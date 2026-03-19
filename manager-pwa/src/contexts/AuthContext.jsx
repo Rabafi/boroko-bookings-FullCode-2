@@ -23,26 +23,13 @@ export function AuthProvider({ children }) {
   const login = async (identifier, password) => {
     const val = identifier.trim().toLowerCase()
 
-    // Try email first, then username
-    let data = null
-    const { data: byEmail } = await supabase
+    const { data, error } = await supabase
       .from('users')
-      .select('id, name, email, username, role, lodge_id, password_hash')
+      .select('id, name, email, role, lodge_id, password_hash')
       .eq('email', val)
       .maybeSingle()
 
-    if (byEmail) {
-      data = byEmail
-    } else {
-      const { data: byUsername } = await supabase
-        .from('users')
-        .select('id, name, email, username, role, lodge_id, password_hash')
-        .eq('username', val)
-        .maybeSingle()
-      data = byUsername
-    }
-
-    if (!data) throw new Error('No account found with that email or username.')
+    if (!data) throw new Error('No account found with that email.')
     if (!['admin', 'manager'].includes(data.role)) throw new Error('Access denied. Manager or Admin role required.')
 
     const ok = await bcrypt.compare(password, data.password_hash)

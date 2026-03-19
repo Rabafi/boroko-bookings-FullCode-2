@@ -35,15 +35,15 @@ export default function Login() {
 
       <form onSubmit={submit} className="w-full max-w-sm space-y-4">
         <div>
-          <label className="text-xs text-gray-400 block mb-1.5">Email or Username</label>
+          <label className="text-xs text-gray-400 block mb-1.5">Email</label>
           <input
             className={inp}
-            type="text"
-            placeholder="manager@lodge.com or username"
+            type="email"
+            placeholder="manager@lodge.com"
             value={email}
             onChange={e => setEmail(e.target.value)}
             required
-            autoComplete="username"
+            autoComplete="email"
           />
         </div>
         <div>
