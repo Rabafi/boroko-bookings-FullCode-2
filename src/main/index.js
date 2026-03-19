@@ -14,6 +14,23 @@ import {
   buildUpgradeRequestEmail
 } from './emailNotifications.js'
 
+// ── Push notification helper ─────────────────────────────────────────────────
+const EDGE_FN_URL = process.env.SUPABASE_URL
+  ? `${process.env.SUPABASE_URL}/functions/v1`
+  : null
+
+function notifyLodge(lodgeId, title, body) {
+  if (!EDGE_FN_URL || !lodgeId) return
+  fetch(`${EDGE_FN_URL}/send-push`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY || ''}`
+    },
+    body: JSON.stringify({ lodge_id: lodgeId, title, body })
+  }).catch(() => {})
+}
+
 // ── Auto-updater setup ───────────────────────────────────────────────────────
 autoUpdater.autoDownload = true        // download silently in background
 autoUpdater.autoInstallOnAppQuit = true // install when user quits naturally
@@ -276,7 +293,11 @@ app.whenReady().then(async () => {
     db.getBookingsByDateRange(start, end)
   )
   ipcMain.handle('bookings:create', async (_, data) => {
-    try { return { success: true, id: await db.createBooking(data) } }
+    try {
+      const id = await db.createBooking(data)
+      notifyLodge(data.lodge_id, '📋 New booking created', `Guest arriving ${data.check_in || ''}`)
+      return { success: true, id }
+    }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('bookings:update', async (_, id, data) => {
@@ -490,7 +511,11 @@ app.whenReady().then(async () => {
   // ── Maintenance ───────────────────────────────────────────────────────────
   ipcMain.handle('maintenance:getAll', async () => db.getMaintenanceTickets())
   ipcMain.handle('maintenance:create', async (_, data) => {
-    try { return await db.createMaintenanceTicket(data) }
+    try {
+      const result = await db.createMaintenanceTicket(data)
+      notifyLodge(data.lodge_id, '🔧 New maintenance request', data.issue || data.description || 'A maintenance ticket was raised')
+      return result
+    }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('maintenance:update', async (_, id, data) => {
