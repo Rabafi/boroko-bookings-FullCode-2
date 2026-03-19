@@ -23,14 +23,15 @@ export function AuthProvider({ children }) {
   const login = async (identifier, password) => {
     const val = identifier.trim().toLowerCase()
 
-    const { data, error } = await supabase
+    const { data: rows, error } = await supabase
       .from('users')
       .select('id, name, email, role, lodge_id, password_hash')
       .eq('email', val)
-      .maybeSingle()
+      .limit(1)
 
     if (error) throw new Error(`DB error: ${error.message} (${error.code})`)
-    if (!data) throw new Error(`No account found for "${val}". Check your Supabase URL/key in Vercel env vars.`)
+    const data = rows?.[0] || null
+    if (!data) throw new Error('No account found with that email.')
     if (!['admin', 'manager'].includes(data.role)) throw new Error('Access denied. Manager or Admin role required.')
 
     const ok = await bcrypt.compare(password, data.password_hash)
