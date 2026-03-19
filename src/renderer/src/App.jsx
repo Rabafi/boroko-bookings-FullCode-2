@@ -170,6 +170,100 @@ function BroadcastBanner() {
   )
 }
 
+// ── Trial Expired Lock Screen ─────────────────────────────────────────────────
+function TrialExpiredScreen({ lodgeName }) {
+  const [submitted, setSubmitted] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+
+  const TIERS = [
+    { name: 'Starter', price: 'Contact us', color: 'blue', features: ['Room bookings', 'Check-in / Check-out', 'Basic reports', 'Up to 2 users'] },
+    { name: 'Standard', price: 'Contact us', color: 'green', features: ['Everything in Starter', 'Expenses & Night Audit', 'Staff management', 'Full reports'] },
+    { name: 'Pro', price: 'Contact us', color: 'purple', features: ['Everything in Standard', 'POS & Inventory', 'Room Supplies', 'Conference & Day Use'] }
+  ]
+
+  const requestUpgrade = async (tier) => {
+    setSubmitting(true)
+    try {
+      await window.api.admin.createSupportTicket({
+        lodge_name: lodgeName || 'Unknown Lodge',
+        title: `Subscription Request — ${tier} Plan`,
+        description: `The lodge has requested to subscribe to the ${tier} plan after their free trial ended.`,
+        category: 'Upgrade Request',
+        priority: 'High'
+      })
+      setSubmitted(true)
+    } catch { setSubmitted(true) }
+    setSubmitting(false)
+  }
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-green-900 via-green-800 to-green-700 flex flex-col items-center justify-center p-6">
+      <div className="text-center mb-8">
+        <div className="text-6xl mb-4">🔒</div>
+        <h1 className="text-3xl font-bold text-white mb-2">Your free trial has ended</h1>
+        <p className="text-green-200 text-sm max-w-md">
+          Thank you for trying Boroko Bookings. Choose a plan below to continue using all features.
+        </p>
+      </div>
+
+      {submitted ? (
+        <div className="bg-white rounded-2xl p-8 max-w-md w-full text-center shadow-2xl">
+          <div className="text-5xl mb-4">✅</div>
+          <h2 className="text-xl font-bold text-gray-800 mb-2">Request sent!</h2>
+          <p className="text-gray-500 text-sm">Our team will contact you shortly to activate your subscription. Thank you for choosing Boroko Bookings.</p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 w-full max-w-3xl">
+          {TIERS.map((tier) => (
+            <div key={tier.name} className="bg-white rounded-2xl p-6 shadow-2xl flex flex-col">
+              <div className={`text-xs font-bold uppercase tracking-widest mb-1 ${tier.color === 'purple' ? 'text-purple-600' : tier.color === 'green' ? 'text-green-600' : 'text-blue-600'}`}>
+                {tier.name}
+              </div>
+              <div className="text-lg font-bold text-gray-800 mb-4">{tier.price}</div>
+              <ul className="space-y-1.5 flex-1 mb-5">
+                {tier.features.map(f => (
+                  <li key={f} className="flex items-start gap-2 text-xs text-gray-600">
+                    <span className="text-green-500 mt-0.5 flex-shrink-0">✓</span>{f}
+                  </li>
+                ))}
+              </ul>
+              <button
+                onClick={() => requestUpgrade(tier.name)}
+                disabled={submitting}
+                className={`w-full py-2 rounded-lg text-sm font-semibold text-white transition-colors disabled:opacity-50 ${
+                  tier.color === 'purple' ? 'bg-purple-600 hover:bg-purple-700' :
+                  tier.color === 'green' ? 'bg-green-600 hover:bg-green-700' :
+                  'bg-blue-600 hover:bg-blue-700'
+                }`}
+              >
+                {submitting ? 'Sending...' : `Get ${tier.name}`}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <p className="text-green-300 text-xs mt-6">
+        Need help? Contact us at support@boroko.io
+      </p>
+    </div>
+  )
+}
+
+// ── Trial Banner ──────────────────────────────────────────────────────────────
+function TrialBanner({ daysLeft }) {
+  const [dismissed, setDismissed] = useState(false)
+  if (dismissed) return null
+  const color = daysLeft <= 1 ? 'bg-red-600' : daysLeft <= 2 ? 'bg-amber-500' : 'bg-blue-600'
+  const label = daysLeft === 1 ? 'Last day' : `${daysLeft} days`
+  return (
+    <div className={`${color} text-white text-xs flex items-center justify-between px-4 py-1.5 fixed top-0 left-0 right-0 z-[9997]`}>
+      <span>🕐 <strong>{label} left</strong> in your free trial — contact us to subscribe and keep your data.</span>
+      <button onClick={() => setDismissed(true)} className="ml-4 opacity-70 hover:opacity-100 text-base leading-none">×</button>
+    </div>
+  )
+}
+
 export function useAuth() {
   return useContext(AuthContext)
 }
@@ -206,7 +300,9 @@ export default function App() {
 
   const [settings, setSettings] = useState(null)
   const [setupComplete, setSetupComplete] = useState(null) // null = loading
+  const [showSetup, setShowSetup] = useState(false)
   const [features, setFeatures] = useState({}) // feature flags keyed by feature name
+  const [trialStatus, setTrialStatus] = useState(null) // null = loading
 
   const loadFeatures = (lodgeId) => {
     if (!lodgeId || !window.api?.admin?.getLodgeFeatures) return
@@ -226,6 +322,12 @@ export default function App() {
       loadFeatures(s?.lodge_id)
       // Re-check feature flags every 60s so plan upgrades reflect without restart
       interval = setInterval(() => loadFeatures(s?.lodge_id), 60_000)
+      // Check trial/license status
+      if (s?.lodge_id && window.api?.trial) {
+        window.api.trial.getStatus(s.lodge_id).then(setTrialStatus).catch(() => setTrialStatus({ status: 'trial', daysLeft: 3, expired: false }))
+      } else {
+        setTrialStatus({ status: 'trial', daysLeft: 3, expired: false })
+      }
     })
     return () => clearInterval(interval)
   }, [])
@@ -243,6 +345,7 @@ export default function App() {
   const handleSetupComplete = (newSettings) => {
     setSettings(newSettings)
     setSetupComplete(true)
+    setShowSetup(false)
   }
 
   // Still loading settings
@@ -257,9 +360,14 @@ export default function App() {
     )
   }
 
-  // First time — show lodge setup wizard
-  if (!setupComplete) {
-    return <Setup onComplete={handleSetupComplete} />
+  // First time or user clicked Sign Up — show lodge setup wizard
+  if (!setupComplete || showSetup) {
+    return <Setup onComplete={handleSetupComplete} onCancel={setupComplete ? () => setShowSetup(false) : null} />
+  }
+
+  // Trial expired and no license — full lock screen (master admins bypass)
+  if (trialStatus?.expired && !user?.isMasterAdmin) {
+    return <TrialExpiredScreen lodgeName={settings?.lodge_name} />
   }
 
   // Master admin gets Command Central, no regular app
@@ -277,11 +385,14 @@ export default function App() {
     <AuthContext.Provider value={{ user, login, logout }}>
       <UpdateBanner />
       <BroadcastBanner />
+      {trialStatus?.status === 'trial' && !user?.isMasterAdmin && (
+        <TrialBanner daysLeft={trialStatus.daysLeft} />
+      )}
       <FeaturesContext.Provider value={features}>
       <SettingsContext.Provider value={{ settings, setSettings }}>
         <HashRouter>
           <Routes>
-            <Route path="/login" element={user ? <Navigate to="/" replace /> : <Login />} />
+            <Route path="/login" element={user ? <Navigate to="/" replace /> : <Login onSignUp={() => setShowSetup(true)} />} />
             {/* One-time master admin setup — accessible without login */}
             <Route path="/master-setup" element={<MasterSetup onComplete={() => window.location.hash = '/login'} />} />
             <Route

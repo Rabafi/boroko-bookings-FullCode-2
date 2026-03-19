@@ -118,6 +118,18 @@ const btn = (variant = 'primary') => ({
   ghost: 'bg-gray-700 hover:bg-gray-600 text-gray-200'
 }[variant])
 
+// ── Trial status helper ───────────────────────────────────────────────────────
+function getTrialInfo(company, licenses) {
+  const hasLicense = licenses.some(l => l.lodge_id === company.lodge_id && l.is_active)
+  if (hasLicense) return { label: 'Licensed', color: 'bg-green-500/20 text-green-300' }
+  if (!company.trial_started_at) return { label: 'In Trial', color: 'bg-blue-500/20 text-blue-300' }
+  const trialEnd = new Date(company.trial_started_at)
+  trialEnd.setDate(trialEnd.getDate() + 3)
+  const daysLeft = Math.ceil((trialEnd - new Date()) / 864e5)
+  if (daysLeft > 0) return { label: `Trial: ${daysLeft}d left`, color: daysLeft === 1 ? 'bg-red-500/20 text-red-300' : 'bg-amber-500/20 text-amber-300' }
+  return { label: 'Trial Expired', color: 'bg-red-500/20 text-red-400' }
+}
+
 // ════════════════════════════════════════════════════════════════════
 // SECTION: Dashboard
 // ════════════════════════════════════════════════════════════════════
@@ -127,6 +139,8 @@ function Dashboard({ companies, licenses, tickets, activityLogs }) {
   const expiring = licenses.filter(l => l.expires_at && l.is_active && new Date(l.expires_at) > new Date() && (new Date(l.expires_at) - new Date()) < 30 * 864e5).length
   const overdue = licenses.filter(l => l.next_due_date && l.next_due_date < today && l.payment_status !== 'free' && l.is_active).length
   const openTickets = tickets.filter(t => t.status === 'open' || t.status === 'in_progress').length
+  const trialsExpired = companies.filter(c => getTrialInfo(c, licenses).label === 'Trial Expired').length
+  const trialsActive = companies.filter(c => getTrialInfo(c, licenses).label.startsWith('Trial:')).length
   const byType = companies.reduce((a, c) => { const t = c.business_type || 'lodge'; a[t] = (a[t] || 0) + 1; return a }, {})
   const recent5 = [...companies].sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at)).slice(0, 5)
   const recentLogs = activityLogs.slice(0, 15)
@@ -140,12 +154,14 @@ function Dashboard({ companies, licenses, tickets, activityLogs }) {
     <div className="space-y-6">
       <h2 className="text-lg font-bold text-white">Dashboard</h2>
       {/* KPIs */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-7 gap-3">
         <StatCard label="Registered Companies" value={companies.length} color="text-white" />
         <StatCard label="Active Licenses" value={active} color="text-green-400" />
+        <StatCard label="In Trial" value={trialsActive} color={trialsActive > 0 ? 'text-blue-400' : 'text-gray-500'} />
+        <StatCard label="Trial Expired" value={trialsExpired} color={trialsExpired > 0 ? 'text-red-400' : 'text-gray-500'} />
         <StatCard label="Expiring (30 days)" value={expiring} color={expiring > 0 ? 'text-yellow-400' : 'text-gray-500'} />
         <StatCard label="Overdue Payments" value={overdue} color={overdue > 0 ? 'text-red-400' : 'text-gray-500'} />
-        <StatCard label="Open Support Tickets" value={openTickets} color={openTickets > 0 ? 'text-orange-400' : 'text-gray-500'} />
+        <StatCard label="Open Tickets" value={openTickets} color={openTickets > 0 ? 'text-orange-400' : 'text-gray-500'} />
       </div>
 
       {/* Business types */}
@@ -212,7 +228,7 @@ function Dashboard({ companies, licenses, tickets, activityLogs }) {
 // ════════════════════════════════════════════════════════════════════
 // SECTION: Companies
 // ════════════════════════════════════════════════════════════════════
-function Companies({ companies, loading }) {
+function Companies({ companies, licenses, loading }) {
   const [selected, setSelected] = useState(null)
   const [stats, setStats] = useState(null)
   const [statsLoading, setStatsLoading] = useState(false)
@@ -240,7 +256,7 @@ function Companies({ companies, loading }) {
             <thead className="bg-gray-900 text-gray-400 text-xs uppercase">
               <tr>
                 <th className="px-4 py-3 text-left">Business</th>
-                <th className="px-4 py-3 text-left">Type</th>
+                <th className="px-4 py-3 text-left">Status</th>
                 <th className="px-4 py-3 text-left">Location</th>
                 <th className="px-4 py-3 text-left">Contact</th>
                 <th className="px-4 py-3 text-left">Lodge ID</th>
@@ -260,9 +276,7 @@ function Companies({ companies, loading }) {
                     {c.company_name && <p className="text-xs text-gray-400">{c.company_name}</p>}
                   </td>
                   <td className="px-4 py-3">
-                    <span className="text-xs bg-gray-700 text-gray-300 px-2 py-0.5 rounded-full">
-                      {BIZ_EMOJI[c.business_type] || '🏢'} {BIZ_LABEL[c.business_type] || c.business_type || 'Lodge'}
-                    </span>
+                    {(() => { const t = getTrialInfo(c, licenses); return <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${t.color}`}>{t.label}</span> })()}
                   </td>
                   <td className="px-4 py-3 text-gray-400 text-xs">{[c.city, c.country].filter(Boolean).join(', ') || '—'}</td>
                   <td className="px-4 py-3 text-gray-400 text-xs">
@@ -343,21 +357,69 @@ function Companies({ companies, loading }) {
 // ════════════════════════════════════════════════════════════════════
 // SECTION: Licenses & Billing
 // ════════════════════════════════════════════════════════════════════
-function LicenseBilling({ licenses, onRefresh }) {
+function LicenseBilling({ licenses, companies, onRefresh }) {
   const [showForm, setShowForm] = useState(false)
   const [form, setForm] = useState({ lodge_id: '', lodge_name: '', business_type: 'lodge', expires_at: '', notes: '' })
+  const [selectedCompany, setSelectedCompany] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [billingModal, setBillingModal] = useState(null) // license to edit billing
   const [billingForm, setBillingForm] = useState({})
+  const [emailStatus, setEmailStatus] = useState({}) // { [licenseId]: 'sending'|'sent'|'error' }
 
   const today = new Date().toISOString().split('T')[0]
 
+  const sendEmail = async (lic) => {
+    const company = companies.find(c => c.lodge_id === lic.lodge_id)
+    const to = company?.email
+    setEmailStatus(s => ({ ...s, [lic.id]: 'sending' }))
+    try {
+      const r = await window.api.email.sendLicense({
+        to,
+        licenseKey: lic.license_key,
+        lodgeName: lic.lodge_name,
+        plan: lic.subscription_plan,
+        expiresAt: lic.expires_at,
+        lodgeId: lic.lodge_id,
+        notes: lic.notes
+      })
+      setEmailStatus(s => ({ ...s, [lic.id]: r.success ? 'sent' : 'error' }))
+      if (!r.success) {
+        alert(`Email failed: ${r.error}`)
+      }
+    } catch (e) {
+      setEmailStatus(s => ({ ...s, [lic.id]: 'error' }))
+      alert(`Email error: ${e.message}`)
+    }
+    setTimeout(() => setEmailStatus(s => { const n = { ...s }; delete n[lic.id]; return n }), 4000)
+  }
+
   const handleCreate = async (e) => {
     e.preventDefault(); setError(''); setSaving(true)
-    const r = await window.api.admin.createLicense({ ...form, lodge_id: form.lodge_id || 'unassigned', expires_at: form.expires_at || null, notes: form.notes || null }).catch(e => ({ error: e.message }))
-    if (r?.license_key) { setShowForm(false); setForm({ lodge_id: '', lodge_name: '', business_type: 'lodge', expires_at: '', notes: '' }); onRefresh() }
-    else setError(r?.error || 'Failed')
+    const companyLodgeId = form.lodge_id // keep for email + display; DB always gets 'unassigned'
+    const r = await window.api.admin.createLicense({ ...form, lodge_id: 'unassigned', expires_at: form.expires_at || null, notes: form.notes || null }).catch(e => ({ error: e.message }))
+    if (r?.license_key) {
+      setShowForm(false)
+      setForm({ lodge_id: '', lodge_name: '', business_type: 'lodge', expires_at: '', notes: '' })
+      setSelectedCompany('')
+      onRefresh()
+      // Auto-send email if company has a registered email
+      const company = companies.find(c => c.lodge_id === companyLodgeId)
+      if (company?.email) {
+        const emailPayload = {
+          to: company.email,
+          licenseKey: r.license_key,
+          lodgeName: form.lodge_name,
+          plan: null,
+          expiresAt: form.expires_at || null,
+          lodgeId: companyLodgeId,
+          notes: form.notes || null
+        }
+        window.api.email.sendLicense(emailPayload).then(res => {
+          if (!res.success) console.warn('[Email] License email failed:', res.error)
+        })
+      }
+    } else setError(r?.error || 'Failed')
     setSaving(false)
   }
 
@@ -402,30 +464,93 @@ function LicenseBilling({ licenses, onRefresh }) {
           <h3 className="font-semibold text-white mb-4 flex items-center gap-2"><Key size={16} className="text-purple-400" /> New License</h3>
           <form onSubmit={handleCreate} className="space-y-4">
             {error && <div className="bg-red-900/50 border border-red-700 text-red-300 rounded-lg px-4 py-3 text-sm">{error}</div>}
-            <div className="grid grid-cols-2 gap-4">
-              <Field label="Business Name *">
-                <input className={inp} placeholder="e.g. Sunset Lodge" value={form.lodge_name} onChange={e => setForm({...form, lodge_name: e.target.value})} required />
-              </Field>
-              <Field label="Business Type">
-                <select className={inp} value={form.business_type} onChange={e => setForm({...form, business_type: e.target.value})}>
-                  <option value="lodge">🏕️ Lodge / Hotel</option>
-                  <option value="restaurant">🍽️ Restaurant</option>
-                  <option value="retail">🛒 Retail</option>
-                  <option value="service_provider">🔧 Service Provider</option>
+            <div className="space-y-4">
+              <Field label="Company *">
+                <select
+                  className={inp}
+                  value={selectedCompany}
+                  onChange={e => {
+                    const lodgeId = e.target.value
+                    setSelectedCompany(lodgeId)
+                    if (lodgeId) {
+                      const c = companies.find(c => c.lodge_id === lodgeId)
+                      if (c) setForm(f => ({ ...f, lodge_id: c.lodge_id, lodge_name: c.lodge_name || c.company_name || '', business_type: c.business_type || 'lodge' }))
+                    } else {
+                      setForm(f => ({ ...f, lodge_id: '', lodge_name: '', business_type: 'lodge' }))
+                    }
+                  }}
+                  required
+                >
+                  <option value="">— Select a company —</option>
+                  {[...(companies || [])].sort((a, b) => (a.lodge_name || '').localeCompare(b.lodge_name || '')).map(c => (
+                    <option key={c.lodge_id} value={c.lodge_id}>{c.lodge_name || c.company_name || c.lodge_id}</option>
+                  ))}
                 </select>
               </Field>
-              <Field label="Lodge ID (optional)">
-                <input className={`${inp} font-mono`} placeholder="UUID from Companies list" value={form.lodge_id} onChange={e => setForm({...form, lodge_id: e.target.value})} />
-              </Field>
-              <Field label="Expiry Date (optional)">
-                <input type="date" className={inp} value={form.expires_at} onChange={e => setForm({...form, expires_at: e.target.value})} />
+              {selectedCompany && (
+                <div className="bg-gray-900/60 border border-gray-700 rounded-lg px-3 py-2 text-xs text-gray-400 font-mono">
+                  ID: {form.lodge_id}
+                </div>
+              )}
+              <Field label="License Period">
+                <div className="space-y-2">
+                  <div className="flex flex-wrap gap-1.5">
+                    {[
+                      { label: '3 Days',   days: 3 },
+                      { label: '7 Days',   days: 7 },
+                      { label: '1 Month',  months: 1 },
+                      { label: '3 Months', months: 3 },
+                      { label: '6 Months', months: 6 },
+                      { label: '1 Year',   years: 1 },
+                      { label: '2 Years',  years: 2 },
+                    ].map(({ label, days, months, years }) => {
+                      const getDate = () => {
+                        const d = new Date()
+                        if (days)   d.setDate(d.getDate() + days)
+                        if (months) d.setMonth(d.getMonth() + months)
+                        if (years)  d.setFullYear(d.getFullYear() + years)
+                        return d.toISOString().split('T')[0]
+                      }
+                      const val = getDate()
+                      const active = form.expires_at === val
+                      return (
+                        <button
+                          key={label}
+                          type="button"
+                          onClick={() => setForm({ ...form, expires_at: active ? '' : val })}
+                          className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
+                            active
+                              ? 'bg-purple-600 border-purple-500 text-white'
+                              : 'bg-gray-700 border-gray-600 text-gray-300 hover:border-purple-500 hover:text-purple-300'
+                          }`}
+                        >
+                          {label}
+                        </button>
+                      )
+                    })}
+                  </div>
+                  <input
+                    type="date"
+                    className={`${inp} text-xs`}
+                    value={form.expires_at}
+                    onChange={e => setForm({ ...form, expires_at: e.target.value })}
+                    placeholder="Or pick a custom date"
+                  />
+                  {form.expires_at && (
+                    <p className="text-xs text-gray-500">
+                      Expires: {new Date(form.expires_at + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}
+                      {' · '}
+                      <button type="button" onClick={() => setForm({ ...form, expires_at: '' })} className="text-red-400 hover:text-red-300">clear</button>
+                    </p>
+                  )}
+                </div>
               </Field>
             </div>
             <Field label="Notes">
               <input className={inp} placeholder="Annual license..." value={form.notes} onChange={e => setForm({...form, notes: e.target.value})} />
             </Field>
             <div className="flex gap-3 pt-1">
-              <button type="button" onClick={() => setShowForm(false)} className={`flex-1 ${btn('ghost')} py-2 rounded-lg text-sm transition-colors`}>Cancel</button>
+              <button type="button" onClick={() => { setShowForm(false); setSelectedCompany('') }} className={`flex-1 ${btn('ghost')} py-2 rounded-lg text-sm transition-colors`}>Cancel</button>
               <button type="submit" disabled={saving} className={`flex-1 ${btn()} py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-60`}>
                 {saving ? 'Generating…' : '🔑 Generate Key'}
               </button>
@@ -500,6 +625,25 @@ function LicenseBilling({ licenses, onRefresh }) {
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
                         <button onClick={() => openBilling(lic)} className="p-1 text-gray-400 hover:text-purple-400 transition-colors" title="Edit billing"><Edit3 size={13} /></button>
+                        {(() => {
+                          const st = emailStatus[lic.id]
+                          const company = companies.find(c => c.lodge_id === lic.lodge_id)
+                          if (!company?.email) return null
+                          return (
+                            <button
+                              onClick={() => sendEmail(lic)}
+                              disabled={st === 'sending'}
+                              title={st === 'sent' ? 'Email sent!' : st === 'error' ? 'Email failed' : `Send key to ${company.email}`}
+                              className={`p-1 transition-colors ${
+                                st === 'sent' ? 'text-green-400' :
+                                st === 'error' ? 'text-red-400' :
+                                'text-gray-400 hover:text-blue-400'
+                              }`}
+                            >
+                              {st === 'sent' ? <CheckCircle2 size={13} /> : <Send size={13} className={st === 'sending' ? 'animate-pulse' : ''} />}
+                            </button>
+                          )
+                        })()}
                         <button onClick={async () => { if (!confirm(`Delete ${lic.license_key}?`)) return; await window.api.admin.deleteLicense(lic.id); onRefresh() }} className="p-1 text-red-500 hover:text-red-400"><Trash2 size={13} /></button>
                       </div>
                     </td>
@@ -1235,8 +1379,8 @@ export default function AdminCentral() {
         {/* Main content */}
         <div className="flex-1 min-w-0 p-6 overflow-y-auto">
           {section === 'dashboard'     && <Dashboard companies={companies} licenses={licenses} tickets={tickets} activityLogs={activityLogs} />}
-          {section === 'companies'     && <Companies companies={companies} loading={loading} />}
-          {section === 'billing'       && <LicenseBilling licenses={licenses} onRefresh={loadAll} />}
+          {section === 'companies'     && <Companies companies={companies} licenses={licenses} loading={loading} />}
+          {section === 'billing'       && <LicenseBilling licenses={licenses} companies={companies} onRefresh={loadAll} />}
           {section === 'flags'         && <FeatureFlags companies={companies} />}
           {section === 'broadcasts'    && <Broadcasts />}
           {section === 'tickets'       && <SupportTickets companies={companies} />}

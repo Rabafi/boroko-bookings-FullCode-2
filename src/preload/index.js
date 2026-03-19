@@ -99,6 +99,10 @@ const api = {
     get: () => ipcRenderer.invoke('settings:get'),
     save: (data) => ipcRenderer.invoke('settings:save', data)
   },
+  trial: {
+    getStatus: (lodgeId) => ipcRenderer.invoke('trial:getStatus', lodgeId),
+    activateKey: (lodgeId, key) => ipcRenderer.invoke('trial:activateKey', lodgeId, key)
+  },
   updates: {
     onAvailable: (cb) => ipcRenderer.on('update:available', (_, info) => cb(info)),
     onProgress: (cb) => ipcRenderer.on('update:progress', (_, p) => cb(p)),
@@ -189,7 +193,8 @@ const api = {
   email: {
     getConfig: () => ipcRenderer.invoke('email:getConfig'),
     saveConfig: (config) => ipcRenderer.invoke('email:saveConfig', config),
-    test: (config) => ipcRenderer.invoke('email:test', config)
+    test: (config) => ipcRenderer.invoke('email:test', config),
+    sendLicense: (payload) => ipcRenderer.invoke('email:sendLicense', payload)
   },
 }
 

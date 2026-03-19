@@ -2104,9 +2104,122 @@ export async function saveSettings(data) {
 
   if (isOnline) {
     await supabase.from('settings').upsert(settings, { onConflict: 'lodge_id' })
+    // Set trial_started_at only on first setup (don't overwrite on subsequent saves)
+    await supabase.from('settings')
+      .update({ trial_started_at: new Date().toISOString() })
+      .eq('lodge_id', lodgeId)
+      .is('trial_started_at', null)
   }
   writeCache('settings', [settings])
   return settings
+}
+
+export async function getTrialStatus(lodgeId) {
+  if (!isOnline) {
+    // Offline — check local cache
+    const cached = readCache('trial_status')
+    if (cached) return cached
+    return { status: 'trial', daysLeft: 3, expired: false }
+  }
+  try {
+    // Check for an active license first
+    const now = new Date().toISOString()
+    const { data: license } = await supabase
+      .from('licenses')
+      .select('id, expires_at, subscription_plan, monthly_fee, payment_status, next_due_date, currency, lodge_name')
+      .eq('lodge_id', lodgeId)
+      .or(`expires_at.is.null,expires_at.gt.${now}`)
+      .maybeSingle()
+
+    if (license) {
+      const result = {
+        status: 'licensed',
+        daysLeft: null,
+        expired: false,
+        plan: license.subscription_plan,
+        expires_at: license.expires_at,
+        monthly_fee: license.monthly_fee,
+        payment_status: license.payment_status,
+        next_due_date: license.next_due_date,
+        currency: license.currency,
+        lodge_name: license.lodge_name
+      }
+      writeCache('trial_status', result)
+      return result
+    }
+
+    // No license — check trial
+    const { data: settings } = await supabase
+      .from('settings')
+      .select('trial_started_at')
+      .eq('lodge_id', lodgeId)
+      .maybeSingle()
+
+    if (!settings?.trial_started_at) {
+      const result = { status: 'trial', daysLeft: 3, expired: false }
+      writeCache('trial_status', result)
+      return result
+    }
+
+    const trialEnd = new Date(settings.trial_started_at)
+    trialEnd.setDate(trialEnd.getDate() + 3)
+    const msLeft = trialEnd - new Date()
+    const daysLeft = Math.ceil(msLeft / (1000 * 60 * 60 * 24))
+
+    const result = daysLeft > 0
+      ? { status: 'trial', daysLeft, expired: false }
+      : { status: 'expired', daysLeft: 0, expired: true }
+    writeCache('trial_status', result)
+    return result
+  } catch {
+    return { status: 'trial', daysLeft: 3, expired: false }
+  }
+}
+
+export async function activateLicenseKey(lodgeId, licenseKey) {
+  if (!isOnline) throw new Error('Internet connection required to activate license.')
+  if (!licenseKey?.trim()) throw new Error('Please enter a license key.')
+
+  const key = licenseKey.trim().toUpperCase()
+
+  // Find the license by key
+  const { data: license, error } = await supabase
+    .from('licenses')
+    .select('*')
+    .eq('license_key', key)
+    .maybeSingle()
+
+  if (error) throw new Error(error.message)
+  if (!license) throw new Error('License key not found. Please check and try again.')
+  if (!license.is_active) throw new Error('This license key has been deactivated.')
+
+  // Check if already assigned to a different lodge
+  if (license.lodge_id && license.lodge_id !== 'unassigned' && license.lodge_id !== lodgeId) {
+    throw new Error('This license key is already registered to another installation.')
+  }
+
+  // Check expiry
+  if (license.expires_at && new Date(license.expires_at) < new Date()) {
+    throw new Error('This license key has expired.')
+  }
+
+  // Assign to this lodge
+  const { error: updateError } = await supabase
+    .from('licenses')
+    .update({ lodge_id: lodgeId })
+    .eq('id', license.id)
+
+  if (updateError) throw new Error(updateError.message)
+
+  // Invalidate cached trial status so next check returns 'licensed'
+  writeCache('trial_status', { status: 'licensed', daysLeft: null, expired: false, plan: license.subscription_plan })
+
+  return {
+    success: true,
+    plan: license.subscription_plan || 'Starter',
+    expires_at: license.expires_at,
+    lodge_name: license.lodge_name
+  }
 }
 
 // ─── MASTER ADMIN ──────────────────────────────────────────────────────────────
@@ -2166,7 +2279,7 @@ export async function getAllCompanies() {
   if (!isOnline) return []
   const { data } = await supabase
     .from('settings')
-    .select('lodge_id, lodge_name, company_name, business_type, city, country, email, phone, updated_at, setup_complete')
+    .select('lodge_id, lodge_name, company_name, business_type, city, country, email, phone, updated_at, setup_complete, trial_started_at')
     .eq('setup_complete', true)
     .order('updated_at', { ascending: false })
   return data || []

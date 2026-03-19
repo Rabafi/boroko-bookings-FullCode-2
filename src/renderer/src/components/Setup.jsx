@@ -1,33 +1,17 @@
 import { useState, useRef } from 'react'
-import { Building2, Phone, Mail, MapPin, Globe, Hash, CheckCircle, Upload, Image, X } from 'lucide-react'
+import { Building2, Phone, Mail, MapPin, Globe, Hash, CheckCircle, Upload, Image, X, User, Lock, Eye, EyeOff } from 'lucide-react'
 
-const BUSINESS_TYPES = [
-  {
-    value: 'lodge',
-    emoji: '🏕️',
-    label: 'Lodge / Hotel',
-    desc: 'Accommodation with room bookings, check-ins, housekeeping, conference rooms & POS'
-  },
-  {
-    value: 'restaurant',
-    emoji: '🍽️',
-    label: 'Restaurant / Bar',
-    desc: 'Food & drinks orders, POS, inventory tracking & expenses'
-  }
-]
-
-const TYPE_LABELS = {
-  lodge: { name: 'Lodge / Property Name', namePlaceholder: 'e.g. Sunset Lodge, Okavango Camp...', nameHint: 'The name of your lodge as it will appear on receipts' },
-  restaurant: { name: 'Restaurant / Bar Name', namePlaceholder: 'e.g. The Grill House, Sunset Bar...', nameHint: 'The name of your restaurant as it will appear on receipts' }
-}
-
-export default function Setup({ onComplete }) {
+export default function Setup({ onComplete, onCancel }) {
   const [step, setStep] = useState(1)
   const [saving, setSaving] = useState(false)
   const [logoPreview, setLogoPreview] = useState(null)
+  const [showPass, setShowPass] = useState(false)
+  const [showConfirm, setShowConfirm] = useState(false)
+  const [adminError, setAdminError] = useState('')
   const fileInputRef = useRef(null)
+  const [admin, setAdmin] = useState({ name: '', email: '', password: '', confirm: '' })
   const [form, setForm] = useState({
-    business_type: '',
+    business_type: 'lodge',
     lodge_name: '',
     company_name: '',
     address: '',
@@ -42,7 +26,6 @@ export default function Setup({ onComplete }) {
   })
 
   const set = (field, value) => setForm((f) => ({ ...f, [field]: value }))
-  const typeLabels = TYPE_LABELS[form.business_type] || TYPE_LABELS.lodge
 
   const processImageFile = (file) => {
     if (!file || !file.type.startsWith('image/')) return
@@ -66,34 +49,55 @@ export default function Setup({ onComplete }) {
   }
 
   const handleFinish = async () => {
+    setAdminError('')
+    if (!admin.name.trim() || !admin.email.trim() || !admin.password) {
+      setAdminError('All fields are required.')
+      return
+    }
+    if (admin.password.length < 6) {
+      setAdminError('Password must be at least 6 characters.')
+      return
+    }
+    if (admin.password !== admin.confirm) {
+      setAdminError('Passwords do not match.')
+      return
+    }
     setSaving(true)
     try {
       const res = await window.api.settings.save(form)
       if (res.success) {
+        await window.api.users.create({
+          name: admin.name.trim(),
+          email: admin.email.trim().toLowerCase(),
+          password: admin.password,
+          role: 'admin',
+          lodge_id: res.data?.lodge_id
+        })
         onComplete(res.data)
       }
     } catch (e) {
       console.error(e)
+      setAdminError('Setup failed. Please try again.')
     }
     setSaving(false)
   }
 
-  const STEP_LABELS = ['Business Type', 'Business Info', 'Contact Details']
+  const STEP_LABELS = ['Property Info', 'Contact Details', 'Admin Account']
+
+  const stepSubtitle = {
+    1: 'Tell us about your property — this appears on all receipts and invoices.',
+    2: 'Where can guests and staff reach you?',
+    3: 'Create your administrator login. You can add more staff accounts after setup.'
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-green-900 via-green-800 to-green-700 flex items-center justify-center p-6">
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden">
         {/* Header */}
         <div className="bg-green-700 px-8 py-6 text-white">
-          <div className="text-3xl mb-2">
-            {form.business_type ? BUSINESS_TYPES.find((b) => b.value === form.business_type)?.emoji : '🏢'}
-          </div>
-          <h1 className="text-2xl font-bold">Welcome to Boroko Business</h1>
-          <p className="text-green-200 text-sm mt-1">
-            {step === 1
-              ? 'What type of business are you setting up?'
-              : 'Let\'s set up your details — these will appear on all receipts and invoices.'}
-          </p>
+          <div className="text-3xl mb-2">🏕️</div>
+          <h1 className="text-2xl font-bold">Welcome to Boroko Bookings</h1>
+          <p className="text-green-200 text-sm mt-1">{stepSubtitle[step]}</p>
         </div>
 
         {/* Progress Steps */}
@@ -121,59 +125,22 @@ export default function Setup({ onComplete }) {
 
         <div className="px-8 py-6">
 
-          {/* ── Step 1: Business Type ── */}
+          {/* ── Step 1: Property Info ── */}
           {step === 1 && (
-            <div className="space-y-3">
-              <p className="text-sm font-medium text-gray-700 mb-3">Select your business type:</p>
-              {BUSINESS_TYPES.map((type) => (
-                <button
-                  key={type.value}
-                  type="button"
-                  onClick={() => set('business_type', type.value)}
-                  className={`w-full flex items-center gap-4 p-4 rounded-xl border-2 text-left transition-all ${
-                    form.business_type === type.value
-                      ? 'border-green-500 bg-green-50 shadow-sm'
-                      : 'border-gray-200 hover:border-green-300 hover:bg-gray-50'
-                  }`}
-                >
-                  <span className="text-2xl flex-shrink-0">{type.emoji}</span>
-                  <div>
-                    <p className={`font-semibold text-sm ${form.business_type === type.value ? 'text-green-800' : 'text-gray-800'}`}>
-                      {type.label}
-                    </p>
-                    <p className="text-xs text-gray-500 mt-0.5">{type.desc}</p>
-                  </div>
-                  {form.business_type === type.value && (
-                    <CheckCircle size={18} className="text-green-600 ml-auto flex-shrink-0" />
-                  )}
-                </button>
-              ))}
-              <button
-                onClick={() => setStep(2)}
-                disabled={!form.business_type}
-                className="btn-primary w-full mt-4"
-              >
-                Next →
-              </button>
-            </div>
-          )}
-
-          {/* ── Step 2: Business Info ── */}
-          {step === 2 && (
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   <Building2 size={14} className="inline mr-1 text-green-600" />
-                  {typeLabels.name} *
+                  Property / Lodge Name *
                 </label>
                 <input
                   className="input"
-                  placeholder={typeLabels.namePlaceholder}
+                  placeholder="e.g. Sunset Lodge, Okavango Camp..."
                   value={form.lodge_name}
                   onChange={(e) => set('lodge_name', e.target.value)}
                   autoFocus
                 />
-                <p className="text-xs text-gray-400 mt-1">{typeLabels.nameHint}</p>
+                <p className="text-xs text-gray-400 mt-1">The name of your lodge as it will appear on receipts</p>
               </div>
 
               <div>
@@ -191,7 +158,7 @@ export default function Setup({ onComplete }) {
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Currency Symbol</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Currency</label>
                   <select className="input" value={form.currency} onChange={(e) => set('currency', e.target.value)}>
                     <option value="P">P — Botswana Pula</option>
                     <option value="R">R — South African Rand</option>
@@ -220,7 +187,7 @@ export default function Setup({ onComplete }) {
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   <Image size={14} className="inline mr-1 text-green-600" />
-                  Business Logo (optional)
+                  Logo (optional)
                 </label>
                 <div className="flex items-center gap-4">
                   {logoPreview ? (
@@ -249,21 +216,18 @@ export default function Setup({ onComplete }) {
                 </div>
               </div>
 
-              <div className="flex gap-3">
-                <button onClick={() => setStep(1)} className="btn-secondary flex-1">← Back</button>
-                <button
-                  onClick={() => setStep(3)}
-                  disabled={!form.lodge_name.trim()}
-                  className="btn-primary flex-1"
-                >
-                  Next →
-                </button>
-              </div>
+              <button
+                onClick={() => setStep(2)}
+                disabled={!form.lodge_name.trim()}
+                className="btn-primary w-full mt-2"
+              >
+                Next →
+              </button>
             </div>
           )}
 
-          {/* ── Step 3: Contact Details ── */}
-          {step === 3 && (
+          {/* ── Step 2: Contact Details ── */}
+          {step === 2 && (
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -321,7 +285,7 @@ export default function Setup({ onComplete }) {
                 <input
                   type="email"
                   className="input"
-                  placeholder="info@yourbusiness.com"
+                  placeholder="info@yourlodge.com"
                   value={form.email}
                   onChange={(e) => set('email', e.target.value)}
                 />
@@ -334,20 +298,96 @@ export default function Setup({ onComplete }) {
                 </label>
                 <input
                   className="input"
-                  placeholder="www.yourbusiness.com"
+                  placeholder="www.yourlodge.com"
                   value={form.website}
                   onChange={(e) => set('website', e.target.value)}
                 />
               </div>
 
               <div className="flex gap-3 pt-1">
+                <button onClick={() => setStep(1)} className="btn-secondary flex-1">← Back</button>
+                <button onClick={() => setStep(3)} className="btn-primary flex-1">Next →</button>
+              </div>
+            </div>
+          )}
+
+          {/* ── Step 3: Admin Account ── */}
+          {step === 3 && (
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  <User size={14} className="inline mr-1 text-green-600" />
+                  Full Name *
+                </label>
+                <input
+                  className="input"
+                  placeholder="e.g. John Doe"
+                  value={admin.name}
+                  onChange={(e) => setAdmin((a) => ({ ...a, name: e.target.value }))}
+                  autoFocus
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  <Mail size={14} className="inline mr-1 text-green-600" />
+                  Email Address *
+                </label>
+                <input
+                  type="email"
+                  className="input"
+                  placeholder="admin@yourlodge.com"
+                  value={admin.email}
+                  onChange={(e) => setAdmin((a) => ({ ...a, email: e.target.value }))}
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  <Lock size={14} className="inline mr-1 text-green-600" />
+                  Password *
+                </label>
+                <div className="relative">
+                  <input
+                    type={showPass ? 'text' : 'password'}
+                    className="input pr-10"
+                    placeholder="Min. 6 characters"
+                    value={admin.password}
+                    onChange={(e) => setAdmin((a) => ({ ...a, password: e.target.value }))}
+                  />
+                  <button type="button" onClick={() => setShowPass((v) => !v)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
+                    {showPass ? <EyeOff size={15} /> : <Eye size={15} />}
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  <Lock size={14} className="inline mr-1 text-green-600" />
+                  Confirm Password *
+                </label>
+                <div className="relative">
+                  <input
+                    type={showConfirm ? 'text' : 'password'}
+                    className="input pr-10"
+                    placeholder="Re-enter password"
+                    value={admin.confirm}
+                    onChange={(e) => setAdmin((a) => ({ ...a, confirm: e.target.value }))}
+                  />
+                  <button type="button" onClick={() => setShowConfirm((v) => !v)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
+                    {showConfirm ? <EyeOff size={15} /> : <Eye size={15} />}
+                  </button>
+                </div>
+              </div>
+
+              {adminError && <p className="text-red-500 text-sm">{adminError}</p>}
+
+              <div className="flex gap-3 pt-1">
                 <button onClick={() => setStep(2)} className="btn-secondary flex-1">← Back</button>
-                <button
-                  onClick={handleFinish}
-                  disabled={saving}
-                  className="btn-primary flex-1"
-                >
-                  {saving ? 'Setting up...' : '✓ Finish Setup'}
+                <button onClick={handleFinish} disabled={saving} className="btn-primary flex-1">
+                  {saving ? 'Creating account...' : '✓ Finish Setup'}
                 </button>
               </div>
             </div>
@@ -357,6 +397,13 @@ export default function Setup({ onComplete }) {
         <p className="text-center text-xs text-gray-400 pb-4">
           You can change these details anytime in Settings
         </p>
+        {onCancel && (
+          <div className="text-center pb-4">
+            <button onClick={onCancel} className="text-xs text-gray-400 hover:text-gray-600 underline">
+              ← Back to Sign In
+            </button>
+          </div>
+        )}
       </div>
     </div>
   )

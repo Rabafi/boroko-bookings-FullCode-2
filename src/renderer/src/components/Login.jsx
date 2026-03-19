@@ -1,10 +1,12 @@
 import { useState } from 'react'
+import { Eye, EyeOff } from 'lucide-react'
 import { useAuth } from '../App'
 
-export default function Login() {
+export default function Login({ onSignUp }) {
   const { login } = useAuth()
-  const [email, setEmail] = useState('admin@boroko.com')
+  const [email, setEmail] = useState(() => localStorage.getItem('bb_last_email') || '')
   const [password, setPassword] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
@@ -15,6 +17,7 @@ export default function Login() {
     try {
       const user = await window.api.auth.login(email, password)
       if (user) {
+        localStorage.setItem('bb_last_email', email)
         login(user)
       } else {
         setError('Invalid email or password')
@@ -42,18 +45,30 @@ export default function Login() {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
+              autoComplete="email"
               required
             />
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
-              required
-            />
+            <div className="relative">
+              <input
+                type={showPassword ? 'text' : 'password'}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full px-4 py-2.5 pr-11 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
+                autoComplete="current-password"
+                required
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword(v => !v)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 transition-colors"
+                tabIndex={-1}
+              >
+                {showPassword ? <EyeOff size={17} /> : <Eye size={17} />}
+              </button>
+            </div>
           </div>
 
           {error && (
@@ -71,8 +86,22 @@ export default function Login() {
           </button>
         </form>
 
-        <p className="text-center text-xs text-gray-400 mt-6">
-          Default credentials: admin@boroko.com / admin123
+        {onSignUp && (
+          <div className="text-center mt-6">
+            <p className="text-sm text-gray-500">
+              New to Boroko?{' '}
+              <button
+                onClick={onSignUp}
+                className="text-green-600 font-semibold hover:text-green-700 hover:underline"
+              >
+                Get Started →
+              </button>
+            </p>
+          </div>
+        )}
+
+        <p className="text-center text-xs text-gray-400 mt-3">
+          Use the email and password you created during setup
         </p>
       </div>
     </div>

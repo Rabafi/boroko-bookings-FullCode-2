@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, ipcMain, Notification, dialog } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, Notification, dialog, Menu } from 'electron'
 import { join } from 'path'
 import fs from 'fs'
 import * as XLSX from 'xlsx'
@@ -10,6 +10,7 @@ import {
   saveEmailConfig,
   testEmailConfig,
   sendNotificationEmail,
+  sendLicenseEmail,
   buildSupportTicketEmail,
   buildUpgradeRequestEmail
 } from './emailNotifications.js'
@@ -87,6 +88,21 @@ function createWindow() {
 
   mainWindow.on('ready-to-show', () => {
     mainWindow.show()
+  })
+
+  // Right-click context menu with cut/copy/paste/select-all
+  mainWindow.webContents.on('context-menu', (_e, params) => {
+    const items = []
+    if (params.isEditable) {
+      if (params.selectionText.length > 0) items.push({ label: 'Cut', role: 'cut' })
+      items.push({ label: 'Copy', role: 'copy', enabled: params.selectionText.length > 0 })
+      items.push({ label: 'Paste', role: 'paste', enabled: params.editFlags.canPaste })
+      items.push({ type: 'separator' })
+      items.push({ label: 'Select All', role: 'selectAll' })
+    } else if (params.selectionText.length > 0) {
+      items.push({ label: 'Copy', role: 'copy' })
+    }
+    if (items.length > 0) Menu.buildFromTemplate(items).popup(mainWindow)
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
@@ -235,6 +251,10 @@ app.whenReady().then(async () => {
       config.pass = existing?.pass || ''
     }
     return testEmailConfig(config)
+  })
+  ipcMain.handle('email:sendLicense', async (_, payload) => {
+    try { return await sendLicenseEmail(payload) }
+    catch (e) { return { success: false, error: e.message } }
   })
 
   // ── Users ─────────────────────────────────────────────────────────────────
@@ -610,6 +630,11 @@ app.whenReady().then(async () => {
   ipcMain.handle('settings:get', async () => db.getSettings())
   ipcMain.handle('settings:save', async (_, data) => {
     try { return { success: true, data: await db.saveSettings(data) } }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('trial:getStatus', async (_, lodgeId) => db.getTrialStatus(lodgeId))
+  ipcMain.handle('trial:activateKey', async (_, lodgeId, key) => {
+    try { return await db.activateLicenseKey(lodgeId, key) }
     catch (e) { return { success: false, error: e.message } }
   })
 
