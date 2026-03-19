@@ -47,7 +47,7 @@ export default function Login() {
                 <Building2 size={20} className="text-green-400" />
               </div>
               <div className="flex-1 min-w-0">
-                <p className="text-white font-medium text-sm truncate">{lodge.lodge_id}</p>
+                <p className="text-white font-medium text-sm truncate">{lodge.lodge_display_name}</p>
                 <p className="text-gray-400 text-xs capitalize">{lodge.role}</p>
               </div>
               <ChevronRight size={18} className="text-gray-500 flex-shrink-0" />

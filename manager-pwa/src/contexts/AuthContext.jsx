@@ -45,9 +45,19 @@ export function AuthProvider({ children }) {
       // Single lodge — log straight in
       return _startSession(eligible[0])
     } else {
-      // Multiple lodges — let user pick
-      setPendingLodges(eligible)
-      return null // caller checks pendingLodges
+      // Multiple lodges — fetch lodge names then let user pick
+      const lodgeIds = eligible.map(r => r.lodge_id)
+      const { data: settings } = await supabase
+        .from('settings')
+        .select('lodge_id, lodge_name, company_name')
+        .in('lodge_id', lodgeIds)
+
+      const nameMap = {}
+      if (settings) settings.forEach(s => { nameMap[s.lodge_id] = s.lodge_name || s.company_name || s.lodge_id })
+
+      const withNames = eligible.map(r => ({ ...r, lodge_display_name: nameMap[r.lodge_id] || r.lodge_id }))
+      setPendingLodges(withNames)
+      return null
     }
   }
 
