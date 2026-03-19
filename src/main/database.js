@@ -351,10 +351,29 @@ export async function getAllUsers() {
 }
 
 export async function createUser(data) {
+  const emailLower = data.email.trim().toLowerCase()
+
+  // ── Duplicate email check ──────────────────────────────────────────────────
+  if (isOnline) {
+    const { data: existing } = await supabase
+      .from('users')
+      .select('id')
+      .eq('lodge_id', lodgeId)
+      .eq('email', emailLower)
+      .limit(1)
+    if (existing && existing.length > 0)
+      throw new Error(`A user with the email "${emailLower}" already exists in this lodge.`)
+  } else {
+    const cached = readCache('users')
+    if (cached.some(u => u.email?.toLowerCase() === emailLower))
+      throw new Error(`A user with the email "${emailLower}" already exists in this lodge.`)
+  }
+  // ──────────────────────────────────────────────────────────────────────────
+
   const hash = bcrypt.hashSync(data.password, 10)
   const user = {
     name: data.name,
-    email: data.email,
+    email: emailLower,
     password_hash: hash,
     role: data.role || 'receptionist',
     lodge_id: lodgeId
