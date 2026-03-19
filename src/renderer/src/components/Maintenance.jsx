@@ -1,0 +1,361 @@
+import { useEffect, useState } from 'react'
+import { Plus, CheckCircle, Wrench, AlertTriangle } from 'lucide-react'
+import { Modal } from './shared/Modal'
+
+const PRIORITIES = ['low', 'medium', 'high', 'urgent']
+const STATUSES = ['open', 'in_progress', 'resolved']
+
+const priorityColor = {
+  low: 'bg-gray-100 text-gray-600',
+  medium: 'bg-yellow-100 text-yellow-700',
+  high: 'bg-orange-100 text-orange-700',
+  urgent: 'bg-red-100 text-red-700'
+}
+
+const statusColor = {
+  open: 'bg-red-50 text-red-600',
+  in_progress: 'bg-blue-50 text-blue-700',
+  resolved: 'bg-green-50 text-green-700'
+}
+
+const today = () => new Date().toISOString().split('T')[0]
+
+export default function Maintenance() {
+  const [tickets, setTickets] = useState([])
+  const [rooms, setRooms] = useState([])
+  const [loading, setLoading] = useState(false)
+  const [statusFilter, setStatusFilter] = useState('open')
+
+  const [formOpen, setFormOpen] = useState(false)
+  const [editOpen, setEditOpen] = useState(false)
+  const [editing, setEditing] = useState(null)
+  const [saving, setSaving] = useState(false)
+  const [resolving, setResolving] = useState(null)
+
+  const [form, setForm] = useState({
+    room_id: '',
+    title: '',
+    description: '',
+    priority: 'medium',
+    reported_date: today()
+  })
+
+  useEffect(() => {
+    loadData()
+  }, [])
+
+  const loadData = async () => {
+    setLoading(true)
+    const [t, r] = await Promise.all([
+      window.api.maintenance.getAll().catch(() => []),
+      window.api.rooms.getAll().catch(() => [])
+    ])
+    setTickets(t || [])
+    setRooms(r || [])
+    setLoading(false)
+  }
+
+  const openCreate = () => {
+    setForm({
+      room_id: rooms[0]?.id || '',
+      title: '',
+      description: '',
+      priority: 'medium',
+      reported_date: today()
+    })
+    setFormOpen(true)
+  }
+
+  const openEdit = (ticket) => {
+    setEditing(ticket)
+    setEditOpen(true)
+  }
+
+  const handleCreate = async (e) => {
+    e.preventDefault()
+    setSaving(true)
+    await window.api.maintenance.create({ ...form, room_id: Number(form.room_id) }).catch(console.error)
+    setSaving(false)
+    setFormOpen(false)
+    loadData()
+  }
+
+  const handleUpdate = async (id, data) => {
+    await window.api.maintenance.update(id, data).catch(console.error)
+    setEditOpen(false)
+    setEditing(null)
+    loadData()
+  }
+
+  const handleResolve = async (ticket) => {
+    if (!confirm(`Mark "${ticket.title}" as resolved? The room will return to Available.`)) return
+    setResolving(ticket.id)
+    await window.api.maintenance.resolve(ticket.id, ticket.room_id).catch(console.error)
+    setResolving(null)
+    loadData()
+  }
+
+  const displayed = tickets.filter((t) =>
+    statusFilter === 'all' ? true : t.status === statusFilter
+  )
+
+  const openCount = tickets.filter((t) => t.status !== 'resolved').length
+
+  return (
+    <div className="p-6">
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-800">Maintenance</h1>
+          <p className="text-sm text-gray-500 mt-0.5">
+            {openCount} open ticket{openCount !== 1 ? 's' : ''}
+          </p>
+        </div>
+        <button onClick={openCreate} className="btn-primary flex items-center gap-2">
+          <Plus size={16} /> New Ticket
+        </button>
+      </div>
+
+      {/* Status filter tabs */}
+      <div className="flex rounded-lg border border-gray-200 overflow-hidden text-sm w-fit mb-5">
+        {[['open', 'Open'], ['in_progress', 'In Progress'], ['resolved', 'Resolved'], ['all', 'All']].map(
+          ([v, l]) => (
+            <button
+              key={v}
+              onClick={() => setStatusFilter(v)}
+              className={`px-4 py-2 transition-colors ${
+                statusFilter === v ? 'bg-green-600 text-white' : 'text-gray-600 hover:bg-gray-50'
+              }`}
+            >
+              {l}
+            </button>
+          )
+        )}
+      </div>
+
+      {/* Ticket Grid */}
+      {loading ? (
+        <p className="text-center text-gray-400 py-16 text-sm">Loading...</p>
+      ) : displayed.length === 0 ? (
+        <div className="bg-white rounded-xl shadow-sm p-12 text-center text-gray-400">
+          <Wrench size={40} className="mx-auto mb-3 opacity-30" />
+          <p>No maintenance tickets found.</p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+          {displayed.map((ticket) => (
+            <div
+              key={ticket.id}
+              className={`bg-white rounded-xl shadow-sm border-l-4 p-5 ${
+                ticket.priority === 'urgent'
+                  ? 'border-red-500'
+                  : ticket.priority === 'high'
+                  ? 'border-orange-400'
+                  : ticket.priority === 'medium'
+                  ? 'border-yellow-400'
+                  : 'border-gray-300'
+              }`}
+            >
+              <div className="flex items-start justify-between gap-2 mb-3">
+                <h3 className="font-semibold text-gray-800 text-sm leading-snug">{ticket.title}</h3>
+                <span
+                  className={`shrink-0 text-xs font-semibold px-2 py-0.5 rounded-full capitalize ${priorityColor[ticket.priority]}`}
+                >
+                  {ticket.priority}
+                </span>
+              </div>
+
+              <p className="text-xs text-gray-500 mb-3 leading-relaxed">
+                {ticket.description || <span className="italic">No description</span>}
+              </p>
+
+              <div className="flex items-center justify-between text-xs text-gray-400 mb-4">
+                <span>
+                  🛏️ Room {ticket.room_number || ticket.room_id}
+                </span>
+                <span>📅 {ticket.reported_date}</span>
+              </div>
+
+              <div className="flex items-center justify-between">
+                <span
+                  className={`text-xs font-semibold px-2 py-0.5 rounded-full capitalize ${statusColor[ticket.status]}`}
+                >
+                  {ticket.status?.replace('_', ' ')}
+                </span>
+                <div className="flex gap-2">
+                  {ticket.status !== 'resolved' && (
+                    <>
+                      <button
+                        onClick={() => openEdit(ticket)}
+                        className="text-xs px-2 py-1 text-blue-600 hover:bg-blue-50 rounded transition-colors"
+                      >
+                        Update
+                      </button>
+                      <button
+                        onClick={() => handleResolve(ticket)}
+                        disabled={resolving === ticket.id}
+                        className="text-xs px-2 py-1 text-green-600 hover:bg-green-50 rounded transition-colors flex items-center gap-1 disabled:opacity-50"
+                      >
+                        <CheckCircle size={12} />
+                        {resolving === ticket.id ? 'Resolving...' : 'Resolve'}
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Create Modal */}
+      {formOpen && (
+        <Modal title="New Maintenance Ticket" onClose={() => setFormOpen(false)} size="sm">
+          <form onSubmit={handleCreate} className="space-y-4">
+            <div className="bg-yellow-50 rounded-lg p-3 flex items-start gap-2 text-sm text-yellow-800">
+              <AlertTriangle size={16} className="shrink-0 mt-0.5" />
+              <span>The selected room will be set to <strong>Maintenance</strong> status, blocking new bookings.</span>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Room *</label>
+              <select
+                className="input"
+                value={form.room_id}
+                onChange={(e) => setForm({ ...form, room_id: e.target.value })}
+                required
+              >
+                {rooms.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    Room {r.room_number} — {r.room_type}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Issue Title *</label>
+              <input
+                type="text"
+                className="input"
+                value={form.title}
+                onChange={(e) => setForm({ ...form, title: e.target.value })}
+                required
+                placeholder="e.g. Broken AC unit"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
+              <textarea
+                className="input resize-none"
+                rows={3}
+                value={form.description}
+                onChange={(e) => setForm({ ...form, description: e.target.value })}
+                placeholder="Details about the issue..."
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Priority *</label>
+                <select
+                  className="input capitalize"
+                  value={form.priority}
+                  onChange={(e) => setForm({ ...form, priority: e.target.value })}
+                >
+                  {PRIORITIES.map((p) => (
+                    <option key={p} value={p} className="capitalize">{p}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Date Reported *</label>
+                <input
+                  type="date"
+                  className="input"
+                  value={form.reported_date}
+                  onChange={(e) => setForm({ ...form, reported_date: e.target.value })}
+                  required
+                />
+              </div>
+            </div>
+            <div className="flex gap-3 pt-2">
+              <button type="button" onClick={() => setFormOpen(false)} className="btn-secondary flex-1">
+                Cancel
+              </button>
+              <button type="submit" disabled={saving} className="btn-primary flex-1">
+                {saving ? 'Creating...' : 'Create Ticket'}
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {/* Edit/Update Status Modal */}
+      {editOpen && editing && (
+        <Modal
+          title="Update Ticket"
+          onClose={() => { setEditOpen(false); setEditing(null) }}
+          size="sm"
+        >
+          <div className="space-y-4">
+            <p className="text-sm text-gray-600">
+              <strong>{editing.title}</strong> — Room {editing.room_number || editing.room_id}
+            </p>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Status</label>
+              <select
+                className="input capitalize"
+                defaultValue={editing.status}
+                id="status-select"
+              >
+                {STATUSES.map((s) => (
+                  <option key={s} value={s} className="capitalize">{s.replace('_', ' ')}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Priority</label>
+              <select
+                className="input capitalize"
+                defaultValue={editing.priority}
+                id="priority-select"
+              >
+                {PRIORITIES.map((p) => (
+                  <option key={p} value={p} className="capitalize">{p}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Notes</label>
+              <textarea
+                className="input resize-none"
+                rows={2}
+                defaultValue={editing.notes || ''}
+                id="notes-input"
+                placeholder="Update notes..."
+              />
+            </div>
+            <div className="flex gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => { setEditOpen(false); setEditing(null) }}
+                className="btn-secondary flex-1"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const status = document.getElementById('status-select').value
+                  const priority = document.getElementById('priority-select').value
+                  const notes = document.getElementById('notes-input').value
+                  handleUpdate(editing.id, { status, priority, notes })
+                }}
+                className="btn-primary flex-1"
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+    </div>
+  )
+}

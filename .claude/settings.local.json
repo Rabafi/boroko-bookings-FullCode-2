@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls \"C:\\\\Users\\\\Botswapelo Studios\\\\Documents\\\\Work\\\\Boroko Bookings\\\\resources\"\" 2>/dev/null || echo \"resources folder missing or empty \")",
+      "Bash(dir \"C:\\\\Users\\\\Botswapelo Studios\\\\Documents\\\\Work\\\\Boroko Bookings\\\\resources\")",
+      "Bash(dir /b \"C:\\\\Users\\\\Botswapelo Studios\\\\Documents\\\\Work\\\\Boroko Bookings\")",
+      "Bash(npm --version)",
+      "Bash(npm run:*)",
+      "Bash(npm install:*)",
+      "Bash(grep -r \"DEFAULT_SETTINGS\\\\|business\\\\|BusinessType\\\\|serviceProvider\" 'C:\\\\Users\\\\Botswapelo Studios\\\\Documents\\\\Work\\\\Boroko Bookings\\\\src' --include=*.js --include=*.jsx)",
+      "Bash(npm create:*)",
+      "Bash(npx tailwindcss:*)",
+      "Bash(gh --version)",
+      "Bash(git --version)"
+    ]
+  }
+}
