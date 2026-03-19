@@ -208,20 +208,26 @@ export default function App() {
   const [setupComplete, setSetupComplete] = useState(null) // null = loading
   const [features, setFeatures] = useState({}) // feature flags keyed by feature name
 
+  const loadFeatures = (lodgeId) => {
+    if (!lodgeId || !window.api?.admin?.getLodgeFeatures) return
+    window.api.admin.getLodgeFeatures(lodgeId).then((flags) => {
+      if (!Array.isArray(flags) || flags.length === 0) return
+      const map = {}
+      flags.forEach(f => { map[f.feature_name] = f.enabled })
+      setFeatures(map)
+    }).catch(() => {})
+  }
+
   useEffect(() => {
+    let interval
     window.api.settings.get().then((s) => {
       setSettings(s)
       setSetupComplete(s?.setup_complete === true)
-      // Load feature flags for this lodge
-      if (s?.lodge_id && window.api?.admin?.getLodgeFeatures) {
-        window.api.admin.getLodgeFeatures(s.lodge_id).then((flags) => {
-          if (!Array.isArray(flags) || flags.length === 0) return // no flags = all enabled (default)
-          const map = {}
-          flags.forEach(f => { map[f.feature_name] = f.enabled })
-          setFeatures(map)
-        }).catch(() => {})
-      }
+      loadFeatures(s?.lodge_id)
+      // Re-check feature flags every 60s so plan upgrades reflect without restart
+      interval = setInterval(() => loadFeatures(s?.lodge_id), 60_000)
     })
+    return () => clearInterval(interval)
   }, [])
 
   const login = (userData) => {

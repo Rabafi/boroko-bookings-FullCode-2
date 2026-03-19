@@ -364,7 +364,7 @@ function LicenseBilling({ licenses, onRefresh }) {
   const openBilling = (lic) => {
     setBillingModal(lic)
     setBillingForm({
-      subscription_plan: lic.subscription_plan || 'Basic',
+      subscription_plan: TIERS.includes(lic.subscription_plan) ? lic.subscription_plan : 'Starter',
       monthly_fee: lic.monthly_fee || 0,
       currency: lic.currency || 'USD',
       payment_status: lic.payment_status || 'active',
