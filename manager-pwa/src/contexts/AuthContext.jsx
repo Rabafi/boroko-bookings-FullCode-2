@@ -29,7 +29,8 @@ export function AuthProvider({ children }) {
       .eq('email', val)
       .maybeSingle()
 
-    if (!data) throw new Error('No account found with that email.')
+    if (error) throw new Error(`DB error: ${error.message} (${error.code})`)
+    if (!data) throw new Error(`No account found for "${val}". Check your Supabase URL/key in Vercel env vars.`)
     if (!['admin', 'manager'].includes(data.role)) throw new Error('Access denied. Manager or Admin role required.')
 
     const ok = await bcrypt.compare(password, data.password_hash)
