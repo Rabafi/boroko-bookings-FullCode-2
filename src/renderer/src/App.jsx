@@ -1,29 +1,47 @@
-import { useState, useEffect, createContext, useContext, useRef, useCallback } from 'react'
+import { useState, useEffect, createContext, useContext, useRef, useCallback, lazy, Suspense } from 'react'
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom'
+
+// ── Eager — needed immediately on startup ──────────────────────────────────────
 import Login from './components/Login'
 import Layout from './components/Layout'
 import Dashboard from './components/Dashboard'
 import Rooms from './components/Rooms'
 import Bookings from './components/Bookings'
-import Calendar from './components/Calendar'
-import Reports from './components/Reports'
-import Staff from './components/Staff'
-import Settings from './components/Settings'
 import Setup from './components/Setup'
-import RoomGrid from './components/RoomGrid'
-import Guests from './components/Guests'
-import Housekeeping from './components/Housekeeping'
-import Expenses from './components/Expenses'
-import Maintenance from './components/Maintenance'
-import POS from './components/POS'
-import Inventory from './components/Inventory'
-import RoomSupplies from './components/RoomSupplies'
-import NightAudit from './components/NightAudit'
-import AdminCentral from './components/AdminCentral'
 import MasterSetup from './components/MasterSetup'
-import Conference from './components/Conference'
-import DayUse from './components/DayUse'
-import DataImport from './components/DataImport'
+
+// ── Lazy — split into separate chunks, loaded on first visit ──────────────────
+const Calendar    = lazy(() => import('./components/Calendar'))
+const Reports     = lazy(() => import('./components/Reports'))
+const Staff       = lazy(() => import('./components/Staff'))
+const Settings    = lazy(() => import('./components/Settings'))
+const RoomGrid    = lazy(() => import('./components/RoomGrid'))
+const Guests      = lazy(() => import('./components/Guests'))
+const Housekeeping = lazy(() => import('./components/Housekeeping'))
+const Expenses    = lazy(() => import('./components/Expenses'))
+const Maintenance = lazy(() => import('./components/Maintenance'))
+const POS         = lazy(() => import('./components/POS'))
+const Inventory   = lazy(() => import('./components/Inventory'))
+const RoomSupplies = lazy(() => import('./components/RoomSupplies'))
+const NightAudit  = lazy(() => import('./components/NightAudit'))
+const AdminCentral = lazy(() => import('./components/AdminCentral'))
+const Conference  = lazy(() => import('./components/Conference'))
+const DayUse      = lazy(() => import('./components/DayUse'))
+const DataManagement = lazy(() => import('./components/DataManagement'))
+
+// ── Loading fallback for lazy routes ─────────────────────────────────────────
+function PageLoader() {
+  return (
+    <div className="flex items-center justify-center h-full min-h-[400px]">
+      <div className="w-8 h-8 border-2 border-green-500 border-t-transparent rounded-full animate-spin" />
+    </div>
+  )
+}
+
+// Thin wrapper so each lazy route element reads cleanly
+function Lazy({ children }) {
+  return <Suspense fallback={<PageLoader />}>{children}</Suspense>
+}
 
 const AuthContext = createContext(null)
 const SettingsContext = createContext(null)
@@ -307,9 +325,10 @@ export default function App() {
   const loadFeatures = (lodgeId) => {
     if (!lodgeId || !window.api?.admin?.getLodgeFeatures) return
     window.api.admin.getLodgeFeatures(lodgeId).then((flags) => {
-      if (!Array.isArray(flags) || flags.length === 0) return
+      // Default all gated features to false (Starter) — explicit DB rows override
       const map = {}
-      flags.forEach(f => { map[f.feature_name] = f.enabled })
+      Object.keys(FEATURE_TIER).forEach(f => { map[f] = false })
+      if (Array.isArray(flags)) flags.forEach(f => { map[f.feature_name] = f.enabled })
       setFeatures(map)
     }).catch(() => {})
   }
@@ -375,7 +394,7 @@ export default function App() {
     return (
       <AuthContext.Provider value={{ user, login, logout }}>
         <SettingsContext.Provider value={{ settings, setSettings }}>
-          <AdminCentral />
+          <Lazy><AdminCentral /></Lazy>
         </SettingsContext.Provider>
       </AuthContext.Provider>
     )
@@ -403,28 +422,29 @@ export default function App() {
                 </ProtectedRoute>
               }
             >
-              {/* Always available */}
+              {/* Always available — eager */}
               <Route index element={<Dashboard />} />
               <Route path="rooms" element={<Rooms />} />
               <Route path="bookings" element={<Bookings />} />
-              <Route path="calendar" element={<Calendar />} />
-              <Route path="roomgrid" element={<RoomGrid />} />
-              <Route path="guests" element={<Guests />} />
-              <Route path="housekeeping" element={<Housekeeping />} />
-              <Route path="maintenance" element={<Maintenance />} />
-              <Route path="settings" element={<Settings />} />
-              {/* Standard tier */}
-              <Route path="reports"    element={<UpgradeWall feature="reports">   <Reports />   </UpgradeWall>} />
-              <Route path="expenses"   element={<UpgradeWall feature="expenses">  <Expenses />  </UpgradeWall>} />
-              <Route path="staff"      element={<UpgradeWall feature="staff">     <Staff />     </UpgradeWall>} />
-              <Route path="audit"      element={<UpgradeWall feature="audit">     <NightAudit /></UpgradeWall>} />
-              <Route path="conference" element={<UpgradeWall feature="conference"><Conference /></UpgradeWall>} />
-              <Route path="dayuse"     element={<UpgradeWall feature="pool">      <DayUse />    </UpgradeWall>} />
-              <Route path="import"     element={<UpgradeWall feature="import">    <DataImport /></UpgradeWall>} />
-              {/* Pro tier */}
-              <Route path="pos"        element={<UpgradeWall feature="pos">       <POS />       </UpgradeWall>} />
-              <Route path="inventory"  element={<UpgradeWall feature="inventory"> <Inventory /> </UpgradeWall>} />
-              <Route path="supplies"   element={<UpgradeWall feature="supplies">  <RoomSupplies /></UpgradeWall>} />
+              {/* Always available — lazy */}
+              <Route path="calendar"    element={<Lazy><Calendar /></Lazy>} />
+              <Route path="roomgrid"    element={<Lazy><RoomGrid /></Lazy>} />
+              <Route path="guests"      element={<Lazy><Guests /></Lazy>} />
+              <Route path="housekeeping" element={<Lazy><Housekeeping /></Lazy>} />
+              <Route path="maintenance" element={<Lazy><Maintenance /></Lazy>} />
+              <Route path="settings"    element={<Lazy><Settings /></Lazy>} />
+              {/* Standard tier — lazy (UpgradeWall outside Lazy so wall renders without loading) */}
+              <Route path="reports"    element={<UpgradeWall feature="reports">   <Lazy><Reports /></Lazy>    </UpgradeWall>} />
+              <Route path="expenses"   element={<UpgradeWall feature="expenses">  <Lazy><Expenses /></Lazy>   </UpgradeWall>} />
+              <Route path="staff"      element={<UpgradeWall feature="staff">     <Lazy><Staff /></Lazy>      </UpgradeWall>} />
+              <Route path="audit"      element={<UpgradeWall feature="audit">     <Lazy><NightAudit /></Lazy> </UpgradeWall>} />
+              <Route path="conference" element={<UpgradeWall feature="conference"><Lazy><Conference /></Lazy>  </UpgradeWall>} />
+              <Route path="dayuse"     element={<UpgradeWall feature="pool">      <Lazy><DayUse /></Lazy>     </UpgradeWall>} />
+              <Route path="data-management" element={<UpgradeWall feature="import"><Lazy><DataManagement /></Lazy></UpgradeWall>} />
+              {/* Pro tier — lazy */}
+              <Route path="pos"        element={<UpgradeWall feature="pos">       <Lazy><POS /></Lazy>        </UpgradeWall>} />
+              <Route path="inventory"  element={<UpgradeWall feature="inventory"> <Lazy><Inventory /></Lazy>  </UpgradeWall>} />
+              <Route path="supplies"   element={<UpgradeWall feature="supplies">  <Lazy><RoomSupplies /></Lazy></UpgradeWall>} />
             </Route>
           </Routes>
         </HashRouter>

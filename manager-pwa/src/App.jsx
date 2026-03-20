@@ -1,16 +1,28 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, lazy, Suspense } from 'react'
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { Sun, Moon, X } from 'lucide-react'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { FeaturesProvider } from './contexts/FeaturesContext'
 import { supabase } from './lib/supabase'
+import BottomNav from './components/BottomNav'
+
+// ── Eager — needed on first render ────────────────────────────────────────────
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
-import Rooms from './pages/Rooms'
-import Bookings from './pages/Bookings'
-import Reports from './pages/Reports'
-import Alerts from './pages/Alerts'
-import BottomNav from './components/BottomNav'
+
+// ── Lazy — loaded on first visit to that tab ──────────────────────────────────
+const Rooms    = lazy(() => import('./pages/Rooms'))
+const Bookings = lazy(() => import('./pages/Bookings'))
+const Reports  = lazy(() => import('./pages/Reports'))
+const Alerts   = lazy(() => import('./pages/Alerts'))
+
+function PageLoader() {
+  return (
+    <div className="flex items-center justify-center min-h-[300px]">
+      <div className="w-8 h-8 border-2 border-green-500 border-t-transparent rounded-full animate-spin" />
+    </div>
+  )
+}
 
 // Register service worker and store registration for push subscription
 let swRegistration = null
@@ -47,6 +59,21 @@ async function subscribeToPush(user) {
       auth: json.keys.auth
     }, { onConflict: 'lodge_id,endpoint' })
   } catch (_) { /* silently skip if push not supported */ }
+}
+
+async function unsubscribeFromPush(user) {
+  try {
+    if (!swRegistration) return
+    const sub = await swRegistration.pushManager.getSubscription()
+    if (!sub) return
+    // Delete from DB first so the edge function won't attempt delivery after logout
+    await supabase
+      .from('push_subscriptions')
+      .delete()
+      .eq('lodge_id', user.lodge_id)
+      .eq('endpoint', sub.endpoint)
+    await sub.unsubscribe()
+  } catch (_) { /* best-effort — don't block logout */ }
 }
 
 function useDarkMode() {
@@ -116,10 +143,17 @@ function AppShell() {
   const { user, loading } = useAuth()
   const [alertCount, setAlertCount] = useState(0)
   const [dark, setDark] = useDarkMode()
+  const lastUserRef = useRef(null)
 
-  // Subscribe to push notifications once after login
+  // Subscribe on login, unsubscribe on logout
   useEffect(() => {
-    if (user) subscribeToPush(user)
+    if (user) {
+      lastUserRef.current = user
+      subscribeToPush(user)
+    } else if (lastUserRef.current) {
+      unsubscribeFromPush(lastUserRef.current)
+      lastUserRef.current = null
+    }
   }, [user?.id])
 
   if (loading) {
@@ -151,10 +185,10 @@ function AppShell() {
         <div className="flex-1">
           <Routes>
             <Route path="/"         element={<Dashboard />} />
-            <Route path="/rooms"    element={<Rooms />} />
-            <Route path="/bookings" element={<Bookings />} />
-            <Route path="/reports"  element={<Reports />} />
-            <Route path="/alerts"   element={<Alerts onCountChange={setAlertCount} />} />
+            <Route path="/rooms"    element={<Suspense fallback={<PageLoader />}><Rooms /></Suspense>} />
+            <Route path="/bookings" element={<Suspense fallback={<PageLoader />}><Bookings /></Suspense>} />
+            <Route path="/reports"  element={<Suspense fallback={<PageLoader />}><Reports /></Suspense>} />
+            <Route path="/alerts"   element={<Suspense fallback={<PageLoader />}><Alerts onCountChange={setAlertCount} /></Suspense>} />
             <Route path="*"         element={<Navigate to="/" replace />} />
           </Routes>
         </div>

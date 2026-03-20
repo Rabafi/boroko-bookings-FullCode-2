@@ -25,7 +25,7 @@ import {
   Waves,
   LifeBuoy,
   X,
-  Upload,
+  Database,
   Lock,
   Zap,
   CheckCircle2,
@@ -38,33 +38,34 @@ const TIER_COLOR = { Starter: 'gray', Standard: 'blue', Pro: 'purple' }
 const TIER_PRICE = { Starter: 'Free / Entry', Standard: 'Mid-tier', Pro: 'Full Suite' }
 const TIER_FEATURES = {
   Starter: ['Dashboard', 'Bookings', 'Room Grid', 'Calendar', 'Rooms', 'Housekeeping', 'Guests', 'Maintenance', 'Settings'],
-  Standard: ['Everything in Starter', 'Reports & Analytics', 'Expenses Tracking', 'Staff Management', 'Night Audit', 'Conference Rooms', 'Pool / Day Use', 'Import Data'],
+  Standard: ['Everything in Starter', 'Reports & Analytics', 'Expenses Tracking', 'Staff Management', 'Night Audit', 'Conference Rooms', 'Pool / Day Use', 'Data Management'],
   Pro: ['Everything in Standard', 'Point of Sale (POS)', 'Inventory Management', 'Room Supplies Tracker']
 }
 
 // ── Nav items per business type ───────────────────────────────────────────────
-// tier: if set, item is locked when that feature flag is explicitly false
 const ALL_NAV = [
-  { to: '/',             label: 'Dashboard',    icon: LayoutDashboard, end: true,  types: ['lodge', 'restaurant'] },
-  { to: '/bookings',     label: 'Bookings',     icon: BookOpen,                    types: ['lodge'] },
-  { to: '/roomgrid',     label: 'Room Grid',    icon: Grid3X3,                     types: ['lodge'] },
-  { to: '/calendar',     label: 'Calendar',     icon: CalendarDays,                types: ['lodge'] },
-  { to: '/rooms',        label: 'Rooms',        icon: BedDouble,                   types: ['lodge'] },
-  { to: '/housekeeping', label: 'Housekeeping', icon: Sparkles,                    types: ['lodge'] },
-  { to: '/guests',       label: 'Guests',       icon: UserRound,                   types: ['lodge'] },
-  { to: '/maintenance',  label: 'Maintenance',  icon: Wrench,                      types: ['lodge'] },
-  { to: '/expenses',     label: 'Expenses',     icon: Receipt,                     types: ['lodge', 'restaurant'], feature: 'expenses',  tier: 'Standard' },
-  { to: '/conference',   label: 'Conference',   icon: Presentation,                types: ['lodge'],               feature: 'conference', tier: 'Standard' },
-  { to: '/dayuse',       label: 'Day Use',      icon: Waves,                       types: ['lodge'],               feature: 'pool',       tier: 'Standard' },
-  { to: '/audit',        label: 'Night Audit',  icon: ClipboardList,               types: ['lodge', 'restaurant'], feature: 'audit',      tier: 'Standard' },
-  { to: '/reports',      label: 'Reports',      icon: BarChart3,                   types: ['lodge', 'restaurant'], feature: 'reports',    tier: 'Standard' },
-  { to: '/staff',        label: 'Staff',        icon: Users,                       types: ['lodge', 'restaurant'], feature: 'staff',      tier: 'Standard' },
-  { to: '/import',       label: 'Import Data',  icon: Upload,                      types: ['lodge', 'restaurant'], feature: 'import',     tier: 'Standard' },
-  { to: '/pos',          label: 'POS',          icon: ShoppingCart,                types: ['lodge', 'restaurant'], feature: 'pos',        tier: 'Pro' },
-  { to: '/inventory',    label: 'Inventory',    icon: Package,                     types: ['lodge', 'restaurant'], feature: 'inventory',  tier: 'Pro' },
-  { to: '/supplies',     label: 'Room Supplies',icon: Boxes,                       types: ['lodge'],               feature: 'supplies',   tier: 'Pro' },
-  { to: '/settings',     label: 'Settings',     icon: Settings,                    types: ['lodge', 'restaurant'] }
+  { to: '/',             label: 'Dashboard',     icon: LayoutDashboard, end: true, types: ['lodge', 'restaurant'] },
+  { to: '/bookings',     label: 'Bookings',      icon: BookOpen,        types: ['lodge'],               group: 'Front Desk' },
+  { to: '/roomgrid',     label: 'Room Grid',     icon: Grid3X3,         types: ['lodge'],               group: 'Front Desk' },
+  { to: '/calendar',     label: 'Calendar',      icon: CalendarDays,    types: ['lodge'],               group: 'Front Desk' },
+  { to: '/guests',       label: 'Guests',        icon: UserRound,       types: ['lodge'],               group: 'Front Desk' },
+  { to: '/conference',   label: 'Conference',    icon: Presentation,    types: ['lodge'],               group: 'Front Desk', feature: 'conference', tier: 'Standard' },
+  { to: '/dayuse',       label: 'Day Use',       icon: Waves,           types: ['lodge'],               group: 'Front Desk', feature: 'pool',       tier: 'Standard' },
+  { to: '/rooms',        label: 'Rooms',         icon: BedDouble,       types: ['lodge'],               group: 'Property' },
+  { to: '/housekeeping', label: 'Housekeeping',  icon: Sparkles,        types: ['lodge'],               group: 'Property' },
+  { to: '/maintenance',  label: 'Maintenance',   icon: Wrench,          types: ['lodge'],               group: 'Property' },
+  { to: '/expenses',     label: 'Expenses',      icon: Receipt,         types: ['lodge', 'restaurant'], group: 'Finance',  feature: 'expenses',   tier: 'Standard' },
+  { to: '/audit',        label: 'Night Audit',   icon: ClipboardList,   types: ['lodge', 'restaurant'], group: 'Finance',  feature: 'audit',      tier: 'Standard' },
+  { to: '/reports',      label: 'Reports',       icon: BarChart3,       types: ['lodge', 'restaurant'], group: 'Finance',  feature: 'reports',    tier: 'Standard' },
+  { to: '/pos',          label: 'POS',           icon: ShoppingCart,    types: ['lodge', 'restaurant'], group: 'Finance',  feature: 'pos',        tier: 'Pro' },
+  { to: '/inventory',    label: 'Inventory',     icon: Package,         types: ['lodge', 'restaurant'], group: 'Finance',  feature: 'inventory',  tier: 'Pro' },
+  { to: '/supplies',     label: 'Room Supplies', icon: Boxes,           types: ['lodge'],               group: 'Finance',  feature: 'supplies',   tier: 'Pro' },
+  { to: '/staff',        label: 'Staff',         icon: Users,           types: ['lodge', 'restaurant'], group: 'Team',     feature: 'staff',      tier: 'Standard' },
+  { to: '/data-management', label: 'Data Management', icon: Database,     types: ['lodge', 'restaurant'], group: 'Finance',  feature: 'import',     tier: 'Standard' },
+  { to: '/settings',     label: 'Settings',      icon: Settings,        types: ['lodge', 'restaurant'] },
 ]
+
+const NAV_GROUPS = ['Front Desk', 'Property', 'Finance', 'Team']
 
 // ── Support Ticket Modal ──────────────────────────────────────────────────────
 function SupportModal({ onClose, settings }) {
@@ -232,20 +233,23 @@ export default function Layout() {
 
   const bizType = settings?.business_type || 'lodge'
 
-  // Separate active items from locked items
-  const { activeItems, lockedItems } = ALL_NAV.reduce(
-    (acc, item) => {
-      if (!item.types.includes(bizType)) return acc
-      const isLocked = item.feature && Object.keys(features).length > 0 && features[item.feature] === false
-      if (isLocked) {
-        acc.lockedItems.push(item)
-      } else {
-        acc.activeItems.push(item)
-      }
-      return acc
-    },
-    { activeItems: [], lockedItems: [] }
-  )
+  const navItems = ALL_NAV.filter(item => item.types.includes(bizType))
+  const standaloneTop    = navItems.filter(item => !item.group && item.to !== '/settings')
+  const standaloneBottom = navItems.filter(item => item.to === '/settings')
+  const grouped = NAV_GROUPS.map(groupName => ({
+    name: groupName,
+    items: navItems
+      .filter(item => item.group === groupName)
+      .map(item => ({
+        ...item,
+        isLocked: item.feature && Object.keys(features).length > 0 && features[item.feature] === false
+      }))
+  })).filter(g => g.items.length > 0)
+
+  const navLinkClass = ({ isActive }) =>
+    `flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${
+      isActive ? 'bg-green-600 text-white' : 'text-green-200 hover:bg-green-800 hover:text-white'
+    }`
 
   const handleLogout = () => {
     logout()
@@ -254,8 +258,6 @@ export default function Layout() {
 
   const BIZ_EMOJI = { lodge: '🏕️', restaurant: '🍽️' }
   const BIZ_LABEL = { lodge: 'Lodge Manager', restaurant: 'Restaurant Manager' }
-
-  const tierDot = { Standard: 'bg-blue-400', Pro: 'bg-purple-400' }
 
   return (
     <div className="flex h-screen bg-gray-100 overflow-hidden">
@@ -283,59 +285,58 @@ export default function Layout() {
 
         {/* Nav — scrollable area */}
         <nav className="flex-1 py-3 px-2 overflow-y-auto flex flex-col">
-          {/* Active nav items */}
-          <div className="space-y-0.5">
-            {activeItems.map(({ to, label, icon: Icon, end }) => (
-              <NavLink
-                key={to}
-                to={to}
-                end={end}
-                className={({ isActive }) =>
-                  `flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${
-                    isActive
-                      ? 'bg-green-600 text-white'
-                      : 'text-green-200 hover:bg-green-800 hover:text-white'
-                  }`
-                }
-                title={collapsed ? label : undefined}
-              >
-                <Icon size={17} className="flex-shrink-0" />
-                {!collapsed && <span className="text-sm font-medium">{label}</span>}
-              </NavLink>
-            ))}
-          </div>
+          {/* Dashboard — standalone top */}
+          {standaloneTop.map(({ to, label, icon: Icon, end }) => (
+            <NavLink key={to} to={to} end={end} className={navLinkClass} title={collapsed ? label : undefined}>
+              <Icon size={17} className="flex-shrink-0" />
+              {!collapsed && <span className="text-sm font-medium">{label}</span>}
+            </NavLink>
+          ))}
 
-          {/* Locked items — shown greyed out at bottom of nav */}
-          {lockedItems.length > 0 && (
-            <div className="mt-3 pt-3 border-t border-green-800/60 space-y-0.5">
-              {!collapsed && (
-                <p className="text-xs text-green-600 px-3 pb-1 font-medium tracking-wide uppercase">
-                  Upgrade to unlock
-                </p>
-              )}
-              {lockedItems.map(({ label, icon: Icon, tier }) => (
-                <button
-                  key={label}
-                  onClick={() => setUpgradeItem({ label, tier })}
-                  title={collapsed ? `${label} — ${tier} plan required` : undefined}
-                  className="flex items-center gap-3 px-3 py-2 rounded-lg w-full text-left opacity-40 hover:opacity-60 transition-opacity cursor-pointer group"
-                >
-                  <Icon size={17} className="flex-shrink-0 text-green-400" />
-                  {!collapsed && (
-                    <span className="text-sm font-medium text-green-300 flex-1">{label}</span>
-                  )}
-                  {!collapsed && tier && (
-                    <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${
-                      tier === 'Pro' ? 'bg-purple-800 text-purple-200' : 'bg-blue-800 text-blue-200'
-                    }`}>
-                      {tier}
-                    </span>
-                  )}
-                  <Lock size={12} className={`flex-shrink-0 ${collapsed ? 'text-green-400' : 'text-green-500'}`} />
-                </button>
-              ))}
+          {/* Grouped sections */}
+          {grouped.map(group => (
+            <div key={group.name} className="mt-2">
+              {!collapsed
+                ? <p className="text-[10px] text-green-500 uppercase tracking-widest font-semibold px-3 pt-2 pb-1">{group.name}</p>
+                : <div className="border-t border-green-800/50 my-1.5 mx-1" />
+              }
+              <div className="space-y-0.5">
+                {group.items.map(({ to, label, icon: Icon, end, isLocked, tier }) =>
+                  isLocked ? (
+                    <button
+                      key={label}
+                      onClick={() => setUpgradeItem({ label, tier })}
+                      title={collapsed ? `${label} — ${tier} plan required` : undefined}
+                      className="flex items-center gap-3 px-3 py-2 rounded-lg w-full text-left opacity-40 hover:opacity-60 transition-opacity cursor-pointer"
+                    >
+                      <Icon size={17} className="flex-shrink-0 text-green-400" />
+                      {!collapsed && <span className="text-sm font-medium text-green-300 flex-1">{label}</span>}
+                      {!collapsed && tier && (
+                        <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full flex-shrink-0 ${
+                          tier === 'Pro' ? 'bg-purple-800 text-purple-200' : 'bg-blue-800 text-blue-200'
+                        }`}>{tier}</span>
+                      )}
+                      <Lock size={12} className="flex-shrink-0 text-green-500" />
+                    </button>
+                  ) : (
+                    <NavLink key={to} to={to} end={end} className={navLinkClass} title={collapsed ? label : undefined}>
+                      <Icon size={17} className="flex-shrink-0" />
+                      {!collapsed && <span className="text-sm font-medium">{label}</span>}
+                    </NavLink>
+                  )
+                )}
+              </div>
             </div>
-          )}
+          ))}
+
+          {/* Spacer + Settings pinned to bottom */}
+          <div className="flex-1 min-h-3" />
+          {standaloneBottom.map(({ to, label, icon: Icon }) => (
+            <NavLink key={to} to={to} className={navLinkClass} title={collapsed ? label : undefined}>
+              <Icon size={17} className="flex-shrink-0" />
+              {!collapsed && <span className="text-sm font-medium">{label}</span>}
+            </NavLink>
+          ))}
         </nav>
 
         {/* User + Logout */}

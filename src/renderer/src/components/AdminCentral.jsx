@@ -5,7 +5,8 @@ import {
   LifeBuoy, Activity, LogOut, Shield, RefreshCw, Plus, Trash2,
   Copy, CheckCircle, XCircle, Key, ChevronRight, X, AlertTriangle,
   Clock, TrendingUp, Users, Home, Wrench, DollarSign, Edit3,
-  Mail, Send, CheckCircle2, Eye, EyeOff
+  Mail, Send, CheckCircle2, Eye, EyeOff, Receipt, FileText,
+  BarChart3, Filter
 } from 'lucide-react'
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -20,7 +21,7 @@ const FEAT_LABEL   = {
 }
 
 // ── Subscription Tiers ────────────────────────────────────────────────────────
-const TIERS = ['Starter', 'Standard', 'Pro']
+const TIERS = ['Basic', 'Standard', 'Premium']
 const TIER_DESC = {
   Starter:  'Bookings, rooms, guests & housekeeping only',
   Standard: 'Adds reports, expenses, staff, audit, conference & day use',
@@ -357,15 +358,20 @@ function Companies({ companies, licenses, loading }) {
 // ════════════════════════════════════════════════════════════════════
 // SECTION: Licenses & Billing
 // ════════════════════════════════════════════════════════════════════
+const INVOICE_CURRENCIES = ['USD', 'BWP', 'ZAR', 'EUR', 'GBP', 'N$', 'ZK']
+
 function LicenseBilling({ licenses, companies, onRefresh }) {
   const [showForm, setShowForm] = useState(false)
   const [form, setForm] = useState({ lodge_id: '', lodge_name: '', business_type: 'lodge', expires_at: '', notes: '' })
   const [selectedCompany, setSelectedCompany] = useState('')
+  const [selectedPeriod, setSelectedPeriod] = useState(null) // '3d'|'7d'|'paid'
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [invoiceForm, setInvoiceForm] = useState({ package_name: 'Basic', amount: '', currency: 'BWP', paid_date: new Date().toISOString().split('T')[0], description: '' })
   const [billingModal, setBillingModal] = useState(null) // license to edit billing
   const [billingForm, setBillingForm] = useState({})
   const [emailStatus, setEmailStatus] = useState({}) // { [licenseId]: 'sending'|'sent'|'error' }
+  const requiresInvoice = selectedPeriod && selectedPeriod !== '3d' && selectedPeriod !== '7d'
 
   const today = new Date().toISOString().split('T')[0]
 
@@ -396,12 +402,37 @@ function LicenseBilling({ licenses, companies, onRefresh }) {
 
   const handleCreate = async (e) => {
     e.preventDefault(); setError(''); setSaving(true)
+    if (requiresInvoice && (!invoiceForm.amount || isNaN(Number(invoiceForm.amount)) || Number(invoiceForm.amount) <= 0)) {
+      setError('Please enter a valid amount for this paid license.')
+      setSaving(false); return
+    }
     const companyLodgeId = form.lodge_id // keep for email + display; DB always gets 'unassigned'
     const r = await window.api.admin.createLicense({ ...form, lodge_id: 'unassigned', expires_at: form.expires_at || null, notes: form.notes || null }).catch(e => ({ error: e.message }))
     if (r?.license_key) {
+      let invoice = null
+      if (requiresInvoice) {
+        const invNum = await window.api.admin.getNextInvoiceNumber().catch(() => null)
+        if (typeof invNum === 'string') {
+          invoice = await window.api.admin.createInvoice({
+            invoice_number: invNum,
+            lodge_id: companyLodgeId,
+            lodge_name: form.lodge_name,
+            license_id: r.id || null,
+            package_name: invoiceForm.package_name,
+            amount: Number(invoiceForm.amount),
+            currency: invoiceForm.currency,
+            status: 'paid',
+            issued_date: invoiceForm.paid_date,
+            paid_date: invoiceForm.paid_date,
+            description: invoiceForm.description || null
+          }).catch(() => null)
+        }
+      }
       setShowForm(false)
       setForm({ lodge_id: '', lodge_name: '', business_type: 'lodge', expires_at: '', notes: '' })
       setSelectedCompany('')
+      setSelectedPeriod(null)
+      setInvoiceForm({ package_name: 'Basic', amount: '', currency: 'BWP', paid_date: new Date().toISOString().split('T')[0], description: '' })
       onRefresh()
       // Auto-send email if company has a registered email
       const company = companies.find(c => c.lodge_id === companyLodgeId)
@@ -410,10 +441,11 @@ function LicenseBilling({ licenses, companies, onRefresh }) {
           to: company.email,
           licenseKey: r.license_key,
           lodgeName: form.lodge_name,
-          plan: null,
+          plan: invoice?.package_name || null,
           expiresAt: form.expires_at || null,
           lodgeId: companyLodgeId,
-          notes: form.notes || null
+          notes: form.notes || null,
+          invoice: invoice || null
         }
         window.api.email.sendLicense(emailPayload).then(res => {
           if (!res.success) console.warn('[Email] License email failed:', res.error)
@@ -496,14 +528,14 @@ function LicenseBilling({ licenses, companies, onRefresh }) {
                 <div className="space-y-2">
                   <div className="flex flex-wrap gap-1.5">
                     {[
-                      { label: '3 Days',   days: 3 },
-                      { label: '7 Days',   days: 7 },
-                      { label: '1 Month',  months: 1 },
-                      { label: '3 Months', months: 3 },
-                      { label: '6 Months', months: 6 },
-                      { label: '1 Year',   years: 1 },
-                      { label: '2 Years',  years: 2 },
-                    ].map(({ label, days, months, years }) => {
+                      { label: '3 Days',   days: 3,  periodId: '3d' },
+                      { label: '7 Days',   days: 7,  periodId: '7d' },
+                      { label: '1 Month',  months: 1, periodId: 'paid' },
+                      { label: '3 Months', months: 3, periodId: 'paid' },
+                      { label: '6 Months', months: 6, periodId: 'paid' },
+                      { label: '1 Year',   years: 1,  periodId: 'paid' },
+                      { label: '2 Years',  years: 2,  periodId: 'paid' },
+                    ].map(({ label, days, months, years, periodId }) => {
                       const getDate = () => {
                         const d = new Date()
                         if (days)   d.setDate(d.getDate() + days)
@@ -517,7 +549,11 @@ function LicenseBilling({ licenses, companies, onRefresh }) {
                         <button
                           key={label}
                           type="button"
-                          onClick={() => setForm({ ...form, expires_at: active ? '' : val })}
+                          onClick={() => {
+                            const newVal = active ? '' : val
+                            setForm({ ...form, expires_at: newVal })
+                            setSelectedPeriod(newVal ? periodId : null)
+                          }}
                           className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
                             active
                               ? 'bg-purple-600 border-purple-500 text-white'
@@ -533,24 +569,57 @@ function LicenseBilling({ licenses, companies, onRefresh }) {
                     type="date"
                     className={`${inp} text-xs`}
                     value={form.expires_at}
-                    onChange={e => setForm({ ...form, expires_at: e.target.value })}
+                    onChange={e => {
+                      setForm({ ...form, expires_at: e.target.value })
+                      setSelectedPeriod(e.target.value ? 'paid' : null)
+                    }}
                     placeholder="Or pick a custom date"
                   />
                   {form.expires_at && (
                     <p className="text-xs text-gray-500">
                       Expires: {new Date(form.expires_at + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}
                       {' · '}
-                      <button type="button" onClick={() => setForm({ ...form, expires_at: '' })} className="text-red-400 hover:text-red-300">clear</button>
+                      <button type="button" onClick={() => { setForm({ ...form, expires_at: '' }); setSelectedPeriod(null) }} className="text-red-400 hover:text-red-300">clear</button>
                     </p>
                   )}
                 </div>
               </Field>
+
+              {/* Invoice fields — required for paid periods (not 3-day or 7-day) */}
+              {requiresInvoice && (
+                <div className="border border-yellow-600/40 bg-yellow-900/10 rounded-xl p-4 space-y-3">
+                  <p className="text-xs font-semibold text-yellow-400 flex items-center gap-1.5"><Receipt size={13} /> Invoice Required for Paid License</p>
+                  <div className="grid grid-cols-2 gap-3">
+                    <Field label="Package *">
+                      <select className={inp} value={invoiceForm.package_name} onChange={e => setInvoiceForm({ ...invoiceForm, package_name: e.target.value })} required={requiresInvoice}>
+                        {TIERS.map(t => <option key={t} value={t}>{t}</option>)}
+                      </select>
+                    </Field>
+                    <Field label="Payment Date *">
+                      <input type="date" className={inp} value={invoiceForm.paid_date} onChange={e => setInvoiceForm({ ...invoiceForm, paid_date: e.target.value })} required={requiresInvoice} />
+                    </Field>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <Field label="Amount Paid *">
+                      <input type="number" step="0.01" min="0.01" className={inp} placeholder="0.00" value={invoiceForm.amount} onChange={e => setInvoiceForm({ ...invoiceForm, amount: e.target.value })} required={requiresInvoice} />
+                    </Field>
+                    <Field label="Currency">
+                      <select className={inp} value={invoiceForm.currency} onChange={e => setInvoiceForm({ ...invoiceForm, currency: e.target.value })}>
+                        {INVOICE_CURRENCIES.map(c => <option key={c} value={c}>{c}</option>)}
+                      </select>
+                    </Field>
+                  </div>
+                  <Field label="Description (optional)">
+                    <input className={inp} placeholder="e.g. Annual subscription payment" value={invoiceForm.description} onChange={e => setInvoiceForm({ ...invoiceForm, description: e.target.value })} />
+                  </Field>
+                </div>
+              )}
             </div>
             <Field label="Notes">
               <input className={inp} placeholder="Annual license..." value={form.notes} onChange={e => setForm({...form, notes: e.target.value})} />
             </Field>
             <div className="flex gap-3 pt-1">
-              <button type="button" onClick={() => { setShowForm(false); setSelectedCompany('') }} className={`flex-1 ${btn('ghost')} py-2 rounded-lg text-sm transition-colors`}>Cancel</button>
+              <button type="button" onClick={() => { setShowForm(false); setSelectedCompany(''); setSelectedPeriod(null); setInvoiceForm({ package_name: 'Basic', amount: '', currency: 'BWP', paid_date: new Date().toISOString().split('T')[0], description: '' }) }} className={`flex-1 ${btn('ghost')} py-2 rounded-lg text-sm transition-colors`}>Cancel</button>
               <button type="submit" disabled={saving} className={`flex-1 ${btn()} py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-60`}>
                 {saving ? 'Generating…' : '🔑 Generate Key'}
               </button>
@@ -1284,12 +1353,396 @@ function EmailSettings() {
 }
 
 // ════════════════════════════════════════════════════════════════════
+// SECTION: Bookkeeping
+// ════════════════════════════════════════════════════════════════════
+const STATUS_COLORS = {
+  paid:      'bg-green-800 text-green-200',
+  draft:     'bg-gray-700 text-gray-300',
+  sent:      'bg-blue-800 text-blue-200',
+  overdue:   'bg-red-800 text-red-200',
+  cancelled: 'bg-gray-700 text-gray-400'
+}
+
+function Bookkeeping({ companies }) {
+  const [subTab, setSubTab] = useState('invoices')
+  const [invoices, setInvoices] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [summary, setSummary] = useState(null)
+  const [filterLodge, setFilterLodge] = useState('')
+  const [filterStatus, setFilterStatus] = useState('')
+  const [showCreate, setShowCreate] = useState(false)
+  const [editInvoice, setEditInvoice] = useState(null)
+  const [sendingEmail, setSendingEmail] = useState({})
+  const [emailSent, setEmailSent] = useState({})
+  const [createForm, setCreateForm] = useState({
+    lodge_id: '', lodge_name: '', package_name: 'Basic', amount: '', currency: 'BWP',
+    status: 'paid', issued_date: new Date().toISOString().split('T')[0],
+    due_date: '', paid_date: new Date().toISOString().split('T')[0], description: '', notes: ''
+  })
+  const [createSaving, setCreateSaving] = useState(false)
+  const [createError, setCreateError] = useState('')
+
+  const loadData = useCallback(async () => {
+    setLoading(true)
+    const [invs, sum] = await Promise.all([
+      window.api.admin.getInvoices({}).catch(() => []),
+      window.api.admin.getInvoiceSummary().catch(() => null)
+    ])
+    setInvoices(invs)
+    setSummary(sum)
+    setLoading(false)
+  }, [])
+
+  useEffect(() => { loadData() }, [loadData])
+
+  const filtered = invoices.filter(inv => {
+    if (filterLodge && inv.lodge_id !== filterLodge) return false
+    if (filterStatus && inv.status !== filterStatus) return false
+    return true
+  })
+
+  const handleCreateInvoice = async (e) => {
+    e.preventDefault(); setCreateError(''); setCreateSaving(true)
+    if (!createForm.amount || Number(createForm.amount) <= 0) { setCreateError('Enter a valid amount.'); setCreateSaving(false); return }
+    const invNum = await window.api.admin.getNextInvoiceNumber().catch(() => null)
+    if (!invNum || typeof invNum !== 'string') { setCreateError('Could not generate invoice number.'); setCreateSaving(false); return }
+    const r = await window.api.admin.createInvoice({ ...createForm, invoice_number: invNum, amount: Number(createForm.amount), due_date: createForm.due_date || null, paid_date: createForm.paid_date || null, description: createForm.description || null, notes: createForm.notes || null }).catch(e => ({ error: e.message }))
+    if (r?.error) { setCreateError(r.error); setCreateSaving(false); return }
+    setShowCreate(false)
+    setCreateForm({ lodge_id: '', lodge_name: '', package_name: 'Basic', amount: '', currency: 'BWP', status: 'paid', issued_date: new Date().toISOString().split('T')[0], due_date: '', paid_date: new Date().toISOString().split('T')[0], description: '', notes: '' })
+    loadData()
+    setCreateSaving(false)
+  }
+
+  const handleSaveEdit = async () => {
+    if (!editInvoice) return
+    await window.api.admin.updateInvoice(editInvoice.id, {
+      package_name: editInvoice.package_name, amount: Number(editInvoice.amount),
+      currency: editInvoice.currency, status: editInvoice.status,
+      paid_date: editInvoice.paid_date || null, due_date: editInvoice.due_date || null,
+      description: editInvoice.description || null, notes: editInvoice.notes || null
+    }).catch(() => {})
+    setEditInvoice(null); loadData()
+  }
+
+  const handleDelete = async (id) => {
+    if (!confirm('Delete this invoice?')) return
+    await window.api.admin.deleteInvoice(id).catch(() => {})
+    loadData()
+  }
+
+  const handleSendEmail = async (inv) => {
+    const company = companies.find(c => c.lodge_id === inv.lodge_id)
+    const to = company?.email
+    if (!to) { alert('No email address found for this company.'); return }
+    setSendingEmail(s => ({ ...s, [inv.id]: true }))
+    const r = await window.api.admin.sendInvoiceEmail({ to, invoice: inv, lodgeName: inv.lodge_name }).catch(e => ({ success: false, error: e.message }))
+    setSendingEmail(s => ({ ...s, [inv.id]: false }))
+    if (r.success) {
+      setEmailSent(s => ({ ...s, [inv.id]: true }))
+      setTimeout(() => setEmailSent(s => { const n = { ...s }; delete n[inv.id]; return n }), 4000)
+      if (inv.status === 'draft') {
+        await window.api.admin.updateInvoice(inv.id, { status: 'sent' }).catch(() => {})
+        loadData()
+      }
+    } else alert(`Email failed: ${r.error}`)
+  }
+
+  const thisMonth = new Date().toISOString().slice(0, 7)
+  const thisMonthTotal = summary?.byMonth?.find(m => m.month === thisMonth)?.amount || 0
+  const pendingCount = invoices.filter(i => ['draft', 'sent', 'overdue'].includes(i.status)).length
+
+  return (
+    <div className="space-y-4">
+      {/* Sub-tab bar */}
+      <div className="flex gap-1 bg-gray-800 rounded-xl p-1">
+        {[{ id: 'invoices', label: 'Invoices', icon: FileText }, { id: 'reports', label: 'Reports', icon: BarChart3 }].map(t => (
+          <button key={t.id} type="button" onClick={() => setSubTab(t.id)}
+            className={`flex-1 flex items-center justify-center gap-2 py-2 px-4 rounded-lg text-sm font-medium transition-all ${subTab === t.id ? 'bg-purple-600 text-white' : 'text-gray-400 hover:text-white'}`}>
+            <t.icon size={14} /> {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* ── INVOICES SUB-TAB ── */}
+      {subTab === 'invoices' && (
+        <div className="space-y-3">
+          <div className="flex items-center gap-2 flex-wrap">
+            <select className={`${inp} text-xs flex-1 min-w-32`} value={filterLodge} onChange={e => setFilterLodge(e.target.value)}>
+              <option value="">All Companies</option>
+              {[...(companies || [])].sort((a, b) => (a.lodge_name || '').localeCompare(b.lodge_name || '')).map(c => (
+                <option key={c.lodge_id} value={c.lodge_id}>{c.lodge_name || c.company_name || c.lodge_id}</option>
+              ))}
+            </select>
+            <select className={`${inp} text-xs flex-1 min-w-28`} value={filterStatus} onChange={e => setFilterStatus(e.target.value)}>
+              <option value="">All Statuses</option>
+              {['draft', 'sent', 'paid', 'overdue', 'cancelled'].map(s => <option key={s} value={s} className="capitalize">{s.charAt(0).toUpperCase() + s.slice(1)}</option>)}
+            </select>
+            <button onClick={() => setShowCreate(v => !v)} className={`flex items-center gap-1.5 ${btn()} px-3 py-2 rounded-lg text-xs font-medium transition-colors whitespace-nowrap`}>
+              <Plus size={13} /> New Invoice
+            </button>
+          </div>
+
+          {/* Create form */}
+          {showCreate && (
+            <div className="bg-gray-800 border border-gray-700 rounded-xl p-4">
+              <h3 className="text-sm font-semibold text-white mb-3 flex items-center gap-2"><FileText size={14} className="text-purple-400" /> New Invoice</h3>
+              <form onSubmit={handleCreateInvoice} className="space-y-3">
+                {createError && <div className="bg-red-900/50 border border-red-700 text-red-300 rounded-lg px-3 py-2 text-xs">{createError}</div>}
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label="Company *">
+                    <select className={inp} value={createForm.lodge_id} onChange={e => {
+                      const c = companies.find(c => c.lodge_id === e.target.value)
+                      setCreateForm(f => ({ ...f, lodge_id: e.target.value, lodge_name: c?.lodge_name || c?.company_name || '' }))
+                    }} required>
+                      <option value="">— Select —</option>
+                      {[...(companies || [])].sort((a, b) => (a.lodge_name || '').localeCompare(b.lodge_name || '')).map(c => (
+                        <option key={c.lodge_id} value={c.lodge_id}>{c.lodge_name || c.company_name || c.lodge_id}</option>
+                      ))}
+                    </select>
+                  </Field>
+                  <Field label="Package *">
+                    <select className={inp} value={createForm.package_name} onChange={e => setCreateForm(f => ({ ...f, package_name: e.target.value }))} required>
+                      {TIERS.map(t => <option key={t} value={t}>{t}</option>)}
+                    </select>
+                  </Field>
+                  <Field label="Amount *">
+                    <input type="number" step="0.01" min="0.01" className={inp} value={createForm.amount} onChange={e => setCreateForm(f => ({ ...f, amount: e.target.value }))} required placeholder="0.00" />
+                  </Field>
+                  <Field label="Currency">
+                    <select className={inp} value={createForm.currency} onChange={e => setCreateForm(f => ({ ...f, currency: e.target.value }))}>
+                      {INVOICE_CURRENCIES.map(c => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  </Field>
+                  <Field label="Status">
+                    <select className={inp} value={createForm.status} onChange={e => setCreateForm(f => ({ ...f, status: e.target.value }))}>
+                      {['draft', 'sent', 'paid', 'overdue', 'cancelled'].map(s => <option key={s} value={s} className="capitalize">{s.charAt(0).toUpperCase() + s.slice(1)}</option>)}
+                    </select>
+                  </Field>
+                  <Field label="Issued Date *">
+                    <input type="date" className={inp} value={createForm.issued_date} onChange={e => setCreateForm(f => ({ ...f, issued_date: e.target.value }))} required />
+                  </Field>
+                  <Field label="Due Date">
+                    <input type="date" className={inp} value={createForm.due_date} onChange={e => setCreateForm(f => ({ ...f, due_date: e.target.value }))} />
+                  </Field>
+                  <Field label="Payment Date">
+                    <input type="date" className={inp} value={createForm.paid_date} onChange={e => setCreateForm(f => ({ ...f, paid_date: e.target.value }))} />
+                  </Field>
+                </div>
+                <Field label="Description">
+                  <input className={inp} placeholder="e.g. Annual subscription" value={createForm.description} onChange={e => setCreateForm(f => ({ ...f, description: e.target.value }))} />
+                </Field>
+                <Field label="Notes">
+                  <input className={inp} placeholder="Internal notes…" value={createForm.notes} onChange={e => setCreateForm(f => ({ ...f, notes: e.target.value }))} />
+                </Field>
+                <div className="flex gap-2 pt-1">
+                  <button type="button" onClick={() => setShowCreate(false)} className={`flex-1 ${btn('ghost')} py-2 rounded-lg text-sm`}>Cancel</button>
+                  <button type="submit" disabled={createSaving} className={`flex-1 ${btn()} py-2 rounded-lg text-sm disabled:opacity-60`}>{createSaving ? 'Saving…' : 'Create Invoice'}</button>
+                </div>
+              </form>
+            </div>
+          )}
+
+          {/* Invoice table */}
+          <div className="bg-gray-800 rounded-xl overflow-hidden">
+            {loading ? (
+              <div className="p-8 text-center text-gray-500 text-sm">Loading invoices…</div>
+            ) : filtered.length === 0 ? (
+              <div className="p-8 text-center text-gray-500"><Receipt size={28} className="mx-auto mb-2 opacity-40" /><p className="text-sm">No invoices found.</p></div>
+            ) : (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-xs text-gray-500 border-b border-gray-700">
+                    <th className="px-4 py-3 text-left font-medium">Invoice #</th>
+                    <th className="px-4 py-3 text-left font-medium">Company</th>
+                    <th className="px-4 py-3 text-left font-medium">Package</th>
+                    <th className="px-4 py-3 text-right font-medium">Amount</th>
+                    <th className="px-4 py-3 text-left font-medium">Status</th>
+                    <th className="px-4 py-3 text-left font-medium">Date</th>
+                    <th className="px-4 py-3 text-center font-medium">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filtered.map((inv, i) => (
+                    <tr key={inv.id} className={`border-t border-gray-700 hover:bg-gray-750 transition-colors ${i % 2 === 1 ? 'bg-gray-800/60' : ''}`}>
+                      <td className="px-4 py-3 font-mono text-xs text-purple-300">{inv.invoice_number}</td>
+                      <td className="px-4 py-3 text-gray-200 text-xs max-w-32 truncate">{inv.lodge_name || inv.lodge_id}</td>
+                      <td className="px-4 py-3 text-gray-300 text-xs">{inv.package_name}</td>
+                      <td className="px-4 py-3 text-right font-semibold text-white text-xs">{inv.currency} {Number(inv.amount).toFixed(2)}</td>
+                      <td className="px-4 py-3">
+                        <span className={`text-xs font-semibold px-2 py-0.5 rounded-full capitalize ${STATUS_COLORS[inv.status] || 'bg-gray-700 text-gray-300'}`}>{inv.status}</span>
+                      </td>
+                      <td className="px-4 py-3 text-gray-400 text-xs">{fmt(inv.issued_date)}</td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center justify-center gap-1">
+                          <button title="Send email" onClick={() => handleSendEmail(inv)} disabled={sendingEmail[inv.id]}
+                            className="p-1.5 rounded hover:bg-gray-700 text-gray-400 hover:text-blue-400 transition-colors disabled:opacity-50">
+                            {emailSent[inv.id] ? <CheckCircle2 size={14} className="text-green-400" /> : sendingEmail[inv.id] ? <RefreshCw size={14} className="animate-spin" /> : <Mail size={14} />}
+                          </button>
+                          <button title="Edit" onClick={() => setEditInvoice({ ...inv })}
+                            className="p-1.5 rounded hover:bg-gray-700 text-gray-400 hover:text-purple-400 transition-colors">
+                            <Edit3 size={14} />
+                          </button>
+                          <button title="Delete" onClick={() => handleDelete(inv.id)}
+                            className="p-1.5 rounded hover:bg-gray-700 text-gray-400 hover:text-red-400 transition-colors">
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── REPORTS SUB-TAB ── */}
+      {subTab === 'reports' && (
+        <div className="space-y-4">
+          <div className="flex justify-between items-center">
+            <p className="text-gray-400 text-sm">Revenue from paid invoices</p>
+            <button onClick={() => window.print()} className={`flex items-center gap-2 ${btn()} px-4 py-2 rounded-lg text-sm font-medium transition-colors print:hidden`}>
+              <FileText size={14} /> Export as PDF
+            </button>
+          </div>
+
+          {/* KPI cards */}
+          <div className="grid grid-cols-2 gap-3 print:grid-cols-4">
+            {[
+              { label: 'Total Revenue', value: summary ? `${summary.currency} ${Number(summary.total).toFixed(2)}` : '—', color: 'text-green-400' },
+              { label: 'This Month', value: summary ? `${summary.currency} ${Number(thisMonthTotal).toFixed(2)}` : '—', color: 'text-blue-400' },
+              { label: 'Paid Invoices', value: invoices.filter(i => i.status === 'paid').length, color: 'text-green-400' },
+              { label: 'Pending', value: pendingCount, color: pendingCount > 0 ? 'text-yellow-400' : 'text-gray-400' }
+            ].map(({ label, value, color }) => (
+              <div key={label} className="bg-gray-800 rounded-xl p-4 print:border print:border-gray-300 print:bg-white">
+                <p className="text-xs text-gray-400 mb-1">{label}</p>
+                <p className={`text-xl font-bold ${color}`}>{value}</p>
+              </div>
+            ))}
+          </div>
+
+          {/* Revenue by Plan */}
+          <div className="bg-gray-800 rounded-xl overflow-hidden print:border print:border-gray-300">
+            <div className="px-4 py-3 border-b border-gray-700 print:border-gray-300">
+              <p className="text-sm font-semibold text-white">Revenue by Plan</p>
+            </div>
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-xs text-gray-500 border-b border-gray-700 print:border-gray-300">
+                  <th className="px-4 py-2 text-left font-medium">Plan</th>
+                  <th className="px-4 py-2 text-right font-medium">Revenue</th>
+                  <th className="px-4 py-2 text-right font-medium">Invoices</th>
+                </tr>
+              </thead>
+              <tbody>
+                {TIERS.map(plan => {
+                  const planTotal = summary?.byPlan?.[plan] || 0
+                  const planCount = invoices.filter(i => i.package_name === plan && i.status === 'paid').length
+                  return (
+                    <tr key={plan} className="border-t border-gray-700 print:border-gray-300">
+                      <td className="px-4 py-3 text-gray-200 font-medium">{plan}</td>
+                      <td className="px-4 py-3 text-right text-white font-semibold">{summary?.currency || 'USD'} {Number(planTotal).toFixed(2)}</td>
+                      <td className="px-4 py-3 text-right text-gray-400">{planCount}</td>
+                    </tr>
+                  )
+                })}
+                <tr className="border-t-2 border-gray-600 print:border-gray-400 bg-gray-700/50 print:bg-gray-50">
+                  <td className="px-4 py-3 text-white font-bold">Total</td>
+                  <td className="px-4 py-3 text-right text-green-400 font-bold">{summary?.currency || 'USD'} {Number(summary?.total || 0).toFixed(2)}</td>
+                  <td className="px-4 py-3 text-right text-gray-400 font-semibold">{invoices.filter(i => i.status === 'paid').length}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          {/* Monthly revenue */}
+          {summary?.byMonth?.length > 0 && (
+            <div className="bg-gray-800 rounded-xl overflow-hidden print:border print:border-gray-300">
+              <div className="px-4 py-3 border-b border-gray-700 print:border-gray-300">
+                <p className="text-sm font-semibold text-white">Monthly Revenue</p>
+              </div>
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-xs text-gray-500 border-b border-gray-700 print:border-gray-300">
+                    <th className="px-4 py-2 text-left font-medium">Month</th>
+                    <th className="px-4 py-2 text-right font-medium">Revenue</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {[...summary.byMonth].reverse().map(({ month, amount }) => (
+                    <tr key={month} className="border-t border-gray-700 print:border-gray-300">
+                      <td className="px-4 py-3 text-gray-200">{new Date(month + '-01').toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })}</td>
+                      <td className="px-4 py-3 text-right text-white font-semibold">{summary.currency} {Number(amount).toFixed(2)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Edit invoice modal */}
+      {editInvoice && (
+        <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
+          <div className="bg-gray-900 rounded-2xl p-6 w-full max-w-md space-y-3 border border-gray-700">
+            <div className="flex justify-between items-center">
+              <h3 className="text-white font-semibold">Edit Invoice {editInvoice.invoice_number}</h3>
+              <button onClick={() => setEditInvoice(null)} className="text-gray-400 hover:text-white"><X size={18} /></button>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Package">
+                <select className={inp} value={editInvoice.package_name} onChange={e => setEditInvoice(v => ({ ...v, package_name: e.target.value }))}>
+                  {TIERS.map(t => <option key={t} value={t}>{t}</option>)}
+                </select>
+              </Field>
+              <Field label="Status">
+                <select className={inp} value={editInvoice.status} onChange={e => setEditInvoice(v => ({ ...v, status: e.target.value }))}>
+                  {['draft', 'sent', 'paid', 'overdue', 'cancelled'].map(s => <option key={s} value={s} className="capitalize">{s.charAt(0).toUpperCase() + s.slice(1)}</option>)}
+                </select>
+              </Field>
+              <Field label="Amount">
+                <input type="number" step="0.01" className={inp} value={editInvoice.amount} onChange={e => setEditInvoice(v => ({ ...v, amount: e.target.value }))} />
+              </Field>
+              <Field label="Currency">
+                <select className={inp} value={editInvoice.currency} onChange={e => setEditInvoice(v => ({ ...v, currency: e.target.value }))}>
+                  {INVOICE_CURRENCIES.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </Field>
+              <Field label="Due Date">
+                <input type="date" className={inp} value={editInvoice.due_date || ''} onChange={e => setEditInvoice(v => ({ ...v, due_date: e.target.value }))} />
+              </Field>
+              <Field label="Paid Date">
+                <input type="date" className={inp} value={editInvoice.paid_date || ''} onChange={e => setEditInvoice(v => ({ ...v, paid_date: e.target.value }))} />
+              </Field>
+            </div>
+            <Field label="Description">
+              <input className={inp} value={editInvoice.description || ''} onChange={e => setEditInvoice(v => ({ ...v, description: e.target.value }))} />
+            </Field>
+            <Field label="Notes">
+              <input className={inp} value={editInvoice.notes || ''} onChange={e => setEditInvoice(v => ({ ...v, notes: e.target.value }))} />
+            </Field>
+            <div className="flex gap-2 pt-1">
+              <button onClick={() => setEditInvoice(null)} className={`flex-1 ${btn('ghost')} py-2 rounded-lg text-sm`}>Cancel</button>
+              <button onClick={handleSaveEdit} className={`flex-1 ${btn()} py-2 rounded-lg text-sm`}>Save Changes</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ════════════════════════════════════════════════════════════════════
 // MAIN: AdminCentral
 // ════════════════════════════════════════════════════════════════════
 const NAV_ITEMS = [
   { id: 'dashboard',     label: 'Dashboard',         icon: LayoutDashboard },
   { id: 'companies',     label: 'Companies',          icon: Building2 },
   { id: 'billing',       label: 'Licenses & Billing', icon: CreditCard },
+  { id: 'bookkeeping',   label: 'Bookkeeping',        icon: Receipt },
   { id: 'flags',         label: 'Feature Flags',      icon: ToggleRight },
   { id: 'broadcasts',    label: 'Broadcasts',         icon: Megaphone },
   { id: 'tickets',       label: 'Support Tickets',    icon: LifeBuoy },
@@ -1381,6 +1834,7 @@ export default function AdminCentral() {
           {section === 'dashboard'     && <Dashboard companies={companies} licenses={licenses} tickets={tickets} activityLogs={activityLogs} />}
           {section === 'companies'     && <Companies companies={companies} licenses={licenses} loading={loading} />}
           {section === 'billing'       && <LicenseBilling licenses={licenses} companies={companies} onRefresh={loadAll} />}
+          {section === 'bookkeeping'   && <Bookkeeping companies={companies} />}
           {section === 'flags'         && <FeatureFlags companies={companies} />}
           {section === 'broadcasts'    && <Broadcasts />}
           {section === 'tickets'       && <SupportTickets companies={companies} />}

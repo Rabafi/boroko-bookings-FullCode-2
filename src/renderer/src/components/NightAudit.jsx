@@ -18,6 +18,23 @@ function fmt(amount, currency) {
   return `${currency} ${Number(amount || 0).toFixed(2)}`
 }
 
+function groupEventBookings(list) {
+  const regular   = list.filter(b => !b.is_exclusive_event)
+  const eventRows = list.filter(b => b.is_exclusive_event)
+  const groupMap  = {}
+  eventRows.forEach(b => {
+    const match   = b.notes?.match(/\[GROUP:([^\]]+)\]/)
+    const groupId = match?.[1] || b.check_in
+    if (!groupMap[groupId]) {
+      const n = Math.ceil((new Date(b.check_out) - new Date(b.check_in)) / 86400000)
+      groupMap[groupId] = { ...b, room_count: 0, total_amount: (b.event_daily_rate || 0) * n, amount_paid: 0, _event_group: true }
+    }
+    groupMap[groupId].room_count++
+    groupMap[groupId].amount_paid += (b.amount_paid || 0)
+  })
+  return [...regular, ...Object.values(groupMap)]
+}
+
 function SummaryCard({ icon: Icon, label, value, sub, color }) {
   return (
     <div className="bg-white rounded-xl p-5 shadow-sm">
@@ -81,14 +98,13 @@ export default function NightAudit() {
 
   const handlePrint = () => window.print()
 
-  const totalCheckinRevenue = (data?.check_ins || []).reduce(
-    (s, b) => s + Number(b.total_amount || 0),
-    0
-  )
-  const totalCheckinPaid = (data?.check_ins || []).reduce(
-    (s, b) => s + Number(b.amount_paid || 0),
-    0
-  )
+  const groupedCheckIns  = groupEventBookings(data?.check_ins  || [])
+  const groupedCheckOuts = groupEventBookings(data?.check_outs || [])
+  const groupedNewBooks  = groupEventBookings(data?.new_bookings || [])
+  const groupedOutstanding = groupEventBookings(data?.outstanding || [])
+
+  const totalCheckinRevenue = groupedCheckIns.reduce((s, b) => s + Number(b.total_amount || 0), 0)
+  const totalCheckinPaid    = groupedCheckIns.reduce((s, b) => s + Number(b.amount_paid  || 0), 0)
 
   return (
     <div className="p-6 max-w-5xl print:p-2 print:max-w-full">
@@ -217,16 +233,18 @@ export default function NightAudit() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-50">
-                    {data.check_ins.map((b) => {
+                    {groupedCheckIns.map((b) => {
                       const balance = Math.max(0, Number(b.total_amount || 0) - Number(b.amount_paid || 0))
                       return (
                         <tr key={b.id} className="hover:bg-gray-50">
-                          <td className="px-5 py-3 font-mono text-xs text-gray-400">{b.booking_number || '—'}</td>
+                          <td className="px-5 py-3 font-mono text-xs text-gray-400">{b._event_group ? '—' : (b.booking_number || '—')}</td>
                           <td className="px-5 py-3 font-medium text-gray-800">
-                            {b.customer_name}
-                            {b.notes && <p className="text-xs text-gray-400 mt-0.5 font-normal">{b.notes}</p>}
+                            <div className="flex items-center gap-1.5">
+                              {b.customer_name}
+                              {b._event_group && <span className="text-[9px] font-bold bg-indigo-100 text-indigo-600 px-1.5 py-0.5 rounded">EVENT</span>}
+                            </div>
                           </td>
-                          <td className="px-5 py-3 text-gray-600">Room {b.room_number}</td>
+                          <td className="px-5 py-3 text-gray-600">{b._event_group ? `${b.room_count} rooms` : `Room ${b.room_number}`}</td>
                           <td className="px-5 py-3 text-gray-500 text-xs">{b.room_type}</td>
                           <td className="px-5 py-3 text-gray-500 text-xs">
                             {b.adults}A{b.children > 0 ? ` ${b.children}C` : ''}
@@ -286,13 +304,18 @@ export default function NightAudit() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-50">
-                    {data.check_outs.map((b) => {
+                    {groupedCheckOuts.map((b) => {
                       const balance = Math.max(0, Number(b.total_amount || 0) - Number(b.amount_paid || 0))
                       return (
                         <tr key={b.id} className="hover:bg-gray-50">
-                          <td className="px-5 py-3 font-mono text-xs text-gray-400">{b.booking_number || '—'}</td>
-                          <td className="px-5 py-3 font-medium text-gray-800">{b.customer_name}</td>
-                          <td className="px-5 py-3 text-gray-600">Room {b.room_number}</td>
+                          <td className="px-5 py-3 font-mono text-xs text-gray-400">{b._event_group ? '—' : (b.booking_number || '—')}</td>
+                          <td className="px-5 py-3 font-medium text-gray-800">
+                            <div className="flex items-center gap-1.5">
+                              {b.customer_name}
+                              {b._event_group && <span className="text-[9px] font-bold bg-indigo-100 text-indigo-600 px-1.5 py-0.5 rounded">EVENT</span>}
+                            </div>
+                          </td>
+                          <td className="px-5 py-3 text-gray-600">{b._event_group ? `${b.room_count} rooms` : `Room ${b.room_number}`}</td>
                           <td className="px-5 py-3 text-gray-500 text-xs">{b.room_type}</td>
                           <td className="px-5 py-3 text-gray-500 text-xs">
                             {b.adults}A{b.children > 0 ? ` ${b.children}C` : ''}
@@ -343,11 +366,16 @@ export default function NightAudit() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-50">
-                    {data.new_bookings.map((b) => (
+                    {groupedNewBooks.map((b) => (
                       <tr key={b.id} className="hover:bg-gray-50">
-                        <td className="px-5 py-3 font-mono text-xs text-gray-400">{b.booking_number || '—'}</td>
-                        <td className="px-5 py-3 font-medium text-gray-800">{b.customer_name}</td>
-                        <td className="px-5 py-3 text-gray-600">Room {b.room_number}</td>
+                        <td className="px-5 py-3 font-mono text-xs text-gray-400">{b._event_group ? '—' : (b.booking_number || '—')}</td>
+                        <td className="px-5 py-3 font-medium text-gray-800">
+                          <div className="flex items-center gap-1.5">
+                            {b.customer_name}
+                            {b._event_group && <span className="text-[9px] font-bold bg-indigo-100 text-indigo-600 px-1.5 py-0.5 rounded">EVENT</span>}
+                          </div>
+                        </td>
+                        <td className="px-5 py-3 text-gray-600">{b._event_group ? `${b.room_count} rooms` : `Room ${b.room_number}`}</td>
                         <td className="px-5 py-3 text-gray-600">{b.check_in}</td>
                         <td className="px-5 py-3 text-gray-600">{b.check_out}</td>
                         <td className="px-5 py-3 text-right font-medium text-gray-800">
@@ -440,13 +468,18 @@ export default function NightAudit() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-50">
-                    {data.outstanding.map((b) => {
+                    {groupedOutstanding.map((b) => {
                       const balance = Math.max(0, Number(b.total_amount || 0) - Number(b.amount_paid || 0))
                       return (
                         <tr key={b.id} className="hover:bg-gray-50">
-                          <td className="px-5 py-3 font-mono text-xs text-gray-400">{b.booking_number || '—'}</td>
-                          <td className="px-5 py-3 font-medium text-gray-800">{b.customer_name}</td>
-                          <td className="px-5 py-3 text-gray-600">Room {b.room_number}</td>
+                          <td className="px-5 py-3 font-mono text-xs text-gray-400">{b._event_group ? '—' : (b.booking_number || '—')}</td>
+                          <td className="px-5 py-3 font-medium text-gray-800">
+                            <div className="flex items-center gap-1.5">
+                              {b.customer_name}
+                              {b._event_group && <span className="text-[9px] font-bold bg-indigo-100 text-indigo-600 px-1.5 py-0.5 rounded">EVENT</span>}
+                            </div>
+                          </td>
+                          <td className="px-5 py-3 text-gray-600">{b._event_group ? `${b.room_count} rooms` : `Room ${b.room_number}`}</td>
                           <td className="px-5 py-3 text-gray-500">{b.check_in}</td>
                           <td className="px-5 py-3 text-gray-500">{b.check_out}</td>
                           <td className="px-5 py-3 text-right text-gray-800">{fmt(b.total_amount, currency)}</td>

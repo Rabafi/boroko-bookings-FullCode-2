@@ -111,7 +111,7 @@ export async function testEmailConfig(config) {
 /**
  * Send a license key email directly to the customer's registered email.
  */
-export async function sendLicenseEmail({ to, licenseKey, lodgeName, plan, expiresAt, lodgeId, notes }) {
+export async function sendLicenseEmail({ to, licenseKey, lodgeName, plan, expiresAt, lodgeId, notes, invoice }) {
   const config = getEmailConfig()
   if (!config?.host || !config?.user || !config?.pass) {
     return { success: false, error: 'Email not configured. Set up SMTP in Command Central → Email Alerts.' }
@@ -196,6 +196,32 @@ export async function sendLicenseEmail({ to, licenseKey, lodgeName, plan, expire
           </td>
         </tr>
 
+        <!-- Payment / Invoice section (only when invoice is provided) -->
+        ${invoice ? `
+        <tr>
+          <td style="padding:0 40px 28px;">
+            <p style="margin:0 0 10px;font-size:13px;font-weight:700;color:#374151;text-transform:uppercase;letter-spacing:0.5px;">Payment Received</p>
+            <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;">
+              <tr style="background:#f0fdf4;">
+                <td style="padding:9px 16px;font-size:13px;color:#6b7280;width:40%;">Invoice No.</td>
+                <td style="padding:9px 16px;font-size:13px;color:#14532d;font-weight:700;font-family:'Courier New',monospace;">${invoice.invoice_number}</td>
+              </tr>
+              <tr style="border-top:1px solid #e5e7eb;">
+                <td style="padding:9px 16px;font-size:13px;color:#6b7280;">Package</td>
+                <td style="padding:9px 16px;font-size:13px;color:#111827;font-weight:600;">${invoice.package_name}</td>
+              </tr>
+              <tr style="border-top:1px solid #e5e7eb;background:#f9fafb;">
+                <td style="padding:9px 16px;font-size:13px;color:#6b7280;">Amount Paid</td>
+                <td style="padding:9px 16px;font-size:13px;color:#111827;font-weight:700;">${invoice.currency || 'USD'} ${Number(invoice.amount).toFixed(2)}</td>
+              </tr>
+              <tr style="border-top:1px solid #e5e7eb;">
+                <td style="padding:9px 16px;font-size:13px;color:#6b7280;">Payment Date</td>
+                <td style="padding:9px 16px;font-size:13px;color:#111827;">${invoice.paid_date ? new Date(invoice.paid_date).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }) : '—'}</td>
+              </tr>
+            </table>
+          </td>
+        </tr>` : ''}
+
         <!-- Activation steps -->
         <tr>
           <td style="padding:0 40px 28px;">
@@ -242,6 +268,112 @@ export async function sendLicenseEmail({ to, licenseKey, lodgeName, plan, expire
       subject: `🔑 Your Boroko Bookings Activation Key — ${lodgeName || licenseKey}`,
       html,
       text: `Your Boroko Bookings activation key is: ${licenseKey}\nPlan: ${planLabel}\nExpiry: ${expiryText}\n\nTo activate: Open Boroko Bookings → Settings → License & Billing → paste the key → click Activate.`
+    })
+    return { success: true }
+  } catch (e) {
+    return { success: false, error: e.message }
+  }
+}
+
+/**
+ * Send a standalone invoice email directly to a client.
+ */
+export async function sendInvoiceEmail({ to, invoice, lodgeName }) {
+  const config = getEmailConfig()
+  if (!config?.host || !config?.user || !config?.pass) {
+    return { success: false, error: 'Email not configured.' }
+  }
+  if (!to?.trim()) return { success: false, error: 'No recipient email.' }
+
+  const year = new Date().getFullYear()
+  const fmtD = (d) => d ? new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }) : '—'
+  const statusColor = { paid: '#16a34a', draft: '#6b7280', sent: '#2563eb', overdue: '#dc2626', cancelled: '#9ca3af' }
+  const sc = statusColor[invoice.status] || '#6b7280'
+
+  const html = `
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8" /></head>
+<body style="margin:0;padding:0;background:#f4f7f6;font-family:'Segoe UI',Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f7f6;padding:32px 0;">
+    <tr><td align="center">
+      <table width="600" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:12px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,0.08);">
+        <tr>
+          <td style="background:#14532d;padding:32px 40px;text-align:center;">
+            <div style="font-size:32px;margin-bottom:6px;">🏕️</div>
+            <h1 style="color:#fff;margin:0;font-size:22px;font-weight:700;">Boroko Bookings</h1>
+            <p style="color:#86efac;margin:4px 0 0;font-size:13px;">Invoice</p>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:32px 40px 0;">
+            <table width="100%" cellpadding="0" cellspacing="0">
+              <tr>
+                <td>
+                  <p style="margin:0;font-size:13px;color:#6b7280;">Billed to</p>
+                  <p style="margin:4px 0 0;font-size:16px;font-weight:700;color:#111827;">${lodgeName || invoice.lodge_name || '—'}</p>
+                </td>
+                <td align="right">
+                  <p style="margin:0;font-size:22px;font-weight:800;color:#14532d;font-family:'Courier New',monospace;">${invoice.invoice_number}</p>
+                  <p style="margin:4px 0 0;font-size:12px;color:#6b7280;">Issued: ${fmtD(invoice.issued_date)}</p>
+                  ${invoice.due_date ? `<p style="margin:2px 0 0;font-size:12px;color:#6b7280;">Due: ${fmtD(invoice.due_date)}</p>` : ''}
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:24px 40px;">
+            <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;">
+              <tr style="background:#f9fafb;">
+                <td style="padding:10px 16px;font-size:12px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px;">Description</td>
+                <td style="padding:10px 16px;font-size:12px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px;text-align:right;">Amount</td>
+              </tr>
+              <tr style="border-top:1px solid #e5e7eb;">
+                <td style="padding:14px 16px;font-size:14px;color:#111827;">
+                  <strong>${invoice.package_name} Subscription</strong>
+                  ${invoice.description ? `<br/><span style="font-size:12px;color:#6b7280;">${invoice.description}</span>` : ''}
+                </td>
+                <td style="padding:14px 16px;font-size:14px;color:#111827;font-weight:700;text-align:right;">${invoice.currency || 'USD'} ${Number(invoice.amount).toFixed(2)}</td>
+              </tr>
+              <tr style="border-top:2px solid #e5e7eb;background:#f0fdf4;">
+                <td style="padding:12px 16px;font-size:14px;font-weight:700;color:#14532d;">Total</td>
+                <td style="padding:12px 16px;font-size:16px;font-weight:800;color:#14532d;text-align:right;">${invoice.currency || 'USD'} ${Number(invoice.amount).toFixed(2)}</td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:0 40px 28px;">
+            <table width="100%" cellpadding="0" cellspacing="0">
+              <tr>
+                <td style="padding:6px 0;font-size:13px;color:#6b7280;width:120px;">Status</td>
+                <td><span style="background:${sc};color:#fff;padding:2px 10px;border-radius:99px;font-size:12px;font-weight:600;text-transform:capitalize;">${invoice.status}</span></td>
+              </tr>
+              ${invoice.paid_date ? `<tr><td style="padding:6px 0;font-size:13px;color:#6b7280;">Paid on</td><td style="font-size:13px;color:#111827;font-weight:600;">${fmtD(invoice.paid_date)}</td></tr>` : ''}
+              ${invoice.notes ? `<tr><td style="padding:6px 0;font-size:13px;color:#6b7280;vertical-align:top;">Notes</td><td style="font-size:13px;color:#374151;">${invoice.notes}</td></tr>` : ''}
+            </table>
+          </td>
+        </tr>
+        <tr>
+          <td style="background:#f9fafb;border-top:1px solid #e5e7eb;padding:18px 40px;text-align:center;">
+            <p style="margin:0;font-size:12px;color:#9ca3af;">© ${year} Boroko Bookings · Botswapelo Studios Pty Ltd</p>
+          </td>
+        </tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`
+
+  try {
+    const transporter = createTransporter(config)
+    await transporter.sendMail({
+      from: config.from || `"Boroko Bookings" <${config.user}>`,
+      to: to.trim(),
+      subject: `Invoice ${invoice.invoice_number} — ${lodgeName || invoice.lodge_name || ''} · Boroko Bookings`,
+      html,
+      text: `Invoice ${invoice.invoice_number}\n${invoice.package_name} — ${invoice.currency || 'USD'} ${Number(invoice.amount).toFixed(2)}\nStatus: ${invoice.status}\nIssued: ${fmtD(invoice.issued_date)}`
     })
     return { success: true }
   } catch (e) {

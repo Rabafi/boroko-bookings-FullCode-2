@@ -35,54 +35,59 @@ export default function Reports() {
 
   const load = useCallback(async () => {
     setLoading(true)
-    const lid = user.lodge_id
-    const todayStr = format(now, 'yyyy-MM-dd')
-    const weekStart = format(startOfWeek(now, { weekStartsOn: 1 }), 'yyyy-MM-dd')
-    const monthStart = format(startOfMonth(now), 'yyyy-MM-dd')
-    const monthEnd = format(endOfMonth(now), 'yyyy-MM-dd')
-    const lastMonthStart = format(startOfMonth(subMonths(now, 1)), 'yyyy-MM-dd')
-    const lastMonthEnd = format(endOfMonth(subMonths(now, 1)), 'yyyy-MM-dd')
+    try {
+      const lid = user.lodge_id
+      const todayStr = format(now, 'yyyy-MM-dd')
+      const weekStart = format(startOfWeek(now, { weekStartsOn: 1 }), 'yyyy-MM-dd')
+      const monthStart = format(startOfMonth(now), 'yyyy-MM-dd')
+      const monthEnd = format(endOfMonth(now), 'yyyy-MM-dd')
+      const lastMonthStart = format(startOfMonth(subMonths(now, 1)), 'yyyy-MM-dd')
+      const lastMonthEnd = format(endOfMonth(subMonths(now, 1)), 'yyyy-MM-dd')
 
-    const [rooms, bookings, expenses, posOrders] = await Promise.all([
-      supabase.from('rooms').select('id').eq('lodge_id', lid),
-      supabase.from('bookings').select('check_in, check_out, total_amount, amount_paid, payment_status, status').eq('lodge_id', lid),
-      isEnabled('expenses') ? supabase.from('expenses').select('amount, date').eq('lodge_id', lid).gte('date', monthStart).lte('date', monthEnd) : Promise.resolve({ data: [] }),
-      isEnabled('pos') ? supabase.from('pos_orders').select('total, created_at').eq('lodge_id', lid).gte('created_at', monthStart).neq('status', 'voided') : Promise.resolve({ data: [] })
-    ])
+      const [rooms, bookings, expenses, posOrders] = await Promise.all([
+        supabase.from('rooms').select('id').eq('lodge_id', lid),
+        supabase.from('bookings').select('check_in, check_out, total_amount, amount_paid, payment_status, status').eq('lodge_id', lid),
+        isEnabled('expenses') ? supabase.from('expenses').select('amount, date').eq('lodge_id', lid).gte('date', monthStart).lte('date', monthEnd) : Promise.resolve({ data: [] }),
+        isEnabled('pos') ? supabase.from('pos_orders').select('total, created_at').eq('lodge_id', lid).gte('created_at', monthStart).neq('status', 'voided') : Promise.resolve({ data: [] })
+      ])
 
-    const totalRooms = (rooms.data || []).length
-    const allBookings = bookings.data || []
+      const totalRooms = (rooms.data || []).length
+      const allBookings = bookings.data || []
 
-    const revForPeriod = (start, end) => allBookings
-      .filter(b => b.check_in >= start && b.check_in <= end && b.status !== 'cancelled')
-      .reduce((s, b) => s + Number(b.amount_paid || 0), 0)
+      const revForPeriod = (start, end) => allBookings
+        .filter(b => b.check_in >= start && b.check_in <= end && b.status !== 'cancelled')
+        .reduce((s, b) => s + Number(b.amount_paid || 0), 0)
 
-    const occupancyForPeriod = (start, end) => {
-      const occ = allBookings.filter(b => b.status === 'checked_in' && b.check_in <= end && b.check_out >= start).length
-      const days = Math.ceil((new Date(end) - new Date(start)) / 86400000) + 1
-      return totalRooms > 0 && days > 0 ? Math.round((occ / (totalRooms * days)) * 100) : 0
+      const occupancyForPeriod = (start, end) => {
+        const occ = allBookings.filter(b => b.status === 'checked_in' && b.check_in <= end && b.check_out >= start).length
+        const days = Math.ceil((new Date(end) - new Date(start)) / 86400000) + 1
+        return totalRooms > 0 && days > 0 ? Math.round((occ / (totalRooms * days)) * 100) : 0
+      }
+
+      const unpaidBookings = allBookings.filter(b => ['pending', 'partial'].includes(b.payment_status) && b.status !== 'cancelled')
+      const unpaidTotal = unpaidBookings.reduce((s, b) => s + Math.max(0, Number(b.total_amount || 0) - Number(b.amount_paid || 0)), 0)
+      const monthExpenses = (expenses.data || []).reduce((s, e) => s + Number(e.amount || 0), 0)
+      const posRevenue = (posOrders.data || []).reduce((s, o) => s + Number(o.total || 0), 0)
+
+      setData({
+        todayRev: revForPeriod(todayStr, todayStr),
+        weekRev: revForPeriod(weekStart, todayStr),
+        monthRev: revForPeriod(monthStart, monthEnd),
+        lastMonthRev: revForPeriod(lastMonthStart, lastMonthEnd),
+        monthOcc: occupancyForPeriod(monthStart, monthEnd),
+        lastMonthOcc: occupancyForPeriod(lastMonthStart, lastMonthEnd),
+        currentOcc: allBookings.filter(b => b.status === 'checked_in').length,
+        totalRooms,
+        unpaidTotal,
+        unpaidCount: unpaidBookings.length,
+        monthExpenses,
+        posRevenue
+      })
+    } catch (e) {
+      console.error('Reports load error:', e)
+    } finally {
+      setLoading(false)
     }
-
-    const unpaidBookings = allBookings.filter(b => ['pending', 'partial'].includes(b.payment_status) && b.status !== 'cancelled')
-    const unpaidTotal = unpaidBookings.reduce((s, b) => s + Math.max(0, Number(b.total_amount || 0) - Number(b.amount_paid || 0)), 0)
-    const monthExpenses = (expenses.data || []).reduce((s, e) => s + Number(e.amount || 0), 0)
-    const posRevenue = (posOrders.data || []).reduce((s, o) => s + Number(o.total || 0), 0)
-
-    setData({
-      todayRev: revForPeriod(todayStr, todayStr),
-      weekRev: revForPeriod(weekStart, todayStr),
-      monthRev: revForPeriod(monthStart, monthEnd),
-      lastMonthRev: revForPeriod(lastMonthStart, lastMonthEnd),
-      monthOcc: occupancyForPeriod(monthStart, monthEnd),
-      lastMonthOcc: occupancyForPeriod(lastMonthStart, lastMonthEnd),
-      currentOcc: allBookings.filter(b => b.status === 'checked_in').length,
-      totalRooms,
-      unpaidTotal,
-      unpaidCount: unpaidBookings.length,
-      monthExpenses,
-      posRevenue
-    })
-    setLoading(false)
   }, [user.lodge_id, isEnabled])
 
   useEffect(() => { load() }, [load])
@@ -119,7 +124,7 @@ export default function Reports() {
             <p className="text-xs font-semibold text-green-400 uppercase tracking-wide mb-2">Live Now</p>
             <div className="flex items-center justify-between">
               <div><p className="text-3xl font-bold text-white">{data.currentOcc}<span className="text-lg text-gray-400">/{data.totalRooms}</span></p><p className="text-xs text-gray-400">Rooms occupied</p></div>
-              <div className="text-right"><p className="text-2xl font-bold text-green-400">{totalRooms > 0 ? Math.round((data.currentOcc / data.totalRooms) * 100) : 0}%</p><p className="text-xs text-gray-400">Occupancy</p></div>
+              <div className="text-right"><p className="text-2xl font-bold text-green-400">{data.totalRooms > 0 ? Math.round((data.currentOcc / data.totalRooms) * 100) : 0}%</p><p className="text-xs text-gray-400">Occupancy</p></div>
             </div>
           </div>
 

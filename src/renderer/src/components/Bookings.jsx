@@ -81,7 +81,7 @@ export default function Bookings() {
 
   // Event booking modal
   const [showEventModal, setShowEventModal] = useState(false)
-  const [eventForm, setEventForm] = useState({ event_name: '', contact_phone: '', contact_email: '', check_in: '', check_out: '', deposit_amount: '', payment_method: 'cash', notes: '' })
+  const [eventForm, setEventForm] = useState({ event_name: '', contact_phone: '', contact_email: '', check_in: '', check_out: '', event_daily_rate: '', deposit_amount: '', payment_method: 'cash', notes: '' })
   const [eventLoading, setEventLoading] = useState(false)
   const [eventResult, setEventResult] = useState(null) // success result
 
@@ -242,7 +242,7 @@ export default function Bookings() {
   }
 
   const openEventModal = () => {
-    setEventForm({ event_name: '', contact_phone: '', contact_email: '', check_in: today(), check_out: tomorrow(), deposit_amount: '', payment_method: 'cash', notes: '' })
+    setEventForm({ event_name: '', contact_phone: '', contact_email: '', check_in: today(), check_out: tomorrow(), event_daily_rate: '', deposit_amount: '', payment_method: 'cash', notes: '' })
     setEventResult(null)
     setError('')
     setShowEventModal(true)
@@ -283,7 +283,24 @@ export default function Bookings() {
     )
   }
 
-  const isEventBooking = (b) => b.notes?.startsWith('[GROUP:')
+  const isEventBooking = (b) => b._event_group || b.notes?.startsWith('[GROUP:')
+
+  const groupEventBookings = (list) => {
+    const regular   = list.filter(b => !b.is_exclusive_event)
+    const eventRows = list.filter(b => b.is_exclusive_event)
+    const groupMap  = {}
+    eventRows.forEach(b => {
+      const match   = b.notes?.match(/\[GROUP:([^\]]+)\]/)
+      const groupId = match?.[1] || b.check_in
+      if (!groupMap[groupId]) {
+        const n = Math.ceil((new Date(b.check_out) - new Date(b.check_in)) / 86400000)
+        groupMap[groupId] = { ...b, room_count: 0, total_amount: (b.event_daily_rate || 0) * n, amount_paid: 0, _event_group: true }
+      }
+      groupMap[groupId].room_count++
+      groupMap[groupId].amount_paid += (b.amount_paid || 0)
+    })
+    return [...regular, ...Object.values(groupMap)]
+  }
 
   const selectedRoom = rooms.find((r) => r.id === form.room_id)
   const estimatedTotal = selectedRoom
@@ -373,7 +390,7 @@ export default function Bookings() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">
-              {filtered.map((b) => (
+              {groupEventBookings(filtered).map((b) => (
                 <tr key={b.id} className="hover:bg-gray-50">
                   <td className="px-5 py-3 font-mono text-xs font-semibold text-gray-500">{fmtBkNum(b)}</td>
                   <td className="px-5 py-3">
@@ -390,8 +407,10 @@ export default function Bookings() {
                     )}
                   </td>
                   <td className="px-5 py-3 text-gray-600">
-                    <p>Room {b.room_number}</p>
-                    <p className="text-xs text-gray-400">{b.room_type}</p>
+                    {b._event_group
+                      ? <p className="text-indigo-600 font-medium">{b.room_count} rooms (whole lodge)</p>
+                      : <><p>Room {b.room_number}</p><p className="text-xs text-gray-400">{b.room_type}</p></>
+                    }
                   </td>
                   <td className="px-5 py-3 text-gray-600">{b.check_in}</td>
                   <td className="px-5 py-3 text-gray-600">{b.check_out}</td>
@@ -685,23 +704,24 @@ export default function Bookings() {
               <div className="w-14 h-14 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
                 <CheckCircle2 size={28} className="text-green-600" />
               </div>
-              <h3 className="text-lg font-bold text-gray-800 mb-1">Event Booking Created!</h3>
+              <h3 className="text-lg font-bold text-gray-800 mb-1">Entire Lodge Reserved!</h3>
               <p className="text-sm text-gray-500 mb-4">
-                <span className="font-semibold text-gray-700">{eventForm.event_name}</span> has been booked into{' '}
-                <span className="font-semibold text-green-700">{eventResult.count} room{eventResult.count !== 1 ? 's' : ''}</span>.
+                <span className="font-semibold text-gray-700">"{eventForm.event_name}"</span> — Entire lodge reserved.
               </p>
-              <div className="bg-gray-50 rounded-lg px-4 py-3 text-sm text-gray-600 mb-5 text-left">
-                <p className="font-medium text-gray-700 mb-1">Rooms booked:</p>
-                <p>{eventResult.rooms.map((n) => `Room ${n}`).join(' · ')}</p>
-                <p className="mt-1 text-gray-400">{eventForm.check_in} → {eventForm.check_out}</p>
+              <div className="bg-gray-50 rounded-lg px-4 py-3 text-sm text-gray-600 mb-5 text-left space-y-1">
+                <p className="font-medium text-gray-700">All {eventResult.count} rooms · Conference · Pool · Bar · Kitchen</p>
+                <p className="text-gray-500">{eventForm.check_in} → {eventForm.check_out} ({eventResult.nights} night{eventResult.nights !== 1 ? 's' : ''})</p>
+                {eventResult.totalPrice > 0 && (
+                  <p className="font-semibold text-green-700">Total: {currency} {eventResult.totalPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+                )}
               </div>
               <button onClick={() => setShowEventModal(false)} className="btn-primary px-8">Done</button>
             </div>
           ) : (
             /* ── Booking form ── */
             <form onSubmit={handleEventSave} className="space-y-5">
-              <div className="bg-indigo-50 border border-indigo-100 rounded-lg px-4 py-3 text-sm text-indigo-800">
-                Books <strong>all available rooms</strong> for the selected dates under one event name. Rooms already reserved will be skipped automatically.
+              <div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 text-sm text-amber-900">
+                <strong>EXCLUSIVE lodge booking.</strong> The entire property — all rooms, conference room, pool, bar and kitchen — will be reserved for one guest. No other bookings can be made during this period. <strong>Any existing bookings must be cancelled first.</strong>
               </div>
 
               <div className="grid grid-cols-2 gap-4">
@@ -751,7 +771,30 @@ export default function Bookings() {
                     required
                   />
                 </F>
-                <F label={`Total Deposit (${currency}) — optional`}>
+                <div className="col-span-2">
+                  <F label={`Daily Rate (${currency}) *`}>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      className="input"
+                      value={eventForm.event_daily_rate}
+                      onChange={(e) => setEventForm({ ...eventForm, event_daily_rate: e.target.value })}
+                      placeholder="Fixed daily rate for the entire lodge"
+                      required
+                    />
+                  </F>
+                  {Number(eventForm.event_daily_rate) > 0 && eventForm.check_in && eventForm.check_out && (() => {
+                    const nights = Math.max(0, Math.ceil((new Date(eventForm.check_out) - new Date(eventForm.check_in)) / 86400000))
+                    const total = Number(eventForm.event_daily_rate) * nights
+                    return nights > 0 ? (
+                      <p className="text-xs text-green-700 font-medium mt-1.5">
+                        Total: {currency} {total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ({nights} night{nights !== 1 ? 's' : ''} × {currency} {Number(eventForm.event_daily_rate).toLocaleString(undefined, { minimumFractionDigits: 2 })}/night)
+                      </p>
+                    ) : null
+                  })()}
+                </div>
+                <F label={`Deposit (${currency}) — optional`}>
                   <input
                     type="number"
                     min="0"
@@ -759,7 +802,7 @@ export default function Bookings() {
                     className="input"
                     value={eventForm.deposit_amount}
                     onChange={(e) => setEventForm({ ...eventForm, deposit_amount: e.target.value })}
-                    placeholder="Split evenly across all rooms"
+                    placeholder="Optional deposit amount"
                   />
                 </F>
                 {Number(eventForm.deposit_amount) > 0 && (
@@ -795,7 +838,7 @@ export default function Bookings() {
               <div className="flex gap-3 pt-1">
                 <button type="button" onClick={() => setShowEventModal(false)} className="btn-secondary flex-1">Cancel</button>
                 <button type="submit" disabled={eventLoading} className="btn-primary flex-1 bg-indigo-600 hover:bg-indigo-700">
-                  {eventLoading ? 'Booking rooms...' : '🏢 Book All Available Rooms'}
+                  {eventLoading ? 'Reserving lodge...' : '🏢 Reserve Entire Lodge'}
                 </button>
               </div>
             </form>

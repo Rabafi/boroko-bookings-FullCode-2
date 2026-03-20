@@ -23,15 +23,35 @@ Deno.serve(async (req) => {
       .select('endpoint, p256dh, auth')
       .eq('lodge_id', lodge_id)
 
-    if (!subs?.length) return new Response(JSON.stringify({ sent: 0 }), { status: 200 })
+    if (!subs?.length) return new Response(JSON.stringify({ sent: 0, pruned: 0 }), { status: 200 })
 
     const payload = JSON.stringify({ title, body, url })
     const results = await Promise.allSettled(
       subs.map(s => webpush.sendNotification({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } }, payload))
     )
 
+    // 404 / 410 = subscription is permanently gone (browser unsubscribed or endpoint expired).
+    // Delete these immediately so they are never retried.
+    const deadEndpoints: string[] = []
+    results.forEach((r, i) => {
+      if (r.status === 'rejected') {
+        const status = (r.reason as any)?.statusCode
+        if (status === 404 || status === 410) deadEndpoints.push(subs[i].endpoint)
+      }
+    })
+
+    let pruned = 0
+    if (deadEndpoints.length > 0) {
+      const { count } = await supabase
+        .from('push_subscriptions')
+        .delete({ count: 'exact' })
+        .in('endpoint', deadEndpoints)
+      pruned = count ?? deadEndpoints.length
+    }
+
     const sent = results.filter(r => r.status === 'fulfilled').length
-    return new Response(JSON.stringify({ sent }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    const failed = results.length - sent - pruned
+    return new Response(JSON.stringify({ sent, pruned, failed }), { status: 200, headers: { 'Content-Type': 'application/json' } })
   } catch (e) {
     return new Response(JSON.stringify({ error: e.message }), { status: 500 })
   }

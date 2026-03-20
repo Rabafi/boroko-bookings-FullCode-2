@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { TrendingUp, BedDouble, DollarSign, Calendar, Download, Printer, FileDown, Table, PiggyBank, ShoppingCart, Package } from 'lucide-react'
+import { TrendingUp, BedDouble, DollarSign, Calendar, Download, Printer, FileDown, Table, PiggyBank, ShoppingCart, Package, Building2 } from 'lucide-react'
 import { useSettings } from '../App'
 
 function monthStart() {
@@ -53,6 +53,10 @@ export default function Reports() {
   const [supSpend, setSupSpend]     = useState(null)
   const [costsLoading, setCostsLoading] = useState(false)
 
+  // P&L tab
+  const [pl, setPl]           = useState(null)
+  const [plLoading, setPlLoading] = useState(false)
+
   useEffect(() => { runReport(start, end) }, [start, end])
 
   useEffect(() => {
@@ -79,6 +83,13 @@ export default function Reports() {
         setInvSpend(inv)
         setSupSpend(sup)
       }).finally(() => setCostsLoading(false))
+    }
+    if (activeTab === 'pl') {
+      setPlLoading(true)
+      window.api.reports.profitLoss(start, end)
+        .then((d) => setPl(d))
+        .catch(() => setPl(null))
+        .finally(() => setPlLoading(false))
     }
   }, [activeTab, start, end])
 
@@ -115,13 +126,13 @@ export default function Reports() {
       ['Avg Occupancy Rate', `${avgOcc}%`],
       [],
       ['ROOM OCCUPANCY'],
-      ['Room', 'Type', `Rate/Night (${currency})`, 'Nights Occupied', `Period (${totalNights} nights)`, 'Occupancy %', `Est. Revenue (${currency})`]
+      ['Room', 'Type', `Rate/Night (${currency})`, 'Nights Occupied', `Period (${totalNights} nights)`, 'Occupancy %', `Revenue (${currency})`]
     ]
     for (const r of occupancy) {
       rows.push([
         `Room ${r.room_number}`, r.room_type,
         Number(r.rate_per_night).toFixed(2), r.occupied_nights, totalNights,
-        `${r.occupancy_rate}%`, (r.rate_per_night * r.occupied_nights).toFixed(2)
+        `${r.occupancy_rate}%`, Number(r.actual_revenue || 0).toFixed(2)
       ])
     }
     const csv = rows.map((r) => r.map((v) => `"${v}"`).join(',')).join('\n')
@@ -135,7 +146,9 @@ export default function Reports() {
   const handleSaveExcel = async () => {
     setSavingXLSX(true); setError('')
     try {
-      const result = await window.api.reports.saveExcel({ occupancy, revenue, start, end, currency })
+      const result = await window.api.reports.saveExcel({
+        occupancy, revenue, expenses, posSales, invSpend, supSpend, profitLoss: pl, start, end, currency
+      })
       if (result.success) { setPdfSuccess(`Excel saved: ${result.filePath}`); setTimeout(() => setPdfSuccess(''), 5000) }
       else if (result.error) setError(`Excel export failed: ${result.error}`)
     } catch (err) { setError(`Excel error: ${err?.message}`) }
@@ -180,7 +193,8 @@ export default function Reports() {
     ['bookings', '🛏️ Bookings'],
     ['expenses', '💸 Expenses'],
     ['pos',      '🍺 POS Sales'],
-    ['costs',    '📦 Stock Costs']
+    ['costs',    '📦 Stock Costs'],
+    ['pl',       '📊 P&L']
   ]
 
   return (
@@ -234,7 +248,7 @@ export default function Reports() {
           <label className="block text-xs font-medium text-gray-600 mb-1">To</label>
           <input type="date" className="input text-sm" value={end} min={start} onChange={(e) => setEnd(e.target.value)} />
         </div>
-        {(loading || posLoading || costsLoading || expLoading) && (
+        {(loading || posLoading || costsLoading || expLoading || plLoading) && (
           <span className="text-sm text-gray-400 italic self-end pb-2">Loading…</span>
         )}
         <div className="flex gap-2 ml-auto">
@@ -646,6 +660,15 @@ export default function Reports() {
         </div>
       )}
 
+      {revenue?.vat_enabled && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl px-5 py-3 mb-6 flex flex-wrap gap-6 text-sm">
+          <span className="text-amber-700 font-medium">VAT ({revenue.vat_rate}% inclusive)</span>
+          <span className="text-gray-600">Gross: <span className="font-semibold text-gray-800">{currency} {Number(revenue.total_revenue || 0).toFixed(2)}</span></span>
+          <span className="text-gray-600">VAT portion: <span className="font-semibold text-amber-700">{currency} {Number(revenue.vat_amount || 0).toFixed(2)}</span></span>
+          <span className="text-gray-600">Net (excl. VAT): <span className="font-semibold text-gray-800">{currency} {Number(revenue.net_revenue || 0).toFixed(2)}</span></span>
+        </div>
+      )}
+
       {revenue && (
         <div className="bg-white rounded-xl shadow-sm p-5 mb-6">
           <h2 className="font-semibold text-gray-700 mb-4">Booking Status Breakdown</h2>
@@ -693,6 +716,36 @@ export default function Reports() {
         </div>
       )}
 
+      {revenue?.event_count > 0 && (
+        <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-5 mb-6">
+          <h2 className="text-sm font-semibold text-indigo-800 mb-3 flex items-center gap-2">
+            <Building2 size={15} /> Exclusive Events ({revenue.event_count})
+          </h2>
+          <div className="space-y-2">
+            {revenue.event_bookings.map(evt => (
+              <div key={evt.group_id} className="flex items-center justify-between text-sm">
+                <span className="text-gray-600">
+                  {evt.check_in} → {evt.check_out}
+                  <span className="ml-2 text-xs text-indigo-500">
+                    {evt.nights} night{evt.nights !== 1 ? 's' : ''} · {evt.room_count} room{evt.room_count !== 1 ? 's' : ''}
+                  </span>
+                </span>
+                <span className="font-semibold text-indigo-700">
+                  {currency} {Number(evt.total).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  <span className="text-xs text-indigo-400 ml-1.5">
+                    ({currency} {Number(evt.daily_rate).toLocaleString()}/night)
+                  </span>
+                </span>
+              </div>
+            ))}
+            <div className="border-t border-indigo-200 pt-2 flex justify-between text-sm font-semibold text-indigo-800">
+              <span>Event Revenue Total</span>
+              <span>{currency} {Number(revenue.event_revenue).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="bg-white rounded-xl shadow-sm overflow-hidden">
         <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
           <h2 className="font-semibold text-gray-700">Room Occupancy — {totalNights}-day period</h2>
@@ -716,7 +769,7 @@ export default function Reports() {
                 <th className="px-5 py-3 text-left">Rate / Night</th>
                 <th className="px-5 py-3 text-left">Nights Booked</th>
                 <th className="px-5 py-3 text-left w-48">Occupancy</th>
-                <th className="px-5 py-3 text-right">Est. Revenue</th>
+                <th className="px-5 py-3 text-right">Revenue</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">
@@ -730,6 +783,7 @@ export default function Reports() {
                       <div className="flex items-center gap-2">
                         <span className="font-medium text-gray-800">Room {room.room_number}</span>
                         {isBest && <span className="text-[10px] text-green-600">🏆</span>}
+                        {room.has_event && <span className="text-[9px] font-bold bg-indigo-100 text-indigo-600 px-1.5 py-0.5 rounded">EVENT</span>}
                       </div>
                     </td>
                     <td className="px-5 py-3 text-gray-600">{room.room_type}</td>
@@ -744,7 +798,7 @@ export default function Reports() {
                       </div>
                     </td>
                     <td className="px-5 py-3 text-right font-medium text-gray-800">
-                      {currency} {(room.rate_per_night * room.occupied_nights).toFixed(2)}
+                      {currency} {Number(room.actual_revenue || 0).toFixed(2)}
                     </td>
                   </tr>
                 )
@@ -762,7 +816,7 @@ export default function Reports() {
                   </td>
                   <td className="px-5 py-3 text-sm font-semibold text-gray-700">{avgOccupancy}% avg</td>
                   <td className="px-5 py-3 text-right text-sm font-bold text-green-700">
-                    {currency} {occupancy.reduce((s, r) => s + r.rate_per_night * r.occupied_nights, 0).toFixed(2)}
+                    {currency} {occupancy.reduce((s, r) => s + (r.actual_revenue || 0), 0).toFixed(2)}
                   </td>
                 </tr>
               </tfoot>
@@ -771,6 +825,81 @@ export default function Reports() {
         </div>
       </div>
       </>}
+
+      {/* ── P&L TAB ──────────────────────────────────────────────────────────── */}
+      {activeTab === 'pl' && (
+        <div>
+          {plLoading ? (
+            <p className="text-center text-gray-400 py-16 text-sm">Loading P&amp;L…</p>
+          ) : !pl ? (
+            <div className="bg-white rounded-xl p-10 text-center text-gray-400 shadow-sm">
+              <p className="text-sm">No data available for this period.</p>
+            </div>
+          ) : (
+            <>
+              {/* Revenue */}
+              <div className="bg-white rounded-xl shadow-sm p-5 mb-4">
+                <h2 className="font-semibold text-gray-700 mb-4 text-sm uppercase tracking-wide">Revenue</h2>
+                <div className="space-y-2">
+                  <PLRow label="Booking Revenue" value={`${currency} ${Number(pl.bookingRevenue).toFixed(2)}`} />
+                  <PLRow label="POS Revenue"     value={`${currency} ${Number(pl.posRevenue).toFixed(2)}`} />
+                  <PLRow label="Total Revenue" value={`${currency} ${Number(pl.totalRevenue).toFixed(2)}`} bold />
+                  {pl.vatEnabled && <>
+                    <PLRow label={`VAT (${pl.vatRate}% inclusive)`} value={`- ${currency} ${Number(pl.vatAmount).toFixed(2)}`} muted />
+                    <PLRow label="Net Revenue (excl. VAT)" value={`${currency} ${Number(pl.netRevenue).toFixed(2)}`} muted />
+                  </>}
+                </div>
+              </div>
+
+              {/* Expenses */}
+              <div className="bg-white rounded-xl shadow-sm p-5 mb-4">
+                <h2 className="font-semibold text-gray-700 mb-4 text-sm uppercase tracking-wide">Operating Expenses</h2>
+                <div className="space-y-2">
+                  {Object.entries(pl.expByCategory || {}).sort((a, b) => b[1] - a[1]).map(([cat, amt]) => (
+                    <PLRow key={cat} label={cat} value={`${currency} ${Number(amt).toFixed(2)}`} />
+                  ))}
+                  {Object.keys(pl.expByCategory || {}).length === 0 && (
+                    <p className="text-sm text-gray-400">No expenses recorded.</p>
+                  )}
+                  <PLRow label="Total Expenses" value={`${currency} ${Number(pl.totalExpenses).toFixed(2)}`} bold />
+                </div>
+              </div>
+
+              {/* Stock Costs */}
+              <div className="bg-white rounded-xl shadow-sm p-5 mb-4">
+                <h2 className="font-semibold text-gray-700 mb-4 text-sm uppercase tracking-wide">Stock Costs</h2>
+                <div className="space-y-2">
+                  <PLRow label="Inventory Purchases" value={`${currency} ${Number(pl.invCosts).toFixed(2)}`} />
+                  <PLRow label="Room Supplies"       value={`${currency} ${Number(pl.supCosts).toFixed(2)}`} />
+                  <PLRow label="Total Stock Costs"   value={`${currency} ${Number(pl.totalCosts).toFixed(2)}`} bold />
+                </div>
+              </div>
+
+              {/* Gross Profit */}
+              <div className={`rounded-xl p-5 ${pl.grossProfit >= 0 ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200'}`}>
+                <div className="flex items-center justify-between">
+                  <span className={`text-base font-bold ${pl.grossProfit >= 0 ? 'text-green-800' : 'text-red-800'}`}>
+                    Gross Profit
+                  </span>
+                  <span className={`text-xl font-bold ${pl.grossProfit >= 0 ? 'text-green-700' : 'text-red-700'}`}>
+                    {pl.grossProfit < 0 ? '- ' : ''}{currency} {Math.abs(pl.grossProfit).toFixed(2)}
+                  </span>
+                </div>
+                <p className="text-xs mt-1 text-gray-500">Revenue − Expenses − Stock Costs</p>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function PLRow({ label, value, bold, muted }) {
+  return (
+    <div className={`flex justify-between text-sm py-1 border-b border-gray-50 ${bold ? 'font-semibold border-t border-gray-200 pt-2' : ''} ${muted ? 'text-gray-400' : 'text-gray-700'}`}>
+      <span>{label}</span>
+      <span className={bold ? 'text-gray-900' : ''}>{value}</span>
     </div>
   )
 }

@@ -11,9 +11,21 @@ import {
   testEmailConfig,
   sendNotificationEmail,
   sendLicenseEmail,
+  sendInvoiceEmail,
   buildSupportTicketEmail,
   buildUpgradeRequestEmail
 } from './emailNotifications.js'
+
+// ── URL safety guard (used by shell:openExternal and setWindowOpenHandler) ────
+const ALLOWED_PROTOCOLS = ['https:', 'http:']
+function isSafeExternalUrl(url) {
+  try {
+    const parsed = new URL(url)
+    return ALLOWED_PROTOCOLS.includes(parsed.protocol)
+  } catch {
+    return false
+  }
+}
 
 // ── Push notification helper ─────────────────────────────────────────────────
 const EDGE_FN_URL = process.env.SUPABASE_URL
@@ -82,6 +94,9 @@ function createWindow() {
     title: 'Boroko Bookings',
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
+      // sandbox: false is required because the preload uses Node.js APIs (ipcRenderer, contextBridge).
+      // Compensating controls: contextIsolation is ON (Electron default), nodeIntegration is OFF
+      // (Electron default), and all external URLs are validated by isSafeExternalUrl().
       sandbox: false
     }
   })
@@ -106,7 +121,7 @@ function createWindow() {
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url)
+    if (isSafeExternalUrl(details.url)) shell.openExternal(details.url)
     return { action: 'deny' }
   })
 
@@ -135,9 +150,8 @@ app.whenReady().then(async () => {
     let masterAdmin = null
     try {
       masterAdmin = await db.checkMasterAdmin(email, password)
-      console.log('[AUTH] checkMasterAdmin result:', JSON.stringify(masterAdmin))
     } catch (err) {
-      console.error('[AUTH] checkMasterAdmin threw:', err.message)
+      console.error('[AUTH] Master admin check failed:', err.message)
     }
     if (masterAdmin) { db.setCurrentUser(masterAdmin); return masterAdmin }
     // Regular user login
@@ -228,6 +242,32 @@ app.whenReady().then(async () => {
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('admin:getOverdueLicenses', async () => db.getOverdueLicenses().catch(() => []))
+
+  // ── Invoices ──────────────────────────────────────────────────────────────
+  ipcMain.handle('admin:getNextInvoiceNumber', async () => {
+    try { return await db.getNextInvoiceNumber() }
+    catch (e) { return { error: e.message } }
+  })
+  ipcMain.handle('admin:createInvoice', async (_, data) => {
+    try { return await db.createInvoice(data) }
+    catch (e) { return { error: e.message } }
+  })
+  ipcMain.handle('admin:getInvoices', async (_, filters) => db.getInvoices(filters).catch(() => []))
+  ipcMain.handle('admin:getInvoicesByLodge', async (_, lodgeId) => db.getInvoicesByLodge(lodgeId).catch(() => []))
+  ipcMain.handle('admin:updateInvoice', async (_, id, data) => {
+    try { return await db.updateInvoice(id, data) }
+    catch (e) { return { error: e.message } }
+  })
+  ipcMain.handle('admin:deleteInvoice', async (_, id) => {
+    try { await db.deleteInvoice(id); return { success: true } }
+    catch (e) { return { error: e.message } }
+  })
+  ipcMain.handle('admin:getInvoiceSummary', async () => db.getInvoiceSummary().catch(() => ({ total: 0, byPlan: {}, byMonth: [], allRows: [] })))
+  ipcMain.handle('admin:sendInvoiceEmail', async (_, payload) => {
+    try { return await sendInvoiceEmail(payload) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('trial:getInvoices', async (_, lodgeId) => db.getInvoicesByLodge(lodgeId).catch(() => []))
 
   // ── Email Notifications ───────────────────────────────────────────────────
   ipcMain.handle('email:getConfig', () => {
@@ -340,6 +380,7 @@ app.whenReady().then(async () => {
   // ── Reports ───────────────────────────────────────────────────────────────
   ipcMain.handle('reports:occupancy', async (_, start, end) => db.getOccupancyReport(start, end))
   ipcMain.handle('reports:revenue', async (_, start, end) => db.getRevenueReport(start, end))
+  ipcMain.handle('reports:profitLoss', async (_, start, end) => db.getProfitLoss(start, end))
   ipcMain.handle('dashboard:stats', async () => db.getDashboardStats())
   ipcMain.handle('reports:savePDF', async (event) => {
     const win = BrowserWindow.fromWebContents(event.sender)
@@ -369,12 +410,13 @@ app.whenReady().then(async () => {
 
   // ── Shell ─────────────────────────────────────────────────────────────────
   ipcMain.handle('shell:openExternal', async (_, url) => {
+    if (!isSafeExternalUrl(url)) return { success: false, error: 'Blocked: unsafe URL protocol' }
     await shell.openExternal(url)
     return { success: true }
   })
 
   // ── Excel Export ──────────────────────────────────────────────────────────
-  ipcMain.handle('reports:saveExcel', async (event, { occupancy, revenue, start, end, currency }) => {
+  ipcMain.handle('reports:saveExcel', async (event, { occupancy, revenue, expenses, posSales, invSpend, supSpend, profitLoss, start, end, currency }) => {
     const win = BrowserWindow.fromWebContents(event.sender)
     const today = new Date().toISOString().split('T')[0]
     const { filePath, canceled } = await dialog.showSaveDialog(win, {
@@ -389,14 +431,39 @@ app.whenReady().then(async () => {
       const totalDays = Math.max(1, Math.ceil((new Date(end) - new Date(start)) / 86400000))
 
       // Revenue Summary sheet
-      const revSheet = XLSX.utils.aoa_to_sheet([
+      const revRows = [
         ['Boroko Bookings — Revenue Report'],
         [`Period: ${start}  to  ${end}`],
         [],
         ['Metric', 'Value'],
         ['Total Revenue',      `${sym} ${Number(revenue?.total_revenue || 0).toFixed(2)}`],
+        ['Regular Bookings',   (revenue?.total_bookings || 0) - (revenue?.event_count || 0)],
+        ['Exclusive Events',   revenue?.event_count || 0],
         ['Total Bookings',     revenue?.total_bookings || 0],
         ['Avg Booking Value',  `${sym} ${Number(revenue?.avg_booking_value || 0).toFixed(2)}`],
+      ]
+      if ((revenue?.event_count || 0) > 0) {
+        revRows.push([], ['EXCLUSIVE EVENTS'])
+        revRows.push(['Event', 'Dates', 'Nights', 'Rooms', `Daily Rate (${sym})`, `Total (${sym})`])
+        ;(revenue.event_bookings || []).forEach((evt, i) => {
+          revRows.push([
+            `Event ${i + 1}`,
+            `${evt.check_in} → ${evt.check_out}`,
+            evt.nights,
+            evt.room_count,
+            Number(evt.daily_rate).toFixed(2),
+            Number(evt.total).toFixed(2)
+          ])
+        })
+        revRows.push(['Event Revenue Total', '', '', '', '', `${sym} ${Number(revenue.event_revenue || 0).toFixed(2)}`])
+      }
+      if (revenue?.vat_enabled) {
+        revRows.push([], ['VAT BREAKDOWN'])
+        revRows.push([`VAT Rate`, `${revenue.vat_rate}%`])
+        revRows.push([`VAT Amount (inclusive)`, `${sym} ${Number(revenue.vat_amount || 0).toFixed(2)}`])
+        revRows.push([`Net Revenue (excl. VAT)`, `${sym} ${Number(revenue.net_revenue || 0).toFixed(2)}`])
+      }
+      revRows.push(
         [],
         ['BOOKING STATUS'],
         ['Confirmed',          revenue?.confirmed_count   || 0],
@@ -410,15 +477,15 @@ app.whenReady().then(async () => {
         ['Unpaid',             revenue?.unpaid_count  || 0],
         ['Amount Collected',   `${sym} ${Number(revenue?.paid_revenue      || 0).toFixed(2)}`],
         ['Outstanding',        `${sym} ${Number(revenue?.outstanding_amount || 0).toFixed(2)}`]
-      ])
-      XLSX.utils.book_append_sheet(wb, revSheet, 'Revenue Summary')
+      )
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(revRows), 'Revenue Summary')
 
       // Room Occupancy sheet
       const occRows = [
         ['Room Occupancy Report'],
         [`Period: ${start}  to  ${end}  (${totalDays} days)`],
         [],
-        ['Room', 'Type', `Rate/Night (${sym})`, 'Nights Occupied', 'Total Period Days', 'Occupancy %', `Est. Revenue (${sym})`],
+        ['Room', 'Type', `Rate/Night (${sym})`, 'Nights Occupied', 'Total Period Days', 'Occupancy %', `Revenue (${sym})`, 'Note'],
         ...(occupancy || []).map((r) => [
           `Room ${r.room_number}`,
           r.room_type,
@@ -426,10 +493,199 @@ app.whenReady().then(async () => {
           r.occupied_nights,
           totalDays,
           `${r.occupancy_rate}%`,
-          (r.rate_per_night * r.occupied_nights).toFixed(2)
+          Number(r.actual_revenue || 0).toFixed(2),
+          r.has_event ? 'Incl. exclusive event' : ''
         ])
       ]
       XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(occRows), 'Room Occupancy')
+
+      // Expenses sheet
+      if (expenses && expenses.length > 0) {
+        const expRows = [
+          ['Expenses Report'],
+          [`Period: ${start}  to  ${end}`],
+          [],
+          ['Date', 'Category', 'Description', `Amount (${sym})`],
+          ...expenses.map(e => [e.date || '', e.category || '', e.description || '', Number(e.amount || 0).toFixed(2)]),
+          [],
+          ['TOTAL', '', '', expenses.reduce((s, e) => s + Number(e.amount || 0), 0).toFixed(2)]
+        ]
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(expRows), 'Expenses')
+      }
+
+      // POS Sales sheet
+      if (posSales) {
+        const posRows = [
+          ['POS Sales Report'],
+          [`Period: ${start}  to  ${end}`],
+          [],
+          ['Metric', 'Value'],
+          ['Total Revenue',  `${sym} ${Number(posSales.total_revenue || 0).toFixed(2)}`],
+          ['Total Orders',   posSales.total_orders || 0],
+          ['Avg Order Value',`${sym} ${Number(posSales.avg_order || 0).toFixed(2)}`],
+        ]
+        if (posSales.by_payment && Object.keys(posSales.by_payment).length > 0) {
+          posRows.push([], ['PAYMENT METHOD BREAKDOWN'])
+          for (const [method, amt] of Object.entries(posSales.by_payment)) {
+            posRows.push([method, `${sym} ${Number(amt).toFixed(2)}`])
+          }
+        }
+        if (posSales.top_items && posSales.top_items.length > 0) {
+          posRows.push([], ['TOP SELLING ITEMS'], ['Item', 'Qty Sold', `Revenue (${sym})`])
+          for (const item of posSales.top_items) {
+            posRows.push([item.item_name, item.qty, Number(item.revenue || 0).toFixed(2)])
+          }
+        }
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(posRows), 'POS Sales')
+      }
+
+      // Stock Costs sheet
+      if (invSpend || supSpend) {
+        const costRows = [
+          ['Stock Costs Report'],
+          [`Period: ${start}  to  ${end}`],
+          [],
+          ['Category', `Amount (${sym})`],
+          ['Inventory Purchases', Number(invSpend?.total || 0).toFixed(2)],
+          ['Room Supplies', Number(supSpend?.total || 0).toFixed(2)],
+          ['TOTAL', (Number(invSpend?.total || 0) + Number(supSpend?.total || 0)).toFixed(2)],
+        ]
+        if (invSpend?.by_category && Object.keys(invSpend.by_category).length > 0) {
+          costRows.push([], ['INVENTORY BY CATEGORY'])
+          for (const [cat, amt] of Object.entries(invSpend.by_category)) {
+            costRows.push([cat, Number(amt).toFixed(2)])
+          }
+        }
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(costRows), 'Stock Costs')
+      }
+
+      // P&L Summary sheet
+      if (profitLoss) {
+        const pl = profitLoss
+        const plRows = [
+          ['Profit & Loss Statement'],
+          [`Period: ${start}  to  ${end}`],
+          [],
+          ['REVENUE', `${sym}`],
+          ['Booking Revenue',  Number(pl.bookingRevenue || 0).toFixed(2)],
+          ['POS Revenue',      Number(pl.posRevenue || 0).toFixed(2)],
+          ['Total Revenue',    Number(pl.totalRevenue || 0).toFixed(2)],
+        ]
+        if (pl.vatEnabled) {
+          plRows.push([`VAT (${pl.vatRate}% inclusive)`, `-${Number(pl.vatAmount || 0).toFixed(2)}`])
+          plRows.push(['Net Revenue (excl. VAT)', Number(pl.netRevenue || 0).toFixed(2)])
+        }
+        plRows.push(
+          [],
+          ['EXPENSES', ''],
+          ['Operating Expenses', Number(pl.totalExpenses || 0).toFixed(2)],
+          ['Stock Costs',        Number(pl.totalCosts || 0).toFixed(2)],
+          ['Total Outgoings',    Number((pl.totalExpenses || 0) + (pl.totalCosts || 0)).toFixed(2)],
+          [],
+          ['GROSS PROFIT', Number(pl.grossProfit || 0).toFixed(2)]
+        )
+        if (pl.expByCategory && Object.keys(pl.expByCategory).length > 0) {
+          plRows.push([], ['EXPENSE BREAKDOWN'])
+          for (const [cat, amt] of Object.entries(pl.expByCategory)) {
+            plRows.push([cat, Number(amt).toFixed(2)])
+          }
+        }
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(plRows), 'P&L')
+      }
+
+      XLSX.writeFile(wb, filePath)
+      return { success: true, filePath }
+    } catch (e) {
+      return { success: false, error: e.message }
+    }
+  })
+
+  // ── Full Data Export ───────────────────────────────────────────────────────
+  ipcMain.handle('data:exportAll', async (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    try {
+      const [bookings, customers, rooms, expenses, posOrders] = await Promise.all([
+        db.getAllBookings(),
+        db.getAllCustomers(),
+        db.getAllRooms(),
+        db.getExpenses('2000-01-01', '2099-12-31'),
+        db.getPosOrders('2000-01-01', '2099-12-31'),
+      ])
+
+      const today = new Date().toISOString().split('T')[0]
+      const { filePath, canceled } = await dialog.showSaveDialog(win, {
+        title: 'Export All Lodge Data',
+        defaultPath: `lodge-data-export-${today}.xlsx`,
+        filters: [{ name: 'Excel Workbook', extensions: ['xlsx'] }]
+      })
+      if (canceled || !filePath) return { canceled: true }
+
+      const wb = XLSX.utils.book_new()
+
+      // Bookings
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
+        (bookings || []).map(b => ({
+          'Booking #':      b.booking_number || '',
+          'Guest':          b.customer_name  || '',
+          'Room':           b.room_number    || '',
+          'Check-in':       b.check_in       || '',
+          'Check-out':      b.check_out      || '',
+          'Status':         b.status         || '',
+          'Payment Status': b.payment_status || '',
+          'Total':          Number(b.total_amount || 0),
+          'Paid':           Number(b.amount_paid  || 0),
+          'Balance':        Math.max(0, Number(b.total_amount || 0) - Number(b.amount_paid || 0)),
+          'Payment Method': b.payment_method || '',
+          'Notes':          b.notes          || '',
+          'Created':        b.created_at     || '',
+        }))
+      ), 'Bookings')
+
+      // Guests
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
+        (customers || []).map(c => ({
+          'Name':        c.full_name     || '',
+          'Email':       c.email         || '',
+          'Phone':       c.phone         || '',
+          'ID Number':   c.id_number     || '',
+          'Nationality': c.nationality   || '',
+          'Blacklisted': c.is_blacklisted ? 'Yes' : 'No',
+        }))
+      ), 'Guests')
+
+      // Rooms
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
+        (rooms || []).map(r => ({
+          'Room #':       r.room_number  || '',
+          'Type':         r.room_type    || '',
+          'Rate':         Number(r.rate  || 0),
+          'Max Adults':   r.max_adults   || '',
+          'Max Children': r.max_children || '',
+          'Status':       r.status       || '',
+        }))
+      ), 'Rooms')
+
+      // Expenses
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
+        (expenses || []).map(e => ({
+          'Date':        e.date        || '',
+          'Category':    e.category    || '',
+          'Description': e.description || '',
+          'Amount':      Number(e.amount || 0),
+          'Paid By':     e.paid_by     || '',
+        }))
+      ), 'Expenses')
+
+      // POS Orders
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
+        (posOrders || []).map(o => ({
+          'Date':          o.created_at    || '',
+          'Room / Guest':  o.walk_in_name  || (o.room_number ? `Room ${o.room_number}` : ''),
+          'Items':         (o.pos_order_items || []).map(i => `${i.quantity}× ${i.item_name}`).join(', '),
+          'Payment':       o.payment_method || '',
+          'Total':         Number(o.total  || 0),
+        }))
+      ), 'POS Orders')
 
       XLSX.writeFile(wb, filePath)
       return { success: true, filePath }

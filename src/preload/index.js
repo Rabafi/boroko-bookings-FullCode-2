@@ -1,5 +1,4 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { electronAPI } from '@electron-toolkit/preload'
 
 const api = {
   auth: {
@@ -74,7 +73,8 @@ const api = {
     posSales: (start, end) => ipcRenderer.invoke('reports:posSales', start, end),
     inventorySpend: (start, end) => ipcRenderer.invoke('reports:inventorySpend', start, end),
     supplySpend: (start, end) => ipcRenderer.invoke('reports:supplySpend', start, end),
-    nightAudit: (date) => ipcRenderer.invoke('reports:nightAudit', date)
+    nightAudit: (date) => ipcRenderer.invoke('reports:nightAudit', date),
+    profitLoss: (start, end) => ipcRenderer.invoke('reports:profitLoss', start, end)
   },
   dashboard: {
     stats: () => ipcRenderer.invoke('dashboard:stats'),
@@ -101,7 +101,8 @@ const api = {
   },
   trial: {
     getStatus: (lodgeId) => ipcRenderer.invoke('trial:getStatus', lodgeId),
-    activateKey: (lodgeId, key) => ipcRenderer.invoke('trial:activateKey', lodgeId, key)
+    activateKey: (lodgeId, key) => ipcRenderer.invoke('trial:activateKey', lodgeId, key),
+    getInvoices: (lodgeId) => ipcRenderer.invoke('trial:getInvoices', lodgeId)
   },
   updates: {
     onAvailable: (cb) => ipcRenderer.on('update:available', (_, info) => cb(info)),
@@ -172,7 +173,16 @@ const api = {
     getCompanyStats: (lodgeId) => ipcRenderer.invoke('admin:getCompanyStats', lodgeId),
     // Billing
     updateLicenseBilling: (id, data) => ipcRenderer.invoke('admin:updateLicenseBilling', id, data),
-    getOverdueLicenses: () => ipcRenderer.invoke('admin:getOverdueLicenses')
+    getOverdueLicenses: () => ipcRenderer.invoke('admin:getOverdueLicenses'),
+    // Invoices
+    getNextInvoiceNumber: () => ipcRenderer.invoke('admin:getNextInvoiceNumber'),
+    createInvoice: (data) => ipcRenderer.invoke('admin:createInvoice', data),
+    getInvoices: (filters) => ipcRenderer.invoke('admin:getInvoices', filters),
+    getInvoicesByLodge: (lodgeId) => ipcRenderer.invoke('admin:getInvoicesByLodge', lodgeId),
+    updateInvoice: (id, data) => ipcRenderer.invoke('admin:updateInvoice', id, data),
+    deleteInvoice: (id) => ipcRenderer.invoke('admin:deleteInvoice', id),
+    getInvoiceSummary: () => ipcRenderer.invoke('admin:getInvoiceSummary'),
+    sendInvoiceEmail: (payload) => ipcRenderer.invoke('admin:sendInvoiceEmail', payload)
   },
   conference: {
     getAll: (start, end) => ipcRenderer.invoke('conference:getAll', start, end),
@@ -183,6 +193,9 @@ const api = {
   import: {
     parseExcel: () => ipcRenderer.invoke('import:parseExcel'),
     execute: (rows) => ipcRenderer.invoke('import:execute', rows)
+  },
+  data: {
+    exportAll: () => ipcRenderer.invoke('data:exportAll')
   },
   dayuse: {
     getAll: (start, end) => ipcRenderer.invoke('dayuse:getAll', start, end),
@@ -200,12 +213,10 @@ const api = {
 
 if (process.contextIsolated) {
   try {
-    contextBridge.exposeInMainWorld('electron', electronAPI)
     contextBridge.exposeInMainWorld('api', api)
   } catch (error) {
     console.error(error)
   }
 } else {
-  window.electron = electronAPI
   window.api = api
 }

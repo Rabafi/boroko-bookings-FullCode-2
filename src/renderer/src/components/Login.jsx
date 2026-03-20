@@ -1,14 +1,48 @@
-import { useState } from 'react'
-import { Eye, EyeOff } from 'lucide-react'
+import { useState, useRef } from 'react'
+import { Eye, EyeOff, X } from 'lucide-react'
 import { useAuth } from '../App'
+
+const EMAILS_KEY = 'bb_saved_emails'
+const MAX_SAVED = 5
+
+function getSavedEmails() {
+  try { return JSON.parse(localStorage.getItem(EMAILS_KEY) || '[]') } catch { return [] }
+}
+function saveEmail(email) {
+  const list = [email, ...getSavedEmails().filter(e => e !== email)].slice(0, MAX_SAVED)
+  localStorage.setItem(EMAILS_KEY, JSON.stringify(list))
+}
+function removeEmail(email) {
+  const list = getSavedEmails().filter(e => e !== email)
+  localStorage.setItem(EMAILS_KEY, JSON.stringify(list))
+}
+function initials(email) {
+  return email.split('@')[0].slice(0, 2).toUpperCase()
+}
 
 export default function Login({ onSignUp }) {
   const { login } = useAuth()
-  const [email, setEmail] = useState(() => localStorage.getItem('bb_last_email') || '')
+  const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [savedEmails, setSavedEmails] = useState(getSavedEmails)
+  const passwordRef = useRef(null)
+
+  const selectSavedEmail = (saved) => {
+    setEmail(saved)
+    setPassword('')
+    setError('')
+    setTimeout(() => passwordRef.current?.focus(), 0)
+  }
+
+  const removeSaved = (e, saved) => {
+    e.stopPropagation()
+    removeEmail(saved)
+    setSavedEmails(getSavedEmails())
+    if (email === saved) setEmail('')
+  }
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -17,10 +51,10 @@ export default function Login({ onSignUp }) {
     try {
       const user = await window.api.auth.login(email, password)
       if (user) {
-        localStorage.setItem('bb_last_email', email)
+        saveEmail(email.trim().toLowerCase())
         login(user)
       } else {
-        setError('Invalid email or password')
+        setError('Invalid email or password.')
       }
     } catch {
       setError('Login failed. Please try again.')
@@ -48,11 +82,42 @@ export default function Login({ onSignUp }) {
               autoComplete="email"
               required
             />
+            {savedEmails.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-2">
+                {savedEmails.map((saved) => (
+                  <button
+                    key={saved}
+                    type="button"
+                    onClick={() => selectSavedEmail(saved)}
+                    className={`flex items-center gap-1.5 pl-1.5 pr-2 py-1 rounded-full border text-xs transition-colors ${
+                      email === saved
+                        ? 'bg-green-50 border-green-400 text-green-800'
+                        : 'bg-gray-50 border-gray-200 text-gray-600 hover:border-green-300 hover:bg-green-50'
+                    }`}
+                  >
+                    <span className="w-5 h-5 rounded-full bg-green-600 text-white text-[10px] font-bold flex items-center justify-center flex-shrink-0">
+                      {initials(saved)}
+                    </span>
+                    <span className="max-w-[140px] truncate">{saved}</span>
+                    <span
+                      role="button"
+                      tabIndex={-1}
+                      onClick={(e) => removeSaved(e, saved)}
+                      className="text-gray-400 hover:text-red-500 transition-colors ml-0.5"
+                    >
+                      <X size={11} />
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
+
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
             <div className="relative">
               <input
+                ref={passwordRef}
                 type={showPassword ? 'text' : 'password'}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}

@@ -5,16 +5,31 @@ import fs from 'fs'
 import crypto from 'crypto'
 import bcrypt from 'bcryptjs'
 
-// ─── YOUR SUPABASE CREDENTIALS ───────────────────────────────────────────────
-// These are YOUR app's Supabase credentials (the developer's project).
-// Every customer's copy of the app connects to this same Supabase project.
-// Their data is kept completely separate using a unique lodge ID per installation.
-// Replace with your actual values from: Supabase Dashboard → Settings → API
-const SUPABASE_URL = 'https://oicgpknsmtvcsjacymum.supabase.co'
-const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9pY2dwa25zbXR2Y3NqYWN5bXVtIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MzY5MzUxMSwiZXhwIjoyMDg5MjY5NTExfQ.ad7P-rJt99EnVRlt9Vzg5k-eCQhAd23GdbnHuN1UnHU'
+// ─── SUPABASE CREDENTIALS ─────────────────────────────────────────────────────
+// URL + ANON KEY — baked in at build time from the root .env file by electron-vite.
+// Neither value is a secret (Supabase designed the anon key to be public-facing),
+// but keeping them in .env rather than source code means they are not committed to
+// the git repository and can be rotated without a code change.
+//
+// Before building, create a root .env file (see .env.example):
+//   VITE_SUPABASE_URL=https://<project-ref>.supabase.co
+//   VITE_SUPABASE_KEY=<anon-public-key>
+//
+// SERVICE ROLE KEY — SECRET. Never put this in .env or source code.
+// Set as an OS environment variable on the Command Central admin machine ONLY:
+//   Windows PowerShell:
+//     [System.Environment]::SetEnvironmentVariable('SUPABASE_SERVICE_ROLE_KEY','<key>','User')
+//   macOS / Linux (add to ~/.zshrc or ~/.bashrc):
+//     export SUPABASE_SERVICE_ROLE_KEY='<key>'
+//
+// Lodge customer machines will NOT have this variable → adminDb stays null →
+// admin-only functions return a clear error instead of exposing privileged access.
 // ─────────────────────────────────────────────────────────────────────────────
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_KEY
 
-let supabase
+let supabase      // anon client — used for all lodge-scoped operations
+let adminDb       // service-role client — null on lodge customer machines
 let isOnline = false
 let cacheDir
 let currentUser = null
@@ -39,6 +54,20 @@ function loadOrCreateLodgeId() {
   fs.writeFileSync(getLodgeIdPath(), JSON.stringify({ lodge_id: newId }, null, 2), 'utf-8')
   console.log(`New lodge registered with ID: ${newId}`)
   return newId
+}
+
+// Returns the admin (service-role) Supabase client, or throws a clear error if
+// the SUPABASE_SERVICE_ROLE_KEY env var was not set on this machine.
+// Use this in any function that queries across all lodges (Command Central only).
+function requireAdmin() {
+  if (!adminDb) {
+    throw new Error(
+      'This operation requires Command Central admin access. ' +
+      'Set the SUPABASE_SERVICE_ROLE_KEY environment variable on this machine. ' +
+      'See setup documentation for details.'
+    )
+  }
+  return adminDb
 }
 
 export function setCurrentUser(user) {
@@ -97,49 +126,91 @@ async function checkOnline() {
   return isOnline
 }
 
-async function refreshAllCaches() {
+// Refresh one or more named caches from Supabase. Only fetches what's requested.
+async function refreshCache(...names) {
+  const fetchers = {
+    users:     () => supabase.from('users').select('id, name, email, role, created_at').eq('lodge_id', lodgeId).order('name'),
+    rooms:     () => supabase.from('rooms').select('*').eq('lodge_id', lodgeId).order('room_number'),
+    customers: () => supabase.from('customers').select('*').eq('lodge_id', lodgeId).order('name'),
+    bookings:  () => supabase.from('bookings').select('*').eq('lodge_id', lodgeId).order('check_in', { ascending: false })
+  }
   try {
-    const [usersRes, roomsRes, customersRes, bookingsRes] = await Promise.all([
-      supabase.from('users').select('id, name, email, role, created_at').eq('lodge_id', lodgeId).order('name'),
-      supabase.from('rooms').select('*').eq('lodge_id', lodgeId).order('room_number'),
-      supabase.from('customers').select('*').eq('lodge_id', lodgeId).order('name'),
-      supabase.from('bookings').select('*').eq('lodge_id', lodgeId).order('check_in', { ascending: false })
-    ])
-    if (usersRes.data) writeCache('users', usersRes.data)
-    if (roomsRes.data) writeCache('rooms', roomsRes.data)
-    if (customersRes.data) writeCache('customers', customersRes.data)
-    if (bookingsRes.data) writeCache('bookings', bookingsRes.data)
+    await Promise.all(names.map(async (name) => {
+      const { data } = await fetchers[name]()
+      if (data) writeCache(name, data)
+    }))
   } catch (e) {
     console.error('Cache refresh failed:', e)
   }
 }
 
+// Full refresh — used only at startup, reconnect, and after bulk operations.
+async function refreshAllCaches() {
+  await refreshCache('users', 'rooms', 'customers', 'bookings')
+}
+
+const MAX_SYNC_RETRIES = 5
+
 async function processSyncQueue() {
   const queue = readSyncQueue()
   if (queue.length === 0) return
 
-  console.log(`Syncing ${queue.length} offline operations...`)
+  console.log(`Syncing ${queue.length} offline operation(s)...`)
   const remaining = []
+  const deadLetter = []
+  let successCount = 0
 
   for (const item of queue) {
+    let supabaseError = null
     try {
       if (item.type === 'insert') {
-        await supabase.from(item.table).insert({ ...item.data, lodge_id: lodgeId })
+        ;({ error: supabaseError } = await supabase.from(item.table).insert({ ...item.data, lodge_id: lodgeId }))
       } else if (item.type === 'update') {
-        await supabase.from(item.table).update(item.data).eq('id', item.id).eq('lodge_id', lodgeId)
+        ;({ error: supabaseError } = await supabase.from(item.table).update(item.data).eq('id', item.id).eq('lodge_id', lodgeId))
       } else if (item.type === 'delete') {
-        await supabase.from(item.table).delete().eq('id', item.id).eq('lodge_id', lodgeId)
+        ;({ error: supabaseError } = await supabase.from(item.table).delete().eq('id', item.id).eq('lodge_id', lodgeId))
       }
     } catch (e) {
-      console.error('Sync item failed:', e)
-      remaining.push(item)
+      supabaseError = { message: e.message }
+    }
+
+    if (supabaseError) {
+      const retryCount = (item.retryCount || 0) + 1
+      const updatedItem = {
+        ...item,
+        retryCount,
+        lastError: supabaseError.message || String(supabaseError),
+        lastAttemptedAt: new Date().toISOString()
+      }
+      if (retryCount >= MAX_SYNC_RETRIES) {
+        console.error(`[Sync] Dead-lettered after ${MAX_SYNC_RETRIES} attempts — ${item.type} ${item.table}:`, supabaseError.message)
+        deadLetter.push(updatedItem)
+      } else {
+        console.warn(`[Sync] Failed (attempt ${retryCount}/${MAX_SYNC_RETRIES}) — ${item.type} ${item.table}:`, supabaseError.message)
+        remaining.push(updatedItem)
+      }
+    } else {
+      successCount++
     }
   }
 
   writeSyncQueue(remaining)
-  if (remaining.length === 0) {
-    console.log('All offline changes synced successfully!')
+
+  if (deadLetter.length > 0) {
+    const deadPath = path.join(cacheDir, 'sync-failed.json')
+    let existing = []
+    try { existing = JSON.parse(fs.readFileSync(deadPath, 'utf-8')) } catch { /* empty */ }
+    try { fs.writeFileSync(deadPath, JSON.stringify([...existing, ...deadLetter], null, 2), 'utf-8') } catch { /* empty */ }
   }
+
+  console.log(`[Sync] Done — ${successCount} synced, ${remaining.length} retrying, ${deadLetter.length} dead-lettered`)
+}
+
+export function getSyncStatus() {
+  const queue = readSyncQueue()
+  let failed = []
+  try { failed = JSON.parse(fs.readFileSync(path.join(cacheDir, 'sync-failed.json'), 'utf-8')) } catch { /* empty */ }
+  return { pending: queue.length, failed: failed.length, isOnline }
 }
 
 function queueOperation(type, table, data, id = null) {
@@ -264,7 +335,23 @@ export async function initDatabase() {
   // Load or generate a unique ID for this lodge installation
   lodgeId = loadOrCreateLodgeId()
 
-  supabase = createClient(SUPABASE_URL, SUPABASE_KEY)
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+    throw new Error(
+      'VITE_SUPABASE_URL or VITE_SUPABASE_KEY is missing.\n' +
+      'Create a root .env file with both variables, then re-run the app.\n' +
+      'See .env.example for the required format.'
+    )
+  }
+  supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim()
+  if (serviceKey) {
+    adminDb = createClient(SUPABASE_URL, serviceKey)
+    console.log('[Auth] SUPABASE_SERVICE_ROLE_KEY found — Command Central admin mode enabled')
+  } else {
+    adminDb = null
+    console.log('[Auth] No SUPABASE_SERVICE_ROLE_KEY — running in lodge-only mode')
+  }
 
   const online = await checkOnline()
   if (online) {
@@ -317,22 +404,50 @@ async function seedDefaultUser() {
 
 // ─── AUTH ─────────────────────────────────────────────────────────────────────
 
+// ─── LOCAL AUTH CACHE ─────────────────────────────────────────────────────────
+// Stores bcrypt hashes locally so offline login works after at least one
+// successful online login. Hashes only — no plain-text passwords ever written.
+
+function readAuthCache() {
+  try { return JSON.parse(fs.readFileSync(path.join(cacheDir, 'auth-cache.json'), 'utf-8')) } catch { return [] }
+}
+function writeAuthCache(entries) {
+  try { fs.writeFileSync(path.join(cacheDir, 'auth-cache.json'), JSON.stringify(entries, null, 2), 'utf-8') } catch {}
+}
+function upsertAuthEntry(email, passwordHash) {
+  const entries = readAuthCache().filter(e => !(e.email === email && e.lodge_id === lodgeId))
+  entries.push({ email, lodge_id: lodgeId, password_hash: passwordHash })
+  writeAuthCache(entries)
+}
+
 export async function loginUser(email, password) {
-  let users = []
+  const emailLower = email.trim().toLowerCase()
 
   if (isOnline) {
-    const { data } = await supabase.from('users').select('*').eq('lodge_id', lodgeId).eq('email', email)
-    users = data || []
+    // RPC runs as postgres (SECURITY DEFINER) so it can read password_hash
+    // even though the column is revoked from the anon/authenticated role.
+    // bcrypt comparison happens here in the app — no pgcrypto dependency.
+    const { data, error } = await supabase.rpc('authenticate_user', {
+      p_email: emailLower,
+      p_lodge_id: lodgeId
+    })
+    if (error || !data || !data.found) return null
+    if (!bcrypt.compareSync(password, data.password_hash)) return null
+    // Cache a local credential hash so offline login works next time
+    const localHash = bcrypt.hashSync(password, 10)
+    upsertAuthEntry(emailLower, localHash)
+    const { password_hash, found, ...safeUser } = data
+    return safeUser
   } else {
-    users = readCache('users').filter((u) => u.email === email)
+    // Offline: compare against locally cached hash from last successful online login
+    const entry = readAuthCache().find(e => e.email === emailLower && e.lodge_id === lodgeId)
+    if (!entry) return null
+    if (!bcrypt.compareSync(password, entry.password_hash)) return null
+    const user = readCache('users').find(u => u.email === emailLower)
+    if (!user) return null
+    const { password_hash, ...safeUser } = user
+    return safeUser
   }
-
-  const user = users[0]
-  if (!user) return null
-  if (!bcrypt.compareSync(password, user.password_hash)) return null
-
-  const { password_hash, ...safeUser } = user
-  return safeUser
 }
 
 // ─── USERS ────────────────────────────────────────────────────────────────────
@@ -381,7 +496,7 @@ export async function createUser(data) {
 
   if (isOnline) {
     const { data: result } = await supabase.from('users').insert(user).select().single()
-    await refreshAllCaches()
+    await refreshCache('users')
     return result?.id
   } else {
     const cached = readCache('users')
@@ -401,7 +516,7 @@ export async function updateUser(id, data) {
 
   if (isOnline) {
     await supabase.from('users').update(update).eq('id', id).eq('lodge_id', lodgeId)
-    await refreshAllCaches()
+    await refreshCache('users')
   } else {
     const cached = readCache('users')
     const idx = cached.findIndex((u) => u.id === id)
@@ -414,7 +529,7 @@ export async function updateUser(id, data) {
 export async function deleteUser(id) {
   if (isOnline) {
     await supabase.from('users').delete().eq('id', id).eq('lodge_id', lodgeId)
-    await refreshAllCaches()
+    await refreshCache('users')
   } else {
     const cached = readCache('users')
     writeCache('users', cached.filter((u) => u.id !== id))
@@ -454,7 +569,7 @@ export async function createRoom(data) {
 
   if (isOnline) {
     const { data: result } = await supabase.from('rooms').insert(room).select().single()
-    await refreshAllCaches()
+    await refreshCache('rooms')
     return result?.id
   } else {
     const cached = readCache('rooms')
@@ -478,7 +593,7 @@ export async function updateRoom(id, data) {
 
   if (isOnline) {
     await supabase.from('rooms').update(update).eq('id', id).eq('lodge_id', lodgeId)
-    await refreshAllCaches()
+    await refreshCache('rooms')
   } else {
     const cached = readCache('rooms')
     const idx = cached.findIndex((r) => r.id === id)
@@ -496,7 +611,7 @@ export async function updateRoomHousekeeping(id, status, notes) {
   if (isOnline) {
     const { error } = await supabase.from('rooms').update(update).eq('id', id).eq('lodge_id', lodgeId)
     if (error) throw new Error(error.message)
-    await refreshAllCaches()
+    await refreshCache('rooms')
     const room = readCache('rooms').find((r) => r.id === id)
     logActivity('housekeeping_updated', `Room ${room?.room_number || id} marked ${status}${notes ? ' · note saved' : ''}`)
   } else {
@@ -513,7 +628,7 @@ export async function updateRoomHousekeeping(id, status, notes) {
 export async function deleteRoom(id) {
   if (isOnline) {
     await supabase.from('rooms').delete().eq('id', id).eq('lodge_id', lodgeId)
-    await refreshAllCaches()
+    await refreshCache('rooms')
   } else {
     const cached = readCache('rooms')
     writeCache('rooms', cached.filter((r) => r.id !== id))
@@ -544,7 +659,7 @@ export async function createCustomer(data) {
 
   if (isOnline) {
     const { data: result } = await supabase.from('customers').insert(customer).select().single()
-    await refreshAllCaches()
+    await refreshCache('customers')
     return result?.id
   } else {
     const cached = readCache('customers')
@@ -560,7 +675,7 @@ export async function updateCustomerBlacklist(id, is_blacklisted, reason) {
   const update = { is_blacklisted: !!is_blacklisted, blacklist_reason: reason || '' }
   if (isOnline) {
     await supabase.from('customers').update(update).eq('id', id).eq('lodge_id', lodgeId)
-    await refreshAllCaches()
+    await refreshCache('customers')
   } else {
     const cached = readCache('customers')
     const idx = cached.findIndex((c) => c.id === id)
@@ -608,7 +723,7 @@ export async function updateCustomer(id, data) {
 
   if (isOnline) {
     await supabase.from('customers').update(update).eq('id', id).eq('lodge_id', lodgeId)
-    await refreshAllCaches()
+    await refreshCache('customers')
   } else {
     const cached = readCache('customers')
     const idx = cached.findIndex((c) => c.id === id)
@@ -709,32 +824,77 @@ export async function getBookingsByDateRange(startDate, endDate) {
     .sort((a, b) => (a.room_number || '').localeCompare(b.room_number || ''))
 }
 
-export async function createBooking(data) {
+// ── BOOKING VALIDATION HELPERS ───────────────────────────────────────────────
+
+async function checkExclusiveEventConflict(checkIn, checkOut, excludeGroupId = null) {
+  if (isOnline) {
+    const { data } = await supabase.from('bookings').select('id, notes')
+      .eq('lodge_id', lodgeId)
+      .eq('is_exclusive_event', true)
+      .neq('status', 'cancelled')
+      .lt('check_in', checkOut)
+      .gt('check_out', checkIn)
+    if (data?.length > 0) {
+      if (excludeGroupId && data.every(b => b.notes?.includes(`[GROUP:${excludeGroupId}]`))) return
+      throw new Error('The lodge is fully reserved for an exclusive event on these dates. No other bookings can be made.')
+    }
+  } else {
+    const events = readCache('bookings').filter(b =>
+      b.is_exclusive_event && b.status !== 'cancelled' &&
+      b.check_in < checkOut && b.check_out > checkIn &&
+      !(excludeGroupId && b.notes?.includes(`[GROUP:${excludeGroupId}]`))
+    )
+    if (events.length > 0)
+      throw new Error('The lodge is fully reserved for an exclusive event on these dates. No other bookings can be made.')
+  }
+}
+
+function validateBookingDates(checkIn, checkOut) {
+  if (!checkIn || !checkOut) throw new Error('Check-in and check-out dates are required')
+  const inMs = new Date(checkIn).getTime()
+  const outMs = new Date(checkOut).getTime()
+  if (isNaN(inMs) || isNaN(outMs)) throw new Error('Invalid date format')
+  if (outMs <= inMs) throw new Error('Check-out must be after check-in')
+  const nights = Math.ceil((outMs - inMs) / (1000 * 60 * 60 * 24))
+  if (nights < 1) throw new Error('Booking must be at least one night')
+  return { nights }
+}
+
+async function checkRoomConflict(roomId, checkIn, checkOut, excludeId = null) {
+  await checkExclusiveEventConflict(checkIn, checkOut)
   const existingBookings = isOnline
-    ? (
-        await supabase
+    ? (() => {
+        let q = supabase
           .from('bookings')
           .select('id, check_in, check_out')
           .eq('lodge_id', lodgeId)
-          .eq('room_id', data.room_id)
+          .eq('room_id', roomId)
           .neq('status', 'cancelled')
-      ).data || []
-    : readCache('bookings').filter(
-        (b) => b.room_id === data.room_id && b.status !== 'cancelled'
+        if (excludeId) q = q.neq('id', excludeId)
+        return q
+      })().then((r) => r.data || [])
+    : Promise.resolve(
+        readCache('bookings').filter(
+          (b) => b.room_id === roomId && b.status !== 'cancelled' && b.id !== excludeId
+        )
       )
 
-  const conflict = existingBookings.find(
-    (b) => b.check_in < data.check_out && b.check_out > data.check_in
-  )
+  const bookings = await existingBookings
+  const conflict = bookings.find((b) => b.check_in < checkOut && b.check_out > checkIn)
   if (conflict) throw new Error('Room is already booked for these dates')
+}
+
+export async function createBooking(data) {
+  const { nights } = validateBookingDates(data.check_in, data.check_out)
+  await checkRoomConflict(data.room_id, data.check_in, data.check_out)
 
   const room = await getRoomById(data.room_id)
-  const nights = Math.ceil(
-    (new Date(data.check_out) - new Date(data.check_in)) / (1000 * 60 * 60 * 24)
-  )
+  if (!room) throw new Error('Room not found')
   const total = room.rate_per_night * nights
+  if (isNaN(total) || total <= 0) throw new Error('Invalid total — check room rate and dates')
 
   const deposit = Number(data.deposit_amount) || 0
+  const invoice_number = await getNextBookingInvoiceNumber()
   const booking = {
     customer_id: data.customer_id,
     room_id: data.room_id,
@@ -750,12 +910,13 @@ export async function createBooking(data) {
     payment_method: deposit > 0 ? (data.payment_method || 'cash') : null,
     notes: data.notes || '',
     created_by: data.created_by || null,
+    invoice_number,
     lodge_id: lodgeId
   }
 
   if (isOnline) {
     const { data: result } = await supabase.from('bookings').insert(booking).select().single()
-    await refreshAllCaches()
+    await refreshCache('bookings')
     const _r = readCache('rooms').find((r) => r.id === booking.room_id)
     const _c = readCache('customers').find((c) => c.id === booking.customer_id)
     logActivity('booking_created', `Booking created · ${_c?.name || 'Guest'} · Room ${_r?.room_number || ''} · ${booking.check_in} → ${booking.check_out}`)
@@ -776,11 +937,13 @@ export async function createBooking(data) {
 }
 
 export async function updateBooking(id, data) {
+  const { nights } = validateBookingDates(data.check_in, data.check_out)
+  await checkRoomConflict(data.room_id, data.check_in, data.check_out, id)
+
   const room = await getRoomById(data.room_id)
-  const nights = Math.ceil(
-    (new Date(data.check_out) - new Date(data.check_in)) / (1000 * 60 * 60 * 24)
-  )
+  if (!room) throw new Error('Room not found')
   const total = room.rate_per_night * nights
+  if (isNaN(total) || total <= 0) throw new Error('Invalid total — check room rate and dates')
 
   const update = {
     customer_id: data.customer_id,
@@ -796,7 +959,7 @@ export async function updateBooking(id, data) {
 
   if (isOnline) {
     await supabase.from('bookings').update(update).eq('id', id).eq('lodge_id', lodgeId)
-    await refreshAllCaches()
+    await refreshCache('bookings')
   } else {
     const cached = readCache('bookings')
     const idx = cached.findIndex((b) => b.id === id)
@@ -834,8 +997,10 @@ export async function updateBookingStatus(id, status) {
     await supabase.from('bookings').update(update).eq('id', id).eq('lodge_id', lodgeId)
     if (roomStatus && booking?.room_id) {
       await supabase.from('rooms').update({ status: roomStatus }).eq('id', booking.room_id).eq('lodge_id', lodgeId)
+      await refreshCache('bookings', 'rooms')
+    } else {
+      await refreshCache('bookings')
     }
-    await refreshAllCaches()
     const _r = readCache('rooms').find((r) => r.id === booking?.room_id)
     const _c = readCache('customers').find((c) => c.id === booking?.customer_id)
     logActivity(actionKey, `${actionLabel} · ${_c?.name || 'Guest'} · Room ${_r?.room_number || ''}`)
@@ -874,7 +1039,7 @@ export async function updateBookingPayment(id, payment_status, amount_paid, paym
 
   if (isOnline) {
     await supabase.from('bookings').update(update).eq('id', id).eq('lodge_id', lodgeId)
-    await refreshAllCaches()
+    await refreshCache('bookings')
     const bk = readCache('bookings').find((b) => b.id === id)
     const _c = readCache('customers').find((c) => c.id === bk?.customer_id)
     logActivity('payment_updated', `Payment updated · ${_c?.name || 'Guest'} · ${payment_status} · ${Number(amount_paid).toFixed(2)} (${payment_method})`)
@@ -925,14 +1090,16 @@ export async function createEventBooking(data) {
   }
 
   const allRooms = await getAllRooms()
+  const bookableRooms = allRooms.filter(r => r.status !== 'maintenance')
+
   const conflicting = isOnline
     ? (
         await supabase
           .from('bookings')
-          .select('room_id, check_in, check_out')
+          .select('room_id')
           .eq('lodge_id', lodgeId)
           .neq('status', 'cancelled')
-          .lte('check_in', data.check_out)
+          .lt('check_in', data.check_out)
           .gt('check_out', data.check_in)
       ).data || []
     : readCache('bookings').filter(
@@ -942,25 +1109,30 @@ export async function createEventBooking(data) {
           b.check_out > data.check_in
       )
 
-  const conflictRoomIds = new Set(conflicting.map((b) => b.room_id))
-  const available = allRooms.filter(
-    (r) => r.status !== 'maintenance' && !conflictRoomIds.has(r.id)
-  )
+  if (conflicting.length > 0) {
+    const roomCount = new Set(conflicting.map(b => b.room_id)).size
+    throw new Error(
+      `Cannot create exclusive event — ${roomCount} room${roomCount !== 1 ? 's' : ''} already have bookings on these dates. Cancel or move existing bookings first.`
+    )
+  }
 
-  if (available.length === 0) {
-    throw new Error('No rooms are available for the selected dates.')
+  if (bookableRooms.length === 0) {
+    throw new Error('No rooms available — all rooms are under maintenance.')
   }
 
   const nights = Math.ceil(
     (new Date(data.check_out) - new Date(data.check_in)) / (1000 * 60 * 60 * 24)
   )
   const groupId = `evt-${Date.now()}`
+  const eventDailyRate = Number(data.event_daily_rate) || 0
+  const totalEventPrice = eventDailyRate * nights
+  const pricePerRoom = bookableRooms.length > 0 ? totalEventPrice / bookableRooms.length : 0
   const totalDeposit = Number(data.deposit_amount) || 0
-  const depositPerRoom = totalDeposit > 0 ? totalDeposit / available.length : 0
+  const depositPerRoom = totalDeposit > 0 ? totalDeposit / bookableRooms.length : 0
   const eventNotes = `[GROUP:${groupId}]${data.notes ? '\n' + data.notes : ''}`
+  const invoice_number = await getNextBookingInvoiceNumber()
 
-  for (const room of available) {
-    const total = room.rate_per_night * nights
+  for (const room of bookableRooms) {
     const booking = {
       customer_id: customerId,
       room_id: room.id,
@@ -968,13 +1140,16 @@ export async function createEventBooking(data) {
       check_out: data.check_out,
       adults: 1,
       children: 0,
-      total_amount: total,
+      total_amount: pricePerRoom,
       status: 'confirmed',
       payment_status: depositPerRoom > 0 ? 'partial' : 'unpaid',
       amount_paid: depositPerRoom,
       deposit_amount: depositPerRoom,
       payment_method: depositPerRoom > 0 ? (data.payment_method || 'cash') : null,
       notes: eventNotes,
+      is_exclusive_event: true,
+      event_daily_rate: eventDailyRate,
+      invoice_number,
       created_by: data.created_by || null,
       lodge_id: lodgeId
     }
@@ -990,18 +1165,20 @@ export async function createEventBooking(data) {
     }
   }
 
-  if (isOnline) await refreshAllCaches()
+  if (isOnline) await refreshCache('bookings')
 
   logActivity(
     'event_booking_created',
-    `Event booking · ${data.event_name} · ${available.length} room${available.length !== 1 ? 's' : ''} · ${data.check_in} → ${data.check_out}`
+    `Exclusive event · ${data.event_name} · ${bookableRooms.length} room${bookableRooms.length !== 1 ? 's' : ''} · ${data.check_in} → ${data.check_out} · ${totalEventPrice.toFixed(2)}`
   )
   createBackup()
 
   return {
-    count: available.length,
+    count: bookableRooms.length,
     groupId,
-    rooms: available.map((r) => r.room_number)
+    rooms: bookableRooms.map((r) => r.room_number),
+    totalPrice: totalEventPrice,
+    nights
   }
 }
 
@@ -1013,7 +1190,7 @@ export async function getOccupancyReport(startDate, endDate) {
     ? (
         await supabase
           .from('bookings')
-          .select('room_id, check_in, check_out')
+          .select('room_id, check_in, check_out, total_amount, is_exclusive_event')
           .eq('lodge_id', lodgeId)
           .neq('status', 'cancelled')
           .lte('check_in', endDate)
@@ -1035,10 +1212,14 @@ export async function getOccupancyReport(startDate, endDate) {
       const end = new Date(Math.min(new Date(b.check_out), new Date(endDate)))
       nights += Math.max(0, Math.ceil((end - start) / (1000 * 60 * 60 * 24)))
     }
+    const actualRevenue = roomBookings.reduce((sum, b) => sum + (b.total_amount || 0), 0)
+    const hasEvent = roomBookings.some(b => b.is_exclusive_event)
     return {
       ...room,
-      occupied_nights: nights,
-      occupancy_rate: totalDays > 0 ? Math.round((nights / totalDays) * 100) : 0
+      occupied_nights:  nights,
+      occupancy_rate:   totalDays > 0 ? Math.round((nights / totalDays) * 100) : 0,
+      actual_revenue:   actualRevenue,
+      has_event:        hasEvent
     }
   })
 }
@@ -1048,7 +1229,7 @@ export async function getRevenueReport(startDate, endDate) {
     ? (
         await supabase
           .from('bookings')
-          .select('*')
+          .select('total_amount, amount_paid, status, payment_status, check_in, check_out, is_exclusive_event, notes, event_daily_rate')
           .eq('lodge_id', lodgeId)
           .gte('check_in', startDate)
           .lte('check_in', endDate)
@@ -1057,22 +1238,100 @@ export async function getRevenueReport(startDate, endDate) {
         (b) => b.check_in >= startDate && b.check_in <= endDate
       )
 
-  const totalRevenue = bookings.reduce((sum, b) => sum + (b.total_amount || 0), 0)
-  const paidRevenue = bookings.reduce((sum, b) => sum + (b.amount_paid || 0), 0)
+  // Split regular bookings from exclusive event room-rows
+  const regularBookings = bookings.filter(b => !b.is_exclusive_event)
+  const eventRows       = bookings.filter(b => b.is_exclusive_event)
+
+  // Collapse event room-rows into unique event groups (1 group = 1 event)
+  const eventGroupMap = {}
+  eventRows.forEach(b => {
+    const match   = b.notes?.match(/\[GROUP:([^\]]+)\]/)
+    const groupId = match?.[1] || b.check_in
+    if (!eventGroupMap[groupId]) {
+      const nights = Math.ceil((new Date(b.check_out) - new Date(b.check_in)) / 86400000)
+      eventGroupMap[groupId] = {
+        group_id:       groupId,
+        check_in:       b.check_in,
+        check_out:      b.check_out,
+        nights,
+        daily_rate:     b.event_daily_rate || 0,
+        total:          (b.event_daily_rate || 0) * nights,
+        room_count:     0,
+        status:         b.status,
+        payment_status: b.payment_status,
+        amount_paid:    0
+      }
+    }
+    eventGroupMap[groupId].room_count++
+    eventGroupMap[groupId].amount_paid += (b.amount_paid || 0)
+  })
+  const uniqueEvents   = Object.values(eventGroupMap)
+  const eventRevenue   = uniqueEvents.reduce((sum, e) => sum + e.total, 0)
+  const regularRevenue = regularBookings.reduce((sum, b) => sum + (b.total_amount || 0), 0)
+  const totalRevenue   = regularRevenue + eventRevenue
+  const totalPaid      = regularBookings.reduce((sum, b) => sum + (b.amount_paid || 0), 0)
+                       + uniqueEvents.reduce((sum, e) => sum + e.amount_paid, 0)
+
+  // Treat each unique event as 1 booking unit for counts / averages
+  const allUnits = [...regularBookings, ...uniqueEvents]
+
+  const cfg = (readCache('settings') || [])[0] || DEFAULT_SETTINGS
+  const vatRate = cfg.vat_enabled ? (cfg.vat_rate || 0) : 0
+  const vatAmount = vatRate > 0 ? +(totalRevenue * vatRate / (100 + vatRate)).toFixed(2) : 0
 
   return {
-    total_revenue: totalRevenue,
-    total_bookings: bookings.length,
-    avg_booking_value: bookings.length > 0 ? totalRevenue / bookings.length : 0,
-    confirmed_count: bookings.filter((b) => b.status === 'confirmed').length,
-    checked_in_count: bookings.filter((b) => b.status === 'checked_in').length,
-    checked_out_count: bookings.filter((b) => b.status === 'checked_out').length,
-    cancelled_count: bookings.filter((b) => b.status === 'cancelled').length,
-    paid_count: bookings.filter((b) => b.payment_status === 'paid').length,
-    partial_count: bookings.filter((b) => b.payment_status === 'partial').length,
-    unpaid_count: bookings.filter((b) => !b.payment_status || b.payment_status === 'unpaid').length,
-    paid_revenue: paidRevenue,
-    outstanding_amount: totalRevenue - paidRevenue
+    total_revenue:     totalRevenue,
+    regular_revenue:   regularRevenue,
+    event_revenue:     eventRevenue,
+    event_count:       uniqueEvents.length,
+    event_bookings:    uniqueEvents,
+    total_bookings:    allUnits.length,
+    avg_booking_value: allUnits.length > 0 ? totalRevenue / allUnits.length : 0,
+    confirmed_count:   allUnits.filter(b => b.status === 'confirmed').length,
+    checked_in_count:  allUnits.filter(b => b.status === 'checked_in').length,
+    checked_out_count: allUnits.filter(b => b.status === 'checked_out').length,
+    cancelled_count:   allUnits.filter(b => b.status === 'cancelled').length,
+    paid_count:        allUnits.filter(b => b.payment_status === 'paid').length,
+    partial_count:     allUnits.filter(b => b.payment_status === 'partial').length,
+    unpaid_count:      allUnits.filter(b => !b.payment_status || b.payment_status === 'unpaid').length,
+    paid_revenue:      totalPaid,
+    outstanding_amount: totalRevenue - totalPaid,
+    vat_enabled: vatRate > 0,
+    vat_rate:    vatRate,
+    vat_amount:  vatAmount,
+    net_revenue: +(totalRevenue - vatAmount).toFixed(2)
+  }
+}
+
+export async function getProfitLoss(start, end) {
+  const [rev, pos, exps, inv, sup] = await Promise.all([
+    getRevenueReport(start, end),
+    getPosRevenueSummary(start, end),
+    getExpenses(start, end),
+    getInventorySpend(start, end),
+    getSupplySpend(start, end)
+  ])
+  const bookingRevenue = rev.total_revenue || 0
+  const posRevenue     = pos.total_revenue || 0
+  const totalRevenue   = bookingRevenue + posRevenue
+  const totalExpenses  = exps.reduce((s, e) => s + Number(e.amount || 0), 0)
+  const invCosts       = inv.total || 0
+  const supCosts       = sup.total || 0
+  const totalCosts     = invCosts + supCosts
+  const grossProfit    = totalRevenue - totalExpenses - totalCosts
+  const expByCategory  = exps.reduce((acc, e) => {
+    acc[e.category] = (acc[e.category] || 0) + Number(e.amount || 0)
+    return acc
+  }, {})
+  return {
+    bookingRevenue, posRevenue, totalRevenue,
+    totalExpenses, expByCategory,
+    invCosts, supCosts, totalCosts,
+    grossProfit,
+    vatAmount: rev.vat_amount || 0,
+    vatEnabled: rev.vat_enabled || false,
+    vatRate: rev.vat_rate || 0,
+    netRevenue: rev.net_revenue || bookingRevenue
   }
 }
 
@@ -1080,31 +1339,63 @@ export async function getDashboardStats() {
   const today = new Date().toISOString().split('T')[0]
   const thisMonth = today.substring(0, 7)
 
-  const rooms = await getAllRooms()
-  const bookings = isOnline
-    ? (await supabase.from('bookings').select('*').eq('lodge_id', lodgeId)).data || []
-    : readCache('bookings')
+  if (isOnline) {
+    // Run 5 targeted queries in parallel — each fetches only what it needs.
+    // Previously: one select('*') with no date filter pulled the full booking history.
+    const d = new Date(today)
+    const monthStart = thisMonth + '-01'
+    const nextMonthStart = new Date(d.getFullYear(), d.getMonth() + 1, 1).toISOString().split('T')[0]
 
+    const [roomsRes, occupiedRes, todayRes, revenueRes, upcomingRes] = await Promise.all([
+      // count only — HEAD request, no rows transferred
+      supabase.from('rooms').select('id', { count: 'exact', head: true }).eq('lodge_id', lodgeId),
+      supabase.from('bookings').select('id', { count: 'exact', head: true })
+        .eq('lodge_id', lodgeId)
+        .in('status', ['confirmed', 'checked_in'])
+        .lte('check_in', today)
+        .gt('check_out', today),
+      // today's arrivals + departures only — 2 columns
+      supabase.from('bookings').select('check_in, check_out')
+        .eq('lodge_id', lodgeId)
+        .neq('status', 'cancelled')
+        .or(`check_in.eq.${today},check_out.eq.${today}`),
+      // this month's revenue — 1 column, date-bounded
+      supabase.from('bookings').select('total_amount')
+        .eq('lodge_id', lodgeId)
+        .neq('status', 'cancelled')
+        .gte('check_in', monthStart)
+        .lt('check_in', nextMonthStart),
+      supabase.from('bookings').select('id', { count: 'exact', head: true })
+        .eq('lodge_id', lodgeId)
+        .eq('status', 'confirmed')
+        .gt('check_in', today)
+    ])
+
+    const todayBookings = todayRes.data || []
+    return {
+      total_rooms: roomsRes.count ?? 0,
+      occupied_today: occupiedRes.count ?? 0,
+      checkins_today: todayBookings.filter((b) => b.check_in === today).length,
+      checkouts_today: todayBookings.filter((b) => b.check_out === today).length,
+      revenue_month: (revenueRes.data || []).reduce((s, b) => s + (b.total_amount || 0), 0),
+      upcoming_bookings: upcomingRes.count ?? 0
+    }
+  }
+
+  // Offline: aggregate from cache
+  const rooms = readCache('rooms')
+  const bookings = readCache('bookings')
   return {
     total_rooms: rooms.length,
     occupied_today: bookings.filter(
-      (b) =>
-        ['confirmed', 'checked_in'].includes(b.status) &&
-        b.check_in <= today &&
-        b.check_out > today
+      (b) => ['confirmed', 'checked_in'].includes(b.status) && b.check_in <= today && b.check_out > today
     ).length,
-    checkins_today: bookings.filter(
-      (b) => b.check_in === today && b.status !== 'cancelled'
-    ).length,
-    checkouts_today: bookings.filter(
-      (b) => b.check_out === today && b.status !== 'cancelled'
-    ).length,
+    checkins_today: bookings.filter((b) => b.check_in === today && b.status !== 'cancelled').length,
+    checkouts_today: bookings.filter((b) => b.check_out === today && b.status !== 'cancelled').length,
     revenue_month: bookings
       .filter((b) => b.check_in?.startsWith(thisMonth) && b.status !== 'cancelled')
-      .reduce((sum, b) => sum + (b.total_amount || 0), 0),
-    upcoming_bookings: bookings.filter(
-      (b) => b.check_in > today && b.status === 'confirmed'
-    ).length
+      .reduce((s, b) => s + (b.total_amount || 0), 0),
+    upcoming_bookings: bookings.filter((b) => b.check_in > today && b.status === 'confirmed').length
   }
 }
 
@@ -1114,20 +1405,27 @@ export async function getTodayActivity() {
   const today = new Date().toISOString().split('T')[0]
   const tomorrow = new Date(Date.now() + 86400000).toISOString().split('T')[0]
 
-  const allBookings = isOnline
-    ? (await supabase.from('bookings').select('*').eq('lodge_id', lodgeId)).data || []
-    : readCache('bookings')
+  if (isOnline) {
+    // Previously fetched all bookings. Now filters to only today/tomorrow rows.
+    const { data } = await supabase
+      .from('bookings')
+      .select('*')
+      .eq('lodge_id', lodgeId)
+      .neq('status', 'cancelled')
+      .or(`check_in.in.(${today},${tomorrow}),check_out.eq.${today}`)
+    const all = data || []
+    return {
+      checkins_today: all.filter((b) => b.check_in === today),
+      checkouts_today: all.filter((b) => b.check_out === today),
+      checkins_tomorrow: all.filter((b) => b.check_in === tomorrow)
+    }
+  }
 
+  const bookings = readCache('bookings')
   return {
-    checkins_today: allBookings.filter(
-      (b) => b.check_in === today && b.status !== 'cancelled'
-    ),
-    checkouts_today: allBookings.filter(
-      (b) => b.check_out === today && b.status !== 'cancelled'
-    ),
-    checkins_tomorrow: allBookings.filter(
-      (b) => b.check_in === tomorrow && b.status !== 'cancelled'
-    )
+    checkins_today: bookings.filter((b) => b.check_in === today && b.status !== 'cancelled'),
+    checkouts_today: bookings.filter((b) => b.check_out === today && b.status !== 'cancelled'),
+    checkins_tomorrow: bookings.filter((b) => b.check_in === tomorrow && b.status !== 'cancelled')
   }
 }
 
@@ -1374,7 +1672,7 @@ export async function createMaintenanceTicket(data) {
     // If a room is selected, mark it as maintenance
     if (data.room_id) {
       await supabase.from('rooms').update({ status: 'maintenance' }).eq('id', data.room_id).eq('lodge_id', lodgeId)
-      await refreshAllCaches()
+      await refreshCache('rooms')
     }
     return { success: true, id: result?.id }
   }
@@ -1414,7 +1712,7 @@ export async function resolveMaintenanceTicket(id, roomId) {
       if (!openTickets || openTickets.length === 0) {
         await supabase.from('rooms').update({ status: 'available' }).eq('id', roomId).eq('lodge_id', lodgeId)
       }
-      await refreshAllCaches()
+      await refreshCache('rooms')
     }
     return { success: true }
   }
@@ -1426,7 +1724,7 @@ export async function resolveMaintenanceTicket(id, roomId) {
 export async function updateCustomerIdPhoto(id, photo) {
   if (isOnline) {
     await supabase.from('customers').update({ id_photo: photo }).eq('id', id).eq('lodge_id', lodgeId)
-    await refreshAllCaches()
+    await refreshCache('customers')
     return { success: true }
   }
   // Offline: update cache
@@ -1564,94 +1862,35 @@ export async function createPosOrder(data) {
   const items = data.items || []
   const total = items.reduce((s, i) => s + i.quantity * i.unit_price, 0)
 
+  // Resolve booking ID before entering the transaction (read-only, safe outside)
   let bookingId = data.booking_id || null
   if (data.room_id && !bookingId) {
     const booking = await getActiveBookingForRoom(data.room_id)
     bookingId = booking?.id || null
   }
 
-  const order = {
-    lodge_id: lodgeId,
-    room_id: data.room_id || null,
-    booking_id: bookingId,
-    walk_in_name: data.walk_in_name || null,
-    status: 'completed',
-    total,
-    notes: data.notes || null,
-    payment_method: data.payment_method || 'cash',
-    completed_at: new Date().toISOString()
-  }
-
-  const { data: orderResult, error: orderErr } = await supabase.from('pos_orders').insert(order).select().single()
-  if (orderErr) throw new Error(orderErr.message)
-  const orderId = orderResult?.id
-  if (!orderId) throw new Error('Failed to create order — no ID returned')
-
-  const orderItems = items.map((i) => ({
-    lodge_id: lodgeId,
-    order_id: orderId,
-    menu_item_id: i.menu_item_id || null,
-    item_name: i.item_name,
-    quantity: i.quantity,
-    unit_price: i.unit_price,
-    subtotal: i.quantity * i.unit_price
-  }))
-  await supabase.from('pos_order_items').insert(orderItems)
-
-  // Auto-add as booking charge if linked to a booking
-  if (bookingId) {
-    const chargeDesc = items.map((i) => `${i.item_name} x${i.quantity}`).join(', ')
-    await supabase.from('booking_charges').insert({
+  // All DB writes are delegated to a single Postgres transaction via RPC.
+  // If any step fails, Postgres rolls back the entire operation automatically.
+  const { data: result, error } = await supabase.rpc('create_pos_order', {
+    payload: {
       lodge_id: lodgeId,
+      room_id: data.room_id || null,
       booking_id: bookingId,
-      description: `Bar/Kitchen: ${chargeDesc}`,
-      category: 'bar_kitchen',
-      quantity: 1,
-      unit_price: total,
-      amount: total
-    })
-  }
-
-  // Auto-deplete inventory stock for linked menu items
-  const itemsWithMenuIds = items.filter((i) => i.menu_item_id)
-  if (itemsWithMenuIds.length > 0) {
-    const menuItemIds = [...new Set(itemsWithMenuIds.map((i) => i.menu_item_id))]
-    const { data: linkedMenuItems } = await supabase
-      .from('pos_menu_items')
-      .select('id, inventory_item_id, depletion_qty')
-      .in('id', menuItemIds)
-      .not('inventory_item_id', 'is', null)
-
-    if (linkedMenuItems && linkedMenuItems.length > 0) {
-      // Aggregate total depletion per inventory item
-      const depletionMap = {}
-      for (const oi of itemsWithMenuIds) {
-        const menuItem = linkedMenuItems.find((m) => m.id === oi.menu_item_id)
-        if (menuItem?.inventory_item_id) {
-          const qty = Number(menuItem.depletion_qty || 1) * oi.quantity
-          depletionMap[menuItem.inventory_item_id] = (depletionMap[menuItem.inventory_item_id] || 0) + qty
-        }
-      }
-      // Update stock levels
-      for (const [invItemId, totalDepletion] of Object.entries(depletionMap)) {
-        const { data: invItem } = await supabase
-          .from('inventory_items')
-          .select('current_stock')
-          .eq('id', invItemId)
-          .single()
-        if (invItem) {
-          const newStock = Math.max(0, Number(invItem.current_stock || 0) - totalDepletion)
-          await supabase
-            .from('inventory_items')
-            .update({ current_stock: newStock })
-            .eq('id', invItemId)
-            .eq('lodge_id', lodgeId)
-        }
-      }
+      walk_in_name: data.walk_in_name || null,
+      total,
+      notes: data.notes || null,
+      payment_method: data.payment_method || 'cash',
+      items: items.map((i) => ({
+        menu_item_id: i.menu_item_id || null,
+        item_name: i.item_name,
+        quantity: i.quantity,
+        unit_price: i.unit_price
+      }))
     }
-  }
+  })
 
-  return { success: true, id: orderId }
+  if (error) throw new Error(error.message)
+  return result // { id: '...', success: true }
 }
 
 export async function voidPosOrder(id) {
@@ -1967,9 +2206,9 @@ export async function getInventorySpend(startDate, endDate) {
     .from('inventory_purchases')
     .select('*, inventory_items(name, category)')
     .eq('lodge_id', lodgeId)
-    .gte('purchased_at', `${startDate}T00:00:00`)
-    .lte('purchased_at', `${endDate}T23:59:59`)
-    .order('purchased_at', { ascending: false })
+    .gte('date', startDate)
+    .lte('date', endDate)
+    .order('date', { ascending: false })
   const purchases = data || []
   const total = purchases.reduce((s, p) => s + Number(p.total_cost || 0), 0)
   const by_category = {}
@@ -1986,9 +2225,9 @@ export async function getSupplySpend(startDate, endDate) {
     .from('supply_purchases')
     .select('*, supply_items(name)')
     .eq('lodge_id', lodgeId)
-    .gte('purchased_at', `${startDate}T00:00:00`)
-    .lte('purchased_at', `${endDate}T23:59:59`)
-    .order('purchased_at', { ascending: false })
+    .gte('date', startDate)
+    .lte('date', endDate)
+    .order('date', { ascending: false })
   const purchases = data || []
   const total = purchases.reduce((s, p) => s + Number(p.total_cost || 0), 0)
   return { total, purchases }
@@ -2065,6 +2304,8 @@ const DEFAULT_SETTINGS = {
   email: '',
   website: '',
   vat_number: '',
+  vat_enabled: false,
+  vat_rate: 0,
   currency: 'P',
   logo: '',
   business_type: 'lodge',
@@ -2094,6 +2335,8 @@ export async function saveSettings(data) {
     email: data.email || '',
     website: data.website || '',
     vat_number: data.vat_number || '',
+    vat_enabled: data.vat_enabled ?? false,
+    vat_rate: Number(data.vat_rate || 0),
     currency: data.currency || 'P',
     logo: data.logo || '',
     business_type: data.business_type || 'lodge',
@@ -2225,24 +2468,19 @@ export async function activateLicenseKey(lodgeId, licenseKey) {
 // ─── MASTER ADMIN ──────────────────────────────────────────────────────────────
 
 export async function checkMasterAdmin(email, password) {
-  console.log('[MASTER] checkMasterAdmin called, isOnline:', isOnline, 'email:', email)
   if (!isOnline) {
     console.log('[MASTER] Not online — skipping master admin check')
     return null
   }
-  const { data, error } = await supabase
+  const { data, error } = await requireAdmin()
     .from('master_admins')
     .select('*')
     .eq('email', email.toLowerCase().trim())
     .limit(1)
-  console.log('[MASTER] query data:', JSON.stringify(data), 'error:', error?.message)
+  if (error) console.error('[MASTER] DB error during admin lookup:', error.message)
   const admin = data?.[0]
-  if (!admin) {
-    console.log('[MASTER] No admin found for email:', email.toLowerCase().trim())
-    return null
-  }
+  if (!admin) return null
   const passwordMatch = bcrypt.compareSync(password, admin.password_hash)
-  console.log('[MASTER] password match:', passwordMatch)
   if (!passwordMatch) return null
   return {
     id: admin.id,
@@ -2255,16 +2493,16 @@ export async function checkMasterAdmin(email, password) {
 
 export async function masterAdminExists() {
   if (!isOnline) return false
-  const { count } = await supabase.from('master_admins').select('id', { count: 'exact', head: true })
+  const { count } = await requireAdmin().from('master_admins').select('id', { count: 'exact', head: true })
   return (count || 0) > 0
 }
 
 export async function createMasterAdmin(name, email, password) {
   if (!isOnline) throw new Error('Requires internet connection')
-  const { count } = await supabase.from('master_admins').select('id', { count: 'exact', head: true })
+  const { count } = await requireAdmin().from('master_admins').select('id', { count: 'exact', head: true })
   if ((count || 0) > 0) throw new Error('Master admin already exists')
   const password_hash = bcrypt.hashSync(password, 12)
-  const { data, error } = await supabase.from('master_admins').insert({
+  const { data, error } = await requireAdmin().from('master_admins').insert({
     email: email.toLowerCase().trim(),
     password_hash,
     name
@@ -2277,7 +2515,7 @@ export async function createMasterAdmin(name, email, password) {
 
 export async function getAllCompanies() {
   if (!isOnline) return []
-  const { data } = await supabase
+  const { data } = await requireAdmin()
     .from('settings')
     .select('lodge_id, lodge_name, company_name, business_type, city, country, email, phone, updated_at, setup_complete, trial_started_at')
     .eq('setup_complete', true)
@@ -2295,7 +2533,7 @@ function generateLicenseKey() {
 
 export async function getLicenses() {
   if (!isOnline) return []
-  const { data } = await supabase
+  const { data } = await requireAdmin()
     .from('licenses')
     .select('*')
     .order('issued_at', { ascending: false })
@@ -2305,7 +2543,7 @@ export async function getLicenses() {
 export async function createLicense({ lodge_id, lodge_name, business_type, expires_at, notes }) {
   if (!isOnline) throw new Error('Requires internet connection')
   const license_key = generateLicenseKey()
-  const { data, error } = await supabase.from('licenses').insert({
+  const { data, error } = await requireAdmin().from('licenses').insert({
     lodge_id: lodge_id || 'unassigned',
     license_key,
     lodge_name: lodge_name || '',
@@ -2320,14 +2558,14 @@ export async function createLicense({ lodge_id, lodge_name, business_type, expir
 
 export async function updateLicense(id, updates) {
   if (!isOnline) throw new Error('Requires internet connection')
-  const { error } = await supabase.from('licenses').update(updates).eq('id', id)
+  const { error } = await requireAdmin().from('licenses').update(updates).eq('id', id)
   if (error) throw new Error(error.message)
   return { success: true }
 }
 
 export async function deleteLicense(id) {
   if (!isOnline) throw new Error('Requires internet connection')
-  const { error } = await supabase.from('licenses').delete().eq('id', id)
+  const { error } = await requireAdmin().from('licenses').delete().eq('id', id)
   if (error) throw new Error(error.message)
   return { success: true }
 }
@@ -2336,7 +2574,7 @@ export async function deleteLicense(id) {
 
 export async function getBroadcasts() {
   if (!isOnline) return []
-  const { data } = await supabase.from('broadcasts').select('*').order('created_at', { ascending: false })
+  const { data } = await requireAdmin().from('broadcasts').select('*').order('created_at', { ascending: false })
   return data || []
 }
 
@@ -2354,7 +2592,7 @@ export async function getActiveBroadcasts() {
 
 export async function createBroadcast({ title, message, expires_at }) {
   if (!isOnline) throw new Error('Requires internet connection')
-  const { data, error } = await supabase
+  const { data, error } = await requireAdmin()
     .from('broadcasts')
     .insert({ title, message, expires_at: expires_at || null, is_active: true })
     .select().single()
@@ -2364,14 +2602,14 @@ export async function createBroadcast({ title, message, expires_at }) {
 
 export async function updateBroadcast(id, updates) {
   if (!isOnline) throw new Error('Requires internet connection')
-  const { error } = await supabase.from('broadcasts').update(updates).eq('id', id)
+  const { error } = await requireAdmin().from('broadcasts').update(updates).eq('id', id)
   if (error) throw new Error(error.message)
   return { success: true }
 }
 
 export async function deleteBroadcast(id) {
   if (!isOnline) throw new Error('Requires internet connection')
-  const { error } = await supabase.from('broadcasts').delete().eq('id', id)
+  const { error } = await requireAdmin().from('broadcasts').delete().eq('id', id)
   if (error) throw new Error(error.message)
   return { success: true }
 }
@@ -2389,7 +2627,7 @@ export async function getLodgeFeatures(targetLodgeId) {
 
 export async function setLodgeFeature(targetLodgeId, featureName, enabled) {
   if (!isOnline) throw new Error('Requires internet connection')
-  const { error } = await supabase
+  const { error } = await requireAdmin()
     .from('lodge_features')
     .upsert(
       { lodge_id: targetLodgeId, feature_name: featureName, enabled, updated_at: new Date().toISOString() },
@@ -2401,7 +2639,7 @@ export async function setLodgeFeature(targetLodgeId, featureName, enabled) {
 
 export async function getAllLodgeFeatures() {
   if (!isOnline) return []
-  const { data } = await supabase.from('lodge_features').select('*').order('lodge_id')
+  const { data } = await requireAdmin().from('lodge_features').select('*').order('lodge_id')
   return data || []
 }
 
@@ -2409,7 +2647,7 @@ export async function getAllLodgeFeatures() {
 
 export async function getSupportTickets(filters = {}) {
   if (!isOnline) return []
-  let q = supabase.from('support_tickets').select('*')
+  let q = requireAdmin().from('support_tickets').select('*')
   if (filters.status) q = q.eq('status', filters.status)
   if (filters.priority) q = q.eq('priority', filters.priority)
   if (filters.lodge_id) q = q.eq('lodge_id', filters.lodge_id)
@@ -2441,14 +2679,14 @@ export async function updateSupportTicket(id, updates) {
   if (updates.status === 'resolved' && !updates.resolved_at) {
     payload.resolved_at = new Date().toISOString()
   }
-  const { error } = await supabase.from('support_tickets').update(payload).eq('id', id)
+  const { error } = await requireAdmin().from('support_tickets').update(payload).eq('id', id)
   if (error) throw new Error(error.message)
   return { success: true }
 }
 
 export async function deleteSupportTicket(id) {
   if (!isOnline) throw new Error('Requires internet connection')
-  const { error } = await supabase.from('support_tickets').delete().eq('id', id)
+  const { error } = await requireAdmin().from('support_tickets').delete().eq('id', id)
   if (error) throw new Error(error.message)
   return { success: true }
 }
@@ -2456,8 +2694,8 @@ export async function deleteSupportTicket(id) {
 // ─── ADMIN: ACTIVITY LOGS ──────────────────────────────────────────────────────
 
 export async function logAdminActivity(targetLodgeId, targetLodgeName, action, details = {}) {
-  if (!isOnline) return // fire-and-forget, silent
-  supabase.from('activity_logs').insert({
+  if (!isOnline || !adminDb) return // fire-and-forget, silent; skip if no admin client
+  adminDb.from('activity_logs').insert({
     lodge_id: targetLodgeId,
     lodge_name: targetLodgeName || null,
     action,
@@ -2467,7 +2705,7 @@ export async function logAdminActivity(targetLodgeId, targetLodgeName, action, d
 
 export async function getActivityLogs(filters = {}) {
   if (!isOnline) return []
-  let q = supabase.from('activity_logs').select('*')
+  let q = requireAdmin().from('activity_logs').select('*')
   if (filters.lodge_id) q = q.eq('lodge_id', filters.lodge_id)
   if (filters.start) q = q.gte('created_at', filters.start)
   if (filters.end) q = q.lte('created_at', filters.end)
@@ -2480,13 +2718,14 @@ export async function getActivityLogs(filters = {}) {
 
 export async function getCompanyStats(targetLodgeId) {
   if (!isOnline) return null
+  const db = requireAdmin()
   const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
   const [rooms, users, bookings, expenses, maintenance] = await Promise.all([
-    supabase.from('rooms').select('id', { count: 'exact', head: true }).eq('lodge_id', targetLodgeId),
-    supabase.from('users').select('id', { count: 'exact', head: true }).eq('lodge_id', targetLodgeId),
-    supabase.from('bookings').select('id', { count: 'exact', head: true }).eq('lodge_id', targetLodgeId).gte('created_at', thirtyDaysAgo),
-    supabase.from('expenses').select('amount').eq('lodge_id', targetLodgeId).gte('date', thirtyDaysAgo),
-    supabase.from('maintenance_tickets').select('id', { count: 'exact', head: true }).eq('lodge_id', targetLodgeId).eq('status', 'open')
+    db.from('rooms').select('id', { count: 'exact', head: true }).eq('lodge_id', targetLodgeId),
+    db.from('users').select('id', { count: 'exact', head: true }).eq('lodge_id', targetLodgeId),
+    db.from('bookings').select('id', { count: 'exact', head: true }).eq('lodge_id', targetLodgeId).gte('created_at', thirtyDaysAgo),
+    db.from('expenses').select('amount').eq('lodge_id', targetLodgeId).gte('date', thirtyDaysAgo),
+    db.from('maintenance_tickets').select('id', { count: 'exact', head: true }).eq('lodge_id', targetLodgeId).eq('status', 'open')
   ])
   const expenseTotal = (expenses.data || []).reduce((sum, e) => sum + Number(e.amount || 0), 0)
   return {
@@ -2502,7 +2741,7 @@ export async function getCompanyStats(targetLodgeId) {
 
 export async function updateLicenseBilling(id, data) {
   if (!isOnline) throw new Error('Requires internet connection')
-  const { error } = await supabase.from('licenses').update(data).eq('id', id)
+  const { error } = await requireAdmin().from('licenses').update(data).eq('id', id)
   if (error) throw new Error(error.message)
   return { success: true }
 }
@@ -2510,13 +2749,105 @@ export async function updateLicenseBilling(id, data) {
 export async function getOverdueLicenses() {
   if (!isOnline) return []
   const today = new Date().toISOString().split('T')[0]
-  const { data } = await supabase
+  const { data } = await requireAdmin()
     .from('licenses')
     .select('*')
     .lt('next_due_date', today)
     .neq('payment_status', 'free')
     .eq('is_active', true)
   return data || []
+}
+
+// ─── INVOICES ────────────────────────────────────────────────────────────────────
+
+async function getNextBookingInvoiceNumber() {
+  const year = new Date().getFullYear()
+  const prefix = `INV-${year}-`
+  let nums = []
+  if (isOnline) {
+    const { data } = await supabase.from('bookings').select('invoice_number')
+      .eq('lodge_id', lodgeId).like('invoice_number', `${prefix}%`)
+    nums = (data || []).map(r => parseInt((r.invoice_number || '').replace(prefix, ''), 10)).filter(n => !isNaN(n))
+  } else {
+    nums = readCache('bookings')
+      .filter(b => (b.invoice_number || '').startsWith(prefix))
+      .map(b => parseInt(b.invoice_number.replace(prefix, ''), 10)).filter(n => !isNaN(n))
+  }
+  const next = nums.length > 0 ? Math.max(...nums) + 1 : 1
+  return `${prefix}${String(next).padStart(4, '0')}`
+}
+
+export async function getNextInvoiceNumber() {
+  const year = new Date().getFullYear()
+  const prefix = `INV-${year}-`
+  const { data } = await requireAdmin()
+    .from('invoices')
+    .select('invoice_number')
+    .like('invoice_number', `${prefix}%`)
+  const nums = (data || []).map(r => parseInt(r.invoice_number.replace(prefix, ''), 10)).filter(n => !isNaN(n))
+  const next = nums.length > 0 ? Math.max(...nums) + 1 : 1
+  return `${prefix}${String(next).padStart(3, '0')}`
+}
+
+export async function createInvoice(data) {
+  if (!isOnline) throw new Error('Requires internet connection')
+  const { data: row, error } = await requireAdmin().from('invoices').insert(data).select().single()
+  if (error) throw new Error(error.message)
+  return row
+}
+
+export async function getInvoices(filters = {}) {
+  if (!isOnline) return []
+  let q = requireAdmin().from('invoices').select('*').order('created_at', { ascending: false })
+  if (filters.lodge_id) q = q.eq('lodge_id', filters.lodge_id)
+  if (filters.status)   q = q.eq('status', filters.status)
+  const { data } = await q
+  return data || []
+}
+
+export async function getInvoicesByLodge(lodgeId) {
+  if (!isOnline) return []
+  const { data } = await supabase
+    .from('invoices')
+    .select('*')
+    .eq('lodge_id', lodgeId)
+    .order('issued_date', { ascending: false })
+  return data || []
+}
+
+export async function updateInvoice(id, updates) {
+  if (!isOnline) throw new Error('Requires internet connection')
+  const { error } = await requireAdmin().from('invoices').update(updates).eq('id', id)
+  if (error) throw new Error(error.message)
+  return { success: true }
+}
+
+export async function deleteInvoice(id) {
+  if (!isOnline) throw new Error('Requires internet connection')
+  const { error } = await requireAdmin().from('invoices').delete().eq('id', id)
+  if (error) throw new Error(error.message)
+}
+
+export async function getInvoiceSummary() {
+  if (!isOnline) return { total: 0, byPlan: {}, byMonth: [], allRows: [] }
+  const { data } = await requireAdmin()
+    .from('invoices')
+    .select('amount, currency, package_name, issued_date, status')
+  const allRows = data || []
+  const paid = allRows.filter(r => r.status === 'paid')
+  const total = paid.reduce((s, r) => s + Number(r.amount), 0)
+  const byPlan = {}
+  paid.forEach(r => { byPlan[r.package_name] = (byPlan[r.package_name] || 0) + Number(r.amount) })
+  const byMonthMap = {}
+  paid.forEach(r => {
+    const m = (r.issued_date || '').slice(0, 7)
+    if (m) byMonthMap[m] = (byMonthMap[m] || 0) + Number(r.amount)
+  })
+  const byMonth = Object.entries(byMonthMap)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([month, amount]) => ({ month, amount }))
+  const currency = paid[0]?.currency || 'USD'
+  return { total, byPlan, byMonth, currency, allRows }
 }
 
 // ─── CONFERENCE BOOKINGS ───────────────────────────────────────────────────────
@@ -2532,6 +2863,7 @@ export async function getConferenceBookings(start, end) {
 
 export async function createConferenceBooking(data) {
   if (!isOnline) throw new Error('Requires internet connection')
+  await checkExclusiveEventConflict(data.booking_date, data.booking_date + 'T23:59:59')
   const { data: row, error } = await supabase.from('conference_bookings').insert({
     lodge_id: lodgeId,
     booking_date: data.booking_date,
@@ -2551,7 +2883,7 @@ export async function createConferenceBooking(data) {
     notes: data.notes || null
   }).select().single()
   if (error) throw new Error(error.message)
-  await logActivity(`Conference booking created for ${data.client_name}`)
+  logActivity('conference_booking_created', `Conference booking · ${data.client_name}${data.company ? ' · ' + data.company : ''} · ${data.booking_date} · ${data.room_name || 'Conference Room'}`)
   return row
 }
 
@@ -2582,6 +2914,7 @@ export async function getPoolDayUse(start, end) {
 
 export async function addPoolDayUse(data) {
   if (!isOnline) throw new Error('Requires internet connection')
+  await checkExclusiveEventConflict(data.date, data.date + 'T23:59:59')
   const total = (data.adults || 0) * (data.fee_per_adult || 0) + (data.children || 0) * (data.fee_per_child || 0)
   const { data: row, error } = await supabase.from('pool_day_use').insert({
     lodge_id: lodgeId,
@@ -2597,7 +2930,7 @@ export async function addPoolDayUse(data) {
     notes: data.notes || null
   }).select().single()
   if (error) throw new Error(error.message)
-  await logActivity(`Pool day use added: ${data.guest_name || 'Walk-in'} — P${total}`)
+  logActivity('pool_day_use_added', `Pool day use · ${data.guest_name || 'Walk-in'} · ${data.date} · P${total}`)
   return row
 }
 

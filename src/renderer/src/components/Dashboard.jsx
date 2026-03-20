@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import {
   BedDouble,
   CalendarCheck,
@@ -8,10 +8,33 @@ import {
   TrendingUp,
   Users,
   ArrowRight,
-  AlertTriangle
+  AlertTriangle,
+  Lock,
+  BookOpen,
+  BarChart3,
+  Receipt,
+  ClipboardList,
+  Presentation,
+  Waves,
+  ShoppingCart,
+  Package,
+  Boxes
 } from 'lucide-react'
 import { StatusBadge } from './shared/StatusBadge'
-import { useSettings } from '../App'
+import { useSettings, useFeatures } from '../App'
+
+const SHORTCUTS = [
+  { label: 'Bookings',      to: '/bookings',   icon: BookOpen },
+  { label: 'Expenses',      to: '/expenses',   icon: Receipt,       feature: 'expenses',   tier: 'Standard' },
+  { label: 'Reports',       to: '/reports',    icon: BarChart3,     feature: 'reports',    tier: 'Standard' },
+  { label: 'Night Audit',   to: '/audit',      icon: ClipboardList, feature: 'audit',      tier: 'Standard' },
+  { label: 'Conference',    to: '/conference', icon: Presentation,  feature: 'conference', tier: 'Standard' },
+  { label: 'Day Use',       to: '/dayuse',     icon: Waves,         feature: 'pool',       tier: 'Standard' },
+  { label: 'Staff',         to: '/staff',      icon: Users,         feature: 'staff',      tier: 'Standard' },
+  { label: 'POS',           to: '/pos',        icon: ShoppingCart,  feature: 'pos',        tier: 'Pro' },
+  { label: 'Inventory',     to: '/inventory',  icon: Package,       feature: 'inventory',  tier: 'Pro' },
+  { label: 'Room Supplies', to: '/supplies',   icon: Boxes,         feature: 'supplies',   tier: 'Pro' },
+]
 
 function formatWhatsAppPhone(phone) {
   if (!phone) return ''
@@ -23,6 +46,8 @@ function formatWhatsAppPhone(phone) {
 
 export default function Dashboard() {
   const { settings } = useSettings()
+  const features = useFeatures()
+  const navigate = useNavigate()
   const currency = settings?.currency || 'P'
 
   const [stats, setStats] = useState(null)
@@ -44,7 +69,23 @@ export default function Dashboard() {
       window.api.inventory.getLowStock().catch(() => [])
     ])
     setStats(s)
-    setRecentBookings(bookings.slice(0, 6))
+
+    // Collapse exclusive event room-rows into one entry per event group
+    const regularBookings = bookings.filter(b => !b.is_exclusive_event)
+    const eventRows       = bookings.filter(b => b.is_exclusive_event)
+    const eventGroupMap   = {}
+    eventRows.forEach(b => {
+      const match   = b.notes?.match(/\[GROUP:([^\]]+)\]/)
+      const groupId = match?.[1] || b.check_in
+      if (!eventGroupMap[groupId]) {
+        const nights = Math.ceil((new Date(b.check_out) - new Date(b.check_in)) / 86400000)
+        eventGroupMap[groupId] = { ...b, room_count: 0, total_amount: (b.event_daily_rate || 0) * nights, _event_group: true }
+      }
+      eventGroupMap[groupId].room_count++
+    })
+    const combined = [...regularBookings, ...Object.values(eventGroupMap)]
+      .sort((a, b_) => new Date(b_.check_in) - new Date(a.check_in))
+    setRecentBookings(combined.slice(0, 6))
     setUpcoming(up || { today: [], tomorrow: [], dayAfter: [] })
     setForecast(fc || [])
     setLowStock(ls || [])
@@ -68,6 +109,37 @@ export default function Dashboard() {
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-gray-800">Dashboard</h1>
         <p className="text-gray-500 text-sm mt-0.5">{today}</p>
+      </div>
+
+      {/* Quick Access */}
+      <div className="mb-8">
+        <h2 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Quick Access</h2>
+        <div className="grid grid-cols-5 lg:grid-cols-10 gap-2">
+          {SHORTCUTS.map(({ label, to, icon: Icon, feature, tier }) => {
+            const isLocked = feature && Object.keys(features).length > 0 && features[feature] === false
+            const tierColor = tier === 'Pro' ? 'text-purple-500' : 'text-blue-500'
+            return (
+              <button
+                key={to}
+                onClick={() => navigate(to)}
+                className={`flex flex-col items-center gap-1.5 p-3 rounded-xl border transition-all text-center relative ${
+                  isLocked
+                    ? 'bg-gray-50 border-gray-200 opacity-50 hover:opacity-70'
+                    : 'bg-white border-gray-200 hover:border-green-400 hover:bg-green-50 hover:shadow-sm'
+                }`}
+              >
+                <Icon size={20} className={isLocked ? 'text-gray-400' : 'text-gray-600'} />
+                <span className="text-[11px] font-medium text-gray-600 leading-tight">{label}</span>
+                {isLocked && (
+                  <Lock size={10} className={`absolute top-1.5 right-1.5 ${tierColor}`} />
+                )}
+                {isLocked && tier && (
+                  <span className={`text-[9px] font-bold ${tierColor}`}>{tier}</span>
+                )}
+              </button>
+            )
+          })}
+        </div>
       </div>
 
       {/* Stats Grid */}
@@ -211,9 +283,16 @@ export default function Dashboard() {
               <tbody className="divide-y divide-gray-50">
                 {recentBookings.map((b) => (
                   <tr key={b.id} className="hover:bg-gray-50">
-                    <td className="px-5 py-3 font-mono text-xs font-semibold text-gray-400">{b.booking_number || '—'}</td>
-                    <td className="px-5 py-3 font-medium text-gray-800">{b.customer_name}</td>
-                    <td className="px-5 py-3 text-gray-600">Room {b.room_number}</td>
+                    <td className="px-5 py-3 font-mono text-xs font-semibold text-gray-400">{b._event_group ? '—' : (b.booking_number || '—')}</td>
+                    <td className="px-5 py-3 font-medium text-gray-800">
+                      <div className="flex items-center gap-1.5">
+                        {b.customer_name}
+                        {b._event_group && (
+                          <span className="text-[9px] font-bold bg-indigo-100 text-indigo-600 px-1.5 py-0.5 rounded flex-shrink-0">EVENT</span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-5 py-3 text-gray-600">{b._event_group ? `${b.room_count} rooms` : `Room ${b.room_number}`}</td>
                     <td className="px-5 py-3 text-gray-600">{b.check_in}</td>
                     <td className="px-5 py-3">
                       <StatusBadge status={b.status} />

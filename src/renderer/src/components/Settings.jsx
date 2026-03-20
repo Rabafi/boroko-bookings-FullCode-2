@@ -22,14 +22,23 @@ export default function Settings() {
   const [appVersion, setAppVersion] = useState('')
   const [updateStatus, setUpdateStatus] = useState('idle') // idle | checking | uptodate | available | error
   const [updateMessage, setUpdateMessage] = useState('')
+  const [downloadProgress, setDownloadProgress] = useState(null) // null | { percent, transferred, total }
+  const [updateReady, setUpdateReady] = useState(false)
 
   useEffect(() => {
     window.api.updates.getVersion().then(setAppVersion).catch(() => {})
   }, [])
 
+  useEffect(() => {
+    window.api.updates.onProgress((p) => setDownloadProgress(p))
+    window.api.updates.onReady(() => { setUpdateReady(true); setDownloadProgress(null) })
+  }, [])
+
   const checkForUpdates = async () => {
     setUpdateStatus('checking')
     setUpdateMessage('')
+    setDownloadProgress(null)
+    setUpdateReady(false)
     try {
       const res = await window.api.updates.check()
       if (res.dev) {
@@ -68,6 +77,7 @@ export default function Settings() {
   const [upgradeMsg, setUpgradeMsg] = useState('')
   const [upgradeSending, setUpgradeSending] = useState(false)
   const [upgradeSent, setUpgradeSent] = useState(false)
+  const [invoices, setInvoices] = useState([])
 
   const refreshLicenseStatus = (lodgeId) => {
     if (lodgeId && window.api?.trial) {
@@ -78,6 +88,12 @@ export default function Settings() {
   useEffect(() => {
     refreshLicenseStatus(globalSettings?.lodge_id)
   }, [globalSettings?.lodge_id])
+
+  useEffect(() => {
+    if (licenseStatus?.status === 'licensed' && globalSettings?.lodge_id && window.api?.trial?.getInvoices) {
+      window.api.trial.getInvoices(globalSettings.lodge_id).then(setInvoices).catch(() => {})
+    }
+  }, [licenseStatus?.status, globalSettings?.lodge_id])
 
   const handleActivate = async () => {
     setActivateMsg(null)
@@ -361,6 +377,31 @@ export default function Settings() {
                 <span>{updateMessage}</span>
               </div>
             )}
+
+            {downloadProgress && (
+              <div className="mt-3">
+                <div className="flex justify-between text-xs text-gray-500 mb-1">
+                  <span>Downloading update…</span>
+                  <span>{downloadProgress.percent}%</span>
+                </div>
+                <div className="w-full bg-gray-200 rounded-full h-2">
+                  <div
+                    className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                    style={{ width: `${downloadProgress.percent}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {updateReady && (
+              <button
+                type="button"
+                onClick={() => window.api.updates.install()}
+                className="mt-3 w-full bg-green-600 hover:bg-green-700 text-white text-xs font-semibold py-2 rounded-lg transition-colors"
+              >
+                Install &amp; Restart
+              </button>
+            )}
           </div>
 
           <form onSubmit={handleSave} className="space-y-6">
@@ -448,10 +489,37 @@ export default function Settings() {
                     </select>
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      <Hash size={13} className="inline mr-1" />VAT / Tax Number
-                    </label>
-                    <input className="input" value={form.vat_number} onChange={(e) => set('vat_number', e.target.value)} placeholder="Optional" />
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="block text-sm font-medium text-gray-700">
+                        <Hash size={13} className="inline mr-1" />VAT / Tax
+                      </label>
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <span className="text-xs text-gray-500">{form.vat_enabled ? 'Enabled' : 'Disabled'}</span>
+                        <div
+                          onClick={() => set('vat_enabled', !form.vat_enabled)}
+                          className={`relative w-9 h-5 rounded-full transition-colors cursor-pointer ${form.vat_enabled ? 'bg-blue-600' : 'bg-gray-300'}`}
+                        >
+                          <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${form.vat_enabled ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                        </div>
+                      </label>
+                    </div>
+                    {form.vat_enabled && (
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="block text-xs text-gray-500 mb-1">VAT Rate (%)</label>
+                          <input
+                            type="number" min="0" max="100" step="0.1" className="input"
+                            value={form.vat_rate || ''}
+                            onChange={(e) => set('vat_rate', parseFloat(e.target.value) || 0)}
+                            placeholder="e.g. 14"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs text-gray-500 mb-1">VAT Number</label>
+                          <input className="input" value={form.vat_number || ''} onChange={(e) => set('vat_number', e.target.value)} placeholder="Optional" />
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -739,6 +807,37 @@ export default function Settings() {
                   )}
                 </div>
               )}
+            </div>
+          )}
+
+          {/* ── Payment History ─────────────────────────────────────────── */}
+          {licenseStatus?.status === 'licensed' && invoices.length > 0 && (
+            <div className="bg-white rounded-xl shadow-sm p-5">
+              <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wider mb-4 flex items-center gap-2">
+                <CreditCard size={15} className="text-green-600" /> Payment History
+              </h2>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-xs text-gray-400 border-b border-gray-100">
+                      <th className="pb-2 text-left font-medium">Invoice #</th>
+                      <th className="pb-2 text-left font-medium">Package</th>
+                      <th className="pb-2 text-right font-medium">Amount</th>
+                      <th className="pb-2 text-left font-medium pl-4">Date</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {invoices.map((inv) => (
+                      <tr key={inv.id} className="border-t border-gray-50">
+                        <td className="py-2.5 font-mono text-xs text-green-700">{inv.invoice_number}</td>
+                        <td className="py-2.5 text-gray-700">{inv.package_name}</td>
+                        <td className="py-2.5 text-right font-semibold text-gray-800">{inv.currency} {Number(inv.amount).toFixed(2)}</td>
+                        <td className="py-2.5 text-gray-500 pl-4 text-xs">{fmtDate(inv.paid_date || inv.issued_date)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
 
