@@ -1,6 +1,11 @@
 import { useEffect, useState, useRef } from 'react'
 import { Building2, Phone, Mail, MapPin, Globe, Hash, Save, Upload, X, Image, Moon, Plus, Pencil, Trash2, Calendar, RefreshCw, CheckCircle2, AlertTriangle, Key, ShieldCheck, Clock, CreditCard, Copy, TrendingUp, ArrowUpCircle, Settings as SettingsIcon } from 'lucide-react'
 import { useSettings } from '../App'
+import SystemHealthPanel from './SystemHealthPanel'
+import SubscriptionAccessPanel from './SubscriptionAccessPanel'
+
+// Update this to your actual booking site URL after deployment
+const BOOKING_SITE_BASE = 'https://book.boroko.app'
 
 
 export default function Settings() {
@@ -24,14 +29,45 @@ export default function Settings() {
   const [updateMessage, setUpdateMessage] = useState('')
   const [downloadProgress, setDownloadProgress] = useState(null) // null | { percent, transferred, total }
   const [updateReady, setUpdateReady] = useState(false)
+  const formatBytes = (bytes = 0) => {
+    if (bytes < 1024) return `${bytes} B`
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`
+  }
 
   useEffect(() => {
     window.api.updates.getVersion().then(setAppVersion).catch(() => {})
   }, [])
 
   useEffect(() => {
-    window.api.updates.onProgress((p) => setDownloadProgress(p))
-    window.api.updates.onReady(() => { setUpdateReady(true); setDownloadProgress(null) })
+    window.api.updates.onAvailable((info) => {
+      setUpdateStatus('available')
+      setUpdateMessage(`v${info.version} found. Downloading now...`)
+      setDownloadProgress({ percent: 0, transferred: 0, total: 0, bytesPerSecond: 0 })
+      setUpdateReady(false)
+    })
+    window.api.updates.onNotAvailable(() => {
+      setUpdateStatus('uptodate')
+      setUpdateMessage('You\'re running the latest version.')
+      setDownloadProgress(null)
+      setUpdateReady(false)
+    })
+    window.api.updates.onProgress((p) => {
+      setUpdateStatus('available')
+      setDownloadProgress(p)
+      setUpdateMessage(p.bytesPerSecond > 0 ? `Downloading at ${formatBytes(p.bytesPerSecond)}/s` : 'Preparing download...')
+    })
+    window.api.updates.onReady(() => {
+      setUpdateReady(true)
+      setUpdateStatus('available')
+      setUpdateMessage('Download complete. Restart to install.')
+    })
+    window.api.updates.onError((info) => {
+      setUpdateStatus('error')
+      setUpdateMessage(info?.message || 'Update failed.')
+      setUpdateReady(false)
+    })
   }, [])
 
   const checkForUpdates = async () => {
@@ -49,7 +85,7 @@ export default function Settings() {
         setUpdateMessage(res.error || 'Could not reach update server.')
       } else if (res.updateAvailable) {
         setUpdateStatus('available')
-        setUpdateMessage(`v${res.latestVersion} is available — downloading now. You'll see a banner at the top when ready.`)
+        setUpdateMessage(`v${res.latestVersion} is available — download started.`)
       } else {
         setUpdateStatus('uptodate')
         setUpdateMessage('You\'re running the latest version.')
@@ -73,6 +109,15 @@ export default function Settings() {
   const [activating, setActivating] = useState(false)
   const [activateMsg, setActivateMsg] = useState(null) // { type: 'success'|'error', text }
   const [lodgeIdCopied, setLodgeIdCopied] = useState(false)
+  const [slugCopied, setSlugCopied] = useState(false)
+
+  // Auto-generate slug from lodge name (only when slug is blank)
+  const toSlug = (name) =>
+    (name || '').toLowerCase()
+      .replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-')
+      .replace(/-+/g, '-').replace(/^-+|-+$/g, '').substring(0, 50)
+
+  const onlinePlanOk = licenseStatus?.effective_features?.online_booking === true
   const [upgradeOpen, setUpgradeOpen] = useState(false)
   const [upgradeMsg, setUpgradeMsg] = useState('')
   const [upgradeSending, setUpgradeSending] = useState(false)
@@ -281,7 +326,8 @@ export default function Settings() {
 
   const tabs = [
     { id: 'general', label: 'General', icon: <SettingsIcon size={14} /> },
-    { id: 'license', label: 'License & Billing', icon: <CreditCard size={14} /> },
+    { id: 'license', label: 'Subscription & Access', icon: <CreditCard size={14} /> },
+    { id: 'system', label: 'System Health', icon: <ShieldCheck size={14} /> },
   ]
 
   return (
@@ -379,16 +425,20 @@ export default function Settings() {
             )}
 
             {downloadProgress && (
-              <div className="mt-3">
-                <div className="flex justify-between text-xs text-gray-500 mb-1">
-                  <span>Downloading update…</span>
-                  <span>{downloadProgress.percent}%</span>
+              <div className="mt-4 rounded-xl border border-sky-100 bg-sky-50 p-4">
+                <div className="flex items-center justify-between text-xs text-sky-800 mb-2">
+                  <span className="font-semibold">Downloading update…</span>
+                  <span className="tabular-nums">{downloadProgress.percent}%</span>
                 </div>
-                <div className="w-full bg-gray-200 rounded-full h-2">
+                <div className="w-full bg-white rounded-full h-2.5 overflow-hidden shadow-inner">
                   <div
-                    className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                    className="bg-gradient-to-r from-sky-500 via-cyan-500 to-emerald-500 h-2.5 rounded-full transition-all duration-300"
                     style={{ width: `${downloadProgress.percent}%` }}
                   />
+                </div>
+                <div className="mt-2 flex items-center justify-between text-[11px] text-sky-700">
+                  <span>{formatBytes(downloadProgress.transferred)} of {downloadProgress.total ? formatBytes(downloadProgress.total) : 'calculating...'}</span>
+                  <span>{downloadProgress.bytesPerSecond > 0 ? `${formatBytes(downloadProgress.bytesPerSecond)}/s` : 'starting...'}</span>
                 </div>
               </div>
             )}
@@ -640,6 +690,83 @@ export default function Settings() {
               )}
             </div>
 
+            {/* ── Online Booking Site ──────────────────────────────────────── */}
+            <div className="border border-gray-200 rounded-xl p-5 space-y-4">
+              <div className="flex items-center gap-2">
+                <Globe size={16} className="text-gray-500" />
+                <h3 className="font-semibold text-gray-800 text-sm">Online Booking Site</h3>
+                <span className="ml-auto text-xs font-semibold px-2 py-0.5 rounded-full bg-violet-100 text-violet-700">Pro</span>
+              </div>
+
+              {!onlinePlanOk ? (
+                <div className="bg-gray-50 border border-gray-200 rounded-lg px-4 py-3 text-sm text-gray-500">
+                  Upgrade to <strong>Pro</strong> to get a public booking page guests can use to request rooms online.
+                </div>
+              ) : (
+                <>
+                  <p className="text-xs text-gray-500">
+                    Guests can browse and request rooms at your unique booking link.
+                    Set a short, memorable URL slug below.
+                  </p>
+
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">
+                      Your booking URL slug
+                    </label>
+                    <div className="flex gap-2">
+                      <span className="flex items-center px-3 bg-gray-100 border border-r-0 border-gray-200 rounded-l-lg text-xs text-gray-400 whitespace-nowrap">
+                        {BOOKING_SITE_BASE.replace('https://', '')}/
+                      </span>
+                      <input
+                        type="text"
+                        value={form?.slug || ''}
+                        onChange={e => {
+                          const raw = e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '').substring(0, 50)
+                          set('slug', raw)
+                        }}
+                        onFocus={() => {
+                          // Auto-populate from lodge name if still empty
+                          if (!form?.slug && form?.lodge_name) {
+                            set('slug', toSlug(form.lodge_name))
+                          }
+                        }}
+                        placeholder={form?.lodge_name ? toSlug(form.lodge_name) : 'your-lodge-name'}
+                        className="input flex-1 rounded-l-none border-l-0"
+                        spellCheck={false}
+                      />
+                    </div>
+                    <p className="text-xs text-gray-400 mt-1">
+                      Lowercase letters, numbers, and hyphens only. Must be unique.
+                    </p>
+                  </div>
+
+                  {form?.slug && (
+                    <div className="flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2">
+                      <span className="text-xs text-gray-500 flex-1 truncate font-mono">
+                        {BOOKING_SITE_BASE.replace('https://', '')}/{form.slug}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          navigator.clipboard.writeText(`${BOOKING_SITE_BASE}/${form.slug}`)
+                          setSlugCopied(true)
+                          setTimeout(() => setSlugCopied(false), 2000)
+                        }}
+                        className="text-xs text-gray-500 hover:text-gray-700 flex items-center gap-1 shrink-0"
+                      >
+                        <Copy size={12} />
+                        {slugCopied ? 'Copied!' : 'Copy link'}
+                      </button>
+                    </div>
+                  )}
+
+                  <p className="text-xs text-gray-400">
+                    Save your settings to activate the link. Online booking requests will appear as <strong>Pending</strong> in your Bookings screen for you to confirm or reject.
+                  </p>
+                </>
+              )}
+            </div>
+
             {/* ── Save ─────────────────────────────────────────────────────── */}
             <div className="flex items-center gap-4 pb-6">
               <button type="submit" disabled={saving} className="btn-primary flex items-center gap-2">
@@ -658,211 +785,11 @@ export default function Settings() {
           LICENSE & BILLING TAB
           ════════════════════════════════════════════════════════════════ */}
       {activeTab === 'license' && (
-        <div className="space-y-5 pb-8">
+        <SubscriptionAccessPanel />
+      )}
 
-          {/* ── Status card ─────────────────────────────────────────────── */}
-          <div className="bg-white rounded-xl shadow-sm p-5">
-            <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wider mb-4 flex items-center gap-2">
-              <ShieldCheck size={15} className="text-green-600" /> License Status
-            </h2>
-
-            {!licenseStatus ? (
-              <p className="text-sm text-gray-400">Checking license…</p>
-            ) : licenseStatus.status === 'licensed' ? (
-              <div className="flex items-start gap-3 bg-green-50 border border-green-200 rounded-xl px-5 py-4">
-                <ShieldCheck size={20} className="text-green-600 flex-shrink-0 mt-0.5" />
-                <div>
-                  <p className="text-sm font-semibold text-green-800">Active License — {licenseStatus.plan || 'Starter'}</p>
-                  <p className="text-xs text-green-600 mt-0.5">Your software license is active and up to date.</p>
-                </div>
-              </div>
-            ) : licenseStatus.status === 'trial' ? (
-              <div className={`flex items-start gap-3 border rounded-xl px-5 py-4 ${
-                licenseStatus.daysLeft <= 1 ? 'bg-red-50 border-red-200' :
-                licenseStatus.daysLeft <= 2 ? 'bg-amber-50 border-amber-200' :
-                'bg-blue-50 border-blue-200'
-              }`}>
-                <Clock size={20} className={`flex-shrink-0 mt-0.5 ${licenseStatus.daysLeft <= 1 ? 'text-red-600' : licenseStatus.daysLeft <= 2 ? 'text-amber-600' : 'text-blue-600'}`} />
-                <div>
-                  <p className={`text-sm font-semibold ${licenseStatus.daysLeft <= 1 ? 'text-red-800' : licenseStatus.daysLeft <= 2 ? 'text-amber-800' : 'text-blue-800'}`}>
-                    Free Trial — {licenseStatus.daysLeft} day{licenseStatus.daysLeft !== 1 ? 's' : ''} remaining
-                  </p>
-                  <p className={`text-xs mt-0.5 ${licenseStatus.daysLeft <= 1 ? 'text-red-600' : licenseStatus.daysLeft <= 2 ? 'text-amber-600' : 'text-blue-600'}`}>
-                    Enter your activation key below to unlock full access.
-                  </p>
-                </div>
-              </div>
-            ) : (
-              <div className="flex items-start gap-3 bg-red-50 border border-red-200 rounded-xl px-5 py-4">
-                <AlertTriangle size={20} className="text-red-600 flex-shrink-0 mt-0.5" />
-                <div>
-                  <p className="text-sm font-semibold text-red-800">Trial Expired</p>
-                  <p className="text-xs text-red-600 mt-0.5">Enter your activation key below to restore access.</p>
-                </div>
-              </div>
-            )}
-
-            {/* Activation key input — show when not licensed */}
-            {licenseStatus?.status !== 'licensed' && (
-              <div className="border-t mt-5 pt-5 space-y-3">
-                <p className="text-sm font-medium text-gray-700">Enter Activation Key</p>
-                <div className="flex gap-2">
-                  <div className="relative flex-1">
-                    <Key size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-                    <input
-                      className="input pl-8 font-mono tracking-wider uppercase"
-                      placeholder="BB-XXXX-XXXX-XXXX"
-                      value={licenseKey}
-                      onChange={(e) => setLicenseKey(e.target.value.toUpperCase())}
-                      maxLength={17}
-                    />
-                  </div>
-                  <button
-                    type="button"
-                    onClick={handleActivate}
-                    disabled={activating || !licenseKey.trim()}
-                    className="btn-primary flex items-center gap-2 whitespace-nowrap"
-                  >
-                    <ShieldCheck size={14} />
-                    {activating ? 'Activating…' : 'Activate'}
-                  </button>
-                </div>
-                {activateMsg && (
-                  <p className={`text-sm flex items-center gap-1.5 ${activateMsg.type === 'success' ? 'text-green-600' : 'text-red-600'}`}>
-                    {activateMsg.type === 'success' ? <CheckCircle2 size={14} /> : <AlertTriangle size={14} />}
-                    {activateMsg.text}
-                  </p>
-                )}
-                <p className="text-xs text-gray-400">Activation keys are issued by Boroko support after purchase. Contact us if you need help.</p>
-              </div>
-            )}
-          </div>
-
-          {/* ── Subscription Details ─────────────────────────────────────── */}
-          {licenseStatus?.status === 'licensed' && (
-            <div className="bg-white rounded-xl shadow-sm p-5">
-              <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wider mb-4 flex items-center gap-2">
-                <TrendingUp size={15} className="text-green-600" /> Subscription Details
-              </h2>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div className="bg-gray-50 rounded-lg p-4">
-                  <p className="text-xs text-gray-500 mb-1">Plan</p>
-                  <p className="text-base font-bold text-gray-800">{licenseStatus.plan || 'Starter'}</p>
-                </div>
-                <div className="bg-gray-50 rounded-lg p-4">
-                  <p className="text-xs text-gray-500 mb-1">Payment Status</p>
-                  <div className="mt-0.5">{paymentBadge(licenseStatus.payment_status) || <span className="text-sm text-gray-500">—</span>}</div>
-                </div>
-                <div className="bg-gray-50 rounded-lg p-4">
-                  <p className="text-xs text-gray-500 mb-1">License Expiry</p>
-                  <p className="text-sm font-semibold text-gray-800">
-                    {licenseStatus.expires_at ? fmtDate(licenseStatus.expires_at) : 'No expiry (lifetime)'}
-                  </p>
-                </div>
-                <div className="bg-gray-50 rounded-lg p-4">
-                  <p className="text-xs text-gray-500 mb-1">Next Due Date</p>
-                  <p className="text-sm font-semibold text-gray-800">{fmtDate(licenseStatus.next_due_date)}</p>
-                </div>
-                {licenseStatus.monthly_fee > 0 && (
-                  <div className="bg-gray-50 rounded-lg p-4 col-span-2">
-                    <p className="text-xs text-gray-500 mb-1">Monthly Fee</p>
-                    <p className="text-base font-bold text-gray-800">
-                      {licenseStatus.currency || 'USD'} {Number(licenseStatus.monthly_fee).toFixed(2)}
-                    </p>
-                  </div>
-                )}
-              </div>
-
-              {/* Upgrade CTA */}
-              {!upgradeOpen ? (
-                <button
-                  type="button"
-                  onClick={() => setUpgradeOpen(true)}
-                  className="mt-5 w-full flex items-center justify-center gap-2 border-2 border-dashed border-green-300 text-green-700 hover:bg-green-50 font-semibold text-sm py-3 rounded-xl transition-colors"
-                >
-                  <ArrowUpCircle size={16} />
-                  Request Plan Upgrade
-                </button>
-              ) : (
-                <div className="mt-5 border border-green-200 rounded-xl p-4 bg-green-50 space-y-3">
-                  <p className="text-sm font-semibold text-green-800 flex items-center gap-2"><ArrowUpCircle size={15} /> Request a Plan Upgrade</p>
-                  {upgradeSent ? (
-                    <p className="text-sm text-green-700 flex items-center gap-2"><CheckCircle2 size={14} /> Request sent! We'll be in touch shortly.</p>
-                  ) : (
-                    <>
-                      <textarea
-                        className="input h-20 resize-none text-sm"
-                        placeholder="Tell us which plan you'd like and anything else relevant (usage, number of rooms, etc.)…"
-                        value={upgradeMsg}
-                        onChange={e => setUpgradeMsg(e.target.value)}
-                      />
-                      <div className="flex gap-2">
-                        <button type="button" onClick={() => setUpgradeOpen(false)} className="btn-secondary flex-1 text-sm">Cancel</button>
-                        <button type="button" onClick={handleUpgradeRequest} disabled={upgradeSending || !upgradeMsg.trim()} className="btn-primary flex-1 text-sm">
-                          {upgradeSending ? 'Sending…' : 'Send Request'}
-                        </button>
-                      </div>
-                    </>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* ── Payment History ─────────────────────────────────────────── */}
-          {licenseStatus?.status === 'licensed' && invoices.length > 0 && (
-            <div className="bg-white rounded-xl shadow-sm p-5">
-              <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wider mb-4 flex items-center gap-2">
-                <CreditCard size={15} className="text-green-600" /> Payment History
-              </h2>
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="text-xs text-gray-400 border-b border-gray-100">
-                      <th className="pb-2 text-left font-medium">Invoice #</th>
-                      <th className="pb-2 text-left font-medium">Package</th>
-                      <th className="pb-2 text-right font-medium">Amount</th>
-                      <th className="pb-2 text-left font-medium pl-4">Date</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {invoices.map((inv) => (
-                      <tr key={inv.id} className="border-t border-gray-50">
-                        <td className="py-2.5 font-mono text-xs text-green-700">{inv.invoice_number}</td>
-                        <td className="py-2.5 text-gray-700">{inv.package_name}</td>
-                        <td className="py-2.5 text-right font-semibold text-gray-800">{inv.currency} {Number(inv.amount).toFixed(2)}</td>
-                        <td className="py-2.5 text-gray-500 pl-4 text-xs">{fmtDate(inv.paid_date || inv.issued_date)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {/* ── Installation ID ──────────────────────────────────────────── */}
-          <div className="bg-white rounded-xl shadow-sm p-5">
-            <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wider mb-3 flex items-center gap-2">
-              <Hash size={15} className="text-gray-400" /> Installation ID
-            </h2>
-            <p className="text-xs text-gray-500 mb-2">Share this with Boroko support if you need help with your license.</p>
-            <div className="flex items-center gap-2">
-              <code className="flex-1 text-xs bg-gray-100 rounded-lg px-3 py-2.5 text-gray-600 font-mono truncate">
-                {globalSettings?.lodge_id || '—'}
-              </code>
-              <button
-                type="button"
-                onClick={copyLodgeId}
-                className="p-2.5 bg-gray-100 hover:bg-gray-200 text-gray-500 hover:text-gray-700 rounded-lg transition-colors"
-                title="Copy ID"
-              >
-                {lodgeIdCopied ? <CheckCircle2 size={15} className="text-green-500" /> : <Copy size={15} />}
-              </button>
-            </div>
-          </div>
-
-        </div>
+      {activeTab === 'system' && (
+        <SystemHealthPanel />
       )}
     </div>
   )
