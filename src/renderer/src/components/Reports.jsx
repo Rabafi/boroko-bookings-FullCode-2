@@ -57,9 +57,10 @@ export default function Reports() {
   const [exportSuccess, setExportSuccess] = useState('')
   const [strictFinanceMode, setStrictFinanceMode] = useState(() => {
     try {
-      return localStorage.getItem('bb_strict_finance_reports') === 'true'
+      // Default ON — only disable if staff has explicitly turned it off
+      return localStorage.getItem('bb_strict_finance_reports') !== 'false'
     } catch {
-      return false
+      return true
     }
   })
 
@@ -341,20 +342,24 @@ export default function Reports() {
           <p className="bb-page-header-subtitle">Occupancy, revenue, cost, and performance analysis across operations.</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <button onClick={exportCSV} disabled={!revenue || loading}
-            className="btn-secondary disabled:opacity-40">
+          {/* Disable all exports when data is from local fallback — money numbers must be authoritative */}
+          <button onClick={exportCSV} disabled={!revenue || loading || revenue?.source !== 'server'}
+            className="btn-secondary disabled:opacity-40"
+            title={revenue?.source !== 'server' ? 'Export blocked: report is using local fallback data, not server-authoritative data' : ''}>
             <Download size={14} /> CSV
           </button>
-          <button onClick={handleSaveExcel} disabled={!revenue || loading || savingXLSX}
-            className="inline-flex items-center gap-2 rounded-2xl border border-emerald-300 bg-emerald-50 px-4 py-2.5 text-sm font-medium text-emerald-700 transition-colors hover:bg-emerald-100 disabled:opacity-40">
+          <button onClick={handleSaveExcel} disabled={!revenue || loading || savingXLSX || revenue?.source !== 'server'}
+            className="inline-flex items-center gap-2 rounded-2xl border border-emerald-300 bg-emerald-50 px-4 py-2.5 text-sm font-medium text-emerald-700 transition-colors hover:bg-emerald-100 disabled:opacity-40"
+            title={revenue?.source !== 'server' ? 'Export blocked: report is using local fallback data, not server-authoritative data' : ''}>
             <Table size={14} /> {savingXLSX ? 'Saving…' : 'Excel'}
           </button>
           <button onClick={handlePrint} disabled={!revenue || loading}
             className="btn-secondary disabled:opacity-40">
             <Printer size={14} /> Print
           </button>
-          <button onClick={handleSavePDF} disabled={!revenue || loading || savingPDF}
-            className="btn-primary disabled:opacity-40">
+          <button onClick={handleSavePDF} disabled={!revenue || loading || savingPDF || revenue?.source !== 'server'}
+            className="btn-primary disabled:opacity-40"
+            title={revenue?.source !== 'server' ? 'Export blocked: report is using local fallback data, not server-authoritative data' : ''}>
             <FileDown size={14} /> {savingPDF ? 'Saving…' : 'Save PDF'}
           </button>
           <button
@@ -447,9 +452,18 @@ export default function Reports() {
           Shared reports snapshot in use: {summarySnapshot.source === 'server' ? 'server-authoritative' : 'local fallback'} as of {summarySnapshot.as_of || end}.
         </div>
       )}
-      {activeTab === 'bookings' && revenueSource && (
-        <div className={`no-print rounded-2xl border px-4 py-3 text-xs ${revenue?.source === 'server' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-amber-200 bg-amber-50 text-amber-800'}`}>
-          Revenue report source: {revenueSource} for {start} to {end}.
+      {activeTab === 'bookings' && revenueSource && revenue?.source !== 'server' && (
+        <div className="no-print flex items-start gap-3 rounded-2xl border-2 border-red-400 bg-red-50 px-5 py-4 text-sm text-red-800 font-medium shadow-sm">
+          <span className="text-lg leading-none">⛔</span>
+          <div>
+            <p className="font-semibold">Financial data is using local fallback — NOT server-authoritative</p>
+            <p className="mt-1 text-xs font-normal text-red-700">Exports are blocked. Restore server connectivity and reload to get verified numbers. Do not make financial decisions based on this data.</p>
+          </div>
+        </div>
+      )}
+      {activeTab === 'bookings' && revenueSource && revenue?.source === 'server' && (
+        <div className="no-print rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs text-emerald-700">
+          Revenue source: server-authoritative for {start} to {end}.
         </div>
       )}
       {activeTab === 'pl' && profitLossSource && (

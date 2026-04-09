@@ -905,8 +905,19 @@ function getCachePath(name) {
 function readCache(name) {
   const filePath = getCachePath(name)
   const tmpPath  = filePath + '.tmp'
-  // Clean up any .tmp left by a previous crash-interrupted write
-  try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath) } catch { /* ignore */ }
+  // Crash recovery: if a .tmp file exists, it was written atomically just before
+  // a crash-interrupted renameSync. Prefer it over the potentially stale main file.
+  if (fs.existsSync(tmpPath)) {
+    try {
+      const tmpData = JSON.parse(fs.readFileSync(tmpPath, 'utf-8'))
+      fs.renameSync(tmpPath, filePath)
+      console.warn(`[Cache] Crash-recovery: promoted '${name}.tmp' to main file`)
+      return tmpData
+    } catch {
+      // .tmp is corrupt — discard it and fall through to main file
+      try { fs.unlinkSync(tmpPath) } catch { /* ignore */ }
+    }
+  }
   try {
     const data = fs.readFileSync(filePath, 'utf-8')
     return JSON.parse(data)
@@ -937,8 +948,20 @@ function clearCache(name, fallback = []) {
 function readSyncQueue() {
   const filePath = path.join(cacheDir, 'sync-queue.json')
   const tmpPath  = filePath + '.tmp'
-  // Clean up any .tmp left by a previous crash-interrupted write
-  try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath) } catch { /* ignore */ }
+  // Crash recovery: if a .tmp file exists, it was written atomically just before
+  // a crash-interrupted renameSync. Prefer it — it may contain queued financial
+  // operations (payments, bookings) that would otherwise be lost permanently.
+  if (fs.existsSync(tmpPath)) {
+    try {
+      const tmpData = JSON.parse(fs.readFileSync(tmpPath, 'utf-8'))
+      fs.renameSync(tmpPath, filePath)
+      console.warn('[Sync Queue] Crash-recovery: promoted sync-queue.tmp to main file')
+      return tmpData
+    } catch {
+      // .tmp is corrupt — discard it and fall through to main file
+      try { fs.unlinkSync(tmpPath) } catch { /* ignore */ }
+    }
+  }
   try {
     const data = fs.readFileSync(filePath, 'utf-8')
     return JSON.parse(data)
