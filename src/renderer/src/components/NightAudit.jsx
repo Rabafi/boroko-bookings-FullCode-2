@@ -26,11 +26,13 @@ function groupEventBookings(list) {
     const match   = b.notes?.match(/\[GROUP:([^\]]+)\]/)
     const groupId = match?.[1] || b.check_in
     if (!groupMap[groupId]) {
-      const n = Math.ceil((new Date(b.check_out) - new Date(b.check_in)) / 86400000)
-      groupMap[groupId] = { ...b, room_count: 0, total_amount: (b.event_daily_rate || 0) * n, amount_paid: 0, _event_group: true }
+      // total_amount starts at 0 and is accumulated from stored per-room values below.
+      // Do NOT derive from event_daily_rate × nights — that drifts from authoritative stored values.
+      groupMap[groupId] = { ...b, room_count: 0, total_amount: 0, amount_paid: 0, _event_group: true }
     }
     groupMap[groupId].room_count++
-    groupMap[groupId].amount_paid += (b.amount_paid || 0)
+    groupMap[groupId].total_amount += Number(b.total_amount || 0)
+    groupMap[groupId].amount_paid  += Number(b.amount_paid  || 0)
   })
   return [...regular, ...Object.values(groupMap)]
 }
@@ -234,7 +236,7 @@ export default function NightAudit() {
                   </thead>
                   <tbody className="divide-y divide-gray-50">
                     {groupedCheckIns.map((b) => {
-                      const balance = Math.max(0, Number(b.total_amount || 0) - Number(b.amount_paid || 0))
+                      const balance = Math.max(0, Number(b.total_amount || 0) + Number(b.charges_total || 0) - Number(b.amount_paid || 0))
                       return (
                         <tr key={b.id} className="hover:bg-gray-50">
                           <td className="px-5 py-3 font-mono text-xs text-gray-400">{b._event_group ? '—' : (b.booking_number || '—')}</td>
@@ -305,7 +307,7 @@ export default function NightAudit() {
                   </thead>
                   <tbody className="divide-y divide-gray-50">
                     {groupedCheckOuts.map((b) => {
-                      const balance = Math.max(0, Number(b.total_amount || 0) - Number(b.amount_paid || 0))
+                      const balance = Math.max(0, Number(b.total_amount || 0) + Number(b.charges_total || 0) - Number(b.amount_paid || 0))
                       return (
                         <tr key={b.id} className="hover:bg-gray-50">
                           <td className="px-5 py-3 font-mono text-xs text-gray-400">{b._event_group ? '—' : (b.booking_number || '—')}</td>
@@ -469,7 +471,7 @@ export default function NightAudit() {
                   </thead>
                   <tbody className="divide-y divide-gray-50">
                     {groupedOutstanding.map((b) => {
-                      const balance = Math.max(0, Number(b.total_amount || 0) - Number(b.amount_paid || 0))
+                      const balance = Math.max(0, Number(b.total_amount || 0) + Number(b.charges_total || 0) - Number(b.amount_paid || 0))
                       return (
                         <tr key={b.id} className="hover:bg-gray-50">
                           <td className="px-5 py-3 font-mono text-xs text-gray-400">{b._event_group ? '—' : (b.booking_number || '—')}</td>

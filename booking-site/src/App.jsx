@@ -1,28 +1,42 @@
+import { lazy, Suspense } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
-import LodgePage from './pages/LodgePage.jsx'
-import BookingPage from './pages/BookingPage.jsx'
-import SuccessPage from './pages/SuccessPage.jsx'
-import NotFoundPage from './pages/NotFoundPage.jsx'
+
+const LodgePage = lazy(() => import('./pages/LodgePage.jsx'))
+const BookingPage = lazy(() => import('./pages/BookingPage.jsx'))
+const SuccessPage = lazy(() => import('./pages/SuccessPage.jsx'))
+const NotFoundPage = lazy(() => import('./pages/NotFoundPage.jsx'))
+
+function RouteLoader() {
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-[var(--bg)] px-4">
+      <div className="rounded-full border border-[var(--line)] bg-white px-5 py-3 text-sm font-semibold text-[var(--muted)] shadow-sm">
+        Loading page...
+      </div>
+    </div>
+  )
+}
 
 export default function App() {
   return (
     <BrowserRouter>
-      <Routes>
-        {/* Lodge home: browse rooms and pick dates */}
-        <Route path="/:slug" element={<LodgePage />} />
+      <Suspense fallback={<RouteLoader />}>
+        <Routes>
+          {/* Lodge home: browse rooms and pick dates */}
+          <Route path="/:slug" element={<LodgePage />} />
 
-        {/* Booking form: guest details for a specific room */}
-        <Route path="/:slug/book" element={<BookingPage />} />
+          {/* Booking form: guest details for a specific room */}
+          <Route path="/:slug/book" element={<BookingPage />} />
 
-        {/* Success: booking reference confirmation */}
-        <Route path="/:slug/success" element={<SuccessPage />} />
+          {/* Success: booking reference confirmation */}
+          <Route path="/:slug/success" element={<SuccessPage />} />
 
-        {/* Root — nothing to show without a slug */}
-        <Route path="/" element={<NotFoundPage />} />
+          {/* Root — nothing to show without a slug */}
+          <Route path="/" element={<NotFoundPage />} />
 
-        {/* Catch-all */}
-        <Route path="*" element={<NotFoundPage />} />
-      </Routes>
+          {/* Catch-all */}
+          <Route path="*" element={<NotFoundPage />} />
+        </Routes>
+      </Suspense>
     </BrowserRouter>
   )
 }

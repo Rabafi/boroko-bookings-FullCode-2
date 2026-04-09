@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Plus, Pencil, Trash2, Search } from 'lucide-react'
 import { Modal } from './shared/Modal'
+import HorizontalScrollArea from './shared/HorizontalScrollArea'
 import { useSettings } from '../App'
 
 const CATEGORIES = [
@@ -31,38 +32,74 @@ export default function Expenses() {
   const currency = settings?.currency || 'P'
 
   const [expenses, setExpenses] = useState([])
+  const [inventorySpend, setInventorySpend] = useState({ total: 0, purchases: [] })
+  const [supplySpend, setSupplySpend] = useState({ total: 0, purchases: [] })
   const [loading, setLoading] = useState(false)
+  const [pageError, setPageError] = useState('')
   const [start, setStart] = useState(monthStart())
   const [end, setEnd] = useState(today())
   const [search, setSearch] = useState('')
   const [catFilter, setCatFilter] = useState('all')
+  const [sortBy, setSortBy] = useState('date_desc')
+  const [outlets, setOutlets] = useState([])
+  const [selectedOutlet, setSelectedOutlet] = useState('all')
 
   const [formOpen, setFormOpen] = useState(false)
   const [editing, setEditing] = useState(null)
   const [saving, setSaving] = useState(false)
+  const [formError, setFormError] = useState('')
 
   const [form, setForm] = useState({
     date: today(),
     description: '',
     category: CATEGORIES[0],
     amount: '',
-    notes: ''
+    notes: '',
+    outlet_id: ''
   })
 
   useEffect(() => {
+    window.api.outlets.getAll().then((d) => setOutlets(d || [])).catch(() => {})
+  }, [])
+
+  useEffect(() => {
     load()
-  }, [start, end])
+  }, [start, end, selectedOutlet])
 
   const load = async () => {
     setLoading(true)
-    const data = await window.api.expenses.getAll(start, end).catch(() => [])
-    setExpenses(data || [])
-    setLoading(false)
+    setPageError('')
+    try {
+      const showSupplyCosts = !selectedOutlet || selectedOutlet === 'all' || selectedOutlet === 'unassigned'
+      const [expenseData, inventoryData, supplyData] = await Promise.all([
+        window.api.expenses.getAll(start, end, selectedOutlet),
+        window.api.reports.inventorySpend(start, end, selectedOutlet).catch(() => ({ total: 0, purchases: [] })),
+        showSupplyCosts
+          ? window.api.reports.supplySpend(start, end).catch(() => ({ total: 0, purchases: [] }))
+          : Promise.resolve({ total: 0, purchases: [] })
+      ])
+      setExpenses(expenseData || [])
+      setInventorySpend(inventoryData || { total: 0, purchases: [] })
+      setSupplySpend(supplyData || { total: 0, purchases: [] })
+    } catch (err) {
+      setPageError(err?.message || 'Could not load expenses right now.')
+      setInventorySpend({ total: 0, purchases: [] })
+      setSupplySpend({ total: 0, purchases: [] })
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const expenseMatchesCurrentOutlet = (expense) => {
+    if (!selectedOutlet || selectedOutlet === 'all') return true
+    if (selectedOutlet === 'unassigned') return !expense?.outlet_id
+    return expense?.outlet_id === selectedOutlet
   }
 
   const openCreate = () => {
     setEditing(null)
-    setForm({ date: today(), description: '', category: CATEGORIES[0], amount: '', notes: '' })
+    setForm({ date: today(), description: '', category: CATEGORIES[0], amount: '', notes: '', outlet_id: '' })
+    setFormError('')
     setFormOpen(true)
   }
 
@@ -73,41 +110,132 @@ export default function Expenses() {
       description: exp.description,
       category: exp.category || CATEGORIES[0],
       amount: String(exp.amount),
-      notes: exp.notes || ''
+      notes: exp.notes || '',
+      outlet_id: exp.outlet_id || ''
     })
+    setFormError('')
     setFormOpen(true)
   }
 
   const handleSubmit = async (e) => {
     e.preventDefault()
     setSaving(true)
-    const payload = { ...form, amount: parseFloat(form.amount) }
-    if (editing) {
-      await window.api.expenses.update(editing.id, payload).catch(console.error)
-    } else {
-      await window.api.expenses.create(payload).catch(console.error)
+    setFormError('')
+    try {
+      const payload = {
+        ...form,
+        amount: parseFloat(form.amount),
+        outlet_id: form.outlet_id || null
+      }
+      const result = editing
+        ? await window.api.expenses.update(editing.id, payload)
+        : await window.api.expenses.create(payload)
+
+      if (!result?.success) {
+        setFormError(result?.error || 'Could not save this expense right now.')
+        return
+      }
+
+      const selectedOutletRow = payload.outlet_id
+        ? outlets.find((row) => row.id === payload.outlet_id)
+        : null
+      const savedExpense = editing
+        ? {
+            ...editing,
+            ...payload,
+            outlets: payload.outlet_id
+              ? { name: selectedOutletRow?.name || null }
+              : null
+          }
+        : {
+            ...payload,
+            id: result?.id,
+            outlets: payload.outlet_id
+              ? { name: selectedOutletRow?.name || null }
+              : null
+          }
+      setExpenses((prev) => {
+        const next = prev.filter((row) => row.id !== savedExpense.id)
+        if (!expenseMatchesCurrentOutlet(savedExpense)) return next
+        return [savedExpense, ...next]
+          .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
+      })
+
+      setFormOpen(false)
+    } catch (err) {
+      setFormError(err?.message || 'Could not save this expense right now.')
+      return
+    } finally {
+      setSaving(false)
     }
-    setSaving(false)
-    setFormOpen(false)
-    load()
   }
 
   const handleDelete = async (exp) => {
-    if (!confirm(`Delete "${exp.description}"?`)) return
-    await window.api.expenses.delete(exp.id).catch(console.error)
-    load()
+    if (!confirm(`Delete "${exp.description}"?\n\nThis permanently removes the expense from the period totals and category summaries.`)) return
+    const result = await window.api.expenses.delete(exp.id).catch((err) => ({ success: false, error: err?.message || 'Could not delete this expense.' }))
+    if (!result?.success) {
+      alert(result?.error || 'Could not delete this expense right now.')
+      return
+    }
+    setExpenses((prev) => prev.filter((row) => row.id !== exp.id))
   }
 
-  const filtered = expenses.filter((e) => {
-    const matchSearch =
-      !search ||
-      e.description?.toLowerCase().includes(search.toLowerCase()) ||
-      e.category?.toLowerCase().includes(search.toLowerCase())
-    const matchCat = catFilter === 'all' || e.category === catFilter
-    return matchSearch && matchCat
-  })
+  const filtered = useMemo(() => {
+    const normalizedSearch = search.toLowerCase()
+    return [...expenses.filter((e) => {
+      const matchSearch =
+        !search ||
+        e.description?.toLowerCase().includes(normalizedSearch) ||
+        e.category?.toLowerCase().includes(normalizedSearch)
+      const matchCat = catFilter === 'all' || e.category === catFilter
+      return matchSearch && matchCat
+    })].sort((a, b) => {
+      switch (sortBy) {
+        case 'date_asc':
+          return String(a.date || '').localeCompare(String(b.date || ''))
+        case 'amount_desc':
+          return Number(b.amount || 0) - Number(a.amount || 0)
+        case 'amount_asc':
+          return Number(a.amount || 0) - Number(b.amount || 0)
+        case 'description_asc':
+          return String(a.description || '').localeCompare(String(b.description || ''))
+        case 'date_desc':
+        default:
+          return String(b.date || '').localeCompare(String(a.date || ''))
+      }
+    })
+  }, [catFilter, expenses, search, sortBy])
 
   const total = filtered.reduce((s, e) => s + Number(e.amount || 0), 0)
+  const manualPeriodTotal = expenses.reduce((s, e) => s + Number(e.amount || 0), 0)
+  const showSupplyCosts = !selectedOutlet || selectedOutlet === 'all' || selectedOutlet === 'unassigned'
+  const inventoryTotal = Number(inventorySpend?.total || 0)
+  const roomSupplyTotal = showSupplyCosts ? Number(supplySpend?.total || 0) : 0
+  const stockTotal = inventoryTotal + roomSupplyTotal
+  const totalOutgoings = manualPeriodTotal + stockTotal
+  const outletNameById = Object.fromEntries((outlets || []).map((row) => [row.id, row.name]))
+  const stockRows = [
+    ...((inventorySpend?.purchases || []).map((row) => ({
+      id: `inventory-${row.id || row.item_id || row.date}`,
+      date: row.date,
+      source: 'Inventory',
+      description: row.inventory_items?.name || 'Inventory purchase',
+      category: row.inventory_items?.category || 'Uncategorised',
+      outlet_id: row.inventory_items?.outlet_id || null,
+      notes: row.notes || '',
+      amount: Number(row.total_cost || 0)
+    }))),
+    ...(showSupplyCosts ? (supplySpend?.purchases || []).map((row) => ({
+      id: `supply-${row.id || row.item_id || row.date}`,
+      date: row.date,
+      source: 'Room Supplies',
+      description: row.supply_items?.name || 'Room supply purchase',
+      category: 'Room Supplies',
+      outlet_id: null,
+      notes: row.notes || '',
+      amount: Number(row.total_cost || 0)
+    })) : [])
+  ].sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
 
   const byCategory = filtered.reduce((acc, e) => {
     acc[e.category] = (acc[e.category] || 0) + Number(e.amount || 0)
@@ -115,12 +243,13 @@ export default function Expenses() {
   }, {})
 
   return (
-    <div className="p-6">
-      <div className="flex items-center justify-between mb-6">
+    <div className="mx-auto flex max-w-7xl flex-col gap-6">
+      <div className="bb-page-header">
         <div>
-          <h1 className="text-2xl font-bold text-gray-800">Expenses</h1>
-          <p className="text-sm text-gray-500 mt-0.5">
-            {filtered.length} records · Total: {currency} {fmt(total)}
+          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-emerald-700/70">Operating Costs</p>
+          <h1 className="bb-page-header-title mt-2">Expenses</h1>
+          <p className="bb-page-header-subtitle">
+            Manual: {currency} {fmt(manualPeriodTotal)} · Stock: {currency} {fmt(stockTotal)} · Total outgoings: {currency} {fmt(totalOutgoings)}
           </p>
         </div>
         <button onClick={openCreate} className="btn-primary flex items-center gap-2">
@@ -128,35 +257,41 @@ export default function Expenses() {
         </button>
       </div>
 
+      {pageError && (
+        <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          {pageError}
+        </div>
+      )}
+
       {/* Filters */}
-      <div className="flex flex-wrap gap-3 mb-5">
+      <div className="bb-filter-bar">
         <div className="flex items-center gap-2 text-sm">
-          <label className="text-gray-500">From</label>
+          <label className="text-slate-500">From</label>
           <input
             type="date"
-            className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+            className="input text-sm"
             value={start}
             onChange={(e) => setStart(e.target.value)}
           />
-          <label className="text-gray-500">To</label>
+          <label className="text-slate-500">To</label>
           <input
             type="date"
-            className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+            className="input text-sm"
             value={end}
             onChange={(e) => setEnd(e.target.value)}
           />
         </div>
         <div className="relative">
-          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
           <input
-            className="pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
+            className="input pl-9"
             placeholder="Search..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
         </div>
         <select
-          className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+          className="input w-auto"
           value={catFilter}
           onChange={(e) => setCatFilter(e.target.value)}
         >
@@ -165,51 +300,114 @@ export default function Expenses() {
             <option key={c} value={c}>{c}</option>
           ))}
         </select>
+        <select
+          className="input w-auto"
+          value={selectedOutlet}
+          onChange={(e) => setSelectedOutlet(e.target.value)}
+        >
+          <option value="all">All Outlets</option>
+          {outlets.map((o) => (
+            <option key={o.id} value={o.id}>{o.name}</option>
+          ))}
+          <option value="unassigned">Unassigned</option>
+        </select>
+        <select
+          className="input w-auto"
+          value={sortBy}
+          onChange={(e) => setSortBy(e.target.value)}
+        >
+          <option value="date_desc">Newest date</option>
+          <option value="date_asc">Oldest date</option>
+          <option value="amount_desc">Highest amount</option>
+          <option value="amount_asc">Lowest amount</option>
+          <option value="description_asc">Description A-Z</option>
+        </select>
+        <div className="ml-auto text-xs text-slate-500">
+          Date and outlet filters update all costs. Search and category filters apply to manual expenses only.
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-4 gap-6">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="bb-card p-5">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Manual Expenses</p>
+          <p className="mt-3 text-2xl font-bold text-slate-900">{currency} {fmt(manualPeriodTotal)}</p>
+          <p className="mt-2 text-xs text-slate-500">{expenses.length} editable records in this date range.</p>
+        </div>
+        <div className="bb-card p-5">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Inventory Purchases</p>
+          <p className="mt-3 text-2xl font-bold text-slate-900">{currency} {fmt(inventoryTotal)}</p>
+          <p className="mt-2 text-xs text-slate-500">{inventorySpend?.purchases?.length || 0} automatic stock cost entries.</p>
+        </div>
+        <div className="bb-card p-5">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Room Supplies</p>
+          <p className="mt-3 text-2xl font-bold text-slate-900">{currency} {fmt(roomSupplyTotal)}</p>
+          <p className="mt-2 text-xs text-slate-500">
+            {showSupplyCosts
+              ? `${supplySpend?.purchases?.length || 0} property-wide supply purchase entries.`
+              : 'Shown in All Outlets or Unassigned view because room supplies are property-wide.'}
+          </p>
+        </div>
+        <div className="bb-card border-slate-900 bg-slate-900 p-5 text-white">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-white/70">Total Outgoings</p>
+          <p className="mt-3 text-2xl font-bold">{currency} {fmt(totalOutgoings)}</p>
+          <p className="mt-2 text-xs text-white/70">Manual expenses plus inventory and room-supply purchases.</p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-4">
         {/* Table */}
-        <div className="xl:col-span-3 bg-white rounded-xl shadow-sm overflow-hidden">
+        <div className="bb-table-shell xl:col-span-3">
+          <div className="border-b border-slate-200 px-5 py-4">
+            <p className="text-sm font-semibold text-slate-800">Manual expense records</p>
+            <p className="mt-1 text-xs text-slate-500">These are the entries you can create, edit, and delete from this screen.</p>
+          </div>
           {loading ? (
-            <p className="px-5 py-10 text-center text-gray-400 text-sm">Loading...</p>
+            <div className="bb-empty-state min-h-[220px]">
+              <p className="text-sm font-medium text-slate-500">Loading expenses…</p>
+            </div>
           ) : (
-            <table className="w-full text-sm">
-              <thead className="bg-gray-50 text-gray-500 text-xs uppercase">
+            <HorizontalScrollArea>
+              <table className="w-full text-sm">
+              <thead className="sticky top-0 z-10 bg-slate-50 text-xs uppercase tracking-[0.16em] text-slate-500">
                 <tr>
                   <th className="px-5 py-3 text-left">Date</th>
                   <th className="px-5 py-3 text-left">Description</th>
                   <th className="px-5 py-3 text-left">Category</th>
+                  <th className="px-5 py-3 text-left">Outlet</th>
                   <th className="px-5 py-3 text-right">Amount</th>
                   <th className="px-5 py-3 text-center">Actions</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-gray-50">
+              <tbody className="divide-y divide-slate-100">
                 {filtered.map((exp) => (
-                  <tr key={exp.id} className="hover:bg-gray-50">
-                    <td className="px-5 py-3 text-gray-600 whitespace-nowrap">{exp.date}</td>
+                  <tr key={exp.id} className="hover:bg-slate-50">
+                    <td className="whitespace-nowrap px-5 py-3 text-slate-600">{exp.date}</td>
                     <td className="px-5 py-3">
-                      <p className="font-medium text-gray-800">{exp.description}</p>
-                      {exp.notes && <p className="text-xs text-gray-400 mt-0.5">{exp.notes}</p>}
+                      <p className="font-medium text-slate-800">{exp.description}</p>
+                      {exp.notes && <p className="mt-0.5 text-xs text-slate-400">{exp.notes}</p>}
                     </td>
                     <td className="px-5 py-3">
-                      <span className="text-xs px-2 py-0.5 rounded-full bg-blue-50 text-blue-700">
+                      <span className="inline-flex items-center rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700">
                         {exp.category}
                       </span>
                     </td>
-                    <td className="px-5 py-3 text-right font-semibold text-gray-800">
+                    <td className="px-5 py-3 text-sm text-slate-600">
+                      {exp.outlets?.name ?? <span className="text-slate-300">Unassigned</span>}
+                    </td>
+                    <td className="px-5 py-3 text-right font-semibold text-slate-800">
                       {currency} {fmt(exp.amount)}
                     </td>
                     <td className="px-5 py-3">
                       <div className="flex items-center justify-center gap-1">
                         <button
                           onClick={() => openEdit(exp)}
-                          className="p-1.5 text-blue-500 hover:bg-blue-50 rounded transition-colors"
+                          className="rounded-lg p-1.5 text-blue-500 transition-colors hover:bg-blue-50"
                         >
                           <Pencil size={14} />
                         </button>
                         <button
                           onClick={() => handleDelete(exp)}
-                          className="p-1.5 text-red-400 hover:bg-red-50 rounded transition-colors"
+                          className="rounded-lg p-1.5 text-red-400 transition-colors hover:bg-red-50"
                         >
                           <Trash2 size={14} />
                         </button>
@@ -219,68 +417,171 @@ export default function Expenses() {
                 ))}
                 {filtered.length === 0 && (
                   <tr>
-                    <td colSpan={5} className="px-5 py-12 text-center text-gray-400">
-                      No expenses found for this period.
+                    <td colSpan={6} className="px-5 py-12">
+                      <div className="bb-empty-state py-10">
+                        <p className="text-base font-semibold text-slate-800">No expenses found</p>
+                        <p className="text-sm text-slate-500">Try a different date range, category, or search term.</p>
+                      </div>
                     </td>
                   </tr>
                 )}
               </tbody>
               {filtered.length > 0 && (
                 <tfoot>
-                  <tr className="bg-gray-50 border-t-2 border-gray-200">
-                    <td colSpan={3} className="px-5 py-3 font-semibold text-gray-700 text-sm">
+                  <tr className="border-t-2 border-slate-200 bg-slate-50">
+                    <td colSpan={4} className="px-5 py-3 text-sm font-semibold text-slate-700">
                       Total
                     </td>
-                    <td className="px-5 py-3 text-right font-bold text-gray-800">
+                    <td className="px-5 py-3 text-right font-bold text-slate-800">
                       {currency} {fmt(total)}
                     </td>
                     <td />
                   </tr>
                 </tfoot>
               )}
-            </table>
+              </table>
+            </HorizontalScrollArea>
           )}
         </div>
 
         {/* Category Summary */}
-        <div className="bg-white rounded-xl shadow-sm p-5">
-          <h3 className="font-semibold text-gray-700 mb-4">By Category</h3>
-          {Object.keys(byCategory).length === 0 ? (
-            <p className="text-sm text-gray-400">No data</p>
-          ) : (
-            <div className="space-y-3">
-              {Object.entries(byCategory)
-                .sort((a, b) => b[1] - a[1])
-                .map(([cat, amount]) => {
-                  const pct = total > 0 ? (amount / total) * 100 : 0
-                  return (
-                    <div key={cat}>
-                      <div className="flex justify-between text-xs text-gray-600 mb-1">
-                        <span className="truncate pr-2">{cat}</span>
-                        <span className="font-medium shrink-0">
-                          {currency} {fmt(amount)}
-                        </span>
+        <div className="space-y-6">
+          <div className="bb-card p-5">
+            <h3 className="mb-4 font-semibold text-slate-700">Manual Expenses by Category</h3>
+            {Object.keys(byCategory).length === 0 ? (
+              <div className="bb-empty-state min-h-[180px] py-8">
+                <p className="text-sm text-slate-500">No manual expense data for the current filters.</p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {Object.entries(byCategory)
+                  .sort((a, b) => b[1] - a[1])
+                  .map(([cat, amount]) => {
+                    const pct = total > 0 ? (amount / total) * 100 : 0
+                    return (
+                      <div key={cat}>
+                        <div className="mb-1 flex justify-between text-xs text-slate-600">
+                          <span className="truncate pr-2">{cat}</span>
+                          <span className="font-medium shrink-0">
+                            {currency} {fmt(amount)}
+                          </span>
+                        </div>
+                        <div className="h-1.5 w-full rounded-full bg-slate-100">
+                          <div
+                            className="bg-blue-500 h-1.5 rounded-full"
+                            style={{ width: `${pct}%` }}
+                          />
+                        </div>
                       </div>
-                      <div className="w-full bg-gray-100 rounded-full h-1.5">
-                        <div
-                          className="bg-blue-500 h-1.5 rounded-full"
-                          style={{ width: `${pct}%` }}
-                        />
-                      </div>
-                    </div>
-                  )
-                })}
-            </div>
-          )}
-          {total > 0 && (
-            <div className="mt-5 pt-4 border-t border-gray-100">
-              <div className="flex justify-between text-sm font-bold text-gray-800">
-                <span>Total</span>
-                <span>{currency} {fmt(total)}</span>
+                    )
+                  })}
+              </div>
+            )}
+            {total > 0 && (
+              <div className="mt-5 border-t border-slate-100 pt-4">
+                <div className="flex justify-between text-sm font-bold text-slate-800">
+                  <span>Filtered Total</span>
+                  <span>{currency} {fmt(total)}</span>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="bb-card p-5">
+            <h3 className="mb-4 font-semibold text-slate-700">Automatic Stock Costs</h3>
+            <div className="space-y-3 text-sm">
+              <div className="flex items-center justify-between">
+                <span className="text-slate-600">Inventory purchases</span>
+                <span className="font-semibold text-slate-800">{currency} {fmt(inventoryTotal)}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-slate-600">Room-supply purchases</span>
+                <span className="font-semibold text-slate-800">{currency} {fmt(roomSupplyTotal)}</span>
+              </div>
+              <div className="border-t border-slate-100 pt-3">
+                <div className="flex items-center justify-between text-sm font-bold text-slate-900">
+                  <span>Total stock costs</span>
+                  <span>{currency} {fmt(stockTotal)}</span>
+                </div>
               </div>
             </div>
-          )}
+            <p className="mt-4 text-xs text-slate-500">
+              These rows come from stock purchase records automatically. They affect reporting and cannot be edited from the Expenses screen.
+            </p>
+          </div>
         </div>
+      </div>
+
+      <div className="bb-table-shell">
+        <div className="border-b border-slate-200 px-5 py-4">
+          <p className="text-sm font-semibold text-slate-800">Automatic stock purchase entries</p>
+          <p className="mt-1 text-xs text-slate-500">Inventory and room-supply purchases flow here automatically for visibility and P&amp;L review.</p>
+        </div>
+        <HorizontalScrollArea>
+          <table className="w-full text-sm">
+          <thead className="sticky top-0 z-10 bg-slate-50 text-xs uppercase tracking-[0.16em] text-slate-500">
+            <tr>
+              <th className="px-5 py-3 text-left">Date</th>
+              <th className="px-5 py-3 text-left">Source</th>
+              <th className="px-5 py-3 text-left">Description</th>
+              <th className="px-5 py-3 text-left">Category</th>
+              <th className="px-5 py-3 text-left">Outlet</th>
+              <th className="px-5 py-3 text-right">Amount</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {stockRows.map((row) => (
+              <tr key={row.id} className="hover:bg-slate-50">
+                <td className="whitespace-nowrap px-5 py-3 text-slate-600">{row.date}</td>
+                <td className="px-5 py-3">
+                  <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ${
+                    row.source === 'Inventory'
+                      ? 'border border-violet-200 bg-violet-50 text-violet-700'
+                      : 'border border-emerald-200 bg-emerald-50 text-emerald-700'
+                  }`}>
+                    {row.source}
+                  </span>
+                </td>
+                <td className="px-5 py-3">
+                  <p className="font-medium text-slate-800">{row.description}</p>
+                  {row.notes && <p className="mt-0.5 text-xs text-slate-400">{row.notes}</p>}
+                </td>
+                <td className="px-5 py-3 text-slate-600">{row.category}</td>
+                <td className="px-5 py-3 text-slate-600">
+                  {row.outlet_id ? (outletNameById[row.outlet_id] || 'Unknown outlet') : <span className="text-slate-400">Property-wide</span>}
+                </td>
+                <td className="px-5 py-3 text-right font-semibold text-slate-800">
+                  {currency} {fmt(row.amount)}
+                </td>
+              </tr>
+            ))}
+            {stockRows.length === 0 && (
+              <tr>
+                <td colSpan={6} className="px-5 py-12">
+                  <div className="bb-empty-state py-10">
+                    <p className="text-base font-semibold text-slate-800">No stock purchases in this view</p>
+                    <p className="text-sm text-slate-500">
+                      Record inventory or room-supply purchases and they will appear here automatically.
+                    </p>
+                  </div>
+                </td>
+              </tr>
+            )}
+          </tbody>
+          {stockRows.length > 0 && (
+            <tfoot>
+              <tr className="border-t-2 border-slate-200 bg-slate-50">
+                <td colSpan={5} className="px-5 py-3 text-sm font-semibold text-slate-700">
+                  Total Stock Costs
+                </td>
+                <td className="px-5 py-3 text-right font-bold text-slate-800">
+                  {currency} {fmt(stockTotal)}
+                </td>
+              </tr>
+            </tfoot>
+          )}
+          </table>
+        </HorizontalScrollArea>
       </div>
 
       {/* Form Modal */}
@@ -291,6 +592,11 @@ export default function Expenses() {
           size="sm"
         >
           <form onSubmit={handleSubmit} className="space-y-4">
+            {formError && (
+              <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                {formError}
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Date *</label>
@@ -314,6 +620,7 @@ export default function Expenses() {
                   required
                   placeholder="0.00"
                 />
+                <p className="mt-1 text-xs text-slate-500">Use the full amount that should count toward reporting for this date.</p>
               </div>
             </div>
             <div>
@@ -337,6 +644,19 @@ export default function Expenses() {
               >
                 {CATEGORIES.map((c) => (
                   <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Outlet</label>
+              <select
+                className="input"
+                value={form.outlet_id}
+                onChange={(e) => setForm({ ...form, outlet_id: e.target.value })}
+              >
+                <option value="">— Unassigned —</option>
+                {outlets.map((o) => (
+                  <option key={o.id} value={o.id}>{o.name}</option>
                 ))}
               </select>
             </div>

@@ -1,8 +1,10 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { useFeatures } from '../contexts/FeaturesContext'
 import { supabase } from '../lib/supabase'
-import { RefreshCw, AlertTriangle, Wrench, CreditCard, Package, Check, X } from 'lucide-react'
+import { normalizeMaintenanceTicket } from '../lib/maintenance'
+import { RefreshCw, AlertTriangle, Wrench, CreditCard, Package, Check } from 'lucide-react'
+import { getNotificationSettings, subscribeRuntimeEvent } from '../lib/runtime'
 
 function AlertCard({ icon: Icon, iconColor, title, sub, badge, badgeColor = 'bg-orange-500', action, actionLabel, actionColor = 'bg-orange-700 hover:bg-orange-600' }) {
   const [loading, setLoading] = useState(false)
@@ -44,7 +46,9 @@ export default function Alerts({ onCountChange }) {
   const { isEnabled } = useFeatures()
   const [data, setData] = useState({ overdue: [], unpaid: [], maintenance: [], lowStock: [] })
   const [loading, setLoading] = useState(true)
+  const [notificationSettings, setNotificationSettings] = useState(() => getNotificationSettings())
   const today = new Date().toISOString().slice(0, 10)
+  const previousCountRef = useRef(0)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -52,16 +56,20 @@ export default function Alerts({ onCountChange }) {
 
     const [overdueRes, unpaidRes, maintRes, stockRes] = await Promise.all([
       supabase.from('bookings').select('id, guest_name, check_out, room_id').eq('lodge_id', lid).eq('status', 'checked_in').lt('check_out', today),
-      supabase.from('bookings').select('id, guest_name, total_amount, amount_paid, payment_status, check_in').eq('lodge_id', lid).in('payment_status', ['pending', 'partial']).neq('status', 'cancelled').order('check_in'),
-      supabase.from('maintenance_tickets').select('id, issue, priority, room_id, created_at').eq('lodge_id', lid).eq('status', 'open').order('created_at', { ascending: false }),
-      isEnabled('inventory') ? supabase.from('inventory_items').select('id, name, quantity, reorder_level').eq('lodge_id', lid).filter('quantity', 'lte', 'reorder_level') : Promise.resolve({ data: [] })
+      supabase.from('bookings').select('id, guest_name, total_amount, charges_total, amount_paid, payment_status, check_in').eq('lodge_id', lid).in('payment_status', ['unpaid', 'partial']).neq('status', 'cancelled').order('check_in'),
+      supabase.from('maintenance_tickets').select('id, title, issue, priority, room_id, created_at, status, description, notes').eq('lodge_id', lid).eq('status', 'open').order('created_at', { ascending: false }),
+      isEnabled('inventory') ? supabase.from('inventory_items').select('id, name, quantity, current_stock, reorder_level').eq('lodge_id', lid) : Promise.resolve({ data: [] })
     ])
 
     const d = {
       overdue: overdueRes.data || [],
       unpaid: unpaidRes.data || [],
-      maintenance: maintRes.data || [],
-      lowStock: stockRes.data || []
+      maintenance: (maintRes.data || []).map(normalizeMaintenanceTicket),
+      lowStock: (stockRes.data || []).filter(item => {
+        const stock = Number(item.current_stock ?? item.quantity ?? 0)
+        const reorder = Number(item.reorder_level ?? 0)
+        return reorder > 0 && stock <= reorder
+      })
     }
     setData(d)
     const totalCount = d.overdue.length + d.maintenance.filter(m => m.priority === 'urgent').length
@@ -71,10 +79,18 @@ export default function Alerts({ onCountChange }) {
 
   useEffect(() => { load() }, [load])
 
-  const resolveMaintenance = async (id, roomId) => {
-    await supabase.from('maintenance_tickets').update({ status: 'resolved', resolved_at: new Date().toISOString() }).eq('id', id)
-    await load()
-  }
+  useEffect(() => subscribeRuntimeEvent('boroko:pwa-notification-settings', setNotificationSettings), [])
+
+  useEffect(() => {
+    const urgentCount = data.overdue.length + data.maintenance.filter((item) => item.priority === 'urgent').length
+    if (notificationSettings.urgentAlerts !== false && urgentCount > previousCountRef.current && typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+      const body = data.overdue.length > 0
+        ? `${data.overdue.length} overdue checkout${data.overdue.length === 1 ? '' : 's'} need attention`
+        : `${urgentCount} urgent issue${urgentCount === 1 ? '' : 's'} need attention`
+      new Notification('Boroko Manager Alert', { body })
+    }
+    previousCountRef.current = urgentCount
+  }, [data, notificationSettings.urgentAlerts])
 
   const allClear = !loading && data.overdue.length === 0 && data.maintenance.length === 0 && data.unpaid.length === 0 && data.lowStock.length === 0
 
@@ -101,6 +117,24 @@ export default function Alerts({ onCountChange }) {
           </div>
         ) : (
           <>
+            {data.maintenance.length > 0 && (
+              <div className="bg-gray-800 rounded-2xl p-4">
+                <p className="text-sm font-semibold text-white mb-3">Maintenance Priority Board</p>
+                <div className="grid grid-cols-3 gap-2">
+                  {[
+                    ['Urgent', data.maintenance.filter((m) => m.priority === 'urgent').length, 'text-red-300'],
+                    ['High', data.maintenance.filter((m) => m.priority === 'high').length, 'text-orange-300'],
+                    ['Open', data.maintenance.filter((m) => m.status === 'open').length, 'text-yellow-300']
+                  ].map(([label, value, tone]) => (
+                    <div key={label} className="bg-gray-900 rounded-xl px-3 py-3">
+                      <p className="text-xs text-gray-400">{label}</p>
+                      <p className={`text-lg font-bold mt-1 ${tone}`}>{value}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* Overdue checkouts */}
             {data.overdue.length > 0 && (
               <div>
@@ -128,13 +162,10 @@ export default function Alerts({ onCountChange }) {
                     key={m.id}
                     icon={Wrench}
                     iconColor="bg-orange-900/60 text-orange-400"
-                    title={m.issue}
+                    title={m.title}
                     sub={`Raised: ${new Date(m.created_at).toLocaleDateString()}`}
                     badge={m.priority}
                     badgeColor={m.priority === 'urgent' ? 'bg-red-600' : 'bg-orange-600'}
-                    action={() => resolveMaintenance(m.id, m.room_id)}
-                    actionLabel="Mark Resolved"
-                    actionColor="bg-green-800 hover:bg-green-700"
                   />
                 ))}
               </div>
@@ -145,7 +176,7 @@ export default function Alerts({ onCountChange }) {
               <div>
                 <p className="text-xs text-yellow-400 font-semibold uppercase tracking-wide mb-2">💰 Unpaid Bookings ({data.unpaid.length})</p>
                 {data.unpaid.slice(0, 5).map(b => {
-                  const balance = Math.max(0, Number(b.total_amount || 0) - Number(b.amount_paid || 0))
+                  const balance = Math.max(0, Number(b.total_amount || 0) + Number(b.charges_total || 0) - Number(b.amount_paid || 0))
                   return (
                     <AlertCard
                       key={b.id}
@@ -172,7 +203,7 @@ export default function Alerts({ onCountChange }) {
                     icon={Package}
                     iconColor="bg-blue-900/60 text-blue-400"
                     title={item.name}
-                    sub={`Stock: ${item.quantity} (reorder at ${item.reorder_level})`}
+                    sub={`Stock: ${item.current_stock ?? item.quantity ?? 0} (reorder at ${item.reorder_level})`}
                     badge="Low Stock"
                     badgeColor="bg-blue-700"
                   />

@@ -1,10 +1,12 @@
-import { useEffect, useState, useRef } from 'react'
-import { Plus, Pencil, Trash2, BedDouble, Image, X } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Plus, Pencil, Trash2, BedDouble, Image, X, ChevronLeft, ChevronRight } from 'lucide-react'
 import { StatusBadge } from './shared/StatusBadge'
 import { Modal } from './shared/Modal'
 
 const ROOM_TYPES = ['Single', 'Double', 'Twin', 'Suite', 'Family', 'Deluxe']
 const STATUSES = ['available', 'occupied', 'maintenance', 'reserved']
+
+const MAX_PHOTOS = 5
 
 const emptyForm = {
   room_number: '',
@@ -13,7 +15,8 @@ const emptyForm = {
   max_occupancy: 2,
   status: 'available',
   description: '',
-  photo: ''
+  photos: [],
+  amenities: []
 }
 
 export default function Rooms() {
@@ -26,23 +29,32 @@ export default function Rooms() {
   const [loading, setLoading] = useState(false)
   const photoInputRef = useRef(null)
 
-  const processRoomPhoto = (file) => {
-    if (!file || !file.type.startsWith('image/')) return
-    const reader = new FileReader()
-    reader.onload = (e) => {
-      const img = new window.Image()
-      img.onload = () => {
-        const MAX = 800
-        const canvas = document.createElement('canvas')
-        const ratio = Math.min(MAX / img.width, MAX / img.height, 1)
-        canvas.width = img.width * ratio
-        canvas.height = img.height * ratio
-        canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height)
-        setForm((f) => ({ ...f, photo: canvas.toDataURL('image/jpeg', 0.85) }))
+  const processRoomPhotos = (files) => {
+    const fileArr = Array.from(files)
+    fileArr.forEach((file) => {
+      if (!file.type.startsWith('image/')) return
+      const reader = new FileReader()
+      reader.onload = (e) => {
+        const img = new window.Image()
+        img.onload = () => {
+          const MAX = 800
+          const canvas = document.createElement('canvas')
+          const ratio = Math.min(MAX / img.width, MAX / img.height, 1)
+          canvas.width = img.width * ratio
+          canvas.height = img.height * ratio
+          canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height)
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.85)
+          setForm((f) => {
+            const existing = f.photos || []
+            if (existing.length >= MAX_PHOTOS) return f
+            return { ...f, photos: [...existing, dataUrl] }
+          })
+        }
+        img.src = e.target.result
       }
-      img.src = e.target.result
-    }
-    reader.readAsDataURL(file)
+      reader.readAsDataURL(file)
+    })
+    if (photoInputRef.current) photoInputRef.current.value = ''
   }
 
   useEffect(() => {
@@ -69,6 +81,10 @@ export default function Rooms() {
 
   const openEdit = (room) => {
     setEditing(room.id)
+    // Normalise: prefer photos array, fall back to legacy single photo field
+    const photos = Array.isArray(room.photos) && room.photos.length > 0
+      ? room.photos
+      : (room.photo ? [room.photo] : [])
     setForm({
       room_number: room.room_number,
       room_type: room.room_type,
@@ -76,7 +92,8 @@ export default function Rooms() {
       max_occupancy: room.max_occupancy,
       status: room.status,
       description: room.description || '',
-      photo: room.photo || ''
+      photos,
+      amenities: Array.isArray(room.amenities) ? room.amenities : []
     })
     setError('')
     setShowModal(true)
@@ -86,7 +103,12 @@ export default function Rooms() {
     e.preventDefault()
     setLoading(true)
     setError('')
-    const data = { ...form, rate_per_night: parseFloat(form.rate_per_night), max_occupancy: parseInt(form.max_occupancy) }
+    const data = {
+      ...form,
+      rate_per_night: parseFloat(form.rate_per_night),
+      max_occupancy: parseInt(form.max_occupancy),
+      amenities: Array.isArray(form.amenities) ? form.amenities.filter(Boolean) : []
+    }
     let res
     if (editing) {
       res = await window.api.rooms.update(editing, data)
@@ -110,9 +132,14 @@ export default function Rooms() {
     setSuccess(`Room ${room.room_number} deleted.`)
   }
 
-  const available = rooms.filter((r) => r.status === 'available').length
-  const occupied = rooms.filter((r) => r.status === 'occupied').length
-  const maintenance = rooms.filter((r) => r.status === 'maintenance').length
+  const roomStatusCounts = useMemo(() => rooms.reduce((counts, room) => {
+    counts[room.status] = (counts[room.status] || 0) + 1
+    return counts
+  }, { available: 0, occupied: 0, maintenance: 0 }), [rooms])
+
+  const available = roomStatusCounts.available || 0
+  const occupied = roomStatusCounts.occupied || 0
+  const maintenance = roomStatusCounts.maintenance || 0
 
   return (
     <div className="mx-auto flex max-w-7xl flex-col gap-6">
@@ -238,33 +265,120 @@ export default function Rooms() {
                 placeholder="Optional notes about this room"
               />
             </Field>
-
-            {/* ── Room Photo (shown on online booking site) ── */}
-            <Field label="Room Photo" helper="Shown on the online booking site. Recommended: landscape photo, at least 800×500 px.">
-              {form.photo ? (
-                <div className="relative w-full rounded-xl overflow-hidden border border-slate-200">
-                  <img src={form.photo} alt="Room preview" className="w-full h-40 object-cover" />
-                  <button
-                    type="button"
-                    onClick={() => { setForm((f) => ({ ...f, photo: '' })); if (photoInputRef.current) photoInputRef.current.value = '' }}
-                    className="absolute top-2 right-2 bg-black/50 hover:bg-black/70 text-white rounded-full p-1 transition-colors"
-                  >
-                    <X size={13} />
-                  </button>
+            <Field
+              label="Room Amenities"
+              helper="Add short guest-facing items like Wi-Fi, breakfast, air conditioning, balcony, or work desk. Press Enter after each item."
+            >
+              <div className="rounded-2xl border border-slate-200 bg-white p-3">
+                <div className="flex flex-wrap gap-2">
+                  {(form.amenities || []).map((amenity, idx) => (
+                    <span key={`${amenity}-${idx}`} className="inline-flex items-center gap-2 rounded-full bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700">
+                      {amenity}
+                      <button
+                        type="button"
+                        onClick={() => setForm((current) => ({
+                          ...current,
+                          amenities: current.amenities.filter((_, amenityIndex) => amenityIndex !== idx)
+                        }))}
+                        className="text-emerald-700/70 hover:text-emerald-900"
+                        aria-label={`Remove ${amenity}`}
+                      >
+                        <X size={12} />
+                      </button>
+                    </span>
+                  ))}
                 </div>
-              ) : (
-                <label className="flex flex-col items-center justify-center gap-2 w-full h-32 border-2 border-dashed border-slate-200 rounded-xl cursor-pointer hover:border-emerald-400 hover:bg-emerald-50/50 transition-colors">
-                  <Image size={22} className="text-slate-300" />
-                  <span className="text-xs text-slate-400">Click to upload a photo</span>
-                  <input
-                    ref={photoInputRef}
-                    type="file"
-                    accept="image/*"
-                    className="hidden"
-                    onChange={(e) => processRoomPhoto(e.target.files[0])}
-                  />
-                </label>
-              )}
+                <input
+                  className="mt-3 input border-0 bg-slate-50"
+                  placeholder="Type an amenity and press Enter"
+                  onKeyDown={(event) => {
+                    if (event.key !== 'Enter') return
+                    event.preventDefault()
+                    const value = event.currentTarget.value.trim()
+                    if (!value) return
+                    setForm((current) => ({
+                      ...current,
+                      amenities: [...new Set([...(current.amenities || []), value])]
+                    }))
+                    event.currentTarget.value = ''
+                  }}
+                />
+              </div>
+            </Field>
+
+            {/* ── Room Photos (shown on online booking site) ── */}
+            <Field
+              label={`Room Photos (${(form.photos || []).length}/${MAX_PHOTOS})`}
+              helper="Guests will scroll through these on the booking site. Add up to 5 photos. Drag to reorder."
+            >
+              <div className="space-y-3">
+                {/* Existing photos */}
+                {(form.photos || []).length > 0 && (
+                  <div className="grid grid-cols-3 gap-2">
+                    {(form.photos || []).map((src, idx) => (
+                      <div key={idx} className="relative rounded-xl overflow-hidden border border-slate-200 group">
+                        <img src={src} alt={`Photo ${idx + 1}`} className="w-full h-24 object-cover" />
+                        {/* Move left */}
+                        {idx > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => setForm((f) => {
+                              const p = [...f.photos]
+                              ;[p[idx - 1], p[idx]] = [p[idx], p[idx - 1]]
+                              return { ...f, photos: p }
+                            })}
+                            className="absolute left-1 top-1/2 -translate-y-1/2 bg-black/50 hover:bg-black/70 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
+                          >
+                            <ChevronLeft size={12} />
+                          </button>
+                        )}
+                        {/* Move right */}
+                        {idx < (form.photos || []).length - 1 && (
+                          <button
+                            type="button"
+                            onClick={() => setForm((f) => {
+                              const p = [...f.photos]
+                              ;[p[idx], p[idx + 1]] = [p[idx + 1], p[idx]]
+                              return { ...f, photos: p }
+                            })}
+                            className="absolute right-1 top-1/2 -translate-y-1/2 bg-black/50 hover:bg-black/70 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
+                          >
+                            <ChevronRight size={12} />
+                          </button>
+                        )}
+                        {/* Remove */}
+                        <button
+                          type="button"
+                          onClick={() => setForm((f) => ({ ...f, photos: f.photos.filter((_, i) => i !== idx) }))}
+                          className="absolute top-1 right-1 bg-black/50 hover:bg-red-600 text-white rounded-full p-0.5 transition-colors"
+                        >
+                          <X size={12} />
+                        </button>
+                        {idx === 0 && (
+                          <span className="absolute bottom-1 left-1 bg-black/60 text-white text-[10px] px-1.5 py-0.5 rounded-full">Cover</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {/* Upload more */}
+                {(form.photos || []).length < MAX_PHOTOS && (
+                  <label className="flex flex-col items-center justify-center gap-2 w-full h-24 border-2 border-dashed border-slate-200 rounded-xl cursor-pointer hover:border-emerald-400 hover:bg-emerald-50/50 transition-colors">
+                    <Image size={20} className="text-slate-300" />
+                    <span className="text-xs text-slate-400">
+                      {(form.photos || []).length === 0 ? 'Click to upload photos' : `Add more (${MAX_PHOTOS - (form.photos || []).length} remaining)`}
+                    </span>
+                    <input
+                      ref={photoInputRef}
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      className="hidden"
+                      onChange={(e) => processRoomPhotos(e.target.files)}
+                    />
+                  </label>
+                )}
+              </div>
             </Field>
 
             {error && (
@@ -287,10 +401,11 @@ export default function Rooms() {
 }
 
 function RoomCard({ room, onEdit, onDelete }) {
+  const coverPhoto = (Array.isArray(room.photos) && room.photos[0]) || room.photo || null
   return (
     <div className="bb-card overflow-hidden transition-shadow hover:shadow-[0_18px_45px_rgba(15,23,42,0.12)]">
-      {room.photo && (
-        <img src={room.photo} alt={`Room ${room.room_number}`} className="w-full h-32 object-cover" />
+      {coverPhoto && (
+        <img src={coverPhoto} alt={`Room ${room.room_number}`} className="w-full h-32 object-cover" />
       )}
       <div className="p-5">
       <div className="mb-4 flex items-start justify-between gap-3">
@@ -300,7 +415,7 @@ function RoomCard({ room, onEdit, onDelete }) {
         </div>
         <StatusBadge status={room.status} />
       </div>
-      <div className="bb-card-muted mb-4 space-y-2 px-4 py-4 text-sm text-slate-600">
+        <div className="bb-card-muted mb-4 space-y-2 px-4 py-4 text-sm text-slate-600">
         <div className="flex items-center justify-between gap-4">
           <span className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">Nightly Rate</span>
           <span className="font-semibold text-slate-800">P {Number(room.rate_per_night).toFixed(2)}</span>
@@ -309,8 +424,17 @@ function RoomCard({ room, onEdit, onDelete }) {
           <span className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">Capacity</span>
           <span className="font-semibold text-slate-800">{room.max_occupancy} guests</span>
         </div>
-        {room.description && <p className="border-t border-slate-200 pt-2 text-xs italic text-slate-500">{room.description}</p>}
-      </div>
+          {room.description && <p className="border-t border-slate-200 pt-2 text-xs italic text-slate-500">{room.description}</p>}
+        </div>
+      {Array.isArray(room.amenities) && room.amenities.length > 0 && (
+        <div className="mb-4 flex flex-wrap gap-2">
+          {room.amenities.slice(0, 4).map((amenity) => (
+            <span key={amenity} className="rounded-full border border-emerald-100 bg-emerald-50 px-2.5 py-1 text-[11px] font-semibold text-emerald-700">
+              {amenity}
+            </span>
+          ))}
+        </div>
+      )}
       <div className="flex gap-2 border-t border-slate-100 pt-3">
         <button
           onClick={() => onEdit(room)}

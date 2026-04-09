@@ -1,8 +1,10 @@
-import { useEffect, useState, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Plus, Search, Filter, CreditCard, Building2, CheckCircle2, MoreVertical } from 'lucide-react'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { StatusBadge } from './shared/StatusBadge'
 import { Modal } from './shared/Modal'
 import { Receipt } from './shared/Receipt'
+import HorizontalScrollArea from './shared/HorizontalScrollArea'
 import { DESKTOP_PAYMENT_METHODS, PAYMENT_METHOD_LABELS } from '../constants/paymentMethods'
 import { useAuth } from '../App'
 import { useSettings } from '../App'
@@ -11,6 +13,40 @@ const STATUS_OPTIONS = ['confirmed', 'checked_in', 'checked_out', 'cancelled']
 
 const PAYMENT_METHODS = DESKTOP_PAYMENT_METHODS
 const METHOD_LABEL = PAYMENT_METHOD_LABELS
+
+function getOnlineRequestAgeMeta(createdAt) {
+  const time = createdAt ? new Date(createdAt).getTime() : NaN
+  if (!Number.isFinite(time)) {
+    return {
+      label: 'New',
+      detail: 'Recently submitted',
+      tone: 'bg-slate-100 text-slate-700'
+    }
+  }
+
+  const ageHours = Math.max(0, (Date.now() - time) / 3600000)
+  if (ageHours >= 24) {
+    const days = Math.floor(ageHours / 24)
+    return {
+      label: `${days}d waiting`,
+      detail: `Waiting for ${days} day${days === 1 ? '' : 's'}`,
+      tone: 'bg-red-100 text-red-700'
+    }
+  }
+  if (ageHours >= 4) {
+    const hours = Math.floor(ageHours)
+    return {
+      label: `${hours}h waiting`,
+      detail: `Waiting for ${hours} hour${hours === 1 ? '' : 's'}`,
+      tone: 'bg-amber-100 text-amber-700'
+    }
+  }
+  return {
+    label: 'New',
+    detail: 'Submitted recently',
+    tone: 'bg-emerald-100 text-emerald-700'
+  }
+}
 
 function formatWhatsAppPhone(phone) {
   if (!phone) return ''
@@ -40,6 +76,10 @@ function buildWhatsAppMessage(b, settings) {
   ].filter((l, i, arr) => !(l === '' && arr[i - 1] === '')).join('\n')
 }
 
+function bookingOutstandingAmount(booking) {
+  return Math.max(0, Number(booking.total_amount || 0) + Number(booking.charges_total || 0) - Number(booking.amount_paid || 0))
+}
+
 const emptyCustomer = { name: '', email: '', phone: '', id_number: '', nationality: '' }
 const emptyBooking = {
   customer_id: '',
@@ -56,6 +96,8 @@ export default function Bookings() {
   const { user } = useAuth()
   const { settings } = useSettings()
   const currency = settings?.currency || 'P'
+  const location = useLocation()
+  const navigate = useNavigate()
 
   const [openMenuId, setOpenMenuId] = useState(null)
   const [bookings, setBookings] = useState([])
@@ -65,8 +107,10 @@ export default function Bookings() {
   const [filterStatus, setFilterStatus] = useState('all')
   const [filterPayment, setFilterPayment] = useState('all')
   const [filterOnline, setFilterOnline] = useState(false) // true = show only online requests
+  const [sortBy, setSortBy] = useState('created_desc')
   const [showModal, setShowModal] = useState(false)
   const [editingId, setEditingId] = useState(null)
+  const [editingBaseUpdatedAt, setEditingBaseUpdatedAt] = useState(null)
   const [form, setForm] = useState(emptyBooking)
   const [newCustomer, setNewCustomer] = useState(emptyCustomer)
   const [useNewCustomer, setUseNewCustomer] = useState(true)
@@ -78,6 +122,10 @@ export default function Bookings() {
   const [loading, setLoading] = useState(false)
   const [receiptBooking, setReceiptBooking] = useState(null)
   const [failedSyncIds, setFailedSyncIds] = useState(new Set())
+  const [financialPendingIds, setFinancialPendingIds] = useState(new Set())
+  const [financialFailedIds, setFinancialFailedIds] = useState(new Set())
+  const [financialCacheStale, setFinancialCacheStale] = useState(false)
+  const FINANCIAL_SYNC_BLOCK_MESSAGE = 'Financial actions are temporarily locked until booking and payment sync are fully confirmed. Review System Health, then try again.'
 
   // Poll sync status every 30s (independent of bookings refresh — sync can change without a data reload)
   useEffect(() => {
@@ -85,6 +133,9 @@ export default function Bookings() {
       try {
         const s = await window.api.sync.getStatus()
         setFailedSyncIds(new Set(s?.failedBookingIds || []))
+        setFinancialPendingIds(new Set(s?.financialPendingBookingIds || []))
+        setFinancialFailedIds(new Set(s?.financialFailedBookingIds || []))
+        setFinancialCacheStale(s?.cacheStale?.active === true)
       } catch { /* non-fatal — sync status is informational */ }
     }
     loadSyncStatus()
@@ -104,6 +155,7 @@ export default function Bookings() {
   const [payForm, setPayForm] = useState({ payment_status: 'paid', payment_method: 'cash', amount_paid: '' })
   const [payLoading, setPayLoading] = useState(false)
   const [payError, setPayError] = useState('')
+  const paymentIntentCacheRef = useRef(new Map())
 
   // Charges modal
   const [chargesBooking, setChargesBooking] = useState(null)
@@ -117,6 +169,10 @@ export default function Bookings() {
   const [frontDeskId, setFrontDeskId] = useState('')
 
   const openCharges = async (b) => {
+    if (isFinanciallySyncBlocked(b.id)) {
+      setWarning(FINANCIAL_SYNC_BLOCK_MESSAGE)
+      return
+    }
     setChargesBooking(b)
     setChargeForm({ description: '', amount: '', category: 'Food & Beverage', quantity: 1, outlet_id: frontDeskId })
     setChargeError('')
@@ -126,6 +182,10 @@ export default function Bookings() {
 
   const handleAddCharge = async (e) => {
     e.preventDefault()
+    if (isFinanciallySyncBlocked(chargesBooking?.id)) {
+      setChargeError(FINANCIAL_SYNC_BLOCK_MESSAGE)
+      return
+    }
     setChargeLoading(true)
     setChargeError('')
     try {
@@ -149,17 +209,45 @@ export default function Bookings() {
   }
 
   const handleDeleteCharge = async (id) => {
-    const confirmed = window.confirm(
-      'Remove this extra charge?\n\nThis will reduce the booking folio total and remove the charge from the guest account.'
+    if (isFinanciallySyncBlocked(chargesBooking?.id)) {
+      setChargeError(FINANCIAL_SYNC_BLOCK_MESSAGE)
+      return
+    }
+    const reason = window.prompt(
+      'Void this extra charge.\n\nEnter a short reason for the audit trail:',
+      'Entered in error'
     )
-    if (!confirmed) return
-    await window.api.charges.delete(id).catch(console.error)
+    if (reason === null) return
+    if (!String(reason || '').trim()) {
+      setChargeError('A void reason is required.')
+      return
+    }
+    const result = await window.api.charges.delete(id, String(reason).trim()).catch((error) => ({ success: false, error: error?.message }))
+    if (result?.success === false) {
+      setChargeError(result.error || 'Failed to void charge')
+      return
+    }
     const data = await window.api.charges.getByBooking(chargesBooking.id).catch(() => [])
     setCharges(data || [])
     // Reload bookings so charges_total is current if user opens payment modal next
     loadAll()
-    showSuccess('Extra charge removed. Booking totals have been refreshed.')
+    showSuccess('Extra charge voided. Booking totals have been refreshed.')
   }
+
+  const loadAll = useCallback(async () => {
+    const [b, r, c] = await Promise.all([
+      window.api.bookings.getAll(),
+      window.api.rooms.getAll(),
+      window.api.customers.getAll()
+    ])
+    setBookings(b)
+    setRooms(r)
+    setCustomers(c)
+  }, [])
+
+  const isFinanciallySyncBlocked = (bookingId) => (
+    financialCacheStale || financialPendingIds.has(bookingId) || financialFailedIds.has(bookingId)
+  )
 
   useEffect(() => {
     loadAll()
@@ -177,7 +265,53 @@ export default function Bookings() {
         }
       })
       .catch(() => {}) // non-critical; charge will save with outlet_id = null
-  }, [])
+  }, [loadAll])
+
+  useEffect(() => {
+    if (!location.state?.showPendingOnline) return
+    setFilterOnline(true)
+    setFilterStatus('pending')
+    setSearch('')
+    setWarning('Showing pending online booking requests that need front-desk action.')
+    navigate(location.pathname, { replace: true, state: {} })
+  }, [location.pathname, location.state, navigate])
+
+  useEffect(() => {
+    const reviewBookingId = location.state?.reviewBookingId
+    const focusBookingId = location.state?.focusBookingId
+    const targetBookingId = location.state?.collectPaymentBookingId
+    const targetId = targetBookingId || reviewBookingId || focusBookingId
+    if (!targetId || paymentBooking) return
+    if (!bookings.length) return
+
+    const booking = bookings.find((entry) => String(entry.id) === String(targetId))
+    if (!booking) {
+      setWarning('Could not find that booking. Please refresh bookings and try again.')
+      navigate(location.pathname, { replace: true, state: {} })
+      return
+    }
+
+    if (targetBookingId && booking.status === 'cancelled') {
+      setWarning('That booking has been cancelled, so no payment can be collected from the invoice screen.')
+    } else if (targetBookingId && isFinanciallySyncBlocked(booking.id)) {
+      setWarning(FINANCIAL_SYNC_BLOCK_MESSAGE)
+    } else if (targetBookingId && bookingOutstandingAmount(booking) <= 0) {
+      setWarning('That booking is already fully settled.')
+    } else if (targetBookingId) {
+      openPayment(booking)
+      showSuccess(`Opened payment collection for ${booking.customer_name || 'this guest'}.`)
+    } else {
+      setSearch(booking.invoice_number || booking.customer_name || booking.room_number || '')
+      setReceiptBooking(booking)
+      setWarning(
+        reviewBookingId
+          ? `Opened ${booking.customer_name || 'this booking'} for review after a sync issue.`
+          : `Focused ${booking.customer_name || 'this booking'} in the bookings list.`
+      )
+    }
+
+    navigate(location.pathname, { replace: true, state: {} })
+  }, [bookings, location.pathname, location.state, navigate, paymentBooking, financialCacheStale, financialFailedIds, financialPendingIds])
 
   useEffect(() => () => window.clearTimeout(successTimerRef.current), [])
 
@@ -187,19 +321,9 @@ export default function Bookings() {
     successTimerRef.current = window.setTimeout(() => setSuccess(''), 3500)
   }
 
-  const loadAll = async () => {
-    const [b, r, c] = await Promise.all([
-      window.api.bookings.getAll(),
-      window.api.rooms.getAll(),
-      window.api.customers.getAll()
-    ])
-    setBookings(b)
-    setRooms(r)
-    setCustomers(c)
-  }
-
   const openAdd = () => {
     setEditingId(null)
+    setEditingBaseUpdatedAt(null)
     setForm({ ...emptyBooking, check_in: today(), check_out: tomorrow() })
     setNewCustomer(emptyCustomer)
     setUseNewCustomer(true)
@@ -212,6 +336,7 @@ export default function Bookings() {
 
   const openEdit = (b) => {
     setEditingId(b.id)
+    setEditingBaseUpdatedAt(b.updated_at || null)
     setForm({
       customer_id: b.customer_id,
       room_id: b.room_id,
@@ -234,14 +359,38 @@ export default function Bookings() {
     setPayError('')
   }
 
+  const getPaymentAttemptSignature = (bookingId, paymentStatus, amount) => {
+    const safeAmount = Math.max(0, Number(amount) || 0).toFixed(2)
+    return `${bookingId}:${paymentStatus}:${safeAmount}`
+  }
+
+  const getOrCreatePaymentIntentKey = (bookingId, paymentStatus, amount) => {
+    const signature = getPaymentAttemptSignature(bookingId, paymentStatus, amount)
+    const existing = paymentIntentCacheRef.current.get(bookingId)
+    if (existing?.signature === signature && existing?.key) {
+      return existing.key
+    }
+    const key = crypto.randomUUID()
+    paymentIntentCacheRef.current.set(bookingId, { signature, key })
+    return key
+  }
+
   const openPayment = (b) => {
+    if (isFinanciallySyncBlocked(b.id)) {
+      setWarning(FINANCIAL_SYNC_BLOCK_MESSAGE)
+      return
+    }
+    const initialStatus = b.payment_status === 'paid' ? 'paid' : b.payment_status === 'partial' ? 'partial' : 'paid'
+    const initialAmount = initialStatus === 'paid'
+      ? Number(b.total_amount || 0) + Number(b.charges_total || 0) - Number(b.amount_paid || 0)
+      : (b.amount_paid || '')
     setPaymentBooking(b)
-    setPaymentIntentKey(crypto.randomUUID())  // generated ONCE when modal opens, never on re-renders
+    setPaymentIntentKey(getOrCreatePaymentIntentKey(b.id, initialStatus, initialAmount))
     setPayError('')
     setPayForm({
-      payment_status: b.payment_status === 'paid' ? 'paid' : b.payment_status === 'partial' ? 'partial' : 'paid',
+      payment_status: initialStatus,
       payment_method: b.payment_method || 'cash',
-      amount_paid: b.payment_status === 'paid' ? b.total_amount : (b.amount_paid || '')
+      amount_paid: initialAmount
     })
   }
 
@@ -270,7 +419,8 @@ export default function Bookings() {
         room_id: form.room_id,
         adults: parseInt(form.adults),
         children: parseInt(form.children),
-        created_by: user.id
+        created_by: user.id,
+        ...(editingId && editingBaseUpdatedAt ? { expected_updated_at: editingBaseUpdatedAt } : {})
       }
 
       let res
@@ -293,16 +443,28 @@ export default function Bookings() {
 
       setModalWarning('')
       setShowModal(false)
+      setEditingBaseUpdatedAt(null)
       loadAll()
       showSuccess(editingId ? 'Booking changes saved.' : 'Booking created successfully.')
     } catch (err) {
-      setError(err.message || 'Failed to save booking')
+      const message = err.message || 'Failed to save booking'
+      if (/modified on another device|refresh and try again/i.test(message)) {
+        await loadAll()
+        setEditingBaseUpdatedAt(null)
+        setError('This booking changed on another device. The latest booking list has been refreshed. Re-open the booking and apply your edit again.')
+      } else {
+        setError(message)
+      }
     }
     setLoading(false)
   }
 
   const handlePaymentSave = async (e) => {
     e.preventDefault()
+    if (isFinanciallySyncBlocked(paymentBooking?.id)) {
+      setPayError(FINANCIAL_SYNC_BLOCK_MESSAGE)
+      return
+    }
     setPayLoading(true)
     setPayError('')
 
@@ -315,12 +477,19 @@ export default function Bookings() {
       amountToPay = Number(payForm.amount_paid) || 0
     }
 
-    // Pass paymentIntentKey — stable for this modal open, so retries reuse the same key
+    const resolvedIntentKey = getOrCreatePaymentIntentKey(
+      paymentBooking.id,
+      payForm.payment_status,
+      amountToPay
+    )
+    setPaymentIntentKey(resolvedIntentKey)
+
+    // Reuse the same key for the same booking+amount even across modal reopen.
     const result = await window.api.bookings.updatePayment(
       paymentBooking.id,
       amountToPay,
       payForm.payment_method,
-      paymentIntentKey
+      resolvedIntentKey
     )
 
     if (result?.success === false) {
@@ -330,6 +499,7 @@ export default function Bookings() {
       return
     }
 
+    paymentIntentCacheRef.current.delete(paymentBooking.id)
     closePaymentModal()
     loadAll()
     const remaining = Math.max(0, (Number(paymentBooking.total_amount || 0) + Number(paymentBooking.charges_total || 0)) - Number(paymentBooking.amount_paid || 0) - Number(amountToPay || 0))
@@ -338,11 +508,23 @@ export default function Bookings() {
   }
 
   const handleStatusChange = async (id, status) => {
+    const booking = bookings.find((entry) => entry.id === id)
+    if ((status === 'checked_out' || status === 'cancelled') && isFinanciallySyncBlocked(id)) {
+      setWarning(FINANCIAL_SYNC_BLOCK_MESSAGE)
+      return
+    }
     if (status === 'cancelled') {
       const confirmed = window.confirm(
         'Cancel this booking?\n\nThis removes it from active operations and can affect room availability and reporting. Continue only if the guest is definitely not staying.'
       )
       if (!confirmed) return
+    }
+    if (status === 'checked_out' && booking) {
+      const outstanding = bookingOutstandingAmount(booking)
+      if (outstanding > 0) {
+        setWarning(`Cannot check out ${booking.customer_name || 'this guest'} until the full balance is paid. Outstanding: ${currency} ${outstanding.toFixed(2)}.`)
+        return
+      }
     }
     const result = await window.api.bookings.updateStatus(id, status)
     if (result?.success === false) {
@@ -382,7 +564,7 @@ export default function Bookings() {
 
   const fmtBkNum = (b) => b.invoice_number || '—'
 
-  const filtered = bookings.filter((b) => {
+  const filtered = useMemo(() => bookings.filter((b) => {
     const matchSearch =
       !search ||
       b.customer_name?.toLowerCase().includes(search.toLowerCase()) ||
@@ -392,7 +574,7 @@ export default function Bookings() {
     const matchPayment = filterPayment === 'all' || (b.payment_status || 'unpaid') === filterPayment
     const matchOnline = !filterOnline || b.source === 'online'
     return matchSearch && matchStatus && matchPayment && matchOnline
-  })
+  }), [bookings, filterOnline, filterPayment, filterStatus, search])
 
   const nights = (checkIn, checkOut) => {
     if (!checkIn || !checkOut) return 0
@@ -404,7 +586,31 @@ export default function Bookings() {
 
   const isEventBooking = (b) => b._event_group || b.notes?.startsWith('[GROUP:')
 
-  const groupEventBookings = (list) => {
+  const sortBookings = useCallback((list) => {
+    const safeDate = (value) => {
+      const time = value ? new Date(value).getTime() : NaN
+      return Number.isFinite(time) ? time : 0
+    }
+    const safeText = (value) => String(value || '').toLowerCase()
+
+    return [...list].sort((left, right) => {
+      switch (sortBy) {
+        case 'created_asc':
+          return safeDate(left.created_at) - safeDate(right.created_at)
+        case 'check_in_asc':
+          return safeDate(left.check_in) - safeDate(right.check_in)
+        case 'check_in_desc':
+          return safeDate(right.check_in) - safeDate(left.check_in)
+        case 'room_asc':
+          return safeText(left.room_number).localeCompare(safeText(right.room_number), undefined, { numeric: true, sensitivity: 'base' })
+        case 'created_desc':
+        default:
+          return safeDate(right.created_at) - safeDate(left.created_at)
+      }
+    })
+  }, [sortBy])
+
+  const groupEventBookings = useCallback((list) => {
     const regular   = list.filter(b => !b.is_exclusive_event)
     const eventRows = list.filter(b => b.is_exclusive_event)
     const groupMap  = {}
@@ -422,9 +628,40 @@ export default function Bookings() {
       groupMap[groupId].amount_paid  += Number(b.amount_paid  || 0)
     })
     return [...regular, ...Object.values(groupMap)]
-  }
+  }, [])
 
-  const selectedRoom = rooms.find((r) => r.id === form.room_id)
+  const groupedFilteredBookings = useMemo(
+    () => sortBookings(groupEventBookings(filtered)),
+    [filtered, groupEventBookings, sortBookings]
+  )
+  const pendingOnlineCount = useMemo(
+    () => bookings.filter((b) => b.source === 'online' && b.status === 'pending').length,
+    [bookings]
+  )
+  const pendingSyncCount = useMemo(
+    () => bookings.filter((b) => b._pending_sync && !failedSyncIds.has(b.id)).length,
+    [bookings, failedSyncIds]
+  )
+  const reviewCount = useMemo(
+    () => bookings.filter((b) => failedSyncIds.has(b.id)).length,
+    [bookings, failedSyncIds]
+  )
+  const oldestPendingOnlineCreatedAt = useMemo(() => {
+    const pendingOnline = bookings.filter((b) => b.source === 'online' && b.status === 'pending' && b.created_at)
+    if (!pendingOnline.length) return null
+    return pendingOnline.reduce((oldest, booking) => (
+      !oldest || String(booking.created_at) < String(oldest) ? booking.created_at : oldest
+    ), null)
+  }, [bookings])
+  const selectedRoom = useMemo(
+    () => rooms.find((r) => r.id === form.room_id),
+    [rooms, form.room_id]
+  )
+  const selectableRooms = useMemo(
+    () => rooms.filter((r) => r.status !== 'maintenance'),
+    [rooms]
+  )
+
   const estimatedTotal = selectedRoom
     ? selectedRoom.rate_per_night * nights(form.check_in, form.check_out)
     : 0
@@ -472,6 +709,30 @@ export default function Bookings() {
           ✓ {success}
         </div>
       )}
+      {pendingOnlineCount > 0 && (
+        <div className="rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="font-semibold">
+                {pendingOnlineCount} online booking request{pendingOnlineCount === 1 ? '' : 's'} waiting for action
+              </p>
+              <p className="mt-1 text-amber-800/85">
+                Oldest request: {getOnlineRequestAgeMeta(oldestPendingOnlineCreatedAt).label}. Confirm or decline these before relying on arrivals and availability.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setFilterOnline(true)
+                setFilterStatus('pending')
+              }}
+              className="rounded-xl border border-amber-300 bg-white px-3 py-2 text-xs font-semibold text-amber-800 transition-colors hover:bg-amber-100"
+            >
+              Focus Pending Requests
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Filters */}
       <div className="bb-filter-bar">
@@ -513,6 +774,20 @@ export default function Bookings() {
             <option value="paid">Paid</option>
           </select>
         </div>
+        <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white/80 px-3 py-2 shadow-sm">
+          <Filter size={15} className="text-slate-400" />
+          <select
+            className="border-0 bg-transparent text-sm font-medium text-slate-700 focus:outline-none"
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value)}
+          >
+            <option value="created_desc">Newest created</option>
+            <option value="created_asc">Oldest created</option>
+            <option value="check_in_asc">Check-in soonest</option>
+            <option value="check_in_desc">Check-in latest</option>
+            <option value="room_asc">Room number</option>
+          </select>
+        </div>
         {/* Online Requests quick filter */}
         {bookings.some(b => b.source === 'online') && (
           <button
@@ -525,22 +800,42 @@ export default function Bookings() {
             }`}
           >
             🌐 Online requests
-            {bookings.filter(b => b.source === 'online' && b.status === 'pending').length > 0 && (
+            {pendingOnlineCount > 0 && (
               <span className="rounded-full bg-amber-500 text-white text-[10px] px-1.5 py-0.5 leading-none">
-                {bookings.filter(b => b.source === 'online' && b.status === 'pending').length}
+                {pendingOnlineCount}
               </span>
             )}
           </button>
         )}
         <div className="ml-auto text-xs text-slate-500">
-          Search by guest or room, then use status and payment filters to narrow active front-desk work.
+          Search, filter, and sort bookings so new reservations are easier to find.
         </div>
       </div>
 
+      {(pendingSyncCount > 0 || reviewCount > 0 || financialCacheStale) && (
+        <div className="mt-[-8px] flex flex-wrap gap-3">
+          {pendingSyncCount > 0 && (
+            <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 shadow-sm">
+              <span className="font-semibold">{pendingSyncCount}</span> booking{pendingSyncCount !== 1 ? 's are' : ' is'} still syncing. Keep this device online until they clear.
+            </div>
+          )}
+          {reviewCount > 0 && (
+            <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 shadow-sm">
+              <span className="font-semibold">{reviewCount}</span> booking{reviewCount !== 1 ? 's need' : ' needs'} review before staff can trust the record.
+            </div>
+          )}
+          {financialCacheStale && (
+            <div className="rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-900 shadow-sm">
+              Financial actions are temporarily locked while fresh booking data is still being confirmed from the server.
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Table */}
       <div className="bb-table-shell overflow-visible">
-        <div className="overflow-x-auto overflow-y-visible">
-          <table className="w-full text-sm">
+        <HorizontalScrollArea viewportClassName="overflow-y-visible">
+          <table className="min-w-[1180px] w-full text-sm">
             <thead className="sticky top-0 z-10 bg-slate-50 text-xs uppercase tracking-[0.16em] text-slate-500">
               <tr>
                 <th className="px-5 py-3 text-left">#</th>
@@ -556,7 +851,7 @@ export default function Bookings() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {groupEventBookings(filtered).map((b) => (
+              {groupedFilteredBookings.map((b) => (
                 <tr key={b.id} className="hover:bg-emerald-50/30">
                   <td className="px-5 py-4 font-mono text-xs font-semibold text-slate-500">{fmtBkNum(b)}</td>
                   <td className="px-5 py-4">
@@ -576,6 +871,15 @@ export default function Bookings() {
                     {b.customer_phone && (
                       <p className="mt-1 text-xs text-slate-500">{b.customer_phone}</p>
                     )}
+                    {(b._pending_sync || failedSyncIds.has(b.id)) && (
+                      <p className={`mt-1 text-xs font-medium ${
+                        failedSyncIds.has(b.id) ? 'text-red-700' : 'text-amber-700'
+                      }`}>
+                        {failedSyncIds.has(b.id)
+                          ? 'Latest booking changes need review before staff rely on them.'
+                          : 'Latest booking changes are still syncing to the server.'}
+                      </p>
+                    )}
                   </td>
                   <td className="px-5 py-4 text-slate-600">
                     {b._event_group
@@ -591,6 +895,16 @@ export default function Bookings() {
                   <td className="px-5 py-4">
                     <div className="flex flex-wrap items-center gap-1.5">
                     <StatusBadge status={b.status} />
+                    {b.source === 'online' && b.status === 'pending' && (
+                      <span className={`rounded-full px-2 py-1 text-xs font-semibold whitespace-nowrap ${getOnlineRequestAgeMeta(b.created_at).tone}`}>
+                        {getOnlineRequestAgeMeta(b.created_at).label}
+                      </span>
+                    )}
+                    {bookingOutstandingAmount(b) > 0 && b.status !== 'cancelled' && (
+                      <span className="rounded-full border border-rose-200 bg-rose-50 px-2 py-1 text-xs text-rose-700 whitespace-nowrap">
+                        Balance {currency} {bookingOutstandingAmount(b).toFixed(2)}
+                      </span>
+                    )}
                     {b._pending_sync && !failedSyncIds.has(b.id) && (
                       <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-600 whitespace-nowrap">
                         ⏳ Waiting to sync
@@ -606,8 +920,8 @@ export default function Bookings() {
                   <td className="px-5 py-4">
                     <PaymentBadge status={b.payment_status || 'unpaid'} />
                     {b._pending_payment && (
-                      <span className="ml-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-600 align-middle whitespace-nowrap">
-                        ⏳ Est.
+                      <span className="ml-1 rounded-full border border-amber-300 bg-amber-100 px-2 py-1 text-xs font-semibold text-amber-700 align-middle whitespace-nowrap animate-pulse">
+                        ⏳ Queued (will sync)
                       </span>
                     )}
                     {b.payment_status === 'partial' && b.amount_paid > 0 && (
@@ -644,12 +958,46 @@ export default function Bookings() {
                         </>
                       ) : (
                         <>
+                          {b.status === 'confirmed' && (
+                            <button
+                              onClick={() => handleStatusChange(b.id, 'checked_in')}
+                              className="cursor-pointer rounded-xl bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-emerald-700"
+                            >
+                              Check In
+                            </button>
+                          )}
+                          {b.status === 'checked_in' && (
+                            <button
+                              onClick={() => handleStatusChange(b.id, 'checked_out')}
+                              disabled={bookingOutstandingAmount(b) > 0 || isFinanciallySyncBlocked(b.id)}
+                              title={
+                                isFinanciallySyncBlocked(b.id)
+                                  ? FINANCIAL_SYNC_BLOCK_MESSAGE
+                                  : bookingOutstandingAmount(b) > 0
+                                    ? `Settle ${currency} ${bookingOutstandingAmount(b).toFixed(2)} before checkout`
+                                    : 'Check out guest'
+                              }
+                              className={`cursor-pointer rounded-xl px-3 py-1.5 text-xs font-semibold text-white transition-colors ${
+                                bookingOutstandingAmount(b) > 0 || isFinanciallySyncBlocked(b.id)
+                                  ? 'bg-slate-300 text-slate-600 cursor-not-allowed'
+                                  : 'bg-indigo-600 hover:bg-indigo-700'
+                              }`}
+                            >
+                              Check Out
+                            </button>
+                          )}
                           {b.payment_status !== 'paid' && b.status !== 'cancelled' && (
                             <button
                               onClick={() => openPayment(b)}
-                              className="cursor-pointer rounded-xl bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-blue-700"
+                              disabled={isFinanciallySyncBlocked(b.id)}
+                              title={isFinanciallySyncBlocked(b.id) ? FINANCIAL_SYNC_BLOCK_MESSAGE : `Collect ${currency} ${bookingOutstandingAmount(b).toFixed(2)}`}
+                              className={`cursor-pointer rounded-xl px-3 py-1.5 text-xs font-semibold text-white transition-colors ${
+                                isFinanciallySyncBlocked(b.id)
+                                  ? 'bg-slate-300 text-slate-600 cursor-not-allowed'
+                                  : 'bg-blue-600 hover:bg-blue-700'
+                              }`}
                             >
-                              + Pay
+                              Collect Balance
                             </button>
                           )}
                         </>
@@ -684,12 +1032,19 @@ export default function Bookings() {
               )}
             </tbody>
           </table>
-        </div>
+        </HorizontalScrollArea>
       </div>
 
       {/* Receipt */}
       {receiptBooking && (
-        <Receipt booking={receiptBooking} onClose={() => setReceiptBooking(null)} />
+        <Receipt
+          booking={receiptBooking}
+          onClose={() => setReceiptBooking(null)}
+          onCollectPayment={(booking) => {
+            setReceiptBooking(null)
+            openPayment(booking)
+          }}
+        />
       )}
 
       {/* Extras / Charges Modal */}
@@ -1192,9 +1547,7 @@ export default function Bookings() {
                   required
                 >
                   <option value="">-- Select room --</option>
-                  {rooms
-                    .filter((r) => r.status !== 'maintenance')
-                    .map((r) => (
+                  {selectableRooms.map((r) => (
                       <option key={r.id} value={r.id}>
                         Room {r.room_number} — {r.room_type} ({currency}{r.rate_per_night}/night)
                       </option>
@@ -1351,6 +1704,7 @@ function BookingMenu({ b, isOpen, onToggle, onClose, onCheckIn, onCheckOut, onCa
 
   const phone = formatWhatsAppPhone(b.customer_phone)
   const msg = buildWhatsAppMessage(b, settings)
+  const outstanding = bookingOutstandingAmount(b)
 
   return (
     <>
@@ -1394,7 +1748,12 @@ function BookingMenu({ b, isOpen, onToggle, onClose, onCheckIn, onCheckOut, onCa
             </>
           )}
           {b.status === 'checked_in' && (
-            <MenuItem onClick={() => { onCheckOut(); onClose() }} color="blue">
+            <MenuItem
+              onClick={() => { onCheckOut(); onClose() }}
+              disabled={outstanding > 0}
+              title={outstanding > 0 ? `Settle the outstanding balance first: ${outstanding.toFixed(2)}` : undefined}
+              color="blue"
+            >
               🏁 Check Out
             </MenuItem>
           )}

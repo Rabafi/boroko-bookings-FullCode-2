@@ -1,270 +1,455 @@
-import { useEffect, useState, useMemo } from 'react'
-import { ChevronLeft, ChevronRight } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { ChevronLeft, ChevronRight, CreditCard, ExternalLink } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
 import {
-  format,
-  startOfMonth,
-  endOfMonth,
-  eachDayOfInterval,
   addMonths,
-  subMonths,
+  eachDayOfInterval,
+  endOfMonth,
+  endOfWeek,
+  format,
   isSameDay,
-  parseISO,
-  isWithinInterval
+  isSameMonth,
+  startOfMonth,
+  startOfWeek
 } from 'date-fns'
+import { useSettings } from '../App'
 
-const STATUS_COLORS = {
-  confirmed: 'bg-blue-400',
-  checked_in: 'bg-green-500',
-  checked_out: 'bg-gray-300',
-  cancelled: 'bg-red-300'
+const STATUS_STYLES = {
+  confirmed: 'bg-blue-100 text-blue-700',
+  checked_in: 'bg-emerald-100 text-emerald-700',
+  checked_out: 'bg-slate-100 text-slate-600',
+  cancelled: 'bg-rose-100 text-rose-700'
 }
 
-const STATUS_TEXT = {
-  confirmed: 'text-blue-700',
-  checked_in: 'text-green-700',
-  checked_out: 'text-gray-500',
-  cancelled: 'text-red-500'
+function bookingOutstandingAmount(booking) {
+  return Math.max(0, Number(booking.total_amount || 0) + Number(booking.charges_total || 0) - Number(booking.amount_paid || 0))
+}
+
+function currency(symbol, value) {
+  return `${symbol} ${Number(value || 0).toFixed(2)}`
 }
 
 export default function Calendar() {
+  const navigate = useNavigate()
+  const { settings } = useSettings()
+  const currencySymbol = settings?.currency || 'P'
   const [currentMonth, setCurrentMonth] = useState(new Date())
   const [rooms, setRooms] = useState([])
   const [bookings, setBookings] = useState([])
-  const [tooltip, setTooltip] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [selectedDay, setSelectedDay] = useState(format(new Date(), 'yyyy-MM-dd'))
+  const [error, setError] = useState('')
 
   const monthStart = startOfMonth(currentMonth)
   const monthEnd = endOfMonth(currentMonth)
-  const days = eachDayOfInterval({ start: monthStart, end: monthEnd })
+  const visibleDays = eachDayOfInterval({
+    start: startOfWeek(monthStart, { weekStartsOn: 1 }),
+    end: endOfWeek(monthEnd, { weekStartsOn: 1 })
+  })
+  const monthDays = eachDayOfInterval({ start: monthStart, end: monthEnd })
 
   useEffect(() => {
     loadData()
   }, [currentMonth])
 
+  useEffect(() => {
+    const currentMonthKey = format(currentMonth, 'yyyy-MM')
+    if (!String(selectedDay || '').startsWith(currentMonthKey)) {
+      const todayKey = format(new Date(), 'yyyy-MM-dd')
+      setSelectedDay(todayKey.startsWith(currentMonthKey) ? todayKey : format(monthStart, 'yyyy-MM-dd'))
+    }
+  }, [currentMonth, monthStart, selectedDay])
+
   const loadData = async () => {
+    setLoading(true)
+    setError('')
     const start = format(monthStart, 'yyyy-MM-dd')
     const end = format(monthEnd, 'yyyy-MM-dd')
-    const [r, b] = await Promise.all([
-      window.api.rooms.getAll(),
-      window.api.bookings.getByDateRange(start, end)
-    ])
-    setRooms(r)
-    setBookings(b)
-  }
-
-  // For each room + day, find which booking is active
-  const cellData = useMemo(() => {
-    const map = {}
-    for (const room of rooms) {
-      map[room.id] = {}
-      for (const day of days) {
-        const dayStr = format(day, 'yyyy-MM-dd')
-        const booking = bookings.find(
-          (b) =>
-            b.room_id === room.id &&
-            dayStr >= b.check_in &&
-            dayStr < b.check_out
-        )
-        map[room.id][dayStr] = booking || null
-      }
+    try {
+      const [r, b] = await Promise.all([
+        window.api.rooms.getAll(),
+        window.api.bookings.getByDateRange(start, end)
+      ])
+      setRooms(Array.isArray(r) ? r : [])
+      setBookings(Array.isArray(b) ? b : [])
+    } catch (loadError) {
+      setError(loadError?.message || 'Could not load the planning calendar right now.')
+    } finally {
+      setLoading(false)
     }
-    return map
-  }, [rooms, bookings, days])
-
-  const occupiedCount = (day) => {
-    const dayStr = format(day, 'yyyy-MM-dd')
-    return rooms.filter((r) => cellData[r.id]?.[dayStr]).length
   }
+
+  const dailySummary = useMemo(() => {
+    const summary = {}
+    monthDays.forEach((day) => {
+      const dayKey = format(day, 'yyyy-MM-dd')
+      const activeBookings = bookings
+        .filter((booking) => (
+          dayKey >= booking.check_in &&
+          dayKey < booking.check_out &&
+          booking.status !== 'cancelled'
+        ))
+        .sort((a, b) => String(a.room_number || '').localeCompare(String(b.room_number || '')))
+      const arrivals = bookings.filter((booking) => booking.check_in === dayKey && booking.status !== 'cancelled')
+      const departures = bookings.filter((booking) => booking.check_out === dayKey && booking.status !== 'cancelled')
+      const outstandingValue = activeBookings.reduce((sum, booking) => sum + bookingOutstandingAmount(booking), 0)
+      const unpaidStays = activeBookings.filter((booking) => bookingOutstandingAmount(booking) > 0).length
+      summary[dayKey] = {
+        dayKey,
+        activeBookings,
+        occupiedRooms: activeBookings.length,
+        arrivals,
+        departures,
+        checkInValue: arrivals.reduce((sum, booking) => sum + Number(booking.total_amount || 0), 0),
+        outstandingValue,
+        unpaidStays
+      }
+    })
+    return summary
+  }, [bookings, monthDays])
+
+  const selectedSummary = dailySummary[selectedDay] || {
+    activeBookings: [],
+    occupiedRooms: 0,
+    arrivals: [],
+    departures: [],
+    checkInValue: 0,
+    outstandingValue: 0,
+    unpaidStays: 0
+  }
+
+  const monthMetrics = useMemo(() => {
+    const totalRoomNights = Math.max(rooms.length * monthDays.length, 1)
+    const occupiedRoomNights = monthDays.reduce((sum, day) => {
+      const dayKey = format(day, 'yyyy-MM-dd')
+      return sum + (dailySummary[dayKey]?.occupiedRooms || 0)
+    }, 0)
+    const occupancyRate = Math.round((occupiedRoomNights / totalRoomNights) * 100)
+    const totalArrivals = monthDays.reduce((sum, day) => sum + (dailySummary[format(day, 'yyyy-MM-dd')]?.arrivals.length || 0), 0)
+    const totalDepartures = monthDays.reduce((sum, day) => sum + (dailySummary[format(day, 'yyyy-MM-dd')]?.departures.length || 0), 0)
+    const peakDay = monthDays.reduce((best, day) => {
+      const dayKey = format(day, 'yyyy-MM-dd')
+      const occupiedRooms = dailySummary[dayKey]?.occupiedRooms || 0
+      if (!best || occupiedRooms > best.occupiedRooms) return { dayKey, occupiedRooms }
+      return best
+    }, null)
+    return {
+      occupancyRate,
+      totalArrivals,
+      totalDepartures,
+      peakDay
+    }
+  }, [dailySummary, monthDays, rooms.length])
+
+  const monthBookings = useMemo(() => (
+    [...bookings].sort((a, b) => String(a.check_in || '').localeCompare(String(b.check_in || '')))
+  ), [bookings])
+
+  const monthCollectionQueue = useMemo(() => (
+    [...bookings]
+      .filter((booking) => booking.status !== 'cancelled' && bookingOutstandingAmount(booking) > 0)
+      .sort((a, b) => {
+        const statusWeight = (booking) => {
+          if (booking.status === 'checked_out') return 0
+          if (booking.status === 'checked_in') return 1
+          return 2
+        }
+        const statusGap = statusWeight(a) - statusWeight(b)
+        if (statusGap !== 0) return statusGap
+        return bookingOutstandingAmount(b) - bookingOutstandingAmount(a)
+      })
+      .slice(0, 8)
+  ), [bookings])
 
   const isToday = (day) => isSameDay(day, new Date())
 
+  const openBooking = (booking) => {
+    navigate('/bookings', { state: { focusBookingId: booking.id } })
+  }
+
+  const collectPayment = (booking) => {
+    navigate('/bookings', { state: { collectPaymentBookingId: booking.id } })
+  }
+
   return (
     <div className="p-6">
-      {/* Header */}
-      <div className="flex items-center justify-between mb-6">
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-gray-800">Occupancy Calendar</h1>
-          <p className="text-sm text-gray-500 mt-0.5">{rooms.length} rooms · {format(currentMonth, 'MMMM yyyy')}</p>
+          <h1 className="text-2xl font-bold text-gray-800">Planning Calendar</h1>
+          <p className="mt-0.5 text-sm text-gray-500">
+            Monthly occupancy patterns, arrivals, departures, and booking flow for {format(currentMonth, 'MMMM yyyy')}.
+          </p>
         </div>
         <div className="flex items-center gap-2">
           <button
-            onClick={() => setCurrentMonth(subMonths(currentMonth, 1))}
-            className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+            onClick={() => setCurrentMonth(addMonths(currentMonth, -1))}
+            className="rounded-lg p-2 transition-colors hover:bg-gray-100"
           >
             <ChevronLeft size={18} />
           </button>
-          <span className="text-base font-semibold text-gray-700 min-w-[140px] text-center">
+          <span className="min-w-[160px] text-center text-base font-semibold text-gray-700">
             {format(currentMonth, 'MMMM yyyy')}
           </span>
           <button
             onClick={() => setCurrentMonth(addMonths(currentMonth, 1))}
-            className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+            className="rounded-lg p-2 transition-colors hover:bg-gray-100"
           >
             <ChevronRight size={18} />
           </button>
           <button
             onClick={() => setCurrentMonth(new Date())}
-            className="ml-2 text-sm px-3 py-1.5 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
+            className="ml-2 rounded-lg border border-gray-200 px-3 py-1.5 text-sm transition-colors hover:bg-gray-50"
           >
-            Today
+            This Month
           </button>
         </div>
       </div>
 
-      {/* Legend */}
-      <div className="flex gap-4 mb-4 text-xs">
-        {Object.entries(STATUS_COLORS).map(([status, color]) => (
-          <div key={status} className="flex items-center gap-1.5">
-            <div className={`w-3 h-3 rounded-sm ${color}`} />
-            <span className="text-gray-500 capitalize">{status.replace('_', ' ')}</span>
-          </div>
-        ))}
+      {error && (
+        <div className="mb-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          {error}
+        </div>
+      )}
+
+      <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <div className="rounded-2xl border border-emerald-100 bg-emerald-50/80 px-5 py-4">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-700">Occupancy Outlook</p>
+          <p className="mt-3 text-2xl font-bold text-emerald-950">{monthMetrics.occupancyRate}%</p>
+          <p className="mt-1 text-sm text-emerald-800">Average occupied room nights across the month.</p>
+        </div>
+        <div className="rounded-2xl border border-blue-100 bg-blue-50/80 px-5 py-4">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-blue-700">Arrivals</p>
+          <p className="mt-3 text-2xl font-bold text-blue-950">{monthMetrics.totalArrivals}</p>
+          <p className="mt-1 text-sm text-blue-800">Expected check-ins this month.</p>
+        </div>
+        <div className="rounded-2xl border border-amber-100 bg-amber-50/80 px-5 py-4">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-amber-700">Departures</p>
+          <p className="mt-3 text-2xl font-bold text-amber-950">{monthMetrics.totalDepartures}</p>
+          <p className="mt-1 text-sm text-amber-800">Expected check-outs this month.</p>
+        </div>
+        <div className="rounded-2xl border border-violet-100 bg-violet-50/80 px-5 py-4">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-violet-700">Peak Day</p>
+          <p className="mt-3 text-xl font-bold text-violet-950">
+            {monthMetrics.peakDay ? format(new Date(`${monthMetrics.peakDay.dayKey}T12:00:00`), 'dd MMM') : '—'}
+          </p>
+          <p className="mt-1 text-sm text-violet-800">
+            {monthMetrics.peakDay ? `${monthMetrics.peakDay.occupiedRooms} occupied room${monthMetrics.peakDay.occupiedRooms === 1 ? '' : 's'}` : 'No bookings yet'}
+          </p>
+        </div>
       </div>
 
-      {/* Occupancy Summary Row */}
-      <div className="bg-white rounded-xl shadow-sm overflow-hidden mb-4">
-        <div className="flex border-b border-gray-100">
-          <div className="w-28 flex-shrink-0 px-3 py-2 text-xs font-semibold text-gray-500 uppercase bg-gray-50 border-r border-gray-100">
-            Rooms
-          </div>
-          <div className="flex-1 overflow-x-auto">
-            <div className="flex">
-              {days.map((day) => (
-                <div
-                  key={day}
-                  className={`flex-none text-center px-1 py-2 border-r border-gray-100 last:border-r-0 ${
-                    isToday(day) ? 'bg-green-50' : ''
-                  }`}
-                  style={{ width: `${Math.max(32, Math.floor(800 / days.length))}px` }}
-                >
-                  <p className="text-xs text-gray-400">{format(day, 'EEE')[0]}</p>
-                  <p className={`text-xs font-medium ${isToday(day) ? 'text-green-600 font-bold' : 'text-gray-600'}`}>
-                    {format(day, 'd')}
-                  </p>
-                  {rooms.length > 0 && (
-                    <p className="text-xs text-gray-400">{occupiedCount(day)}/{rooms.length}</p>
-                  )}
-                </div>
-              ))}
+      <div className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm">
+        <div className="grid grid-cols-7 border-b border-gray-100 bg-gray-50">
+          {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((label) => (
+            <div key={label} className="px-4 py-3 text-xs font-semibold uppercase tracking-[0.16em] text-gray-500">
+              {label}
             </div>
-          </div>
+          ))}
         </div>
-
-        {/* Room rows */}
-        {rooms.length === 0 ? (
-          <div className="py-12 text-center text-gray-400 text-sm">
-            No rooms configured. Add rooms first.
-          </div>
+        {loading ? (
+          <div className="py-20 text-center text-sm text-gray-400">Loading monthly planning view…</div>
         ) : (
-          rooms.map((room) => (
-            <div key={room.id} className="flex border-b border-gray-50 last:border-b-0 hover:bg-gray-50/50">
-              {/* Room label */}
-              <div className="w-28 flex-shrink-0 px-3 py-2 border-r border-gray-100 bg-gray-50/50">
-                <p className="text-xs font-bold text-gray-700">Rm {room.room_number}</p>
-                <p className="text-xs text-gray-400">{room.room_type}</p>
-              </div>
-              {/* Day cells */}
-              <div className="flex-1 overflow-x-auto">
-                <div className="flex">
-                  {days.map((day) => {
-                    const dayStr = format(day, 'yyyy-MM-dd')
-                    const booking = cellData[room.id]?.[dayStr]
-                    const isCheckIn = booking && booking.check_in === dayStr
-                    const isCheckOut = booking && booking.check_out === format(day, 'yyyy-MM-dd')
-                    return (
-                      <div
-                        key={dayStr}
-                        className={`flex-none border-r border-gray-100 last:border-r-0 relative ${
-                          isToday(day) ? 'bg-green-50/50' : ''
-                        }`}
-                        style={{ width: `${Math.max(32, Math.floor(800 / days.length))}px`, height: '40px' }}
-                        onMouseEnter={(e) => {
-                          if (booking) {
-                            setTooltip({ booking, x: e.clientX, y: e.clientY })
-                          }
-                        }}
-                        onMouseLeave={() => setTooltip(null)}
-                      >
-                        {booking && (
-                          <div
-                            className={`absolute inset-y-1 ${
-                              isCheckIn ? 'left-1 right-0 rounded-l-sm' : 'left-0 right-0'
-                            } ${STATUS_COLORS[booking.status]} opacity-80 cursor-pointer`}
-                            title={`${booking.customer_name} | ${booking.check_in} → ${booking.check_out}`}
-                          >
-                            {isCheckIn && (
-                              <span className="absolute left-1 top-1/2 -translate-y-1/2 text-white text-xs font-medium truncate max-w-[60px] leading-none">
-                                {booking.customer_name?.split(' ')[0]}
-                              </span>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    )
-                  })}
-                </div>
-              </div>
-            </div>
-          ))
+          <div className="grid grid-cols-7">
+            {visibleDays.map((day) => {
+              const dayKey = format(day, 'yyyy-MM-dd')
+              const summary = dailySummary[dayKey]
+              const inMonth = isSameMonth(day, currentMonth)
+              const selected = selectedDay === dayKey
+              return (
+                <button
+                  key={dayKey}
+                  type="button"
+                  onClick={() => inMonth && setSelectedDay(dayKey)}
+                  className={`min-h-[132px] border-b border-r border-gray-100 px-3 py-3 text-left transition-colors ${
+                    !inMonth
+                      ? 'bg-gray-50/60 text-gray-300'
+                      : selected
+                        ? 'bg-emerald-50'
+                        : 'bg-white hover:bg-gray-50'
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className={`text-sm font-semibold ${isToday(day) && inMonth ? 'text-emerald-700' : inMonth ? 'text-gray-800' : 'text-gray-300'}`}>
+                      {format(day, 'd')}
+                    </span>
+                    {inMonth && (
+                      <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+                        (summary?.occupiedRooms || 0) > 0
+                          ? 'bg-emerald-100 text-emerald-700'
+                          : 'bg-slate-100 text-slate-500'
+                      }`}>
+                        {summary?.occupiedRooms || 0}/{rooms.length || 0}
+                      </span>
+                    )}
+                  </div>
+                  {inMonth && (
+                    <div className="mt-3 space-y-1.5 text-xs">
+                      <p className="text-gray-600">Arrivals: <span className="font-semibold text-gray-800">{summary?.arrivals.length || 0}</span></p>
+                      <p className="text-gray-600">Departures: <span className="font-semibold text-gray-800">{summary?.departures.length || 0}</span></p>
+                      <p className="text-gray-600">Check-in value: <span className="font-semibold text-gray-800">{currency(currencySymbol, summary?.checkInValue || 0)}</span></p>
+                      {(summary?.unpaidStays || 0) > 0 && (
+                        <p className="text-rose-600">Due stays: <span className="font-semibold text-rose-700">{summary?.unpaidStays || 0}</span></p>
+                      )}
+                    </div>
+                  )}
+                </button>
+              )
+            })}
+          </div>
         )}
       </div>
 
-      {/* Tooltip */}
-      {tooltip && (
-        <div
-          className="fixed z-50 bg-gray-900 text-white text-xs rounded-lg px-3 py-2 pointer-events-none shadow-lg"
-          style={{ left: tooltip.x + 12, top: tooltip.y - 10 }}
-        >
-          <p className="font-semibold">{tooltip.booking.customer_name}</p>
-          <p className="text-gray-300">
-            {tooltip.booking.check_in} → {tooltip.booking.check_out}
-          </p>
-          <p className="text-gray-300 capitalize">{tooltip.booking.status?.replace('_', ' ')}</p>
-          <p className="text-gray-300">P {Number(tooltip.booking.total_amount || 0).toFixed(2)}</p>
-        </div>
-      )}
-
-      {/* Bookings this month list */}
-      {bookings.length > 0 && (
-        <div className="bg-white rounded-xl shadow-sm overflow-hidden">
-          <div className="px-5 py-3 border-b border-gray-100">
-            <h2 className="font-semibold text-gray-700 text-sm">
-              Bookings in {format(currentMonth, 'MMMM yyyy')} ({bookings.length})
+      <div className="mt-6 grid grid-cols-1 gap-6 xl:grid-cols-[1.15fr_0.85fr]">
+        <section className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm">
+          <div className="border-b border-gray-100 px-5 py-4">
+            <h2 className="text-base font-semibold text-gray-800">
+              Day Plan for {format(new Date(`${selectedDay}T12:00:00`), 'dd MMM yyyy')}
             </h2>
+            <p className="mt-1 text-sm text-gray-500">
+              Use this to review expected arrivals, departures, and rooms occupied on that date.
+            </p>
           </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-gray-50 text-gray-500 text-xs uppercase">
-                <tr>
-                  <th className="px-5 py-2 text-left">Guest</th>
-                  <th className="px-5 py-2 text-left">Room</th>
-                  <th className="px-5 py-2 text-left">Check In</th>
-                  <th className="px-5 py-2 text-left">Check Out</th>
-                  <th className="px-5 py-2 text-left">Status</th>
-                  <th className="px-5 py-2 text-right">Amount</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-50">
-                {bookings.map((b) => (
-                  <tr key={b.id} className="hover:bg-gray-50">
-                    <td className="px-5 py-2.5 font-medium text-gray-800">{b.customer_name}</td>
-                    <td className="px-5 py-2.5 text-gray-600">Room {b.room_number}</td>
-                    <td className="px-5 py-2.5 text-gray-600">{b.check_in}</td>
-                    <td className="px-5 py-2.5 text-gray-600">{b.check_out}</td>
-                    <td className="px-5 py-2.5">
-                      <span className={`text-xs font-medium capitalize ${STATUS_TEXT[b.status]}`}>
-                        {b.status?.replace('_', ' ')}
+          <div className="grid grid-cols-1 gap-4 border-b border-gray-100 px-5 py-4 md:grid-cols-3">
+            <div className="rounded-xl bg-slate-50 px-4 py-3">
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Occupied Rooms</p>
+              <p className="mt-2 text-xl font-bold text-slate-900">{selectedSummary.occupiedRooms}</p>
+            </div>
+            <div className="rounded-xl bg-blue-50 px-4 py-3">
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-blue-600">Arrivals</p>
+              <p className="mt-2 text-xl font-bold text-blue-950">{selectedSummary.arrivals.length}</p>
+            </div>
+            <div className="rounded-xl bg-amber-50 px-4 py-3">
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-amber-600">Departures</p>
+              <p className="mt-2 text-xl font-bold text-amber-950">{selectedSummary.departures.length}</p>
+            </div>
+          </div>
+          <div className="grid grid-cols-1 gap-4 border-b border-gray-100 px-5 py-4 md:grid-cols-2">
+            <div className="rounded-xl bg-rose-50 px-4 py-3">
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-rose-600">Outstanding Balance</p>
+              <p className="mt-2 text-xl font-bold text-rose-950">{currency(currencySymbol, selectedSummary.outstandingValue || 0)}</p>
+              <p className="mt-1 text-xs text-rose-700">Across active stays on this date.</p>
+            </div>
+            <div className="rounded-xl bg-indigo-50 px-4 py-3">
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-indigo-600">Unpaid Active Stays</p>
+              <p className="mt-2 text-xl font-bold text-indigo-950">{selectedSummary.unpaidStays || 0}</p>
+              <p className="mt-1 text-xs text-indigo-700">Rooms that may need collection attention.</p>
+            </div>
+          </div>
+          <div className="px-5 py-4">
+            {selectedSummary.activeBookings.length === 0 ? (
+              <div className="py-10 text-center text-sm text-gray-400">No occupied rooms on this day.</div>
+            ) : (
+              <div className="space-y-3">
+                {selectedSummary.activeBookings.map((booking) => (
+                  <div key={booking.id} className="flex flex-wrap items-start justify-between gap-3 rounded-xl border border-gray-100 bg-gray-50/70 px-4 py-3">
+                    <div>
+                      <p className="font-semibold text-gray-800">{booking.customer_name}</p>
+                      <p className="mt-1 text-sm text-gray-500">
+                        Room {booking.room_number} · {booking.room_type || 'Room'} · {booking.check_in} to {booking.check_out}
+                      </p>
+                      {bookingOutstandingAmount(booking) > 0 && booking.status !== 'cancelled' && (
+                        <p className="mt-1 text-sm font-semibold text-rose-700">
+                          Balance due: {currency(currencySymbol, bookingOutstandingAmount(booking))}
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${STATUS_STYLES[booking.status] || 'bg-slate-100 text-slate-600'}`}>
+                        {String(booking.status || 'confirmed').replace('_', ' ')}
                       </span>
-                    </td>
-                    <td className="px-5 py-2.5 text-right text-gray-800">
-                      P {Number(b.total_amount || 0).toFixed(2)}
-                    </td>
-                  </tr>
+                      <span className="text-sm font-semibold text-gray-700">{currency(currencySymbol, Number(booking.total_amount || 0) + Number(booking.charges_total || 0))}</span>
+                      <button
+                        type="button"
+                        onClick={() => openBooking(booking)}
+                        className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                      >
+                        <ExternalLink size={12} /> Open
+                      </button>
+                      {bookingOutstandingAmount(booking) > 0 && booking.status !== 'cancelled' && (
+                        <button
+                          type="button"
+                          onClick={() => collectPayment(booking)}
+                          className="inline-flex items-center gap-1 rounded-full bg-blue-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-blue-700"
+                        >
+                          <CreditCard size={12} /> Collect
+                        </button>
+                      )}
+                    </div>
+                  </div>
                 ))}
-              </tbody>
-            </table>
+              </div>
+            )}
           </div>
-        </div>
-      )}
+        </section>
+
+        <section className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm">
+          <div className="border-b border-gray-100 px-5 py-4">
+            <h2 className="text-base font-semibold text-gray-800">Month Booking Flow</h2>
+            <p className="mt-1 text-sm text-gray-500">A chronological list for planning the month ahead.</p>
+          </div>
+          {monthCollectionQueue.length > 0 && (
+            <div className="border-b border-gray-100 bg-rose-50/70 px-5 py-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold text-rose-900">Collection Attention</p>
+                  <p className="mt-1 text-xs text-rose-700">Unpaid stays this month that most likely need follow-up.</p>
+                </div>
+              </div>
+              <div className="mt-3 space-y-2">
+                {monthCollectionQueue.slice(0, 3).map((booking) => (
+                  <div key={booking.id} className="flex items-center justify-between gap-3 rounded-xl border border-rose-100 bg-white/80 px-3 py-2">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-semibold text-slate-900">{booking.customer_name}</p>
+                      <p className="text-xs text-slate-500">Room {booking.room_number} · {String(booking.status || '').replace('_', ' ')}</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => collectPayment(booking)}
+                      className="inline-flex items-center gap-1 rounded-full bg-blue-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-blue-700"
+                    >
+                      <CreditCard size={12} /> Collect {currency(currencySymbol, bookingOutstandingAmount(booking))}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          <div className="max-h-[640px] overflow-y-auto">
+            {monthBookings.length === 0 ? (
+              <div className="py-12 text-center text-sm text-gray-400">No bookings in this month yet.</div>
+            ) : (
+              <div className="divide-y divide-gray-100">
+                {monthBookings.map((booking) => (
+                  <button
+                    key={booking.id}
+                    type="button"
+                    onClick={() => setSelectedDay(booking.check_in)}
+                    className="flex w-full items-start justify-between gap-3 px-5 py-4 text-left transition-colors hover:bg-gray-50"
+                  >
+                    <div>
+                      <p className="font-medium text-gray-800">{booking.customer_name}</p>
+                      <p className="mt-1 text-sm text-gray-500">
+                        Room {booking.room_number} · Check-in {booking.check_in} · Check-out {booking.check_out}
+                      </p>
+                      {bookingOutstandingAmount(booking) > 0 && booking.status !== 'cancelled' && (
+                        <p className="mt-1 text-xs font-semibold text-rose-700">
+                          Balance due {currency(currencySymbol, bookingOutstandingAmount(booking))}
+                        </p>
+                      )}
+                    </div>
+                    <div className="text-right">
+                      <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${STATUS_STYLES[booking.status] || 'bg-slate-100 text-slate-600'}`}>
+                        {String(booking.status || 'confirmed').replace('_', ' ')}
+                      </span>
+                      <p className="mt-2 text-sm font-semibold text-gray-700">{currency(currencySymbol, Number(booking.total_amount || 0) + Number(booking.charges_total || 0))}</p>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </section>
+      </div>
     </div>
   )
 }

@@ -1,75 +1,156 @@
 import { createContext, useContext, useState, useEffect } from 'react'
-import { supabase } from '../lib/supabase'
+import { authenticateManager, logoutManagerSession, validateManagerSession } from '../lib/api'
+import { clearSession, getSession, setSession } from '../lib/runtime'
+import { clearSupabaseSessionToken, setSupabaseSessionToken } from '../lib/supabase'
 
 const AuthContext = createContext(null)
 export const useAuth = () => useContext(AuthContext)
 
-const SESSION_KEY = 'boroko_manager_session'
+function isSessionExpired(expiresAt) {
+  if (!expiresAt) return false
+  const timestamp = new Date(expiresAt).getTime()
+  return Number.isFinite(timestamp) && timestamp <= Date.now()
+}
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null)
   const [loading, setLoading] = useState(true)
-  // When the same email exists in multiple lodges, hold them here until user picks one
   const [pendingLodges, setPendingLodges] = useState(null)
+  const [pendingCredentials, setPendingCredentials] = useState(null)
 
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(SESSION_KEY)
-      if (raw) setUser(JSON.parse(raw))
-    } catch {}
-    setLoading(false)
-  }, [])
-
-  // Step 1 — verify credentials server-side via Postgres RPC.
-  // The password hash never leaves the database.
-  const login = async (identifier, password) => {
-    const email = identifier.trim().toLowerCase()
-
-    const { data, error } = await supabase.rpc('authenticate_manager', {
-      p_email: email,
-      p_password: password
-    })
-
-    if (error) throw new Error('Login failed. Please try again.')
-    if (data?.error) throw new Error(data.error)
-
-    const lodges = data?.lodges
-    if (!lodges || lodges.length === 0) {
-      throw new Error('Access denied. Manager or Admin role required.')
-    }
-
-    if (lodges.length === 1) {
-      return _startSession(lodges[0])
-    }
-
-    // Multiple lodges — let the user pick (same UX as before)
-    setPendingLodges(lodges)
-    return null
-  }
-
-  // Step 2 — called after user picks a lodge from the picker
-  const selectLodge = (lodgeRow) => {
+  const clearAuthSession = () => {
+    clearSupabaseSessionToken()
+    clearSession()
+    setUser(null)
     setPendingLodges(null)
-    _startSession(lodgeRow)
+    setPendingCredentials(null)
   }
 
-  const _startSession = (row) => {
+  const startSession = (row) => {
     const session = {
       id: row.id,
       name: row.name,
       email: row.email,
       role: row.role,
-      lodge_id: row.lodge_id
+      lodge_id: row.lodge_id,
+      lodge_display_name: row.lodge_display_name || row.lodge_name || 'Your Lodge',
+      session_token: row.session_token,
+      session_expires_at: row.session_expires_at || null,
+      started_at: row.started_at || getSession()?.started_at || new Date().toISOString()
     }
-    localStorage.setItem(SESSION_KEY, JSON.stringify(session))
+    if (isSessionExpired(session.session_expires_at)) {
+      clearAuthSession()
+      throw new Error('Your session has expired. Please sign in again.')
+    }
+    setSupabaseSessionToken(session.session_token)
+    setSession(session)
     setUser(session)
     return session
   }
 
-  const logout = () => {
-    localStorage.removeItem(SESSION_KEY)
-    setUser(null)
+  useEffect(() => {
+    let cancelled = false
+
+    async function restoreSavedSession() {
+      const saved = getSession()
+      if (!saved) {
+        setLoading(false)
+        return
+      }
+
+      try {
+        if (!saved?.session_token) {
+          clearAuthSession()
+          setLoading(false)
+          return
+        }
+
+        if (isSessionExpired(saved.session_expires_at)) {
+          clearAuthSession()
+          setLoading(false)
+          return
+        }
+
+        setSupabaseSessionToken(saved.session_token)
+        const profile = await validateManagerSession(saved.session_token)
+        if (cancelled) return
+
+        if (!profile?.pwa_enabled || isSessionExpired(profile.session_expires_at)) {
+          clearAuthSession()
+          setLoading(false)
+          return
+        }
+
+        startSession(profile)
+      } catch {
+        clearAuthSession()
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+
+    restoreSavedSession()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!user?.session_expires_at) return undefined
+
+    const expiresInMs = new Date(user.session_expires_at).getTime() - Date.now()
+    if (!Number.isFinite(expiresInMs)) return undefined
+
+    if (expiresInMs <= 0) {
+      clearAuthSession()
+      return undefined
+    }
+
+    const timer = window.setTimeout(() => {
+      clearAuthSession()
+    }, expiresInMs + 250)
+
+    return () => {
+      window.clearTimeout(timer)
+    }
+  }, [user?.session_expires_at])
+
+  const login = async (identifier, password) => {
+    const result = await authenticateManager(identifier, password)
+    if (result?.lodges?.length > 1) {
+      setPendingLodges(result.lodges)
+      setPendingCredentials({ identifier, password })
+      return null
+    }
+
+    setPendingCredentials(null)
+    return startSession(result.user)
+  }
+
+  const selectLodge = async (lodgeRow) => {
+    if (!pendingCredentials?.identifier || !pendingCredentials?.password) {
+      throw new Error('Your lodge selection expired. Please sign in again.')
+    }
+    const result = await authenticateManager(
+      pendingCredentials.identifier,
+      pendingCredentials.password,
+      lodgeRow?.lodge_id
+    )
     setPendingLodges(null)
+    setPendingCredentials(null)
+    return startSession(result.user)
+  }
+
+  const logout = async () => {
+    const saved = getSession()
+    try {
+      if (saved?.session_token) {
+        await logoutManagerSession(saved.session_token)
+      }
+    } catch {
+      // Local cleanup still needs to happen.
+    }
+    clearAuthSession()
   }
 
   return (

@@ -37,7 +37,12 @@ export default function Maintenance() {
     title: '',
     description: '',
     priority: 'medium',
-    reported_date: today()
+    reported_date: today(),
+    labour_cost: '',
+    parts_cost: '',
+    total_cost: '',
+    vendor_name: '',
+    cost_notes: ''
   })
 
   useEffect(() => {
@@ -61,7 +66,12 @@ export default function Maintenance() {
       title: '',
       description: '',
       priority: 'medium',
-      reported_date: today()
+      reported_date: today(),
+      labour_cost: '',
+      parts_cost: '',
+      total_cost: '',
+      vendor_name: '',
+      cost_notes: ''
     })
     setFormOpen(true)
   }
@@ -88,7 +98,7 @@ export default function Maintenance() {
   }
 
   const handleResolve = async (ticket) => {
-    if (!confirm(`Mark "${ticket.title}" as resolved? The room will return to Available.`)) return
+    if (!confirm(`Mark "${ticket.title || ticket.issue}" as resolved? The room will return to Available.`)) return
     setResolving(ticket.id)
     await window.api.maintenance.resolve(ticket.id, ticket.room_id).catch(console.error)
     setResolving(null)
@@ -102,11 +112,12 @@ export default function Maintenance() {
   const openCount = tickets.filter((t) => t.status !== 'resolved').length
 
   return (
-    <div className="p-6">
-      <div className="flex items-center justify-between mb-6">
+    <div className="mx-auto flex max-w-7xl flex-col gap-6">
+      <div className="bb-page-header">
         <div>
-          <h1 className="text-2xl font-bold text-gray-800">Maintenance</h1>
-          <p className="text-sm text-gray-500 mt-0.5">
+          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-emerald-700/70">Property Care</p>
+          <h1 className="bb-page-header-title mt-2">Maintenance</h1>
+          <p className="bb-page-header-subtitle">
             {openCount} open ticket{openCount !== 1 ? 's' : ''}
           </p>
         </div>
@@ -116,14 +127,14 @@ export default function Maintenance() {
       </div>
 
       {/* Status filter tabs */}
-      <div className="flex rounded-lg border border-gray-200 overflow-hidden text-sm w-fit mb-5">
+      <div className="bb-filter-bar w-fit">
         {[['open', 'Open'], ['in_progress', 'In Progress'], ['resolved', 'Resolved'], ['all', 'All']].map(
           ([v, l]) => (
             <button
               key={v}
               onClick={() => setStatusFilter(v)}
               className={`px-4 py-2 transition-colors ${
-                statusFilter === v ? 'bg-green-600 text-white' : 'text-gray-600 hover:bg-gray-50'
+                statusFilter === v ? 'rounded-xl bg-green-600 text-white' : 'rounded-xl text-slate-600 hover:bg-slate-50'
               }`}
             >
               {l}
@@ -134,18 +145,21 @@ export default function Maintenance() {
 
       {/* Ticket Grid */}
       {loading ? (
-        <p className="text-center text-gray-400 py-16 text-sm">Loading...</p>
+        <div className="bb-empty-state min-h-[220px]">
+          <p className="text-sm font-medium text-slate-500">Loading maintenance tickets…</p>
+        </div>
       ) : displayed.length === 0 ? (
-        <div className="bg-white rounded-xl shadow-sm p-12 text-center text-gray-400">
+        <div className="bb-empty-state min-h-[220px]">
           <Wrench size={40} className="mx-auto mb-3 opacity-30" />
-          <p>No maintenance tickets found.</p>
+          <p className="text-base font-semibold text-slate-800">No maintenance tickets found</p>
+          <p className="text-sm text-slate-500">New tickets will appear here as issues are reported.</p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
           {displayed.map((ticket) => (
             <div
               key={ticket.id}
-              className={`bg-white rounded-xl shadow-sm border-l-4 p-5 ${
+              className={`bb-card border-l-4 p-5 ${
                 ticket.priority === 'urgent'
                   ? 'border-red-500'
                   : ticket.priority === 'high'
@@ -156,7 +170,7 @@ export default function Maintenance() {
               }`}
             >
               <div className="flex items-start justify-between gap-2 mb-3">
-                <h3 className="font-semibold text-gray-800 text-sm leading-snug">{ticket.title}</h3>
+                <h3 className="text-sm font-semibold leading-snug text-slate-800">{ticket.title || ticket.issue}</h3>
                 <span
                   className={`shrink-0 text-xs font-semibold px-2 py-0.5 rounded-full capitalize ${priorityColor[ticket.priority]}`}
                 >
@@ -164,16 +178,21 @@ export default function Maintenance() {
                 </span>
               </div>
 
-              <p className="text-xs text-gray-500 mb-3 leading-relaxed">
-                {ticket.description || <span className="italic">No description</span>}
+              <p className="mb-3 text-xs leading-relaxed text-slate-500">
+                {ticket.description || ticket.notes || <span className="italic">No description</span>}
               </p>
 
-              <div className="flex items-center justify-between text-xs text-gray-400 mb-4">
+              <div className="mb-4 flex items-center justify-between text-xs text-slate-400">
                 <span>
                   🛏️ Room {ticket.room_number || ticket.room_id}
                 </span>
                 <span>📅 {ticket.reported_date}</span>
               </div>
+              {Number(ticket.total_cost || 0) > 0 && (
+                <div className="mb-4 rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700">
+                  Repair cost: P {Number(ticket.total_cost || 0).toFixed(2)}
+                </div>
+              )}
 
               <div className="flex items-center justify-between">
                 <span
@@ -186,14 +205,14 @@ export default function Maintenance() {
                     <>
                       <button
                         onClick={() => openEdit(ticket)}
-                        className="text-xs px-2 py-1 text-blue-600 hover:bg-blue-50 rounded transition-colors"
+                        className="rounded-lg px-2 py-1 text-xs text-blue-600 transition-colors hover:bg-blue-50"
                       >
                         Update
                       </button>
                       <button
                         onClick={() => handleResolve(ticket)}
                         disabled={resolving === ticket.id}
-                        className="text-xs px-2 py-1 text-green-600 hover:bg-green-50 rounded transition-colors flex items-center gap-1 disabled:opacity-50"
+                        className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-green-600 transition-colors hover:bg-green-50 disabled:opacity-50"
                       >
                         <CheckCircle size={12} />
                         {resolving === ticket.id ? 'Resolving...' : 'Resolve'}
@@ -211,7 +230,7 @@ export default function Maintenance() {
       {formOpen && (
         <Modal title="New Maintenance Ticket" onClose={() => setFormOpen(false)} size="sm">
           <form onSubmit={handleCreate} className="space-y-4">
-            <div className="bg-yellow-50 rounded-lg p-3 flex items-start gap-2 text-sm text-yellow-800">
+            <div className="flex items-start gap-2 rounded-xl bg-yellow-50 p-3 text-sm text-yellow-800">
               <AlertTriangle size={16} className="shrink-0 mt-0.5" />
               <span>The selected room will be set to <strong>Maintenance</strong> status, blocking new bookings.</span>
             </div>
@@ -275,6 +294,28 @@ export default function Maintenance() {
                 />
               </div>
             </div>
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Labour Cost</label>
+                <input type="number" min="0" step="0.01" className="input" value={form.labour_cost} onChange={(e) => setForm({ ...form, labour_cost: e.target.value })} placeholder="0.00" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Parts Cost</label>
+                <input type="number" min="0" step="0.01" className="input" value={form.parts_cost} onChange={(e) => setForm({ ...form, parts_cost: e.target.value })} placeholder="0.00" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Total Cost</label>
+                <input type="number" min="0" step="0.01" className="input" value={form.total_cost} onChange={(e) => setForm({ ...form, total_cost: e.target.value })} placeholder="Auto from labour + parts" />
+              </div>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Vendor</label>
+              <input type="text" className="input" value={form.vendor_name} onChange={(e) => setForm({ ...form, vendor_name: e.target.value })} placeholder="Optional supplier / technician" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Cost Notes</label>
+              <textarea className="input resize-none" rows={2} value={form.cost_notes} onChange={(e) => setForm({ ...form, cost_notes: e.target.value })} placeholder="Optional note about the repair spend..." />
+            </div>
             <div className="flex gap-3 pt-2">
               <button type="button" onClick={() => setFormOpen(false)} className="btn-secondary flex-1">
                 Cancel
@@ -296,7 +337,7 @@ export default function Maintenance() {
         >
           <div className="space-y-4">
             <p className="text-sm text-gray-600">
-              <strong>{editing.title}</strong> — Room {editing.room_number || editing.room_id}
+              <strong>{editing.title || editing.issue}</strong> — Room {editing.room_number || editing.room_id}
             </p>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Status</label>
@@ -332,6 +373,28 @@ export default function Maintenance() {
                 placeholder="Update notes..."
               />
             </div>
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Labour Cost</label>
+                <input type="number" min="0" step="0.01" className="input" defaultValue={editing.labour_cost || ''} id="labour-cost-input" placeholder="0.00" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Parts Cost</label>
+                <input type="number" min="0" step="0.01" className="input" defaultValue={editing.parts_cost || ''} id="parts-cost-input" placeholder="0.00" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Total Cost</label>
+                <input type="number" min="0" step="0.01" className="input" defaultValue={editing.total_cost || ''} id="total-cost-input" placeholder="0.00" />
+              </div>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Vendor</label>
+              <input type="text" className="input" defaultValue={editing.vendor_name || ''} id="vendor-name-input" placeholder="Optional supplier / technician" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Cost Notes</label>
+              <textarea className="input resize-none" rows={2} defaultValue={editing.cost_notes || ''} id="cost-notes-input" placeholder="Optional note about the repair spend..." />
+            </div>
             <div className="flex gap-3 pt-2">
               <button
                 type="button"
@@ -346,7 +409,12 @@ export default function Maintenance() {
                   const status = document.getElementById('status-select').value
                   const priority = document.getElementById('priority-select').value
                   const notes = document.getElementById('notes-input').value
-                  handleUpdate(editing.id, { status, priority, notes })
+                  const labour_cost = document.getElementById('labour-cost-input').value
+                  const parts_cost = document.getElementById('parts-cost-input').value
+                  const total_cost = document.getElementById('total-cost-input').value
+                  const vendor_name = document.getElementById('vendor-name-input').value
+                  const cost_notes = document.getElementById('cost-notes-input').value
+                  handleUpdate(editing.id, { status, priority, notes, labour_cost, parts_cost, total_cost, vendor_name, cost_notes })
                 }}
                 className="btn-primary flex-1"
               >

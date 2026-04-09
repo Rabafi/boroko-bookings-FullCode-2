@@ -1,6 +1,7 @@
-import { useEffect, useState, useRef } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Search, UserX, Clock, ChevronDown, ChevronUp, Camera, X } from 'lucide-react'
 import { Modal } from './shared/Modal'
+import HorizontalScrollArea from './shared/HorizontalScrollArea'
 import { useSettings } from '../App'
 
 export default function Guests() {
@@ -10,6 +11,7 @@ export default function Guests() {
   const [customers, setCustomers] = useState([])
   const [search, setSearch]       = useState('')
   const [filter, setFilter]       = useState('all') // all | active | blacklisted
+  const [sortBy, setSortBy]       = useState('created_desc')
 
   // History panel
   const [historyCustomer, setHistoryCustomer] = useState(null)
@@ -60,12 +62,12 @@ export default function Guests() {
     loadCustomers()
   }
 
-  useEffect(() => { loadCustomers() }, [])
-
-  const loadCustomers = async () => {
+  const loadCustomers = useCallback(async () => {
     const data = await window.api.customers.getAll()
     setCustomers(data || [])
-  }
+  }, [])
+
+  useEffect(() => { loadCustomers() }, [loadCustomers])
 
   const toggleHistory = async (customer) => {
     if (expandedId === customer.id) {
@@ -106,62 +108,96 @@ export default function Guests() {
     loadCustomers()
   }
 
-  const filtered = customers.filter((c) => {
-    const matchSearch =
-      !search ||
-      c.name?.toLowerCase().includes(search.toLowerCase()) ||
-      c.phone?.includes(search) ||
-      c.email?.toLowerCase().includes(search.toLowerCase())
-    const matchFilter =
-      filter === 'all' ||
-      (filter === 'blacklisted' && c.is_blacklisted) ||
-      (filter === 'active' && !c.is_blacklisted)
-    return matchSearch && matchFilter
-  })
+  const filtered = useMemo(() => {
+    const normalizedSearch = search.toLowerCase()
+    return [...customers.filter((c) => {
+      const matchSearch =
+        !search ||
+        c.name?.toLowerCase().includes(normalizedSearch) ||
+        c.phone?.includes(search) ||
+        c.email?.toLowerCase().includes(normalizedSearch)
+      const matchFilter =
+        filter === 'all' ||
+        (filter === 'blacklisted' && c.is_blacklisted) ||
+        (filter === 'active' && !c.is_blacklisted)
+      return matchSearch && matchFilter
+    })].sort((a, b) => {
+      switch (sortBy) {
+        case 'name_asc':
+          return String(a.name || '').localeCompare(String(b.name || ''))
+        case 'name_desc':
+          return String(b.name || '').localeCompare(String(a.name || ''))
+        case 'blacklisted_first':
+          if (!!a.is_blacklisted !== !!b.is_blacklisted) return a.is_blacklisted ? -1 : 1
+          return String(a.name || '').localeCompare(String(b.name || ''))
+        case 'created_asc':
+          return String(a.created_at || '').localeCompare(String(b.created_at || ''))
+        case 'created_desc':
+        default:
+          return String(b.created_at || '').localeCompare(String(a.created_at || ''))
+      }
+    })
+  }, [customers, filter, search, sortBy])
 
-  const blacklistedCount = customers.filter((c) => c.is_blacklisted).length
+  const blacklistedCount = useMemo(
+    () => customers.filter((c) => c.is_blacklisted).length,
+    [customers]
+  )
 
   return (
-    <div className="p-6">
-      <div className="flex items-center justify-between mb-6">
+    <div className="mx-auto flex max-w-7xl flex-col gap-6">
+      <div className="bb-page-header">
         <div>
-          <h1 className="text-2xl font-bold text-gray-800">Guests</h1>
-          <p className="text-sm text-gray-500 mt-0.5">
+          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-emerald-700/70">Guest Records</p>
+          <h1 className="bb-page-header-title mt-2">Guests</h1>
+          <p className="bb-page-header-subtitle">
             {customers.length} total · {blacklistedCount} blacklisted
           </p>
         </div>
       </div>
 
       {/* Filters */}
-      <div className="flex flex-wrap gap-3 mb-5">
+      <div className="bb-filter-bar">
         <div className="relative flex-1 max-w-xs">
-          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
           <input
-            className="pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-lg w-full focus:outline-none focus:ring-2 focus:ring-green-500"
+            className="input w-full pl-9"
             placeholder="Search by name, phone or email..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
         </div>
-        <div className="flex rounded-lg border border-gray-200 overflow-hidden text-sm">
+        <div className="flex overflow-hidden rounded-2xl border border-slate-200 bg-white text-sm shadow-sm">
           {[['all', 'All'], ['active', 'Active'], ['blacklisted', 'Blacklisted']].map(([v, l]) => (
             <button
               key={v}
               onClick={() => setFilter(v)}
               className={`px-3 py-2 transition-colors ${
-                filter === v ? 'bg-green-600 text-white' : 'text-gray-600 hover:bg-gray-50'
+                filter === v ? 'bg-green-600 text-white' : 'text-slate-600 hover:bg-slate-50'
               }`}
             >
               {l}
             </button>
           ))}
         </div>
+        <select
+          className="input w-auto min-w-[170px]"
+          value={sortBy}
+          onChange={(e) => setSortBy(e.target.value)}
+        >
+          <option value="created_desc">Newest added</option>
+          <option value="created_asc">Oldest added</option>
+          <option value="name_asc">Name A-Z</option>
+          <option value="name_desc">Name Z-A</option>
+          <option value="blacklisted_first">Blacklisted first</option>
+        </select>
       </div>
 
       {/* Table */}
-      <div className="bg-white rounded-xl shadow-sm overflow-hidden">
+      <div className="bb-table-shell">
+        <HorizontalScrollArea>
         <table className="w-full text-sm">
-          <thead className="bg-gray-50 text-gray-500 text-xs uppercase">
+          <thead className="sticky top-0 z-10 bg-slate-50 text-xs uppercase tracking-[0.16em] text-slate-500">
             <tr>
               <th className="px-5 py-3 text-left">Guest</th>
               <th className="px-5 py-3 text-left">Phone</th>
@@ -173,20 +209,20 @@ export default function Guests() {
               <th className="px-5 py-3 text-center">Actions</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-gray-50">
+          <tbody className="divide-y divide-slate-100">
             {filtered.map((c) => (
-              <>
-                <tr key={c.id} className={`hover:bg-gray-50 ${c.is_blacklisted ? 'bg-red-50/40' : ''}`}>
+              <Fragment key={c.id}>
+                <tr key={c.id} className={`hover:bg-slate-50 ${c.is_blacklisted ? 'bg-red-50/40' : ''}`}>
                   <td className="px-5 py-3">
-                    <p className="font-medium text-gray-800">{c.name}</p>
+                    <p className="font-medium text-slate-800">{c.name}</p>
                     {c.is_blacklisted && c.blacklist_reason && (
                       <p className="text-xs text-red-500 mt-0.5">⚠ {c.blacklist_reason}</p>
                     )}
                   </td>
-                  <td className="px-5 py-3 text-gray-600">{c.phone || '—'}</td>
-                  <td className="px-5 py-3 text-gray-600">{c.email || '—'}</td>
-                  <td className="px-5 py-3 text-gray-600">{c.id_number || '—'}</td>
-                  <td className="px-5 py-3 text-gray-600">{c.nationality || '—'}</td>
+                  <td className="px-5 py-3 text-slate-600">{c.phone || '—'}</td>
+                  <td className="px-5 py-3 text-slate-600">{c.email || '—'}</td>
+                  <td className="px-5 py-3 text-slate-600">{c.id_number || '—'}</td>
+                  <td className="px-5 py-3 text-slate-600">{c.nationality || '—'}</td>
                   <td className="px-5 py-3">
                     {c.is_blacklisted ? (
                       <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-red-100 text-red-700">
@@ -204,14 +240,14 @@ export default function Guests() {
                         <img
                           src={c.id_photo}
                           alt="ID"
-                          className="w-10 h-10 object-cover rounded-lg border border-gray-200 hover:opacity-80 transition-opacity"
+                          className="h-10 w-10 rounded-xl border border-slate-200 object-cover transition-opacity hover:opacity-80"
                           data-no-invert
                         />
                       </button>
                     ) : (
                       <button
                         onClick={() => openPhotoModal(c)}
-                        className="flex items-center gap-1 text-xs text-gray-400 hover:text-blue-600 transition-colors"
+                        className="flex items-center gap-1 text-xs text-slate-400 transition-colors hover:text-blue-600"
                       >
                         <Camera size={14} /> Add
                       </button>
@@ -221,7 +257,7 @@ export default function Guests() {
                     <div className="flex items-center justify-center gap-1">
                       <button
                         onClick={() => toggleHistory(c)}
-                        className="flex items-center gap-1 text-xs px-2 py-1 text-blue-600 hover:bg-blue-50 rounded transition-colors"
+                        className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-blue-600 transition-colors hover:bg-blue-50"
                       >
                         <Clock size={12} />
                         History
@@ -229,7 +265,7 @@ export default function Guests() {
                       </button>
                       <button
                         onClick={() => openBlacklist(c)}
-                        className={`flex items-center gap-1 text-xs px-2 py-1 rounded transition-colors ${
+                        className={`flex items-center gap-1 rounded-lg px-2 py-1 text-xs transition-colors ${
                           c.is_blacklisted
                             ? 'text-green-600 hover:bg-green-50'
                             : 'text-red-500 hover:bg-red-50'
@@ -245,18 +281,21 @@ export default function Guests() {
                 {/* History expansion row */}
                 {expandedId === c.id && (
                   <tr key={`${c.id}-history`}>
-                    <td colSpan={8} className="px-5 py-3 bg-blue-50/40 border-b border-blue-100">
-                      <p className="text-xs font-semibold text-blue-700 mb-2">
+                    <td colSpan={8} className="border-b border-blue-100 bg-blue-50/40 px-5 py-3">
+                      <p className="mb-2 text-xs font-semibold text-blue-700">
                         Booking history for {c.name}
                       </p>
                       {historyLoading ? (
-                        <p className="text-xs text-gray-400">Loading...</p>
+                        <p className="text-xs text-slate-400">Loading booking history for this guest…</p>
                       ) : history.length === 0 ? (
-                        <p className="text-xs text-gray-400">No bookings found for this guest.</p>
+                        <div className="bb-empty-state min-h-[120px] py-6">
+                          <p className="text-sm text-slate-500">No bookings found for this guest.</p>
+                        </div>
                       ) : (
+                        <div className="bb-card-muted overflow-hidden">
                         <table className="w-full text-xs">
                           <thead>
-                            <tr className="text-gray-500">
+                            <tr className="text-slate-500">
                               <th className="text-left pr-4 py-1">Room</th>
                               <th className="text-left pr-4 py-1">Check In</th>
                               <th className="text-left pr-4 py-1">Check Out</th>
@@ -268,33 +307,38 @@ export default function Guests() {
                           <tbody>
                             {history.map((b) => (
                               <tr key={b.id} className="border-t border-blue-100">
-                                <td className="pr-4 py-1 text-gray-700">Room {b.room_number}</td>
-                                <td className="pr-4 py-1 text-gray-600">{b.check_in}</td>
-                                <td className="pr-4 py-1 text-gray-600">{b.check_out}</td>
-                                <td className="pr-4 py-1 capitalize text-gray-600">{b.status?.replace('_', ' ')}</td>
-                                <td className="pr-4 py-1 capitalize text-gray-600">{b.payment_status || 'unpaid'}</td>
-                                <td className="text-right py-1 font-medium text-gray-800">
+                                <td className="py-1 pr-4 text-slate-700">Room {b.room_number}</td>
+                                <td className="py-1 pr-4 text-slate-600">{b.check_in}</td>
+                                <td className="py-1 pr-4 text-slate-600">{b.check_out}</td>
+                                <td className="py-1 pr-4 capitalize text-slate-600">{b.status?.replace('_', ' ')}</td>
+                                <td className="py-1 pr-4 capitalize text-slate-600">{b.payment_status || 'unpaid'}</td>
+                                <td className="py-1 text-right font-medium text-slate-800">
                                   {currency} {Number(b.total_amount || 0).toFixed(2)}
                                 </td>
                               </tr>
                             ))}
                           </tbody>
                         </table>
+                        </div>
                       )}
                     </td>
                   </tr>
                 )}
-              </>
+              </Fragment>
             ))}
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={8} className="px-5 py-10 text-center text-gray-400">
-                  No guests found
+                <td colSpan={8} className="px-5 py-10">
+                  <div className="bb-empty-state py-10">
+                    <p className="text-base font-semibold text-slate-800">No guests found</p>
+                    <p className="text-sm text-slate-500">Try adjusting the search or guest status filter.</p>
+                  </div>
                 </td>
               </tr>
             )}
           </tbody>
         </table>
+        </HorizontalScrollArea>
       </div>
 
       {/* ID Photo modal */}
@@ -310,7 +354,7 @@ export default function Guests() {
                 <img
                   src={photoPreview}
                   alt="ID Photo"
-                  className="w-full max-h-64 object-contain rounded-lg border border-gray-200"
+                  className="w-full max-h-64 rounded-xl border border-slate-200 object-contain"
                   data-no-invert
                 />
                 <button
@@ -323,11 +367,11 @@ export default function Guests() {
             ) : (
               <div
                 onClick={() => photoInputRef.current?.click()}
-                className="border-2 border-dashed border-gray-300 rounded-xl p-10 text-center cursor-pointer hover:border-green-400 hover:bg-green-50 transition-colors"
+                className="cursor-pointer rounded-2xl border-2 border-dashed border-slate-300 p-10 text-center transition-colors hover:border-green-400 hover:bg-green-50"
               >
-                <Camera size={32} className="mx-auto mb-2 text-gray-300" />
-                <p className="text-sm text-gray-500">Click to upload ID / Passport photo</p>
-                <p className="text-xs text-gray-400 mt-1">JPG, PNG — will be resized automatically</p>
+                <Camera size={32} className="mx-auto mb-2 text-slate-300" />
+                <p className="text-sm text-slate-500">Click to upload ID / Passport photo</p>
+                <p className="mt-1 text-xs text-slate-400">JPG, PNG — will be resized automatically</p>
               </div>
             )}
             <input
@@ -366,10 +410,10 @@ export default function Guests() {
           size="sm"
         >
           <form onSubmit={handleBlacklist} className="space-y-4">
-            <div className={`rounded-lg p-3 text-sm ${blacklistTarget.removing ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-800'}`}>
+            <div className={`rounded-xl p-3 text-sm ${blacklistTarget.removing ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-800'}`}>
               {blacklistTarget.removing
                 ? `Remove ${blacklistTarget.customer.name} from the blacklist? They will be allowed to book again.`
-                : `You are blacklisting ${blacklistTarget.customer.name}. They will show a warning in future bookings.`}
+                : `You are blacklisting ${blacklistTarget.customer.name}. Front-desk staff will see a warning during future bookings.`}
             </div>
             {!blacklistTarget.removing && (
               <div>
@@ -382,6 +426,7 @@ export default function Guests() {
                   placeholder="Why is this guest being blacklisted?"
                   required
                 />
+                <p className="mt-1 text-xs text-slate-500">Record a short, factual reason so staff understand the warning later.</p>
               </div>
             )}
             <div className="flex gap-3">

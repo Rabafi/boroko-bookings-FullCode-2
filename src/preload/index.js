@@ -2,12 +2,36 @@ import { contextBridge, ipcRenderer } from 'electron'
 
 const api = {
   auth: {
-    login: (email, password) => ipcRenderer.invoke('auth:login', email, password)
+    login:          (email, password) => {
+      console.log('[AUTH TRACE] preload login invoke', {
+        email,
+        normalizedEmail: String(email || '').trim().toLowerCase(),
+        passwordLength: typeof password === 'string' ? password.length : null,
+        hasPassword: typeof password === 'string' ? password.length > 0 : false
+      })
+      return ipcRenderer.invoke('auth:login', email, password)
+    },
+    getStatus:      (email)           => ipcRenderer.invoke('auth:status', email),
+    healthCheck:    (email)           => ipcRenderer.invoke('auth:healthCheck', email),
+    restoreSession: (nonce)           => ipcRenderer.invoke('auth:restoreSession', nonce),
+    validateSession: ()               => ipcRenderer.invoke('auth:validateSession'),
+    logout:         ()                => ipcRenderer.invoke('auth:logout')
+  },
+  profiles: {
+    list:       ()              => ipcRenderer.invoke('profiles:list'),
+    getActive:  ()              => ipcRenderer.invoke('profiles:getActive'),
+    select:     (lodgeId)       => ipcRenderer.invoke('profiles:select', lodgeId),
+    createDraft: ()             => ipcRenderer.invoke('profiles:createDraft'),
+    removeDraft: (lodgeId)      => ipcRenderer.invoke('profiles:removeDraft', lodgeId)
+  },
+  setup: {
+    initializeCompany: (payload)      => ipcRenderer.invoke('setup:initializeCompany', payload)
   },
   users: {
     getAll: () => ipcRenderer.invoke('users:getAll'),
     create: (data) => ipcRenderer.invoke('users:create', data),
     update: (id, data) => ipcRenderer.invoke('users:update', id, data),
+    resetPassword: (id, password) => ipcRenderer.invoke('users:resetPassword', id, password),
     delete: (id) => ipcRenderer.invoke('users:delete', id)
   },
   rooms: {
@@ -30,7 +54,7 @@ const api = {
   charges: {
     getByBooking: (bookingId) => ipcRenderer.invoke('charges:getByBooking', bookingId),
     add: (bookingId, data) => ipcRenderer.invoke('charges:add', bookingId, data),
-    delete: (id) => ipcRenderer.invoke('charges:delete', id)
+    delete: (id, reason) => ipcRenderer.invoke('charges:delete', id, reason)
   },
   rateOverrides: {
     getAll: () => ipcRenderer.invoke('rateOverrides:getAll'),
@@ -41,7 +65,7 @@ const api = {
       ipcRenderer.invoke('rateOverrides:getApplicable', roomId, checkIn, checkOut)
   },
   expenses: {
-    getAll: (start, end) => ipcRenderer.invoke('expenses:getAll', start, end),
+    getAll: (start, end, outletId) => ipcRenderer.invoke('expenses:getAll', start, end, outletId),
     create: (data) => ipcRenderer.invoke('expenses:create', data),
     update: (id, data) => ipcRenderer.invoke('expenses:update', id, data),
     delete: (id) => ipcRenderer.invoke('expenses:delete', id)
@@ -53,7 +77,15 @@ const api = {
     resolve: (id, roomId) => ipcRenderer.invoke('maintenance:resolve', id, roomId)
   },
   receipts: {
-    savePDF: (guestName) => ipcRenderer.invoke('receipts:savePDF', guestName)
+    savePDF: (payload) => ipcRenderer.invoke('receipts:savePDF', payload)
+  },
+  quotations: {
+    getAll:     ()                                      => ipcRenderer.invoke('quotations:getAll'),
+    create:     (data)                                  => ipcRenderer.invoke('quotations:create', data),
+    update:     (id, data)                              => ipcRenderer.invoke('quotations:update', id, data),
+    convert:    (quotationId, depositAmount, method)    => ipcRenderer.invoke('quotations:convert', quotationId, depositAmount, method),
+    savePDF:    (quotationId, quotationNumber, customerName) => ipcRenderer.invoke('quotations:savePDF', quotationId, quotationNumber, customerName),
+    duplicate:  (id)                                    => ipcRenderer.invoke('quotations:duplicate', id)
   },
   bookings: {
     getAll: () => ipcRenderer.invoke('bookings:getAll'),
@@ -61,24 +93,49 @@ const api = {
     create: (data) => ipcRenderer.invoke('bookings:create', data),
     update: (id, data) => ipcRenderer.invoke('bookings:update', id, data),
     updateStatus: (id, status) => ipcRenderer.invoke('bookings:updateStatus', id, status),
-    updatePayment: (id, payment_status, amount_paid, payment_method) =>
-      ipcRenderer.invoke('bookings:updatePayment', id, payment_status, amount_paid, payment_method),
-    createEvent: (data) => ipcRenderer.invoke('bookings:createEvent', data)
+    updatePayment: (id, amount, method, intentKey) =>
+      ipcRenderer.invoke('bookings:updatePayment', id, amount, method, intentKey),
+    getPayments: (bookingId) => ipcRenderer.invoke('bookings:getPayments', bookingId),
+    refund: (bookingId, payload) => ipcRenderer.invoke('bookings:refund', bookingId, payload),
+    createEvent: (data) => ipcRenderer.invoke('bookings:createEvent', data),
+    getPendingOnline: () => ipcRenderer.invoke('bookings:getPendingOnline')
+  },
+  invoices: {
+    getBookingInvoices: () => ipcRenderer.invoke('invoices:getBookingInvoices'),
+    sendBookingInvoiceEmail: (invoice) => ipcRenderer.invoke('invoices:sendBookingInvoiceEmail', invoice),
+    recordDelivery: (payload) => ipcRenderer.invoke('invoices:recordDelivery', payload)
   },
   reports: {
     occupancy: (start, end) => ipcRenderer.invoke('reports:occupancy', start, end),
     revenue: (start, end) => ipcRenderer.invoke('reports:revenue', start, end),
+    snapshot: (today) => ipcRenderer.invoke('reports:snapshot', today),
+    invoiceDeliveryHistory: (payload) => ipcRenderer.invoke('reports:invoiceDeliveryHistory', payload),
+    financialAudit: (payload) => ipcRenderer.invoke('reports:financialAudit', payload),
+    financialReconciliation: () => ipcRenderer.invoke('reports:financialReconciliation'),
+    financialValidation: () => ipcRenderer.invoke('reports:financialValidation'),
+    financialValidationRuns: (limit) => ipcRenderer.invoke('reports:financialValidationRuns', limit),
+    financialValidationAlerts: (limit) => ipcRenderer.invoke('reports:financialValidationAlerts', limit),
+    criticalErrors: (limit) => ipcRenderer.invoke('reports:criticalErrors', limit),
+    saveSupportBundle: (limit) => ipcRenderer.invoke('reports:saveSupportBundle', limit),
+    runFinancialValidation: () => ipcRenderer.invoke('reports:runFinancialValidation'),
     savePDF: () => ipcRenderer.invoke('reports:savePDF'),
     saveExcel: (data) => ipcRenderer.invoke('reports:saveExcel', data),
-    posSales: (start, end) => ipcRenderer.invoke('reports:posSales', start, end),
-    inventorySpend: (start, end) => ipcRenderer.invoke('reports:inventorySpend', start, end),
+    posSales: (start, end, outletId) => ipcRenderer.invoke('reports:posSales', start, end, outletId),
+    inventorySpend: (start, end, outletId) => ipcRenderer.invoke('reports:inventorySpend', start, end, outletId),
     supplySpend: (start, end) => ipcRenderer.invoke('reports:supplySpend', start, end),
     nightAudit: (date) => ipcRenderer.invoke('reports:nightAudit', date),
-    profitLoss: (start, end) => ipcRenderer.invoke('reports:profitLoss', start, end)
+    profitLoss: (start, end) => ipcRenderer.invoke('reports:profitLoss', start, end),
+    outletProfitLoss: (start, end) => ipcRenderer.invoke('reports:outletProfitLoss', start, end),
+    roomProfitability: (start, end) => ipcRenderer.invoke('reports:roomProfitability', start, end)
   },
   dashboard: {
     stats: () => ipcRenderer.invoke('dashboard:stats'),
-    forecast: (days) => ipcRenderer.invoke('dashboard:forecast', days)
+    forecast: (days) => ipcRenderer.invoke('dashboard:forecast', days),
+    bookingPaymentsToday: () => ipcRenderer.invoke('dashboard:bookingPaymentsToday')
+  },
+  requests: {
+    getAll: (limit) => ipcRenderer.invoke('requests:getAll', limit),
+    update: (id, updates) => ipcRenderer.invoke('requests:update', id, updates)
   },
   notifications: {
     today: () => ipcRenderer.invoke('notifications:today'),
@@ -87,17 +144,50 @@ const api = {
   shell: {
     openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url)
   },
+  window: {
+    onFocusRecovery: (cb) => {
+      const listener = (_, payload) => cb(payload)
+      ipcRenderer.on('window:focus-recovery', listener)
+      return () => ipcRenderer.off('window:focus-recovery', listener)
+    }
+  },
   activity: {
     getAll: () => ipcRenderer.invoke('activity:getAll'),
     clear: () => ipcRenderer.invoke('activity:clear')
   },
   backup: {
     getInfo: () => ipcRenderer.invoke('backup:getInfo'),
-    openFolder: () => ipcRenderer.invoke('backup:openFolder')
+    chooseTargetFolder: () => ipcRenderer.invoke('backup:chooseTargetFolder'),
+    savePolicy: (updates) => ipcRenderer.invoke('backup:savePolicy', updates),
+    runManagedNow: () => ipcRenderer.invoke('backup:runManagedNow'),
+    createManual: () => ipcRenderer.invoke('backup:createManual'),
+    openFolder: () => ipcRenderer.invoke('backup:openFolder'),
+    openManagedFolder: () => ipcRenderer.invoke('backup:openManagedFolder')
   },
   settings: {
     get: () => ipcRenderer.invoke('settings:get'),
-    save: (data) => ipcRenderer.invoke('settings:save', data)
+    save: (data) => ipcRenderer.invoke('settings:save', data),
+    getDiagnostics: (expectedLodgeId) => ipcRenderer.invoke('settings:getDiagnostics', expectedLodgeId),
+    getSystemHealth: () => ipcRenderer.invoke('settings:getSystemHealth'),
+    relinkLodge: (lodgeId) => ipcRenderer.invoke('settings:relinkLodge', lodgeId),
+    resetToNewLodge: () => ipcRenderer.invoke('settings:resetToNewLodge')
+  },
+  sync: {
+    getStatus: () => ipcRenderer.invoke('sync:getStatus'),
+    getDetails: () => ipcRenderer.invoke('sync:getDetails'),
+    retryFailed: (queueIds) => ipcRenderer.invoke('sync:retryFailed', queueIds),
+    clearFailed: (queueIds) => ipcRenderer.invoke('sync:clearFailed', queueIds),
+    onStatusChanged: (cb) => {
+      const listener = (_, payload) => cb(payload)
+      ipcRenderer.on('sync:status-changed', listener)
+      return () => ipcRenderer.off('sync:status-changed', listener)
+    },
+    // P0-4: Listen for booking sync conflicts so staff can take action
+    onBookingConflict: (cb) => {
+      const listener = (_, payload) => cb(payload)
+      ipcRenderer.on('booking:sync-conflict', listener)
+      return () => ipcRenderer.off('booking:sync-conflict', listener)
+    }
   },
   trial: {
     getStatus: (lodgeId) => ipcRenderer.invoke('trial:getStatus', lodgeId),
@@ -106,20 +196,28 @@ const api = {
   },
   updates: {
     onAvailable: (cb) => ipcRenderer.on('update:available', (_, info) => cb(info)),
+    onNotAvailable: (cb) => ipcRenderer.on('update:not-available', (_, info) => cb(info)),
     onProgress: (cb) => ipcRenderer.on('update:progress', (_, p) => cb(p)),
     onReady: (cb) => ipcRenderer.on('update:ready', (_, info) => cb(info)),
+    onError: (cb) => ipcRenderer.on('update:error', (_, info) => cb(info)),
     install: () => ipcRenderer.invoke('update:install'),
     check: () => ipcRenderer.invoke('update:check'),
     getVersion: () => ipcRenderer.invoke('app:getVersion')
+  },
+  outlets: {
+    getAll: () => ipcRenderer.invoke('outlets:getAll')
   },
   pos: {
     getMenuItems: () => ipcRenderer.invoke('pos:getMenuItems'),
     createMenuItem: (data) => ipcRenderer.invoke('pos:createMenuItem', data),
     updateMenuItem: (id, data) => ipcRenderer.invoke('pos:updateMenuItem', id, data),
     deleteMenuItem: (id) => ipcRenderer.invoke('pos:deleteMenuItem', id),
+    setBarPackTemplate: (data) => ipcRenderer.invoke('pos:setBarPackTemplate', data),
     getOrders: (start, end) => ipcRenderer.invoke('pos:getOrders', start, end),
+    getVoidHistory: (start, end) => ipcRenderer.invoke('pos:getVoidHistory', start, end),
     createOrder: (data) => ipcRenderer.invoke('pos:createOrder', data),
     voidOrder: (id) => ipcRenderer.invoke('pos:voidOrder', id),
+    approveVoidWithPin: (data) => ipcRenderer.invoke('pos:approveVoidWithPin', data),
     getActiveBookingForRoom: (roomId) => ipcRenderer.invoke('pos:getActiveBookingForRoom', roomId)
   },
   inventory: {
@@ -130,7 +228,12 @@ const api = {
     addPurchase: (data) => ipcRenderer.invoke('inventory:addPurchase', data),
     getPurchases: (itemId) => ipcRenderer.invoke('inventory:getPurchases', itemId),
     adjustStock: (itemId, delta, notes) => ipcRenderer.invoke('inventory:adjustStock', itemId, delta, notes),
-    getLowStock: () => ipcRenderer.invoke('inventory:getLowStock')
+    getLowStock: () => ipcRenderer.invoke('inventory:getLowStock'),
+    getStocktakes: (limit) => ipcRenderer.invoke('inventory:getStocktakes', limit),
+    createStocktake: (data) => ipcRenderer.invoke('inventory:createStocktake', data),
+    getStocktake: (stocktakeId) => ipcRenderer.invoke('inventory:getStocktake', stocktakeId),
+    saveStocktakeCounts: (stocktakeId, lines) => ipcRenderer.invoke('inventory:saveStocktakeCounts', stocktakeId, lines),
+    postStocktake: (stocktakeId, notes) => ipcRenderer.invoke('inventory:postStocktake', stocktakeId, notes)
   },
   supplies: {
     getItems: () => ipcRenderer.invoke('supplies:getItems'),
@@ -139,10 +242,28 @@ const api = {
     deleteItem: (id) => ipcRenderer.invoke('supplies:deleteItem', id),
     addPurchase: (data) => ipcRenderer.invoke('supplies:addPurchase', data),
     getPurchases: (itemId) => ipcRenderer.invoke('supplies:getPurchases', itemId),
+    adjustStock: (itemId, delta, notes) => ipcRenderer.invoke('supplies:adjustStock', itemId, delta, notes),
+    getRoomStock: () => ipcRenderer.invoke('supplies:getRoomStock'),
+    loadToRoom: (data) => ipcRenderer.invoke('supplies:loadToRoom', data),
+    useInRoom: (data) => ipcRenderer.invoke('supplies:useInRoom', data),
+    returnFromRoom: (data) => ipcRenderer.invoke('supplies:returnFromRoom', data),
+    getMovements: (limit) => ipcRenderer.invoke('supplies:getMovements', limit),
     saveAllocations: (weekStart, allocations) =>
       ipcRenderer.invoke('supplies:saveAllocations', weekStart, allocations),
     getAllocations: (start, end) => ipcRenderer.invoke('supplies:getAllocations', start, end),
-    getWeekAllocations: (weekStart) => ipcRenderer.invoke('supplies:getWeekAllocations', weekStart)
+    getWeekAllocations: (weekStart) => ipcRenderer.invoke('supplies:getWeekAllocations', weekStart),
+    exportReport: (payload) => ipcRenderer.invoke('supplies:exportReport', payload),
+    getStocktakes: (limit) => ipcRenderer.invoke('supplies:getStocktakes', limit),
+    createStocktake: (data) => ipcRenderer.invoke('supplies:createStocktake', data),
+    getStocktake: (stocktakeId) => ipcRenderer.invoke('supplies:getStocktake', stocktakeId),
+    saveStocktakeCounts: (stocktakeId, lines) => ipcRenderer.invoke('supplies:saveStocktakeCounts', stocktakeId, lines),
+    postStocktake: (stocktakeId, notes) => ipcRenderer.invoke('supplies:postStocktake', stocktakeId, notes),
+    getRoomStocktakes: (limit) => ipcRenderer.invoke('supplies:getRoomStocktakes', limit),
+    createRoomStocktake: (data) => ipcRenderer.invoke('supplies:createRoomStocktake', data),
+    getRoomStocktake: (stocktakeId) => ipcRenderer.invoke('supplies:getRoomStocktake', stocktakeId),
+    saveRoomStocktakeCounts: (stocktakeId, lines) => ipcRenderer.invoke('supplies:saveRoomStocktakeCounts', stocktakeId, lines),
+    postRoomStocktake: (stocktakeId, notes) => ipcRenderer.invoke('supplies:postRoomStocktake', stocktakeId, notes),
+    addRoomStocktakeLine: (stocktakeId, data) => ipcRenderer.invoke('supplies:addRoomStocktakeLine', stocktakeId, data)
   },
   admin: {
     exists: () => ipcRenderer.invoke('admin:exists'),
@@ -150,6 +271,7 @@ const api = {
     getCompanies: () => ipcRenderer.invoke('admin:getCompanies'),
     getLicenses: () => ipcRenderer.invoke('admin:getLicenses'),
     createLicense: (data) => ipcRenderer.invoke('admin:createLicense', data),
+    issueSubscriptionContract: (payload) => ipcRenderer.invoke('admin:issueSubscriptionContract', payload),
     updateLicense: (id, updates) => ipcRenderer.invoke('admin:updateLicense', id, updates),
     deleteLicense: (id) => ipcRenderer.invoke('admin:deleteLicense', id),
     // Broadcasts
@@ -160,8 +282,12 @@ const api = {
     deleteBroadcast: (id) => ipcRenderer.invoke('admin:deleteBroadcast', id),
     // Feature flags
     getLodgeFeatures: (lodgeId) => ipcRenderer.invoke('admin:getLodgeFeatures', lodgeId),
-    setLodgeFeature: (lodgeId, name, enabled) => ipcRenderer.invoke('admin:setLodgeFeature', lodgeId, name, enabled),
+    setLodgeFeature: (lodgeId, name, enabled, metadata) => ipcRenderer.invoke('admin:setLodgeFeature', lodgeId, name, enabled, metadata),
+    clearLodgeFeature: (lodgeId, name) => ipcRenderer.invoke('admin:clearLodgeFeature', lodgeId, name),
     getAllLodgeFeatures: () => ipcRenderer.invoke('admin:getAllLodgeFeatures'),
+    getTestDataResetPreview: (lodgeId, payload) => ipcRenderer.invoke('admin:getTestDataResetPreview', lodgeId, payload),
+    runTestDataReset: (lodgeId, payload) => ipcRenderer.invoke('admin:runTestDataReset', lodgeId, payload),
+    getTestDataResetAudit: (lodgeId, limit) => ipcRenderer.invoke('admin:getTestDataResetAudit', lodgeId, limit),
     // Support tickets
     getSupportTickets: (filters) => ipcRenderer.invoke('admin:getSupportTickets', filters),
     createSupportTicket: (data) => ipcRenderer.invoke('admin:createSupportTicket', data),
@@ -182,7 +308,11 @@ const api = {
     updateInvoice: (id, data) => ipcRenderer.invoke('admin:updateInvoice', id, data),
     deleteInvoice: (id) => ipcRenderer.invoke('admin:deleteInvoice', id),
     getInvoiceSummary: () => ipcRenderer.invoke('admin:getInvoiceSummary'),
-    sendInvoiceEmail: (payload) => ipcRenderer.invoke('admin:sendInvoiceEmail', payload)
+    sendInvoiceEmail: (payload) => ipcRenderer.invoke('admin:sendInvoiceEmail', payload),
+    updateCompany: (lodgeId, updates) => ipcRenderer.invoke('admin:updateCompany', lodgeId, updates),
+    getCompanyUsers: (lodgeId) => ipcRenderer.invoke('admin:getCompanyUsers', lodgeId),
+    resetCompanyUserPassword: (lodgeId, userId, password) => ipcRenderer.invoke('admin:resetCompanyUserPassword', lodgeId, userId, password),
+    updateCompanyUserPwaAccess: (lodgeId, userId, payload) => ipcRenderer.invoke('admin:updateCompanyUserPwaAccess', lodgeId, userId, payload)
   },
   conference: {
     getAll: (start, end) => ipcRenderer.invoke('conference:getAll', start, end),
@@ -192,7 +322,16 @@ const api = {
   },
   import: {
     parseExcel: () => ipcRenderer.invoke('import:parseExcel'),
-    execute: (rows) => ipcRenderer.invoke('import:execute', rows)
+    execute: (rows, filename) => ipcRenderer.invoke('import:execute', rows, filename),
+    checkDuplicates: (rows) => ipcRenderer.invoke('import:checkDuplicates', rows),
+    undoBatch: (batchId) => ipcRenderer.invoke('import:undoBatch', batchId),
+    getBatches: () => ipcRenderer.invoke('import:getBatches'),
+    downloadTemplate: () => ipcRenderer.invoke('import:downloadTemplate'),
+    onProgress: (cb) => {
+      const handler = (_, progress) => cb(progress)
+      ipcRenderer.on('import:progress', handler)
+      return () => ipcRenderer.removeListener('import:progress', handler)
+    }
   },
   data: {
     exportAll: () => ipcRenderer.invoke('data:exportAll')
@@ -208,6 +347,11 @@ const api = {
     saveConfig: (config) => ipcRenderer.invoke('email:saveConfig', config),
     test: (config) => ipcRenderer.invoke('email:test', config),
     sendLicense: (payload) => ipcRenderer.invoke('email:sendLicense', payload)
+  },
+  app: {
+    getVersion: () => ipcRenderer.invoke('app:getVersion'),
+    logRendererError: (payload) => ipcRenderer.invoke('app:logRendererError', payload),
+    getRendererErrors: (limit) => ipcRenderer.invoke('app:getRendererErrors', limit)
   },
 }
 

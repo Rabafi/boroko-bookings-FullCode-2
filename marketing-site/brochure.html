@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Boroko Bookings Brochure</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <style>
+      body { background: #f6f1e8; }
+      .brochure-shell {
+        width: min(960px, calc(100vw - 32px));
+        margin: 32px auto;
+        padding: 40px;
+        background: rgba(255,255,255,0.92);
+        border: 1px solid rgba(22,50,41,0.1);
+        border-radius: 28px;
+        box-shadow: 0 24px 60px rgba(18,34,28,0.1);
+      }
+      .brochure-grid {
+        display: grid;
+        gap: 18px;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+      @media print {
+        body { background: white; }
+        .brochure-shell { box-shadow: none; margin: 0; width: 100%; border: 0; }
+      }
+      @media (max-width: 720px) {
+        .brochure-grid { grid-template-columns: 1fr; }
+        .brochure-shell { padding: 24px; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="brochure-shell">
+      <div class="eyebrow">
+        <span class="eyebrow-dot"></span>
+        Built by Batswana for Batswana lodges
+      </div>
+      <h1>Boroko Bookings</h1>
+      <p class="hero-lead">
+        A practical lodge system for bookings, rooms, invoices, reports, stock, bar or kitchen sales, and online reservations.
+      </p>
+      <p class="demo-note">
+        Simple enough for everyday lodge teams. Strong enough to help owners see the business better.
+      </p>
+      <div class="brochure-grid">
+        <article class="content-card">
+          <h3>What it helps with</h3>
+          <ul>
+            <li>Bookings and guest records</li>
+            <li>Room board and planning</li>
+            <li>Invoices and payment follow-up</li>
+            <li>Reports and expenses</li>
+          </ul>
+        </article>
+        <article class="content-card">
+          <h3>Good for lodges that want</h3>
+          <ul>
+            <li>Less manual admin</li>
+            <li>Better owner visibility</li>
+            <li>Stock and supply control</li>
+            <li>Online reservations</li>
+          </ul>
+        </article>
+        <article class="content-card">
+          <h3>Packages</h3>
+          <ul>
+            <li>Starter: daily lodge operations</li>
+            <li>Standard: owner control and visibility</li>
+            <li>Pro: growth, sales, and online reservations</li>
+          </ul>
+        </article>
+        <article class="content-card">
+          <h3>Why lodges switch</h3>
+          <ul>
+            <li>Too many notebooks and spreadsheets</li>
+            <li>Owner cannot see the real business clearly</li>
+            <li>Bookings, billing, and stock are scattered</li>
+            <li>The lodge wants to grow into online reservations</li>
+          </ul>
+        </article>
+        <article class="content-card">
+          <h3>Why people trust Boroko</h3>
+          <ul>
+            <li>Built by Batswana for Batswana</li>
+            <li>Good fit for owner-managed lodges</li>
+            <li>Practical workflows, not complicated software jargon</li>
+            <li>Free 7-day demo to test it first</li>
+          </ul>
+        </article>
+        <article class="content-card">
+          <h3>Start simple</h3>
+          <p>Every customer can start with a free 7-day demo.</p>
+          <p>WhatsApp: +267 72 789 415</p>
+          <p>Email: hello@borokobookings.com</p>
+        </article>
+      </div>
+      <div class="contact-strip" style="margin-top:24px;">
+        <a class="btn btn-primary" href="https://wa.me/26772789415?text=Hello%20Boroko%20Bookings%2C%20I%20want%20to%20start%20the%20free%207-day%20demo." target="_blank" rel="noreferrer">Chat on WhatsApp</a>
+        <a class="btn btn-secondary" href="mailto:hello@borokobookings.com?subject=Boroko%20Bookings%20brochure%20enquiry">Email directly</a>
+      </div>
+    </div>
+  </body>
+</html>

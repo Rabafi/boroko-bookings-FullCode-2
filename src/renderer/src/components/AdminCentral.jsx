@@ -1,5 +1,11 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useAuth } from '../App'
+import LicensingWorkbench from './LicensingWorkbench'
+import {
+  SUBSCRIPTION_PLAN_ORDER,
+  getSubscriptionPlan,
+  normalizeSubscriptionPlan
+} from '../../../shared/subscriptionPlans'
 import {
   LayoutDashboard, Building2, CreditCard, ToggleRight, Megaphone,
   LifeBuoy, Activity, LogOut, Shield, RefreshCw, Plus, Trash2,
@@ -12,42 +18,65 @@ import {
 // ── Constants ────────────────────────────────────────────────────────────────
 const BIZ_EMOJI  = { lodge: '🏕️', restaurant: '🍽️', retail: '🛒', service_provider: '🔧' }
 const BIZ_LABEL  = { lodge: 'Lodge', restaurant: 'Restaurant', retail: 'Retail', service_provider: 'Service Provider' }
-const ALL_FEATURES = ['pos', 'inventory', 'supplies', 'conference', 'pool', 'reports', 'expenses', 'staff', 'audit', 'import']
+const ALL_FEATURES = ['reports', 'expenses', 'staff', 'pwa', 'audit', 'conference', 'pool', 'import', 'pos', 'inventory', 'supplies']
 const FEAT_LABEL   = {
+  reports: 'Reports', expenses: 'Expenses', staff: 'Staff Management', pwa: 'Manager PWA',
+  audit: 'Night Audit', import: 'Data Import',
   pos: 'POS / Bar', inventory: 'Inventory', supplies: 'Room Supplies',
-  conference: 'Conference', pool: 'Pool / Day Use',
-  reports: 'Reports', expenses: 'Expenses', staff: 'Staff Management',
-  audit: 'Night Audit', import: 'Data Import'
+  conference: 'Conference', pool: 'Pool / Day Use'
 }
 
 // ── Subscription Tiers ────────────────────────────────────────────────────────
-const TIERS = ['Basic', 'Standard', 'Premium']
-const TIER_DESC = {
-  Starter:  'Bookings, rooms, guests & housekeeping only',
-  Standard: 'Adds reports, expenses, staff, audit, conference & day use',
-  Pro:      'Full suite including POS, inventory & room supplies'
-}
+const TIERS = SUBSCRIPTION_PLAN_ORDER
+const TIER_DESC = Object.fromEntries(TIERS.map((planName) => [planName, getSubscriptionPlan(planName).pitch]))
 const TIER_FLAGS = {
   Starter: {
-    reports: false, expenses: false, staff: false, audit: false,
+    reports: false, expenses: false, staff: false, pwa: false, audit: false,
     conference: false, pool: false, pos: false, inventory: false,
     supplies: false, import: false
   },
   Standard: {
-    reports: true, expenses: true, staff: true, audit: true,
+    reports: true, expenses: true, staff: true, pwa: false, audit: true,
     conference: true, pool: true, pos: false, inventory: false,
     supplies: false, import: true
   },
   Pro: {
-    reports: true, expenses: true, staff: true, audit: true,
+    reports: true, expenses: true, staff: true, pwa: true, audit: true,
     conference: true, pool: true, pos: true, inventory: true,
     supplies: true, import: true
   }
 }
 const PRIORITY_COLOR = { Low: 'text-gray-400', Normal: 'text-blue-400', High: 'text-orange-400', Urgent: 'text-red-400' }
 const STATUS_COLOR   = { open: 'bg-yellow-500/20 text-yellow-300', in_progress: 'bg-blue-500/20 text-blue-300', resolved: 'bg-green-500/20 text-green-300', closed: 'bg-gray-500/20 text-gray-400' }
+const DEFAULT_PLAN = 'Starter'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+function normalizePlanName(plan) {
+  return normalizeSubscriptionPlan(plan)
+}
+
+function getPlanFlags(plan) {
+  return { ...(TIER_FLAGS[normalizePlanName(plan)] || TIER_FLAGS[DEFAULT_PLAN]) }
+}
+
+function getLicensePlanForLodge(licenses, lodgeId) {
+  const activeLicense = (licenses || []).find((license) => license.lodge_id === lodgeId && license.is_active !== false)
+  return normalizePlanName(activeLicense?.subscription_plan)
+}
+
+function getSubscriptionStatusLabel(license) {
+  return String(license?.subscription_state || license?.payment_status || 'active').replace(/_/g, ' ')
+}
+
+function subscriptionStatusTone(license) {
+  const raw = String(license?.subscription_state || license?.payment_status || 'active').toLowerCase()
+  if (raw === 'active') return 'bg-green-500/20 text-green-300'
+  if (raw === 'trial' || raw === 'free') return 'bg-blue-500/20 text-blue-300'
+  if (raw === 'grace_period' || raw === 'overdue') return 'bg-amber-500/20 text-amber-300'
+  if (raw === 'suspended' || raw === 'cancelled' || raw === 'expired') return 'bg-red-500/20 text-red-300'
+  return 'bg-gray-500/20 text-gray-400'
+}
+
 function fmt(dt) {
   if (!dt) return '—'
   return new Date(dt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
@@ -121,7 +150,12 @@ const btn = (variant = 'primary') => ({
 
 // ── Trial status helper ───────────────────────────────────────────────────────
 function getTrialInfo(company, licenses) {
-  const hasLicense = licenses.some(l => l.lodge_id === company.lodge_id && l.is_active)
+  const hasLicense = licenses.some((license) =>
+    license.lodge_id === company.lodge_id
+    && license.is_active !== false
+    && String(license.payment_status || '').toLowerCase() !== 'cancelled'
+    && (!license.expires_at || new Date(license.expires_at) >= new Date())
+  )
   if (hasLicense) return { label: 'Licensed', color: 'bg-green-500/20 text-green-300' }
   if (!company.trial_started_at) return { label: 'In Trial', color: 'bg-blue-500/20 text-blue-300' }
   const trialEnd = new Date(company.trial_started_at)
@@ -229,10 +263,63 @@ function Dashboard({ companies, licenses, tickets, activityLogs }) {
 // ════════════════════════════════════════════════════════════════════
 // SECTION: Companies
 // ════════════════════════════════════════════════════════════════════
-function Companies({ companies, licenses, loading }) {
+function Companies({ companies, licenses, loading, onReload }) {
   const [selected, setSelected] = useState(null)
   const [stats, setStats] = useState(null)
   const [statsLoading, setStatsLoading] = useState(false)
+
+  const [showDisabled, setShowDisabled] = useState(false)
+  const visibleCompanies = showDisabled ? companies : companies.filter(c => !c.deleted)
+
+  // ─── delete state ───────────────────────────────────────────────────────────
+  const [companyTarget,   setCompanyTarget]   = useState(null)
+  const [confirmName,     setConfirmName]     = useState('')
+  const [deletingCompany, setDeletingCompany] = useState(false)
+
+  // ─── reset state ────────────────────────────────────────────────────────────
+  const [resetTarget,  setResetTarget]  = useState(null)
+  const [newPassword,  setNewPassword]  = useState('')
+  const [resetLoading, setResetLoading] = useState(false)
+  const [showResetPassword, setShowResetPassword] = useState(false)
+  const [pwaTarget, setPwaTarget] = useState(null)
+  const [companyUsers, setCompanyUsers] = useState([])
+  const [pwaUsersLoading, setPwaUsersLoading] = useState(false)
+  const [pwaSaving, setPwaSaving] = useState(false)
+  const [selectedCompanyUserId, setSelectedCompanyUserId] = useState('')
+  const [pwaEnabled, setPwaEnabled] = useState(false)
+  const [pwaPassword, setPwaPassword] = useState('')
+  const [pwaDisabledReason, setPwaDisabledReason] = useState('')
+  const [showPwaPassword, setShowPwaPassword] = useState(false)
+
+  const eligibleUsers = companyUsers.filter((user) => user.role === 'manager' || user.role === 'admin')
+  const activePwaUser = eligibleUsers.find((user) => user.id === selectedCompanyUserId) || null
+
+  const applyPwaUser = (user) => {
+    setSelectedCompanyUserId(user?.id || '')
+    setPwaEnabled(user?.pwa_enabled === true)
+    setPwaPassword('')
+    setPwaDisabledReason(user?.pwa_disabled_reason || '')
+    setShowPwaPassword(false)
+  }
+
+  const loadCompanyUsers = useCallback(async (targetLodgeId) => {
+    setPwaUsersLoading(true)
+    try {
+      const rows = await window.api.admin.getCompanyUsers(targetLodgeId).catch(() => [])
+      const nextUsers = Array.isArray(rows) ? rows : []
+      setCompanyUsers(nextUsers)
+      const nextEligible = nextUsers.filter((user) => user.role === 'manager' || user.role === 'admin')
+      if (nextEligible.length === 0) {
+        applyPwaUser(null)
+        return
+      }
+
+      const nextSelected = nextEligible.find((user) => user.id === selectedCompanyUserId) || nextEligible[0]
+      applyPwaUser(nextSelected)
+    } finally {
+      setPwaUsersLoading(false)
+    }
+  }, [selectedCompanyUserId])
 
   const openDetail = async (company) => {
     setSelected(company)
@@ -243,14 +330,113 @@ function Companies({ companies, licenses, loading }) {
     setStatsLoading(false)
   }
 
+  const openPwaManager = async (company) => {
+    setPwaTarget(company)
+    setCompanyUsers([])
+    applyPwaUser(null)
+    await loadCompanyUsers(company.lodge_id)
+  }
+
+  const confirmDeleteCompany = async () => {
+    if (deletingCompany) return
+    setDeletingCompany(true)
+    try {
+      await window.api.admin.updateCompany(companyTarget.lodge_id, { deleted: true })
+      alert('Company disabled successfully')
+      setCompanyTarget(null)
+      setConfirmName('')
+      setSelected(null)
+      onReload?.()
+    } catch (err) {
+      console.error(err)
+      alert('Failed to delete company')
+    } finally {
+      setDeletingCompany(false)
+    }
+  }
+
+  const confirmReset = async () => {
+    const password = newPassword.trim()
+    if (!password || password.length < 6) {
+      alert('Password must be at least 6 characters')
+      return
+    }
+    setResetLoading(true)
+    try {
+      const users = await window.api.admin.getCompanyUsers(resetTarget.lodge_id)
+      const admin = users.find(u => u.role === 'admin')
+      if (!admin) {
+        alert('No admin user found for this company')
+        setResetLoading(false)
+        return
+      }
+      const result = await window.api.admin.resetCompanyUserPassword(resetTarget.lodge_id, admin.id, password)
+      if (result?.success === false) {
+        throw new Error(result.error || 'Failed to reset password')
+      }
+      alert('Admin password reset successfully')
+      setResetTarget(null)
+      setNewPassword('')
+    } catch (err) {
+      console.error(err)
+      alert('Failed to reset password')
+    } finally {
+      setResetLoading(false)
+    }
+  }
+
+  const savePwaAccess = async () => {
+    if (!pwaTarget || !selectedCompanyUserId) return
+    if (pwaPassword && pwaPassword.trim().length < 6) {
+      alert('Manager PWA password must be at least 6 characters')
+      return
+    }
+    if (pwaEnabled && !pwaPassword.trim() && !activePwaUser?.pwa_password_set_at) {
+      alert('Set a Manager PWA password before enabling access')
+      return
+    }
+
+    setPwaSaving(true)
+    try {
+      const result = await window.api.admin.updateCompanyUserPwaAccess(
+        pwaTarget.lodge_id,
+        selectedCompanyUserId,
+        {
+          pwa_enabled: pwaEnabled,
+          pwa_password: pwaPassword.trim(),
+          pwa_disabled_reason: pwaEnabled ? '' : pwaDisabledReason.trim()
+        }
+      )
+      if (result?.success === false) {
+        throw new Error(result.error || 'Could not update Manager PWA access')
+      }
+      await loadCompanyUsers(pwaTarget.lodge_id)
+      alert('Manager PWA access updated')
+    } catch (err) {
+      console.error(err)
+      alert(err.message || 'Failed to update Manager PWA access')
+    } finally {
+      setPwaSaving(false)
+    }
+  }
+
   return (
     <div className="flex gap-5 h-full">
       {/* Table */}
       <div className={`flex-1 min-w-0 bg-gray-800 rounded-xl overflow-hidden ${selected ? 'hidden md:block' : ''}`}>
-        {companies.length === 0 && !loading ? (
+        <div className="flex items-center justify-between px-4 py-3 border-b border-gray-700">
+          <p className="text-xs text-gray-400">{visibleCompanies.length} {showDisabled ? 'total' : 'active'} {visibleCompanies.length === 1 ? 'company' : 'companies'}</p>
+          <button
+            onClick={() => setShowDisabled(v => !v)}
+            className={`text-xs px-3 py-1.5 rounded-lg transition-colors ${showDisabled ? 'bg-red-900/40 text-red-400 hover:bg-red-900/60' : 'text-gray-400 hover:text-white hover:bg-gray-700'}`}
+          >
+            {showDisabled ? 'Hide Disabled' : 'Show Disabled'}
+          </button>
+        </div>
+        {visibleCompanies.length === 0 && !loading ? (
           <div className="px-6 py-16 text-center text-gray-500">
             <Building2 size={32} className="mx-auto mb-3 opacity-40" />
-            <p>No registered businesses found.</p>
+            <p>{showDisabled ? 'No companies found.' : 'No active companies found.'}</p>
           </div>
         ) : (
           <table className="w-full text-sm">
@@ -266,7 +452,7 @@ function Companies({ companies, licenses, loading }) {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-700">
-              {companies.map((c) => (
+              {visibleCompanies.map((c) => (
                 <tr
                   key={c.lodge_id}
                   className={`hover:bg-gray-700 transition-colors cursor-pointer ${selected?.lodge_id === c.lodge_id ? 'bg-gray-700' : ''}`}
@@ -277,7 +463,10 @@ function Companies({ companies, licenses, loading }) {
                     {c.company_name && <p className="text-xs text-gray-400">{c.company_name}</p>}
                   </td>
                   <td className="px-4 py-3">
-                    {(() => { const t = getTrialInfo(c, licenses); return <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${t.color}`}>{t.label}</span> })()}
+                    <div className="flex items-center gap-1 flex-wrap">
+                      {(() => { const t = getTrialInfo(c, licenses); return <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${t.color}`}>{t.label}</span> })()}
+                      {c.deleted && <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-red-900/40 text-red-400">Disabled</span>}
+                    </div>
                   </td>
                   <td className="px-4 py-3 text-gray-400 text-xs">{[c.city, c.country].filter(Boolean).join(', ') || '—'}</td>
                   <td className="px-4 py-3 text-gray-400 text-xs">
@@ -349,10 +538,256 @@ function Companies({ companies, licenses, loading }) {
               </div>
             ) : <p className="text-xs text-gray-500">Stats unavailable</p>}
           </div>
+          {/* Admin actions */}
+          <div className="border-t border-gray-700 pt-3 flex gap-2">
+            <button
+              onClick={() => { setResetTarget(selected); setNewPassword(''); setShowResetPassword(false) }}
+              className="flex-1 text-xs py-2 px-3 rounded-lg bg-blue-600 hover:bg-blue-700 text-white transition-colors"
+            >
+              Reset Admin Password
+            </button>
+            <button
+              onClick={() => openPwaManager(selected)}
+              className="flex-1 text-xs py-2 px-3 rounded-lg bg-purple-600 hover:bg-purple-700 text-white transition-colors"
+            >
+              Manage Manager PWA
+            </button>
+            <button
+              onClick={() => { setCompanyTarget(selected); setConfirmName('') }}
+              className="flex-1 text-xs py-2 px-3 rounded-lg bg-red-600 hover:bg-red-700 text-white transition-colors"
+            >
+              Delete Company
+            </button>
+          </div>
         </div>
+      )}
+
+      {/* Delete company modal */}
+      {companyTarget && (
+        <Modal title="Delete Company" onClose={() => { setCompanyTarget(null); setConfirmName('') }}>
+          <div className="space-y-4">
+            <div className="bg-red-900/40 text-red-300 p-3 rounded-lg text-sm">
+              This will disable this company from accessing the system.
+            </div>
+            <p className="text-sm text-gray-300">
+              Type <b className="text-white">{companyTarget.lodge_name}</b> to confirm
+            </p>
+            <input
+              value={confirmName}
+              onChange={(e) => setConfirmName(e.target.value)}
+              className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
+              placeholder="Type company name"
+              autoFocus
+            />
+            <div className="flex gap-3">
+              <button
+                onClick={() => { setCompanyTarget(null); setConfirmName('') }}
+                className="flex-1 py-2 px-4 rounded-lg text-sm text-gray-300 bg-gray-700 hover:bg-gray-600"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmDeleteCompany}
+                disabled={confirmName.trim() !== companyTarget.lodge_name || deletingCompany}
+                className="flex-1 py-2 px-4 rounded-lg text-sm font-medium text-white bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {deletingCompany ? 'Deleting...' : 'Delete Company'}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Reset admin password modal */}
+      {resetTarget && (
+        <Modal
+          title={`Reset Admin Password — ${resetTarget.lodge_name}`}
+          onClose={() => { setResetTarget(null); setNewPassword(''); setShowResetPassword(false) }}
+        >
+          <div className="space-y-4">
+            <div className="relative">
+              <input
+                type={showResetPassword ? 'text' : 'password'}
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 pr-10 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="New password (min 6 characters)"
+                autoFocus
+              />
+              <button
+                type="button"
+                onClick={() => setShowResetPassword((value) => !value)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-200"
+              >
+                {showResetPassword ? <EyeOff size={15} /> : <Eye size={15} />}
+              </button>
+            </div>
+            <div className="flex gap-3">
+              <button
+                onClick={() => { setResetTarget(null); setNewPassword(''); setShowResetPassword(false) }}
+                className="flex-1 py-2 px-4 rounded-lg text-sm text-gray-300 bg-gray-700 hover:bg-gray-600"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmReset}
+                disabled={resetLoading}
+                className="flex-1 py-2 px-4 rounded-lg text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 transition-colors"
+              >
+                {resetLoading ? 'Resetting...' : 'Reset Password'}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {pwaTarget && (
+        <Modal
+          title={`Manager PWA Access — ${pwaTarget.lodge_name}`}
+          onClose={() => {
+            setPwaTarget(null)
+            setCompanyUsers([])
+            applyPwaUser(null)
+            setPwaPassword('')
+            setPwaDisabledReason('')
+            setShowPwaPassword(false)
+          }}
+          wide
+        >
+          <div className="space-y-4">
+            {pwaUsersLoading ? (
+              <p className="text-sm text-gray-400">Loading eligible company users…</p>
+            ) : eligibleUsers.length === 0 ? (
+              <div className="bg-amber-900/30 border border-amber-700 rounded-lg p-4 text-sm text-amber-200">
+                This company does not currently have any Manager or Admin users who are eligible for the Manager PWA.
+              </div>
+            ) : (
+              <>
+                <Field label="Eligible User">
+                  <select
+                    className={inp}
+                    value={selectedCompanyUserId}
+                    onChange={(event) => {
+                      const nextUser = eligibleUsers.find((user) => user.id === event.target.value) || null
+                      applyPwaUser(nextUser)
+                    }}
+                  >
+                    {eligibleUsers.map((user) => (
+                      <option key={user.id} value={user.id}>
+                        {user.name} ({user.role})
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+
+                {activePwaUser && (
+                  <div className="rounded-xl border border-gray-700 bg-gray-800/80 p-4 space-y-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-semibold text-white">{activePwaUser.name}</p>
+                        <p className="text-xs text-gray-400 mt-1">{activePwaUser.email} · {activePwaUser.role}</p>
+                      </div>
+                      <span className={`text-xs px-2 py-1 rounded-full font-semibold ${activePwaUser.pwa_enabled ? 'bg-indigo-500/20 text-indigo-300' : 'bg-gray-700 text-gray-300'}`}>
+                        {activePwaUser.pwa_enabled ? 'Manager PWA enabled' : 'Manager PWA disabled'}
+                      </span>
+                    </div>
+
+                    <label className="flex items-start gap-3 text-sm text-gray-300">
+                      <input
+                        type="checkbox"
+                        checked={pwaEnabled}
+                        onChange={(event) => {
+                          setPwaEnabled(event.target.checked)
+                          if (event.target.checked) setPwaDisabledReason('')
+                        }}
+                        className="mt-1"
+                      />
+                      <span>
+                        Enable Manager PWA for this user
+                        <span className="block text-xs text-gray-500 mt-1">Command Central can override the lodge plan, but login still stays limited to Manager and Admin roles.</span>
+                      </span>
+                    </label>
+
+                    <Field label={`Manager PWA Password${activePwaUser.pwa_password_set_at ? ' (leave blank to keep current)' : ''}`}>
+                      <div className="relative">
+                        <input
+                          type={showPwaPassword ? 'text' : 'password'}
+                          className={`${inp} pr-10`}
+                          value={pwaPassword}
+                          onChange={(event) => setPwaPassword(event.target.value)}
+                          placeholder={activePwaUser.pwa_password_set_at ? 'Leave blank to keep current password' : 'Min 6 characters'}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowPwaPassword((value) => !value)}
+                          className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300"
+                        >
+                          {showPwaPassword ? <EyeOff size={15} /> : <Eye size={15} />}
+                        </button>
+                      </div>
+                    </Field>
+
+                    <p className="text-xs text-gray-500">
+                      {activePwaUser.pwa_password_set_at
+                        ? `Current Manager PWA password last updated ${fmt(activePwaUser.pwa_password_set_at)}.`
+                        : 'No Manager PWA password has been set yet.'}
+                    </p>
+
+                    {!pwaEnabled && (
+                      <Field label="Disable Reason">
+                        <input
+                          className={inp}
+                          value={pwaDisabledReason}
+                          onChange={(event) => setPwaDisabledReason(event.target.value)}
+                          placeholder="Why is Manager PWA disabled for this user?"
+                        />
+                      </Field>
+                    )}
+                  </div>
+                )}
+
+                <div className="flex gap-3">
+                  <button
+                    onClick={() => {
+                      setPwaTarget(null)
+                      setCompanyUsers([])
+                      applyPwaUser(null)
+                      setPwaPassword('')
+                      setPwaDisabledReason('')
+                    }}
+                    className="flex-1 py-2 px-4 rounded-lg text-sm text-gray-300 bg-gray-700 hover:bg-gray-600"
+                  >
+                    Close
+                  </button>
+                  <button
+                    onClick={savePwaAccess}
+                    disabled={pwaSaving || !activePwaUser}
+                    className="flex-1 py-2 px-4 rounded-lg text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 disabled:opacity-50 transition-colors"
+                  >
+                    {pwaSaving ? 'Saving...' : 'Save Manager PWA'}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </Modal>
       )}
     </div>
   )
+}
+
+function parseUpgradeRequest(description = '') {
+  const text = String(description || '')
+  const lines = text.split('\n').map((line) => line.trim()).filter(Boolean)
+  const read = (prefix) => lines.find((line) => line.startsWith(prefix))?.slice(prefix.length).trim() || ''
+  return {
+    currentPlan: read('Current plan:'),
+    requestedPlan: read('Requested plan:'),
+    blockedFeature: read('Blocked feature:'),
+    businessNeed: read('Business need:'),
+    requestedOutcome: read('Requested package outcome:'),
+    commercialValue: read('Commercial value:')
+  }
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -362,12 +797,12 @@ const INVOICE_CURRENCIES = ['USD', 'BWP', 'ZAR', 'EUR', 'GBP', 'N$', 'ZK']
 
 function LicenseBilling({ licenses, companies, onRefresh }) {
   const [showForm, setShowForm] = useState(false)
-  const [form, setForm] = useState({ lodge_id: '', lodge_name: '', business_type: 'lodge', expires_at: '', notes: '' })
+  const [form, setForm] = useState({ lodge_id: '', lodge_name: '', business_type: 'lodge', expires_at: '', notes: '', subscription_plan: DEFAULT_PLAN })
   const [selectedCompany, setSelectedCompany] = useState('')
   const [selectedPeriod, setSelectedPeriod] = useState(null) // '3d'|'7d'|'paid'
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
-  const [invoiceForm, setInvoiceForm] = useState({ package_name: 'Basic', amount: '', currency: 'BWP', paid_date: new Date().toISOString().split('T')[0], description: '' })
+  const [invoiceForm, setInvoiceForm] = useState({ package_name: DEFAULT_PLAN, amount: '', currency: 'BWP', paid_date: new Date().toISOString().split('T')[0], description: '' })
   const [billingModal, setBillingModal] = useState(null) // license to edit billing
   const [billingForm, setBillingForm] = useState({})
   const [emailStatus, setEmailStatus] = useState({}) // { [licenseId]: 'sending'|'sent'|'error' }
@@ -406,46 +841,56 @@ function LicenseBilling({ licenses, companies, onRefresh }) {
       setError('Please enter a valid amount for this paid license.')
       setSaving(false); return
     }
-    const companyLodgeId = form.lodge_id // keep for email + display; DB always gets 'unassigned'
-    const r = await window.api.admin.createLicense({ ...form, lodge_id: 'unassigned', expires_at: form.expires_at || null, notes: form.notes || null }).catch(e => ({ error: e.message }))
-    if (r?.license_key) {
-      let invoice = null
-      if (requiresInvoice) {
-        const invNum = await window.api.admin.getNextInvoiceNumber().catch(() => null)
-        if (typeof invNum === 'string') {
-          invoice = await window.api.admin.createInvoice({
-            invoice_number: invNum,
+    const companyLodgeId = form.lodge_id
+    const selectedPlan = normalizePlanName(form.subscription_plan || invoiceForm.package_name)
+    const r = await window.api.admin.issueSubscriptionContract({
+      license: {
+        ...form,
+        lodge_id: companyLodgeId || null,
+        subscription_plan: selectedPlan,
+        expires_at: form.expires_at || null,
+        notes: form.notes || null,
+        payment_status: requiresInvoice ? 'active' : 'free',
+        monthly_fee: requiresInvoice ? Number(invoiceForm.amount || 0) : 0,
+        currency: invoiceForm.currency || 'BWP',
+        next_due_date: form.expires_at || null,
+        last_payment_date: requiresInvoice ? (invoiceForm.paid_date || null) : null
+      },
+      invoice: requiresInvoice
+        ? {
             lodge_id: companyLodgeId,
             lodge_name: form.lodge_name,
-            license_id: r.id || null,
-            package_name: invoiceForm.package_name,
+            package_name: selectedPlan,
             amount: Number(invoiceForm.amount),
             currency: invoiceForm.currency,
             status: 'paid',
             issued_date: invoiceForm.paid_date,
             paid_date: invoiceForm.paid_date,
             description: invoiceForm.description || null
-          }).catch(() => null)
-        }
-      }
+          }
+        : null
+    }).catch(e => ({ error: e.message }))
+    const issuedLicense = r?.license_key ? r : r?.license || null
+    const issuedInvoice = r?.invoice || null
+    if (issuedLicense?.license_key) {
       setShowForm(false)
-      setForm({ lodge_id: '', lodge_name: '', business_type: 'lodge', expires_at: '', notes: '' })
+      setForm({ lodge_id: '', lodge_name: '', business_type: 'lodge', expires_at: '', notes: '', subscription_plan: DEFAULT_PLAN })
       setSelectedCompany('')
       setSelectedPeriod(null)
-      setInvoiceForm({ package_name: 'Basic', amount: '', currency: 'BWP', paid_date: new Date().toISOString().split('T')[0], description: '' })
+      setInvoiceForm({ package_name: DEFAULT_PLAN, amount: '', currency: 'BWP', paid_date: new Date().toISOString().split('T')[0], description: '' })
       onRefresh()
       // Auto-send email if company has a registered email
       const company = companies.find(c => c.lodge_id === companyLodgeId)
       if (company?.email) {
         const emailPayload = {
           to: company.email,
-          licenseKey: r.license_key,
+          licenseKey: issuedLicense.license_key,
           lodgeName: form.lodge_name,
-          plan: invoice?.package_name || null,
+          plan: selectedPlan,
           expiresAt: form.expires_at || null,
           lodgeId: companyLodgeId,
           notes: form.notes || null,
-          invoice: invoice || null
+          invoice: issuedInvoice || null
         }
         window.api.email.sendLicense(emailPayload).then(res => {
           if (!res.success) console.warn('[Email] License email failed:', res.error)
@@ -458,7 +903,7 @@ function LicenseBilling({ licenses, companies, onRefresh }) {
   const openBilling = (lic) => {
     setBillingModal(lic)
     setBillingForm({
-      subscription_plan: TIERS.includes(lic.subscription_plan) ? lic.subscription_plan : 'Starter',
+      subscription_plan: normalizePlanName(lic.subscription_plan),
       monthly_fee: lic.monthly_fee || 0,
       currency: lic.currency || 'USD',
       payment_status: lic.payment_status || 'active',
@@ -468,17 +913,10 @@ function LicenseBilling({ licenses, companies, onRefresh }) {
   }
 
   const saveBilling = async () => {
-    await window.api.admin.updateLicenseBilling(billingModal.id, billingForm).catch(() => {})
-    // Auto-apply tier feature flags to the lodge if lodge_id is set
-    const lodgeId = billingModal.lodge_id
-    const tierFlags = TIER_FLAGS[billingForm.subscription_plan]
-    if (lodgeId && lodgeId !== 'unassigned' && tierFlags) {
-      await Promise.all(
-        Object.entries(tierFlags).map(([feature, enabled]) =>
-          window.api.admin.setLodgeFeature(lodgeId, feature, enabled).catch(() => {})
-        )
-      )
-    }
+    await window.api.admin.updateLicenseBilling(billingModal.id, {
+      ...billingForm,
+      subscription_plan: normalizePlanName(billingForm.subscription_plan)
+    }).catch(() => {})
     setBillingModal(null); onRefresh()
   }
 
@@ -524,6 +962,28 @@ function LicenseBilling({ licenses, companies, onRefresh }) {
                   ID: {form.lodge_id}
                 </div>
               )}
+              <Field label="Subscription Plan">
+                <div className="grid grid-cols-3 gap-2">
+                  {TIERS.map((tier) => (
+                    <button
+                      key={tier}
+                      type="button"
+                      onClick={() => {
+                        setForm((f) => ({ ...f, subscription_plan: tier }))
+                        setInvoiceForm((f) => ({ ...f, package_name: tier }))
+                      }}
+                      className={`p-3 rounded-lg border-2 text-left transition-all ${
+                        normalizePlanName(form.subscription_plan) === tier
+                          ? 'border-purple-500 bg-purple-500/10'
+                          : 'border-gray-600 hover:border-gray-500'
+                      }`}
+                    >
+                      <p className="text-sm font-bold text-white">{tier}</p>
+                      <p className="text-xs text-gray-400 mt-0.5 leading-tight">{TIER_DESC[tier]}</p>
+                    </button>
+                  ))}
+                </div>
+              </Field>
               <Field label="License Period">
                 <div className="space-y-2">
                   <div className="flex flex-wrap gap-1.5">
@@ -591,8 +1051,20 @@ function LicenseBilling({ licenses, companies, onRefresh }) {
                   <p className="text-xs font-semibold text-yellow-400 flex items-center gap-1.5"><Receipt size={13} /> Invoice Required for Paid License</p>
                   <div className="grid grid-cols-2 gap-3">
                     <Field label="Package *">
-                      <select className={inp} value={invoiceForm.package_name} onChange={e => setInvoiceForm({ ...invoiceForm, package_name: e.target.value })} required={requiresInvoice}>
-                        {TIERS.map(t => <option key={t} value={t}>{t}</option>)}
+                      <select
+                        className={inp}
+                        value={invoiceForm.package_name}
+                        onChange={e => {
+                          setInvoiceForm({ ...invoiceForm, package_name: e.target.value })
+                          setForm((f) => ({ ...f, subscription_plan: e.target.value }))
+                        }}
+                        required={requiresInvoice}
+                      >
+                        {TIERS.map((planName) => (
+                          <option key={planName} value={planName}>
+                            {planName} - {getSubscriptionPlan(planName).headline}
+                          </option>
+                        ))}
                       </select>
                     </Field>
                     <Field label="Payment Date *">
@@ -619,7 +1091,19 @@ function LicenseBilling({ licenses, companies, onRefresh }) {
               <input className={inp} placeholder="Annual license..." value={form.notes} onChange={e => setForm({...form, notes: e.target.value})} />
             </Field>
             <div className="flex gap-3 pt-1">
-              <button type="button" onClick={() => { setShowForm(false); setSelectedCompany(''); setSelectedPeriod(null); setInvoiceForm({ package_name: 'Basic', amount: '', currency: 'BWP', paid_date: new Date().toISOString().split('T')[0], description: '' }) }} className={`flex-1 ${btn('ghost')} py-2 rounded-lg text-sm transition-colors`}>Cancel</button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowForm(false)
+                  setSelectedCompany('')
+                  setSelectedPeriod(null)
+                  setForm({ lodge_id: '', lodge_name: '', business_type: 'lodge', expires_at: '', notes: '', subscription_plan: DEFAULT_PLAN })
+                  setInvoiceForm({ package_name: DEFAULT_PLAN, amount: '', currency: 'BWP', paid_date: new Date().toISOString().split('T')[0], description: '' })
+                }}
+                className={`flex-1 ${btn('ghost')} py-2 rounded-lg text-sm transition-colors`}
+              >
+                Cancel
+              </button>
               <button type="submit" disabled={saving} className={`flex-1 ${btn()} py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-60`}>
                 {saving ? 'Generating…' : '🔑 Generate Key'}
               </button>
@@ -648,7 +1132,7 @@ function LicenseBilling({ licenses, companies, onRefresh }) {
             <tbody className="divide-y divide-gray-700">
               {licenses.map(lic => {
                 const expired = lic.expires_at && new Date(lic.expires_at) < new Date()
-                const overdue = lic.next_due_date && lic.next_due_date < today && lic.payment_status !== 'free'
+                const overdue = ['grace_period', 'suspended', 'overdue'].includes(String(lic.subscription_state || lic.payment_status || '').toLowerCase())
                 return (
                   <tr key={lic.id} className={`hover:bg-gray-700 transition-colors ${!lic.is_active ? 'opacity-50' : ''} ${overdue ? 'bg-red-950/30' : ''}`}>
                     <td className="px-4 py-3">
@@ -670,12 +1154,8 @@ function LicenseBilling({ licenses, companies, onRefresh }) {
                       }`}>{lic.subscription_plan || 'Starter'}</span>
                     </td>
                     <td className="px-4 py-3">
-                      <span className={`text-xs px-2 py-0.5 rounded-full ${
-                        lic.payment_status === 'active' ? 'bg-green-500/20 text-green-300' :
-                        lic.payment_status === 'overdue' ? 'bg-red-500/20 text-red-300' :
-                        lic.payment_status === 'free' ? 'bg-blue-500/20 text-blue-300' :
-                        'bg-gray-500/20 text-gray-400'}`}>
-                        {lic.payment_status || 'active'}
+                      <span className={`text-xs px-2 py-0.5 rounded-full ${subscriptionStatusTone(lic)}`}>
+                        {getSubscriptionStatusLabel(lic)}
                       </span>
                     </td>
                     <td className="px-4 py-3 text-xs">
@@ -751,7 +1231,7 @@ function LicenseBilling({ licenses, companies, onRefresh }) {
             {/* Feature preview for selected tier */}
             {TIER_FLAGS[billingForm.subscription_plan] && (
               <div className="bg-gray-800/60 border border-gray-700 rounded-lg p-3">
-                <p className="text-xs text-gray-400 mb-2 font-medium uppercase tracking-wider">Features auto-applied with this plan</p>
+                <p className="text-xs text-gray-400 mb-2 font-medium uppercase tracking-wider">Features included with this plan before overrides</p>
                 <div className="flex flex-wrap gap-1.5">
                   {ALL_FEATURES.map(f => {
                     const on = TIER_FLAGS[billingForm.subscription_plan][f] !== false
@@ -762,9 +1242,6 @@ function LicenseBilling({ licenses, companies, onRefresh }) {
                     )
                   })}
                 </div>
-                {(!billingModal.lodge_id || billingModal.lodge_id === 'unassigned') && (
-                  <p className="text-xs text-amber-400 mt-2">⚠ No lodge ID linked — flags won't be auto-applied. Set a lodge ID on the license first.</p>
-                )}
               </div>
             )}
 
@@ -777,7 +1254,7 @@ function LicenseBilling({ licenses, companies, onRefresh }) {
               </Field>
               <Field label="Payment Status">
                 <select className={inp} value={billingForm.payment_status} onChange={e => setBillingForm({...billingForm, payment_status: e.target.value})}>
-                  {['active', 'overdue', 'free', 'cancelled'].map(s => <option key={s} value={s}>{s}</option>)}
+                  {['active', 'overdue', 'suspended', 'free', 'cancelled'].map(s => <option key={s} value={s}>{s}</option>)}
                 </select>
               </Field>
               <Field label="Last Payment Date">
@@ -789,7 +1266,7 @@ function LicenseBilling({ licenses, companies, onRefresh }) {
             </div>
             <div className="flex gap-3 pt-2">
               <button onClick={() => setBillingModal(null)} className={`flex-1 ${btn('ghost')} py-2 rounded-lg text-sm`}>Cancel</button>
-              <button onClick={saveBilling} className={`flex-1 ${btn()} py-2 rounded-lg text-sm font-medium`}>Save & Apply Plan</button>
+              <button onClick={saveBilling} className={`flex-1 ${btn()} py-2 rounded-lg text-sm font-medium`}>Save Billing</button>
             </div>
           </div>
         </Modal>
@@ -801,28 +1278,42 @@ function LicenseBilling({ licenses, companies, onRefresh }) {
 // ════════════════════════════════════════════════════════════════════
 // SECTION: Feature Flags
 // ════════════════════════════════════════════════════════════════════
-function FeatureFlags({ companies }) {
+function FeatureFlags({ companies, licenses }) {
   const [selectedLodge, setSelectedLodge] = useState(null)
+  const [selectedPlan, setSelectedPlan] = useState(DEFAULT_PLAN)
+  const [baseFlags, setBaseFlags] = useState(getPlanFlags(DEFAULT_PLAN))
   const [flags, setFlags] = useState({})
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
 
-  const loadFlags = async (lodgeId) => {
+  const loadFlags = async (lodgeId, planName = DEFAULT_PLAN) => {
     const data = await window.api.admin.getLodgeFeatures(lodgeId).catch(() => [])
-    const map = {}
-    ALL_FEATURES.forEach(f => map[f] = true) // default all enabled
+    const map = getPlanFlags(planName)
     data.forEach(r => { map[r.feature_name] = r.enabled })
+    setSelectedPlan(normalizePlanName(planName))
+    setBaseFlags(getPlanFlags(planName))
     setFlags(map)
   }
 
-  const selectLodge = (c) => { setSelectedLodge(c); loadFlags(c.lodge_id); setSaved(false) }
+  const selectLodge = (c) => {
+    const planName = getLicensePlanForLodge(licenses, c.lodge_id)
+    setSelectedLodge(c)
+    loadFlags(c.lodge_id, planName)
+    setSaved(false)
+  }
 
   const toggle = (f) => setFlags(prev => ({ ...prev, [f]: !prev[f] }))
 
   const saveFlags = async () => {
     if (!selectedLodge) return
     setSaving(true)
-    await Promise.all(ALL_FEATURES.map(f => window.api.admin.setLodgeFeature(selectedLodge.lodge_id, f, flags[f] !== false)))
+    await Promise.all(ALL_FEATURES.map((featureName) => {
+      const isBaseValue = flags[featureName] === baseFlags[featureName]
+      if (isBaseValue) {
+        return window.api.admin.clearLodgeFeature(selectedLodge.lodge_id, featureName).catch(() => {})
+      }
+      return window.api.admin.setLodgeFeature(selectedLodge.lodge_id, featureName, flags[featureName] !== false).catch(() => {})
+    }))
     setSaving(false); setSaved(true)
     setTimeout(() => setSaved(false), 2000)
   }
@@ -859,7 +1350,7 @@ function FeatureFlags({ companies }) {
             <div className="flex items-center justify-between">
               <div>
                 <h3 className="font-semibold text-white">{selectedLodge.lodge_name}</h3>
-                <p className="text-xs text-gray-400">Toggle individual modules, or apply a preset tier</p>
+                <p className="text-xs text-gray-400">Override modules on top of the assigned plan instead of replacing the plan itself</p>
               </div>
               <button
                 onClick={saveFlags}
@@ -870,13 +1361,23 @@ function FeatureFlags({ companies }) {
               </button>
             </div>
             {/* Quick tier preset buttons */}
-            <div className="flex items-center gap-2 pb-1">
-              <span className="text-xs text-gray-500">Quick apply:</span>
+            <div className="space-y-2 pb-1">
+              <div className="flex items-center gap-2 text-xs">
+                <span className="text-gray-500">Base plan:</span>
+                <span className="px-2 py-0.5 rounded-full bg-gray-700 text-gray-200 font-medium">{selectedPlan}</span>
+                <span className="text-gray-600">Changes below are saved as overrides only.</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-gray-500">Preview preset:</span>
               {TIERS.map(tier => (
                 <button
                   key={tier}
                   type="button"
-                  onClick={() => setFlags({ ...flags, ...TIER_FLAGS[tier] })}
+                  onClick={() => {
+                    setSelectedPlan(tier)
+                    setBaseFlags(getPlanFlags(tier))
+                    setFlags(getPlanFlags(tier))
+                  }}
                   className={`text-xs px-3 py-1 rounded-full border transition-colors ${
                     tier === 'Pro'      ? 'border-purple-600 text-purple-300 hover:bg-purple-600/20' :
                     tier === 'Standard' ? 'border-blue-600 text-blue-300 hover:bg-blue-600/20' :
@@ -886,14 +1387,30 @@ function FeatureFlags({ companies }) {
                   {tier}
                 </button>
               ))}
-              <span className="text-xs text-gray-600 ml-1">(then Save)</span>
+              <button
+                type="button"
+                onClick={() => {
+                  const planName = getLicensePlanForLodge(licenses, selectedLodge.lodge_id)
+                  setSelectedPlan(planName)
+                  setBaseFlags(getPlanFlags(planName))
+                  loadFlags(selectedLodge.lodge_id, planName)
+                }}
+                className="text-xs px-3 py-1 rounded-full border border-gray-600 text-gray-400 hover:bg-gray-600/20"
+              >
+                Reset to assigned plan
+              </button>
+              </div>
             </div>
             <div className="space-y-3 pt-2">
               {ALL_FEATURES.map(f => (
                 <div key={f} className="flex items-center justify-between py-3 border-b border-gray-700">
                   <div>
                     <p className="text-sm font-medium text-white">{FEAT_LABEL[f]}</p>
-                    <p className="text-xs text-gray-500">Allow this lodge to access the {FEAT_LABEL[f]} module</p>
+                    <p className="text-xs text-gray-500">
+                      {flags[f] === baseFlags[f]
+                        ? `Inherits ${baseFlags[f] ? 'enabled' : 'disabled'} from the ${selectedPlan} plan`
+                        : `Override applied: ${flags[f] ? 'enabled' : 'disabled'} for this lodge`}
+                    </p>
                   </div>
                   <button
                     onClick={() => toggle(f)}
@@ -1081,7 +1598,24 @@ function SupportTickets({ companies }) {
               {filtered.map(t => (
                 <tr key={t.id} className="hover:bg-gray-700 transition-colors cursor-pointer" onClick={() => openDetail(t)}>
                   <td className="px-4 py-3 text-xs text-gray-400">{t.lodge_name || t.lodge_id?.slice(0,8)}</td>
-                  <td className="px-4 py-3 font-medium text-white">{t.title}</td>
+                  <td className="px-4 py-3">
+                    <p className="font-medium text-white">{t.title}</p>
+                    {t.category === 'Upgrade Request' && (() => {
+                      const parsed = parseUpgradeRequest(t.description)
+                      return parsed.requestedPlan ? (
+                        <div className="mt-1 flex flex-wrap gap-1.5">
+                          <span className="rounded-full bg-purple-500/15 px-2 py-0.5 text-[10px] font-semibold text-purple-300">
+                            {parsed.requestedPlan}
+                          </span>
+                          {parsed.blockedFeature && (
+                            <span className="rounded-full bg-gray-700 px-2 py-0.5 text-[10px] font-semibold text-gray-300">
+                              {parsed.blockedFeature}
+                            </span>
+                          )}
+                        </div>
+                      ) : null
+                    })()}
+                  </td>
                   <td className="px-4 py-3 text-xs text-gray-400">{t.category}</td>
                   <td className={`px-4 py-3 text-xs font-semibold ${PRIORITY_COLOR[t.priority] || 'text-gray-400'}`}>{t.priority}</td>
                   <td className="px-4 py-3">
@@ -1100,16 +1634,58 @@ function SupportTickets({ companies }) {
 
       {detail && (
         <Modal title={detail.title} onClose={() => setDetail(null)} wide>
+          {(() => {
+            const upgrade = detail.category === 'Upgrade Request' ? parseUpgradeRequest(detail.description) : null
+            return (
           <div className="space-y-4">
             <div className="flex flex-wrap gap-2 text-xs">
               <span className="bg-gray-700 text-gray-300 px-2 py-1 rounded">{detail.category}</span>
               <span className={`px-2 py-1 rounded font-semibold ${PRIORITY_COLOR[detail.priority]}`}>{detail.priority} priority</span>
               <span className={`px-2 py-1 rounded ${STATUS_COLOR[detail.status]}`}>{detail.status}</span>
             </div>
+            {upgrade && (upgrade.requestedPlan || upgrade.businessNeed || upgrade.blockedFeature) && (
+              <div className="grid gap-3 sm:grid-cols-3">
+                {upgrade.requestedPlan && (
+                  <div className="rounded-xl border border-purple-500/30 bg-purple-500/10 p-3">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-purple-300">Requested Plan</p>
+                    <p className="mt-2 text-sm font-semibold text-white">{upgrade.requestedPlan}</p>
+                    {upgrade.currentPlan && <p className="mt-1 text-xs text-purple-200/75">Current: {upgrade.currentPlan}</p>}
+                  </div>
+                )}
+                {upgrade.blockedFeature && (
+                  <div className="rounded-xl border border-gray-700 bg-gray-800 p-3">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-400">Blocked Feature</p>
+                    <p className="mt-2 text-sm font-semibold text-white">{upgrade.blockedFeature}</p>
+                  </div>
+                )}
+                {upgrade.businessNeed && (
+                  <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 sm:col-span-1">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-300">Business Need</p>
+                    <p className="mt-2 text-sm text-emerald-100">{upgrade.businessNeed}</p>
+                  </div>
+                )}
+              </div>
+            )}
             <div className="bg-gray-800 rounded-lg p-4">
               <p className="text-xs text-gray-400 mb-1">Lodge: {detail.lodge_name || detail.lodge_id}</p>
               <p className="text-sm text-gray-200 whitespace-pre-wrap">{detail.description}</p>
             </div>
+            {upgrade && (upgrade.requestedOutcome || upgrade.commercialValue) && (
+              <div className="rounded-xl border border-gray-700 bg-gray-900 p-4 space-y-3">
+                {upgrade.requestedOutcome && (
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500">Requested Outcome</p>
+                    <p className="mt-1 text-sm text-gray-200">{upgrade.requestedOutcome}</p>
+                  </div>
+                )}
+                {upgrade.commercialValue && (
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500">Commercial Value</p>
+                    <p className="mt-1 text-sm text-gray-200">{upgrade.commercialValue}</p>
+                  </div>
+                )}
+              </div>
+            )}
             <Field label="Update Status">
               <select className={inp} value={newStatus} onChange={e => setNewStatus(e.target.value)}>
                 {['open', 'in_progress', 'resolved', 'closed'].map(s => <option key={s} value={s}>{s}</option>)}
@@ -1123,6 +1699,8 @@ function SupportTickets({ companies }) {
               <button onClick={updateTicket} disabled={saving} className={`flex-1 ${btn()} py-2 rounded-lg text-sm font-medium disabled:opacity-60`}>{saving ? 'Saving…' : 'Save Update'}</button>
             </div>
           </div>
+            )
+          })()}
         </Modal>
       )}
     </div>
@@ -1198,7 +1776,7 @@ function ActivityLog({ companies }) {
 // ════════════════════════════════════════════════════════════════════
 // SECTION: Email / Notification Settings
 // ════════════════════════════════════════════════════════════════════
-const EMPTY_CONFIG = { host: '', port: '587', user: '', pass: '', from: '', to: '' }
+const EMPTY_CONFIG = { host: '', port: '587', user: '', pass: '', from: '', to: '', allow_insecure_tls: false }
 
 function EmailSettings() {
   const [config, setConfig] = useState(EMPTY_CONFIG)
@@ -1262,6 +1840,20 @@ function EmailSettings() {
               <input className={inp} placeholder="587" value={config.port} onChange={e => set('port', e.target.value)} />
             </div>
           </div>
+          <label className="mt-3 flex items-start gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-3 text-sm text-amber-100">
+            <input
+              type="checkbox"
+              className="mt-1"
+              checked={config.allow_insecure_tls === true}
+              onChange={e => set('allow_insecure_tls', e.target.checked)}
+            />
+            <span>
+              <span className="block font-semibold text-amber-200">Allow insecure TLS certificate</span>
+              <span className="block text-xs text-amber-100/80">
+                Leave this off unless your mail server uses a self-signed or otherwise invalid certificate.
+              </span>
+            </span>
+          </label>
         </div>
 
         {/* Auth */}
@@ -1375,7 +1967,7 @@ function Bookkeeping({ companies }) {
   const [sendingEmail, setSendingEmail] = useState({})
   const [emailSent, setEmailSent] = useState({})
   const [createForm, setCreateForm] = useState({
-    lodge_id: '', lodge_name: '', package_name: 'Basic', amount: '', currency: 'BWP',
+    lodge_id: '', lodge_name: '', package_name: DEFAULT_PLAN, amount: '', currency: 'BWP',
     status: 'paid', issued_date: new Date().toISOString().split('T')[0],
     due_date: '', paid_date: new Date().toISOString().split('T')[0], description: '', notes: ''
   })
@@ -1409,7 +2001,7 @@ function Bookkeeping({ companies }) {
     const r = await window.api.admin.createInvoice({ ...createForm, invoice_number: invNum, amount: Number(createForm.amount), due_date: createForm.due_date || null, paid_date: createForm.paid_date || null, description: createForm.description || null, notes: createForm.notes || null }).catch(e => ({ error: e.message }))
     if (r?.error) { setCreateError(r.error); setCreateSaving(false); return }
     setShowCreate(false)
-    setCreateForm({ lodge_id: '', lodge_name: '', package_name: 'Basic', amount: '', currency: 'BWP', status: 'paid', issued_date: new Date().toISOString().split('T')[0], due_date: '', paid_date: new Date().toISOString().split('T')[0], description: '', notes: '' })
+    setCreateForm({ lodge_id: '', lodge_name: '', package_name: DEFAULT_PLAN, amount: '', currency: 'BWP', status: 'paid', issued_date: new Date().toISOString().split('T')[0], due_date: '', paid_date: new Date().toISOString().split('T')[0], description: '', notes: '' })
     loadData()
     setCreateSaving(false)
   }
@@ -1503,7 +2095,11 @@ function Bookkeeping({ companies }) {
                   </Field>
                   <Field label="Package *">
                     <select className={inp} value={createForm.package_name} onChange={e => setCreateForm(f => ({ ...f, package_name: e.target.value }))} required>
-                      {TIERS.map(t => <option key={t} value={t}>{t}</option>)}
+                      {TIERS.map((planName) => (
+                        <option key={planName} value={planName}>
+                          {planName} - {getSubscriptionPlan(planName).headline}
+                        </option>
+                      ))}
                     </select>
                   </Field>
                   <Field label="Amount *">
@@ -1567,7 +2163,7 @@ function Bookkeeping({ companies }) {
                     <tr key={inv.id} className={`border-t border-gray-700 hover:bg-gray-750 transition-colors ${i % 2 === 1 ? 'bg-gray-800/60' : ''}`}>
                       <td className="px-4 py-3 font-mono text-xs text-purple-300">{inv.invoice_number}</td>
                       <td className="px-4 py-3 text-gray-200 text-xs max-w-32 truncate">{inv.lodge_name || inv.lodge_id}</td>
-                      <td className="px-4 py-3 text-gray-300 text-xs">{inv.package_name}</td>
+                      <td className="px-4 py-3 text-gray-300 text-xs">{normalizePlanName(inv.package_name)}</td>
                       <td className="px-4 py-3 text-right font-semibold text-white text-xs">{inv.currency} {Number(inv.amount).toFixed(2)}</td>
                       <td className="px-4 py-3">
                         <span className={`text-xs font-semibold px-2 py-0.5 rounded-full capitalize ${STATUS_COLORS[inv.status] || 'bg-gray-700 text-gray-300'}`}>{inv.status}</span>
@@ -1579,7 +2175,7 @@ function Bookkeeping({ companies }) {
                             className="p-1.5 rounded hover:bg-gray-700 text-gray-400 hover:text-blue-400 transition-colors disabled:opacity-50">
                             {emailSent[inv.id] ? <CheckCircle2 size={14} className="text-green-400" /> : sendingEmail[inv.id] ? <RefreshCw size={14} className="animate-spin" /> : <Mail size={14} />}
                           </button>
-                          <button title="Edit" onClick={() => setEditInvoice({ ...inv })}
+                          <button title="Edit" onClick={() => setEditInvoice({ ...inv, package_name: normalizePlanName(inv.package_name) })}
                             className="p-1.5 rounded hover:bg-gray-700 text-gray-400 hover:text-purple-400 transition-colors">
                             <Edit3 size={14} />
                           </button>
@@ -1638,8 +2234,10 @@ function Bookkeeping({ companies }) {
               </thead>
               <tbody>
                 {TIERS.map(plan => {
-                  const planTotal = summary?.byPlan?.[plan] || 0
-                  const planCount = invoices.filter(i => i.package_name === plan && i.status === 'paid').length
+                  const planTotal = invoices
+                    .filter(i => normalizePlanName(i.package_name) === plan && i.status === 'paid')
+                    .reduce((sum, invoice) => sum + Number(invoice.amount || 0), 0)
+                  const planCount = invoices.filter(i => normalizePlanName(i.package_name) === plan && i.status === 'paid').length
                   return (
                     <tr key={plan} className="border-t border-gray-700 print:border-gray-300">
                       <td className="px-4 py-3 text-gray-200 font-medium">{plan}</td>
@@ -1695,7 +2293,11 @@ function Bookkeeping({ companies }) {
             <div className="grid grid-cols-2 gap-3">
               <Field label="Package">
                 <select className={inp} value={editInvoice.package_name} onChange={e => setEditInvoice(v => ({ ...v, package_name: e.target.value }))}>
-                  {TIERS.map(t => <option key={t} value={t}>{t}</option>)}
+                  {TIERS.map((planName) => (
+                    <option key={planName} value={planName}>
+                      {planName} - {getSubscriptionPlan(planName).headline}
+                    </option>
+                  ))}
                 </select>
               </Field>
               <Field label="Status">
@@ -1741,14 +2343,335 @@ function Bookkeeping({ companies }) {
 const NAV_ITEMS = [
   { id: 'dashboard',     label: 'Dashboard',         icon: LayoutDashboard },
   { id: 'companies',     label: 'Companies',          icon: Building2 },
-  { id: 'billing',       label: 'Licenses & Billing', icon: CreditCard },
+  { id: 'licensing',     label: 'Licensing',          icon: CreditCard },
+  { id: 'test-reset',    label: 'Test Reset',         icon: Trash2 },
   { id: 'bookkeeping',   label: 'Bookkeeping',        icon: Receipt },
-  { id: 'flags',         label: 'Feature Flags',      icon: ToggleRight },
   { id: 'broadcasts',    label: 'Broadcasts',         icon: Megaphone },
   { id: 'tickets',       label: 'Support Tickets',    icon: LifeBuoy },
   { id: 'activity',      label: 'Activity Log',       icon: Activity },
   { id: 'notifications', label: 'Email Alerts',       icon: Mail },
 ]
+
+function TestResetMaintenance({ companies }) {
+  const [selectedLodge, setSelectedLodge] = useState(null)
+  const [testModeEnabled, setTestModeEnabled] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [previewLoading, setPreviewLoading] = useState(false)
+  const [running, setRunning] = useState(false)
+  const [flash, setFlash] = useState(null)
+  const [preview, setPreview] = useState(null)
+  const [auditRows, setAuditRows] = useState([])
+  const [form, setForm] = useState({
+    mode: 'full_demo_reset',
+    days: 30,
+    reason: '',
+    confirmation: ''
+  })
+  const confirmationValid = String(form.confirmation || '').trim().toUpperCase() === 'RESET TEST DATA'
+
+  const pushFlash = (type, text) => {
+    setFlash({ type, text })
+    setTimeout(() => setFlash(null), 4000)
+  }
+
+  const loadLodgeState = useCallback(async (company) => {
+    if (!company?.lodge_id) return
+    setLoading(true)
+    try {
+      const [features, audit] = await Promise.all([
+        window.api.admin.getLodgeFeatures(company.lodge_id).catch(() => []),
+        window.api.admin.getTestDataResetAudit(company.lodge_id, 10).catch(() => [])
+      ])
+      const enabled = Array.isArray(features) && features.some((row) => row.feature_name === 'test_mode_enabled' && row.enabled === true)
+      setTestModeEnabled(enabled)
+      setAuditRows(Array.isArray(audit) ? audit : [])
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  const selectLodge = (company) => {
+    setSelectedLodge(company)
+    setPreview(null)
+    setForm({ mode: 'full_demo_reset', days: 30, reason: '', confirmation: '' })
+    loadLodgeState(company)
+  }
+
+  const toggleTestMode = async (enabled) => {
+    if (!selectedLodge?.lodge_id) return
+    setLoading(true)
+    try {
+      if (enabled) {
+        const result = await window.api.admin.setLodgeFeature(
+          selectedLodge.lodge_id,
+          'test_mode_enabled',
+          true,
+          { reason: 'Boroko internal test reset mode enabled' }
+        )
+        if (result?.success === false) throw new Error(result.error || 'Could not enable test mode')
+        setTestModeEnabled(true)
+        pushFlash('success', 'Test mode enabled for this lodge.')
+      } else {
+        const result = await window.api.admin.clearLodgeFeature(selectedLodge.lodge_id, 'test_mode_enabled')
+        if (result?.success === false) throw new Error(result.error || 'Could not disable test mode')
+        setTestModeEnabled(false)
+        pushFlash('success', 'Test mode disabled for this lodge.')
+      }
+      await loadLodgeState(selectedLodge)
+    } catch (error) {
+      pushFlash('error', error?.message || 'Could not update test mode.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const runPreview = async () => {
+    if (!selectedLodge?.lodge_id) return
+    setPreviewLoading(true)
+    try {
+      const result = await window.api.admin.getTestDataResetPreview(selectedLodge.lodge_id, {
+        mode: form.mode,
+        days: Number(form.days || 30)
+      })
+      if (result?.success === false) throw new Error(result.error || 'Could not load preview')
+      setPreview(result)
+      pushFlash('success', 'Reset preview loaded.')
+    } catch (error) {
+      pushFlash('error', error?.message || 'Could not load preview.')
+    } finally {
+      setPreviewLoading(false)
+    }
+  }
+
+  const runReset = async () => {
+    if (!selectedLodge?.lodge_id) return
+    setRunning(true)
+    try {
+      const result = await window.api.admin.runTestDataReset(selectedLodge.lodge_id, {
+        lodge_name: selectedLodge.lodge_name,
+        mode: form.mode,
+        days: Number(form.days || 30),
+        reason: form.reason,
+        confirmation: form.confirmation
+      })
+      if (result?.success === false) throw new Error(result.error || 'Could not run test reset')
+      pushFlash('success', 'Test data reset completed.')
+      setPreview(result)
+      setForm((current) => ({ ...current, confirmation: '' }))
+      await loadLodgeState(selectedLodge)
+    } catch (error) {
+      pushFlash('error', error?.message || 'Could not run test reset.')
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  return (
+    <div className="flex gap-5">
+      <div className="w-64 shrink-0 bg-gray-800 rounded-xl overflow-hidden">
+        <p className="px-4 py-3 text-xs text-gray-400 uppercase tracking-wider border-b border-gray-700">Select Company</p>
+        <div className="divide-y divide-gray-700 max-h-[620px] overflow-y-auto">
+          {companies.map((company) => (
+            <button
+              key={company.lodge_id}
+              onClick={() => selectLodge(company)}
+              className={`w-full px-4 py-3 text-left text-sm transition-colors ${
+                selectedLodge?.lodge_id === company.lodge_id ? 'bg-red-600/20 text-red-200' : 'text-gray-300 hover:bg-gray-700'
+              }`}
+            >
+              <p className="font-medium truncate">{company.lodge_name || '—'}</p>
+              <p className="text-xs text-gray-500">{company.lodge_id}</p>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="flex-1 space-y-5">
+        {!selectedLodge ? (
+          <div className="bg-gray-800 rounded-xl p-12 text-center text-gray-500">
+            <Trash2 size={32} className="mx-auto mb-3 opacity-40" />
+            <p>Select a company to manage Boroko-only test reset controls.</p>
+          </div>
+        ) : (
+          <>
+            <div className="rounded-2xl border border-red-500/30 bg-gradient-to-br from-red-950/70 to-gray-900 p-5">
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-red-300">Boroko Internal Tool</p>
+                  <h3 className="mt-2 text-xl font-bold text-white">{selectedLodge.lodge_name}</h3>
+                  <p className="mt-1 text-sm text-red-100/80">
+                    This tool is for demos, QA, and sandbox cleanup only. It must never be used for live client finance records.
+                  </p>
+                </div>
+                <div className={`rounded-xl px-3 py-2 text-xs font-semibold ${testModeEnabled ? 'bg-emerald-500/15 text-emerald-300' : 'bg-amber-500/15 text-amber-300'}`}>
+                  {testModeEnabled ? 'Test mode enabled' : 'Test mode disabled'}
+                </div>
+              </div>
+              <div className="mt-4 flex flex-wrap gap-3">
+                <button
+                  type="button"
+                  onClick={() => toggleTestMode(true)}
+                  disabled={loading || testModeEnabled}
+                  className={`px-4 py-2 rounded-lg text-sm font-medium ${btn()} disabled:opacity-50`}
+                >
+                  Enable Test Mode
+                </button>
+                <button
+                  type="button"
+                  onClick={() => toggleTestMode(false)}
+                  disabled={loading || !testModeEnabled}
+                  className={`px-4 py-2 rounded-lg text-sm font-medium ${btn('ghost')} disabled:opacity-50`}
+                >
+                  Disable Test Mode
+                </button>
+              </div>
+              <p className={`mt-3 text-xs ${testModeEnabled ? 'text-emerald-300' : 'text-amber-300'}`}>
+                {testModeEnabled
+                  ? 'Test mode is currently active for this lodge. The green badge is the persistent state; the popup message is only temporary.'
+                  : 'Enable test mode first. The reset tool stays locked until this lodge is explicitly marked for internal testing.'}
+              </p>
+            </div>
+
+            {flash && (
+              <div className={`rounded-xl px-4 py-3 text-sm font-medium ${flash.type === 'success' ? 'bg-green-500/15 text-green-300 border border-green-500/30' : 'bg-red-500/15 text-red-300 border border-red-500/30'}`}>
+                {flash.text}
+              </div>
+            )}
+
+            <div className="grid gap-5 xl:grid-cols-[1.1fr_0.9fr]">
+              <div className="bg-gray-800 rounded-xl p-5 space-y-4">
+                <div>
+                  <h4 className="text-white font-semibold">Reset Plan</h4>
+                  <p className="text-sm text-gray-400 mt-1">Preview first, then type the confirmation phrase to execute.</p>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <Field label="Reset Mode">
+                    <select className={inp} value={form.mode} onChange={(e) => setForm((current) => ({ ...current, mode: e.target.value }))}>
+                      <option value="recent_activity">Reset Recent Activity</option>
+                      <option value="tagged_test_data">Reset Tagged Test Data</option>
+                      <option value="full_demo_reset">Full Demo Lodge Reset</option>
+                    </select>
+                  </Field>
+                  <Field label="Days Window">
+                    <input
+                      type="number"
+                      min="1"
+                      className={inp}
+                      disabled={form.mode === 'full_demo_reset'}
+                      value={form.days}
+                      onChange={(e) => setForm((current) => ({ ...current, days: e.target.value }))}
+                    />
+                  </Field>
+                </div>
+
+                <Field label="Reason">
+                  <textarea
+                    className={inp}
+                    rows="3"
+                    value={form.reason}
+                    onChange={(e) => setForm((current) => ({ ...current, reason: e.target.value }))}
+                    placeholder="Why this reset is needed"
+                  />
+                </Field>
+
+                <Field label='Type "RESET TEST DATA" to confirm'>
+                  <input
+                    className={inp}
+                    value={form.confirmation}
+                    onChange={(e) => setForm((current) => ({ ...current, confirmation: e.target.value }))}
+                    placeholder="RESET TEST DATA"
+                  />
+                </Field>
+                <p className={`text-xs ${confirmationValid ? 'text-emerald-300' : 'text-amber-300'}`}>
+                  {confirmationValid
+                    ? 'Confirmation accepted. You can now run the reset.'
+                    : 'The reset button unlocks only after you type RESET TEST DATA exactly.'}
+                </p>
+
+                <div className="flex flex-wrap gap-3">
+                  <button
+                    type="button"
+                    onClick={runPreview}
+                    disabled={!testModeEnabled || previewLoading || running}
+                    className={`px-4 py-2 rounded-lg text-sm font-medium ${btn('ghost')} disabled:opacity-50`}
+                  >
+                    {previewLoading ? 'Loading Preview…' : 'Preview Impact'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={runReset}
+                    disabled={!testModeEnabled || running || !confirmationValid}
+                    className="px-4 py-2 rounded-lg text-sm font-medium bg-red-600 hover:bg-red-700 text-white disabled:opacity-50"
+                  >
+                    {running ? 'Running Reset…' : 'Run Reset'}
+                  </button>
+                </div>
+                {(!testModeEnabled || !confirmationValid) && (
+                  <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs text-amber-200">
+                    {!testModeEnabled
+                      ? 'Run Reset is locked because test mode is not active for this lodge.'
+                      : 'Run Reset is locked until the confirmation phrase is entered exactly.'}
+                  </div>
+                )}
+
+                {preview && (
+                  <div className="rounded-xl border border-gray-700 bg-gray-900/70 p-4">
+                    <div className="flex items-center gap-2 text-red-300">
+                      <AlertTriangle size={15} />
+                      <p className="text-sm font-semibold">Reset impact preview</p>
+                    </div>
+                    <div className="mt-4 grid grid-cols-2 md:grid-cols-3 gap-3">
+                      {Object.entries(preview.deleted_counts || preview.counts || {}).map(([key, value]) => (
+                        <div key={key} className="rounded-lg bg-gray-800 px-3 py-2">
+                          <p className="text-xs uppercase tracking-wide text-gray-500">{key.replace(/_/g, ' ')}</p>
+                          <p className="mt-1 text-lg font-semibold text-white">{Number(value || 0)}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="bg-gray-800 rounded-xl p-5 space-y-4">
+                <div>
+                  <h4 className="text-white font-semibold">Reset Audit</h4>
+                  <p className="text-sm text-gray-400 mt-1">Every reset stays logged even after test data is removed.</p>
+                </div>
+                {auditRows.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-gray-700 px-4 py-8 text-center text-sm text-gray-500">
+                    No reset runs logged for this lodge yet.
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {auditRows.map((row) => (
+                      <div key={row.id} className="rounded-xl border border-gray-700 bg-gray-900/60 px-4 py-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="text-sm font-semibold text-white">{String(row.reset_mode || '').replace(/_/g, ' ')}</p>
+                          <span className="text-xs text-gray-500">{fmt(row.created_at)}</span>
+                        </div>
+                        <p className="mt-1 text-xs text-gray-400">By {row.triggered_by_name || 'System'}</p>
+                        {row.reason && <p className="mt-2 text-sm text-gray-300">{row.reason}</p>}
+                        <div className="mt-3 grid grid-cols-2 gap-2">
+                          {Object.entries(row.deleted_counts || {}).slice(0, 6).map(([key, value]) => (
+                            <div key={`${row.id}-${key}`} className="rounded-lg bg-gray-800 px-2.5 py-2">
+                              <p className="text-[11px] uppercase tracking-wide text-gray-500">{key.replace(/_/g, ' ')}</p>
+                              <p className="mt-1 text-sm font-semibold text-white">{Number(value || 0)}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
 
 export default function AdminCentral() {
   const { logout } = useAuth()
@@ -1832,10 +2755,10 @@ export default function AdminCentral() {
         {/* Main content */}
         <div className="flex-1 min-w-0 p-6 overflow-y-auto">
           {section === 'dashboard'     && <Dashboard companies={companies} licenses={licenses} tickets={tickets} activityLogs={activityLogs} />}
-          {section === 'companies'     && <Companies companies={companies} licenses={licenses} loading={loading} />}
-          {section === 'billing'       && <LicenseBilling licenses={licenses} companies={companies} onRefresh={loadAll} />}
+          {section === 'companies'     && <Companies companies={companies} licenses={licenses} loading={loading} onReload={loadAll} />}
+          {section === 'licensing'     && <LicensingWorkbench companies={companies} licenses={licenses} tickets={tickets} onRefresh={loadAll} />}
+          {section === 'test-reset'    && <TestResetMaintenance companies={companies} />}
           {section === 'bookkeeping'   && <Bookkeeping companies={companies} />}
-          {section === 'flags'         && <FeatureFlags companies={companies} />}
           {section === 'broadcasts'    && <Broadcasts />}
           {section === 'tickets'       && <SupportTickets companies={companies} />}
           {section === 'activity'      && <ActivityLog companies={companies} />}

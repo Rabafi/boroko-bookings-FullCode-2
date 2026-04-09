@@ -1,6 +1,7 @@
 {
   "name": "boroko-bookings",
-  "version": "1.0.6",
+  "version": "1.2.6",
+  "type": "module",
   "description": "Boroko Lodge Booking Management System",
   "author": {
     "name": "Botswapelo Studios Pty Ltd"
@@ -10,7 +11,8 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
-    "dist": "electron-builder",
+    "test": "node .\\tests\\production-guardrails.test.mjs",
+    "dist": "npm run build && electron-builder",
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
@@ -41,6 +43,7 @@
     "appId": "com.boroko.bookings",
     "productName": "Boroko Bookings",
     "asar": true,
+    "artifactName": "Boroko-Bookings-${version}-${arch}.${ext}",
     "publish": {
       "provider": "github",
       "owner": "Rabafi",

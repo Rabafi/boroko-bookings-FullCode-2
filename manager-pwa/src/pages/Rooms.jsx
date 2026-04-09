@@ -1,7 +1,9 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useAuth } from '../contexts/AuthContext'
-import { supabase } from '../lib/supabase'
-import { RefreshCw, X, Check, Wrench, Sparkles } from 'lucide-react'
+import { createMaintenanceTicket } from '../lib/maintenance'
+import { RefreshCw, X, Check, Wrench } from 'lucide-react'
+import { listBookings, listRooms } from '../lib/api'
+import { useToast } from '../App'
 
 const STATUS_CONFIG = {
   clean:       { label: 'Clean',       bg: 'bg-green-800/60',  border: 'border-green-600',  dot: 'bg-green-400' },
@@ -12,32 +14,51 @@ const STATUS_CONFIG = {
 }
 
 function RoomSheet({ room, booking, onClose, onUpdate }) {
-  const [hk, setHk] = useState(room.housekeeping_status || 'clean')
-  const [notes, setNotes] = useState(room.housekeeping_notes || '')
+  const { showToast } = useToast()
   const [maint, setMaint] = useState('')
   const [saving, setSaving] = useState(false)
   const [done, setDone] = useState('')
 
-  const saveHousekeeping = async () => {
-    setSaving(true)
-    await supabase.from('rooms').update({ housekeeping_status: hk, housekeeping_notes: notes }).eq('id', room.id)
-    setSaving(false); setDone('hk')
-    setTimeout(() => { onUpdate(); onClose() }, 800)
-  }
-
   const raiseMaintenance = async () => {
     if (!maint.trim()) return
     setSaving(true)
-    await supabase.from('maintenance_tickets').insert({ room_id: room.id, lodge_id: room.lodge_id, issue: maint, status: 'open', priority: 'normal' })
-    setSaving(false); setDone('maint')
-    setTimeout(() => { setMaint(''); setDone('') }, 1500)
+    try {
+      const result = await createMaintenanceTicket({
+        room_id: room.id,
+        lodge_id: room.lodge_id,
+        title: maint,
+        issue: maint,
+        description: '',
+        status: 'open',
+        priority: 'medium'
+      })
+      setDone('maint')
+      setMaint('')
+      onUpdate?.()
+      showToast({
+        title: result?.queued ? 'Ticket saved offline' : 'Maintenance ticket raised',
+        message: result?.queued
+          ? 'It will send automatically when the device reconnects.'
+          : `Front desk can now track Room ${room.room_number}.`,
+        tone: result?.queued ? 'queued' : 'success'
+      })
+      setTimeout(() => { setDone('') }, 1500)
+    } catch (error) {
+      showToast({
+        title: 'Ticket was not raised',
+        message: error?.message || 'Please try again.',
+        tone: 'error'
+      })
+    } finally {
+      setSaving(false)
+    }
   }
 
   const inp = 'w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-green-500'
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col justify-end bg-black/60" onClick={onClose}>
-      <div className="bg-gray-900 rounded-t-3xl p-5 max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+    <div className="fixed inset-0 z-[70] flex flex-col justify-end bg-black/60" onClick={onClose}>
+      <div className="bg-gray-900 rounded-t-3xl p-5 pb-28 max-h-[85vh] overflow-y-auto overscroll-contain" onClick={e => e.stopPropagation()}>
         {/* Handle */}
         <div className="w-10 h-1 bg-gray-700 rounded-full mx-auto mb-4" />
 
@@ -62,27 +83,11 @@ function RoomSheet({ room, booking, onClose, onUpdate }) {
         )}
 
         {/* Housekeeping */}
-        <div className="mb-4">
-          <p className="text-xs text-gray-400 font-semibold uppercase tracking-wide mb-2 flex items-center gap-1"><Sparkles size={12} /> Housekeeping</p>
-          <div className="grid grid-cols-2 gap-2 mb-3">
-            {['clean', 'dirty', 'in_progress', 'out_of_service'].map(s => (
-              <button
-                key={s}
-                onClick={() => setHk(s)}
-                className={`py-2 rounded-xl text-sm font-medium border transition-colors ${
-                  hk === s ? `${STATUS_CONFIG[s].bg} ${STATUS_CONFIG[s].border} text-white` : 'bg-gray-800 border-gray-700 text-gray-400'
-                }`}
-              >{STATUS_CONFIG[s].label}</button>
-            ))}
-          </div>
-          <input className={inp} placeholder="Notes (optional)" value={notes} onChange={e => setNotes(e.target.value)} />
-          <button
-            onClick={saveHousekeeping}
-            disabled={saving}
-            className="w-full mt-2 bg-green-700 hover:bg-green-600 text-white py-2.5 rounded-xl text-sm font-semibold flex items-center justify-center gap-2 disabled:opacity-60"
-          >
-            {done === 'hk' ? <><Check size={16} /> Saved!</> : saving ? 'Saving…' : 'Update Housekeeping'}
-          </button>
+        <div className="mb-4 rounded-xl border border-blue-900 bg-blue-950/30 px-4 py-3">
+          <p className="text-xs font-semibold uppercase tracking-wide text-blue-300">Read only</p>
+          <p className="mt-1 text-sm text-blue-100">
+            Housekeeping and room-state changes stay in Front Desk. Managers can view status here and raise a maintenance request if needed.
+          </p>
         </div>
 
         {/* Maintenance */}
@@ -116,13 +121,12 @@ export default function Rooms() {
 
   const load = useCallback(async () => {
     setLoading(true)
-    const today = new Date().toISOString().slice(0, 10)
-    const [r, b] = await Promise.all([
-      supabase.from('rooms').select('*').eq('lodge_id', user.lodge_id).order('room_number'),
-      supabase.from('bookings').select('*').eq('lodge_id', user.lodge_id).eq('status', 'checked_in')
+    const [roomRows, bookingRows] = await Promise.all([
+      listRooms(user.lodge_id).catch(() => []),
+      listBookings(user.lodge_id).catch(() => [])
     ])
-    setRooms(r.data || [])
-    setBookings(b.data || [])
+    setRooms(roomRows || [])
+    setBookings((bookingRows || []).filter((booking) => booking.status === 'checked_in'))
     setLoading(false)
   }, [user.lodge_id])
 

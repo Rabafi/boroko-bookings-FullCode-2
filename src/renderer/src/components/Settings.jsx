@@ -1,11 +1,67 @@
-import { useEffect, useState, useRef } from 'react'
-import { Building2, Phone, Mail, MapPin, Globe, Hash, Save, Upload, X, Image, Moon, Plus, Pencil, Trash2, Calendar, RefreshCw, CheckCircle2, AlertTriangle, Key, ShieldCheck, Clock, CreditCard, Copy, TrendingUp, ArrowUpCircle, Settings as SettingsIcon } from 'lucide-react'
+import { useEffect, useState, useRef, lazy, Suspense } from 'react'
+import { Building2, Phone, Mail, MapPin, Globe, Hash, Save, Upload, X, Image, Moon, Plus, Pencil, Trash2, Calendar, RefreshCw, CheckCircle2, AlertTriangle, Key, ShieldCheck, Clock, CreditCard, Copy, TrendingUp, ArrowUpCircle, Settings as SettingsIcon, MessageCircle, FileText, Info, Send, Sparkles } from 'lucide-react'
 import { useSettings } from '../App'
-import SystemHealthPanel from './SystemHealthPanel'
-import SubscriptionAccessPanel from './SubscriptionAccessPanel'
+const SystemHealthPanel = lazy(() => import('./SystemHealthPanel'))
+const SubscriptionAccessPanel = lazy(() => import('./SubscriptionAccessPanel'))
 
 // Update this to your actual booking site URL after deployment
-const BOOKING_SITE_BASE = 'https://book.boroko.app'
+const BOOKING_SITE_BASE = 'https://luminous-flan-27fdac.netlify.app'
+const EMAIL_PROVIDER_PRESETS = {
+  gmail: {
+    label: 'Gmail',
+    host: 'smtp.gmail.com',
+    port: 587,
+    allow_insecure_tls: false,
+    hint: 'Use your full Gmail address and a Gmail App Password.'
+  },
+  outlook: {
+    label: 'Outlook / Microsoft 365',
+    host: 'smtp.office365.com',
+    port: 587,
+    allow_insecure_tls: false,
+    hint: 'Use your full Outlook or Microsoft 365 email and password or app password.'
+  },
+  zoho: {
+    label: 'Zoho Mail',
+    host: 'smtp.zoho.com',
+    port: 587,
+    allow_insecure_tls: false,
+    hint: 'Use your full Zoho mailbox and password or app password.'
+  },
+  cpanel: {
+    label: 'cPanel / Business Email',
+    host: 'mail.yourdomain.com',
+    port: 465,
+    allow_insecure_tls: false,
+    hint: 'Use the mailbox details from your hosting provider.'
+  },
+  custom: {
+    label: 'Other SMTP',
+    host: '',
+    port: 587,
+    allow_insecure_tls: false,
+    hint: 'Use this if your provider gave you custom SMTP details.'
+  }
+}
+
+function inferEmailProvider(host = '') {
+  const normalized = String(host || '').trim().toLowerCase()
+  if (normalized.includes('smtp.gmail.com')) return 'gmail'
+  if (normalized.includes('office365.com') || normalized.includes('outlook.com')) return 'outlook'
+  if (normalized.includes('zoho.com')) return 'zoho'
+  if (normalized.startsWith('mail.') || normalized.includes('cpanel')) return 'cpanel'
+  return 'custom'
+}
+
+function normalizePlanName(plan) {
+  const raw = String(plan || '').trim().toLowerCase()
+  if (raw === 'premium') return 'Pro'
+  if (raw === 'basic') return 'Starter'
+  if (raw === 'pro') return 'Pro'
+  if (raw === 'standard') return 'Standard'
+  if (raw === 'starter') return 'Starter'
+  return plan || ''
+}
 
 
 export default function Settings() {
@@ -15,8 +71,11 @@ export default function Settings() {
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [logoPreview, setLogoPreview] = useState(null)
+  const [heroPreview, setHeroPreview] = useState(null)
+  const [bookingFaqText, setBookingFaqText] = useState('')
   const [dragOver, setDragOver] = useState(false)
   const fileInputRef = useRef(null)
+  const heroInputRef = useRef(null)
 
   // Dark mode
   const [darkMode, setDarkMode] = useState(
@@ -29,6 +88,24 @@ export default function Settings() {
   const [updateMessage, setUpdateMessage] = useState('')
   const [downloadProgress, setDownloadProgress] = useState(null) // null | { percent, transferred, total }
   const [updateReady, setUpdateReady] = useState(false)
+  const [emailConfig, setEmailConfig] = useState({
+    provider: 'gmail',
+    host: 'smtp.gmail.com',
+    port: 587,
+    user: '',
+    pass: '',
+    from: '',
+    reply_to: '',
+    to: '',
+    allow_insecure_tls: false,
+    auto_send_quotations: true,
+    auto_send_booking_invoice: true,
+    auto_send_booking_confirmation: true,
+    auto_send_booking_cancellation: true
+  })
+  const [emailSaving, setEmailSaving] = useState(false)
+  const [emailTesting, setEmailTesting] = useState(false)
+  const [emailStatus, setEmailStatus] = useState(null)
   const formatBytes = (bytes = 0) => {
     if (bytes < 1024) return `${bytes} B`
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
@@ -37,10 +114,40 @@ export default function Settings() {
   }
 
   useEffect(() => {
+    if (activeTab !== 'general') return
     window.api.updates.getVersion().then(setAppVersion).catch(() => {})
-  }, [])
+  }, [activeTab])
 
   useEffect(() => {
+    if (activeTab !== 'general') return
+    let active = true
+    window.api.email.getConfig()
+      .then((config) => {
+        if (!active || !config) return
+        const provider = inferEmailProvider(config.host)
+        const preset = EMAIL_PROVIDER_PRESETS[provider] || EMAIL_PROVIDER_PRESETS.custom
+        setEmailConfig({
+          provider,
+          host: config.host || preset.host,
+          port: Number(config.port) || preset.port,
+          user: config.user || '',
+          pass: config.pass || '',
+          from: config.from || '',
+          reply_to: config.reply_to || '',
+          to: config.to || '',
+          allow_insecure_tls: config.allow_insecure_tls === true,
+          auto_send_quotations: config.auto_send_quotations === true,
+          auto_send_booking_invoice: config.auto_send_booking_invoice === true,
+          auto_send_booking_confirmation: config.auto_send_booking_confirmation === true,
+          auto_send_booking_cancellation: config.auto_send_booking_cancellation === true
+        })
+      })
+      .catch(() => {})
+    return () => { active = false }
+  }, [activeTab])
+
+  useEffect(() => {
+    if (activeTab !== 'general') return
     window.api.updates.onAvailable((info) => {
       setUpdateStatus('available')
       setUpdateMessage(`v${info.version} found. Downloading now...`)
@@ -68,7 +175,7 @@ export default function Settings() {
       setUpdateMessage(info?.message || 'Update failed.')
       setUpdateReady(false)
     })
-  }, [])
+  }, [activeTab])
 
   const checkForUpdates = async () => {
     setUpdateStatus('checking')
@@ -117,12 +224,43 @@ export default function Settings() {
       .replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-')
       .replace(/-+/g, '-').replace(/^-+|-+$/g, '').substring(0, 50)
 
-  const onlinePlanOk = licenseStatus?.effective_features?.online_booking === true
+  const faqToText = (items) => {
+    if (!Array.isArray(items) || items.length === 0) return ''
+    return items
+      .map((item) => `${item?.question || ''} | ${item?.answer || ''}`.trim())
+      .filter((line) => line !== '|' && line !== '')
+      .join('\n')
+  }
+
+  const textToFaq = (value) => {
+    return String(value || '')
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const [question, ...rest] = line.split('|')
+        return {
+          question: (question || '').trim(),
+          answer: rest.join('|').trim()
+        }
+      })
+      .filter((item) => item.question && item.answer)
+  }
+
+  const normalizedPlan = normalizePlanName(licenseStatus?.plan || licenseStatus?.subscription_plan)
+  const onlinePlanOk = licenseStatus?.effective_features?.online_booking === true || normalizedPlan === 'Pro'
   const [upgradeOpen, setUpgradeOpen] = useState(false)
   const [upgradeMsg, setUpgradeMsg] = useState('')
   const [upgradeSending, setUpgradeSending] = useState(false)
   const [upgradeSent, setUpgradeSent] = useState(false)
   const [invoices, setInvoices] = useState([])
+  const [rateOverrides, setRateOverrides] = useState([])
+  const [rooms, setRooms] = useState([])
+  const [rateForm, setRateForm] = useState(null) // null = closed, {} = open
+  const [editingRate, setEditingRate] = useState(null)
+  const [rateSaving, setRateSaving] = useState(false)
+  const [generalDataLoaded, setGeneralDataLoaded] = useState(false)
+  const [licenseDataLoaded, setLicenseDataLoaded] = useState(false)
 
   const refreshLicenseStatus = (lodgeId) => {
     if (lodgeId && window.api?.trial) {
@@ -131,14 +269,24 @@ export default function Settings() {
   }
 
   useEffect(() => {
+    if (!globalSettings?.lodge_id || licenseDataLoaded) return
     refreshLicenseStatus(globalSettings?.lodge_id)
-  }, [globalSettings?.lodge_id])
+    setLicenseDataLoaded(true)
+  }, [globalSettings?.lodge_id, licenseDataLoaded])
 
   useEffect(() => {
+    if (activeTab !== 'license') return
     if (licenseStatus?.status === 'licensed' && globalSettings?.lodge_id && window.api?.trial?.getInvoices) {
       window.api.trial.getInvoices(globalSettings.lodge_id).then(setInvoices).catch(() => {})
     }
-  }, [licenseStatus?.status, globalSettings?.lodge_id])
+  }, [activeTab, licenseStatus?.status, globalSettings?.lodge_id])
+
+  useEffect(() => {
+    if (activeTab !== 'general' || generalDataLoaded) return
+    window.api.rateOverrides.getAll().then(setRateOverrides).catch(() => {})
+    window.api.rooms.getAll().then(setRooms).catch(() => {})
+    setGeneralDataLoaded(true)
+  }, [activeTab, generalDataLoaded])
 
   const handleActivate = async () => {
     setActivateMsg(null)
@@ -188,16 +336,6 @@ export default function Settings() {
   }
 
   // Seasonal pricing
-  const [rateOverrides, setRateOverrides] = useState([])
-  const [rooms, setRooms] = useState([])
-  const [rateForm, setRateForm] = useState(null) // null = closed, {} = open
-  const [editingRate, setEditingRate] = useState(null)
-  const [rateSaving, setRateSaving] = useState(false)
-
-  useEffect(() => {
-    window.api.rateOverrides.getAll().then(setRateOverrides).catch(() => {})
-    window.api.rooms.getAll().then(setRooms).catch(() => {})
-  }, [])
 
   const openRateCreate = () => {
     setEditingRate(null)
@@ -233,51 +371,87 @@ export default function Settings() {
   }
 
   useEffect(() => {
-    window.api.settings.get().then((s) => {
+    if (globalSettings) {
+      let s = globalSettings
+      if (s && !s.slug && s.lodge_name) {
+        s = { ...s, slug: s.lodge_name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') }
+      }
       setForm(s)
-      if (s?.logo) setLogoPreview(s.logo)
+      setLogoPreview(s?.logo || null)
+      setHeroPreview(s?.hero_image || null)
+      setBookingFaqText(faqToText(s?.booking_faq))
+      return
+    }
+
+    window.api.settings.get().then((s) => {
+      if (s && !s.slug && s.lodge_name) {
+        s = { ...s, slug: s.lodge_name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') }
+      }
+      setForm(s)
+      setLogoPreview(s?.logo || null)
+      setHeroPreview(s?.hero_image || null)
+      setBookingFaqText(faqToText(s?.booking_faq))
     })
-  }, [])
+  }, [globalSettings])
 
   const set = (field, value) => setForm((f) => ({ ...f, [field]: value }))
 
   // ── Logo handling ──────────────────────────────────────────────────────────
 
-  const processImageFile = (file) => {
+  const processImageFile = (file, onDone, max = 400) => {
     if (!file || !file.type.startsWith('image/')) return
 
     const reader = new FileReader()
     reader.onload = (e) => {
       const img = new window.Image()
       img.onload = () => {
-        const MAX = 400
         const canvas = document.createElement('canvas')
-        const ratio = Math.min(MAX / img.width, MAX / img.height, 1)
+        const ratio = Math.min(max / img.width, max / img.height, 1)
         canvas.width = img.width * ratio
         canvas.height = img.height * ratio
         const ctx = canvas.getContext('2d')
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
         const base64 = canvas.toDataURL('image/png')
-        setLogoPreview(base64)
-        setForm((f) => ({ ...f, logo: base64 }))
+        onDone(base64)
       }
       img.src = e.target.result
     }
     reader.readAsDataURL(file)
   }
 
-  const handleFileChange = (e) => { processImageFile(e.target.files[0]) }
+  const handleFileChange = (e) => {
+    processImageFile(e.target.files[0], (base64) => {
+      setLogoPreview(base64)
+      setForm((f) => ({ ...f, logo: base64 }))
+    })
+  }
+
+  const handleHeroFileChange = (e) => {
+    processImageFile(e.target.files[0], (base64) => {
+      setHeroPreview(base64)
+      setForm((f) => ({ ...f, hero_image: base64 }))
+    }, 1400)
+  }
 
   const handleDrop = (e) => {
     e.preventDefault()
     setDragOver(false)
-    processImageFile(e.dataTransfer.files[0])
+    processImageFile(e.dataTransfer.files[0], (base64) => {
+      setLogoPreview(base64)
+      setForm((f) => ({ ...f, logo: base64 }))
+    })
   }
 
   const removeLogo = () => {
     setLogoPreview(null)
     setForm((f) => ({ ...f, logo: '' }))
     if (fileInputRef.current) fileInputRef.current.value = ''
+  }
+
+  const removeHeroImage = () => {
+    setHeroPreview(null)
+    setForm((f) => ({ ...f, hero_image: '' }))
+    if (heroInputRef.current) heroInputRef.current.value = ''
   }
 
   const handleSave = async (e) => {
@@ -295,6 +469,69 @@ export default function Settings() {
       console.error(err)
     }
     setSaving(false)
+  }
+
+  const setEmailField = (field, value) => {
+    setEmailConfig((current) => ({ ...current, [field]: value }))
+  }
+
+  const applyEmailProvider = (provider) => {
+    const preset = EMAIL_PROVIDER_PRESETS[provider] || EMAIL_PROVIDER_PRESETS.custom
+    setEmailConfig((current) => ({
+      ...current,
+      provider,
+      host: preset.host,
+      port: preset.port,
+      allow_insecure_tls: preset.allow_insecure_tls
+    }))
+    setEmailStatus(null)
+  }
+
+  const saveEmailSetup = async () => {
+    setEmailSaving(true)
+    setEmailStatus(null)
+    try {
+      const fromValue = emailConfig.from?.trim()
+        || (form?.lodge_name?.trim() && emailConfig.user?.trim()
+          ? `"${form.lodge_name.trim()}" <${emailConfig.user.trim()}>`
+          : '')
+      const result = await window.api.email.saveConfig({
+        ...emailConfig,
+        from: fromValue
+      })
+      if (result?.success) {
+        setEmailStatus({ ok: true, msg: 'Email setup saved. Automatic guest emails can now use these details.' })
+        setEmailConfig((current) => ({ ...current, from: fromValue || current.from }))
+      } else {
+        setEmailStatus({ ok: false, msg: result?.error || 'Could not save email setup right now.' })
+      }
+    } catch (error) {
+      setEmailStatus({ ok: false, msg: error?.message || 'Could not save email setup right now.' })
+    }
+    setEmailSaving(false)
+  }
+
+  const testEmailSetup = async () => {
+    setEmailTesting(true)
+    setEmailStatus(null)
+    try {
+      const fromValue = emailConfig.from?.trim()
+        || (form?.lodge_name?.trim() && emailConfig.user?.trim()
+          ? `"${form.lodge_name.trim()}" <${emailConfig.user.trim()}>`
+          : '')
+      const result = await window.api.email.test({
+        ...emailConfig,
+        from: fromValue
+      })
+      if (result?.success) {
+        setEmailStatus({ ok: true, msg: `Test email sent to ${emailConfig.to || 'your test inbox'}.` })
+      } else {
+        setEmailStatus({ ok: false, msg: result?.error || 'Test email failed.' })
+      }
+    } catch (error) {
+      setEmailStatus({ ok: false, msg: error?.message || 'Test email failed.' })
+    }
+    setEmailTesting(false)
   }
 
   if (!form) return (
@@ -330,8 +567,14 @@ export default function Settings() {
     { id: 'system', label: 'System Health', icon: <ShieldCheck size={14} /> },
   ]
 
+  const tabLoader = (
+    <div className="rounded-xl border border-gray-200 bg-white p-6 text-sm text-gray-500 shadow-sm">
+      Loading panel...
+    </div>
+  )
+
   return (
-    <div className="p-6 max-w-2xl mx-auto">
+    <div className="p-6 max-w-7xl mx-auto">
       <div className="mb-5">
         <h1 className="text-2xl font-bold text-gray-800">Settings</h1>
       </div>
@@ -619,6 +862,166 @@ export default function Settings() {
               </div>
             </div>
 
+            {/* ── Email Setup ─────────────────────────────────────────────── */ }
+            <div className="bg-white rounded-xl shadow-sm p-6">
+              <div className="flex items-start justify-between gap-4 mb-4">
+                <div>
+                  <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wider flex items-center gap-2">
+                    <Mail size={15} className="text-green-600" /> Email Setup
+                  </h2>
+                  <p className="text-sm text-gray-500 mt-2">
+                    Connect your lodge email here so the system can send guest-facing emails automatically.
+                  </p>
+                </div>
+                <div className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
+                  Guest email
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 mb-5">
+                <p className="text-sm font-medium text-amber-900">Set this up on the main front desk computer.</p>
+                <p className="text-xs text-amber-800 mt-1">
+                  This computer will send quotations, booking confirmations, cancellations, and booking invoices when those actions happen here.
+                </p>
+              </div>
+
+              <div className="grid gap-5 lg:grid-cols-2">
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Email provider</label>
+                    <select
+                      className="input"
+                      value={emailConfig.provider}
+                      onChange={(e) => applyEmailProvider(e.target.value)}
+                    >
+                      {Object.entries(EMAIL_PROVIDER_PRESETS).map(([key, preset]) => (
+                        <option key={key} value={key}>{preset.label}</option>
+                      ))}
+                    </select>
+                    <p className="text-xs text-gray-400 mt-1">{EMAIL_PROVIDER_PRESETS[emailConfig.provider]?.hint}</p>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">SMTP host</label>
+                      <input className="input" value={emailConfig.host} onChange={(e) => setEmailField('host', e.target.value)} placeholder="smtp.yourprovider.com" />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Port</label>
+                      <input className="input" type="number" value={emailConfig.port} onChange={(e) => setEmailField('port', Number(e.target.value) || '')} placeholder="587" />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Email / username</label>
+                      <input className="input" type="email" value={emailConfig.user} onChange={(e) => setEmailField('user', e.target.value)} placeholder="reservations@yourlodge.com" />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Password / app password</label>
+                      <input className="input" type="password" value={emailConfig.pass} onChange={(e) => setEmailField('pass', e.target.value)} placeholder="Mailbox password or app password" />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">From line</label>
+                      <input className="input" value={emailConfig.from} onChange={(e) => setEmailField('from', e.target.value)} placeholder={`"${form?.lodge_name || 'Your lodge'}" <${emailConfig.user || 'you@example.com'}>`} />
+                      <p className="text-xs text-gray-400 mt-1">Leave blank to use your lodge name automatically.</p>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Reply-to address</label>
+                      <input className="input" type="email" value={emailConfig.reply_to} onChange={(e) => setEmailField('reply_to', e.target.value)} placeholder="reservations@yourlodge.com" />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Test inbox</label>
+                    <input className="input" type="email" value={emailConfig.to} onChange={(e) => setEmailField('to', e.target.value)} placeholder="manager@yourlodge.com" />
+                    <p className="text-xs text-gray-400 mt-1">We use this address for the test email and any local email checks from this computer.</p>
+                  </div>
+
+                  <label className="flex items-center gap-3 rounded-xl border border-gray-200 px-4 py-3">
+                    <input
+                      type="checkbox"
+                      checked={emailConfig.allow_insecure_tls}
+                      onChange={(e) => setEmailField('allow_insecure_tls', e.target.checked)}
+                    />
+                    <div>
+                      <p className="text-sm font-medium text-gray-700">Allow insecure TLS only if your provider asks for it</p>
+                      <p className="text-xs text-gray-400">Most lodges should leave this off.</p>
+                    </div>
+                  </label>
+                </div>
+
+                <div className="space-y-4">
+                  <div className="rounded-xl border border-gray-200 p-4">
+                    <div className="flex items-center gap-2 mb-3">
+                      <Sparkles size={15} className="text-violet-600" />
+                      <p className="text-sm font-semibold text-gray-800">Automatic guest emails</p>
+                    </div>
+                    <div className="space-y-3">
+                      <label className="flex items-start gap-3">
+                        <input type="checkbox" checked={emailConfig.auto_send_quotations} onChange={(e) => setEmailField('auto_send_quotations', e.target.checked)} />
+                        <div>
+                          <p className="text-sm font-medium text-gray-700">Send quotation email when a quotation is marked as sent</p>
+                          <p className="text-xs text-gray-400">Useful when front desk sends a quote after checking dates and rates.</p>
+                        </div>
+                      </label>
+                      <label className="flex items-start gap-3">
+                        <input type="checkbox" checked={emailConfig.auto_send_booking_confirmation} onChange={(e) => setEmailField('auto_send_booking_confirmation', e.target.checked)} />
+                        <div>
+                          <p className="text-sm font-medium text-gray-700">Send booking confirmation when front desk confirms a booking</p>
+                          <p className="text-xs text-gray-400">Guests get a clear stay summary and balance information.</p>
+                        </div>
+                      </label>
+                      <label className="flex items-start gap-3">
+                        <input type="checkbox" checked={emailConfig.auto_send_booking_invoice} onChange={(e) => setEmailField('auto_send_booking_invoice', e.target.checked)} />
+                        <div>
+                          <p className="text-sm font-medium text-gray-700">Send booking invoice with the confirmation</p>
+                          <p className="text-xs text-gray-400">This sends the guest-facing invoice as soon as the booking is confirmed.</p>
+                        </div>
+                      </label>
+                      <label className="flex items-start gap-3">
+                        <input type="checkbox" checked={emailConfig.auto_send_booking_cancellation} onChange={(e) => setEmailField('auto_send_booking_cancellation', e.target.checked)} />
+                        <div>
+                          <p className="text-sm font-medium text-gray-700">Send cancellation confirmation when front desk cancels a booking</p>
+                          <p className="text-xs text-gray-400">Useful when a guest asks for written confirmation that the booking was cancelled.</p>
+                        </div>
+                      </label>
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-blue-200 bg-blue-50 p-4">
+                    <p className="text-sm font-semibold text-blue-900 mb-2">What guests will receive</p>
+                    <ul className="space-y-2 text-xs text-blue-900/90">
+                      <li>Quotation emails show the quoted room, dates, total, and validity date.</li>
+                      <li>Booking confirmations show the stay summary, amount paid, and balance due.</li>
+                      <li>Cancellation emails confirm the stay was cancelled and tell the guest to contact the lodge if needed.</li>
+                      <li>Booking invoices are sent as a separate guest invoice email when enabled.</li>
+                    </ul>
+                  </div>
+
+                  {emailStatus && (
+                    <div className={`rounded-xl px-4 py-3 text-sm ${emailStatus.ok ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-700 border border-red-200'}`}>
+                      {emailStatus.msg}
+                    </div>
+                  )}
+
+                  <div className="flex gap-3 pt-1">
+                    <button type="button" onClick={saveEmailSetup} disabled={emailSaving} className="btn-primary flex-1 flex items-center justify-center gap-2">
+                      <Save size={15} />
+                      {emailSaving ? 'Saving...' : 'Save Email Setup'}
+                    </button>
+                    <button type="button" onClick={testEmailSetup} disabled={emailTesting} className="btn-secondary flex-1 flex items-center justify-center gap-2">
+                      <Send size={15} />
+                      {emailTesting ? 'Sending...' : 'Send Test Email'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
             {/* ── Seasonal / Event Pricing ──────────────────────────────────── */}
             <div className="bg-white rounded-xl shadow-sm p-6">
               <div className="flex items-center justify-between mb-4">
@@ -700,12 +1103,12 @@ export default function Settings() {
 
               {!onlinePlanOk ? (
                 <div className="bg-gray-50 border border-gray-200 rounded-lg px-4 py-3 text-sm text-gray-500">
-                  Upgrade to <strong>Pro</strong> to get a public booking page guests can use to request rooms online.
+                  Upgrade to <strong>Pro</strong> to unlock a branded booking page for this lodge, a unique public URL, direct guest enquiries, WhatsApp contact, policies, room amenities, and a stronger direct-booking sales flow.
                 </div>
               ) : (
                 <>
                   <p className="text-xs text-gray-500">
-                    Guests can browse and request rooms at your unique booking link.
+                    This Pro feature gives your lodge its own public booking page. Guests can browse rooms, view amenities and policies, contact you directly, and send booking requests from your unique link.
                     Set a short, memorable URL slug below.
                   </p>
 
@@ -761,8 +1164,159 @@ export default function Settings() {
                   )}
 
                   <p className="text-xs text-gray-400">
-                    Save your settings to activate the link. Online booking requests will appear as <strong>Pending</strong> in your Bookings screen for you to confirm or reject.
+                    Save your settings to publish the page. Booking requests from this public lodge URL will appear as <strong>Pending</strong> in your Bookings screen for you to confirm or reject.
                   </p>
+
+                  <div className="grid gap-4 border-t border-gray-200 pt-4 lg:grid-cols-2">
+                    <div className="space-y-4">
+                      <div>
+                        <label className="block text-xs font-medium text-gray-600 mb-1">Booking tagline</label>
+                        <input
+                          className="input"
+                          value={form?.booking_tagline || ''}
+                          onChange={(e) => set('booking_tagline', e.target.value)}
+                          placeholder="e.g. Riverside calm, booked directly"
+                        />
+                        <p className="text-xs text-gray-400 mt-1">Short headline shown near the top of the booking page.</p>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-medium text-gray-600 mb-1">Property description</label>
+                        <textarea
+                          className="input resize-none"
+                          rows={5}
+                          value={form?.booking_description || ''}
+                          onChange={(e) => set('booking_description', e.target.value)}
+                          placeholder="Describe what makes your lodge special, who it suits best, and what guests can expect on arrival."
+                        />
+                      </div>
+
+                      <div>
+                        <div className="flex items-center gap-2 mb-1">
+                          <MessageCircle size={14} className="text-green-600" />
+                          <label className="block text-xs font-medium text-gray-600">WhatsApp number</label>
+                        </div>
+                        <input
+                          className="input"
+                          value={form?.whatsapp_number || ''}
+                          onChange={(e) => set('whatsapp_number', e.target.value)}
+                          placeholder="e.g. 26771234567"
+                        />
+                        <p className="text-xs text-gray-400 mt-1">Use country code and digits only if possible, for example 26771234567.</p>
+                      </div>
+                    </div>
+
+                    <div className="space-y-4">
+                      <div>
+                        <div className="flex items-center justify-between mb-2">
+                          <label className="block text-xs font-medium text-gray-600">Hero image</label>
+                          {heroPreview && (
+                            <button type="button" onClick={removeHeroImage} className="text-xs text-red-500 hover:text-red-600 flex items-center gap-1">
+                              <X size={12} /> Remove
+                            </button>
+                          )}
+                        </div>
+                        {heroPreview ? (
+                          <img src={heroPreview} alt="Hero preview" className="h-36 w-full rounded-xl border border-gray-200 object-cover" />
+                        ) : (
+                          <div className="flex h-36 items-center justify-center rounded-xl border border-dashed border-gray-300 bg-gray-50 text-xs text-gray-400">
+                            Upload a wide welcome image for your booking page
+                          </div>
+                        )}
+                        <label className="mt-3 flex cursor-pointer items-center justify-center gap-2 rounded-xl border border-dashed border-gray-300 px-4 py-3 text-sm text-gray-600 hover:border-green-400 hover:bg-green-50/50">
+                          <Image size={15} />
+                          {heroPreview ? 'Replace hero image' : 'Upload hero image'}
+                          <input
+                            ref={heroInputRef}
+                            type="file"
+                            accept="image/*"
+                            className="hidden"
+                            onChange={handleHeroFileChange}
+                          />
+                        </label>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-xs font-medium text-gray-600 mb-1">Check-in from</label>
+                          <input
+                            className="input"
+                            value={form?.booking_check_in_from || ''}
+                            onChange={(e) => set('booking_check_in_from', e.target.value)}
+                            placeholder="e.g. 14:00"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-gray-600 mb-1">Check-out until</label>
+                          <input
+                            className="input"
+                            value={form?.booking_check_out_until || ''}
+                            onChange={(e) => set('booking_check_out_until', e.target.value)}
+                            placeholder="e.g. 10:00"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid gap-4 border-t border-gray-200 pt-4 lg:grid-cols-3">
+                    <div>
+                      <div className="flex items-center gap-2 mb-1">
+                        <FileText size={14} className="text-green-600" />
+                        <label className="block text-xs font-medium text-gray-600">Cancellation policy</label>
+                      </div>
+                      <textarea
+                        className="input resize-none"
+                        rows={5}
+                        value={form?.booking_cancellation_policy || ''}
+                        onChange={(e) => set('booking_cancellation_policy', e.target.value)}
+                        placeholder="e.g. Free cancellation up to 48 hours before arrival."
+                      />
+                    </div>
+
+                    <div>
+                      <div className="flex items-center gap-2 mb-1">
+                        <CreditCard size={14} className="text-green-600" />
+                        <label className="block text-xs font-medium text-gray-600">Payment terms</label>
+                      </div>
+                      <textarea
+                        className="input resize-none"
+                        rows={5}
+                        value={form?.booking_payment_terms || ''}
+                        onChange={(e) => set('booking_payment_terms', e.target.value)}
+                        placeholder="e.g. Deposit required to confirm. Balance due on arrival."
+                      />
+                    </div>
+
+                    <div>
+                      <div className="flex items-center gap-2 mb-1">
+                        <Info size={14} className="text-green-600" />
+                        <label className="block text-xs font-medium text-gray-600">House rules / guest notes</label>
+                      </div>
+                      <textarea
+                        className="input resize-none"
+                        rows={5}
+                        value={form?.booking_house_rules || ''}
+                        onChange={(e) => set('booking_house_rules', e.target.value)}
+                        placeholder="e.g. No smoking indoors. Quiet hours from 22:00."
+                      />
+                    </div>
+                  </div>
+
+                  <div className="border-t border-gray-200 pt-4">
+                    <label className="block text-xs font-medium text-gray-600 mb-1">Frequently asked questions</label>
+                    <textarea
+                      className="input resize-none"
+                      rows={5}
+                      value={bookingFaqText}
+                      onChange={(e) => {
+                        setBookingFaqText(e.target.value)
+                        set('booking_faq', textToFaq(e.target.value))
+                      }}
+                      placeholder={'Use one line per FAQ.\nExample: Is breakfast included? | Yes, breakfast is served from 06:30 to 09:30.'}
+                    />
+                    <p className="text-xs text-gray-400 mt-1">Format each line as: question | answer</p>
+                  </div>
                 </>
               )}
             </div>
@@ -785,11 +1339,15 @@ export default function Settings() {
           LICENSE & BILLING TAB
           ════════════════════════════════════════════════════════════════ */}
       {activeTab === 'license' && (
-        <SubscriptionAccessPanel />
+        <Suspense fallback={tabLoader}>
+          <SubscriptionAccessPanel />
+        </Suspense>
       )}
 
       {activeTab === 'system' && (
-        <SystemHealthPanel />
+        <Suspense fallback={tabLoader}>
+          <SystemHealthPanel />
+        </Suspense>
       )}
     </div>
   )

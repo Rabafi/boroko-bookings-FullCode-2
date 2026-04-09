@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react'
 import { Presentation, Plus, Pencil, Trash2, X, Users, Clock, Calendar, ChevronDown, ChevronUp } from 'lucide-react'
+import { PAYMENT_METHOD_PLAIN_OPTIONS } from '../constants/paymentMethods'
 import { useSettings } from '../App'
 
 const SETUP_TYPES = ['Theatre', 'Boardroom', 'Classroom', 'U-Shape', 'Banquet', 'Cocktail']
 const PAYMENT_STATUSES = ['pending', 'deposit_paid', 'paid', 'cancelled']
-const PAYMENT_METHODS = ['Cash', 'Card', 'EFT / Bank Transfer', 'Mobile Money']
+const PAYMENT_METHODS = PAYMENT_METHOD_PLAIN_OPTIONS
 
 const STATUS_COLORS = {
   pending: 'bg-yellow-100 text-yellow-800',

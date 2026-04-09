@@ -63,8 +63,8 @@ export default function Login() {
     <div className="min-h-screen bg-gray-950 flex flex-col items-center justify-center px-6">
       <div className="mb-8 text-center">
         <div className="text-5xl mb-3">🏕️</div>
-        <h1 className="text-2xl font-bold text-white">Boroko Manager</h1>
-        <p className="text-gray-400 text-sm mt-1">Lodge Management Dashboard</p>
+        <h1 className="text-2xl font-bold text-white">Boroko Manager PWA</h1>
+        <p className="text-gray-400 text-sm mt-1">Leadership access for lodge managers and admins</p>
       </div>
 
       <form onSubmit={submit} className="w-full max-w-sm space-y-4">
@@ -81,7 +81,7 @@ export default function Login() {
           />
         </div>
         <div>
-          <label className="text-xs text-gray-400 block mb-1.5">Password</label>
+          <label className="text-xs text-gray-400 block mb-1.5">Manager PWA Password</label>
           <div className="relative">
             <input
               className={`${inp} pr-11`}
@@ -100,10 +100,11 @@ export default function Login() {
               {showPass ? <EyeOff size={18} /> : <Eye size={18} />}
             </button>
           </div>
+          <p className="mt-1.5 text-xs text-gray-500">Use the Manager PWA password set in Staff. It can be different from the desktop password.</p>
         </div>
 
         {error && (
-          <div className="bg-red-900/40 border border-red-700/50 rounded-xl px-4 py-3 text-red-300 text-sm">
+          <div className={`${error.includes('Pro plan') ? 'bg-purple-900/40 border-purple-700/50 text-purple-200' : 'bg-red-900/40 border-red-700/50 text-red-300'} border rounded-xl px-4 py-3 text-sm`}>
             {error}
           </div>
         )}
