@@ -5010,7 +5010,7 @@ export async function createEventBooking(data) {
 export async function getOccupancyReport(startDate, endDate) {
   const rooms = await getAllRooms()
   const cachedBookingsInRange = readCache('bookings').filter(
-    (b) => b.status !== 'cancelled' && b.check_in <= endDate && b.check_out > startDate
+    (b) => b.status !== 'cancelled' && b.status !== 'pending' && b.check_in <= endDate && b.check_out > startDate
   )
   let bookings = []
   try {
@@ -5029,9 +5029,10 @@ export async function getOccupancyReport(startDate, endDate) {
     bookings = cachedBookingsInRange
   }
 
-  const totalDays = Math.ceil(
+  // +1 for inclusive end-date: Jan 1–Jan 7 = 7 days, not 6
+  const totalDays = Math.max(1, Math.round(
     (new Date(endDate) - new Date(startDate)) / (1000 * 60 * 60 * 24)
-  )
+  ) + 1)
 
   return rooms.map((room) => {
     const roomBookings = bookings.filter((b) => b.room_id === room.id)
@@ -5098,7 +5099,8 @@ async function getRevenueReportLocal(startDate, endDate) {
   // Cancelled count is preserved from the raw fetch for informational reporting.
   // Guard: normalize status to '' so null/undefined values do not pass through as non-cancelled.
   const cancelledCount  = bookings.filter(b => (b.status || '') === 'cancelled').length
-  const revenueBookings = bookings.filter(b => (b.status || '') !== 'cancelled')
+  // Exclude both cancelled and pending: pending online requests are not financial commitments
+  const revenueBookings = bookings.filter(b => !['cancelled', 'pending'].includes(b.status || ''))
   const cancelledBookingIds = new Set(
     bookings
       .filter((booking) => (booking.status || '') === 'cancelled')

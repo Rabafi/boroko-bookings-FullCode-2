@@ -752,8 +752,12 @@ export default function BookingInvoices() {
       )}
 
       {financialCacheStale && (
-        <div className="rounded-2xl border border-sky-200 bg-sky-50 px-5 py-4 text-sm text-sky-900 shadow-sm">
-          Collections and refunds are locked while fresh booking and invoice data is still being confirmed from the server.
+        <div className="flex items-start gap-3 rounded-2xl border-2 border-red-400 bg-red-50 px-5 py-4 text-sm text-red-800 font-medium shadow-sm">
+          <span className="text-lg leading-none">⛔</span>
+          <div>
+            <p className="font-semibold">Financial data not yet confirmed from server</p>
+            <p className="mt-1 text-xs font-normal text-red-700">Collections and refunds are locked until booking and payment sync are fully confirmed. Do not record or export financial totals until this banner clears.</p>
+          </div>
         </div>
       )}
 
