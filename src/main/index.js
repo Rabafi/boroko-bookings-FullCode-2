@@ -161,17 +161,54 @@ function createWindow() {
     title: 'Boroko Bookings',
     webPreferences: {
       preload: join(__dirname, '../preload/index.mjs'),
-      // Secure defaults: sandboxed renderer with isolated context
-      // The preload only uses Electron APIs (ipcRenderer, contextBridge), not Node.js APIs
-      sandbox: true,
+      // sandbox: false required — electron-vite preload uses ESM imports resolved
+      // via Node module system, incompatible with sandbox: true in dev HTTP mode.
+      // Security enforced via contextIsolation: true (contextBridge) + nodeIntegration: false.
+      sandbox: false,
       contextIsolation: true,
       nodeIntegration: false
     }
   })
 
+  let didShowWindow = false
+  const showWindowSafely = (reason) => {
+    if (didShowWindow || mainWindow.isDestroyed()) return
+    didShowWindow = true
+    if (INPUT_FOCUS_DEBUG) console.log('[WINDOW] show requested:', reason)
+    mainWindow.show()
+  }
+
   mainWindow.on('ready-to-show', () => {
     if (INPUT_FOCUS_DEBUG) console.log('[WINDOW] ready-to-show')
-    mainWindow.show()
+    showWindowSafely('ready-to-show')
+  })
+
+  // If the renderer gets slow or partially fails, do not leave the app hidden forever.
+  setTimeout(() => {
+    showWindowSafely('startup-timeout')
+  }, 2500)
+
+  mainWindow.webContents.on('did-finish-load', () => {
+    console.log('[WINDOW] did-finish-load', mainWindow.webContents.getURL())
+  })
+
+  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    console.error('[WINDOW] did-fail-load', {
+      errorCode,
+      errorDescription,
+      validatedURL,
+      isMainFrame
+    })
+  })
+
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    console.error('[WINDOW] render-process-gone', details)
+  })
+
+  mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+    if (level <= 2 || String(message || '').includes('preload')) {
+      console.log('[RENDERER]', { level, message, line, sourceId })
+    }
   })
 
   const sendFocusRecovery = (reason) => {
