@@ -41,6 +41,7 @@ let currentUser = null
 let backupIntervalStarted = false
 let lodgeId = null
 let syncInProgress = false
+let replayAuthReady = false   // P0-5: set to true only after a user is authenticated
 let backendSession = null
 let syncRefreshState = {
   stale: false,
@@ -84,6 +85,10 @@ const FINANCIAL_VALIDATION_RUNS_FILE = 'financial-validation-runs.json'
 const FINANCIAL_VALIDATION_ALERTS_FILE = 'financial-validation-alerts.json'
 const LOCAL_INVOICE_DELIVERY_FILE = 'invoice-delivery-history.json'
 const CRITICAL_ERROR_LOG_FILE = 'critical-errors.json'
+const SYNC_META_FILE = 'sync-meta.json'
+const HEALTH_FAULTS_FILE = 'health-faults.json'
+const CACHE_FRESHNESS_FILE = 'cache-freshness.json'
+const PERIODIC_SYNC_INTERVAL_MS = 5 * 60 * 1000   // 5 min — auto-retry retryable dead letters
 const BACKUP_POLICY_DEFAULT = {
   enabled: false,
   target_dir: '',
@@ -107,6 +112,9 @@ const PROFILE_CACHE_FILES = {
   auth: [],
   syncQueue: [],
   syncFailed: [],
+  syncMeta: null,
+  healthFaults: [],
+  cacheFreshness: null,
   trialStatus: null
 }
 
@@ -471,6 +479,9 @@ function ensureProfileCacheFiles(profileLodgeId) {
     ['auth-cache.json', PROFILE_CACHE_FILES.auth],
     ['sync-queue.json', PROFILE_CACHE_FILES.syncQueue],
     ['sync-failed.json', PROFILE_CACHE_FILES.syncFailed],
+    ['sync-meta.json', PROFILE_CACHE_FILES.syncMeta],
+    ['health-faults.json', PROFILE_CACHE_FILES.healthFaults],
+    ['cache-freshness.json', PROFILE_CACHE_FILES.cacheFreshness],
     ['trial_status.json', PROFILE_CACHE_FILES.trialStatus]
   ]
 
@@ -687,6 +698,10 @@ export function setCurrentUser(user) {
   if (currentUser?.isMasterAdmin) {
     clearBackendSession()
   }
+  // P0-5: a real user is now authenticated — allow queue replay
+  if (currentUser) {
+    replayAuthReady = true
+  }
 }
 
 export function getCurrentUser() {
@@ -818,6 +833,8 @@ export function restoreUserSession(nonce) {
 }
 
 export async function validateCurrentSession() {
+  // Master admins authenticate against master_admins table, not Supabase app sessions.
+  // They have no backend session token by design — treat as always valid.
   if (currentUser?.isMasterAdmin) return currentUser
 
   const session = getBackendSession()
@@ -924,12 +941,18 @@ function readCache(name) {
   } catch (e) {
     if (fs.existsSync(filePath)) {
       console.warn(`[Cache] Parse failed for '${name}' — returning []. Error: ${e.message}`)
+      appendHealthFault({
+        type: 'cache_corrupt',
+        scope: name,
+        message: `Cache file '${name}.json' could not be parsed and was reset to empty. Error: ${e.message}`,
+        at: new Date().toISOString()
+      })
     }
     return []
   }
 }
 
-function writeCache(name, data) {
+function writeCache(name, data, { source = 'local' } = {}) {
   const filePath = getCachePath(name)
   const tmpPath  = filePath + '.tmp'
   try {
@@ -939,6 +962,18 @@ function writeCache(name, data) {
     console.error(`[Cache] Write failed for '${name}':`, e)
     try { fs.unlinkSync(tmpPath) } catch { /* ignore */ }
   }
+  // Track freshness metadata for each named cache write
+  try {
+    const freshnessPath = path.join(cacheDir, CACHE_FRESHNESS_FILE)
+    let freshness = {}
+    try { freshness = JSON.parse(fs.readFileSync(freshnessPath, 'utf-8')) || {} } catch { /* start fresh */ }
+    freshness[name] = {
+      updatedAt: new Date().toISOString(),
+      source,
+      count: Array.isArray(data) ? data.length : (data && typeof data === 'object' ? Object.keys(data).length : 0)
+    }
+    fs.writeFileSync(freshnessPath, JSON.stringify(freshness, null, 2), 'utf-8')
+  } catch { /* freshness tracking is non-critical */ }
 }
 
 function clearCache(name, fallback = []) {
@@ -968,6 +1003,12 @@ function readSyncQueue() {
   } catch (e) {
     if (fs.existsSync(filePath)) {
       console.warn('[Sync Queue] Parse failed — returning []. Error:', e.message)
+      appendHealthFault({
+        type: 'queue_corrupt',
+        scope: 'sync-queue',
+        message: `sync-queue.json could not be parsed and was treated as empty. Queued operations may have been lost. Error: ${e.message}`,
+        at: new Date().toISOString()
+      })
     }
     return []
   }
@@ -1233,7 +1274,12 @@ async function refreshCacheStrict(...names) {
     rooms:      () => supabase.from('rooms').select('*').eq('lodge_id', lodgeId).order('room_number'),
     customers:  () => supabase.from('customers').select('*').eq('lodge_id', lodgeId).order('name'),
     bookings:   () => supabase.from('bookings').select('*').eq('lodge_id', lodgeId).order('check_in', { ascending: false }),
-    quotations: () => supabase.from('quotations').select('*').eq('lodge_id', lodgeId).order('created_at', { ascending: false })
+    quotations: () => supabase.from('quotations').select('*').eq('lodge_id', lodgeId).order('created_at', { ascending: false }),
+    'pos-orders': () => supabase
+      .from('pos_orders')
+      .select('*, pos_order_items(*), outlets(name)')
+      .eq('lodge_id', lodgeId)
+      .order('created_at', { ascending: false })
   }
 
   await Promise.all(names.map(async (name) => {
@@ -1243,7 +1289,7 @@ async function refreshCacheStrict(...names) {
     if (!data) return
     if (name === 'users') {
       const normalizedUsers = data.map(normalizeUserRecord).filter(Boolean)
-      writeCache(name, normalizedUsers)
+      writeCache(name, normalizedUsers, { source: 'remote' })
       if (currentUser && !currentUser.isMasterAdmin) {
         const refreshedUser = normalizedUsers.find((entry) =>
           (currentUser.id && entry.id === currentUser.id) ||
@@ -1255,7 +1301,7 @@ async function refreshCacheStrict(...names) {
       }
       return
     }
-    writeCache(name, data)
+    writeCache(name, data, { source: 'remote' })
   }))
 }
 
@@ -1333,6 +1379,12 @@ function createPaymentIdempotencyKey(bookingId, type = 'payment', intentId = nul
   return `payment:${type}:${bookingId}:${randomUUID()}`
 }
 
+function buildPaymentFallbackSignature(bookingId, type, amount, bookingVersion = null) {
+  const normalizedAmount = roundMoneyValue(Math.abs(amount)).toFixed(2)
+  const normalizedVersion = bookingVersion || 'no-version'
+  return `${bookingId}:${type}:${normalizedAmount}:${normalizedVersion}`
+}
+
 function ensureQueuedItem(item = {}, fallbackType = 'op') {
   return {
     ...item,
@@ -1378,6 +1430,22 @@ function getQueuedPosOrderId(item) {
     table: item?.table || null
   })
   return null
+}
+
+function getSyncItemBookingId(item) {
+  return item?.data?.p_booking_id
+    || item?.data?.payload?.booking_id
+    || item?.data?.payload?.id
+    || item?.data?.p_id
+    || null
+}
+
+function getSyncItemScope(item) {
+  const bookingId = getSyncItemBookingId(item)
+  if (bookingId) return `booking:${bookingId}`
+  const posOrderId = getQueuedPosOrderId(item)
+  if (posOrderId) return `pos-order:${posOrderId}`
+  return item?.table || 'unknown'
 }
 
 function patchCachedPosOrderSyncState(orderId, patch = {}) {
@@ -1451,6 +1519,37 @@ function patchCachedBookingSyncState(bookingId, patch = {}) {
   return true
 }
 
+function markClearedSyncItemForManualReview(item) {
+  const manualReviewMessage = `${item?.table || 'sync item'} was cleared from failed sync without server confirmation. Review manually before trusting local data.`
+  const bookingId = getSyncItemBookingId(item)
+  if (bookingId) {
+    patchCachedBookingSyncState(bookingId, {
+      _pending_sync: true,
+      _sync_state: 'manual_review_required',
+      _sync_error: manualReviewMessage
+    })
+    return
+  }
+  const posOrderId = getQueuedPosOrderId(item)
+  if (posOrderId) {
+    patchCachedPosOrderSyncState(posOrderId, {
+      _pending_sync: true,
+      _sync_state: 'manual_review_required',
+      _sync_error: manualReviewMessage
+    })
+  }
+}
+
+function valuesEqualForDrift(left, right) {
+  if (left == null && right == null) return true
+  const leftNum = Number(left)
+  const rightNum = Number(right)
+  if (Number.isFinite(leftNum) && Number.isFinite(rightNum)) {
+    return Math.abs(leftNum - rightNum) < 0.0001
+  }
+  return String(left) === String(right)
+}
+
 function queueItemNeedsBookingRefresh(item) {
   if (!item) return false
   if (isPosCreateOrderQueueItem(item)) {
@@ -1483,11 +1582,20 @@ function isAlreadyAppliedInsertError(item, error) {
 
 async function processSyncQueue() {
   if (syncInProgress) return
+  // P0-5: Never replay queued operations before a real user session is confirmed.
+  // Offline financial RPCs carry lodge-scoped auth; replaying them before the
+  // correct Supabase client/session is restored can poison data or fail silently.
+  if (!replayAuthReady) {
+    console.warn('[Sync] processSyncQueue skipped — replayAuthReady is false (no authenticated session yet)')
+    writeSyncMeta({ replayAuthNotReadyAt: new Date().toISOString() })
+    return
+  }
   syncInProgress = true
   try {
     await _runSyncQueue()
   } finally {
     syncInProgress = false
+    broadcastSyncStatus()
   }
 }
 
@@ -1510,6 +1618,9 @@ async function _runSyncQueue() {
   if (normalized.length !== queue.length) writeSyncQueue(normalized)
   queue = normalized
 
+  // P0-1: record that a sync run has started
+  writeSyncMeta({ lastSyncStartedAt: new Date().toISOString(), lastSyncOutcome: 'in_progress', lastSyncError: '' })
+
   console.log(`Syncing ${queue.length} offline operation(s)...`)
   const deadLetter = []
   let successCount = 0
@@ -1522,8 +1633,13 @@ async function _runSyncQueue() {
   const completedQueueIds = new Set()
   console.log('[SYNC PRELOAD FAILED IDS]', [...failedQueueIds])
   const pending = [...queue]
+  // P1-8: widen post-sync refresh tracking
   let shouldRefreshBookings = false
   let shouldRefreshInventory = false
+  let shouldRefreshCustomers = false
+  let shouldRefreshRooms = false
+  let shouldRefreshQuotations = false
+  let shouldRefreshPosOrders = false
 
   while (pending.length > 0) {
     const nextIndex = pickNextReadySyncItemIndex(pending, completedQueueIds, failedQueueIds)
@@ -1622,8 +1738,24 @@ async function _runSyncQueue() {
           console.log('✅ INSERT SUCCESS:', data)
         }
       } else if (item.type === 'update') {
+        // P2-14: use .select('id') to verify at least one row was actually matched.
+        // A 0-row result means the entity was deleted or moved on the server during
+        // the outage — the update is silently lost. We surface this as a health fault
+        // rather than treating it as a success.
         const itemLodgeId = item.data?.lodge_id || item.lodge_id || lodgeId
-        ;({ error: supabaseError } = await supabase.from(item.table).update(item.data).eq('id', item.id).eq('lodge_id', itemLodgeId))
+        const { data: updData, error: updError } = await supabase
+          .from(item.table)
+          .update(item.data)
+          .eq('id', item.id)
+          .eq('lodge_id', itemLodgeId)
+          .select('id')
+        supabaseError = updError || null
+        if (!updError && (!updData || updData.length === 0)) {
+          // Row not found on server — record as a fault but treat operation as consumed
+          const ghostMsg = `UPDATE ${item.table} id=${item.id} matched 0 rows on server (entity may have been deleted during outage)`
+          console.warn('[Sync] Ghost update:', ghostMsg)
+          appendHealthFault({ type: 'ghost_update', scope: item.table, message: ghostMsg, at: new Date().toISOString() })
+        }
       } else if (item.type === 'delete') {
         const itemLodgeId = item.data?.lodge_id || item.lodge_id || lodgeId
         ;({ error: supabaseError } = await supabase.from(item.table).delete().eq('id', item.id).eq('lodge_id', itemLodgeId))
@@ -1655,6 +1787,17 @@ async function _runSyncQueue() {
             _pending_sync: true,
             _sync_state: 'failed',
             _sync_error: errorMessage
+          })
+        }
+      }
+      // P1-13: mark rejected optimistic state for update/payment/status RPCs
+      if (item.type === 'rpc' && ['update_booking', 'update_booking_status', 'update_booking_payment', 'add_booking_charge', 'delete_booking_charge', 'approve_booking_refund'].includes(item.table)) {
+        const bookingId = item.data?.p_booking_id || item.data?.p_id || null
+        if (bookingId) {
+          patchCachedBookingSyncState(bookingId, {
+            _pending_sync: true,
+            _sync_state: 'failed',
+            _sync_error: `${item.table} rejected by server: ${errorMessage}`
           })
         }
       }
@@ -1732,6 +1875,11 @@ async function _runSyncQueue() {
       }
       if (queueItemNeedsInventoryRefresh(item)) shouldRefreshInventory = true
       if (queueItemNeedsBookingRefresh(item)) shouldRefreshBookings = true
+      // P1-8: widen refresh to cover all domains touched by this operation
+      if (item.type === 'rpc' && ['create_customer', 'update_customer'].includes(item.table)) shouldRefreshCustomers = true
+      if (item.table === 'rooms' || (item.type === 'rpc' && item.table?.startsWith?.('update_room'))) shouldRefreshRooms = true
+      if (item.type === 'rpc' && ['create_quotation', 'update_quotation', 'convert_quotation'].includes(item.table)) shouldRefreshQuotations = true
+      if (isPosCreateOrderQueueItem(item)) shouldRefreshPosOrders = true
       // Phase 1: persist committed state before removing from queue file.
       // Crash here → restart sees 'committed' → skips RPC without retrying.
       writeSyncQueue([{ ...item, _state: 'committed' }, ...pending])
@@ -1741,9 +1889,25 @@ async function _runSyncQueue() {
       writeSyncQueue(pending)
     }
   }
+  const syncFinishedAt = new Date().toISOString()
   console.log(`✅ Sync complete: ${successCount} success, ${pending.length} remaining`)
   if (successCount > 0) {
-    lastSuccessfulSyncAt = new Date().toISOString()
+    lastSuccessfulSyncAt = syncFinishedAt
+    // P0-1: persist sync recency to disk so it survives restarts
+    writeSyncMeta({
+      lastSuccessfulSyncAt: syncFinishedAt,
+      lastSyncFinishedAt: syncFinishedAt,
+      lastSyncOutcome: deadLetter.length > 0 ? 'partial' : 'success',
+      lastSyncError: deadLetter.length > 0 ? `${deadLetter.length} item(s) dead-lettered` : ''
+    })
+  } else if (deadLetter.length > 0) {
+    writeSyncMeta({
+      lastSyncFinishedAt: syncFinishedAt,
+      lastSyncOutcome: 'failed',
+      lastSyncError: `All ${deadLetter.length} item(s) dead-lettered with no successes`
+    })
+  } else {
+    writeSyncMeta({ lastSyncFinishedAt: syncFinishedAt, lastSyncOutcome: 'empty' })
   }
   writeSyncQueue(pending)
 
@@ -1751,8 +1915,53 @@ async function _runSyncQueue() {
     try { await getInventoryItems() } catch (error) { console.error('[Sync] Inventory refresh failed:', error) }
   }
 
-  if (successCount > 0 && shouldRefreshBookings) {
-    await refreshCachesAfterSync('bookings')
+  // P2-16: snapshot optimistic booking state before refresh so we can detect drift afterwards
+  const preSyncBookingSnapshot = shouldRefreshBookings
+    ? readCache('bookings')
+        .filter((b) => !b._pending_sync)
+        .reduce((map, b) => {
+          map[b.id] = { total_amount: b.total_amount, amount_paid: b.amount_paid, status: b.status, payment_status: b.payment_status }
+          return map
+        }, {})
+    : null
+
+  // P1-8: widen canonical post-sync refresh
+  const refreshTargets = []
+  if (successCount > 0 && shouldRefreshBookings)   refreshTargets.push('bookings')
+  if (successCount > 0 && shouldRefreshCustomers)  refreshTargets.push('customers')
+  if (successCount > 0 && shouldRefreshRooms)      refreshTargets.push('rooms')
+  if (successCount > 0 && shouldRefreshQuotations) refreshTargets.push('quotations')
+  if (successCount > 0 && shouldRefreshPosOrders)  refreshTargets.push('pos-orders')
+  if (refreshTargets.length > 0) {
+    await refreshCachesAfterSync(...refreshTargets)
+  }
+
+  // P2-16: compare post-refresh server values against pre-refresh optimistic state
+  if (preSyncBookingSnapshot && successCount > 0) {
+    try {
+      const postSyncBookings = readCache('bookings')
+      for (const b of postSyncBookings) {
+        const pre = preSyncBookingSnapshot[b.id]
+        if (!pre) continue
+        const drifts = []
+        if (!valuesEqualForDrift(pre.total_amount, b.total_amount)) drifts.push(`total_amount: local ${pre.total_amount} → server ${b.total_amount}`)
+        if (!valuesEqualForDrift(pre.amount_paid, b.amount_paid)) drifts.push(`amount_paid: local ${pre.amount_paid} → server ${b.amount_paid}`)
+        if (!valuesEqualForDrift(pre.status, b.status)) drifts.push(`status: local ${pre.status} → server ${b.status}`)
+        if (!valuesEqualForDrift(pre.payment_status, b.payment_status)) drifts.push(`payment_status: local ${pre.payment_status} → server ${b.payment_status}`)
+        if (drifts.length > 0) {
+          appendHealthFault({
+            type: 'booking_drift',
+            scope: `booking:${b.id}`,
+            severity: 'warn',
+            message: `Post-sync drift on booking ${b.id}: ${drifts.join('; ')}`,
+            context: { booking_id: b.id, drifts, invoice_number: b.invoice_number || null }
+          })
+          console.warn('[SYNC DRIFT]', b.id, drifts)
+        }
+      }
+    } catch (driftError) {
+      console.error('[Sync] Drift check failed:', driftError)
+    }
   }
 
   if (deadLetter.length > 0) {
@@ -1767,7 +1976,6 @@ async function _runSyncQueue() {
       console.error('[Sync] Dead-letter write failed:', e)
       try { fs.unlinkSync(deadTmp) } catch { /* ignore */ }
     }
-    // Structured dead-letter log — aids production debugging; older entries can be auto-requeued later.
     for (const item of deadLetter) {
       console.error('[SYNC DEAD LETTER]', item)
     }
@@ -1781,6 +1989,8 @@ async function _runSyncQueue() {
 export function getSyncStatus() {
   const queue = readSyncQueue()
   const failed = readFailedSyncQueue()
+  const faults = readHealthFaults()
+  const syncMeta = readSyncMeta()
   const financialTables = new Set(['create_booking', 'create_booking_record', 'update_booking', 'update_booking_status', 'update_booking_payment'])
   const extractBookingId = (item) => (
     item?.data?.p_booking_id
@@ -1789,9 +1999,6 @@ export function getSyncStatus() {
     || item?.data?.p_id
     || null
   )
-  // Extract booking UUIDs from dead-lettered booking creation RPCs.
-  // Cleared naturally: when items are retried or cleared from sync-failed.json, they
-  // disappear from this array on the next call. No separate persistence needed.
   const failedBookingIds = failed
     .filter(item => ['create_booking', 'create_booking_record', 'update_booking'].includes(item.table))
     .map(item => item.data?.p_booking_id || item.data?.payload?.id || item.data?.p_id)
@@ -1808,16 +2015,34 @@ export function getSyncStatus() {
       .map(extractBookingId)
       .filter(Boolean)
   )]
+  // P0-1: lastSuccessfulSyncAt from memory first, fall back to persisted meta
+  const resolvedLastSync = lastSuccessfulSyncAt || syncMeta.lastSuccessfulSyncAt || null
   return {
     pending: queue.length,
     failed: failed.length,
+    // P0-2: named fields as specified
+    currentQueueLength: queue.length,
+    currentDeadLetterWrites: failed.length,
     isOnline,
+    // P0-2: expose replay in-progress state
+    syncInProgress,
+    replayAuthReady,
     failedBookingIds,
     financialPendingBookingIds,
     financialFailedBookingIds,
     financialPendingCount: financialPendingBookingIds.length,
     financialFailedCount: financialFailedBookingIds.length,
-    lastSuccessfulSyncAt,
+    lastSuccessfulSyncAt: resolvedLastSync,
+    // P0-1: full sync meta
+    syncMeta: {
+      lastSyncStartedAt: syncMeta.lastSyncStartedAt || null,
+      lastSyncFinishedAt: syncMeta.lastSyncFinishedAt || null,
+      lastSyncOutcome: syncMeta.lastSyncOutcome || null,
+      lastSyncError: syncMeta.lastSyncError || '',
+      replayAuthNotReadyAt: syncMeta.replayAuthNotReadyAt || null
+    },
+    // P0-4: expose corruption/integrity faults
+    faults,
     cacheStale: {
       active: syncRefreshState.stale,
       names: syncRefreshState.names,
@@ -1832,8 +2057,26 @@ function readFailedSyncQueue() {
   try {
     const parsed = JSON.parse(fs.readFileSync(path.join(cacheDir, 'sync-failed.json'), 'utf-8'))
     // Guard: ensure result is always an array — corrupted or unexpected JSON must not crash the sync loop
-    return Array.isArray(parsed) ? parsed : []
-  } catch {
+    if (!Array.isArray(parsed)) {
+      appendHealthFault({
+        type: 'queue_corrupt',
+        scope: 'sync-failed',
+        message: 'sync-failed.json contained non-array JSON and was treated as empty. Dead-lettered operations may have been lost.',
+        at: new Date().toISOString()
+      })
+      return []
+    }
+    return parsed
+  } catch (e) {
+    const filePath = path.join(cacheDir, 'sync-failed.json')
+    if (fs.existsSync(filePath)) {
+      appendHealthFault({
+        type: 'queue_corrupt',
+        scope: 'sync-failed',
+        message: `sync-failed.json could not be parsed. Dead-lettered operations may have been lost. Error: ${e.message}`,
+        at: new Date().toISOString()
+      })
+    }
     return []
   }
 }
@@ -1850,27 +2093,186 @@ function writeFailedSyncQueue(items) {
   }
 }
 
+// ─── SYNC META (P0-1) ─────────────────────────────────────────────────────────
+// Persists sync recency data to disk so it survives app restarts.
+
+function readSyncMeta() {
+  if (!cacheDir) return {}
+  try {
+    const raw = fs.readFileSync(path.join(cacheDir, SYNC_META_FILE), 'utf-8')
+    return JSON.parse(raw) || {}
+  } catch {
+    return {}
+  }
+}
+
+function writeSyncMeta(updates = {}) {
+  if (!cacheDir) return
+  const filePath = path.join(cacheDir, SYNC_META_FILE)
+  const tmpPath  = filePath + '.tmp'
+  try {
+    const current = readSyncMeta()
+    const next = { ...current, ...updates }
+    fs.writeFileSync(tmpPath, JSON.stringify(next, null, 2), 'utf-8')
+    fs.renameSync(tmpPath, filePath)
+  } catch (e) {
+    console.error('[Sync Meta] Write failed:', e)
+    try { fs.unlinkSync(tmpPath) } catch { /* ignore */ }
+  }
+}
+
+// ─── HEALTH FAULTS (P0-4) ─────────────────────────────────────────────────────
+// Structured corruption / integrity alerts that survive restarts.
+
+function appendHealthFault(fault = {}) {
+  if (!cacheDir) return
+  const filePath = path.join(cacheDir, HEALTH_FAULTS_FILE)
+  const tmpPath  = filePath + '.tmp'
+  try {
+    let existing = []
+    try { existing = JSON.parse(fs.readFileSync(filePath, 'utf-8')) } catch { /* start fresh */ }
+    if (!Array.isArray(existing)) existing = []
+    const entry = {
+      id: randomUUID(),
+      type: fault.type || 'unknown',
+      scope: fault.scope || 'unknown',
+      severity: fault.severity || 'warn',
+      message: fault.message || 'An integrity fault was detected.',
+      at: fault.at || new Date().toISOString(),
+      ...(fault.context && typeof fault.context === 'object' ? { context: fault.context } : {})
+    }
+    // Deduplicate: don't append a fault with the same type+scope within 10 minutes
+    const tenMinutesAgo = Date.now() - 10 * 60 * 1000
+    const isDuplicate = existing.some(
+      (e) => e.type === entry.type && e.scope === entry.scope && Date.parse(e.at) > tenMinutesAgo
+    )
+    if (isDuplicate) return
+    const next = [entry, ...existing].slice(0, 50)
+    fs.writeFileSync(tmpPath, JSON.stringify(next, null, 2), 'utf-8')
+    fs.renameSync(tmpPath, filePath)
+    console.error('[Health Fault]', entry)
+  } catch (e) {
+    console.error('[Health Fault] Write failed:', e)
+    try { fs.unlinkSync(tmpPath) } catch { /* ignore */ }
+  }
+}
+
+function readHealthFaults() {
+  if (!cacheDir) return []
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(cacheDir, HEALTH_FAULTS_FILE), 'utf-8'))
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+export function clearHealthFault(id) {
+  if (!cacheDir) return { success: true, remaining: 0 }
+  const filePath = path.join(cacheDir, HEALTH_FAULTS_FILE)
+  const tmpPath  = filePath + '.tmp'
+  try {
+    const faults = readHealthFaults()
+    const next = id ? faults.filter((f) => f.id !== id) : []
+    fs.writeFileSync(tmpPath, JSON.stringify(next, null, 2), 'utf-8')
+    fs.renameSync(tmpPath, filePath)
+    return { success: true, remaining: next.length }
+  } catch (e) {
+    try { fs.unlinkSync(tmpPath) } catch { /* ignore */ }
+    return { success: false, error: e.message }
+  }
+}
+
+// ─── CACHE FRESHNESS READER (P1-9) ────────────────────────────────────────────
+
+function readCacheFreshness() {
+  if (!cacheDir) return {}
+  try {
+    const raw = fs.readFileSync(path.join(cacheDir, CACHE_FRESHNESS_FILE), 'utf-8')
+    return JSON.parse(raw) || {}
+  } catch {
+    return {}
+  }
+}
+
 export function getSyncDetails() {
   const pending = readSyncQueue()
   const failed = readFailedSyncQueue()
-  const enrich = (item) => ({
+  const faults = readHealthFaults()
+  const syncMeta = readSyncMeta()
+  const cacheFreshness = readCacheFreshness()
+  const resolvedLastSync = lastSuccessfulSyncAt || syncMeta.lastSuccessfulSyncAt || null
+  const now = Date.now()
+
+  const enrichPending = (item) => ({
     ...item,
     isFinancial: isFinancialSyncItem(item),
     dependencyState: item?._depends_on
-      ? failed.some((failedItem) => failedItem?._queue_id === item._depends_on)
+      ? failed.some((f) => f?._queue_id === item._depends_on)
         ? 'failed_parent'
-        : pending.some((pendingItem) => pendingItem?._queue_id === item._depends_on)
+        : pending.some((p) => p?._queue_id === item._depends_on)
           ? 'waiting_for_parent'
           : 'ready_or_external'
       : 'none'
   })
+
+  // P1-11: enrich failed items with retry classification and timing
+  const enrichFailed = (item) => {
+    const attemptedAtMs = item.lastAttemptedAt ? Date.parse(item.lastAttemptedAt) : NaN
+    const ageMs = Number.isNaN(attemptedAtMs) ? null : now - attemptedAtMs
+    const isAutoRetryable = item.manualRetryOnly !== true
+    const nextAutoRetryAt = isAutoRetryable && !Number.isNaN(attemptedAtMs)
+      ? new Date(attemptedAtMs + DEAD_LETTER_AUTO_RETRY_AFTER_MS).toISOString()
+      : null
+    const autoRetryEligible = isAutoRetryable && (Number.isNaN(attemptedAtMs) || ageMs >= DEAD_LETTER_AUTO_RETRY_AFTER_MS)
+    return {
+      ...item,
+      isFinancial: isFinancialSyncItem(item),
+      isAutoRetryable,
+      nextAutoRetryAt,
+      autoRetryEligible,
+      ageMs
+    }
+  }
+
+  // P1-10: financial entity IDs
+  const financialTables = new Set(['create_booking', 'create_booking_record', 'update_booking', 'update_booking_status', 'update_booking_payment'])
+  const extractBookingId = (item) => (
+    item?.data?.p_booking_id || item?.data?.payload?.booking_id || item?.data?.payload?.id || item?.data?.p_id || null
+  )
+  const financialPendingBookingIds = [...new Set(pending.filter((i) => financialTables.has(i?.table)).map(extractBookingId).filter(Boolean))]
+  const financialFailedBookingIds  = [...new Set(failed.filter((i) => financialTables.has(i?.table)).map(extractBookingId).filter(Boolean))]
+
+  // P1-9: annotate cache freshness with human-readable age
+  const enrichedCacheFreshness = Object.fromEntries(
+    Object.entries(cacheFreshness).map(([name, meta]) => {
+      const updatedAtMs = meta?.updatedAt ? Date.parse(meta.updatedAt) : NaN
+      const cacheAgeMs  = Number.isNaN(updatedAtMs) ? null : now - updatedAtMs
+      return [name, { ...meta, cacheAgeMs, stale: cacheAgeMs != null && cacheAgeMs > 24 * 60 * 60 * 1000 }]
+    })
+  )
+
   return {
     isOnline,
+    syncInProgress,
+    replayAuthReady,
     pendingCount: pending.length,
     failedCount: failed.length,
-    lastSuccessfulSyncAt,
-    pending: pending.map(enrich),
-    failed: failed.map(enrich),
+    lastSuccessfulSyncAt: resolvedLastSync,
+    syncMeta: {
+      lastSyncStartedAt: syncMeta.lastSyncStartedAt || null,
+      lastSyncFinishedAt: syncMeta.lastSyncFinishedAt || null,
+      lastSyncOutcome: syncMeta.lastSyncOutcome || null,
+      lastSyncError: syncMeta.lastSyncError || ''
+    },
+    financialPendingBookingIds,
+    financialFailedBookingIds,
+    financialPendingCount: financialPendingBookingIds.length,
+    financialFailedCount: financialFailedBookingIds.length,
+    pending: pending.map(enrichPending),
+    failed: failed.map(enrichFailed),
+    faults,
+    cacheFreshness: enrichedCacheFreshness,
     cacheStale: {
       active: syncRefreshState.stale,
       names: syncRefreshState.names,
@@ -1973,15 +2375,59 @@ export function clearSyncFailed(queueIds = []) {
   const failed = readFailedSyncQueue()
   const targetIds = new Set((queueIds || []).filter(Boolean))
   const shouldClearAll = targetIds.size === 0
-  const remaining = shouldClearAll
-    ? []
-    : failed.filter((item) => !targetIds.has(item?._queue_id))
+  const itemsToRemove = shouldClearAll
+    ? failed
+    : failed.filter((item) => targetIds.has(item?._queue_id))
+
+  // P1-12: Before discarding dead letters, preserve unresolved-local-state evidence
+  // so a clear action cannot falsely imply reconciliation is complete.
+  const financialCleared = itemsToRemove.filter((item) => isFinancialSyncItem(item))
+  let integrityAlertsRecorded = 0
+  for (const item of itemsToRemove) {
+    markClearedSyncItemForManualReview(item)
+    const isFinancial = isFinancialSyncItem(item)
+    appendHealthFault({
+      type: isFinancial ? 'financial_dead_letter_cleared' : 'dead_letter_cleared',
+      scope: getSyncItemScope(item),
+      severity: isFinancial ? 'error' : 'warn',
+      message: `${isFinancial ? 'Financial' : 'Sync'} dead-lettered operation was manually cleared without remote confirmation. Operation: ${item.table}, Queue ID: ${item._queue_id}, Last error: ${item.lastError || 'unknown'}. Verify manually that this was handled.`,
+      at: new Date().toISOString(),
+      context: {
+        queue_id: item?._queue_id || null,
+        table: item?.table || null,
+        booking_id: getSyncItemBookingId(item),
+        pos_order_id: getQueuedPosOrderId(item),
+        last_error: item?.lastError || '',
+        is_financial: isFinancial
+      }
+    })
+    integrityAlertsRecorded++
+    console.warn('[Sync] Dead letter cleared without remote confirmation:', item._queue_id, item.table)
+  }
+
+  const remaining = failed.filter((item) => !itemsToRemove.some((r) => r?._queue_id === item?._queue_id))
   writeFailedSyncQueue(remaining)
+  broadcastSyncStatus()
   return {
     success: true,
     removed: failed.length - remaining.length,
+    financialCleared: financialCleared.length,
+    integrityAlertsRecorded,
     remaining: remaining.length
   }
+}
+
+// P0-6 / P1-11: Run sync immediately regardless of connectivity transition.
+// Called from the "Run Sync Now" button in System Health, and by the periodic timer.
+export async function runSyncNow() {
+  if (!isOnline) {
+    await checkOnline()
+  }
+  if (!isOnline) return { success: false, error: 'Offline — cannot sync right now.' }
+  if (!replayAuthReady) return { success: false, error: 'No authenticated session — please log in first.' }
+  await requeueEligibleFailedSyncItems()
+  await processSyncQueue()
+  return { success: true }
 }
 
 function queueOperation(type, table, data, id = null, meta = {}) {
@@ -2219,7 +2665,7 @@ export function getBackupInfo() {
   }
 }
 
-export async function buildExpandedBackupPayload() {
+async function buildExpandedBackupPayload() {
   if (!lodgeId) throw new Error('No lodge profile selected')
   const [
     settings,
@@ -2337,12 +2783,22 @@ export async function initDatabase() {
     console.log('[Auth] No SUPABASE_SERVICE_ROLE_KEY — running in lodge-only mode')
   }
 
+  // P0-1: restore persisted sync recency so System Health has real data immediately
+  if (cacheDir) {
+    const meta = readSyncMeta()
+    if (meta.lastSuccessfulSyncAt && !lastSuccessfulSyncAt) {
+      lastSuccessfulSyncAt = meta.lastSuccessfulSyncAt
+    }
+  }
+
+  // P0-5: replayAuthReady stays false until a real user logs in.
+  // Startup sync is intentionally skipped — we must not replay queued financial
+  // operations before the correct Supabase client is authenticated.
   const online = await checkOnline()
   if (online && lodgeId) {
-    await requeueEligibleFailedSyncItems()
-    await processSyncQueue()
+    // Only refresh caches at startup (safe read-only — does not replay writes)
     await refreshAllCaches()
-    console.log('Connected to Supabase ✓')
+    console.log('Connected to Supabase ✓ (replay deferred until user authenticates)')
   } else {
     console.log('Running in offline mode — using cached data')
   }
@@ -2353,6 +2809,7 @@ export async function initDatabase() {
     createBackup()
     setInterval(() => createBackup(), 60 * 60 * 1000)
 
+    // Reconnect detection: fires sync on network return
     setInterval(async () => {
       const wasOffline = !isOnline
       const nowOnline = await checkOnline()
@@ -2363,6 +2820,16 @@ export async function initDatabase() {
         await refreshAllCaches()
       }
     }, 30000)
+
+    // P0-6: Periodic sync — ensures retryable dead letters are replayed even when
+    // the app never transitions offline→online (i.e., stays continuously online).
+    setInterval(async () => {
+      if (!isOnline || !lodgeId || !replayAuthReady) return
+      await requeueEligibleFailedSyncItems()
+      if (readSyncQueue().length > 0) {
+        await processSyncQueue()
+      }
+    }, PERIODIC_SYNC_INTERVAL_MS)
   }
 }
 
@@ -2387,13 +2854,20 @@ export async function selectProfile(targetLodgeId) {
   if (!profile) throw new Error('That lodge profile was not found on this computer.')
 
   currentUser = null
+  replayAuthReady = false   // P0-5: profile switch = new auth context required
   clearBackendSession()
   setRuntimeActiveProfile(normalizedId, { persistActive: true, touch: true })
   ensureProfileCacheFiles(normalizedId)
 
+  // Restore persisted sync meta for the new profile
+  if (cacheDir) {
+    const meta = readSyncMeta()
+    lastSuccessfulSyncAt = meta.lastSuccessfulSyncAt || null
+  }
+
   await checkOnline()
   if (isOnline) {
-    await processSyncQueue()
+    // Only refresh caches on profile switch — replay deferred until user logs in
     await refreshAllCaches()
   }
 
@@ -3551,8 +4025,10 @@ cached.push(cachedUser)
 writeCache('users', cached)
 
 // IMPORTANT: send ID to Supabase too
-queueOperation('rpc', 'create_user', { payload: newUser })
+// P2-15: assign _queue_id so pwa_access setup can declare an explicit dependency
+queueOperation('rpc', 'create_user', { payload: newUser }, null, { _queue_id: `user-${id}` })
 if (pwaAccess.requested) {
+  // P2-15: must not run before the user row exists on the server
   queueOperation('rpc', 'set_user_pwa_access', {
     p_id: id,
     p_lodge_id: lodgeId,
@@ -3560,7 +4036,7 @@ if (pwaAccess.requested) {
     p_password_hash: pwaAccess.password_hash,
     p_disabled_reason: pwaAccess.disabled_reason,
     p_reset_by: currentUser?.id || null
-  })
+  }, null, { _depends_on: `user-${id}` })
 }
 
 if (pwaAccess.requested) {
@@ -3854,10 +4330,11 @@ export async function createRoom(data) {
     return result?.id
   } else {
     const cached = readCache('rooms')
-    const newRoom = { ...room, created_at: new Date().toISOString() }
+    const newRoom = { ...room, _pending_sync: true, created_at: new Date().toISOString() }
     cached.push(newRoom)
     writeCache('rooms', cached)
-    queueOperation('rpc', 'create_room', { payload: newRoom })
+    // P2-15: assign _queue_id so any offline update to this room can declare _depends_on
+    queueOperation('rpc', 'create_room', { payload: room }, null, { _queue_id: `room-${id}` })
     return id
   }
 }
@@ -3886,13 +4363,15 @@ export async function updateRoom(id, data) {
   } else {
     const cached = readCache('rooms')
     const idx = cached.findIndex((r) => r.id === id)
+    // P2-15: if the room itself hasn't synced yet, update must wait for creation to land first
+    const roomPendingSync = idx >= 0 && cached[idx]?._pending_sync
     if (idx >= 0) cached[idx] = { ...cached[idx], ...update }
     writeCache('rooms', cached)
     queueOperation('rpc', 'update_room', {
       p_id: id,
       p_lodge_id: lodgeId,
       payload: update
-    })
+    }, null, roomPendingSync ? { _depends_on: `room-${id}` } : {})
   }
 }
 
@@ -3917,6 +4396,7 @@ export async function updateRoomHousekeeping(id, status, notes) {
     const cached = readCache('rooms')
     const idx = cached.findIndex((r) => r.id === id)
     const room = cached[idx]
+    const roomPendingSync = idx >= 0 && cached[idx]?._pending_sync
     if (idx >= 0) cached[idx] = { ...cached[idx], ...update }
     writeCache('rooms', cached)
     queueOperation('rpc', 'update_room_housekeeping', {
@@ -3924,7 +4404,7 @@ export async function updateRoomHousekeeping(id, status, notes) {
       p_lodge_id: lodgeId,
       p_status: status || 'clean',
       p_notes: notes || ''
-    })
+    }, null, roomPendingSync ? { _depends_on: `room-${id}` } : {})
     logActivity('housekeeping_updated', `Room ${room?.room_number || id} marked ${status}${notes ? ' · note saved' : ''}`)
   }
 }
@@ -3940,11 +4420,12 @@ export async function deleteRoom(id) {
     await refreshCache('rooms')
   } else {
     const cached = readCache('rooms')
+    const roomPendingSync = cached.some((r) => r.id === id && r?._pending_sync)
     writeCache('rooms', cached.filter((r) => r.id !== id))
     queueOperation('rpc', 'delete_room', {
       p_id: id,
       p_lodge_id: lodgeId
-    })
+    }, null, roomPendingSync ? { _depends_on: `room-${id}` } : {})
   }
 }
 
@@ -3979,10 +4460,15 @@ export async function createCustomer(data) {
     return result?.id
   } else {
     const cached = readCache('customers')
-    const newCustomer = { ...customer, created_at: new Date().toISOString() }
+    const newCustomer = { ...customer, _pending_sync: true, created_at: new Date().toISOString() }
     cached.push(newCustomer)
     writeCache('customers', cached)
-    queueOperation('rpc', 'create_customer', { payload: newCustomer })
+    queueOperation('rpc', 'create_customer', {
+      payload: {
+        ...customer,
+        created_at: newCustomer.created_at
+      }
+    }, null, { _queue_id: `customer-${id}` })
     return id
   }
 }
@@ -4374,6 +4860,9 @@ export async function createBooking(data) {
     return bookingId
   } else {
     const cached = readCache('bookings')
+    const cachedCustomer = booking.customer_id
+      ? readCache('customers').find((customer) => customer.id === booking.customer_id)
+      : null
     const newBooking = {
       ...booking,
       amount_paid: 0,
@@ -4400,7 +4889,10 @@ export async function createBooking(data) {
       p_idempotency_key: bookingCreateIdempotencyKey,
       p_deposit_method:  deposit > 0 ? paymentMethod : null,
       p_allow_total_override: allowTotalOverride
-    }, null, { _queue_id: `booking-${id}` })
+    }, null, {
+      _queue_id: `booking-${id}`,
+      ...(cachedCustomer?._pending_sync ? { _depends_on: `customer-${booking.customer_id}` } : {})
+    })
 
     cached.push(newBooking)
     writeCache('bookings', cached)
@@ -4620,7 +5112,7 @@ export async function updateBookingPayment(id, paymentAmount, paymentMethod, typ
   }
   // Generate deterministic fallback signature (booking+status+amount) to prevent double-payments
   // even if intentKey is lost after app restart. Format: booking_id:status:amount
-  const fallbackSignature = `${id}:${type}:${Math.abs(numericAmount).toFixed(2)}`
+  const fallbackSignature = buildPaymentFallbackSignature(id, type, numericAmount, expectedUpdatedAt)
   if (type === 'payment' && !callerKey) {
     console.warn('[PAYMENT] Missing intent key — using deterministic fallback signature. Booking:', id, 'Signature:', fallbackSignature)
   }
@@ -4795,16 +5287,57 @@ export async function refundBooking(bookingId, options = {}) {
   }
 }
 
+function normalizeRpcProbeEnvelope(data) {
+  if (Array.isArray(data)) return data[0] || null
+  return data && typeof data === 'object' ? data : null
+}
+
+function isReplayContractProbeFailure(message = '') {
+  return /PGRST202|42883|could not find the function|function.*does not exist|function.*not.*found|schema cache|structure of query does not match|returned record type does not match expected record type|unexpected parameter|missing required|has no parameter named|column .* does not exist/i.test(String(message || ''))
+}
+
+// P0-7: probe replay-critical RPCs with the current argument names used by the app.
+// Missing/shape-mismatched contracts must fail health, while ordinary business-rule
+// rejections still count as "function exists and is callable with this signature".
+async function probeRpc(name, args = {}, options = {}) {
+  const { expectSuccessEnvelope = true } = options
+  try {
+    const { data, error } = await supabase.rpc(name, args)
+    if (error) {
+      const message = error.message || 'Unknown error'
+      if (isReplayContractProbeFailure(message) || error.code === 'PGRST202') {
+        return { ok: false, message: `${name} contract mismatch — ${message}` }
+      }
+      return { ok: true, message: `${name} is callable (probe reached runtime validation).`, responseShapeVerified: false }
+    }
+
+    if (!expectSuccessEnvelope) {
+      return { ok: true, message: `${name} is available.`, responseShapeVerified: false }
+    }
+
+    const envelope = normalizeRpcProbeEnvelope(data)
+    if (!envelope || typeof envelope !== 'object' || !Object.prototype.hasOwnProperty.call(envelope, 'success')) {
+      return { ok: false, message: `${name} returned an unexpected response shape.` }
+    }
+    return { ok: true, message: `${name} returned the expected response shape.`, responseShapeVerified: true }
+  } catch (e) {
+    return { ok: false, message: `${name} probe threw: ${e.message}` }
+  }
+}
+
 export async function getSystemHealth() {
   const diagnostics = await getLodgeDiagnostics(lodgeId || '').catch((error) => ({ error: error.message }))
   const sync = getSyncStatus()
   const backups = getBackupInfo()
+  const faults = readHealthFaults()
   const finance = {
-    payments_rpc: { ok: false, message: 'Offline or not checked yet.' }
+    payments_rpc: { ok: false, message: 'Offline or not checked yet.' },
+    contract: { ok: false, probes: {}, allOk: false, message: 'Not checked yet.' }
   }
 
   await checkOnline()
   if (isOnline && lodgeId) {
+    // Existing payment ledger check
     try {
       const { error } = await supabase.rpc('get_booking_payments', {
         p_booking_id: randomUUID(),
@@ -4820,16 +5353,140 @@ export async function getSystemHealth() {
           : (e.message || 'Could not verify booking payment ledger RPC.')
       }
     }
+
+    // P0-7: probe all replay-critical RPCs
+    const probeBookingId = randomUUID()
+    const probeCustomerId = randomUUID()
+    const probeRoomId = randomUUID()
+    const probeChargeId = randomUUID()
+    const probePosOrderId = randomUUID()
+    const probeNow = new Date().toISOString()
+    const probeInvoiceNumber = `PROBE-${Date.now()}`
+    const probeBookingPayload = {
+      id: probeBookingId,
+      customer_id: probeCustomerId,
+      room_id: probeRoomId,
+      check_in: '2099-12-01',
+      check_out: '2099-12-02',
+      adults: 1,
+      children: 0,
+      total_amount: 1,
+      status: 'confirmed',
+      payment_status: 'unpaid',
+      amount_paid: 0,
+      deposit_amount: 0,
+      payment_method: null,
+      invoice_number: probeInvoiceNumber,
+      notes: 'contract probe',
+      created_by: currentUser?.id || null,
+      lodge_id: lodgeId,
+      deposit_method: null,
+      create_idempotency_key: createBookingIdempotencyKey(probeBookingId)
+    }
+    const rpcProbes = await Promise.all([
+      probeRpc('create_booking', {
+        p_lodge_id: lodgeId,
+        p_customer_id: probeCustomerId,
+        p_room_id: probeRoomId,
+        p_check_in: probeBookingPayload.check_in,
+        p_check_out: probeBookingPayload.check_out,
+        p_adults: probeBookingPayload.adults,
+        p_children: probeBookingPayload.children,
+        p_total_amount: probeBookingPayload.total_amount,
+        p_invoice_number: probeInvoiceNumber,
+        p_notes: probeBookingPayload.notes,
+        p_created_by: currentUser?.id || null,
+        p_deposit_amount: 0,
+        p_booking_id: probeBookingId,
+        p_idempotency_key: createBookingIdempotencyKey(probeBookingId),
+        p_deposit_method: null,
+        p_allow_total_override: false
+      }).then((r) => ['create_booking', r]),
+      probeRpc('create_booking_record', {
+        payload: probeBookingPayload
+      }).then((r) => ['create_booking_record', r]),
+      probeRpc('update_booking', {
+        p_id: probeBookingId,
+        p_lodge_id: lodgeId,
+        payload: {
+          notes: 'contract probe',
+          expected_updated_at: probeNow
+        }
+      }).then((r) => ['update_booking', r]),
+      probeRpc('update_booking_status', {
+        p_id: probeBookingId,
+        p_lodge_id: lodgeId,
+        p_status: 'confirmed',
+        p_expected_updated_at: probeNow
+      }).then((r) => ['update_booking_status', r]),
+      probeRpc('update_booking_payment', {
+        p_booking_id: probeBookingId,
+        p_lodge_id: lodgeId,
+        p_amount: 1,
+        p_method: 'cash',
+        p_type: 'payment',
+        p_idempotency_key: `probe:payment:${probeBookingId}`,
+        p_recorded_by: currentUser?.id || null,
+        p_expected_updated_at: probeNow
+      }).then((r) => ['update_booking_payment', r]),
+      probeRpc('create_pos_order', {
+        payload: {
+          lodge_id: lodgeId,
+          id: probePosOrderId,
+          room_id: probeRoomId,
+          booking_id: null,
+          walk_in_name: 'Contract Probe',
+          total: 1,
+          notes: 'contract probe',
+          payment_method: 'folio',
+          outlet_id: null,
+          create_idempotency_key: `probe:pos:${probePosOrderId}`,
+          created_at_client: probeNow,
+          items: [
+            { menu_item_id: null, item_name: 'Contract Probe', quantity: 1, unit_price: 1 }
+          ]
+        }
+      }).then((r) => ['create_pos_order', r]),
+      probeRpc('add_booking_charge', {
+        p_booking_id: probeBookingId,
+        p_lodge_id: lodgeId,
+        p_description: 'Contract probe',
+        p_category: 'other',
+        p_quantity: 1,
+        p_unit_price: 1,
+        p_outlet_id: null,
+        p_expected_updated_at: probeNow
+      }).then((r) => ['add_booking_charge', r]),
+      probeRpc('delete_booking_charge', {
+        p_charge_id: probeChargeId,
+        p_lodge_id: lodgeId,
+        p_reason: 'contract probe',
+        p_expected_booking_updated_at: probeNow
+      }).then((r) => ['delete_booking_charge', r]),
+    ])
+    const probesObj = Object.fromEntries(rpcProbes)
+    const allOk = Object.values(probesObj).every((p) => p.ok)
+    const missing = Object.entries(probesObj).filter(([, p]) => !p.ok).map(([name]) => name)
+    finance.contract = {
+      ok: allOk,
+      probes: probesObj,
+      allOk,
+      message: allOk
+        ? 'All replay-critical RPCs are available.'
+        : `Missing RPCs: ${missing.join(', ')} — run the latest migrations before trusting replay.`
+    }
   }
 
   return {
     checked_at: new Date().toISOString(),
     lodge_id: lodgeId,
     online: isOnline,
+    replayAuthReady,
     sync,
     backups,
     diagnostics,
-    finance
+    finance,
+    faults
   }
 }
 
@@ -4837,6 +5494,7 @@ export async function getSystemHealth() {
 
 export async function createEventBooking(data) {
   let customerId
+  let bookingCustomerDepend = null
   const contactCustomer = {
     name: data.event_name,
     phone: data.contact_phone || '',
@@ -4863,12 +5521,23 @@ export async function createEventBooking(data) {
     const existing = cached.find((c) => c.name === data.event_name)
     if (existing) {
       customerId = existing.id
+      if (existing._pending_sync) {
+        bookingCustomerDepend = `customer-${customerId}`
+      }
     } else {
       customerId = randomUUID()
-      const newCustomer = { ...contactCustomer, id: customerId, created_at: new Date().toISOString() }
+      const newCustomer = { ...contactCustomer, id: customerId, _pending_sync: true, created_at: new Date().toISOString() }
       cached.push(newCustomer)
       writeCache('customers', cached)
-      queueOperation('rpc', 'create_customer', { payload: newCustomer })
+      // P2-15: assign a stable _queue_id so booking records can declare _depends_on
+      bookingCustomerDepend = `customer-${customerId}`
+      queueOperation('rpc', 'create_customer', {
+        payload: {
+          ...contactCustomer,
+          id: customerId,
+          created_at: newCustomer.created_at
+        }
+      }, null, { _queue_id: bookingCustomerDepend })
     }
   }
 
@@ -4972,7 +5641,11 @@ export async function createEventBooking(data) {
           deposit_method: depositPerRoom > 0 ? paymentMethod : null,
           create_idempotency_key: createBookingIdempotencyKey(bookingId)
         }
-      }, null, { _queue_id: `booking-${bookingId}` })
+      }, null, {
+        _queue_id: `booking-${bookingId}`,
+        // P2-15: if a new customer was just queued, each booking must wait for it to land first
+        ...(bookingCustomerDepend ? { _depends_on: bookingCustomerDepend } : {})
+      })
       // Cache SECOND
       const cachedBookings = readCache('bookings')
       cachedBookings.push(newBooking)
@@ -5016,9 +5689,9 @@ export async function getOccupancyReport(startDate, endDate) {
   try {
     const { data, error } = await supabase
       .from('bookings')
-      .select('room_id, check_in, check_out, total_amount, is_exclusive_event')
+      .select('room_id, check_in, check_out, total_amount, charges_total, is_exclusive_event, status')
       .eq('lodge_id', lodgeId)
-      .neq('status', 'cancelled')
+      .not('status', 'in', '("cancelled","pending")')
       .lte('check_in', endDate)
       .gt('check_out', startDate)
     if (error) throw error
@@ -9602,7 +10275,12 @@ export async function getSupportTickets(filters = {}) {
 
 export async function createSupportTicket({ lodge_id, lodge_name, title, description, category, priority }) {
   if (!isOnline) throw new Error('Requires internet connection')
-  const { data, error } = await supabase
+  // Use the admin client when available (Command Central machine) to bypass RLS.
+  // On lodge machines (no service key), fall back to the anon client — the anon
+  // client can INSERT but cannot SELECT from support_tickets, so we skip .select()
+  // to avoid a false RLS failure on the read-back that would mask a successful insert.
+  const client = adminDb || supabase
+  const { error } = await client
     .from('support_tickets')
     .insert({
       lodge_id: lodge_id || lodgeId,
@@ -9613,9 +10291,8 @@ export async function createSupportTicket({ lodge_id, lodge_name, title, descrip
       priority: priority || 'Normal',
       status: 'open'
     })
-    .select().single()
   if (error) throw new Error(error.message)
-  return data
+  return { success: true }
 }
 
 export async function getLodgeSupportTickets(limit = 20) {
@@ -9669,7 +10346,7 @@ export async function deleteSupportTicket(id) {
 
 // ─── ADMIN: ACTIVITY LOGS ──────────────────────────────────────────────────────
 
-export async function logAdminActivity(targetLodgeId, targetLodgeName, action, details = {}) {
+async function logAdminActivity(targetLodgeId, targetLodgeName, action, details = {}) {
   if (!isOnline || !adminDb) return // fire-and-forget, silent; skip if no admin client
   adminDb.from('activity_logs').insert({
     lodge_id: targetLodgeId,
@@ -10010,8 +10687,20 @@ export async function getFinancialReconciliation() {
     invoices = invoicesResult.data || []
     posOrders = posOrdersResult.data || []
   } else {
-    bookings = readCache('bookings')
-    posOrders = readCache('pos-orders')
+    // P0-3: offline reconciliation is INVALID — payment/charge/invoice tables cannot
+    // be queried. Return an explicitly invalid result so the UI cannot show "clear".
+    return {
+      local_only: true,
+      valid: false,
+      checked_at: new Date().toISOString(),
+      summary: { paymentMismatches: 0, chargeMismatches: 0, invoiceGaps: 0, orphanInvoices: 0, folioPosMismatches: 0 },
+      paymentMismatches: [],
+      chargeMismatches: [],
+      invoiceGaps: [],
+      orphanInvoices: [],
+      folioPosMismatches: [],
+      message: 'Reconciliation cannot be verified while offline. Connect to the internet and run again.'
+    }
   }
 
   const paymentsByBooking = new Map()
@@ -10128,6 +10817,9 @@ export async function getFinancialReconciliation() {
     .filter((row) => row.issue)
 
   return {
+    valid: true,
+    local_only: false,
+    checked_at: new Date().toISOString(),
     summary: {
       paymentMismatches: paymentMismatches.length,
       chargeMismatches: chargeMismatches.length,
@@ -10185,17 +10877,6 @@ export async function getFinancialValidationSummary() {
     recentChargeVoids,
     reconciliation
   }
-}
-
-export async function getRefundApprovalLog({ bookingId = null, limit = 50 } = {}) {
-  if (!isOnline || !lodgeId) return []
-  const { data, error } = await supabase.rpc('get_refund_approval_log', {
-    p_lodge_id: lodgeId,
-    p_booking_id: bookingId || null,
-    p_limit: limit
-  })
-  if (error) throw new Error(error.message)
-  return Array.isArray(data) ? data : []
 }
 
 export async function recordInvoiceDelivery(payload = {}) {
@@ -10336,6 +11017,11 @@ export async function getFinancialValidationAlerts(limit = 30) {
 
 export function getCriticalErrorLog(limit = 100) {
   return readAuxiliaryLog(CRITICAL_ERROR_LOG_FILE).slice(0, limit)
+}
+
+export function clearCriticalErrorLog() {
+  writeAuxiliaryLog(CRITICAL_ERROR_LOG_FILE, [])
+  return { success: true }
 }
 
 export async function getSupportBundle(limit = 20) {
