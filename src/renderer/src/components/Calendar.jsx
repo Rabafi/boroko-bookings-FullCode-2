@@ -12,7 +12,7 @@ import {
   startOfMonth,
   startOfWeek
 } from 'date-fns'
-import { useSettings } from '../App'
+import { useSettings } from '../app-context'
 
 const STATUS_STYLES = {
   confirmed: 'bg-blue-100 text-blue-700',
@@ -27,6 +27,47 @@ function bookingOutstandingAmount(booking) {
 
 function currency(symbol, value) {
   return `${symbol} ${Number(value || 0).toFixed(2)}`
+}
+
+function getEventGroupId(booking) {
+  if (!booking?.is_exclusive_event && !String(booking?.notes || '').includes('[GROUP:')) return null
+  const match = String(booking?.notes || '').match(/\[GROUP:([^\]]+)\]/)
+  return match?.[1] || `${booking.customer_id || booking.customer_name || 'event'}-${booking.check_in}-${booking.check_out}`
+}
+
+function groupEventBookings(rows = []) {
+  const grouped = []
+  const groups = new Map()
+  for (const booking of rows) {
+    const groupId = getEventGroupId(booking)
+    if (!groupId) {
+      grouped.push(booking)
+      continue
+    }
+    if (!groups.has(groupId)) {
+      const parent = {
+        ...booking,
+        _event_group: true,
+        _event_booking_ids: [booking.id],
+        room_count: 1,
+        room_number: null,
+        room_type: 'Full Lodge',
+        total_amount: Number(booking.total_amount || 0),
+        charges_total: Number(booking.charges_total || 0),
+        amount_paid: Number(booking.amount_paid || 0)
+      }
+      groups.set(groupId, parent)
+      grouped.push(parent)
+      continue
+    }
+    const parent = groups.get(groupId)
+    parent._event_booking_ids.push(booking.id)
+    parent.room_count += 1
+    parent.total_amount += Number(booking.total_amount || 0)
+    parent.charges_total += Number(booking.charges_total || 0)
+    parent.amount_paid += Number(booking.amount_paid || 0)
+  }
+  return grouped
 }
 
 export default function Calendar() {
@@ -83,21 +124,21 @@ export default function Calendar() {
     const summary = {}
     monthDays.forEach((day) => {
       const dayKey = format(day, 'yyyy-MM-dd')
-      const activeBookings = bookings
+      const activeBookings = groupEventBookings(bookings
         .filter((booking) => (
           dayKey >= booking.check_in &&
           dayKey < booking.check_out &&
           booking.status !== 'cancelled'
         ))
-        .sort((a, b) => String(a.room_number || '').localeCompare(String(b.room_number || '')))
-      const arrivals = bookings.filter((booking) => booking.check_in === dayKey && booking.status !== 'cancelled')
-      const departures = bookings.filter((booking) => booking.check_out === dayKey && booking.status !== 'cancelled')
+        .sort((a, b) => String(a.room_number || '').localeCompare(String(b.room_number || ''))))
+      const arrivals = groupEventBookings(bookings.filter((booking) => booking.check_in === dayKey && booking.status !== 'cancelled'))
+      const departures = groupEventBookings(bookings.filter((booking) => booking.check_out === dayKey && booking.status !== 'cancelled'))
       const outstandingValue = activeBookings.reduce((sum, booking) => sum + bookingOutstandingAmount(booking), 0)
       const unpaidStays = activeBookings.filter((booking) => bookingOutstandingAmount(booking) > 0).length
       summary[dayKey] = {
         dayKey,
         activeBookings,
-        occupiedRooms: activeBookings.length,
+        occupiedRooms: activeBookings.reduce((sum, booking) => sum + Number(booking.room_count || 1), 0),
         arrivals,
         departures,
         checkInValue: arrivals.reduce((sum, booking) => sum + Number(booking.total_amount || 0), 0),
@@ -142,11 +183,11 @@ export default function Calendar() {
   }, [dailySummary, monthDays, rooms.length])
 
   const monthBookings = useMemo(() => (
-    [...bookings].sort((a, b) => String(a.check_in || '').localeCompare(String(b.check_in || '')))
+    groupEventBookings([...bookings]).sort((a, b) => String(a.check_in || '').localeCompare(String(b.check_in || '')))
   ), [bookings])
 
   const monthCollectionQueue = useMemo(() => (
-    [...bookings]
+    groupEventBookings([...bookings])
       .filter((booking) => booking.status !== 'cancelled' && bookingOutstandingAmount(booking) > 0)
       .sort((a, b) => {
         const statusWeight = (booking) => {
@@ -180,7 +221,8 @@ export default function Calendar() {
             Monthly occupancy patterns, arrivals, departures, and booking flow for {format(currentMonth, 'MMMM yyyy')}.
           </p>
         </div>
-        <div className="flex items-center gap-2">
+
+<div className="flex items-center gap-2">
           <button
             onClick={() => setCurrentMonth(addMonths(currentMonth, -1))}
             className="rounded-lg p-2 transition-colors hover:bg-gray-100"
@@ -345,7 +387,7 @@ export default function Calendar() {
                     <div>
                       <p className="font-semibold text-gray-800">{booking.customer_name}</p>
                       <p className="mt-1 text-sm text-gray-500">
-                        Room {booking.room_number} · {booking.room_type || 'Room'} · {booking.check_in} to {booking.check_out}
+                        {booking._event_group ? `Full Lodge · ${booking.room_count} rooms` : `Room ${booking.room_number} · ${booking.room_type || 'Room'}`} · {booking.check_in} to {booking.check_out}
                       </p>
                       {bookingOutstandingAmount(booking) > 0 && booking.status !== 'cancelled' && (
                         <p className="mt-1 text-sm font-semibold text-rose-700">
@@ -400,7 +442,7 @@ export default function Calendar() {
                   <div key={booking.id} className="flex items-center justify-between gap-3 rounded-xl border border-rose-100 bg-white/80 px-3 py-2">
                     <div className="min-w-0">
                       <p className="truncate text-sm font-semibold text-slate-900">{booking.customer_name}</p>
-                      <p className="text-xs text-slate-500">Room {booking.room_number} · {String(booking.status || '').replace('_', ' ')}</p>
+                      <p className="text-xs text-slate-500">{booking._event_group ? `Full Lodge · ${booking.room_count} rooms` : `Room ${booking.room_number}`} · {String(booking.status || '').replace('_', ' ')}</p>
                     </div>
                     <button
                       type="button"
@@ -429,7 +471,7 @@ export default function Calendar() {
                     <div>
                       <p className="font-medium text-gray-800">{booking.customer_name}</p>
                       <p className="mt-1 text-sm text-gray-500">
-                        Room {booking.room_number} · Check-in {booking.check_in} · Check-out {booking.check_out}
+                        {booking._event_group ? `Full Lodge · ${booking.room_count} rooms` : `Room ${booking.room_number}`} · Check-in {booking.check_in} · Check-out {booking.check_out}
                       </p>
                       {bookingOutstandingAmount(booking) > 0 && booking.status !== 'cancelled' && (
                         <p className="mt-1 text-xs font-semibold text-rose-700">

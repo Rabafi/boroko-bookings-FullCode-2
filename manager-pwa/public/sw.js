@@ -1,3 +1,5 @@
+/* global self, clients */
+
 const CACHE = 'boroko-manager-v2'
 const STATIC = [
   '/',
@@ -65,7 +67,7 @@ self.addEventListener('push', (event) => {
     tag: data.tag || 'boroko',
     data: sanitizeNotificationUrl(data.url)
   }))
-}))
+})
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close()

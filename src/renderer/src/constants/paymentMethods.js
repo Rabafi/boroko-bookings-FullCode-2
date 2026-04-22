@@ -22,7 +22,7 @@ export const PAYMENT_METHOD_LABELS = Object.fromEntries(
   DESKTOP_PAYMENT_METHODS.map((method) => [method.value, method.label])
 )
 
-export const PAYMENT_METHOD_PLAIN_LABELS = Object.fromEntries(
+const PAYMENT_METHOD_PLAIN_LABELS = Object.fromEntries(
   DESKTOP_PAYMENT_METHODS.map((method) => [method.value, method.plainLabel])
 )
 

@@ -10,6 +10,7 @@ import { flushOfflineQueue, getQueueStatus } from './lib/api'
 import { getRuntimeMeta, subscribeRuntimeEvent } from './lib/runtime'
 
 import Login from './pages/Login'
+import ResetPassword from './pages/ResetPassword'
 import Dashboard from './pages/Dashboard'
 
 const Rooms = lazy(() => import('./pages/Rooms'))
@@ -401,8 +402,25 @@ function AuthenticatedShell({ alertCount, dark, setDark, setAlertCount }) {
 
 function AppShell() {
   const { user, loading } = useAuth()
+  const location = useLocation()
   const [alertCount, setAlertCount] = useState(0)
   const [dark, setDark] = useDarkMode()
+  const browserPath = typeof window === 'undefined' ? '' : window.location.pathname
+  const browserHash = typeof window === 'undefined' ? '' : window.location.hash
+  const storedRecoveryMode = typeof window !== 'undefined' && sessionStorage.getItem('boroko_password_recovery') === '1'
+  const isPasswordRecoveryLink =
+    location.pathname === '/reset-password' ||
+    browserPath === '/reset-password' ||
+    browserHash.startsWith('#/reset-password') ||
+    /(?:^|[&#])type=recovery(?:&|$)/.test(browserHash) ||
+    /(?:^|[&#])access_token=/.test(browserHash)
+  const showPasswordRecovery = storedRecoveryMode || isPasswordRecoveryLink
+
+  if (isPasswordRecoveryLink && typeof window !== 'undefined') {
+    sessionStorage.setItem('boroko_password_recovery', '1')
+  }
+
+  if (showPasswordRecovery) return <ResetPassword />
 
   if (loading) {
     return (

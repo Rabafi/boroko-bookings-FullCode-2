@@ -1,12 +1,23 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Search, UserX, Clock, ChevronDown, ChevronUp, Camera, X } from 'lucide-react'
+import { Search, UserX, Clock, ChevronDown, ChevronUp, Camera, X, Pencil, Plus, RefreshCw } from 'lucide-react'
 import { Modal } from './shared/Modal'
 import HorizontalScrollArea from './shared/HorizontalScrollArea'
-import { useSettings } from '../App'
+import { useAccess, useSettings } from '../app-context'
+import { canAccessCapability } from '../../../shared/accessControl'
+
+const emptyGuestForm = {
+  name: '',
+  phone: '',
+  email: '',
+  id_number: '',
+  nationality: ''
+}
 
 export default function Guests() {
+  const access = useAccess()
   const { settings } = useSettings()
   const currency = settings?.currency || 'P'
+  const canManageGuests = canAccessCapability(access, 'guests.manage')
 
   const [customers, setCustomers] = useState([])
   const [search, setSearch]       = useState('')
@@ -29,6 +40,13 @@ export default function Guests() {
   const [photoPreview, setPhotoPreview] = useState(null)
   const [photoSaving, setPhotoSaving] = useState(false)
   const photoInputRef = useRef(null)
+
+  // Guest form
+  const [guestModalOpen, setGuestModalOpen] = useState(false)
+  const [editingCustomer, setEditingCustomer] = useState(null)
+  const [guestForm, setGuestForm] = useState(emptyGuestForm)
+  const [guestSaving, setGuestSaving] = useState(false)
+  const [guestError, setGuestError] = useState('')
 
   const openPhotoModal = (customer) => {
     setPhotoCustomer(customer)
@@ -62,12 +80,83 @@ export default function Guests() {
     loadCustomers()
   }
 
+  const [loading, setLoading] = useState(false)
+
   const loadCustomers = useCallback(async () => {
+    setLoading(true)
     const data = await window.api.customers.getAll()
     setCustomers(data || [])
+    setLoading(false)
   }, [])
 
   useEffect(() => { loadCustomers() }, [loadCustomers])
+
+  const closeGuestModal = () => {
+    setGuestModalOpen(false)
+    setEditingCustomer(null)
+    setGuestForm(emptyGuestForm)
+    setGuestError('')
+    setGuestSaving(false)
+  }
+
+  const openCreateGuest = () => {
+    setEditingCustomer(null)
+    setGuestForm(emptyGuestForm)
+    setGuestError('')
+    setGuestModalOpen(true)
+  }
+
+  const openEditGuest = (customer) => {
+    setEditingCustomer(customer)
+    setGuestForm({
+      name: customer.name || '',
+      phone: customer.phone || '',
+      email: customer.email || '',
+      id_number: customer.id_number || '',
+      nationality: customer.nationality || ''
+    })
+    setGuestError('')
+    setGuestModalOpen(true)
+  }
+
+  const handleGuestFormChange = (field, value) => {
+    setGuestForm((current) => ({ ...current, [field]: value }))
+  }
+
+  const handleGuestSubmit = async (event) => {
+    event.preventDefault()
+    if (!guestForm.name.trim()) {
+      setGuestError('Guest name is required.')
+      return
+    }
+
+    setGuestSaving(true)
+    setGuestError('')
+    try {
+      const payload = {
+        name: guestForm.name.trim(),
+        phone: guestForm.phone.trim(),
+        email: guestForm.email.trim().toLowerCase(),
+        id_number: guestForm.id_number.trim(),
+        nationality: guestForm.nationality.trim()
+      }
+
+      const result = editingCustomer
+        ? await window.api.customers.update(editingCustomer.id, payload)
+        : await window.api.customers.create(payload)
+
+      if (!result?.success) {
+        throw new Error(result?.error || `Could not ${editingCustomer ? 'update' : 'create'} guest.`)
+      }
+
+      closeGuestModal()
+      await loadCustomers()
+    } catch (error) {
+      setGuestError(error?.message || 'Could not save guest details.')
+    } finally {
+      setGuestSaving(false)
+    }
+  }
 
   const toggleHistory = async (customer) => {
     if (expandedId === customer.id) {
@@ -154,6 +243,12 @@ export default function Guests() {
             {customers.length} total · {blacklistedCount} blacklisted
           </p>
         </div>
+        {canManageGuests && (
+          <button type="button" onClick={openCreateGuest} className="btn-primary inline-flex items-center gap-2 self-start">
+            <Plus size={15} />
+            New Guest
+          </button>
+        )}
       </div>
 
       {/* Filters */}
@@ -256,6 +351,15 @@ export default function Guests() {
                   <td className="px-5 py-3">
                     <div className="flex items-center justify-center gap-1">
                       <button
+                        onClick={() => openEditGuest(c)}
+                        className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-emerald-700 transition-colors hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-50"
+                        disabled={!canManageGuests}
+                        title={!canManageGuests ? 'You do not have permission to edit guest records.' : 'Edit guest'}
+                      >
+                        <Pencil size={12} />
+                        Edit
+                      </button>
+                      <button
                         onClick={() => toggleHistory(c)}
                         className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-blue-600 transition-colors hover:bg-blue-50"
                       >
@@ -326,7 +430,17 @@ export default function Guests() {
                 )}
               </Fragment>
             ))}
-            {filtered.length === 0 && (
+            {loading && customers.length === 0 && (
+              <tr>
+                <td colSpan={8} className="px-5 py-10">
+                  <div className="flex items-center justify-center gap-3 py-10 text-sm text-gray-500">
+                    <RefreshCw size={16} className="animate-spin" />
+                    Loading guests…
+                  </div>
+                </td>
+              </tr>
+            )}
+            {!loading && filtered.length === 0 && (
               <tr>
                 <td colSpan={8} className="px-5 py-10">
                   <div className="bb-empty-state py-10">
@@ -340,6 +454,79 @@ export default function Guests() {
         </table>
         </HorizontalScrollArea>
       </div>
+
+      {guestModalOpen && (
+        <Modal
+          title={editingCustomer ? `Edit Guest — ${editingCustomer.name}` : 'Add Guest'}
+          onClose={closeGuestModal}
+          size="md"
+        >
+          <form onSubmit={handleGuestSubmit} className="space-y-4">
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="md:col-span-2">
+                <label className="mb-1 block text-sm font-medium text-gray-700">Guest Name *</label>
+                <input
+                  className="input"
+                  value={guestForm.name}
+                  onChange={(event) => handleGuestFormChange('name', event.target.value)}
+                  placeholder="Guest full name"
+                  required
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">Phone</label>
+                <input
+                  className="input"
+                  value={guestForm.phone}
+                  onChange={(event) => handleGuestFormChange('phone', event.target.value)}
+                  placeholder="+267 ..."
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">Email</label>
+                <input
+                  type="email"
+                  className="input"
+                  value={guestForm.email}
+                  onChange={(event) => handleGuestFormChange('email', event.target.value)}
+                  placeholder="guest@email.com"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">ID / Passport</label>
+                <input
+                  className="input"
+                  value={guestForm.id_number}
+                  onChange={(event) => handleGuestFormChange('id_number', event.target.value)}
+                  placeholder="Passport or ID number"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">Nationality</label>
+                <input
+                  className="input"
+                  value={guestForm.nationality}
+                  onChange={(event) => handleGuestFormChange('nationality', event.target.value)}
+                  placeholder="Nationality"
+                />
+              </div>
+            </div>
+            {guestError && (
+              <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                {guestError}
+              </div>
+            )}
+            <div className="flex gap-3">
+              <button type="button" onClick={closeGuestModal} className="btn-secondary flex-1" disabled={guestSaving}>
+                Cancel
+              </button>
+              <button type="submit" className="btn-primary flex-1" disabled={guestSaving}>
+                {guestSaving ? 'Saving...' : editingCustomer ? 'Save Changes' : 'Create Guest'}
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
 
       {/* ID Photo modal */}
       {photoCustomer && (

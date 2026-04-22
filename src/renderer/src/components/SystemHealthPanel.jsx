@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   AlertTriangle, CheckCircle2, Database, Download, HardDrive,
@@ -38,6 +38,112 @@ function formatTs(ts) {
   try { return new Date(ts).toLocaleString('en-GB') } catch { return ts }
 }
 
+function HumanContext({ details, rooms, customers }) {
+  if (!details || typeof details !== 'object') return null
+
+  // Flatten common payload structures
+  const flattened = { 
+    ...(details.data?.payload || {}),
+    ...(details.data || {}),
+    ...(details.payload || {}), 
+    ...details 
+  }
+  
+  const findRoom = (id) => rooms.find(r => r.id === Number(id) || r.id === String(id))
+  const findCustomer = (id) => customers.find(c => c.id === Number(id) || c.id === String(id))
+
+  const entries = Object.entries(flattened)
+    .filter(([key, val]) => {
+      const skipKeys = [
+        'payload', 'data', 'lodge_id', 'created_at', 'updated_at', 
+        '_queue_id', 'type', 'at', 'id', 'p_id', 'p_lodge_id', 'operation', 'scope'
+      ]
+      if (val === null || val === undefined || val === '') return false
+      if (typeof val === 'object' && !Array.isArray(val)) return false
+      if (skipKeys.includes(key.toLowerCase())) return false
+      return true
+    })
+    .map(([key, val]) => {
+      let label = key.replace(/_/g, ' ').replace(/^p /, '')
+      label = label.charAt(0).toUpperCase() + label.slice(1)
+      
+      let displayVal = val
+      if (key.toLowerCase().includes('room_id')) {
+        const r = findRoom(val)
+        if (r) displayVal = `Room ${r.room_number}`
+      } else if (key.toLowerCase().includes('customer_id')) {
+        const c = findCustomer(val)
+        if (c) displayVal = c.name
+      } else if (key.toLowerCase().includes('amount') || key.toLowerCase().includes('rate') || key.toLowerCase().includes('total') || key.toLowerCase().includes('balance')) {
+        if (!isNaN(val)) displayVal = Number(val).toLocaleString(undefined, { minimumFractionDigits: 2 })
+      }
+
+      return { label, value: String(displayVal) }
+    })
+
+  if (entries.length === 0) return null
+
+  return (
+    <div className="mt-2 space-y-1 rounded-lg bg-white/60 p-2.5 ring-1 ring-black/5 shadow-sm">
+      {entries.map((entry, i) => (
+        <div key={i} className="flex justify-between gap-4 text-[11px] leading-relaxed">
+          <span className="font-semibold text-slate-500 shrink-0">{entry.label}</span>
+          <span className="text-slate-900 text-right truncate max-w-[200px] font-medium">{entry.value}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// Sanitize a raw sync error string for display to front-desk operators.
+// Strips UUIDs and maps known technical patterns to plain English.
+function sanitizeForOperator(raw) {
+  if (!raw) return 'Unknown sync failure'
+  const msg = String(raw)
+  if (/room.*conflict|no_overlapping_bookings/i.test(msg)) return 'Room conflict — this room was already booked for the selected dates.'
+  if (/idempotency.*required/i.test(msg)) return 'Operation requires a retry key — retry this item.'
+  if (/authenticated.*required|authentication.*required|session.*required/i.test(msg)) return 'Session expired — sign in again, then retry.'
+  if (/lodge.*role|permission denied|insufficient.*privilege/i.test(msg)) return 'Permission denied — check the account role in Settings.'
+  if (/unique.*violation|duplicate key/i.test(msg)) return 'Duplicate record — this item may already exist on the server.'
+  if (/not found/i.test(msg)) return 'Record not found on server — it may have been deleted remotely.'
+  if (/overpay/i.test(msg)) return 'Payment would exceed the booking total — adjust and retry.'
+  if (/below zero/i.test(msg)) return 'Adjustment would reduce paid balance below zero.'
+  const cleaned = msg
+    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, '…')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return cleaned.length > 140 ? `${cleaned.slice(0, 137)}…` : cleaned
+}
+
+// Human-readable labels for sync queue operation names shown to operators.
+const SYNC_OP_LABEL = {
+  create_booking:           'New booking',
+  create_booking_record:    'New booking',
+  update_booking:           'Update booking',
+  update_booking_status:    'Booking status change',
+  update_booking_payment:   'Payment',
+  create_customer:          'New guest',
+  update_customer:          'Update guest',
+  update_customer_blacklist:'Update guest blacklist',
+  create_room:              'New room',
+  update_room:              'Update room',
+  update_room_housekeeping: 'Housekeeping update',
+  create_quotation:         'New quotation',
+  update_quotation:         'Update quotation',
+  mark_quotation_sent:      'Quotation sent',
+  convert_quotation:        'Quotation conversion',
+  create_user:              'New staff account',
+  update_user_profile:      'Staff profile update',
+  set_user_password:        'Password change',
+  delete_user:              'Remove staff account',
+  add_booking_charge:       'Booking charge',
+  void_pos_order:           'POS void',
+}
+
+function syncOpLabel(table) {
+  return SYNC_OP_LABEL[table] || table || 'Unknown operation'
+}
+
 // ─── Main component ────────────────────────────────────────────────────────────
 
 export default function SystemHealthPanel() {
@@ -51,10 +157,15 @@ export default function SystemHealthPanel() {
   const [validationRuns, setValidationRuns] = useState([])
   const [validationAlerts, setValidationAlerts] = useState([])
   const [criticalErrors, setCriticalErrors] = useState([])
+  const [deviceHealthRollup, setDeviceHealthRollup] = useState({ available: false, devices: [] })
   const [loading, setLoading]             = useState(false)
   const [actionBusy, setActionBusy]       = useState('')
   const [flash, setFlash]                 = useState(null)
   const [rendererErrors, setRendererErrors] = useState([])
+  const [rooms, setRooms]                 = useState([])
+  const [customers, setCustomers]         = useState([])
+  // Track current pending count so post-sync polling can detect when items drain
+  const pendingCountRef = useRef(0)
 
   const load = async () => {
     setLoading(true)
@@ -62,7 +173,8 @@ export default function SystemHealthPanel() {
       const [
         systemHealth, settingsSnapshot, validatedUser, details,
         reconciliationSummary, validationSummary, validationHistory,
-        nextRendererErrors, nextValidationAlerts, nextCriticalErrors
+        nextRendererErrors, nextValidationAlerts, nextCriticalErrors,
+        nextDeviceHealthRollup, nextRooms, nextCustomers
       ] = await Promise.all([
         window.api.settings.getSystemHealth().catch((e) => ({ error: e.message })),
         window.api.settings.get().catch(() => null),
@@ -73,13 +185,18 @@ export default function SystemHealthPanel() {
         window.api.reports.financialValidationRuns(10).catch(() => []),
         window.api.app?.getRendererErrors?.(6).catch(() => []) || Promise.resolve([]),
         window.api.reports.financialValidationAlerts?.(8).catch(() => []) || Promise.resolve([]),
-        window.api.reports.criticalErrors?.(8).catch(() => []) || Promise.resolve([])
+        window.api.reports.criticalErrors?.(8).catch(() => []) || Promise.resolve([]),
+        window.api.sync.getDeviceHealthRollup().catch(() => ({ available: false, devices: [] })),
+        window.api.rooms.getAll().catch(() => []),
+        window.api.customers.getAll().catch(() => [])
       ])
       setHealth(systemHealth || null)
       setGlobalSettings(settingsSnapshot || null)
       setSessionUser(validatedUser || null)
+      const nextPending = Array.isArray(details?.pending) ? details.pending : []
+      pendingCountRef.current = nextPending.length
       setSyncDetails({
-        pending:        Array.isArray(details?.pending) ? details.pending : [],
+        pending:        nextPending,
         failed:         Array.isArray(details?.failed) ? details.failed : [],
         faults:         Array.isArray(details?.faults) ? details.faults : [],
         cacheFreshness: details?.cacheFreshness && typeof details.cacheFreshness === 'object' ? details.cacheFreshness : {},
@@ -89,6 +206,7 @@ export default function SystemHealthPanel() {
         replayAuthReady: details?.replayAuthReady !== false,
         financialPendingBookingIds: Array.isArray(details?.financialPendingBookingIds) ? details.financialPendingBookingIds : [],
         financialFailedBookingIds:  Array.isArray(details?.financialFailedBookingIds)  ? details.financialFailedBookingIds  : [],
+        unresolvedLocal: details?.unresolvedLocal || null,
         error: details?.error || ''
       })
       setReconciliation(reconciliationSummary || null)
@@ -97,6 +215,9 @@ export default function SystemHealthPanel() {
       setRendererErrors(Array.isArray(nextRendererErrors) ? nextRendererErrors : [])
       setValidationAlerts(Array.isArray(nextValidationAlerts) ? nextValidationAlerts : [])
       setCriticalErrors(Array.isArray(nextCriticalErrors) ? nextCriticalErrors : [])
+      setDeviceHealthRollup(nextDeviceHealthRollup || { available: false, devices: [] })
+      setRooms(Array.isArray(nextRooms) ? nextRooms : [])
+      setCustomers(Array.isArray(nextCustomers) ? nextCustomers : [])
     } catch (error) {
       pushFlash('error', error?.message || 'Could not refresh system health.')
     } finally {
@@ -104,7 +225,21 @@ export default function SystemHealthPanel() {
     }
   }
 
-  useEffect(() => { load() }, [])
+  // Initial load + subscribe to real-time sync status events so the panel
+  // auto-refreshes whenever the background sync loop emits a status change
+  // (this mirrors what App.jsx, Layout.jsx, and POS.jsx already do).
+  useEffect(() => {
+    load()
+
+    if (!window.api?.sync?.onStatusChanged) return
+    const unsubscribe = window.api.sync.onStatusChanged(() => {
+      // A status-changed event fires when sync starts, processes an item, or
+      // finishes. Reload the full health snapshot so all counters stay current.
+      load()
+    })
+    return () => unsubscribe?.()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const pushFlash = (type, text) => {
     setFlash({ type, text })
@@ -121,8 +256,27 @@ export default function SystemHealthPanel() {
         pushFlash('error', result.error || 'Could not run sync right now.')
         return
       }
-      pushFlash('success', 'Sync triggered. Refreshing status…')
-      await load()
+      pushFlash('success', 'Sync running… status will update automatically.')
+      // runNow() fires the sync asynchronously — poll until items drain or
+      // sync finishes (up to ~15 s). The onStatusChanged subscription above
+      // will also update the panel reactively while we poll here.
+      const previousPending = pendingCountRef.current
+      const pollIntervalMs = 1500
+      const maxAttempts = 10 // 10 × 1.5 s = 15 s max
+      let attempts = 0
+      const poll = async () => {
+        if (attempts >= maxAttempts) return
+        attempts++
+        await load()
+        const currentPending = pendingCountRef.current
+        // Stop polling once pending items have drained or count changed meaningfully
+        if (currentPending < previousPending || currentPending === 0) return
+        await new Promise((res) => setTimeout(res, pollIntervalMs))
+        await poll()
+      }
+      // Wait a short moment before first poll so the sync engine can start
+      await new Promise((res) => setTimeout(res, 800))
+      await poll()
     } finally {
       setActionBusy('')
     }
@@ -312,17 +466,21 @@ export default function SystemHealthPanel() {
   const failedCount        = Number(syncDetails?.failed?.length || health?.sync?.failed || 0)
   const faults             = syncDetails?.faults || []
   const blockingFaults     = faults.filter((f) => ['queue_corrupt', 'cache_corrupt'].includes(f.type))
-  const driftFaults        = faults.filter((f) => f.type === 'booking_drift')
+  const manualReviewFaults = faults.filter((f) => ['financial_dead_letter_cleared', 'ghost_update'].includes(f.type))
+  const driftFaults        = faults.filter((f) => ['booking_drift', 'quotation_drift', 'pos_drift', 'customer_drift', 'room_drift'].includes(f.type))
+  const infoFaults         = faults.filter((f) => !blockingFaults.includes(f) && !manualReviewFaults.includes(f) && !driftFaults.includes(f))
   const manualClearFaults  = faults.filter((f) => ['financial_dead_letter_cleared', 'dead_letter_cleared'].includes(f.type))
   const ghostFaults        = faults.filter((f) => f.type === 'ghost_update')
-  const convergenceFaults  = faults.filter((f) => ['booking_drift', 'ghost_update'].includes(f.type))
-  const integrityRiskFaults = faults.filter((f) => ['financial_dead_letter_cleared', 'dead_letter_cleared', 'ghost_update', 'booking_drift'].includes(f.type))
+  const convergenceFaults  = faults.filter((f) => ['booking_drift', 'quotation_drift', 'pos_drift', 'ghost_update'].includes(f.type))
+  const integrityRiskFaults = faults.filter((f) => ['financial_dead_letter_cleared', 'dead_letter_cleared', 'ghost_update', 'booking_drift', 'quotation_drift', 'pos_drift'].includes(f.type))
+  const unresolvedLocal    = syncDetails?.unresolvedLocal || null
   const syncMeta           = syncDetails?.syncMeta || {}
   const syncRunning        = syncDetails?.syncInProgress === true || health?.sync?.syncInProgress === true
   const replayAuthReady    = syncDetails?.replayAuthReady !== false
   const lastSyncAt         = syncDetails?.syncMeta?.lastSyncFinishedAt || health?.sync?.lastSuccessfulSyncAt || null
   const lastSyncOutcome    = syncMeta?.lastSyncOutcome || null
   const lastSyncError      = syncMeta?.lastSyncError || ''
+  const syncState          = syncRunning ? 'Syncing' : failedCount > 0 ? 'Failed' : 'Idle'
   const cacheFreshness     = syncDetails?.cacheFreshness || {}
   const staleCaches        = Object.entries(cacheFreshness).filter(([, m]) => m.stale).map(([k]) => k)
   const needsAttention     = failedCount > 0 || pendingCount > 0 || cacheStale || blockingFaults.length > 0 || integrityRiskFaults.length > 0 || lastSyncOutcome === 'partial' || lastSyncOutcome === 'failed'
@@ -336,10 +494,48 @@ export default function SystemHealthPanel() {
   const financialPendingBookingIds = syncDetails?.financialPendingBookingIds || []
   const financialFailedCount    = financialFailedBookingIds.length
   const financialPendingCount   = financialPendingBookingIds.length
+  const localStateAcknowledged = unresolvedLocal?.total === 0 && health?.online === true && replayAuthReady && pendingCount === 0
 
   const getFailedItemBookingId = (item) => (
     item?.data?.p_booking_id || item?.data?.payload?.id || item?.data?.payload?.booking_id || item?.data?.p_id || null
   )
+
+  /**
+   * Returns domain-aware action metadata (label, route, state) for a sync queue item or fault.
+   * This ensures POS failures lead to POS, and Booking failures lead to Bookings.
+   */
+  const getSyncItemAction = (item) => {
+    // POS Orders
+    if (item.table === 'create_pos_order' || item.scope === 'pos' || item.type?.startsWith('pos_')) {
+      return {
+        label: 'Review POS Order',
+        route: '/pos',
+        state: { tab: 'history' }
+      }
+    }
+
+    // Booking Payments
+    if (item.table === 'update_booking_payment') {
+      const bid = getFailedItemBookingId(item)
+      return bid ? {
+        label: 'Collect Payment',
+        route: '/bookings',
+        state: { collectPaymentBookingId: bid }
+      } : null
+    }
+
+    // Generic Bookings
+    const bookingId = getFailedItemBookingId(item) || (item.context && item.context.booking_id) || (typeof item.scope === 'string' && item.scope.startsWith('booking:') ? item.scope.slice(8) : null)
+    if (bookingId) {
+      return {
+        label: 'Review Booking',
+        route: '/bookings',
+        state: { reviewBookingId: bookingId }
+      }
+    }
+
+    return null
+  }
 
   const getFaultBookingId = (fault) => {
     if (fault?.context?.booking_id) return fault.context.booking_id
@@ -423,14 +619,19 @@ export default function SystemHealthPanel() {
         </div>
       ))}
 
-      {/* P2-16: Post-sync booking drift alerts */}
+      {/* Convergence Drift alerts (booking_drift, quotation_drift, pos_drift) */}
       {driftFaults.map((fault) => (
         <div key={fault.id} className="rounded-2xl border border-amber-300 bg-amber-50 px-5 py-4">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="flex items-start gap-3">
               <AlertTriangle size={18} className="mt-0.5 shrink-0 text-amber-700" />
               <div>
-                <p className="text-sm font-bold text-amber-900">Post-Sync Booking Drift Detected</p>
+                <p className="text-xs font-semibold uppercase tracking-wide text-amber-600 mb-0.5">Convergence Drift</p>
+                <p className="text-sm font-bold text-amber-900">
+                  {fault.type === 'quotation_drift' ? 'Post-Sync Quotation Drift Detected'
+                    : fault.type === 'pos_drift' ? 'Post-Sync POS Order Drift Detected'
+                    : 'Post-Sync Booking Drift Detected'}
+                </p>
                 <p className="mt-1 text-sm text-amber-800/80">{fault.message}</p>
                 <p className="mt-1 text-xs text-amber-700/70">{formatTs(fault.at)}</p>
               </div>
@@ -450,17 +651,21 @@ export default function SystemHealthPanel() {
             <div className="flex items-start gap-3">
               <AlertTriangle size={18} className="mt-0.5 shrink-0 text-rose-700" />
               <div>
+                <p className="text-xs font-semibold uppercase tracking-wide text-rose-600 mb-0.5">Manual Review Required</p>
                 <p className="text-sm font-bold text-rose-900">Server Mismatch Detected During Replay</p>
                 <p className="mt-1 text-sm text-rose-800/80">{fault.message}</p>
                 <p className="mt-1 text-xs text-rose-700/70">{formatTs(fault.at)}</p>
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              {getFaultBookingId(fault) && (
+              {getSyncItemAction(fault) && (
                 <button type="button"
-                  onClick={() => navigate('/bookings', { state: { reviewBookingId: getFaultBookingId(fault) } })}
+                  onClick={() => {
+                    const action = getSyncItemAction(fault)
+                    navigate(action.route, { state: action.state })
+                  }}
                   className="rounded-lg border border-rose-300 bg-white px-3 py-1.5 text-xs font-semibold text-rose-800 transition hover:bg-rose-50">
-                  Open Booking
+                  {getSyncItemAction(fault).label}
                 </button>
               )}
               <button type="button" onClick={() => dismissFault(fault.id)}
@@ -479,17 +684,21 @@ export default function SystemHealthPanel() {
             <div className="flex items-start gap-3">
               <AlertTriangle size={18} className="mt-0.5 shrink-0 text-red-700" />
               <div>
+                <p className="text-xs font-semibold uppercase tracking-wide text-red-600 mb-0.5">Manual Review Required</p>
                 <p className="text-sm font-bold text-red-900">Manual Clear Left Integrity Unproven</p>
                 <p className="mt-1 text-sm text-red-800/80">{fault.message}</p>
                 <p className="mt-1 text-xs text-red-700/70">{formatTs(fault.at)}</p>
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              {getFaultBookingId(fault) && (
+              {getSyncItemAction(fault) && (
                 <button type="button"
-                  onClick={() => navigate('/bookings', { state: { reviewBookingId: getFaultBookingId(fault) } })}
+                  onClick={() => {
+                    const action = getSyncItemAction(fault)
+                    navigate(action.route, { state: action.state })
+                  }}
                   className="rounded-lg border border-red-300 bg-white px-3 py-1.5 text-xs font-semibold text-red-800 transition hover:bg-red-50">
-                  Open Booking
+                  {getSyncItemAction(fault).label}
                 </button>
               )}
               <button type="button" onClick={() => dismissFault(fault.id)}
@@ -502,6 +711,74 @@ export default function SystemHealthPanel() {
         </div>
       ))}
 
+
+      {/* Info faults (muted/gray) */}
+      {infoFaults.map((fault) => (
+        <div key={fault.id} className="rounded-2xl border border-slate-200 bg-slate-50 px-5 py-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="flex items-start gap-3">
+              <Info size={16} className="mt-0.5 shrink-0 text-slate-400" />
+              <div>
+                <p className="text-sm font-medium text-slate-700">{fault.message || fault.type}</p>
+                <p className="mt-0.5 text-xs text-slate-500">{fault.type} · {fault.scope} · {formatTs(fault.at)}</p>
+              </div>
+            </div>
+            <button type="button" onClick={() => dismissFault(fault.id)}
+              disabled={actionBusy === `fault:${fault.id}`}
+              className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-slate-100 disabled:opacity-60">
+              {actionBusy === `fault:${fault.id}` ? '…' : 'Dismiss'}
+            </button>
+          </div>
+        </div>
+      ))}
+
+      {/* Unresolved Local State card */}
+      {unresolvedLocal && (
+        <div className={`rounded-2xl border px-5 py-4 ${localStateAcknowledged ? 'border-slate-200 bg-slate-50' : 'border-amber-200 bg-amber-50'}`}>
+          <div className="flex items-start gap-3">
+            <Database size={16} className={`mt-0.5 shrink-0 ${localStateAcknowledged ? 'text-slate-400' : 'text-amber-600'}`} />
+            <div className="flex-1">
+              <p className={`text-sm font-semibold ${localStateAcknowledged ? 'text-slate-600' : 'text-amber-900'}`}>
+                {unresolvedLocal.total > 0
+                  ? `Unresolved Local State (${unresolvedLocal.total} record${unresolvedLocal.total === 1 ? '' : 's'})`
+                  : localStateAcknowledged
+                    ? 'All local state acknowledged'
+                    : 'Local state acknowledgement not yet proven'}
+              </p>
+              {unresolvedLocal.total > 0 && (
+                <div className="mt-2 space-y-1">
+                  {[
+                    { key: 'bookings', label: 'Bookings' },
+                    { key: 'customers', label: 'Customers' },
+                    { key: 'rooms', label: 'Rooms' },
+                    { key: 'users', label: 'Users' },
+                    { key: 'quotations', label: 'Quotations' },
+                    { key: 'posOrders', label: 'POS Orders' }
+                  ].filter(({ key }) => (unresolvedLocal[key]?.count ?? 0) > 0).map(({ key, label }) => (
+                    <div key={key} className="text-xs text-amber-800">
+                      <span className="font-medium">{label}:</span> {unresolvedLocal[key].count} unresolved
+                      {unresolvedLocal[key].ids?.length > 0 && (
+                        <span className="ml-1 text-amber-700/70">({unresolvedLocal[key].ids.slice(0, 3).map(id => String(id).slice(0, 8)).join(', ')}{unresolvedLocal[key].ids.length > 3 ? '…' : ''})</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {unresolvedLocal.total === 0 && !localStateAcknowledged && (
+                <p className="mt-1 text-xs text-amber-800/80">
+                  Queue is not yet in a state where this device can prove local changes are fully acknowledged remotely.
+                  {!health?.online && ' App is offline.'}
+                  {health?.online && !replayAuthReady && ' Replay is paused until an authenticated session is restored.'}
+                  {pendingCount > 0 && ' Pending queue items still exist.'}
+                </p>
+              )}
+              {localStateAcknowledged && (
+                <p className="mt-0.5 text-xs text-slate-500">(this device only)</p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* General attention banner */}
       {needsAttention && !blockingFaults.length && (
@@ -612,43 +889,47 @@ export default function SystemHealthPanel() {
       {/* Top stat cards */}
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         {/* Connectivity + sync recency */}
-        <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-gray-200">
+        <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-gray-200" data-testid="system-health-sync-card">
           <div className="flex items-center gap-3">
             <div className="rounded-xl bg-blue-50 p-2 text-blue-600"><Wifi size={18} /></div>
             <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-gray-500">Connectivity</p>
-              <p className="mt-1 text-lg font-bold text-gray-900">{health?.online ? 'Online' : 'Offline'}</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-gray-500">Sync Status</p>
+              <p className="mt-1 text-lg font-bold text-gray-900">{syncState}</p>
             </div>
           </div>
-          <p className="mt-3 text-sm text-gray-500">Pending sync: {health?.sync?.pending ?? 0}</p>
-          {/* P0-1: last sync recency */}
-          {lastSyncAt ? (
-            <p className="mt-1 text-xs text-gray-400">
-              Last clean sync: {formatTs(lastSyncAt)}
-              {lastSyncOutcome === 'partial' && <span className="ml-1 text-amber-600">(partial)</span>}
-              {lastSyncOutcome === 'failed'  && <span className="ml-1 text-red-600">(failed)</span>}
-            </p>
-          ) : (
-            <p className="mt-1 text-xs text-amber-600 font-medium">No sync recorded since last startup</p>
-          )}
+          <div className="mt-3 grid grid-cols-2 gap-3 text-sm">
+            <div className="rounded-xl bg-gray-50 px-3 py-2">
+              <p className="text-[11px] uppercase tracking-[0.12em] text-gray-400">Pending</p>
+              <p className="mt-1 text-lg font-bold text-gray-900">{pendingCount}</p>
+            </div>
+            <div className="rounded-xl bg-gray-50 px-3 py-2">
+              <p className="text-[11px] uppercase tracking-[0.12em] text-gray-400">Failed</p>
+              <p className={`mt-1 text-lg font-bold ${failedCount > 0 ? 'text-red-700' : 'text-gray-900'}`}>{failedCount}</p>
+            </div>
+          </div>
+          <p className="mt-3 text-sm text-gray-600">
+            {syncRunning
+              ? 'Sync is running now.'
+              : pendingCount > 0
+                ? 'Pending items are waiting to be sent.'
+                : 'No sync activity is running right now.'}
+          </p>
+          <p className="mt-1 text-xs text-gray-400">
+            Last successful sync: {lastSyncAt ? formatTs(lastSyncAt) : 'No successful sync recorded yet'}
+          </p>
           {lastSyncError && (
             <p className="mt-1 text-xs text-red-600">{lastSyncError}</p>
-          )}
-          {cacheStale && (
-            <p className="mt-2 text-xs text-amber-700">
-              Fresh {syncDetails?.cacheStale?.names?.join(', ') || 'booking'} data is still retrying.
-            </p>
           )}
         </div>
 
         {/* Finance contract */}
-        <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-gray-200">
+        <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-gray-200" data-testid="system-health-failed-queue">
           <div className="flex items-center gap-3">
             <div className="rounded-xl bg-emerald-50 p-2 text-emerald-600"><ShieldCheck size={18} /></div>
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.16em] text-gray-500">Finance Contract</p>
               <p className={`mt-1 text-lg font-bold ${financeRpcOk && contractAllOk ? 'text-gray-900' : 'text-red-700'}`}>
-                {financeRpcOk && contractAllOk ? 'All RPCs Ready' : 'Needs Attention'}
+                {financeRpcOk && contractAllOk ? 'All RPCs Ready' : 'RPC Unavailable'}
               </p>
             </div>
           </div>
@@ -663,11 +944,11 @@ export default function SystemHealthPanel() {
           <div className="flex items-center gap-3">
             <div className="rounded-xl bg-amber-50 p-2 text-amber-600"><AlertTriangle size={18} /></div>
             <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-gray-500">Failed Sync</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-gray-500">Failed Sync Queue</p>
               <p className={`mt-1 text-lg font-bold ${failedCount > 0 ? 'text-red-700' : 'text-gray-900'}`}>{failedCount}</p>
             </div>
           </div>
-          <p className="mt-3 text-sm text-gray-500">Review, retry, or clear dead-lettered operations.</p>
+          <p className="mt-3 text-sm text-gray-500">Review items that could not sync and check the reason shown below.</p>
           {financialFailedCount > 0 && (
             <p className="mt-1 text-xs font-semibold text-red-700">{financialFailedCount} financial operation{financialFailedCount === 1 ? '' : 's'} affected</p>
           )}
@@ -705,7 +986,7 @@ export default function SystemHealthPanel() {
             <div className="flex items-center justify-between gap-3">
               <div>
                 <h3 className="text-sm font-semibold text-gray-900">Sync Recovery</h3>
-                <p className="mt-1 text-xs text-gray-500">Operations that failed repeated sync attempts and were parked locally.</p>
+                <p className="mt-1 text-xs text-gray-500">Operations that failed repeated sync attempts. See the reason under each item, then retry or open the booking to resolve.</p>
               </div>
               <div className="flex gap-2">
                 <button type="button" onClick={retryFailed} disabled={actionBusy === 'retry' || !syncDetails?.failed?.length}
@@ -737,18 +1018,22 @@ export default function SystemHealthPanel() {
                         : 'Auto-retry armed'
                     : 'Manual retry required'
                   return (
-                    <div key={item._queue_id} className={`rounded-xl border p-4 ${isFinancial ? 'border-red-200 bg-red-50/40' : 'border-gray-200'}`}>
+                    <div
+                      key={item._queue_id}
+                      className={`rounded-xl border p-4 ${isFinancial ? 'border-red-200 bg-red-50/40' : 'border-gray-200'}`}
+                      data-testid="system-health-failed-item"
+                    >
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="flex items-center gap-2">
                           <StatusPill ok={false} label={(item.type || 'op').toUpperCase()} />
-                          <span className="text-sm font-semibold text-gray-900">{item.table || 'Unknown operation'}</span>
+                          <span className="text-sm font-semibold text-gray-900">{syncOpLabel(item.table)}</span>
                           {isFinancial && <span className="rounded-full bg-red-100 px-2 py-0.5 text-[11px] font-semibold text-red-700">Financial</span>}
                         </div>
                         <span className="text-xs text-gray-400">
                           {item.lastAttemptedAt ? formatTs(item.lastAttemptedAt) : 'Not attempted recently'}
                         </span>
                       </div>
-                      <p className="mt-2 text-sm text-red-700">{item.lastError || 'Unknown sync failure'}</p>
+                      <p className="mt-2 text-sm text-red-700">{sanitizeForOperator(item.lastError)}</p>
                       {/* P1-11: retry classification */}
                       <p className={`mt-1 text-xs font-medium ${isAutoRetryable ? 'text-blue-600' : 'text-amber-700'}`}>
                         {retryLabel}
@@ -756,15 +1041,14 @@ export default function SystemHealthPanel() {
                       <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
                         <p className="text-xs text-gray-500">Queue ID: {item._queue_id || '—'}</p>
                         <div className="flex flex-wrap items-center gap-2">
-                          {getFailedItemBookingId(item) && (
+                          {getSyncItemAction(item) && (
                             <button type="button"
-                              onClick={() => navigate('/bookings', {
-                                state: item.table === 'update_booking_payment'
-                                  ? { collectPaymentBookingId: getFailedItemBookingId(item) }
-                                  : { reviewBookingId: getFailedItemBookingId(item) }
-                              })}
+                              onClick={() => {
+                                const action = getSyncItemAction(item)
+                                navigate(action.route, { state: action.state })
+                              }}
                               className="inline-flex items-center gap-2 rounded-lg border border-blue-200 px-3 py-1.5 text-xs font-semibold text-blue-700 transition hover:bg-blue-50">
-                              Open in Bookings
+                              {getSyncItemAction(item).label}
                             </button>
                           )}
                           <button type="button" onClick={() => retryFailedItem(item._queue_id)}
@@ -783,7 +1067,7 @@ export default function SystemHealthPanel() {
           </div>
 
           {/* Pending queue */}
-          <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-gray-200">
+          <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-gray-200" data-testid="system-health-pending-queue">
             <div className="flex items-center justify-between gap-3">
               <div>
                 <h3 className="text-sm font-semibold text-gray-900">Pending Sync Queue</h3>
@@ -798,11 +1082,11 @@ export default function SystemHealthPanel() {
                 </div>
               ) : (
                 syncDetails.pending.slice(0, 6).map((item) => (
-                  <div key={item._queue_id} className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3">
+                  <div key={item._queue_id} className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3" data-testid="system-health-pending-item">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="flex items-center gap-2">
                         <StatusPill ok={false} label={(item.type || 'op').toUpperCase()} warn />
-                        <span className="text-sm font-semibold text-gray-900">{item.table || 'Queued operation'}</span>
+                        <span className="text-sm font-semibold text-gray-900">{syncOpLabel(item.table)}</span>
                       </div>
                       <span className="text-xs text-gray-400">
                         {item.createdAt ? formatTs(item.createdAt) : 'Queued locally'}
@@ -847,10 +1131,14 @@ export default function SystemHealthPanel() {
                       <p className={`text-sm font-semibold ${isHighRisk ? 'text-red-900' : 'text-amber-900'}`}>{fault.type?.replace(/_/g, ' ')}</p>
                       <div className="flex items-center gap-2">
                         <span className={`text-xs ${isHighRisk ? 'text-red-700/80' : 'text-amber-700/80'}`}>{formatTs(fault.at)}</span>
-                        {bookingId && (
-                          <button type="button" onClick={() => navigate('/bookings', { state: { reviewBookingId: bookingId } })}
+                        {getSyncItemAction(fault) && (
+                          <button type="button"
+                            onClick={() => {
+                              const action = getSyncItemAction(fault)
+                              navigate(action.route, { state: action.state })
+                            }}
                             className={`rounded border bg-white px-2 py-0.5 text-[11px] font-medium ${isHighRisk ? 'border-red-300 text-red-800 hover:bg-red-50' : 'border-amber-300 text-amber-800 hover:bg-amber-50'}`}>
-                            Open Booking
+                            {getSyncItemAction(fault).label}
                           </button>
                         )}
                         <button type="button" onClick={() => dismissFault(fault.id)}
@@ -874,7 +1162,7 @@ export default function SystemHealthPanel() {
 
           {/* Sync metadata + contract */}
           <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-gray-200">
-            <h3 className="text-sm font-semibold text-gray-900">Sync Status Detail</h3>
+            <h3 className="text-sm font-semibold text-gray-900" data-testid="system-health-sync-detail">Sync Status Detail</h3>
             <div className="mt-4 space-y-2 text-sm">
               <div className="flex items-center justify-between gap-2">
                 <span className="text-gray-500">Last sync finished</span>
@@ -973,7 +1261,10 @@ export default function SystemHealthPanel() {
                   Not run yet
                 </span>
               ) : (
-                <StatusPill ok={financeMismatchCount + invoiceGapCount === 0} label={financeMismatchCount + invoiceGapCount === 0 ? 'Clear' : `${financeMismatchCount + invoiceGapCount} issues`} />
+                <StatusPill 
+                  ok={financeMismatchCount + invoiceGapCount + Number(reconciliationSummary.pendingRefunds || 0) === 0} 
+                  label={financeMismatchCount + invoiceGapCount + Number(reconciliationSummary.pendingRefunds || 0) === 0 ? 'Clear' : `${financeMismatchCount + invoiceGapCount + Number(reconciliationSummary.pendingRefunds || 0)} issues`} 
+                />
               )}
             </div>
 
@@ -997,10 +1288,11 @@ export default function SystemHealthPanel() {
                     ['Charge mismatches', reconciliationSummary.chargeMismatches],
                     ['Invoice gaps', reconciliationSummary.invoiceGaps],
                     ['Orphan invoices', reconciliationSummary.orphanInvoices],
+                    ['Pending Refunds', reconciliationSummary.pendingRefunds],
                   ].map(([label, val]) => (
                     <div key={label} className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3">
                       <p className="text-xs font-semibold uppercase tracking-[0.16em] text-gray-500">{label}</p>
-                      <p className={`mt-2 text-2xl font-bold ${Number(val) > 0 ? 'text-red-700' : 'text-gray-900'}`}>{val || 0}</p>
+                      <p className={`mt-2 text-2xl font-bold ${Number(val) > 0 ? (label === 'Pending Refunds' ? 'text-amber-700' : 'text-red-700') : 'text-gray-900'}`}>{val || 0}</p>
                     </div>
                   ))}
                 </div>
@@ -1016,9 +1308,18 @@ export default function SystemHealthPanel() {
                     <p className="mt-1 text-sm text-amber-800/80">Booking shows {Number(item.booking_charges_total || 0).toFixed(2)} but active charges total {Number(item.charge_ledger_total || 0).toFixed(2)}.</p>
                   </div>
                 ))}
-                {financeMismatchCount + invoiceGapCount === 0 && reconciliationValid && (
+                {(reconciliation?.pendingRefunds || []).slice(0, 3).map((item) => (
+                  <div key={`refund-p-${item.id}`} className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-sm font-semibold text-amber-900">Pending Refund · {item.invoice_number}</p>
+                      <span className="text-xs font-bold text-amber-700">{item.amount_to_refund.toFixed(2)}</span>
+                    </div>
+                    <p className="mt-1 text-xs text-amber-800/80">Cancelled booking for {item.customer_name}. Balance needs to be returned to guest.</p>
+                  </div>
+                ))}
+                {financeMismatchCount + invoiceGapCount + Number(reconciliationSummary.pendingRefunds || 0) === 0 && reconciliationValid && (
                   <div className="mt-4 rounded-xl border border-dashed border-gray-200 px-4 py-6 text-center text-sm text-gray-500">
-                    No reconciliation mismatches detected in the current live snapshot.
+                    No reconciliation mismatches or pending refunds detected.
                   </div>
                 )}
               </>
@@ -1067,7 +1368,7 @@ export default function SystemHealthPanel() {
             </div>
 
             {/* Validation alerts */}
-            <div className="mt-5 border-t border-gray-100 pt-4">
+            <div className="mt-5 border-t border-gray-100 pt-4" data-testid="system-health-validation-alerts">
               <div className="flex items-center justify-between gap-3">
                 <h4 className="text-sm font-semibold text-gray-900">Validation Alerts</h4>
                 <StatusPill ok={validationAlerts.length === 0} label={validationAlerts.length === 0 ? 'No alerts' : `${validationAlerts.length} logged`} />
@@ -1079,7 +1380,11 @@ export default function SystemHealthPanel() {
                   </div>
                 ) : (
                   validationAlerts.slice(0, 5).map((entry, index) => (
-                    <div key={`${entry.id || entry.detected_at || 'alert'}-${index}`} className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+                    <div
+                      key={`${entry.id || entry.detected_at || 'alert'}-${index}`}
+                      className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3"
+                      data-testid="system-health-validation-alert"
+                    >
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <p className="text-sm font-semibold text-amber-900">{entry.alert_type || entry.type || 'Validation alert'}</p>
                         <span className="text-xs text-amber-700/80">{formatTs(entry.detected_at) || 'Time unknown'}</span>
@@ -1139,23 +1444,29 @@ export default function SystemHealthPanel() {
                   No critical desktop errors were logged recently.
                 </div>
               ) : (
-                criticalErrors.map((entry, index) => (
-                  <div key={`${entry.at || entry.operation || 'critical'}-${index}`} className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <p className="text-sm font-semibold text-rose-900">{entry.scope || entry.operation || 'critical.error'}</p>
-                      <span className="text-xs text-rose-700/80">{formatTs(entry.at) || 'Time unknown'}</span>
+                criticalErrors.map((entry, index) => {
+                  const isFinancial = entry.scope?.toLowerCase().includes('financial') || entry.operation?.toLowerCase().includes('financial')
+                  const isCritical = isFinancial || entry.severity === 'error' || entry.scope?.includes('db_init')
+                  const tone = isCritical ? 'rose' : 'amber'
+                  return (
+                    <div key={`${entry.at || entry.operation || 'critical'}-${index}`} className={`rounded-xl border border-${tone}-200 bg-${tone}-50 px-4 py-3`}>
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <p className={`text-sm font-semibold text-${tone}-900`}>{entry.scope || entry.operation || 'system'}</p>
+                          {!isCritical && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-amber-700">Warning</span>}
+                        </div>
+                        <span className={`text-xs text-${tone}-700/80`}>{formatTs(entry.at) || 'Time unknown'}</span>
+                      </div>
+                      <p className={`mt-1 text-sm text-${tone}-800/80`}>{entry.message || 'No message recorded.'}</p>
+                      {entry.details && Object.keys(entry.details).length > 0 && (
+                        <details className={`mt-2 text-xs text-${tone}-800/80`}>
+                          <summary className={`cursor-pointer font-medium text-${tone}-900`}>Show details</summary>
+                          <HumanContext details={entry.details} rooms={rooms} customers={customers} />
+                        </details>
+                      )}
                     </div>
-                    <p className="mt-1 text-sm text-rose-800/80">{entry.message || 'No message recorded.'}</p>
-                    {entry.details && Object.keys(entry.details).length > 0 && (
-                      <details className="mt-2 text-xs text-rose-800/80">
-                        <summary className="cursor-pointer font-medium text-rose-900">Show context</summary>
-                        <pre className="mt-2 overflow-auto whitespace-pre-wrap rounded-lg bg-white px-3 py-2 text-[11px] leading-5 text-rose-800 ring-1 ring-rose-100">
-                          {JSON.stringify(entry.details, null, 2)}
-                        </pre>
-                      </details>
-                    )}
-                  </div>
-                ))
+                  )
+                })
               )}
             </div>
           </div>
@@ -1244,6 +1555,52 @@ export default function SystemHealthPanel() {
 
         </div>
       </div>
+
+      {/* Cross-Device Sync Health */}
+      <div className="rounded-2xl border border-slate-200 bg-white p-5">
+        <div className="mb-4 flex items-center gap-3">
+          <div className="rounded-xl bg-blue-50 p-2 text-blue-600"><Wifi size={18} /></div>
+          <div>
+            <h3 className="text-sm font-bold text-gray-900">Cross-Device Sync Health</h3>
+            <p className="text-xs text-gray-500">Health reports published by each device for this lodge</p>
+          </div>
+        </div>
+        {!deviceHealthRollup?.available ? (
+          <p className="text-sm text-gray-500">Cross-device health unavailable (offline or not reported)</p>
+        ) : deviceHealthRollup.devices.length === 0 ? (
+          <p className="text-sm text-gray-500">No device health reports found</p>
+        ) : (
+          <div className="space-y-3">
+            {deviceHealthRollup.devices.map((device) => {
+              const isDegraded = device.failed_queue_count > 0 || device.unresolved_local_count > 0 || device.stale
+              return (
+                <div key={device.device_id} className={`rounded-xl border p-4 ${isDegraded ? 'border-amber-200 bg-amber-50' : 'border-slate-100 bg-slate-50'}`}>
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div>
+                      <span className="text-xs font-semibold text-slate-600 uppercase">{device.client_type}</span>
+                      <span className="ml-2 text-xs text-slate-400">{String(device.device_id || '').slice(0, 24)}</span>
+                    </div>
+                    <span className="text-xs text-slate-500">{formatTs(device.reported_at)}</span>
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-3 text-xs text-slate-700">
+                    <span>Pending: <strong>{device.pending_queue_count}</strong></span>
+                    <span>Failed: <strong className={device.failed_queue_count > 0 ? 'text-red-700' : ''}>{device.failed_queue_count}</strong></span>
+                    <span>Unresolved: <strong className={device.unresolved_local_count > 0 ? 'text-amber-700' : ''}>{device.unresolved_local_count}</strong></span>
+                    <span>Reconciliation: <strong>{device.reconciliation_state}</strong></span>
+                  </div>
+                  {Array.isArray(device.top_fault_types) && device.top_fault_types.length > 0 && (
+                    <div className="mt-1 text-xs text-slate-500">Faults: {device.top_fault_types.join(', ')}</div>
+                  )}
+                  {device.stale && (
+                    <div className="mt-2 text-xs text-amber-700 font-medium">Report is stale (&gt;10 min old) — may not reflect current state</div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
+
     </div>
   )
 }

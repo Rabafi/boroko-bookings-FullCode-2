@@ -1,0 +1,133 @@
+import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
+
+async function read(path) {
+  return readFile(new URL(`../${path}`, import.meta.url), 'utf8')
+}
+
+async function run() {
+  const database = await read('src/main/database.js')
+  const mainIndex = await read('src/main/index.js')
+  const packageJson = await read('package.json')
+  const bookingsUi = await read('src/renderer/src/components/Bookings.jsx')
+  const posUi = await read('src/renderer/src/components/POS.jsx')
+  const layout = await read('src/renderer/src/components/Layout.jsx')
+  const health = await read('src/renderer/src/components/SystemHealthPanel.jsx')
+  const conferenceUi = await read('src/renderer/src/components/Conference.jsx')
+  const dayUseUi = await read('src/renderer/src/components/DayUse.jsx')
+  const quotationsUi = await read('src/renderer/src/components/Quotations.jsx')
+  const posReplaySql = await read('supabase/migrations/20260507_pos_offline_inventory_payload.sql')
+
+  assert.match(packageJson, /"test:offline-queue-critical":\s*"node \.\\\\tests\\\\offline-queue-regression\.test\.mjs"/)
+
+  // Shared offline queue / replay contract
+  assert.match(database, /async function processSyncQueue\(\)/)
+  assert.match(database, /if \(!replayAuthReady\)/)
+  assert.match(database, /function queueOperation\(type, table, data, id = null, meta = \{\}\)/)
+  assert.match(database, /pending:\s*queue\.length/)
+  assert.match(database, /failed:\s*failed\.length/)
+  assert.match(database, /syncInProgress/)
+  assert.match(database, /replayAuthReady/)
+  assert.match(database, /dependencyState:\s*item\?\._depends_on/)
+  assert.match(mainIndex, /ipcMain\.handle\('sync:getStatus'/)
+  assert.match(mainIndex, /ipcMain\.handle\('sync:getDetails'/)
+  assert.match(health, /Pending Sync Queue/)
+  assert.match(health, /Failed Sync Queue/)
+  assert.match(health, /Financial Sync Risk/)
+  assert.match(layout, /Clock,/)
+  assert.match(layout, /AlertCircle/)
+  assert.match(layout, /syncStatus\.pending/)
+
+  // Bookings: create/update/status/payment must stay queue-aware and visible.
+  assert.match(database, /queueOperation\('rpc', 'create_booking', \{/)
+  assert.match(database, /_queue_id:\s*`booking-\$\{id\}`/)
+  assert.match(database, /function buildLocalPendingInvoiceNumber\(/)
+  assert.match(database, /function buildOfflineBookingFinancialState\(/)
+  assert.match(database, /function mergeRemoteBookingsWithLocalState\(/)
+  assert.match(database, /writeCache\(name, mergeRemoteBookingsWithLocalState\(data \|\| \[\]\), \{ source: 'remote' \}\)/)
+  assert.match(database, /const mergedLiveRows = mergeRemoteBookingsWithLocalState\(mapped, localRowsForMerge\)/)
+  assert.match(database, /cachedCustomer\?\._pending_sync \? \{ _depends_on: `customer-\$\{booking\.customer_id\}` \} : \{\}/)
+  assert.match(database, /amount_paid:\s*optimisticPayment\.amount_paid/)
+  assert.match(database, /payment_status:\s*optimisticPayment\.payment_status/)
+  assert.match(database, /_local_invoice_number:\s*buildLocalPendingInvoiceNumber\(id\)/)
+  assert.match(database, /_pending_sync:\s*true,[\s\S]*_pending_payment:\s*deposit > 0/)
+  assert.match(database, /_sync_created_offline:\s*true/)
+  assert.match(database, /const _updDepend = cached\[idx\]\?\._pending_sync \? `booking-\$\{id\}` : null/)
+  assert.match(database, /queueOperation\('rpc', 'update_booking', \{/)
+  assert.match(database, /const _stDepend = bookings\[idx\]\?\._pending_sync \? `booking-\$\{id\}` : null/)
+  assert.match(database, /queueOperation\('rpc', 'update_booking_status', \{/)
+  assert.match(database, /const autoDepend\s*=\s*dependsOn \|\| \(b\._pending_sync \? `booking-\$\{id\}` : null\)/)
+  assert.match(database, /queueOperation\('rpc', 'update_booking_payment', \{/)
+  assert.match(database, /booking\._local_invoice_number \|\| null/)
+  assert.match(database, /refreshTargets\.push\('bookings'\)/)
+  assert.match(bookingsUi, /Pending Sync/)
+  assert.match(bookingsUi, /Sync Failed/)
+  assert.match(bookingsUi, /Changes are queued and will sync when the app is online\./)
+  assert.match(bookingsUi, /Queued \(will sync\)/)
+  assert.match(bookingsUi, /const fmtBkNum = \(b\) => b\.invoice_number \|\| b\._local_invoice_number \|\| \(b\._pending_sync \? 'PENDING' : '—'\)/)
+
+  // Quotations: critical offline quote lifecycle remains queued and refreshed.
+  assert.match(database, /queueOperation\('rpc', 'create_quotation', \{ payload: record \}\)/)
+  assert.match(database, /queueOperation\('rpc', 'update_quotation', \{/)
+  assert.match(database, /queueOperation\('rpc', 'mark_quotation_sent', \{/)
+  assert.match(database, /shouldRefreshQuotations = true/)
+  assert.match(database, /refreshTargets\.push\('quotations'\)/)
+  assert.match(quotationsUi, /window\.api\.quotations\.getAll\(\)/)
+  assert.match(quotationsUi, /window\.api\.quotations\.create\(data\)/)
+  assert.match(quotationsUi, /window\.api\.quotations\.update\(q\.id, \{ \.\.\.q, status: newStatus \}\)/)
+
+  // POS: preserve pending state, keep local stock reservations, and replay inventory deduction.
+  assert.match(database, /function getOfflinePosInventoryReservation\(/)
+  assert.match(database, /function applyOfflinePosInventoryReservation\(/)
+  assert.match(database, /function resolveQueuedPosInventoryLink\(/)
+  assert.match(database, /function buildQueuedPosInventoryUsage\(/)
+  assert.match(database, /function applyQueuedPosInventoryReservations\(/)
+  assert.match(database, /function mergeRemotePosOrdersWithLocalState\(/)
+  assert.match(database, /writeCache\(name, applyQueuedPosInventoryReservations\(data \|\| \[\]\), \{ source: 'remote' \}\)/)
+  assert.match(database, /writeCache\(name, mergeRemotePosOrdersWithLocalState\(data \|\| \[\]\), \{ source: 'remote' \}\)/)
+  assert.match(database, /const mergedLiveRows = mergeRemotePosOrdersWithLocalState\(data \|\| \[\], cachedOrders\)/)
+  assert.match(database, /return applyPosOrderFilters\(mergedLiveRows, startDate, endDate, outletFilter\)/)
+  assert.match(database, /queueOperation\('rpc', 'create_pos_order', \{/)
+  assert.match(database, /_queue_id:\s*`pos-order-\$\{id\}`/)
+  assert.match(database, /inventory_item_id:\s*item\.inventory_item_id \|\| null/)
+  assert.match(database, /depletion_qty:\s*Math\.max\(1, Number\(item\.depletion_qty \|\| 1\)\)/)
+  assert.match(database, /inventory_item_id:\s*i\.inventory_item_id \|\| null/)
+  assert.match(database, /depletion_qty:\s*Math\.max\(1, Number\(i\.depletion_qty \|\| 1\)\)/)
+  assert.match(database, /refreshTargets\.push\('pos-orders'\)/)
+  assert.match(database, /resolveQueuedPosInventoryLink\(entry, \{ outletId \}\)\.inventoryItemId/)
+  assert.match(posUi, /Pending Sync/)
+  assert.match(posUi, /Failed Sync/)
+  assert.match(posUi, /Needs Attention/)
+  assert.match(posReplaySql, /create or replace function public\.create_pos_order\(payload jsonb\)/)
+  assert.match(posReplaySql, /nullif\(v_item->>'inventory_item_id', ''\)::uuid/)
+  assert.match(posReplaySql, /coalesce\(nullif\(v_item->>'depletion_qty', ''\)::numeric, 1\)/)
+  assert.match(posReplaySql, /update public\.inventory_items/)
+
+  // Conference bookings: offline create/update/delete stay in the shared queue and reload in UI.
+  assert.match(database, /queueOperation\('rpc', 'create_conference_booking', \{ payload \}\)/)
+  assert.match(database, /queueOperation\('rpc', 'update_conference_booking', \{/)
+  assert.match(database, /queueOperation\('rpc', 'delete_conference_booking', \{/)
+  assert.match(database, /shouldRefreshConference = true/)
+  assert.match(database, /refreshTargets\.push\('conference-bookings'\)/)
+  assert.match(conferenceUi, /window\.api\.conference\.getAll\(start, end\)/)
+  assert.match(conferenceUi, /window\.api\.conference\.create\(payload\)/)
+  assert.match(conferenceUi, /window\.api\.conference\.update\(editing\.id, payload\)/)
+  assert.match(conferenceUi, /window\.api\.conference\.delete\(id\)/)
+
+  // Pool / day use: offline create/delete stay queued and UI refreshes on sync.
+  assert.match(database, /queueOperation\('rpc', 'add_pool_day_use', \{ payload \}\)/)
+  assert.match(database, /queueOperation\('rpc', 'delete_pool_day_use', \{/)
+  assert.match(database, /shouldRefreshPoolDayUse = true/)
+  assert.match(database, /refreshTargets\.push\('pool-day-use'\)/)
+  assert.match(dayUseUi, /window\.api\.dayuse\.getAll\(selectedDate, selectedDate\)/)
+  assert.match(dayUseUi, /window\.api\.sync\.onStatusChanged\(\(\) => \{/)
+  assert.match(dayUseUi, /window\.api\.dayuse\.delete\(id\)/)
+
+  console.log('offline-queue-regression: ok')
+}
+
+run().catch((error) => {
+  console.error('offline-queue-regression: failed')
+  console.error(error)
+  process.exitCode = 1
+})

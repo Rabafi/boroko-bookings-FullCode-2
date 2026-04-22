@@ -1,6 +1,6 @@
 {
   "name": "boroko-bookings",
-  "version": "1.2.6",
+  "version": "1.3.4",
   "type": "module",
   "description": "Boroko Lodge Booking Management System",
   "author": {
@@ -12,14 +12,29 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "test": "node .\\tests\\production-guardrails.test.mjs",
+    "test:offline-pos-critical": "node .\\tests\\offline-pos-regression.test.mjs",
+    "test:offline-queue-critical": "node .\\tests\\offline-queue-regression.test.mjs",
+    "test:e2e": "playwright test --config \"Playwright tests/playwright.config.cjs\"",
+    "test:e2e:pwa": "playwright test --config \"Playwright tests/playwright.config.cjs\" \"Playwright tests/pwa\"",
+    "pwa:deploy": "npx vercel --prod",
+    "version:patch": "npm version patch --no-git-tag-version",
+    "version:minor": "npm version minor --no-git-tag-version",
+    "version:major": "npm version major --no-git-tag-version",
+    "release:patch": "node ./scripts/release.mjs patch",
+    "release:minor": "node ./scripts/release.mjs minor",
+    "release:major": "node ./scripts/release.mjs major",
+    "release:all": "node ./scripts/release.mjs patch --remind-pwa",
+    "release:build": "npm run build && electron-builder --win nsis --publish never",
+    "release:publish": "node ./scripts/release.mjs publish",
     "dist": "npm run build && electron-builder",
+    "dist:publish": "npm run build && electron-builder --publish always",
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
-    "@electron-toolkit/preload": "^3.0.0",
     "@electron-toolkit/utils": "^3.0.0",
     "@supabase/supabase-js": "^2.39.0",
     "bcryptjs": "^2.4.3",
+    "better-sqlite3": "^12.2.0",
     "date-fns": "^3.3.1",
     "electron-updater": "^6.8.3",
     "lucide-react": "^0.344.0",
@@ -30,6 +45,7 @@
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
+    "@playwright/test": "^1.59.1",
     "@vitejs/plugin-react": "^4.2.1",
     "autoprefixer": "^10.4.18",
     "electron": "^29.1.0",

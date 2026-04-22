@@ -119,11 +119,11 @@ export function getFeatureRequiredPlan(featureName) {
   return FEATURE_REQUIRED_PLAN[featureName] || 'Standard'
 }
 
-export function getFeatureUpgradeContext(featureName) {
+function getFeatureUpgradeContext(featureName) {
   return FEATURE_UPGRADE_CONTEXT[featureName] || ''
 }
 
-export function inferFeatureKey(value) {
+function inferFeatureKey(value) {
   const raw = String(value || '').trim().toLowerCase()
   if (!raw) return ''
   if (FEATURE_REQUIRED_PLAN[raw]) return raw

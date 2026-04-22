@@ -3,7 +3,7 @@ import { useAuth } from '../contexts/AuthContext'
 import { useFeatures } from '../contexts/FeaturesContext'
 import { supabase } from '../lib/supabase'
 import { normalizeMaintenanceTicket } from '../lib/maintenance'
-import { RefreshCw, AlertTriangle, Wrench, CreditCard, Package, Check } from 'lucide-react'
+import { RefreshCw, AlertTriangle, Wrench, CreditCard, Package, Check, XCircle } from 'lucide-react'
 import { getNotificationSettings, subscribeRuntimeEvent } from '../lib/runtime'
 
 function AlertCard({ icon: Icon, iconColor, title, sub, badge, badgeColor = 'bg-orange-500', action, actionLabel, actionColor = 'bg-orange-700 hover:bg-orange-600' }) {
@@ -44,7 +44,7 @@ function AlertCard({ icon: Icon, iconColor, title, sub, badge, badgeColor = 'bg-
 export default function Alerts({ onCountChange }) {
   const { user } = useAuth()
   const { isEnabled } = useFeatures()
-  const [data, setData] = useState({ overdue: [], unpaid: [], maintenance: [], lowStock: [] })
+  const [data, setData] = useState({ overdue: [], unpaid: [], maintenance: [], lowStock: [], blockedDemand: [] })
   const [loading, setLoading] = useState(true)
   const [notificationSettings, setNotificationSettings] = useState(() => getNotificationSettings())
   const today = new Date().toISOString().slice(0, 10)
@@ -54,11 +54,18 @@ export default function Alerts({ onCountChange }) {
     setLoading(true)
     const lid = user.lodge_id
 
-    const [overdueRes, unpaidRes, maintRes, stockRes] = await Promise.all([
+    const [overdueRes, unpaidRes, maintRes, stockRes, blockedRes] = await Promise.all([
       supabase.from('bookings').select('id, guest_name, check_out, room_id').eq('lodge_id', lid).eq('status', 'checked_in').lt('check_out', today),
       supabase.from('bookings').select('id, guest_name, total_amount, charges_total, amount_paid, payment_status, check_in').eq('lodge_id', lid).in('payment_status', ['unpaid', 'partial']).neq('status', 'cancelled').order('check_in'),
       supabase.from('maintenance_tickets').select('id, title, issue, priority, room_id, created_at, status, description, notes').eq('lodge_id', lid).eq('status', 'open').order('created_at', { ascending: false }),
-      isEnabled('inventory') ? supabase.from('inventory_items').select('id, name, quantity, current_stock, reorder_level').eq('lodge_id', lid) : Promise.resolve({ data: [] })
+      isEnabled('inventory') ? supabase.from('inventory_items').select('id, name, quantity, current_stock, reorder_level').eq('lodge_id', lid) : Promise.resolve({ data: [] }),
+      supabase
+        .from('rejected_online_bookings')
+        .select('id, room_id, rejection_reason, check_in, check_out, attempted_at, guest_name')
+        .eq('lodge_id', lid)
+        .eq('rejection_reason', 'maintenance')
+        .gte('attempted_at', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString())
+        .order('attempted_at', { ascending: false })
     ])
 
     const d = {
@@ -69,7 +76,8 @@ export default function Alerts({ onCountChange }) {
         const stock = Number(item.current_stock ?? item.quantity ?? 0)
         const reorder = Number(item.reorder_level ?? 0)
         return reorder > 0 && stock <= reorder
-      })
+      }),
+      blockedDemand: blockedRes.data || []
     }
     setData(d)
     const totalCount = d.overdue.length + d.maintenance.filter(m => m.priority === 'urgent').length
@@ -92,7 +100,15 @@ export default function Alerts({ onCountChange }) {
     previousCountRef.current = urgentCount
   }, [data, notificationSettings.urgentAlerts])
 
-  const allClear = !loading && data.overdue.length === 0 && data.maintenance.length === 0 && data.unpaid.length === 0 && data.lowStock.length === 0
+  const allClear = !loading && data.overdue.length === 0 && data.maintenance.length === 0 && data.unpaid.length === 0 && data.lowStock.length === 0 && data.blockedDemand.length === 0
+
+  // Group blocked demand attempts by room_id
+  const blockedByRoom = data.blockedDemand.reduce((acc, attempt) => {
+    const key = attempt.room_id || 'unknown'
+    if (!acc[key]) acc[key] = []
+    acc[key].push(attempt)
+    return acc
+  }, {})
 
   return (
     <div className="flex flex-col min-h-screen bg-gray-950 pb-24">
@@ -208,6 +224,30 @@ export default function Alerts({ onCountChange }) {
                     badgeColor="bg-blue-700"
                   />
                 ))}
+              </div>
+            )}
+
+            {/* Blocked online booking attempts (maintenance) — last 7 days */}
+            {data.blockedDemand.length > 0 && (
+              <div>
+                <p className="text-xs text-purple-400 font-semibold uppercase tracking-wide mb-2">🚫 Blocked Demand — Under Maintenance ({data.blockedDemand.length} attempt{data.blockedDemand.length === 1 ? '' : 's'}, last 7 days)</p>
+                {Object.entries(blockedByRoom).map(([roomId, attempts]) => {
+                  const latest = attempts[0]
+                  const attemptCount = attempts.length
+                  const latestDate = new Date(latest.attempted_at).toLocaleDateString()
+                  const latestTime = new Date(latest.attempted_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                  return (
+                    <AlertCard
+                      key={roomId}
+                      icon={XCircle}
+                      iconColor="bg-purple-900/60 text-purple-400"
+                      title={latest.guest_name ? `Last attempt: ${latest.guest_name}` : `Room blocked — ${attemptCount} attempt${attemptCount === 1 ? '' : 's'}`}
+                      sub={`${attemptCount} blocked attempt${attemptCount === 1 ? '' : 's'} · Latest: ${latestDate} ${latestTime}${latest.check_in ? ` · Requested: ${latest.check_in} → ${latest.check_out}` : ''}`}
+                      badge="Under Maintenance"
+                      badgeColor="bg-purple-700"
+                    />
+                  )
+                })}
               </div>
             )}
           </>

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { CheckCircle, AlertCircle, Clock, RefreshCw, Package2, BarChart3, ClipboardList } from 'lucide-react'
-import { useSettings } from '../App'
+import { useSettings } from '../app-context'
 
 const STATUS_CONFIG = {
   clean: {

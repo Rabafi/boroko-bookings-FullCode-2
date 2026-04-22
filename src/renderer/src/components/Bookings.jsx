@@ -1,13 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Plus, Search, Filter, CreditCard, Building2, CheckCircle2, MoreVertical } from 'lucide-react'
+import { Plus, Search, Filter, CreditCard, Building2, CheckCircle2, MoreVertical, RefreshCw } from 'lucide-react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { StatusBadge } from './shared/StatusBadge'
 import { Modal } from './shared/Modal'
 import { Receipt } from './shared/Receipt'
 import HorizontalScrollArea from './shared/HorizontalScrollArea'
 import { DESKTOP_PAYMENT_METHODS, PAYMENT_METHOD_LABELS } from '../constants/paymentMethods'
-import { useAuth } from '../App'
-import { useSettings } from '../App'
+import { useAuth, useSettings } from '../app-context'
 
 const STATUS_OPTIONS = ['confirmed', 'checked_in', 'checked_out', 'cancelled']
 
@@ -80,6 +79,48 @@ function bookingOutstandingAmount(booking) {
   return Math.max(0, Number(booking.total_amount || 0) + Number(booking.charges_total || 0) - Number(booking.amount_paid || 0))
 }
 
+function bookingNeedsAttention(booking) {
+  const total = Math.max(0, Number(booking.total_amount || 0) + Number(booking.charges_total || 0))
+  const paid = Math.max(0, Number(booking.amount_paid || 0))
+  const status = String(booking.payment_status || 'unpaid')
+  if (paid > total + 0.01) return true
+  if (status === 'paid' && paid < total - 0.01) return true
+  if (status === 'unpaid' && paid > 0.01) return true
+  if (status === 'partial' && (paid <= 0.01 || paid >= total - 0.01)) return true
+  return false
+}
+
+function bookingHasSyncFailure(booking, failedSyncIds) {
+  const syncState = String(booking?._sync_state || '').trim().toLowerCase()
+  return failedSyncIds.has(booking?.id) || syncState === 'failed' || syncState === 'sync_failed'
+}
+
+function bookingHasAttentionState(booking) {
+  const syncState = String(booking?._sync_state || '').trim().toLowerCase()
+  return booking?._needs_attention === true || syncState === 'manual_review_required'
+}
+
+// Sanitize raw sync error text for display to front-desk operators.
+// Strips UUIDs and translates known technical patterns to plain language.
+// Returns null for errors already covered by a specific badge (e.g. room conflict).
+function sanitizeSyncError(raw) {
+  if (!raw) return null
+  const msg = String(raw)
+  if (/room.*conflict|no_overlapping_bookings/i.test(msg)) return null
+  if (/idempotency.*required/i.test(msg)) return 'Retry required — open System Health to resend.'
+  if (/authenticated.*required|authentication.*required|session.*required/i.test(msg)) return 'Session expired — sign in again, then retry in System Health.'
+  if (/lodge.*role|permission denied|insufficient.*privilege/i.test(msg)) return 'Permission denied — check your account role.'
+  if (/unique.*violation|duplicate key/i.test(msg)) return 'Duplicate record detected — this item may already exist on the server.'
+  if (/not found/i.test(msg)) return 'Record not found on server — it may have been deleted remotely.'
+  if (/overpay/i.test(msg)) return 'Payment exceeds booking total — adjust the amount before retrying.'
+  if (/below zero/i.test(msg)) return 'Adjustment would reduce balance below zero.'
+  const cleaned = msg
+    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, '…')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return cleaned.length > 120 ? `${cleaned.slice(0, 117)}…` : cleaned
+}
+
 const emptyCustomer = { name: '', email: '', phone: '', id_number: '', nationality: '' }
 const emptyBooking = {
   customer_id: '',
@@ -110,6 +151,7 @@ export default function Bookings() {
   const [sortBy, setSortBy] = useState('created_desc')
   const [showModal, setShowModal] = useState(false)
   const [editingId, setEditingId] = useState(null)
+  const [editingGroupId, setEditingGroupId] = useState(null)
   const [editingBaseUpdatedAt, setEditingBaseUpdatedAt] = useState(null)
   const [form, setForm] = useState(emptyBooking)
   const [newCustomer, setNewCustomer] = useState(emptyCustomer)
@@ -120,6 +162,7 @@ export default function Bookings() {
   const successTimerRef = useRef(null)
   const [modalWarning, setModalWarning] = useState('')  // amber — booking saved but deposit failed
   const [loading, setLoading] = useState(false)
+  const [applicableRate, setApplicableRate] = useState(null)
   const [receiptBooking, setReceiptBooking] = useState(null)
   const [failedSyncIds, setFailedSyncIds] = useState(new Set())
   const [financialPendingIds, setFinancialPendingIds] = useState(new Set())
@@ -142,6 +185,10 @@ export default function Bookings() {
     const interval = setInterval(loadSyncStatus, 30_000)
     return () => clearInterval(interval)
   }, [])
+
+  // History Timeline modal
+  const [showHistory, setShowHistory] = useState(false)
+  const [historyBooking, setHistoryBooking] = useState(null)
 
   // Event booking modal
   const [showEventModal, setShowEventModal] = useState(false)
@@ -234,7 +281,10 @@ export default function Bookings() {
     showSuccess('Extra charge voided. Booking totals have been refreshed.')
   }
 
+  const [listLoading, setListLoading] = useState(true)
+
   const loadAll = useCallback(async () => {
+    setListLoading(true)
     const [b, r, c] = await Promise.all([
       window.api.bookings.getAll(),
       window.api.rooms.getAll(),
@@ -243,11 +293,18 @@ export default function Bookings() {
     setBookings(b)
     setRooms(r)
     setCustomers(c)
+    setListLoading(false)
   }, [])
 
   const isFinanciallySyncBlocked = (bookingId) => (
     financialCacheStale || financialPendingIds.has(bookingId) || financialFailedIds.has(bookingId)
   )
+
+  // Reload bookings whenever this page becomes active — catches stale data after navigating away
+  // (e.g. returning from the invoices refund flow without a full page remount)
+  useEffect(() => {
+    loadAll()
+  }, [location.pathname, loadAll])
 
   useEffect(() => {
     loadAll()
@@ -315,6 +372,35 @@ export default function Bookings() {
 
   useEffect(() => () => window.clearTimeout(successTimerRef.current), [])
 
+  useEffect(() => {
+    let cancelled = false
+
+    const loadApplicableRate = async () => {
+      if (!showModal || !form.room_id || !form.check_in || !form.check_out) {
+        if (!cancelled) setApplicableRate(null)
+        return
+      }
+
+      try {
+        const result = await window.api.rateOverrides.getApplicable(form.room_id, form.check_in, form.check_out)
+        if (cancelled) return
+        if (result && Number.isFinite(Number(result.rate))) {
+          setApplicableRate({
+            rate_per_night: Number(result.rate),
+            name: result.name || ''
+          })
+        } else {
+          setApplicableRate(null)
+        }
+      } catch {
+        if (!cancelled) setApplicableRate(null)
+      }
+    }
+
+    loadApplicableRate()
+    return () => { cancelled = true }
+  }, [showModal, form.room_id, form.check_in, form.check_out])
+
   const showSuccess = (message) => {
     setSuccess(message)
     window.clearTimeout(successTimerRef.current)
@@ -323,8 +409,10 @@ export default function Bookings() {
 
   const openAdd = () => {
     setEditingId(null)
+    setEditingGroupId(null)
     setEditingBaseUpdatedAt(null)
     setForm({ ...emptyBooking, check_in: today(), check_out: tomorrow() })
+    setApplicableRate(null)
     setNewCustomer(emptyCustomer)
     setUseNewCustomer(true)
     setError('')
@@ -337,6 +425,12 @@ export default function Bookings() {
   const openEdit = (b) => {
     setEditingId(b.id)
     setEditingBaseUpdatedAt(b.updated_at || null)
+    
+    const groupMatch = b.notes?.match(/\[GROUP:[^\]]+\]/)
+    const groupId = groupMatch ? groupMatch[0] : null
+    setEditingGroupId(groupId)
+    const displayNotes = b.notes ? b.notes.replace(/\[GROUP:[^\]]+\]/g, '').trim() : ''
+    
     setForm({
       customer_id: b.customer_id,
       room_id: b.room_id,
@@ -344,8 +438,9 @@ export default function Bookings() {
       check_out: b.check_out,
       adults: b.adults,
       children: b.children,
-      notes: b.notes || ''
+      notes: displayNotes
     })
+    setApplicableRate(null)
     setUseNewCustomer(false)
     setError('')
     setSuccess('')
@@ -417,6 +512,7 @@ export default function Bookings() {
         ...form,
         customer_id: customerId,
         room_id: form.room_id,
+        notes: editingGroupId ? `${form.notes} ${editingGroupId}`.trim() : form.notes,
         adults: parseInt(form.adults),
         children: parseInt(form.children),
         created_by: user.id,
@@ -514,9 +610,12 @@ export default function Bookings() {
       return
     }
     if (status === 'cancelled') {
-      const confirmed = window.confirm(
-        'Cancel this booking?\n\nThis removes it from active operations and can affect room availability and reporting. Continue only if the guest is definitely not staying.'
-      )
+      const hasDeposit = Number(booking?.amount_paid || 0) > 0
+      const msg = hasDeposit
+        ? `This booking has a deposit of ${currency} ${Number(booking.amount_paid).toFixed(2)}.\n\nCancelling will mark this as "Pending Refund". You must process the refund in the Financial Reconciliation section later to clear the balance.\n\nContinue with cancellation?`
+        : 'Cancel this booking?\n\nThis removes it from active operations and can affect room availability and reporting. Continue only if the guest is definitely not staying.'
+      
+      const confirmed = window.confirm(msg)
       if (!confirmed) return
     }
     if (status === 'checked_out' && booking) {
@@ -562,7 +661,9 @@ export default function Bookings() {
     setEventLoading(false)
   }
 
-  const fmtBkNum = (b) => b.invoice_number || '—'
+  // Show PENDING for offline-queued bookings without a server-assigned invoice number.
+  // Once sync completes the cache is refreshed from the server and the real number appears.
+  const fmtBkNum = (b) => b.invoice_number || b._local_invoice_number || (b._pending_sync ? 'PENDING' : '—')
 
   const filtered = useMemo(() => bookings.filter((b) => {
     const matchSearch =
@@ -584,7 +685,7 @@ export default function Bookings() {
     )
   }
 
-  const isEventBooking = (b) => b._event_group || b.notes?.startsWith('[GROUP:')
+  const isEventBooking = (b) => b && (b._event_group || b.is_exclusive_event || b.notes?.includes('[GROUP:'))
 
   const sortBookings = useCallback((list) => {
     const safeDate = (value) => {
@@ -615,15 +716,22 @@ export default function Bookings() {
     const eventRows = list.filter(b => b.is_exclusive_event)
     const groupMap  = {}
     eventRows.forEach(b => {
+      if (!b) return
       const match   = b.notes?.match(/\[GROUP:([^\]]+)\]/)
-      const groupId = match?.[1] || b.check_in
+      const groupId = match?.[1] || b.check_in || 'unknown'
+      const roomCountMatch = String(b.notes || '').match(/\[ROOMS:(\d+)\]/)
+      const expectedRoomCount = Number(roomCountMatch?.[1] || 0)
       if (!groupMap[groupId]) {
-        // total_amount and amount_paid start at 0 and are accumulated below.
-        // Do NOT derive total_amount from event_daily_rate × nights — that would drift
-        // from authoritative stored values if per-room amounts are ever adjusted.
-        groupMap[groupId] = { ...b, room_count: 0, total_amount: 0, amount_paid: 0, _event_group: true }
+        groupMap[groupId] = {
+          ...b,
+          room_count: 0,
+          total_amount: 0,
+          amount_paid: 0,
+          _event_group: true,
+          room_number: 'Full Lodge'
+        }
       }
-      groupMap[groupId].room_count++
+      groupMap[groupId].room_count = Math.max(groupMap[groupId].room_count + 1, expectedRoomCount || 0)
       groupMap[groupId].total_amount += Number(b.total_amount || 0)
       groupMap[groupId].amount_paid  += Number(b.amount_paid  || 0)
     })
@@ -639,12 +747,16 @@ export default function Bookings() {
     [bookings]
   )
   const pendingSyncCount = useMemo(
-    () => bookings.filter((b) => b._pending_sync && !failedSyncIds.has(b.id)).length,
+    () => bookings.filter((b) => b._pending_sync && !bookingHasSyncFailure(b, failedSyncIds)).length,
     [bookings, failedSyncIds]
   )
   const reviewCount = useMemo(
-    () => bookings.filter((b) => failedSyncIds.has(b.id)).length,
+    () => bookings.filter((b) => bookingHasSyncFailure(b, failedSyncIds)).length,
     [bookings, failedSyncIds]
+  )
+  const attentionCount = useMemo(
+    () => bookings.filter((b) => bookingHasAttentionState(b) || financialFailedIds.has(b.id) || bookingNeedsAttention(b)).length,
+    [bookings, financialFailedIds]
   )
   const oldestPendingOnlineCreatedAt = useMemo(() => {
     const pendingOnline = bookings.filter((b) => b.source === 'online' && b.status === 'pending' && b.created_at)
@@ -658,12 +770,13 @@ export default function Bookings() {
     [rooms, form.room_id]
   )
   const selectableRooms = useMemo(
-    () => rooms.filter((r) => r.status !== 'maintenance'),
+    () => rooms,
     [rooms]
   )
 
+  const selectedNightlyRate = applicableRate?.rate_per_night ?? selectedRoom?.rate_per_night ?? 0
   const estimatedTotal = selectedRoom
-    ? selectedRoom.rate_per_night * nights(form.check_in, form.check_out)
+    ? selectedNightlyRate * nights(form.check_in, form.check_out)
     : 0
   const bookingGrandTotal = paymentBooking
     ? Number(paymentBooking.total_amount || 0) + Number(paymentBooking.charges_total || 0)
@@ -812,7 +925,7 @@ export default function Bookings() {
         </div>
       </div>
 
-      {(pendingSyncCount > 0 || reviewCount > 0 || financialCacheStale) && (
+      {(pendingSyncCount > 0 || reviewCount > 0 || attentionCount > 0 || financialCacheStale) && (
         <div className="mt-[-8px] flex flex-wrap gap-3">
           {pendingSyncCount > 0 && (
             <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 shadow-sm">
@@ -822,6 +935,11 @@ export default function Bookings() {
           {reviewCount > 0 && (
             <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 shadow-sm">
               <span className="font-semibold">{reviewCount}</span> booking{reviewCount !== 1 ? 's need' : ' needs'} review before staff can trust the record.
+            </div>
+          )}
+          {attentionCount > 0 && (
+            <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 shadow-sm">
+              <span className="font-semibold">{attentionCount}</span> booking{attentionCount !== 1 ? 's have' : ' has'} payment totals that need attention.
             </div>
           )}
           {financialCacheStale && (
@@ -852,7 +970,7 @@ export default function Bookings() {
             </thead>
             <tbody className="divide-y divide-slate-100">
               {groupedFilteredBookings.map((b) => (
-                <tr key={b.id} className="hover:bg-emerald-50/30">
+                <tr key={b.id} className="hover:bg-emerald-50/30" data-testid={`booking-row-${b.id}`}>
                   <td className="px-5 py-4 font-mono text-xs font-semibold text-slate-500">{fmtBkNum(b)}</td>
                   <td className="px-5 py-4">
                     <div className="flex items-center gap-1.5">
@@ -871,13 +989,15 @@ export default function Bookings() {
                     {b.customer_phone && (
                       <p className="mt-1 text-xs text-slate-500">{b.customer_phone}</p>
                     )}
-                    {(b._pending_sync || failedSyncIds.has(b.id)) && (
+                    {(b._pending_sync || bookingHasSyncFailure(b, failedSyncIds)) && (
                       <p className={`mt-1 text-xs font-medium ${
-                        failedSyncIds.has(b.id) ? 'text-red-700' : 'text-amber-700'
+                        bookingHasSyncFailure(b, failedSyncIds) ? 'text-red-700' : 'text-amber-700'
                       }`}>
-                        {failedSyncIds.has(b.id)
-                          ? 'Latest booking changes need review before staff rely on them.'
-                          : 'Latest booking changes are still syncing to the server.'}
+                        {bookingHasSyncFailure(b, failedSyncIds)
+                          ? b._sync_state === 'sync_failed'
+                            ? 'Room conflict — this room was taken by another booking. Reassign or cancel.'
+                            : sanitizeSyncError(b._sync_error) || 'Sync failed — open System Health to see the reason and retry.'
+                          : 'Changes are queued and will sync when the app is online.'}
                       </p>
                     )}
                   </td>
@@ -905,14 +1025,37 @@ export default function Bookings() {
                         Balance {currency} {bookingOutstandingAmount(b).toFixed(2)}
                       </span>
                     )}
-                    {b._pending_sync && !failedSyncIds.has(b.id) && (
-                      <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-600 whitespace-nowrap">
-                        ⏳ Waiting to sync
+                    {b.status === 'cancelled' && Number(b.amount_paid || 0) > 0.01 && b.payment_status !== 'paid' && (
+                      <span className="rounded-full border border-rose-300 bg-rose-50 px-2 py-1 text-xs font-semibold text-rose-700 whitespace-nowrap">
+                        ⚠️ Refund Pending
                       </span>
                     )}
-                    {failedSyncIds.has(b.id) && (
-                      <span className="rounded-full border border-red-200 bg-red-50 px-2 py-1 text-xs text-red-600 whitespace-nowrap">
-                        ⛔ Needs review
+                    {b._pending_sync && !bookingHasSyncFailure(b, failedSyncIds) && (
+                      <span
+                        className="rounded-full border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-600 whitespace-nowrap"
+                        data-testid={`booking-pending-sync-${b.id}`}
+                      >
+                        ⏳ Pending Sync
+                      </span>
+                    )}
+                    {bookingHasSyncFailure(b, failedSyncIds) && (
+                      <span
+                        className="rounded-full border border-red-200 bg-red-50 px-2 py-1 text-xs text-red-600 whitespace-nowrap"
+                        data-testid={`booking-sync-failed-${b.id}`}
+                      >
+                        {b._sync_state === 'sync_failed' ? '⛔ Room Conflict' : '⛔ Sync Failed'}
+                      </span>
+                    )}
+                    {!bookingHasSyncFailure(b, failedSyncIds) && !b._pending_sync && (bookingHasAttentionState(b) || financialFailedIds.has(b.id) || bookingNeedsAttention(b)) && (
+                      <span
+                        className="rounded-full border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-700 whitespace-nowrap"
+                        data-testid={`booking-needs-attention-${b.id}`}
+                      >
+                        {financialFailedIds.has(b.id)
+                          ? '⚠️ Payment Issue'
+                          : bookingNeedsAttention(b)
+                            ? '⚠️ Balance Mismatch'
+                            : '⚠️ Review Required'}
                       </span>
                     )}
                     </div>
@@ -932,6 +1075,9 @@ export default function Bookings() {
                     {b.payment_method && b.payment_status !== 'unpaid' && (
                       <p className="mt-1 text-xs text-slate-500">
                         {METHOD_LABEL[b.payment_method] || b.payment_method}
+                        {!b._pending_payment && !b._pending_sync && !bookingHasSyncFailure(b, failedSyncIds) && (
+                          <span className="ml-1 text-emerald-600">✔</span>
+                        )}
                       </p>
                     )}
                   </td>
@@ -940,8 +1086,26 @@ export default function Bookings() {
                   </td>
                   <td className="px-5 py-4 text-center relative">
                     <div className="flex items-center justify-center gap-1.5">
-                      {/* Online booking pending: Confirm or Reject */}
-                      {b.status === 'pending' && b.source === 'online' ? (
+                      {/* Room conflict — reassign or cancel */}
+                      {bookingHasSyncFailure(b, failedSyncIds) && b._sync_state === 'sync_failed' ? (
+                        <>
+                          <button
+                            onClick={() => openEdit(b)}
+                            className="cursor-pointer rounded-xl bg-amber-500 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-amber-600"
+                            title="Change room or dates to resolve the conflict"
+                          >
+                            Reassign Room
+                          </button>
+                          <button
+                            onClick={() => handleStatusChange(b.id, 'cancelled')}
+                            className="cursor-pointer rounded-xl border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-600 transition-colors hover:bg-red-100"
+                            title="Cancel this booking"
+                          >
+                            Cancel
+                          </button>
+                        </>
+                      ) : b.status === 'pending' && b.source === 'online' ? (
+                        /* Online booking pending: Confirm or Reject */
                         <>
                           <button
                             onClick={() => handleStatusChange(b.id, 'confirmed')}
@@ -1000,6 +1164,26 @@ export default function Bookings() {
                               Collect Balance
                             </button>
                           )}
+                          {b.status === 'cancelled' && Number(b.amount_paid || 0) > 0.01 && b.payment_status !== 'paid' && (
+                            <button
+                              onClick={() => {
+                                if (isFinanciallySyncBlocked(b.id)) {
+                                  setWarning(FINANCIAL_SYNC_BLOCK_MESSAGE)
+                                  return
+                                }
+                                navigate('/invoices', { state: { refundBookingId: b.id } })
+                              }}
+                              disabled={isFinanciallySyncBlocked(b.id)}
+                              title={isFinanciallySyncBlocked(b.id) ? FINANCIAL_SYNC_BLOCK_MESSAGE : `Refund ${currency} ${Number(b.amount_paid).toFixed(2)}`}
+                              className={`cursor-pointer rounded-xl px-3 py-1.5 text-xs font-semibold text-white transition-colors ${
+                                isFinanciallySyncBlocked(b.id)
+                                  ? 'bg-slate-300 text-slate-600 cursor-not-allowed'
+                                  : 'bg-rose-600 hover:bg-rose-700'
+                              }`}
+                            >
+                              Process Refund
+                            </button>
+                          )}
                         </>
                       )}
                       <BookingMenu
@@ -1014,21 +1198,32 @@ export default function Bookings() {
                         onPayment={() => openPayment(b)}
                         onExtras={() => openCharges(b)}
                         onReceipt={() => setReceiptBooking(b)}
+                        onHistory={() => { setHistoryBooking(b); setShowHistory(true) }}
                         settings={settings}
                       />
                     </div>
                   </td>
                 </tr>
               ))}
-              {filtered.length === 0 && (
+              {listLoading && bookings.length === 0 && (
+                <tr>
+                  <td colSpan={10} className="px-5 py-10">
+                    <div className="flex items-center justify-center gap-3 py-10 text-sm text-gray-500">
+                      <RefreshCw size={16} className="animate-spin" />
+                      Loading bookings…
+                    </div>
+                  </td>
+                </tr>
+              )}
+              {!listLoading && filtered.length === 0 && (
                 <tr>
                   <td colSpan={10} className="px-5 py-10">
                     <div className="bb-empty-state py-10">
                       <p className="text-base font-semibold text-slate-800">No bookings found</p>
-                        <p className="text-sm text-slate-500">Try adjusting the search or filters, or create a new booking to continue front-desk work.</p>
-                </div>
-              </td>
-            </tr>
+                      <p className="text-sm text-slate-500">Try adjusting the search or filters, or create a new booking to continue front-desk work.</p>
+                    </div>
+                  </td>
+                </tr>
               )}
             </tbody>
           </table>
@@ -1139,7 +1334,7 @@ export default function Bookings() {
                     onChange={(e) => setChargeForm({ ...chargeForm, outlet_id: e.target.value })}
                   >
                     {chargeOutlets.map(o => (
-                      <option key={o.id} value={o.id}>{o.name}</option>
+                      <option key={o.id || o.name} value={o.id || ''}>{o.name}</option>
                     ))}
                   </select>
                   <p className="mt-1 text-xs text-slate-400">Front Desk for room/admin charges. Kitchen or Bar for food/beverage.</p>
@@ -1189,6 +1384,7 @@ export default function Bookings() {
                     amount_paid: ps === 'paid' ? (Number(paymentBooking.total_amount || 0) + Number(paymentBooking.charges_total || 0)) : f.amount_paid
                   }))
                 }}
+                data-testid="booking-payment-status-select"
               >
                 <option value="paid">✅ Paid in Full</option>
                 <option value="partial">⚡ Partial Payment</option>
@@ -1206,6 +1402,7 @@ export default function Bookings() {
                 className="input"
                 value={payForm.payment_method}
                 onChange={(e) => setPayForm((f) => ({ ...f, payment_method: e.target.value }))}
+                data-testid="booking-payment-method-select"
               >
                 {PAYMENT_METHODS.map((m) => (
                   <option key={m.value} value={m.value}>{m.label}</option>
@@ -1421,6 +1618,13 @@ export default function Bookings() {
         </Modal>
       )}
 
+      {showHistory && historyBooking && (
+        <BookingHistoryModal
+          booking={historyBooking}
+          onClose={() => { setShowHistory(false); setHistoryBooking(null) }}
+        />
+      )}
+
       {/* Booking Modal */}
       {showModal && (
         <Modal
@@ -1462,6 +1666,7 @@ export default function Bookings() {
                         className="input"
                         value={newCustomer.name}
                         onChange={(e) => setNewCustomer({ ...newCustomer, name: e.target.value })}
+                        data-testid="booking-new-guest-name-input"
                         placeholder="Guest name"
                       />
                     </F>
@@ -1470,6 +1675,7 @@ export default function Bookings() {
                         className="input"
                         value={newCustomer.phone}
                         onChange={(e) => setNewCustomer({ ...newCustomer, phone: e.target.value })}
+                        data-testid="booking-new-guest-phone-input"
                         placeholder="+267 ..."
                       />
                     </F>
@@ -1544,12 +1750,13 @@ export default function Bookings() {
                   className="input"
                   value={form.room_id}
                   onChange={(e) => setForm({ ...form, room_id: e.target.value })}
+                  data-testid="booking-room-select"
                   required
                 >
                   <option value="">-- Select room --</option>
                   {selectableRooms.map((r) => (
-                      <option key={r.id} value={r.id}>
-                        Room {r.room_number} — {r.room_type} ({currency}{r.rate_per_night}/night)
+                      <option key={r.id} value={r.id} disabled={r.status === 'maintenance'}>
+                        Room {r.room_number} — {r.room_type} ({currency}{r.rate_per_night}/night) {r.status === 'maintenance' ? ' (UNDER MAINTENANCE)' : ''}
                       </option>
                     ))}
                 </select>
@@ -1570,6 +1777,7 @@ export default function Bookings() {
                   className="input"
                   value={form.check_in}
                   onChange={(e) => setForm({ ...form, check_in: e.target.value })}
+                  data-testid="booking-check-in-input"
                   required
                 />
               </F>
@@ -1580,6 +1788,7 @@ export default function Bookings() {
                   value={form.check_out}
                   min={form.check_in}
                   onChange={(e) => setForm({ ...form, check_out: e.target.value })}
+                  data-testid="booking-check-out-input"
                   required
                 />
               </F>
@@ -1601,9 +1810,14 @@ export default function Bookings() {
               <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm">
                 <span className="text-slate-600">
                   {nights(form.check_in, form.check_out)} night(s) × {currency}{' '}
-                  {selectedRoom?.rate_per_night?.toFixed(2)} ={' '}
+                  {Number(selectedNightlyRate || 0).toFixed(2)} ={' '}
                 </span>
                 <span className="font-bold text-green-700">{currency} {estimatedTotal.toFixed(2)}</span>
+                {applicableRate && selectedRoom && Number(applicableRate.rate_per_night) !== Number(selectedRoom.rate_per_night) && (
+                  <p className="mt-1 text-xs font-medium text-emerald-700">
+                    Seasonal/Event pricing applied: {applicableRate.name || 'Override'} instead of the standard {currency} {Number(selectedRoom.rate_per_night || 0).toFixed(2)}/night.
+                  </p>
+                )}
                 <p className="mt-1 text-xs text-emerald-700/80">Estimated total before any future extra charges, refunds, or manual adjustments.</p>
               </div>
             )}
@@ -1691,7 +1905,94 @@ function F({ label, children }) {
   )
 }
 
-function BookingMenu({ b, isOpen, onToggle, onClose, onCheckIn, onCheckOut, onCancel, onEdit, onPayment, onExtras, onReceipt, settings }) {
+function BookingHistoryModal({ booking, onClose }) {
+  const { settings } = useSettings()
+  const [charges, setCharges] = useState([])
+  const [payments, setPayments] = useState([])
+  const bookingId = booking.id || booking.booking_id
+
+  useEffect(() => {
+    if (!bookingId) return
+    window.api.charges.getByBooking(bookingId).then(setCharges).catch(() => {})
+    window.api.bookings.getPayments(bookingId).then((data) => setPayments(Array.isArray(data) ? data : [])).catch(() => {})
+  }, [bookingId])
+
+  const currency = settings?.currency || 'P'
+  const nights = Math.max(0, Math.ceil((new Date(booking.check_out) - new Date(booking.check_in)) / (1000 * 60 * 60 * 24)))
+
+  const events = useMemo(() => {
+    const list = []
+    if (booking.created_at) {
+      list.push({
+        at: booking.created_at,
+        tone: 'bg-slate-100 text-slate-700',
+        title: 'Booking created',
+        detail: `${booking.customer_name || 'Guest'} added.`
+      })
+    }
+    list.push({
+      at: booking.check_in,
+      tone: 'bg-blue-100 text-blue-700',
+      title: 'Stay scheduled',
+      detail: `${booking.check_in} to ${booking.check_out} · ${nights} night${nights !== 1 ? 's' : ''}`
+    })
+    charges.forEach(c => {
+      list.push({
+        at: c.created_at || c.date || booking.created_at,
+        tone: 'bg-amber-100 text-amber-700',
+        title: 'Extra charge',
+        detail: `${c.description} · ${currency} ${Number(c.amount || 0).toFixed(2)}`
+      })
+    })
+    payments.forEach(p => {
+      const amount = Math.abs(Number(p.amount || 0))
+      list.push({
+        at: p.paid_at || p.created_at || booking.created_at,
+        tone: p.type === 'refund' ? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700',
+        title: p.type === 'refund' ? 'Refund recorded' : 'Payment recorded',
+        detail: `${currency} ${amount.toFixed(2)} via ${String(p.method || 'cash').replace(/_/g, ' ')}`
+      })
+    })
+    if (booking.status === 'checked_in' || booking.status === 'checked_out') {
+      list.push({
+        at: booking.updated_at || booking.check_in,
+        tone: booking.status === 'checked_out' ? 'bg-slate-100 text-slate-700' : 'bg-emerald-100 text-emerald-700',
+        title: booking.status === 'checked_out' ? 'Checked out' : 'Checked in',
+        detail: booking.status === 'checked_out' ? 'Booking closed.' : 'Guest is currently in house.'
+      })
+    }
+    return list.sort((a, b) => new Date(b.at) - new Date(a.at))
+  }, [booking, charges, payments, currency, nights])
+
+  return (
+    <Modal title={`Booking Activity · ${booking.invoice_number || booking._local_invoice_number || 'Draft'}`} onClose={onClose} size="sm">
+      <div className="space-y-4">
+        <div className="rounded-2xl bg-slate-50 p-4">
+          <p className="font-bold text-slate-800">{booking.customer_name}</p>
+          <p className="text-xs text-slate-500 mt-1">{booking.room_number ? `Room ${booking.room_number}` : 'Multiple Rooms'} · {booking.check_in} to {booking.check_out}</p>
+        </div>
+        <div className="space-y-3">
+          {events.map((e, i) => (
+            <div key={i} className="flex gap-3">
+              <div className={`mt-0.5 h-2 w-2 rounded-full ${e.tone.split(' ')[0]}`} />
+              <div className="flex-1">
+                <div className="flex items-center gap-2">
+                  <p className="text-sm font-bold text-slate-800">{e.title}</p>
+                  <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${e.tone}`}>
+                    {new Date(e.at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-slate-500">{e.detail}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+function BookingMenu({ b, isOpen, onToggle, onClose, onCheckIn, onCheckOut, onCancel, onEdit, onPayment, onExtras, onReceipt, onHistory, settings }) {
   const ref = useRef(null)
   useEffect(() => {
     if (!isOpen) return
@@ -1717,6 +2018,7 @@ function BookingMenu({ b, isOpen, onToggle, onClose, onCheckIn, onCheckOut, onCa
       <div ref={ref} className="relative inline-block">
         <button
           onClick={onToggle}
+          data-testid={`booking-menu-toggle-${b.id}`}
           className="cursor-pointer rounded-xl border border-slate-200 bg-slate-50 p-2 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800"
         >
           <MoreVertical size={15} />
@@ -1774,7 +2076,10 @@ function BookingMenu({ b, isOpen, onToggle, onClose, onCheckIn, onCheckOut, onCa
 
           {/* Documents */}
           <MenuItem onClick={() => { onReceipt(); onClose() }}>
-            🖨️ View Receipt
+            📄 View Receipt
+          </MenuItem>
+          <MenuItem onClick={() => { onHistory(); onClose() }}>
+            📋 View History
           </MenuItem>
 
           {/* Communication */}

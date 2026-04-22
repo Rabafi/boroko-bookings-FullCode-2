@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Plus, Pencil, Trash2, AlertTriangle, TrendingUp, Package, ClipboardCheck, RefreshCw } from 'lucide-react'
 import { Modal } from './shared/Modal'
 import HorizontalScrollArea from './shared/HorizontalScrollArea'
-import { useSettings } from '../App'
+import { useSettings } from '../app-context'
 
 const CATEGORIES = ['Bar', 'Kitchen', 'Other']
 const UNITS = ['bottle', 'can', 'piece', 'roll', 'packet', 'pack', 'box', 'crate', 'tray', 'carton', 'case', 'kg', 'g', 'L', 'ml']
@@ -29,6 +29,7 @@ export default function Inventory() {
   const [items, setItems] = useState([])
   const [outlets, setOutlets] = useState([])
   const [catFilter, setCatFilter] = useState('all')
+  const [stockFilter, setStockFilter] = useState('all')
   const [sortBy, setSortBy] = useState('name_asc')
   const [loading, setLoading] = useState(false)
   const [pageError, setPageError] = useState('')
@@ -69,6 +70,7 @@ export default function Inventory() {
   const [adjustItem, setAdjustItem] = useState(null)
   const [adjustDelta, setAdjustDelta] = useState('')
   const [adjustNotes, setAdjustNotes] = useState('')
+  const [adjustPin, setAdjustPin] = useState('')
   const [adjustSaving, setAdjustSaving] = useState(false)
   const [adjustError, setAdjustError] = useState('')
 
@@ -84,6 +86,15 @@ export default function Inventory() {
   const [stocktakePosting, setStocktakePosting] = useState(false)
 
   useEffect(() => { loadItems() }, [])
+  useEffect(() => {
+    if (!window.api?.sync?.onStatusChanged) return
+    const unsubscribe = window.api.sync.onStatusChanged(() => {
+      loadItems(true)
+      if (tab === 'purchases' && historyItemId) loadPurchases(historyItemId)
+      if (tab === 'stocktake' && activeStocktakeId) loadStocktakeSession(activeStocktakeId)
+    })
+    return () => unsubscribe?.()
+  }, [tab, historyItemId, activeStocktakeId])
   useEffect(() => {
     window.api.outlets.getAll().then((data) => setOutlets(data || [])).catch(() => {})
   }, [])
@@ -116,8 +127,8 @@ export default function Inventory() {
     [activeStocktake]
   )
 
-  const loadItems = async () => {
-    setLoading(true)
+  const loadItems = async (silent = false) => {
+    if (!silent) setLoading(true)
     setPageError('')
     try {
       const data = await window.api.inventory.getItems()
@@ -410,7 +421,7 @@ export default function Inventory() {
       const quantityPurchased = getEffectivePurchaseQuantity(purchaseForm)
       const totalCost = parseFloat(purchaseForm.total_cost)
       if (!(quantityPurchased > 0)) {
-        setPurchaseError(`Enter the quantity received in ${purchaseItem.unit}s, or fill in packs × units per pack.`)
+        setPurchaseError(`Enter the quantity received in ${purchaseItem?.unit || 'units'}s, or fill in packs × units per pack.`)
         return
       }
       if (!(totalCost > 0)) {
@@ -474,6 +485,7 @@ export default function Inventory() {
     setAdjustItem(item)
     setAdjustDelta('')
     setAdjustNotes('')
+    setAdjustPin('')
     setAdjustError('')
     setAdjustModal(true)
   }
@@ -483,7 +495,7 @@ export default function Inventory() {
     setAdjustSaving(true)
     setAdjustError('')
     try {
-      const result = await window.api.inventory.adjustStock(adjustItem.id, parseFloat(adjustDelta), adjustNotes)
+      const result = await window.api.inventory.adjustStock(adjustItem.id, parseFloat(adjustDelta), adjustNotes, adjustPin)
       if (!result?.success) {
         setAdjustError(result?.error || 'Failed to adjust stock. Please try again.')
         return
@@ -501,7 +513,14 @@ export default function Inventory() {
   }
 
   const filtered = useMemo(() => {
-    return [...items.filter((i) => catFilter === 'all' || i.category === catFilter)].sort((a, b) => {
+    return [...items.filter((i) => {
+      if (catFilter !== 'all' && i.category !== catFilter) return false
+      if (stockFilter === 'low') {
+        const isLow = Number(i.current_stock || 0) <= Number(i.reorder_level || 0)
+        return isLow
+      }
+      return true
+    })].sort((a, b) => {
       switch (sortBy) {
         case 'stock_asc':
           return Number(a.current_stock || 0) - Number(b.current_stock || 0)
@@ -543,15 +562,15 @@ export default function Inventory() {
               <button
                 key={v}
                 onClick={() => setTab(v)}
-                className={`px-4 py-2 transition-colors ${tab === v ? 'bg-green-600 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
+                className={`px-4 py-2 transition-colors ${tab === v ? 'bg-emerald-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-50'}`}
               >
                 {l}
               </button>
             ))}
           </div>
-          <button onClick={openCreate} className="btn-primary flex items-center gap-2">
-            <Plus size={16} /> Add Item
-          </button>
+          <div className="flex items-center gap-2">
+            {/* "Add Item" moved to Stock tab as "Add New Product" */}
+          </div>
         </div>
       </div>
 
@@ -586,7 +605,7 @@ export default function Inventory() {
                 >
                   <option value="">All outlets together</option>
                   {outlets.map((outlet) => (
-                    <option key={outlet.id} value={outlet.id}>
+                    <option key={outlet.id || outlet.name} value={outlet.id || ''}>
                       {outlet.name}
                     </option>
                   ))}
@@ -800,36 +819,48 @@ export default function Inventory() {
       {/* ── Stock Tab ── */}
       {tab === 'stock' && (
         <>
-          {/* Category filter */}
-          <div className="bb-filter-bar w-fit">
-            <button
-              onClick={() => setCatFilter('all')}
-              className={`rounded-xl px-3 py-2 transition-colors ${catFilter === 'all' ? 'bg-green-600 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
-            >
-              All
-            </button>
-            {CATEGORIES.map((c) => (
+          <div className="bb-filter-bar mb-5 flex items-center justify-between">
+            <div className="flex items-center gap-2">
               <button
-                key={c}
-                onClick={() => setCatFilter(c)}
-                className={`rounded-xl px-3 py-2 transition-colors ${catFilter === c ? 'bg-green-600 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
+                onClick={() => setCatFilter('all')}
+                className={`rounded-xl px-3 py-2 transition-colors ${catFilter === 'all' ? 'bg-green-600 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
               >
-                {c}
+                All
               </button>
-            ))}
-            <select
-              className="input ml-3 w-auto min-w-[180px]"
-              value={sortBy}
-              onChange={(event) => setSortBy(event.target.value)}
-            >
-              <option value="name_asc">Name A-Z</option>
-              <option value="stock_asc">Lowest stock first</option>
-              <option value="stock_desc">Highest stock first</option>
-              <option value="low_stock_first">Low stock first</option>
-              <option value="outlet_asc">Outlet</option>
-            </select>
-            <span className="ml-2 self-center text-xs text-slate-500">Category filters help isolate low-stock items faster during stock checks.</span>
+              {CATEGORIES.map((c) => (
+                <button
+                  key={c}
+                  onClick={() => setCatFilter(c)}
+                  className={`rounded-xl px-3 py-2 transition-colors ${catFilter === c ? 'bg-green-600 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
+                >
+                  {c}
+                </button>
+              ))}
+              <select
+                className="input ml-3 w-auto min-w-[180px]"
+                value={sortBy}
+                onChange={(event) => setSortBy(event.target.value)}
+              >
+                <option value="name_asc">Name A-Z</option>
+                <option value="stock_asc">Lowest stock first</option>
+                <option value="stock_desc">Highest stock first</option>
+                <option value="low_stock_first">Low stock first</option>
+                <option value="outlet_asc">Outlet</option>
+              </select>
+              <select
+                className="input w-auto min-w-[150px]"
+                value={stockFilter}
+                onChange={(event) => setStockFilter(event.target.value)}
+              >
+                <option value="all">All stock levels</option>
+                <option value="low">Low stock only</option>
+              </select>
+            </div>
+            <button onClick={openCreate} className="btn-primary flex items-center gap-2 whitespace-nowrap">
+              <Plus size={16} /> Add New Product
+            </button>
           </div>
+          <div className="mb-4 text-xs text-slate-500">Category filters help isolate low-stock items faster during stock checks.</div>
 
           <div className="bb-table-shell">
             {loading ? (
@@ -948,39 +979,46 @@ export default function Inventory() {
       {/* ── Purchases Tab ── */}
       {tab === 'purchases' && (
         <div>
-          <div className="bb-filter-bar mb-5">
-            <select
-              className="input w-auto"
-              value={historyItemId || ''}
-              onChange={async (e) => {
-                setHistoryItemId(e.target.value)
-                if (e.target.value) await loadPurchases(e.target.value)
-                else setPurchaseHistory([])
-              }}
-            >
-              <option value="">All items</option>
-              {items.map((i) => (
-                <option key={i.id} value={i.id}>{i.name}</option>
-              ))}
-            </select>
-            {!historyItemId && (
-              <button
-                onClick={async () => {
-                  // Load all purchases by loading each item's purchases
-                  const all = []
-                  for (const item of items) {
-                    const p = await window.api.inventory.getPurchases(item.id).catch(() => [])
-                    all.push(...p.map((x) => ({ ...x, item_name: item.name, item_unit: item.unit })))
-                  }
-                  all.sort((a, b) => new Date(b.date) - new Date(a.date))
-                  setPurchaseHistory(all)
+          <div className="bb-filter-bar mb-5 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <select
+                className="input w-auto"
+                value={historyItemId || ''}
+                onChange={async (e) => {
+                  setHistoryItemId(e.target.value)
+                  if (e.target.value) await loadPurchases(e.target.value)
+                  else setPurchaseHistory([])
                 }}
-                className="btn-secondary text-sm"
               >
-                Load All
+                <option value="">All items</option>
+                {items.map((i) => (
+                  <option key={i.id} value={i.id}>{i.name}</option>
+                ))}
+              </select>
+              <button
+                onClick={() => openPurchase(null)}
+                className="btn-primary flex items-center gap-2 text-sm"
+              >
+                <Plus size={16} /> Record Purchase
               </button>
-            )}
-            <span className="self-center text-xs text-slate-500">Purchase history shows how unit cost was derived from each stock purchase.</span>
+              {!historyItemId && (
+                <button
+                  onClick={async () => {
+                    const all = []
+                    for (const item of items) {
+                      const p = await window.api.inventory.getPurchases(item.id).catch(() => [])
+                      all.push(...p.map((x) => ({ ...x, item_name: item.name, item_unit: item.unit })))
+                    }
+                    all.sort((a, b) => new Date(b.date) - new Date(a.date))
+                    setPurchaseHistory(all)
+                  }}
+                  className="btn-secondary text-sm flex items-center gap-2"
+                >
+                  <RefreshCw size={14} /> Load All
+                </button>
+              )}
+            </div>
+            <span className="text-xs text-slate-500">Purchase history shows how unit cost was derived from each stock purchase.</span>
           </div>
 
           <div className="bb-table-shell">
@@ -1035,7 +1073,7 @@ export default function Inventory() {
       {/* Item Modal */}
       {itemModal && (
         <Modal
-          title={editingItem ? 'Edit Item' : 'Add Inventory Item'}
+          title={editingItem ? 'Edit Product' : 'Add New Product'}
           onClose={() => setItemModal(false)}
           size="sm"
         >
@@ -1091,7 +1129,7 @@ export default function Inventory() {
               >
                 <option value="">— Unassigned —</option>
                 {outlets.map((outlet) => (
-                  <option key={outlet.id} value={outlet.id}>{outlet.name}</option>
+                  <option key={outlet.id || outlet.name} value={outlet.id || ''}>{outlet.name}</option>
                 ))}
               </select>
               <p className="mt-1 text-xs text-slate-500">
@@ -1154,7 +1192,7 @@ export default function Inventory() {
                 Cancel
               </button>
               <button type="submit" disabled={itemSaving} className="btn-primary flex-1">
-                {itemSaving ? 'Saving...' : editingItem ? 'Update' : 'Add Item'}
+                {itemSaving ? 'Saving...' : editingItem ? 'Update' : 'Add Product'}
               </button>
             </div>
           </form>
@@ -1162,9 +1200,9 @@ export default function Inventory() {
       )}
 
       {/* Purchase Modal */}
-      {purchaseModal && purchaseItem && (
+      {purchaseModal && (
         <Modal
-          title={`Record Purchase — ${purchaseItem.name}`}
+          title={purchaseItem ? `Record Purchase - ${purchaseItem.name}` : 'Record Purchase'}
           onClose={() => setPurchaseModal(false)}
           size="sm"
         >
@@ -1174,6 +1212,28 @@ export default function Inventory() {
                 {purchaseError}
               </div>
             )}
+            {!purchaseItem && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Select Item *</label>
+                <select
+                  className="input"
+                  onChange={(e) => {
+                    const found = items.find(i => i.id === e.target.value);
+                    if (found) {
+                      setPurchaseItem(found);
+                      setPurchaseError("");
+                    }
+                  }}
+                  defaultValue=""
+                  required
+                >
+                  <option value="" disabled>Select an item...</option>
+                  {items.map(i => <option key={i.id} value={i.id}>{i.name} ({i.unit})</option>)}
+                </select>
+                <p className="mt-1 text-xs text-slate-500">Pick the existing stock item you are purchasing.</p>
+              </div>
+            )}
+            <div className={!purchaseItem ? "opacity-30 pointer-events-none" : ""}>
             <div className="rounded-xl border border-emerald-100 bg-emerald-50/70 px-4 py-3">
               <p className="text-xs text-slate-600">
                 The unit cost is calculated automatically from the base units received and the total supplier cost for this delivery.
@@ -1192,7 +1252,7 @@ export default function Inventory() {
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Quantity ({purchaseItem.unit}) *
+                  Quantity ({purchaseItem?.unit || 'units'}) *
                 </label>
                 <input
                   type="number"
@@ -1226,7 +1286,7 @@ export default function Inventory() {
             <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
               <p className="text-sm font-semibold text-slate-800">Bought in packs, cartons, or crates?</p>
               <p className="mt-1 text-xs text-slate-500">
-                Enter the pack count and how many {purchaseItem.unit}s are inside each pack. Example: 2 crates × 24 bottles = 48 bottles.
+                Enter the pack count and how many {purchaseItem?.unit || 'units'}s are inside each pack. Example: 2 crates × 24 bottles = 48 bottles.
               </p>
               <div className="mt-3 grid grid-cols-2 gap-4">
                 <div>
@@ -1250,20 +1310,20 @@ export default function Inventory() {
                     className="input"
                     value={purchaseForm.units_per_package}
                     onChange={(e) => setPurchaseForm({ ...purchaseForm, units_per_package: e.target.value })}
-                    placeholder={`e.g. 24 ${purchaseItem.unit}`}
+                    placeholder={`e.g. 24 ${purchaseItem?.unit || 'units'}`}
                   />
                 </div>
               </div>
               {getEffectivePurchaseQuantity(purchaseForm) > 0 && (
                 <p className="mt-3 text-xs font-medium text-slate-700">
-                  Effective received quantity: {fmt(getEffectivePurchaseQuantity(purchaseForm), 1)} {purchaseItem.unit}
+                  Effective received quantity: {fmt(getEffectivePurchaseQuantity(purchaseForm), 1)} {purchaseItem?.unit || 'units'}
                 </p>
               )}
             </div>
             {unitCostPreview() && (
               <div className="bg-green-50 rounded-lg p-3 text-sm">
                 <p className="text-green-800">
-                  Auto unit cost: <strong>{currency} {unitCostPreview()}</strong> per {purchaseItem.unit}
+                  Auto unit cost: <strong>{currency} {unitCostPreview()}</strong> per {purchaseItem?.unit || 'units'}
                 </p>
               </div>
             )}
@@ -1277,12 +1337,13 @@ export default function Inventory() {
                 placeholder="Supplier, invoice number, pack details, etc."
               />
             </div>
+            </div>
             <div className="flex gap-3 pt-2">
               <button type="button" onClick={() => setPurchaseModal(false)} className="btn-secondary flex-1">
                 Cancel
               </button>
-              <button type="submit" disabled={purchaseSaving} className="btn-primary flex-1">
-                {purchaseSaving ? 'Saving...' : 'Record Purchase'}
+              <button type="submit" disabled={purchaseSaving || !purchaseItem} className="btn-primary flex-1">
+                {purchaseSaving ? "Saving..." : "Record Purchase"}
               </button>
             </div>
           </form>
@@ -1337,6 +1398,17 @@ export default function Inventory() {
                 placeholder="e.g. Waste, spillage, stocktake correction"
               />
             </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Manager PIN *</label>
+              <input
+                type="password"
+                className="input"
+                value={adjustPin}
+                onChange={(e) => setAdjustPin(e.target.value)}
+                required
+                placeholder="Manager PIN"
+              />
+            </div>
             <div className="flex gap-3 pt-2">
               <button type="button" onClick={() => setAdjustModal(false)} className="btn-secondary flex-1">
                 Cancel
@@ -1351,3 +1423,5 @@ export default function Inventory() {
     </div>
   )
 }
+
+

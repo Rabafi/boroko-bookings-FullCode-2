@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { TrendingUp, BedDouble, DollarSign, Calendar, Download, Printer, FileDown, Table, PiggyBank, ShoppingCart, Package, Building2, CreditCard } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { formatPaymentMethod } from '../constants/paymentMethods'
-import { useSettings, useAccess } from '../App'
+import { useSettings, useAccess } from '../app-context'
 import HorizontalScrollArea from './shared/HorizontalScrollArea'
 import { canAccessCapability } from '../../../shared/accessControl'
 
@@ -30,7 +30,48 @@ function occColor(rate) {
 }
 
 const PAYMENT_LABELS = {
-  folio: '📋 Room Folio'
+  folio: 'Room Folio'
+}
+
+function getEventGroupId(booking) {
+  if (!booking?.is_exclusive_event && !String(booking?.notes || '').includes('[GROUP:')) return null
+  const match = String(booking?.notes || '').match(/\[GROUP:([^\]]+)\]/)
+  return match?.[1] || `${booking.customer_id || booking.customer_name || 'event'}-${booking.check_in}-${booking.check_out}`
+}
+
+function groupEventBookings(rows = []) {
+  const grouped = []
+  const groups = new Map()
+  for (const booking of rows) {
+    const groupId = getEventGroupId(booking)
+    if (!groupId) {
+      grouped.push(booking)
+      continue
+    }
+    if (!groups.has(groupId)) {
+      const parent = {
+        ...booking,
+        _event_group: true,
+        _event_booking_ids: [booking.id],
+        room_count: 1,
+        room_number: null,
+        room_type: 'Full Lodge',
+        total_amount: Number(booking.total_amount || 0),
+        charges_total: Number(booking.charges_total || 0),
+        amount_paid: Number(booking.amount_paid || 0)
+      }
+      groups.set(groupId, parent)
+      grouped.push(parent)
+      continue
+    }
+    const parent = groups.get(groupId)
+    parent._event_booking_ids.push(booking.id)
+    parent.room_count += 1
+    parent.total_amount += Number(booking.total_amount || 0)
+    parent.charges_total += Number(booking.charges_total || 0)
+    parent.amount_paid += Number(booking.amount_paid || 0)
+  }
+  return grouped
 }
 
 export default function Reports() {
@@ -262,6 +303,10 @@ export default function Reports() {
   }
 
   const handlePrint = () => {
+    if (revenue?.source !== 'server') {
+      setError('Cannot print reports while using local fallback data. Please restore internet connection and refresh the report.')
+      return
+    }
     setExportSuccess('Print dialog opened for the current report. Review the preview before confirming.')
     setTimeout(() => setExportSuccess(''), 3500)
     window.print()
@@ -277,7 +322,7 @@ export default function Reports() {
     ? occupancy.reduce((best, r) => r.occupancy_rate > (best?.occupancy_rate || -1) ? r : best, null) : null
   const topRoomContribution = roomProfitability.length > 0 ? roomProfitability[0] : null
   const collectionQueue = useMemo(() => (
-    reportBookings
+    groupEventBookings(reportBookings)
       .filter((booking) => {
         const bookingDate = String(booking.check_in || booking.created_at || '')
         return bookingDate >= start && bookingDate <= end
@@ -341,7 +386,8 @@ export default function Reports() {
           <h1 className="bb-page-header-title mt-2">Reports</h1>
           <p className="bb-page-header-subtitle">Occupancy, revenue, cost, and performance analysis across operations.</p>
         </div>
-        <div className="flex flex-wrap gap-2">
+
+<div className="flex flex-wrap gap-2">
           {/* Disable all exports when data is from local fallback — money numbers must be authoritative */}
           <button onClick={exportCSV} disabled={!revenue || loading || revenue?.source !== 'server'}
             className="btn-secondary disabled:opacity-40"
@@ -353,8 +399,9 @@ export default function Reports() {
             title={revenue?.source !== 'server' ? 'Export blocked: report is using local fallback data, not server-authoritative data' : ''}>
             <Table size={14} /> {savingXLSX ? 'Saving…' : 'Excel'}
           </button>
-          <button onClick={handlePrint} disabled={!revenue || loading}
-            className="btn-secondary disabled:opacity-40">
+          <button onClick={handlePrint} disabled={!revenue || loading || revenue?.source !== 'server'}
+            className="btn-secondary disabled:opacity-40"
+            title={revenue?.source !== 'server' ? 'Print blocked: report is using local fallback data, not server-authoritative data' : ''}>
             <Printer size={14} /> Print
           </button>
           <button onClick={handleSavePDF} disabled={!revenue || loading || savingPDF || revenue?.source !== 'server'}
@@ -409,7 +456,7 @@ export default function Reports() {
               {outlets
                 .filter(o => !access?.allowedOutletIds || access.allowedOutletIds.includes(o.id))
                 .map(o => (
-                  <option key={o.id} value={o.id}>{o.name}</option>
+                  <option key={o.id || o.name} value={o.id || ''}>{o.name}</option>
                 ))}
               {/* Unassigned only for full-access users */}
               {!access?.allowedOutletIds && <option value="unassigned">Unassigned</option>}
@@ -1033,7 +1080,7 @@ export default function Reports() {
           </div>
           <div className="mt-4 space-y-3">
             {collectionQueue.map((booking) => (
-              <div key={`report-queue-${booking.id}`} className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+              <div key={`report-queue-${booking._event_booking_ids?.join('-') || booking.id}`} className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <p className="truncate text-sm font-semibold text-slate-900">{booking.customer_name || 'Guest'}</p>
@@ -1051,7 +1098,7 @@ export default function Reports() {
                     </span>
                   </div>
                   <p className="mt-1 text-xs text-slate-500">
-                    Room {booking.room_number || '—'} · {booking.check_in} → {booking.check_out}
+                    {booking._event_group ? `Full Lodge · ${booking.room_count} rooms` : `Room ${booking.room_number || '—'}`} · {booking.check_in} → {booking.check_out}
                   </p>
                 </div>
                 <button

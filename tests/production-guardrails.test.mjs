@@ -80,6 +80,50 @@ async function run() {
   assert.match(database, /probeRpc\('create_booking'/)
   assert.match(database, /probeRpc\('create_pos_order'/)
   assert.match(database, /probeRpc\('delete_booking_charge'/)
+  assert.match(database, /function getOfflinePosInventoryReservation\(/)
+  assert.match(database, /function applyOfflinePosInventoryReservation\(/)
+  assert.match(database, /function buildQueuedPosInventoryUsage\(/)
+  assert.match(database, /function applyQueuedPosInventoryReservations\(/)
+  assert.match(database, /function mergeRemotePosOrdersWithLocalState\(/)
+  assert.match(database, /const inventoryReservations = getOfflinePosInventoryReservation\(items\)/)
+  assert.match(database, /applyOfflinePosInventoryReservation\(inventoryReservations\)/)
+  assert.match(database, /shouldRefreshInventory = true/)
+  assert.match(database, /inventory_item_id:\s*item\.inventory_item_id\s*\|\|\s*null/)
+  assert.match(database, /depletion_qty:\s*Math\.max\(1,\s*Number\(item\.depletion_qty \|\| 1\)\)/)
+  assert.match(database, /'inventory-items':\s*\(\)\s*=>\s*supabase[\s\S]*?from\('inventory_items'\)/)
+  assert.match(database, /'inventory-purchases':\s*\(\)\s*=>\s*supabase[\s\S]*?from\('inventory_purchases'\)/)
+  assert.match(database, /refreshCache\(\s*'inventory-items',\s*'inventory-purchases'\s*\)\.catch\(\(\) => \{\}\)/)
+  assert.match(database, /export async function getInventoryItems\(\)\s*\{[\s\S]*?await checkOnline\(\)/)
+  assert.match(database, /getInventoryItems received empty live result; using cached inventory items instead/)
+  assert.match(database, /export async function getInventoryPurchases\(itemId\)\s*\{[\s\S]*?await checkOnline\(\)/)
+  assert.match(database, /export async function getLowStockItems\(\)\s*\{[\s\S]*?getInventoryItems\(\)\.catch\(\(\) => readCache\('inventory-items'\)\)/)
+  assert.match(database, /const mergedLiveRows = mergeRemotePosOrdersWithLocalState\(data \|\| \[\], cachedOrders\)/)
+  assert.match(mainIndex, /inventory:getItems failed:/)
+  assert.match(mainIndex, /Could not load inventory items right now\./)
+  assert.match(database, /function buildEventGroupId\(/)
+  assert.match(database, /const eventIdempotencyKey = `event-booking:\$\{groupId\}`/)
+  assert.match(database, /representativeRoom/)
+  assert.match(database, /room_number:\s*'Full Lodge'/)
+  assert.match(database, /export async function repairDuplicateEventBookings\(/)
+  assert.match(mainIndex, /admin:repairDuplicateEventBookings/)
+  assert.match(preload, /repairDuplicateEventBookings:\s*\(lodgeId\)\s*=>\s*ipcRenderer\.invoke\('admin:repairDuplicateEventBookings', lodgeId\)/)
+  assert.doesNotMatch(database, /pricePerRoom/)
+  assert.doesNotMatch(database, /depositPerRoom/)
+
+  const eventSingletonSql = await read('supabase/migrations/20260521_event_booking_singleton_guard.sql')
+  assert.match(eventSingletonSql, /guard_single_active_event_booking/)
+  assert.match(eventSingletonSql, /trg_single_active_event_booking/)
+  assert.match(eventSingletonSql, /An active exclusive event booking already exists/)
+  const eventRepairSql = await read('supabase/migrations/20260522_repair_duplicate_event_bookings.sql')
+  assert.match(eventRepairSql, /repair_duplicate_event_bookings/)
+  assert.match(eventRepairSql, /delete from public\.invoices/)
+  assert.match(eventRepairSql, /delete from public\.bookings/)
+  assert.doesNotMatch(eventRepairSql, /where\s+lodge_id\s*=/i)
+  const eventRepairAmbiguityFixSql = await read('supabase/migrations/20260523_fix_repair_duplicate_event_bookings_ambiguous_lodge_id.sql')
+  assert.match(eventRepairAmbiguityFixSql, /repair_duplicate_event_bookings/)
+  assert.match(eventRepairAmbiguityFixSql, /where p\.lodge_id = v_group\.lodge_id/)
+  assert.match(eventRepairAmbiguityFixSql, /where b\.lodge_id = v_group\.lodge_id/)
+  assert.doesNotMatch(eventRepairAmbiguityFixSql, /where\s+lodge_id\s*=/i)
 
   const reports = await read('src/renderer/src/components/Reports.jsx')
   assert.match(reports, /bb_strict_finance_reports/)
@@ -96,6 +140,11 @@ async function run() {
   assert.match(appShell, /function FinancialHealthBanner\(/)
   assert.match(appShell, /criticalErrors\?\.\(3\)/)
   assert.match(appShell, /<FinancialHealthBanner \/>/)
+
+  const layout = await read('src/renderer/src/components/Layout.jsx')
+  assert.match(layout, /Clock/)
+  assert.match(layout, /AlertCircle/)
+  assert.match(layout, /from 'lucide-react'/)
 
   const resetSql = await read('supabase/migrations/20260426_test_reset_invoice_cleanup_fix.sql')
   assert.match(resetSql, /invoice_number = any\(v_invoice_numbers\)/)
@@ -121,6 +170,12 @@ async function run() {
   assert.match(operationsReportsSql, /grant execute on function public\.get_inventory_spend_summary\(uuid, date, date, text\)/)
   assert.match(operationsReportsSql, /grant execute on function public\.get_supply_spend_summary\(uuid, date, date\)/)
 
+  const posReplaySql = await read('supabase/migrations/20260507_pos_offline_inventory_payload.sql')
+  assert.match(posReplaySql, /create or replace function public\.create_pos_order\(payload jsonb\)/)
+  assert.match(posReplaySql, /inventory_item_id/)
+  assert.match(posReplaySql, /depletion_qty/)
+  assert.match(posReplaySql, /name = v_item_name/)
+
   assert.equal(
     pickNextReadySyncItemIndex([
       { _queue_id: 'payment-1', _depends_on: 'booking-1' },
@@ -137,6 +192,86 @@ async function run() {
   )
   assert.equal(isFinancialSyncItem({ table: 'update_booking_payment' }), true)
   assert.equal(isFinancialSyncItem({ table: 'maintenance:update' }), false)
+
+  // Hardening phase: new patch helpers
+  assert.match(database, /function patchCachedCustomerSyncState\(/)
+  assert.match(database, /function patchCachedRoomSyncState\(/)
+  assert.match(database, /function patchCachedUserSyncState\(/)
+  assert.match(database, /function patchCachedQuotationSyncState\(/)
+
+  // Hardening phase: unresolvedLocal in getSyncDetails
+  assert.match(database, /unresolvedLocal/)
+
+  // Hardening phase: new fault types
+  assert.match(database, /quotation_drift/)
+  assert.match(database, /pos_drift/)
+  assert.match(database, /mark_quotation_sent/)
+
+  // Hardening phase: shouldRefreshUsers flag in _runSyncQueue
+  assert.match(database, /shouldRefreshUsers/)
+
+  // Hardening phase: booking drift covers customer_id and room_id
+  assert.match(database, /customer_id.*→ server|server.*customer_id/)
+  assert.match(database, /room_id.*→ server|server.*room_id/)
+
+  // Hardening phase: support bundle includes syncMeta
+  assert.match(database, /syncMeta,\s*\n\s*healthFaults/)
+  assert.match(panel, /localStateAcknowledged/)
+  assert.match(panel, /Local state acknowledgement not yet proven/)
+
+  // Gap 1: clearSyncFailed / markClearedSyncItemForManualReview routes all entity types
+  assert.match(database, /patchCachedCustomerSyncState\(customerId,\s*\{[\s\S]*?manual_review_required/)
+  assert.match(database, /patchCachedRoomSyncState\(roomId,\s*\{[\s\S]*?manual_review_required/)
+  assert.match(database, /patchCachedUserSyncState\(userId,\s*\{[\s\S]*?manual_review_required/)
+  assert.match(database, /patchCachedQuotationSyncState\(quotationId,\s*\{[\s\S]*?manual_review_required/)
+
+  // Gap 2: create_quotation offline path has _queue_id
+  assert.match(database, /_queue_id:\s*`quotation-\$\{record\.id\}`/)
+
+  // Gap 3: PWA queue health functions exist in runtime.js
+  const runtime = await read('manager-pwa/src/lib/runtime.js')
+  assert.match(runtime, /export function getPwaQueueHealth\(/)
+  assert.match(runtime, /export function getUnresolvedLocalState\(/)
+
+  // Gap 3: PWA control UI shows device-local scope warning
+  const controlUi = await read('manager-pwa/src/pages/Control.jsx')
+  assert.match(controlUi, /this device only/)
+
+  // Sync-integrity phase: non-financial entity idempotency (20260428)
+  const idempotencySql = await read('supabase/migrations/20260428_non_financial_entity_idempotency.sql')
+  assert.match(idempotencySql, /idempotent/)
+  assert.match(idempotencySql, /create_customer/)
+  assert.match(idempotencySql, /create_room/)
+  assert.match(idempotencySql, /create_user/)
+
+  // Sync-integrity phase: update entity concurrency (20260429)
+  const concurrencySql = await read('supabase/migrations/20260429_update_entity_concurrency.sql')
+  assert.match(concurrencySql, /p_expected_updated_at/)
+  assert.match(concurrencySql, /update_customer/)
+  assert.match(concurrencySql, /update_room/)
+  assert.match(concurrencySql, /update_quotation/)
+
+  // Sync-integrity phase: device health reports table (20260430)
+  const deviceHealthSql = await read('supabase/migrations/20260430_device_health_reports.sql')
+  assert.match(deviceHealthSql, /device_health_reports/)
+
+  // Sync-integrity phase: database.js concurrency changes
+  assert.match(database, /p_expected_updated_at.*expectedUpdatedAt|expectedUpdatedAt.*p_expected_updated_at/)
+  assert.match(database, /export async function updateCustomer\(/)
+  assert.match(database, /export async function updateRoom\(/)
+  assert.match(database, /publishDeviceHealth/)
+  assert.match(database, /export async function getDeviceHealthRollup\(/)
+
+  // Sync-integrity phase: PWA health publishing
+  assert.match(runtime, /export async function publishPwaHealth\(/)
+
+  // Sync-integrity phase: customer_drift and room_drift fault types
+  assert.match(database, /customer_drift/)
+  assert.match(database, /room_drift/)
+
+  // Sync-integrity phase: SystemHealthPanel includes customer_drift and room_drift
+  assert.match(panel, /customer_drift/)
+  assert.match(panel, /room_drift/)
 
   console.log('production-guardrails: ok')
 }

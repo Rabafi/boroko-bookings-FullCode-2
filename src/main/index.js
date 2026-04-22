@@ -24,6 +24,10 @@ import {
 
 const INPUT_FOCUS_DEBUG = false
 
+if (process.env.BOROKO_TEST_USER_DATA_DIR) {
+  app.setPath('userData', process.env.BOROKO_TEST_USER_DATA_DIR)
+}
+
 // ── URL safety guard (used by shell:openExternal and setWindowOpenHandler) ────
 const ALLOWED_PROTOCOLS = ['https:', 'http:']
 function isSafeExternalUrl(url) {
@@ -69,6 +73,17 @@ function getRendererErrorLog(limit = 10) {
   } catch (error) {
     console.error('Renderer error log read failed:', error.message)
     return []
+  }
+}
+
+function clearRendererErrorLog() {
+  try {
+    const logPath = join(app.getPath('userData'), 'renderer-errors.log')
+    if (fs.existsSync(logPath)) fs.unlinkSync(logPath)
+    return { success: true }
+  } catch (error) {
+    console.error('Renderer error log clear failed:', error.message)
+    return { success: false, error: error.message }
   }
 }
 
@@ -284,7 +299,7 @@ async function collectFullExportData() {
     }
   }
 
-  const [bookings, customers, rooms, expenses, posOrders, quotations, bookingInvoices, maintenance, inventoryItems, supplyItems, conferenceBookings, dayUseEntries] = await Promise.all([
+  const [bookings, customers, rooms, expenses, posOrders, quotations, bookingInvoices, maintenance, inventoryItems, supplyItems, conferenceBookings, dayUseEntries, users, activityLog] = await Promise.all([
     safe('bookings', () => db.getAllBookings(), []),
     safe('customers', () => db.getAllCustomers(), []),
     safe('rooms', () => db.getAllRooms(), []),
@@ -296,7 +311,9 @@ async function collectFullExportData() {
     safe('inventoryItems', () => db.getInventoryItems(), []),
     safe('supplyItems', () => db.getSupplyItems(), []),
     safe('conferenceBookings', () => db.getConferenceBookings('2000-01-01', '2099-12-31'), []),
-    safe('dayUseEntries', () => db.getPoolDayUse('2000-01-01', '2099-12-31'), [])
+    safe('dayUseEntries', () => db.getPoolDayUse('2000-01-01', '2099-12-31'), []),
+    safe('users', () => db.getUsers?.() || [], []),
+    safe('activityLog', () => db.getActivityLog?.(5000) || [], [])
   ])
 
   const inventoryPurchases = []
@@ -331,7 +348,9 @@ async function collectFullExportData() {
     supplyItems,
     supplyPurchases,
     conferenceBookings,
-    dayUseEntries
+    dayUseEntries,
+    users,
+    activityLog
   }
 }
 
@@ -510,6 +529,25 @@ function buildFullExportWorkbook(data) {
     }))
   ), 'Pool Day Use')
 
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
+    (data.users || []).map(u => ({
+      'Name': u.name || '',
+      'Email': u.email || '',
+      'Role': u.role || '',
+      'PWA Access': u.pwa_enabled ? 'Yes' : 'No',
+      'Created': u.created_at || ''
+    }))
+  ), 'Staff')
+
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
+    (data.activityLog || []).map(entry => ({
+      'Timestamp': entry.timestamp || '',
+      'Action': entry.action || '',
+      'Details': entry.details || '',
+      'User Email': entry.user_email || ''
+    }))
+  ), 'Activity Log')
+
   return wb
 }
 
@@ -673,18 +711,16 @@ async function runManagedBackupPolicy(force = false) {
   }
 
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
-  const jsonPath = policy.export_json ? join(policy.target_dir, `boroko-full-${stamp}.json`) : null
-  const excelPath = policy.export_excel ? join(policy.target_dir, `boroko-full-${stamp}.xlsx`) : null
+  const excelPath = join(policy.target_dir, `boroko-full-${stamp}.xlsx`)
 
   try {
     fs.mkdirSync(policy.target_dir, { recursive: true })
-    if (jsonPath) await db.writeExpandedBackupToPath(jsonPath)
-    if (excelPath) await exportAllDataWorkbookToPath(excelPath)
-    db.recordManagedBackupRun({ success: true, jsonPath, excelPath })
-    return { success: true, jsonPath, excelPath }
+    await exportAllDataWorkbookToPath(excelPath)
+    db.recordManagedBackupRun({ success: true, excelPath })
+    return { success: true, excelPath }
   } catch (e) {
-    db.recordManagedBackupRun({ success: false, error: e.message || 'Managed backup failed.', jsonPath, excelPath })
-    return { success: false, error: e.message || 'Managed backup failed.', jsonPath, excelPath }
+    db.recordManagedBackupRun({ success: false, error: e.message || 'Managed export failed.', excelPath })
+    return { success: false, error: e.message || 'Managed export failed.', excelPath }
   }
 }
 
@@ -708,14 +744,7 @@ app.whenReady().then(async () => {
   // ── Auth ──────────────────────────────────────────────────────────────────
   ipcMain.handle('auth:login', async (_, email, password) => {
     try {
-      console.log('\n[AUTH LOGIN ATTEMPT]')
-      console.log('Email:', email)
-      console.log('[AUTH TRACE] main auth:login input', {
-        email,
-        normalizedEmail: String(email || '').trim().toLowerCase(),
-        passwordLength: typeof password === 'string' ? password.length : null,
-        hasPassword: typeof password === 'string' ? password.length > 0 : false
-      })
+      console.log('[AUTH] Login attempt')
 
       // Master admin check
       let masterAdmin = null
@@ -731,7 +760,7 @@ app.whenReady().then(async () => {
         db.clearBackendSession()
         db.setCurrentUser(masterAdmin)
         db.runScheduledFinancialValidation('startup').catch(() => {})
-        const nonce = db.createSessionNonce(masterAdmin)
+        const nonce = db.createSessionNonce(masterAdmin, password)
         return { ok: true, code: null, user: masterAdmin, mode: 'online', nonce }
       }
 
@@ -739,14 +768,11 @@ app.whenReady().then(async () => {
       console.log('[AUTH] Trying regular user login...')
       const result = await db.loginUser(email, password)
 
-      console.log('[AUTH] loginUser result:', result)
-      console.log('[AUTH TRACE] main auth:login result', result)
-
       if (result?.user) {
-        console.log('[AUTH] SUCCESS - user found:', result.user.email)
+        console.log('[AUTH] SUCCESS')
         db.setCurrentUser(result.user)
         db.runScheduledFinancialValidation('startup').catch(() => {})
-        const nonce = db.createSessionNonce(result.user)
+        const nonce = db.createSessionNonce(result.user, password)
 
         return {
           ok: true,
@@ -785,6 +811,11 @@ app.whenReady().then(async () => {
     catch (e) { return { ok: false, code: 'health_check_failed', error: e.message || 'Could not validate auth health.', online: false } }
   })
 
+  ipcMain.handle('auth:sendPasswordReset', async (_, email) => {
+    try { return await db.sendPasswordResetEmail(email) }
+    catch (e) { return { success: false, error: e.message || 'Could not send password reset email.' } }
+  })
+
   // Restores main-process session using a nonce issued during login.
   // Identity is derived from the nonce file — renderer cannot influence which user is restored.
   ipcMain.handle('auth:restoreSession', (_, nonce) => {
@@ -795,13 +826,22 @@ app.whenReady().then(async () => {
     } catch { return null }
   })
 
+  ipcMain.handle('auth:restoreSavedSession', (_, email, password) => {
+    try {
+      const restored = db.restoreSavedTrustedSession(email, password)
+      if (restored?.user) db.runScheduledFinancialValidation('startup').catch(() => {})
+      return restored
+    } catch { return { user: null, nonce: '' } }
+  })
+
   ipcMain.handle('auth:validateSession', async () => {
     try { return await db.validateCurrentSession() } catch { return null }
   })
 
-  // Clears main-process session on logout
+  // Clears the active app session on logout, but keeps the trusted device session.
+  // Offline-first front desks must be able to log out and reopen while offline.
   ipcMain.handle('auth:logout', () => {
-    try { db.restoreUserSession(null); return { ok: true } } catch { return { ok: true } }
+    try { db.logoutCurrentUser(); return { ok: true } } catch { return { ok: true } }
   })
 
   // ── Lodge Profiles ────────────────────────────────────────────────────────
@@ -942,6 +982,22 @@ app.whenReady().then(async () => {
     catch { return [] }
   })
   ipcMain.handle('admin:getActiveBroadcasts', async () => db.getActiveBroadcasts().catch(() => []))
+  ipcMain.handle('admin:getExpenses', async () => {
+    try { requireRole('super_admin'); return await db.getAdminExpenses() }
+    catch { return [] }
+  })
+  ipcMain.handle('admin:createExpense', async (_, data) => {
+    try { requireRole('super_admin'); return await db.createAdminExpense(data) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('admin:updateExpense', async (_, id, data) => {
+    try { requireRole('super_admin'); return await db.updateAdminExpense(id, data) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('admin:deleteExpense', async (_, id) => {
+    try { requireRole('super_admin'); return await db.deleteAdminExpense(id) }
+    catch (e) { return { success: false, error: e.message } }
+  })
   ipcMain.handle('admin:createBroadcast', async (_, data) => {
     try {
       requireRole('super_admin')
@@ -1083,6 +1139,22 @@ app.whenReady().then(async () => {
     try { requireRole('super_admin'); await db.updateCompany(lodgeId, updates); return { success: true } }
     catch (e) { return { success: false, error: e.message } }
   })
+  ipcMain.handle('admin:archiveCompany', async (_, lodgeId) => {
+    try { requireRole('super_admin'); return await db.archiveCompany(lodgeId) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('admin:restoreCompany', async (_, lodgeId) => {
+    try { requireRole('super_admin'); return await db.restoreCompany(lodgeId) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('admin:permanentlyDeleteCompany', async (_, lodgeId) => {
+    try { requireRole('super_admin'); return await db.permanentlyDeleteCompany(lodgeId) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('admin:repairDuplicateEventBookings', async (_, lodgeId) => {
+    try { requireRole('super_admin'); return await db.repairDuplicateEventBookings(lodgeId) }
+    catch (e) { return { success: false, error: e.message } }
+  })
   ipcMain.handle('admin:getCompanyUsers', async (_, lodgeId) => {
     try { requireRole('super_admin'); return await db.getCompanyUsers(lodgeId) }
     catch { return [] }
@@ -1200,6 +1272,33 @@ app.whenReady().then(async () => {
       return { success: true, filePath: result.filePath }
     } catch (e) {
       return { success: false, error: e?.message || 'Failed to export support bundle' }
+    }
+  })
+  ipcMain.handle('reports:exportOfflineSafetyManifest', async (event) => {
+    try {
+      await requireCapability('bookings.view')
+      const win = BrowserWindow.fromWebContents(event.sender)
+      const today = new Date().toISOString().slice(0, 10)
+      const result = await dialog.showSaveDialog(win, {
+        title: 'Export Offline Safety Manifest',
+        defaultPath: `offline-safety-manifest-${today}.xlsx`,
+        filters: [{ name: 'Excel Workbook', extensions: ['xlsx'] }]
+      })
+      if (result.canceled || !result.filePath) return { success: false, canceled: true }
+      const manifest = await db.getOfflineSafetyData()
+      const wb = XLSX.utils.book_new()
+      ;[
+        ['Arrivals', manifest?.arrivals || []],
+        ['Departures', manifest?.departures || []],
+        ['In House', manifest?.inHouse || []],
+        ['Upcoming', manifest?.upcoming || []]
+      ].forEach(([name, rows]) => {
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), name)
+      })
+      XLSX.writeFile(wb, result.filePath)
+      return { success: true, filePath: result.filePath }
+    } catch (e) {
+      return { success: false, error: e?.message || 'Failed to export offline safety manifest' }
     }
   })
   ipcMain.handle('reports:runFinancialValidation', async () => {
@@ -2178,8 +2277,15 @@ app.whenReady().then(async () => {
     try { await requireCapability('inventory.view'); return await db.getInventoryItems() }
     catch (e) {
       console.error('inventory:getItems failed:', e)
-      return []
+      throw new Error(e?.message || 'Could not load inventory items right now.')
     }
+  })
+  ipcMain.handle('users:sendInvite', async (_, id) => {
+    try {
+      await requireCapability('staff.manage')
+      await assertResourceBelongsToCurrentLodge('User', id, db.getUserById)
+      return await db.sendUserInviteOrReset(id)
+    } catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('inventory:createItem', async (_, data) => {
     try {
@@ -2215,11 +2321,11 @@ app.whenReady().then(async () => {
       return []
     }
   })
-  ipcMain.handle('inventory:adjustStock', async (_, itemId, delta, notes) => {
+  ipcMain.handle('inventory:adjustStock', async (_, itemId, delta, notes, managerPin) => {
     try {
       await requireCapability('inventory.manage')
       await assertResourceBelongsToCurrentLodge('Inventory item', itemId, db.getInventoryItemById)
-      return await db.adjustInventoryStock(itemId, delta, notes)
+      return await db.adjustInventoryStock(itemId, delta, notes, managerPin)
     } catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('inventory:getStocktakes', async (_, limit) => {
@@ -2285,11 +2391,11 @@ app.whenReady().then(async () => {
     try { await requireCapability('supplies.view'); await assertResourceBelongsToCurrentLodge('Supply item', itemId, db.getSupplyItemById); return await db.getSupplyPurchases(itemId).catch(() => []) }
     catch { return [] }
   })
-  ipcMain.handle('supplies:adjustStock', async (_, itemId, delta, notes) => {
+  ipcMain.handle('supplies:adjustStock', async (_, itemId, delta, notes, managerPin) => {
     try {
       await requireCapability('supplies.manage')
       await assertResourceBelongsToCurrentLodge('Supply item', itemId, db.getSupplyItemById)
-      return await db.adjustSupplyStock(itemId, delta, notes)
+      return await db.adjustSupplyStock(itemId, delta, notes, managerPin)
     } catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('supplies:getRoomStock', async () => {
@@ -2557,6 +2663,96 @@ app.whenReady().then(async () => {
     catch (e) { throw new Error(e?.message || 'Failed to load night audit report') }
   })
 
+  ipcMain.handle('reports:saveNightAuditExcel', async (event, { data, date, currency }) => {
+    await requireCapability('audit.view')
+    const win = BrowserWindow.fromWebContents(event.sender)
+    const { filePath, canceled } = await dialog.showSaveDialog(win, {
+      title: 'Export Night Audit to Excel',
+      defaultPath: `night-audit-${date}.xlsx`,
+      filters: [{ name: 'Excel Files', extensions: ['xlsx'] }]
+    })
+    if (canceled || !filePath) return { success: false }
+    try {
+      const wb = XLSX.utils.book_new()
+      const sym = currency || 'P'
+
+      // 1. Summary
+      const summaryRows = [
+        ['Night Audit Summary'],
+        [`Date: ${date}`],
+        [],
+        ['Category', 'Count', `Revenue (${sym})`],
+        ['Check-ins Today', data.check_ins.length, '—'],
+        ['Check-outs Today', data.check_outs.length, '—'],
+        ['New Bookings Created', data.new_bookings.length, '—'],
+        ['POS Orders Completed', data.pos_orders.length, Number(data.pos_revenue || 0).toFixed(2)],
+        ['Outstanding Balances', data.outstanding.length, Number(data.outstanding_total || 0).toFixed(2)],
+        [],
+        ['Printed at', new Date().toLocaleString()]
+      ]
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(summaryRows), 'Summary')
+
+      // 2. Check-ins
+      const checkinRows = [['#', 'Guest', 'Room', 'Type', 'Adults', 'Children', `Total (${sym})`, `Paid (${sym})`, 'Status']]
+      ;(data.check_ins || []).forEach(b => {
+        const roomDisp = b._event_group ? `${b.room_count} rooms` : (b.room_number ? `Room ${b.room_number}` : '—')
+        checkinRows.push([
+          b.booking_number || '—', b.customer_name, roomDisp, b.room_type || '—',
+          b.adults, b.children, Number(b.total_amount || 0).toFixed(2), Number(b.amount_paid || 0).toFixed(2), b.payment_status
+        ])
+      })
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(checkinRows), 'Check-ins')
+
+      // 3. Check-outs
+      const checkoutRows = [['#', 'Guest', 'Room', 'Type', 'Adults', 'Children', `Total (${sym})`, `Paid (${sym})`, 'Status']]
+      ;(data.check_outs || []).forEach(b => {
+        const roomDisp = b._event_group ? `${b.room_count} rooms` : (b.room_number ? `Room ${b.room_number}` : '—')
+        checkoutRows.push([
+          b.booking_number || '—', b.customer_name, roomDisp, b.room_type || '—',
+          b.adults, b.children, Number(b.total_amount || 0).toFixed(2), Number(b.amount_paid || 0).toFixed(2), b.payment_status
+        ])
+      })
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(checkoutRows), 'Check-outs')
+
+      // 4. New Bookings
+      const newBookRows = [['#', 'Guest', 'Room', 'Check-in', 'Check-out', `Total (${sym})`, 'Status']]
+      ;(data.new_bookings || []).forEach(b => {
+        const roomDisp = b._event_group ? `${b.room_count} rooms` : (b.room_number ? `Room ${b.room_number}` : '—')
+        newBookRows.push([
+          b.booking_number || '—', b.customer_name, roomDisp, b.check_in, b.check_out,
+          Number(b.total_amount || 0).toFixed(2), b.status
+        ])
+      })
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(newBookRows), 'New Bookings')
+
+      // 5. POS
+      const posRows = [['Time', 'Guest/Room', 'Payment', `Total (${sym})`, 'Items']]
+      ;(data.pos_orders || []).forEach(o => {
+        const time = new Date(o.created_at).toLocaleTimeString()
+        const items = (o.pos_order_items || []).map(i => `${i.quantity}x ${i.item_name}`).join(', ')
+        posRows.push([time, o.walk_in_name || (o.room_number ? `Room ${o.room_number}` : 'Walk-in'), o.payment_method, Number(o.total || 0).toFixed(2), items])
+      })
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(posRows), 'POS Orders')
+
+      // 6. Outstanding
+      const outstandingRows = [['#', 'Guest', 'Room', 'Check-in', 'Check-out', `Total (${sym})`, `Paid (${sym})`, `Balance (${sym})`]]
+      ;(data.outstanding || []).forEach(b => {
+        const balance = Math.max(0, Number(b.total_amount || 0) + Number(b.charges_total || 0) - Number(b.amount_paid || 0))
+        const roomDisp = b._event_group ? `${b.room_count} rooms` : (b.room_number ? `Room ${b.room_number}` : '—')
+        outstandingRows.push([
+          b.booking_number || '—', b.customer_name, roomDisp, b.check_in, b.check_out,
+          Number(b.total_amount || 0).toFixed(2), Number(b.amount_paid || 0).toFixed(2), balance.toFixed(2)
+        ])
+      })
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(outstandingRows), 'Outstanding')
+
+      XLSX.writeFile(wb, filePath)
+      return { success: true, filePath }
+    } catch (e) {
+      return { success: false, error: e.message }
+    }
+  })
+
   // ── Settings ──────────────────────────────────────────────────────────────
   ipcMain.handle('settings:get', async () => {
     try { return await db.getSettings() }
@@ -2621,6 +2817,24 @@ app.whenReady().then(async () => {
       await requireCapability('sync.manage')
       return db.clearSyncFailed(queueIds)
     } catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('sync:runNow', async () => {
+    try {
+      await requireCapability('sync.manage')
+      return await db.runSyncNow()
+    } catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('sync:clearHealthFault', async (_, id) => {
+    try {
+      await requireCapability('sync.manage')
+      return db.clearHealthFault(id)
+    } catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('sync:getDeviceHealthRollup', async () => {
+    try {
+      await requireCapability('system.health')
+      return await db.getDeviceHealthRollup()
+    } catch { return { available: false, devices: [] } }
   })
   ipcMain.handle('trial:getStatus', async (_, lodgeId) => {
     try { return await db.getTrialStatus(lodgeId) }
@@ -2772,7 +2986,7 @@ app.whenReady().then(async () => {
     autoUpdater.quitAndInstall(false, true) // isSilent=false, isForceRunAfter=true
   })
   ipcMain.handle('update:check', async () => {
-    if (is.dev) return { updateAvailable: false, dev: true }
+    if (is.dev) return { success: true, updateAvailable: false, dev: true }
     try {
       const result = await autoUpdater.checkForUpdates()
       const latestVersion = result?.updateInfo?.version
@@ -2784,6 +2998,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('app:getVersion', () => app.getVersion())
   ipcMain.handle('app:logRendererError', async (_, payload) => appendRendererErrorLog(payload || {}))
   ipcMain.handle('app:getRendererErrors', async (_, limit) => getRendererErrorLog(limit))
+  ipcMain.handle('app:clearRendererErrors', async () => clearRendererErrorLog())
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

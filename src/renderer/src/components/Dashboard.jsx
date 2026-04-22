@@ -20,6 +20,7 @@ import {
   Package,
   Boxes,
   Globe,
+  Tag,
   CheckCircle,
   XCircle,
   Clock,
@@ -27,7 +28,7 @@ import {
 } from 'lucide-react'
 import { StatusBadge } from './shared/StatusBadge'
 import HorizontalScrollArea from './shared/HorizontalScrollArea'
-import { useSettings, useFeatures, useOnlineRequests } from '../App'
+import { useSettings, useFeatures, useOnlineRequests } from '../app-context'
 
 const SHORTCUTS = [
   { label: 'Bookings',      to: '/bookings',   icon: BookOpen },
@@ -101,54 +102,64 @@ export default function Dashboard() {
   const [lowStock, setLowStock] = useState([])
   const [paymentMixToday, setPaymentMixToday] = useState({ total_collected: 0, gross_collected: 0, refunds_issued: 0, by_method: {}, payment_count: 0, date: null })
   const [frontDeskRequests, setFrontDeskRequests] = useState([])
+  const [activeSpecials, setActiveSpecials] = useState([])
   const [requestDialog, setRequestDialog] = useState(null)
   const [requestStatus, setRequestStatus] = useState('open')
   const [requestNote, setRequestNote] = useState('')
   const [requestSaving, setRequestSaving] = useState(false)
 
   const loadData = useCallback(async () => {
-    const [s, bookings, up, fc, ls, paymentMix, lodgeRequests] = await Promise.all([
-      window.api.dashboard.stats(),
-      window.api.bookings.getAll(),
-      window.api.notifications.upcoming(),
-      window.api.dashboard.forecast(30).catch(() => []),
-      window.api.inventory.getLowStock().catch(() => []),
-      window.api.dashboard.bookingPaymentsToday().catch(() => ({ total_collected: 0, gross_collected: 0, refunds_issued: 0, by_method: {}, payment_count: 0, date: null })),
-      window.api.requests?.getAll?.(8).catch(() => [])
-    ])
-    const allBookings = Array.isArray(bookings) ? bookings : []
-    setStats(s || null)
+    setLoading(true)
+    try {
+      const [s, bookings, up, fc, ls, paymentMix, lodgeRequests, rooms, rateOverrides] = await Promise.all([
+        window.api.dashboard.stats(),
+        window.api.bookings.getAll(),
+        window.api.notifications.upcoming(),
+        window.api.dashboard.forecast(30).catch(() => []),
+        window.api.inventory.getLowStock().catch(() => []),
+        window.api.dashboard.bookingPaymentsToday().catch(() => ({ total_collected: 0, gross_collected: 0, refunds_issued: 0, by_method: {}, payment_count: 0, date: null })),
+        window.api.requests?.getAll?.(8).catch(() => []),
+        window.api.rooms.getAll().catch(() => []),
+        window.api.rateOverrides.getAll().catch(() => [])
+      ])
+      const allBookings = Array.isArray(bookings) ? bookings : []
+      setStats(s || null)
 
     // Collapse exclusive event room-rows into one entry per event group
     const regularBookings = allBookings.filter(b => !b.is_exclusive_event)
     const eventRows       = allBookings.filter(b => b.is_exclusive_event)
     const eventGroupMap   = {}
     eventRows.forEach(b => {
+      if (!b) return
       const match   = b.notes?.match(/\[GROUP:([^\]]+)\]/)
-      const groupId = match?.[1] || b.check_in
+      const groupId = match?.[1] || b.check_in || 'unknown'
       if (!eventGroupMap[groupId]) {
-        // total_amount starts at 0 and is accumulated from stored per-room values below.
-        // Do NOT derive from event_daily_rate × nights — that drifts from authoritative stored values.
         eventGroupMap[groupId] = { ...b, room_count: 0, total_amount: 0, amount_paid: 0, _event_group: true }
       }
       eventGroupMap[groupId].room_count++
       eventGroupMap[groupId].total_amount += Number(b.total_amount || 0)
       eventGroupMap[groupId].amount_paid  += Number(b.amount_paid  || 0)
     })
+
     const combined = [...regularBookings, ...Object.values(eventGroupMap)]
-      .sort((a, b_) => new Date(b_.check_in) - new Date(a.check_in))
+      .filter(Boolean)
+      .sort((a, b_) => {
+        const da = a.check_in ? new Date(a.check_in) : new Date(0)
+        const db_ = b_.check_in ? new Date(b_.check_in) : new Date(0)
+        return db_ - da
+      })
     setRecentBookings(combined.slice(0, 6))
-    const revenueEligible = combined.filter((b) => (b.status || '') !== 'cancelled')
+    const revenueEligible = combined.filter((b) => b && (b.status || '') !== 'cancelled')
     const computedOutstandingTotal = revenueEligible.reduce((sum, booking) => (
-      sum + Math.max(0, Number(booking.total_amount || 0) + Number(booking.charges_total || 0) - Number(booking.amount_paid || 0))
+      sum + Math.max(0, Number(booking?.total_amount || 0) + Number(booking?.charges_total || 0) - Number(booking?.amount_paid || 0))
     ), 0)
     const computedUnpaidCount = revenueEligible.filter((booking) => (
-      Math.max(0, Number(booking.total_amount || 0) + Number(booking.charges_total || 0) - Number(booking.amount_paid || 0)) > 0
+      Math.max(0, Number(booking?.total_amount || 0) + Number(booking?.charges_total || 0) - Number(booking?.amount_paid || 0)) > 0
     )).length
     const mostOverdueBalances = revenueEligible
       .map((booking) => ({
         ...booking,
-        outstanding_balance: Math.max(0, Number(booking.total_amount || 0) + Number(booking.charges_total || 0) - Number(booking.amount_paid || 0))
+        outstanding_balance: Math.max(0, Number(booking?.total_amount || 0) + Number(booking?.charges_total || 0) - Number(booking?.amount_paid || 0))
       }))
       .filter((booking) => booking.outstanding_balance > 0)
       .sort((left, right) => {
@@ -174,16 +185,44 @@ export default function Dashboard() {
     setForecast(Array.isArray(fc) ? fc : [])
     setLowStock(Array.isArray(ls) ? ls : [])
     setFrontDeskRequests(Array.isArray(lodgeRequests) ? lodgeRequests : [])
-    setPaymentMixToday(paymentMix && typeof paymentMix === 'object'
-        ? {
-          total_collected: Number(paymentMix.total_collected || 0),
-          gross_collected: Number(paymentMix.gross_collected || 0),
-          refunds_issued: Number(paymentMix.refunds_issued || 0),
-          by_method: paymentMix.by_method && typeof paymentMix.by_method === 'object' ? paymentMix.by_method : {},
-          payment_count: Number(paymentMix.payment_count || 0),
-          date: paymentMix.date || null
-        }
-      : { total_collected: 0, gross_collected: 0, refunds_issued: 0, by_method: {}, payment_count: 0, date: null })
+    const roomNumberById = new Map((Array.isArray(rooms) ? rooms : []).map((room) => [room.id, room.room_number]))
+    const todayKey = new Date().toISOString().slice(0, 10)
+    setActiveSpecials(
+      (Array.isArray(rateOverrides) ? rateOverrides : [])
+        .filter((row) => row?.start_date && row?.end_date && row.start_date <= todayKey && row.end_date >= todayKey)
+        .map((row) => {
+          const start = new Date(`${row.start_date}T00:00:00`)
+          const end = new Date(`${row.end_date}T00:00:00`)
+          const durationDays = Number.isFinite(start.getTime()) && Number.isFinite(end.getTime())
+            ? Math.max(1, Math.round((end - start) / 86400000) + 1)
+            : 0
+          const daysRemaining = Number.isFinite(end.getTime())
+            ? Math.max(1, Math.round((end - new Date(`${todayKey}T00:00:00`)) / 86400000) + 1)
+            : 0
+          return {
+            ...row,
+            roomLabel: row.room_id ? `Room ${roomNumberById.get(row.room_id) || row.room_id}` : 'All rooms',
+            durationDays,
+            daysRemaining
+          }
+        })
+        .sort((left, right) => String(left.end_date || '').localeCompare(String(right.end_date || '')))
+    )
+      setPaymentMixToday(paymentMix && typeof paymentMix === 'object'
+          ? {
+            total_collected: Number(paymentMix.total_collected || 0),
+            gross_collected: Number(paymentMix.gross_collected || 0),
+            refunds_issued: Number(paymentMix.refunds_issued || 0),
+            by_method: paymentMix.by_method && typeof paymentMix.by_method === 'object' ? paymentMix.by_method : {},
+            payment_count: Number(paymentMix.payment_count || 0),
+            date: paymentMix.date || null
+          }
+        : { total_collected: 0, gross_collected: 0, refunds_issued: 0, by_method: {}, payment_count: 0, date: null })
+    } catch (err) {
+      console.error('[Dashboard] Failed to load dashboard data:', err)
+    } finally {
+      setLoading(false)
+    }
   }, [])
 
   const openRequestDialog = useCallback((request) => {
@@ -244,7 +283,8 @@ export default function Dashboard() {
           <h1 className="bb-page-header-title mt-2">Dashboard</h1>
           <p className="bb-page-header-subtitle">{today}</p>
         </div>
-        <div className="bb-card-muted min-w-[240px] px-4 py-4">
+
+<div className="bb-card-muted min-w-[240px] px-4 py-4">
           <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">At a glance</p>
           <p className="mt-2 text-sm text-slate-600">
             Review occupancy, arrivals, revenue, and operational alerts without losing sight of the front desk.
@@ -257,15 +297,8 @@ export default function Dashboard() {
         <section className="rounded-2xl border-2 border-amber-400 bg-amber-50 shadow-[0_8px_32px_rgba(217,119,6,0.18)] overflow-hidden">
           <div className="flex items-center justify-between gap-4 px-5 py-4 border-b border-amber-200">
             <div className="flex items-center gap-3">
-              <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-amber-500 text-white shadow-sm">
-                <Globe size={18} />
-              </div>
-              <div>
-                <p className="font-bold text-amber-900 text-sm">
-                  {onlineRequests.length} Online Booking Request{onlineRequests.length !== 1 ? 's' : ''}
-                </p>
-                <p className="text-xs text-amber-700">Guests submitted these from your booking site — confirm or decline each one.</p>
-              </div>
+              <Globe size={18} className="text-amber-600" />
+              <p className="text-sm font-bold text-amber-900">Online Booking Requests</p>
             </div>
             <span className="flex h-7 w-7 items-center justify-center rounded-full bg-red-500 text-white text-xs font-bold shadow animate-pulse">
               {onlineRequests.length}
@@ -347,6 +380,50 @@ export default function Dashboard() {
           </div>
         </section>
       )}
+
+      <section className="bb-card p-5">
+        <div className="mb-4 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-emerald-100 text-emerald-700">
+              <Tag size={18} />
+            </div>
+            <div>
+              <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-500">Running Specials</h2>
+              <p className="mt-1 text-sm text-slate-500">Seasonal and event pricing that is active today.</p>
+            </div>
+          </div>
+          <Link
+            to="/rooms"
+            className="inline-flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700 transition-colors hover:bg-emerald-100"
+          >
+            Manage Specials <ArrowRight size={13} />
+          </Link>
+        </div>
+        {activeSpecials.length === 0 ? (
+          <p className="text-sm text-slate-500">No seasonal or event specials are running today.</p>
+        ) : (
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {activeSpecials.map((special) => (
+              <div key={special.id} className="rounded-2xl border border-emerald-100 bg-emerald-50/60 px-4 py-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="font-semibold text-slate-800">{special.name || 'Special price'}</p>
+                    <p className="mt-1 text-xs text-slate-500">{special.roomLabel}</p>
+                  </div>
+                  <span className="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-emerald-700 shadow-sm">
+                    {currency} {Number(special.rate_per_night || 0).toFixed(2)}
+                  </span>
+                </div>
+                <div className="mt-3 space-y-1 text-xs text-slate-600">
+                  <p>{special.start_date} to {special.end_date}</p>
+                  <p>Duration: {special.durationDays} day{special.durationDays === 1 ? '' : 's'}</p>
+                  <p>{special.daysRemaining} day{special.daysRemaining === 1 ? '' : 's'} remaining</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
 
       {/* Quick Access */}
       <section className="bb-card p-5">

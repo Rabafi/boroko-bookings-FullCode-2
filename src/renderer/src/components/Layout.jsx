@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Outlet, NavLink, useLocation, useNavigate } from 'react-router-dom'
-import { useAuth, useSettings, useAccess, useOnlineRequests } from '../App'
+import { useAuth, useSettings, useAccess, useOnlineRequests } from '../app-context'
 import {
   LogOut,
   ChevronLeft,
@@ -14,9 +14,17 @@ import {
   Search,
   BellDot,
   ChevronsRight,
-  CreditCard
+  CreditCard,
+  HardDrive,
+  ShieldAlert,
+  Download,
+  Loader2,
+  RefreshCw,
+  Clock,
+  AlertCircle
 } from 'lucide-react'
 import CommandPalette from './CommandPalette'
+import OfflineNotice from './shared/OfflineNotice'
 import { ALL_NAV, NAV_GROUPS, getDesktopNavItems } from '../navigation/desktopNav'
 import {
   SUBSCRIPTION_PLAN_ORDER,
@@ -215,6 +223,36 @@ function UpgradeModal({ lockedItem, onClose, settings }) {
   )
 }
 
+// ── Mandatory Backup Modal ───────────────────────────────────────────────────
+function MandatoryBackupModal({ onGoToBackup }) {
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-md">
+      <div className="w-full max-w-md rounded-[32px] border border-white/20 bg-white p-8 text-center shadow-2xl">
+        <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-3xl bg-amber-50 text-amber-600 ring-8 ring-amber-50/50">
+          <ShieldAlert size={40} />
+        </div>
+        <h2 className="text-2xl font-bold text-slate-900">Weekly Archiving Due</h2>
+        <p className="mt-3 text-slate-500">
+          To maintain data safety and audit compliance, a full Excel data export is required once a week. 
+          The current week's archive is now overdue.
+        </p>
+        <div className="mt-8 space-y-3">
+          <button
+            onClick={onGoToBackup}
+            className="flex w-full items-center justify-center gap-2 rounded-2xl bg-emerald-600 py-4 text-sm font-bold text-white shadow-lg shadow-emerald-600/20 transition-all hover:bg-emerald-700 hover:shadow-emerald-600/30"
+          >
+            <HardDrive size={18} />
+            Go to Data Management
+          </button>
+          <p className="text-[11px] font-medium uppercase tracking-wider text-slate-400">
+            Mandatory Security Procedure
+          </p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function Layout() {
   const { user, logout } = useAuth()
   const { settings } = useSettings()
@@ -225,21 +263,21 @@ export default function Layout() {
   const [collapsed, setCollapsed] = useState(false)
   const [showHelp, setShowHelp] = useState(false)
   const [upgradeItem, setUpgradeItem] = useState(null) // { label, tier, capability } of locked item clicked
-  const [syncStatus, setSyncStatus] = useState({ pending: 0, failed: 0 })
+  const [syncStatus, setSyncStatus] = useState({ pending: 0, failed: 0, syncInProgress: false, lastSuccessfulSyncAt: null })
   const [collectionSummary, setCollectionSummary] = useState({ count: 0, amount: 0 })
-  const [backupSummary, setBackupSummary] = useState({ latestAt: null })
+  const [backupStatus, setBackupStatus] = useState({ latestAt: null, overdue: false, enabled: false })
   const [paletteOpen, setPaletteOpen] = useState(false)
 
   useEffect(() => {
     const checkSync = async () => {
       try {
         const status = await window.api.sync.getStatus()
-        setSyncStatus(status || { pending: 0, failed: 0 })
+        setSyncStatus(status || { pending: 0, failed: 0, syncInProgress: false, lastSuccessfulSyncAt: null })
       } catch { /* non-fatal — sync status is informational */ }
     }
     checkSync()
     const unsubscribe = window.api?.sync?.onStatusChanged?.((status) => {
-      setSyncStatus(status || { pending: 0, failed: 0 })
+      setSyncStatus(status || { pending: 0, failed: 0, syncInProgress: false, lastSuccessfulSyncAt: null })
     })
     const interval = setInterval(checkSync, 30_000)
     return () => {
@@ -252,9 +290,48 @@ export default function Layout() {
     let mounted = true
     const loadCollections = async () => {
       try {
+        // Guard: don't fetch while offline — avoids crash and spurious navigation
+        const syncStatus = await window.api.sync.getStatus().catch(() => null)
+        if (syncStatus?.isOnline === false) {
+          if (mounted) setCollectionSummary({ count: 0, amount: 0 })
+          return
+        }
+
         const bookings = await window.api.bookings.getAll()
         if (!mounted) return
-        const openBalances = (Array.isArray(bookings) ? bookings : []).filter((booking) => {
+
+        const all = Array.isArray(bookings) ? bookings : []
+
+        // Collapse exclusive-event room-rows into one group so a 6-room lodge event
+        // shows as ONE collection reminder, not six.
+        const eventGroupMap = {}
+        const deduped = []
+        for (const b of all) {
+          if (!b) continue
+          if (b.is_exclusive_event) {
+            const match = b.notes?.match(/\[GROUP:([^\]]+)\]/)
+            const gid = match?.[1] || b.check_in
+            if (!eventGroupMap[gid]) {
+              eventGroupMap[gid] = {
+                ...b,
+                _event_group: true,
+                total_amount: Number(b.total_amount || 0),
+                charges_total: Number(b.charges_total || 0),
+                amount_paid: Number(b.amount_paid || 0)
+              }
+              deduped.push(eventGroupMap[gid])
+            } else {
+              const g = eventGroupMap[gid]
+              g.total_amount += Number(b.total_amount || 0)
+              g.charges_total += Number(b.charges_total || 0)
+              g.amount_paid += Number(b.amount_paid || 0)
+            }
+          } else {
+            deduped.push(b)
+          }
+        }
+
+        const openBalances = deduped.filter((booking) => {
           if ((booking.status || '') === 'cancelled') return false
           return Math.max(0, Number(booking.total_amount || 0) + Number(booking.charges_total || 0) - Number(booking.amount_paid || 0)) > 0
         })
@@ -286,13 +363,17 @@ export default function Layout() {
           .filter(Boolean)
           .sort()
           .at(-1) || null
-        setBackupSummary({ latestAt: latest })
+        setBackupStatus({ 
+          latestAt: latest, 
+          overdue: info?.policy?.overdue === true,
+          enabled: info?.policy?.enabled === true
+        })
       } catch {
-        if (mounted) setBackupSummary({ latestAt: null })
+        if (mounted) setBackupStatus({ latestAt: null, overdue: false, enabled: false })
       }
     }
     loadBackups()
-    const interval = setInterval(loadBackups, 300000)
+    const interval = setInterval(loadBackups, 30000) // check every 30s for compliance
     return () => {
       mounted = false
       clearInterval(interval)
@@ -351,7 +432,70 @@ export default function Layout() {
   const workspaceName = settings?.lodge_name || settings?.company_name || 'Boroko Workspace'
   const pendingCount = Number(syncStatus.pending || 0)
   const failedCount = Number(syncStatus.failed || 0)
+  const syncInProgress = syncStatus?.syncInProgress === true
+  const currentSyncState = failedCount > 0 ? 'failed' : syncInProgress ? 'syncing' : 'idle'
   const cacheStale = syncStatus?.cacheStale || { active: false, names: [] }
+  const isPosRoute = location.pathname === '/pos'
+
+  const offlineTasksByRoute = {
+    '/': [
+      'Polling for new online guest enquiries',
+      'Syncing occupancy data from other devices',
+      'Live revenue and performance updates'
+    ],
+    '/bookings': [
+      'Receiving new website bookings',
+      'Processing guest refunds',
+      'Converting quotes to bookings',
+      'Real-time multi-device availability sync'
+    ],
+    '/pos': [
+      'Real-time stock level synchronisation',
+      'Processing cloud-based mobile payments',
+      'Master inventory data updates'
+    ],
+    '/inventory': [
+      'Live multi-outlet stock synchronisation',
+      'Master catalogue cloud verification',
+      'Remote supplier price updates'
+    ],
+    '/quotations': [
+      'Converting quotes to bookings',
+      'Emailing digital documents to clients',
+      'Live currency rate verification'
+    ],
+    '/rooms': [
+      'Uploading room gallery photos',
+      'Live status sync between departments',
+      'Remote configuration backups'
+    ],
+    '/calendar': [
+      'Seeing bookings made on other devices',
+      'Live cloud availability verification',
+      'Remote scheduling conflict resolution'
+    ],
+    '/day-use': [
+      'Real-time multi-device count sync',
+      'Remote revenue reconciliation',
+      'Instant cloud backup of new entries'
+    ],
+    '/invoices': [
+      'Sending digital invoices via Email/WhatsApp',
+      'Cloud-validated financial audit trails',
+      'Real-time payment ledger reconciliation'
+    ],
+    '/reports': [
+      'Consolidating data from other offline devices',
+      'Authoritative cloud financial verification',
+      'Cloud-based Excel and PDF exports'
+    ],
+    '/settings': [
+      'Downloading new software updates',
+      'Cloud profile and license synchronization',
+      'Activating new subscription features'
+    ]
+  }
+  const currentOfflineTasks = offlineTasksByRoute[location.pathname] || ['Instant multi-device synchronisation', 'Sending external notifications', 'Live cloud-side data verification']
   const quickSearchShortcut = typeof navigator !== 'undefined' && /mac/i.test(navigator.platform) ? 'Cmd K' : 'Ctrl K'
   const searchableItems = useMemo(() => (
     navItems
@@ -368,33 +512,52 @@ export default function Layout() {
     setPaletteOpen(false)
   }
 
-  const syncTone = failedCount > 0
-    ? 'border-red-200 bg-red-50 text-red-800'
-    : pendingCount > 0
+  const financialFailedCount = Number(syncStatus.financialFailedCount || 0)
+  const syncTone = financialFailedCount > 0
+    ? 'border-rose-200 bg-rose-50 text-rose-800'
+    : failedCount > 0
       ? 'border-amber-200 bg-amber-50 text-amber-800'
-      : cacheStale.active
-        ? 'border-sky-200 bg-sky-50 text-sky-900'
-        : 'border-emerald-200 bg-emerald-50 text-emerald-800'
+      : syncInProgress || pendingCount > 0
+        ? 'border-blue-100 bg-blue-50 text-blue-700'
+        : cacheStale.active
+          ? 'border-sky-200 bg-sky-50 text-sky-900'
+          : !syncStatus.isOnline
+            ? 'border-amber-200 bg-amber-50 text-amber-800'
+            : 'border-emerald-200 bg-emerald-50 text-emerald-800'
 
-  const syncLabel = failedCount > 0
-    ? `${failedCount} need review`
-    : pendingCount > 0
-      ? `${pendingCount} syncing`
-      : cacheStale.active
-        ? 'Refreshing data'
-        : 'Synced'
+  const syncLabel = financialFailedCount > 0
+    ? `${financialFailedCount} critical issue${financialFailedCount !== 1 ? 's' : ''}`
+    : failedCount > 0
+      ? `${failedCount} item${failedCount !== 1 ? 's' : ''} need review`
+      : syncInProgress
+        ? 'Syncing now'
+        : pendingCount > 0
+          ? `${pendingCount} waiting`
+          : cacheStale.active
+            ? 'Refreshing data'
+            : !syncStatus.isOnline
+              ? 'Offline'
+              : 'Synced'
 
   const syncSubLabel = failedCount > 0
     ? 'Open System Health'
-    : pendingCount > 0
+    : syncInProgress
+      ? 'Sync replay is running'
+      : pendingCount > 0
       ? 'Keep this device online'
       : cacheStale.active
         ? 'Retrying in background'
-        : syncStatus?.lastSuccessfulSyncAt
-          ? `Last sync ${new Date(syncStatus.lastSuccessfulSyncAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`
-          : 'All local changes saved'
-  const backupSubLabel = backupSummary.latestAt
-    ? `Backup ${new Date(backupSummary.latestAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`
+        : !syncStatus.isOnline
+          ? 'Cloud sync is paused'
+          : syncStatus?.lastSuccessfulSyncAt
+            ? `Last sync ${new Date(syncStatus.lastSuccessfulSyncAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`
+            : 'All local changes saved'
+  const syncStateLabel = currentSyncState === 'failed' ? 'Failed' : currentSyncState === 'syncing' ? 'Syncing' : 'Idle'
+  const lastSuccessfulSyncLabel = syncStatus?.lastSuccessfulSyncAt
+    ? new Date(syncStatus.lastSuccessfulSyncAt).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })
+    : 'No successful sync yet'
+  const backupSubLabel = backupStatus.latestAt
+    ? `Backup ${new Date(backupStatus.latestAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`
     : 'No local backup yet'
 
   return (
@@ -442,6 +605,8 @@ export default function Layout() {
               <p className="mt-1 text-xs text-emerald-100/65">{bizType === 'restaurant' ? 'Restaurant operations' : 'Hospitality operations'}</p>
             </div>
           )}
+          {/* Sidebar spacer */}
+          <div className="h-2" />
         </div>
 
         {/* Nav — scrollable area */}
@@ -550,103 +715,129 @@ export default function Layout() {
 
       {/* Main */}
       <div className="flex flex-1 flex-col overflow-auto">
-        <div className="shrink-0 border-b border-slate-200/70 bg-white/72 px-6 py-4 backdrop-blur-xl">
-          <div className="flex flex-wrap items-center justify-between gap-4">
-            <div className="min-w-0">
-              <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.2em] text-slate-500">
-                <span>{BIZ_LABEL[bizType] || 'Business Manager'}</span>
-                <ChevronsRight size={12} className="text-slate-300" />
-                <span className="truncate text-slate-700">{workspaceName}</span>
+        {!isPosRoute && (
+          <div className="shrink-0 border-b border-slate-200/70 bg-white/72 px-6 py-4 backdrop-blur-xl">
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.2em] text-slate-500">
+                  <span>{BIZ_LABEL[bizType] || 'Business Manager'}</span>
+                  <ChevronsRight size={12} className="text-slate-300" />
+                  <span className="truncate text-slate-700">{workspaceName}</span>
+                </div>
+                <div className="mt-2 flex items-center gap-3">
+                  <h1 className="truncate text-2xl font-semibold tracking-[-0.03em] text-slate-900">
+                    Operations Workspace
+                  </h1>
+                  <span className="hidden rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700 md:inline-flex">
+                    {access?.roleLabel || user?.role}
+                  </span>
+                </div>
+                <p className="mt-1 text-sm text-slate-500">
+                  Navigate core modules, monitor sync health, and keep daily operations moving with confidence.
+                </p>
               </div>
-              <div className="mt-2 flex items-center gap-3">
-                <h1 className="truncate text-2xl font-semibold tracking-[-0.03em] text-slate-900">
-                  Operations Workspace
-                </h1>
-                <span className="hidden rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700 md:inline-flex">
-                  {access?.roleLabel || user?.role}
-                </span>
-              </div>
-              <p className="mt-1 text-sm text-slate-500">
-                Navigate core modules, monitor sync health, and keep daily operations moving with confidence.
-              </p>
-            </div>
 
-            <div className="flex flex-wrap items-center gap-2.5">
-              {collectionSummary.count > 0 && (
+              <div className="flex flex-wrap items-center gap-2.5">
+                {collectionSummary.count > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => navigate('/invoices')}
+                    className="inline-flex items-center gap-3 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-left shadow-sm transition-all hover:border-rose-300 hover:bg-rose-100"
+                    title="Open invoice collections"
+                  >
+                    <div className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-white text-rose-600">
+                      <CreditCard size={16} />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-sm font-semibold text-rose-900">
+                        {settings?.currency || 'P'} {Number(collectionSummary.amount || 0).toFixed(2)} owed
+                      </div>
+                      <div className="text-xs text-rose-700">
+                        {collectionSummary.count} booking{collectionSummary.count === 1 ? '' : 's'} need collection
+                      </div>
+                    </div>
+                  </button>
+                )}
+
                 <button
                   type="button"
-                  onClick={() => navigate('/invoices')}
-                  className="inline-flex items-center gap-3 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-left shadow-sm transition-all hover:border-rose-300 hover:bg-rose-100"
-                  title="Open invoice collections"
+                  onClick={() => setPaletteOpen(true)}
+                  className="inline-flex flex-1 min-w-[280px] md:min-w-[420px] items-center gap-4 rounded-2xl border border-slate-200 bg-white px-5 py-3 text-left shadow-sm transition-all hover:border-slate-300 hover:bg-slate-50 group"
+                  title="Open quick search"
                 >
-                  <div className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-white text-rose-600">
-                    <CreditCard size={16} />
+                  <div className="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-slate-100 text-slate-500 group-hover:bg-emerald-50 group-hover:text-emerald-600 transition-colors">
+                    <Search size={18} />
                   </div>
-                  <div className="min-w-0">
-                    <div className="text-sm font-semibold text-rose-900">
-                      {settings?.currency || 'P'} {Number(collectionSummary.amount || 0).toFixed(2)} owed
-                    </div>
-                    <div className="text-xs text-rose-700">
-                      {collectionSummary.count} booking{collectionSummary.count === 1 ? '' : 's'} need collection
-                    </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-semibold text-slate-900">Quick search...</div>
+                    <div className="text-[11px] text-slate-500 font-medium">Find bookings, guests or jump to modules</div>
+                  </div>
+                  <div className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-[10px] font-bold text-slate-400">
+                    <span className="opacity-60">{quickSearchShortcut.split(' ')[0]}</span>
+                    <span>{quickSearchShortcut.split(' ')[1]}</span>
                   </div>
                 </button>
-              )}
 
-              <button
-                type="button"
-                onClick={() => setPaletteOpen(true)}
-                className="inline-flex items-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-left shadow-sm transition-all hover:border-slate-300 hover:bg-slate-50"
-                title="Open quick search"
-              >
-                <div className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-slate-100 text-slate-600">
-                  <Search size={16} />
-                </div>
-                <div className="min-w-0">
-                  <div className="text-sm font-medium text-slate-900">Quick search</div>
-                  <div className="text-xs text-slate-500">Jump to modules faster</div>
-                </div>
-                <span className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-medium text-slate-500">
-                  {quickSearchShortcut}
-                </span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => navigate('/settings')}
-                className={`inline-flex items-center gap-3 rounded-2xl border px-3.5 py-3 text-left shadow-sm transition-all hover:shadow-md ${syncTone}`}
-                title="Open Settings and System Health"
-              >
-                <BellDot size={16} className="text-slate-500" />
-                <div className="min-w-0">
-                  <div className="text-sm font-semibold">{syncLabel}</div>
-                  <div className="text-xs opacity-80">{syncSubLabel}</div>
-                  <div className="text-[11px] opacity-70">{backupSubLabel}</div>
-                </div>
-              </button>
+                <button
+                  type="button"
+                  onClick={() => navigate('/settings', { state: { activeTab: 'system' } })}
+                  className={`inline-flex items-center gap-3 rounded-2xl border px-3.5 py-3 text-left shadow-sm transition-all hover:shadow-md ${syncTone}`}
+                  title="Open System Health & Sync"
+                >
+                  <div className={`flex h-10 w-10 items-center justify-center rounded-xl bg-white/60 shadow-inner ${
+                    financialFailedCount > 0 ? 'text-rose-600' : failedCount > 0 ? 'text-amber-600' : 'text-emerald-600'
+                  }`}>
+                    {syncInProgress ? <RefreshCw size={18} className="animate-spin" /> : <BellDot size={18} />}
+                  </div>
+                  <div className="flex flex-col min-w-[124px]">
+                    <div className="text-sm font-bold leading-tight tracking-tight">{syncLabel}</div>
+                    <div className="mt-0.5 text-[11px] font-medium opacity-80 leading-tight">
+                      {syncSubLabel}
+                    </div>
+                    {(pendingCount > 0 || failedCount > 0) && (
+                      <div className="mt-1.5 flex items-center gap-2 border-t border-black/5 pt-1.5">
+                        {pendingCount > 0 && (
+                          <div className="flex items-center gap-1 text-[10px] font-bold opacity-60">
+                            <Clock size={10} /> {pendingCount}
+                          </div>
+                        )}
+                        {failedCount > 0 && (
+                          <div className={`flex items-center gap-1 text-[10px] font-bold ${financialFailedCount > 0 ? 'text-rose-700' : 'text-amber-700'}`}>
+                            <AlertCircle size={10} /> {failedCount}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </button>
+              </div>
             </div>
           </div>
-        </div>
+        )}
 
-        {syncStatus.failed > 0 && (
-          <div className="flex shrink-0 items-center gap-2 border-b border-red-200 bg-red-50 px-6 py-2.5 text-sm text-red-800">
-            <span>⛔</span>
+        {!isPosRoute && failedCount > 0 && (
+          <div className={`flex shrink-0 items-center gap-2 border-b px-6 py-2.5 text-sm ${
+            financialFailedCount > 0
+              ? 'border-rose-200 bg-rose-50 text-rose-800'
+              : 'border-amber-200 bg-amber-50 text-amber-800'
+          }`}>
+            <span>{financialFailedCount > 0 ? '⛔' : '⚠️'}</span>
             <span>
-              {syncStatus.failed} operation{syncStatus.failed !== 1 ? 's' : ''} need manual review before they can be trusted.
-              Older failed items will retry automatically once the app is back online, but you can review them now in System Health.
+              {failedCount} operation{failedCount !== 1 ? 's' : ''} {financialFailedCount > 0 ? 'could not sync and need critical review' : 'stopped syncing and need attention'}.
+              Open <strong>System Health</strong> to see the reason and resolve each item.
               {syncStatus.failedBookingIds?.length > 0 && (
-                <> Includes {syncStatus.failedBookingIds.length} booking creation{syncStatus.failedBookingIds.length !== 1 ? 's' : ''} — review the booking list before taking further action.</>
+                <> {syncStatus.failedBookingIds.length} affected booking{syncStatus.failedBookingIds.length !== 1 ? 's are' : ' is'} marked in the booking list.</>
               )}
             </span>
           </div>
         )}
-        {syncStatus.pending > 0 && (
+        {!isPosRoute && syncStatus.pending > 0 && (
           <div className="flex shrink-0 items-center gap-2 border-b border-amber-200 bg-amber-50 px-6 py-2.5 text-sm text-amber-800">
             <span>⏳</span>
             <span>{syncStatus.pending} operation{syncStatus.pending !== 1 ? 's' : ''} still need to sync. Keep the app online until this clears.</span>
           </div>
         )}
-        {cacheStale.active && (
+        {!isPosRoute && cacheStale.active && (
           <div className="flex shrink-0 items-center gap-2 border-b border-sky-200 bg-sky-50 px-6 py-2.5 text-sm text-sky-900">
             <span>🔄</span>
             <span>
@@ -655,7 +846,8 @@ export default function Layout() {
             </span>
           </div>
         )}
-        <div className="flex-1 overflow-auto px-4 pb-4 pt-4 md:px-6 md:pb-6">
+        <div className={`flex-1 overflow-auto ${isPosRoute ? 'px-3 pb-3 pt-3 md:px-4 md:pb-4 md:pt-4' : 'px-4 pb-4 pt-4 md:px-6 md:pb-6'}`}>
+          <OfflineNotice tasks={currentOfflineTasks} />
           <Outlet />
         </div>
       </div>
@@ -679,6 +871,11 @@ export default function Layout() {
         onSelect={handlePaletteSelect}
         currentPath={location.pathname}
       />
+
+      {/* Mandatory Backup Block */}
+      {backupStatus.overdue && location.pathname !== '/settings' && (
+        <MandatoryBackupModal onGoToBackup={() => navigate('/settings', { state: { activeTab: 'system' } })} />
+      )}
     </div>
   )
 }

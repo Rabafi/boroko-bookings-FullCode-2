@@ -77,7 +77,7 @@ export function storeAccessSnapshot(lodgeId, snapshot) {
   writeLocalJson(scoped(ACCESS_PREFIX, lodgeId), snapshot)
 }
 
-export function getStoredAccessSnapshot(lodgeId = getSession()?.lodge_id) {
+function getStoredAccessSnapshot(lodgeId = getSession()?.lodge_id) {
   return readLocalJson(scoped(ACCESS_PREFIX, lodgeId), null)
 }
 
@@ -112,7 +112,7 @@ export function getStoredEntitlement(lodgeId = getSession()?.lodge_id) {
   }
 }
 
-export function hasCapability(capability, lodgeId = getSession()?.lodge_id) {
+function hasCapability(capability, lodgeId = getSession()?.lodge_id) {
   return getStoredAccessSnapshot(lodgeId)?.capabilities?.[capability] === true
 }
 
@@ -121,16 +121,6 @@ export function assertCapability(capability, options = {}) {
   throw new Error(options.message || `${CAPABILITY_LABELS[capability] || 'This action'} is not available for your account.`)
 }
 
-export function isFeatureEnabled(featureName, lodgeId = getSession()?.lodge_id) {
-  const entitlement = getStoredEntitlement(lodgeId)
-  if (entitlement?.effective_features && Object.prototype.hasOwnProperty.call(entitlement.effective_features, featureName)) {
-    return entitlement.effective_features[featureName] !== false
-  }
-  return true
-}
-
 export function getRoleMeta(role) {
   return ROLE_DEFINITIONS[normalizeAppRole(role)] || ROLE_DEFINITIONS.receptionist
 }
-
-export { CAPABILITY_LABELS, FEATURE_LABELS, ROLE_DEFINITIONS, normalizeAppRole }

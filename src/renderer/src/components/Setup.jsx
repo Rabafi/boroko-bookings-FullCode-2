@@ -1,7 +1,7 @@
 import { useNavigate } from 'react-router-dom'
 import { useState, useRef } from 'react'
 import { Building2, Phone, Mail, MapPin, Globe, Hash, CheckCircle, Upload, Image, X, User, Lock, Eye, EyeOff } from 'lucide-react'
-import { useProfiles } from '../App'
+import { useProfiles } from '../app-context'
 
 export default function Setup({ onComplete }) {
   const navigate = useNavigate()

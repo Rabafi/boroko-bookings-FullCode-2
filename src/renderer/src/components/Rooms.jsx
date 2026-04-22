@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Plus, Pencil, Trash2, BedDouble, Image, X, ChevronLeft, ChevronRight } from 'lucide-react'
+import { Plus, Pencil, Trash2, BedDouble, Image, X, ChevronLeft, ChevronRight, Calendar, RefreshCw } from 'lucide-react'
 import { StatusBadge } from './shared/StatusBadge'
 import { Modal } from './shared/Modal'
 
@@ -21,6 +21,11 @@ const emptyForm = {
 
 export default function Rooms() {
   const [rooms, setRooms] = useState([])
+  const [activeRateByRoom, setActiveRateByRoom] = useState({})
+  const [rateOverrides, setRateOverrides] = useState([])
+  const [rateForm, setRateForm] = useState(null)
+  const [editingRate, setEditingRate] = useState(null)
+  const [rateSaving, setRateSaving] = useState(false)
   const [showModal, setShowModal] = useState(false)
   const [editing, setEditing] = useState(null)
   const [form, setForm] = useState(emptyForm)
@@ -67,9 +72,34 @@ export default function Rooms() {
     return () => window.clearTimeout(timer)
   }, [success])
 
+  const [listLoading, setListLoading] = useState(true)
+
   const load = async () => {
-    const data = await window.api.rooms.getAll()
+    setListLoading(true)
+    const [data, overrides] = await Promise.all([
+      window.api.rooms.getAll(),
+      window.api.rateOverrides.getAll().catch(() => [])
+    ])
     setRooms(data)
+    setRateOverrides(Array.isArray(overrides) ? overrides : [])
+    const today = new Date()
+    const start = today.toISOString().slice(0, 10)
+    const endDate = new Date(today)
+    endDate.setDate(endDate.getDate() + 1)
+    const end = endDate.toISOString().slice(0, 10)
+    const entries = await Promise.all((data || []).map(async (room) => {
+      try {
+        const result = await window.api.rateOverrides.getApplicable(room.id, start, end)
+        if (result && Number.isFinite(Number(result.rate))) {
+          return [room.id, { rate_per_night: Number(result.rate), name: result.name || '' }]
+        }
+      } catch {
+        // ignore missing override lookup
+      }
+      return [room.id, null]
+    }))
+    setActiveRateByRoom(Object.fromEntries(entries))
+    setListLoading(false)
   }
 
   const openAdd = () => {
@@ -77,6 +107,98 @@ export default function Rooms() {
     setForm(emptyForm)
     setError('')
     setShowModal(true)
+  }
+
+  const openRateCreate = () => {
+    setEditingRate(null)
+    setRateForm({
+      room_id: rooms[0]?.id || '',
+      start_date: '',
+      end_date: '',
+      rate_per_night: '',
+      name: '',
+      apply_scope: 'single',
+      pricing_mode: 'fixed',
+      percentage_off: ''
+    })
+  }
+
+  const openRateEdit = (rateOverride) => {
+    setEditingRate(rateOverride)
+    setRateForm({
+      room_id: rateOverride.room_id,
+      start_date: rateOverride.start_date,
+      end_date: rateOverride.end_date,
+      rate_per_night: String(rateOverride.rate_per_night),
+      name: rateOverride.name || '',
+      apply_scope: 'single',
+      pricing_mode: 'fixed',
+      percentage_off: ''
+    })
+  }
+
+  const handleRateSave = async () => {
+    setRateSaving(true)
+    try {
+      const applyScope = rateForm.apply_scope || 'single'
+      const pricingMode = rateForm.pricing_mode || 'fixed'
+      const selectedRoom = rooms.find((room) => room.id === String(rateForm.room_id || '').trim())
+      const targetRooms = editingRate || applyScope === 'single'
+        ? (selectedRoom ? [selectedRoom] : [])
+        : rooms
+
+      if (targetRooms.length === 0) {
+        throw new Error('Choose at least one room for this special.')
+      }
+
+      const fixedRate = parseFloat(rateForm.rate_per_night)
+      const percentageOff = parseFloat(rateForm.percentage_off)
+      if (pricingMode === 'fixed' && !Number.isFinite(fixedRate)) {
+        throw new Error('Enter a valid special rate.')
+      }
+      if (pricingMode === 'percent' && (!Number.isFinite(percentageOff) || percentageOff <= 0 || percentageOff >= 100)) {
+        throw new Error('Enter a percentage discount between 0 and 100.')
+      }
+
+      const buildPayloadForRoom = (room) => {
+        const computedRate = pricingMode === 'percent'
+          ? Number((Number(room.rate_per_night || 0) * (1 - (percentageOff / 100))).toFixed(2))
+          : fixedRate
+        return {
+          room_id: String(room.id || '').trim(),
+          start_date: rateForm.start_date,
+          end_date: rateForm.end_date,
+          name: rateForm.name,
+          rate_per_night: computedRate
+        }
+      }
+
+      const results = editingRate
+        ? [await window.api.rateOverrides.update(editingRate.id, buildPayloadForRoom(targetRooms[0]))]
+        : await Promise.all(targetRooms.map((room) => window.api.rateOverrides.create(buildPayloadForRoom(room))))
+
+      const failed = results.find((result) => !result?.success)
+      if (failed) {
+        throw new Error(failed?.error || `Could not ${editingRate ? 'update' : 'create'} rate override.`)
+      }
+
+      await load()
+      setRateForm(null)
+      setEditingRate(null)
+      if (results.some((result) => result?.local_only)) {
+        alert('One or more rate overrides were saved locally because the server save is currently unavailable.')
+      }
+    } catch (error) {
+      alert(error?.message || 'Could not save rate override.')
+    } finally {
+      setRateSaving(false)
+    }
+  }
+
+  const handleRateDelete = async (id) => {
+    if (!window.confirm('Delete this rate override?')) return
+    await window.api.rateOverrides.delete(id).catch(console.error)
+    await load()
   }
 
   const openEdit = (room) => {
@@ -180,7 +302,122 @@ export default function Rooms() {
         </div>
       )}
 
-      {rooms.length === 0 ? (
+      <section className="bb-card p-5">
+        <div className="mb-4 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-emerald-100 text-emerald-700">
+              <Calendar size={18} />
+            </div>
+            <div>
+              <p className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-500">Seasonal & Event Pricing</p>
+              <p className="mt-1 text-sm text-slate-500">Set temporary special prices by room and date range.</p>
+            </div>
+          </div>
+          <button type="button" onClick={openRateCreate} className="btn-primary">
+            <Plus size={16} /> Add Override
+          </button>
+        </div>
+
+        {rateOverrides.length === 0 ? (
+          <p className="text-sm text-slate-500">No rate overrides set. Add seasonal, holiday, or weekend rates here.</p>
+        ) : (
+          <div className="space-y-3">
+            {rateOverrides.map((rateOverride) => {
+              const room = rooms.find((roomEntry) => roomEntry.id === rateOverride.room_id)
+              return (
+                <div key={rateOverride.id} className="flex items-center justify-between rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm">
+                  <div>
+                    <p className="font-medium text-slate-800">{rateOverride.name || 'Rate override'} — {room ? `Room ${room.room_number}` : rateOverride.room_id ? rateOverride.room_id : 'All rooms'}</p>
+                    <p className="mt-1 text-xs text-slate-500">{rateOverride.start_date} to {rateOverride.end_date}</p>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className="font-semibold text-emerald-700">P {Number(rateOverride.rate_per_night).toFixed(2)}/night</span>
+                    <button type="button" onClick={() => openRateEdit(rateOverride)} className="p-1 text-blue-400 hover:text-blue-600"><Pencil size={14} /></button>
+                    <button type="button" onClick={() => handleRateDelete(rateOverride.id)} className="p-1 text-red-400 hover:text-red-600"><Trash2 size={14} /></button>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
+
+        {rateForm && (
+          <div className="mt-4 border-t border-slate-200 pt-4 space-y-3">
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+              {editingRate ? 'Edit Rate Override' : 'New Rate Override'}
+            </p>
+            <div className="grid grid-cols-2 gap-4">
+              <Field label="Apply To" required>
+                <select
+                  className="input"
+                  value={rateForm.apply_scope || 'single'}
+                  onChange={(e) => setRateForm({ ...rateForm, apply_scope: e.target.value })}
+                  disabled={!!editingRate}
+                >
+                  <option value="single">One room</option>
+                  <option value="all">All rooms</option>
+                </select>
+              </Field>
+              <Field label="Room" required>
+                <select className="input" value={rateForm.room_id} onChange={(e) => setRateForm({ ...rateForm, room_id: e.target.value })} required disabled={(rateForm.apply_scope || 'single') === 'all' || !!editingRate && (rateForm.pricing_mode || 'fixed') === 'percent'}>
+                  {rooms.map((room) => (<option key={room.id} value={room.id}>Room {room.room_number} — {room.room_type}</option>))}
+                </select>
+              </Field>
+              <Field label="Name / Label">
+                <input type="text" className="input" placeholder="e.g. Christmas, Weekend" value={rateForm.name} onChange={(e) => setRateForm({ ...rateForm, name: e.target.value })} />
+              </Field>
+              <Field label="Discount Type" required>
+                <select className="input" value={rateForm.pricing_mode || 'fixed'} onChange={(e) => setRateForm({ ...rateForm, pricing_mode: e.target.value })}>
+                  <option value="fixed">Set special price</option>
+                  <option value="percent">Reduce by percentage</option>
+                </select>
+              </Field>
+              <Field label="Start Date" required>
+                <input type="date" className="input" value={rateForm.start_date} onChange={(e) => setRateForm({ ...rateForm, start_date: e.target.value })} required />
+              </Field>
+              <Field label="End Date" required>
+                <input type="date" className="input" value={rateForm.end_date} min={rateForm.start_date} onChange={(e) => setRateForm({ ...rateForm, end_date: e.target.value })} required />
+              </Field>
+              <Field label={rateForm.pricing_mode === 'percent' ? 'Discount Percentage (%)' : 'Rate Per Night (P)'} required>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  max={rateForm.pricing_mode === 'percent' ? '99.99' : undefined}
+                  className="input"
+                  value={rateForm.pricing_mode === 'percent' ? (rateForm.percentage_off || '') : rateForm.rate_per_night}
+                  onChange={(e) => setRateForm({
+                    ...rateForm,
+                    ...(rateForm.pricing_mode === 'percent'
+                      ? { percentage_off: e.target.value }
+                      : { rate_per_night: e.target.value })
+                  })}
+                  required
+                  placeholder={rateForm.pricing_mode === 'percent' ? '10' : '0.00'}
+                />
+              </Field>
+            </div>
+            {rateForm.pricing_mode === 'percent' && (
+              <p className="text-xs text-slate-500">
+                {rateForm.apply_scope === 'all'
+                  ? 'The same percentage discount will be applied to each room’s standard rate.'
+                  : 'The percentage discount will be calculated from the selected room’s standard rate.'}
+              </p>
+            )}
+            <div className="flex gap-3">
+              <button type="button" onClick={() => { setRateForm(null); setEditingRate(null) }} className="btn-secondary flex-1">Cancel</button>
+              <button type="button" onClick={handleRateSave} disabled={rateSaving} className="btn-primary flex-1">{rateSaving ? 'Saving...' : editingRate ? 'Update' : 'Add Override'}</button>
+            </div>
+          </div>
+        )}
+      </section>
+
+      {listLoading && rooms.length === 0 ? (
+        <div className="flex items-center justify-center gap-3 min-h-[260px] text-sm text-gray-500">
+          <RefreshCw size={16} className="animate-spin" />
+          Loading rooms…
+        </div>
+      ) : rooms.length === 0 ? (
         <div className="bb-empty-state min-h-[260px]">
           <BedDouble size={40} className="mx-auto mb-3 text-slate-300" />
           <p className="text-slate-500">No rooms yet. Add your first room to get started.</p>
@@ -188,7 +425,7 @@ export default function Rooms() {
       ) : (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {rooms.map((room) => (
-            <RoomCard key={room.id} room={room} onEdit={openEdit} onDelete={handleDelete} />
+            <RoomCard key={room.id} room={room} activeRate={activeRateByRoom[room.id] || null} onEdit={openEdit} onDelete={handleDelete} />
           ))}
         </div>
       )}
@@ -400,8 +637,9 @@ export default function Rooms() {
   )
 }
 
-function RoomCard({ room, onEdit, onDelete }) {
+function RoomCard({ room, activeRate, onEdit, onDelete }) {
   const coverPhoto = (Array.isArray(room.photos) && room.photos[0]) || room.photo || null
+  const showingOverride = activeRate && Number(activeRate.rate_per_night) !== Number(room.rate_per_night)
   return (
     <div className="bb-card overflow-hidden transition-shadow hover:shadow-[0_18px_45px_rgba(15,23,42,0.12)]">
       {coverPhoto && (
@@ -418,7 +656,14 @@ function RoomCard({ room, onEdit, onDelete }) {
         <div className="bb-card-muted mb-4 space-y-2 px-4 py-4 text-sm text-slate-600">
         <div className="flex items-center justify-between gap-4">
           <span className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">Nightly Rate</span>
-          <span className="font-semibold text-slate-800">P {Number(room.rate_per_night).toFixed(2)}</span>
+          <div className="text-right">
+            <span className="font-semibold text-slate-800">P {Number(showingOverride ? activeRate.rate_per_night : room.rate_per_night).toFixed(2)}</span>
+            {showingOverride && (
+              <p className="mt-1 text-[11px] font-medium text-emerald-700">
+                Today: {activeRate.name || 'Seasonal rate'} instead of P {Number(room.rate_per_night).toFixed(2)}
+              </p>
+            )}
+          </div>
         </div>
         <div className="flex items-center justify-between gap-4">
           <span className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">Capacity</span>

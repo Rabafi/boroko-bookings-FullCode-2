@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Presentation, Plus, Pencil, Trash2, X, Users, Clock, Calendar, ChevronDown, ChevronUp } from 'lucide-react'
 import { PAYMENT_METHOD_PLAIN_OPTIONS } from '../constants/paymentMethods'
-import { useSettings } from '../App'
+import { useSettings } from '../app-context'
 
 const SETUP_TYPES = ['Theatre', 'Boardroom', 'Classroom', 'U-Shape', 'Banquet', 'Cocktail']
 const PAYMENT_STATUSES = ['pending', 'deposit_paid', 'paid', 'cancelled']

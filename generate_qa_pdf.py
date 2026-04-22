@@ -2,33 +2,23 @@
 Generate Boroko Bookings Interactive QA Checklist PDF
 """
 from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import mm, cm
-from reportlab.lib.colors import HexColor, white, black, Color
+from reportlab.lib.styles import ParagraphStyle
+from reportlab.lib.units import mm
+from reportlab.lib.colors import HexColor, white, black
 from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
     PageBreak, HRFlowable
 )
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
-import pypdf
-import io, os
+from reportlab.lib.enums import TA_CENTER
 
 # ── Brand colours ─────────────────────────────────────────────────────────────
 GREEN_DARK  = HexColor('#14532d')
 GREEN_MID   = HexColor('#166534')
-GREEN_LIGHT = HexColor('#dcfce7')
 GREEN_ROW   = HexColor('#f0fdf4')
-GRAY_LIGHT  = HexColor('#f8fafc')
 GRAY_MID    = HexColor('#e2e8f0')
 GRAY_TEXT   = HexColor('#475569')
 
-PAGE_W, PAGE_H = A4
 MARGIN = 18 * mm
-
-# ── Styles ─────────────────────────────────────────────────────────────────────
-styles = getSampleStyleSheet()
 
 cover_title = ParagraphStyle('CoverTitle',
     fontSize=30, leading=36, textColor=white,
@@ -236,7 +226,6 @@ def make_section_table(tests):
     ]
     rows = [header]
     for i, (name, steps, expected) in enumerate(tests):
-        bg = GREEN_ROW if i % 2 == 0 else white
         rows.append([
             Paragraph(name, cell_normal),
             Paragraph(steps, cell_normal),

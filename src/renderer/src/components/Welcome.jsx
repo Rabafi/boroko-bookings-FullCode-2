@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Loader2 } from 'lucide-react'
-import { useProfiles } from '../App'
+import { useProfiles } from '../app-context'
 
 export default function Welcome() {
   const navigate = useNavigate()

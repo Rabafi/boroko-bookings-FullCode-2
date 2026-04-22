@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { AlertTriangle, Eye, EyeOff, Loader2, RefreshCw, X } from 'lucide-react'
-import { useAuth, useProfiles } from '../App'
+import { AlertTriangle, Eye, EyeOff, Loader2, Mail, RefreshCw, X } from 'lucide-react'
+import { useAuth, useProfiles } from '../app-context'
 
 const EMAILS_KEY_PREFIX = 'bb_saved_emails'
 const MAX_SAVED = 5
@@ -38,10 +38,13 @@ export default function Login() {
   const [error, setError] = useState('')
   const [warning, setWarning] = useState('')
   const [loading, setLoading] = useState(false)
+  const [resetLoading, setResetLoading] = useState(false)
+  const [resetMessage, setResetMessage] = useState('')
   const [savedEmails, setSavedEmails] = useState([])
   const [authStatus, setAuthStatus] = useState({
     online: true,
     hasOfflineAccess: false,
+    hasTrustedSession: false,
     message: 'Checking sign-in status...'
   })
   const [diagnostics, setDiagnostics] = useState(null)
@@ -50,6 +53,7 @@ export default function Login() {
   const [recoveryLoading, setRecoveryLoading] = useState(false)
   const [recoveryError, setRecoveryError] = useState('')
   const [recoverySuccess, setRecoverySuccess] = useState('')
+  const [updateStatus, setUpdateStatus] = useState({ checking: false, available: false, version: '', error: '' })
   const [creatingLodge, setCreatingLodge] = useState(false)
   const passwordRef = useRef(null)
 
@@ -88,6 +92,7 @@ export default function Login() {
           setAuthStatus({
             online: false,
             hasOfflineAccess: false,
+            hasTrustedSession: false,
             message: 'Could not read sign-in status right now.'
           })
         }
@@ -123,41 +128,91 @@ export default function Login() {
     event.preventDefault()
     setError('')
     setWarning('')
+    setResetMessage('')
+
+    let latestStatus = authStatus
+    try {
+      latestStatus = await window.api.auth.getStatus(email)
+      setAuthStatus(latestStatus)
+    } catch {
+      // Fall back to the status already shown in the UI.
+    }
+
+    if (!latestStatus?.online && (latestStatus?.hasTrustedSession || authStatus.hasTrustedSession)) {
+      await handleOpenSavedSession()
+      return
+    }
+
     setLoading(true)
     try {
-      console.log('[AUTH DEBUG][RENDERER INPUT]', {
-        email,
-        normalizedEmail: email?.trim()?.toLowerCase(),
-        passwordLength: typeof password === 'string' ? password.length : null,
-        hasPassword: typeof password === 'string' ? password.length > 0 : false
-      })
-      console.log('[AUTH TRACE] renderer submit', {
-        email,
-        normalizedEmail: email?.trim()?.toLowerCase(),
-        passwordLength: typeof password === 'string' ? password.length : null,
-        hasPassword: typeof password === 'string' ? password.length > 0 : false
-      })
       const res = await window.api.auth.login(email, password)
-      console.log('[AUTH DEBUG][RENDERER RESPONSE]', res)
-      console.log('[AUTH TRACE] renderer login response', res)
       if (res?.ok && res.user) {
         saveEmail(emailStorageKey, email.trim().toLowerCase())
         setSavedEmails(getSavedEmails(emailStorageKey))
         if (res.warning) setWarning(res.warning)
-        login(res.user, res.nonce)
+        await login(res.user, res.nonce)
       } else if (res?.code === 'backend_auth_schema_outdated') {
         const nextError = res?.error || 'Sign-in failed.'
-        console.log('[AUTH TRACE] renderer final displayed error', { error: nextError, code: res?.code || null })
         setError(nextError)
       } else {
         const nextError = res?.error || 'Sign-in failed.'
-        console.log('[AUTH TRACE] renderer final displayed error', { error: nextError, code: res?.code || null })
         setError(nextError)
       }
     } catch (e) {
       const nextError = 'Login failed. Please try again.'
-      console.log('[AUTH TRACE] renderer final displayed error', { error: nextError, code: e?.code || null, message: e?.message || null })
       setError(nextError)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleForgotPassword = async () => {
+    const targetEmail = email.trim().toLowerCase()
+    setError('')
+    setWarning('')
+    setResetMessage('')
+    if (!targetEmail) {
+      setError('Enter your email address first, then request a password reset.')
+      return
+    }
+    setResetLoading(true)
+    try {
+      const result = await window.api.auth.sendPasswordReset(targetEmail)
+      if (result?.success === false) {
+        setError(result.error || 'Could not send password reset email.')
+        return
+      }
+      setResetMessage(`Password reset email sent to ${targetEmail}.`)
+    } catch (e) {
+      setError(e.message || 'Could not send password reset email.')
+    } finally {
+      setResetLoading(false)
+    }
+  }
+
+  const handleOpenSavedSession = async () => {
+    setError('')
+    setWarning('')
+    setResetMessage('')
+    const targetEmail = email.trim().toLowerCase()
+    if (!targetEmail) {
+      setError('Enter the staff email for the saved offline session.')
+      return
+    }
+    if (!password) {
+      setError('Enter this user password to open the saved offline session.')
+      return
+    }
+    setLoading(true)
+    try {
+      const saved = await window.api.auth.restoreSavedSession?.(targetEmail, password)
+      if (!saved?.user) {
+        setError(saved?.error || 'The saved trusted session could not be opened. Connect to the internet and sign in again.')
+        return
+      }
+      await login(saved.user, saved.nonce || '')
+    } catch (e) {
+      setError(e.message || 'Could not open the saved trusted session.')
     } finally {
       setLoading(false)
     }
@@ -177,38 +232,34 @@ export default function Login() {
     }
   }
 
-  const handleCheckDevice = async () => {
-    setRecoverySuccess('')
-    await loadDiagnostics(expectedLodgeId)
-  }
-
-  const handleRelinkDevice = async () => {
-    if (!expectedLodgeId.trim()) {
-      setRecoveryError('Enter the correct lodge ID first.')
+  const handleCheckUpdates = async () => {
+    if (!navigator.onLine) {
+      setUpdateStatus({ checking: false, available: false, version: '', error: 'Internet connection required to check for updates.' })
       return
     }
-
-    setRecoveryLoading(true)
-    setRecoveryError('')
-    setRecoverySuccess('')
+    setUpdateStatus({ checking: true, available: false, version: '', error: '' })
     try {
-      const res = await window.api.settings.relinkLodge(expectedLodgeId.trim())
-      if (!res?.success) {
-        setRecoveryError(res?.error || 'Could not relink this lodge profile.')
-        return
+      const res = await window.api.updates.check()
+      if (res.success) {
+        setUpdateStatus({
+          checking: false,
+          available: res.updateAvailable,
+          version: res.latestVersion || (res.dev ? 'Dev' : ''),
+          error: ''
+        })
+      } else {
+        const msg = res.error?.includes('net::') ? 'Connection error. Check your internet and try again.' : (res.error || 'Check failed')
+        setUpdateStatus({ checking: false, available: false, version: '', error: msg })
       }
-      setRecoverySuccess('This lodge profile is now linked to the new lodge ID. Try signing in again while online.')
-      setExpectedLodgeId(res.lodge_id || expectedLodgeId.trim())
-      await Promise.all([
-        loadDiagnostics(res.lodge_id || expectedLodgeId.trim()),
-        window.api.auth.getStatus(email).then(setAuthStatus).catch(() => {})
-      ])
     } catch (e) {
-      setRecoveryError(e.message || 'Could not relink this lodge profile.')
-    } finally {
-      setRecoveryLoading(false)
+      setUpdateStatus({ checking: false, available: false, version: '', error: e.message })
     }
   }
+
+  const handleInstallUpdate = () => {
+    window.api.updates.install()
+  }
+
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-[radial-gradient(circle_at_top_left,rgba(187,247,208,0.28),transparent_24%),radial-gradient(circle_at_top_right,rgba(167,243,208,0.22),transparent_18%),linear-gradient(135deg,#0f3d2c_0%,#166534_55%,#22c55e_100%)] p-4">
@@ -221,9 +272,12 @@ export default function Login() {
         </div>
 
         {activeProfile ? (
-          <div className={`mb-4 rounded-2xl border px-4 py-3 ${
+          <div
+            className={`mb-4 rounded-2xl border px-4 py-3 ${
             hasDraftProfile ? 'border-amber-200 bg-amber-50' : 'border-green-200 bg-green-50'
-          }`}>
+          }`}
+            data-testid="selected-lodge-panel"
+          >
             <div className="flex items-start justify-between gap-3">
               <div>
                 <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Selected Lodge</p>
@@ -252,13 +306,16 @@ export default function Login() {
           </div>
         )}
 
-        <div className={`mb-5 rounded-2xl border px-4 py-3 text-sm ${
+        <div
+          className={`mb-5 rounded-2xl border px-4 py-3 text-sm ${
           authStatus.online
             ? authStatus.hasOfflineAccess
               ? 'bg-green-50 border-green-200 text-green-700'
               : 'bg-amber-50 border-amber-200 text-amber-700'
             : 'bg-slate-100 border-slate-300 text-slate-700'
-        }`}>
+        }`}
+          data-testid="login-auth-status"
+        >
           {authStatus.message}
         </div>
 
@@ -269,6 +326,7 @@ export default function Login() {
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
+              data-testid="login-email-input"
               className="input"
               autoComplete="email"
               required
@@ -307,11 +365,12 @@ export default function Login() {
           <div>
             <label className="mb-1.5 block text-sm font-medium text-slate-700">Password</label>
             <div className="relative">
-              <input
+                <input
                 ref={passwordRef}
                 type={showPassword ? 'text' : 'password'}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
+                data-testid="login-password-input"
                 className="input pr-11"
                 autoComplete="current-password"
                 required
@@ -339,14 +398,48 @@ export default function Login() {
             </div>
           )}
 
+          {resetMessage && (
+            <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-sm text-emerald-700">
+              {resetMessage}
+            </div>
+          )}
+
           <button
             type="submit"
             disabled={loading}
+            data-testid="login-submit-button"
             className="btn-primary mt-2 w-full justify-center"
           >
-            {loading ? 'Signing in…' : hasReadyProfile ? 'Sign In' : 'Sign In / Command Central'}
+            {loading
+              ? 'Signing in…'
+              : !authStatus.online && authStatus.hasTrustedSession
+              ? 'Open Saved Session'
+              : hasReadyProfile
+              ? 'Sign In'
+              : 'Sign In / Command Central'}
           </button>
         </form>
+
+        {!authStatus.online && authStatus.hasTrustedSession && (
+          <button
+            type="button"
+            onClick={handleOpenSavedSession}
+            disabled={loading}
+            className="mt-3 w-full rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800 transition-colors hover:bg-emerald-100 disabled:opacity-60"
+          >
+            Open Saved Session
+          </button>
+        )}
+
+        <button
+          type="button"
+          onClick={handleForgotPassword}
+          disabled={resetLoading}
+          className="mt-3 flex w-full items-center justify-center gap-2 text-sm font-semibold text-emerald-700 transition-colors hover:text-emerald-800 disabled:opacity-60"
+        >
+          {resetLoading ? <Loader2 size={14} className="animate-spin" /> : <Mail size={14} />}
+          {resetLoading ? 'Sending reset email...' : 'Forgot password?'}
+        </button>
 
         <div className="mt-6 text-center">
           <p className="text-sm text-slate-500">
@@ -374,99 +467,47 @@ export default function Login() {
         </p>
 
         <div className="mt-5 border-t border-slate-100 pt-4">
-          <button
-            type="button"
-            onClick={() => setRecoveryOpen((value) => !value)}
-            className="flex w-full items-center justify-between text-sm font-medium text-slate-600 hover:text-slate-800"
-          >
-            <span>Device Repair</span>
-            <span>{recoveryOpen ? 'Hide' : 'Show'}</span>
-          </button>
+          <div className="flex items-center justify-between">
+            <button
+              type="button"
+              onClick={handleCheckUpdates}
+              disabled={updateStatus.checking}
+              className="text-sm font-medium text-slate-600 hover:text-slate-800 flex items-center gap-2"
+            >
+              <RefreshCw size={14} className={updateStatus.checking ? 'animate-spin' : ''} />
+              {updateStatus.checking ? 'Checking for updates...' : 'Update Software'}
+            </button>
+            <span className="text-[10px] text-slate-400 font-mono">v{diagnostics?.app_version || '...'}</span>
+          </div>
 
-          {recoveryOpen && (
-            <div className="mt-3 space-y-3 rounded-2xl border border-amber-200 bg-amber-50/60 p-4">
-              <div className="flex items-start gap-2 text-amber-800 text-sm">
-                <AlertTriangle size={16} className="mt-0.5 flex-shrink-0" />
-                <p>
-                  Use this only if the selected lodge profile on this computer was linked to the wrong lodge ID. You can confirm the correct lodge ID from Command Central or Boroko support.
-                </p>
-              </div>
+          {updateStatus.error && (
+            <div className="mt-3 rounded-xl bg-red-50 border border-red-100 p-3 text-xs text-red-700">
+              {updateStatus.error}
+            </div>
+          )}
 
-              <div className="rounded-xl border border-amber-100 bg-white px-3 py-2">
-                <p className="mb-1 text-xs text-slate-500">Selected local lodge ID</p>
-                <code className="break-all text-xs text-slate-700">
-                  {diagnostics?.current_lodge_id || 'Loading...'}
-                </code>
-              </div>
+          {updateStatus.available && (
+            <div className="mt-3 rounded-xl bg-blue-50 border border-blue-200 p-4">
+              <p className="text-sm font-bold text-blue-900">New version available!</p>
+              <p className="text-xs text-blue-700 mt-1">Version {updateStatus.version} is ready to be installed.</p>
+              <button
+                onClick={handleInstallUpdate}
+                className="mt-3 w-full rounded-lg bg-blue-600 py-2 text-xs font-semibold text-white hover:bg-blue-700 transition-colors"
+              >
+                Install & Restart Now
+              </button>
+            </div>
+          )}
 
-              <div className="rounded-xl border border-amber-100 bg-white px-3 py-2">
-                <p className="mb-1 text-xs text-slate-500">Unsynced offline changes</p>
-                <p className="text-sm font-medium text-slate-700">{diagnostics?.unsynced_operations ?? '—'}</p>
-              </div>
-
-              <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600">Correct lodge ID</label>
-                <input
-                  className="input text-sm font-mono"
-                  value={expectedLodgeId}
-                  onChange={(e) => setExpectedLodgeId(e.target.value)}
-                  placeholder="Paste the lodge ID from Command Central"
-                />
-              </div>
-
-              {diagnostics?.expected_lodge_id && (
-                <div className={`rounded-lg px-3 py-2 text-xs ${
-                  diagnostics.expected_matches_current
-                    ? 'bg-green-50 text-green-700 border border-green-200'
-                    : diagnostics.expected_lodge_exists_remotely
-                      ? 'bg-amber-50 text-amber-800 border border-amber-200'
-                      : 'bg-red-50 text-red-700 border border-red-200'
-                }`}>
-                  {diagnostics.expected_matches_current
-                    ? 'This lodge profile is already linked to that lodge ID.'
-                    : diagnostics.expected_lodge_exists_remotely
-                      ? 'That lodge ID exists and can be used to relink this lodge profile.'
-                      : 'That lodge ID could not be found.'}
-                </div>
-              )}
-
-              {recoveryError && (
-                <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-                  {recoveryError}
-                </div>
-              )}
-
-              {recoverySuccess && (
-                <div className="rounded-xl border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-700">
-                  {recoverySuccess}
-                </div>
-              )}
-
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={handleCheckDevice}
-                  disabled={recoveryLoading}
-                  className="btn-secondary flex-1 justify-center border-amber-200 text-amber-800 hover:bg-amber-100 disabled:opacity-60"
-                >
-                  <RefreshCw size={14} className={recoveryLoading ? 'animate-spin' : ''} />
-                  Check ID
-                </button>
-                <button
-                  type="button"
-                  onClick={handleRelinkDevice}
-                  disabled={recoveryLoading || !expectedLodgeId.trim() || diagnostics?.unsynced_operations > 0}
-                  className="flex-1 rounded-xl bg-amber-600 py-2 text-sm font-medium text-white transition-colors hover:bg-amber-700 disabled:opacity-60"
-                >
-                  Relink Lodge
-                </button>
-              </div>
-
-              {diagnostics?.unsynced_operations > 0 && (
-                <p className="text-xs text-red-600">
-                  Relinking is blocked because this lodge profile still has unsynced offline changes that could be lost or attached to the wrong lodge.
-                </p>
-              )}
+          {!updateStatus.checking && !updateStatus.available && !updateStatus.error && updateStatus.version === '' && (
+             <p className="mt-2 text-[10px] text-slate-400">
+               Auto-updates run in the background. Use the button above to manually check if you're missing a version.
+             </p>
+          )}
+          
+          {updateStatus.version && !updateStatus.available && !updateStatus.error && (
+            <div className="mt-3 rounded-xl bg-green-50 border border-green-200 p-3 text-xs text-green-700">
+              ✓ You are running the latest version.
             </div>
           )}
         </div>

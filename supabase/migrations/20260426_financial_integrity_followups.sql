@@ -2100,7 +2100,7 @@ declare
   v_month_end_exclusive date := (date_trunc('month', coalesce(p_today, current_date)::timestamp) + interval '1 month')::date;
   v_next_week date := coalesce(p_today, current_date) + 7;
   v_previous_start date := coalesce(p_today, current_date) - 6;
-  v_total_rooms integer := 0;
+  v_all_lodge_rooms integer := 0;
   v_occupied integer := 0;
   v_open_maintenance integer := 0;
   v_urgent_maintenance integer := 0;
@@ -2124,7 +2124,7 @@ begin
     raise exception 'Access denied' using errcode = '42501';
   end if;
 
-  select count(*) into v_total_rooms
+  select count(*) into v_all_lodge_rooms
   from public.rooms
   where lodge_id = p_lodge_id;
 
@@ -2299,7 +2299,7 @@ begin
       d.day::date as day,
       count(b.id) as occupied,
       case
-        when v_total_rooms > 0 then round((count(b.id)::numeric / v_total_rooms::numeric) * 100)
+        when v_all_lodge_rooms > 0 then round((count(b.id)::numeric / v_all_lodge_rooms::numeric) * 100)
         else 0
       end as percent
     from generate_series(v_previous_start::timestamp, v_today::timestamp, interval '1 day') d(day)
@@ -2333,9 +2333,9 @@ begin
   ) t;
 
   return jsonb_build_object(
-    'totalRooms', v_total_rooms,
+    'totalRooms', v_all_lodge_rooms,
     'occupied', v_occupied,
-    'occupancyPercent', case when v_total_rooms > 0 then round((v_occupied::numeric / v_total_rooms::numeric) * 100) else 0 end,
+    'occupancyPercent', case when v_all_lodge_rooms > 0 then round((v_occupied::numeric / v_all_lodge_rooms::numeric) * 100) else 0 end,
     'openMaintenanceCount', v_open_maintenance,
     'urgentMaintenanceCount', v_urgent_maintenance,
     'lowStockCount', v_low_stock_count,
@@ -2376,7 +2376,7 @@ declare
   v_month_end_exclusive date := (date_trunc('month', coalesce(p_today, current_date)::timestamp) + interval '1 month')::date;
   v_last_month_start date := (date_trunc('month', coalesce(p_today, current_date)::timestamp) - interval '1 month')::date;
   v_last_month_end date := (date_trunc('month', coalesce(p_today, current_date)::timestamp)::date - 1);
-  v_total_rooms integer := 0;
+  v_all_lodge_rooms integer := 0;
   v_current_occ integer := 0;
   v_unpaid_count integer := 0;
   v_unpaid_total numeric := 0;
@@ -2399,7 +2399,7 @@ begin
     raise exception 'Access denied' using errcode = '42501';
   end if;
 
-  select count(*) into v_total_rooms
+  select count(*) into v_all_lodge_rooms
   from public.rooms
   where lodge_id = p_lodge_id;
 
@@ -2504,14 +2504,14 @@ begin
     and b.check_out > v_last_month_start;
 
   v_month_occ := case
-    when v_total_rooms > 0 and (v_month_end - v_month_start + 1) > 0
-      then round((v_month_room_nights / (v_total_rooms::numeric * (v_month_end - v_month_start + 1)::numeric)) * 100)
+    when v_all_lodge_rooms > 0 and (v_month_end - v_month_start + 1) > 0
+      then round((v_month_room_nights / (v_all_lodge_rooms::numeric * (v_month_end - v_month_start + 1)::numeric)) * 100)
     else 0
   end;
 
   v_last_month_occ := case
-    when v_total_rooms > 0 and (v_last_month_end - v_last_month_start + 1) > 0
-      then round((v_last_month_room_nights / (v_total_rooms::numeric * (v_last_month_end - v_last_month_start + 1)::numeric)) * 100)
+    when v_all_lodge_rooms > 0 and (v_last_month_end - v_last_month_start + 1) > 0
+      then round((v_last_month_room_nights / (v_all_lodge_rooms::numeric * (v_last_month_end - v_last_month_start + 1)::numeric)) * 100)
     else 0
   end;
 
@@ -2525,7 +2525,7 @@ begin
     'monthOcc', v_month_occ,
     'lastMonthOcc', v_last_month_occ,
     'currentOcc', v_current_occ,
-    'totalRooms', v_total_rooms,
+    'totalRooms', v_all_lodge_rooms,
     'unpaidTotal', coalesce(v_unpaid_total, 0),
     'unpaidCount', v_unpaid_count,
     'monthExpenses', coalesce(v_month_expenses, 0),

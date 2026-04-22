@@ -106,8 +106,7 @@ function BackupsTab() {
       setPolicy({
         enabled: data.policy.enabled === true,
         target_dir: data.policy.target_dir || '',
-        export_json: data.policy.export_json !== false,
-        export_excel: data.policy.export_excel !== false
+        export_excel: true // Always true now
       })
     }
   }
@@ -135,8 +134,7 @@ function BackupsTab() {
       setPolicy({
         enabled: res.policy.enabled === true,
         target_dir: res.policy.target_dir || '',
-        export_json: res.policy.export_json !== false,
-        export_excel: res.policy.export_excel !== false
+        export_excel: true
       })
       setPolicyResult({ success: true, message: 'Managed weekly export policy updated.' })
       await loadInfo()
@@ -164,11 +162,10 @@ function BackupsTab() {
     try {
       const res = await window.api.backup.runManagedNow()
       if (!res?.success) throw new Error(res?.error || 'Managed weekly export failed.')
-      const parts = [res.jsonPath, res.excelPath].filter(Boolean)
       setPolicyResult({
         success: true,
-        message: parts.length > 0
-          ? `Managed export created: ${parts.join(' | ')}`
+        message: res.excelPath
+          ? `Managed export created: ${res.excelPath}`
           : 'Managed export completed.'
       })
       await loadInfo()
@@ -202,9 +199,9 @@ function BackupsTab() {
       <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-gray-200">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 className="text-lg font-bold text-gray-900">Managed Weekly Exports</h2>
+            <h2 className="text-lg font-bold text-gray-900">Mandatory Weekly Data Archiving</h2>
             <p className="mt-1 text-sm text-gray-500">
-              Create automatic weekly Excel and JSON snapshots into a synced folder like OneDrive, Google Drive, or Dropbox. Supabase remains the parent system; this adds an extra client-side recovery layer.
+              Create a complete Excel snapshot of all lodge transactions, guests, and operational history. This is mandatory once a week to ensure you have an offline backup for recovery and auditing.
             </p>
           </div>
           <span className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-semibold ${statusClass}`}>
@@ -229,29 +226,11 @@ function BackupsTab() {
             </div>
           </label>
 
-          <div className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3">
-            <p className="text-sm font-semibold text-gray-900">Export formats</p>
-            <div className="mt-3 flex flex-wrap gap-4 text-sm text-gray-700">
-              <label className="inline-flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  className="h-4 w-4"
-                  checked={policy.export_excel}
-                  onChange={(e) => savePolicy({ export_excel: e.target.checked })}
-                  disabled={policySaving}
-                />
-                Excel workbook
-              </label>
-              <label className="inline-flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  className="h-4 w-4"
-                  checked={policy.export_json}
-                  onChange={(e) => savePolicy({ export_json: e.target.checked })}
-                  disabled={policySaving}
-                />
-                JSON snapshot
-              </label>
+          <div className="rounded-xl border border-blue-100 bg-blue-50 px-4 py-3">
+            <p className="text-sm font-semibold text-blue-900">Export Format</p>
+            <div className="mt-2 flex items-center gap-2 text-sm text-blue-700">
+              <ShieldCheck size={16} />
+              <span>Full Multi-Sheet Excel Workbook (Mandatory)</span>
             </div>
           </div>
         </div>
@@ -283,7 +262,7 @@ function BackupsTab() {
             </button>
             <button
               onClick={runManagedNow}
-              disabled={policyRunning || !policy.target_dir || (!policy.export_excel && !policy.export_json)}
+              disabled={policyRunning || !policy.target_dir}
               className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:opacity-60"
             >
               {policyRunning ? <Loader2 size={15} className="animate-spin" /> : <ShieldCheck size={15} />}

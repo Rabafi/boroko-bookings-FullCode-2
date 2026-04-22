@@ -3,13 +3,13 @@ import { Plus, Search, MoreVertical, FileText } from 'lucide-react'
 import { Modal } from './shared/Modal'
 import HorizontalScrollArea from './shared/HorizontalScrollArea'
 import { DESKTOP_PAYMENT_METHODS } from '../constants/paymentMethods'
-import { useAuth, useSettings } from '../App'
+import { useAuth, useSettings } from '../app-context'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const PAYMENT_METHODS = DESKTOP_PAYMENT_METHODS
 
-const STATUS_OPTIONS = ['all', 'draft', 'sent', 'accepted', 'declined', 'expired', 'cancelled', 'converted']
+const STATUS_OPTIONS = ['all', 'draft', 'sent', 'accepted', 'expired', 'cancelled', 'converted']
 
 const emptyForm = {
   customer_id:    '',
@@ -84,13 +84,13 @@ function normalizeQuotationRow(q) {
   return {
     ...q,
     converted_booking_id: convertedBookingId,
-    status: convertedBookingId ? 'converted' : q.status
+    status: convertedBookingId ? 'converted' : (q.status || 'draft')
   }
 }
 
 function canConvert(q) {
   if (q?.converted_booking_id) return false
-  if (['converted', 'declined', 'cancelled'].includes(q.status)) return false
+  if (['converted', 'cancelled'].includes(q.status)) return false
   if (!['sent', 'accepted'].includes(q.status)) return false
   return true
 }
@@ -190,7 +190,7 @@ function QuotationMenu({ q, isOpen, onToggle, onClose, onEdit, onStatusChange, o
             <QDivider />
 
             {/* Status changes */}
-            {!isTerminal && q.status !== 'sent' && q.status !== 'declined' && (
+            {!isTerminal && q.status !== 'sent' && (
               <QMenuItem onClick={() => { onStatusChange('sent'); onClose() }}>
                 📤 Mark as Sent
               </QMenuItem>
@@ -198,11 +198,6 @@ function QuotationMenu({ q, isOpen, onToggle, onClose, onEdit, onStatusChange, o
             {q.status === 'sent' && (
               <QMenuItem color="green" onClick={() => { onStatusChange('accepted'); onClose() }}>
                 ✅ Mark as Accepted
-              </QMenuItem>
-            )}
-            {['draft', 'sent', 'accepted'].includes(q.status) && (
-              <QMenuItem color="red" onClick={() => { onStatusChange('declined'); onClose() }}>
-                ✖ Mark as Declined
               </QMenuItem>
             )}
 
@@ -222,7 +217,7 @@ function QuotationMenu({ q, isOpen, onToggle, onClose, onEdit, onStatusChange, o
             )}
 
             {/* Cancel */}
-            {!isTerminal && q.status !== 'declined' && (
+            {!isTerminal && (
               <>
                 <QDivider />
                 <QMenuItem color="red" onClick={() => { onCancel(); onClose() }}>
@@ -301,7 +296,7 @@ function QuotationPreview({ quotation: q, settings, onClose, onConvert, canConve
       <div className="fixed inset-0 bg-black/50 z-50 no-print" onClick={onClose} />
 
       {/* Modal */}
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 no-print-wrapper">
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 print:p-0 print:static print:bg-white">
         <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[92vh] overflow-auto print:max-h-none print:overflow-visible print:shadow-none print:rounded-none">
 
           {/* Toolbar — screen only */}

@@ -14,7 +14,7 @@ import {
 } from 'lucide-react'
 import { Modal } from './shared/Modal'
 import HorizontalScrollArea from './shared/HorizontalScrollArea'
-import { useSettings } from '../App'
+import { useSettings } from '../app-context'
 
 const SUPPLY_CATEGORIES = ['Bathroom', 'Linen', 'Kitchen', 'Other']
 const SUPPLY_UNITS = ['roll', 'piece', 'bar', 'sachet', 'packet', 'pack', 'box', 'sheet', 'pair', 'ml', 'L', 'kg']
@@ -99,6 +99,7 @@ export default function RoomSupplies() {
   const [adjustError, setAdjustError] = useState('')
   const [adjustDelta, setAdjustDelta] = useState('')
   const [adjustNotes, setAdjustNotes] = useState('')
+  const [adjustPin, setAdjustPin] = useState('')
 
   const [movementModal, setMovementModal] = useState(false)
   const [movementType, setMovementType] = useState('load')
@@ -421,7 +422,7 @@ export default function RoomSupplies() {
     const packages = parseFloat(purchaseForm.package_count)
     const unitsPerPackage = parseFloat(purchaseForm.units_per_package)
     if (!(packages > 0 && unitsPerPackage > 0)) return base
-    const extra = `Pack detail: ${packages} pack(s) × ${unitsPerPackage} ${purchaseItem.unit}`
+    const extra = `Pack detail: ${packages} pack(s) × ${unitsPerPackage} ${purchaseItem?.unit || 'units'}`
     return base ? `${base} | ${extra}` : extra
   }
 
@@ -498,7 +499,7 @@ export default function RoomSupplies() {
       const qty = getEffectivePurchaseQuantity()
       const total = parseFloat(purchaseForm.total_cost)
       if (!(qty > 0)) {
-        setPurchaseError(`Enter the quantity purchased in ${purchaseItem.unit}s, or use packs × units per pack.`)
+        setPurchaseError(`Enter the quantity purchased in ${purchaseItem?.unit || 'units'}s, or use packs × units per pack.`)
         return
       }
       if (!(total > 0)) {
@@ -529,6 +530,7 @@ export default function RoomSupplies() {
     setAdjustItem(item)
     setAdjustDelta('')
     setAdjustNotes('')
+    setAdjustPin('')
     setAdjustError('')
     setAdjustModal(true)
   }
@@ -538,7 +540,7 @@ export default function RoomSupplies() {
     setAdjustSaving(true)
     setAdjustError('')
     try {
-      const result = await window.api.supplies.adjustStock(adjustItem.id, parseFloat(adjustDelta), adjustNotes)
+      const result = await window.api.supplies.adjustStock(adjustItem.id, parseFloat(adjustDelta), adjustNotes, adjustPin)
       if (!result?.success) {
         setAdjustError(result?.error || 'Failed to adjust stock.')
         return
@@ -1015,7 +1017,7 @@ export default function RoomSupplies() {
 
       {tab === 'items' && (
         <div className="flex flex-col gap-4">
-          <div className="flex justify-end"><button onClick={openCreate} className="btn-primary flex items-center gap-2"><Plus size={16} /> Add Supply Item</button></div>
+          <div className="flex justify-end gap-2"><button onClick={() => openPurchase(null)} className="btn-secondary flex items-center gap-2"><Plus size={16} /> Record Purchase</button><button onClick={openCreate} className="btn-primary flex items-center gap-2"><Plus size={16} /> Add Supply Item</button></div>
           <div className="bb-table-shell">
             {loading ? (
               <div className="bb-empty-state min-h-[220px]"><p className="text-sm font-medium text-slate-500">Loading supply items…</p></div>
@@ -1081,16 +1083,44 @@ export default function RoomSupplies() {
         </Modal>
       )}
 
-      {purchaseModal && purchaseItem && (
-        <Modal title={`Record Purchase — ${purchaseItem.name}`} onClose={() => setPurchaseModal(false)} size="sm">
+      {purchaseModal && (
+        <Modal title={purchaseItem ? `Record Purchase — ${purchaseItem.name}` : 'Record Purchase'} onClose={() => setPurchaseModal(false)} size="sm">
           <form onSubmit={handlePurchaseSubmit} className="space-y-4">
             {purchaseError && <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{purchaseError}</div>}
-            <div><label className="mb-1 block text-sm font-medium text-slate-700">Date *</label><input type="date" className="input" value={purchaseForm.date} onChange={(e) => setPurchaseForm({ ...purchaseForm, date: e.target.value })} required /></div>
-            <div className="grid grid-cols-2 gap-4"><div><label className="mb-1 block text-sm font-medium text-slate-700">Qty ({purchaseItem.unit}s) *</label><input type="number" step="1" min="0" className="input" value={purchaseForm.quantity_purchased} onChange={(e) => setPurchaseForm({ ...purchaseForm, quantity_purchased: e.target.value })} /></div><div><label className="mb-1 block text-sm font-medium text-slate-700">Total Cost ({currency}) *</label><input type="number" step="0.01" min="0.01" className="input" value={purchaseForm.total_cost} onChange={(e) => setPurchaseForm({ ...purchaseForm, total_cost: e.target.value })} required /></div></div>
-            <div className="grid grid-cols-2 gap-4"><div><label className="mb-1 block text-sm font-medium text-slate-700">Number of Packs</label><input type="number" step="1" min="0" className="input" value={purchaseForm.package_count} onChange={(e) => setPurchaseForm({ ...purchaseForm, package_count: e.target.value })} /></div><div><label className="mb-1 block text-sm font-medium text-slate-700">Units per Pack</label><input type="number" step="0.1" min="0" className="input" value={purchaseForm.units_per_package} onChange={(e) => setPurchaseForm({ ...purchaseForm, units_per_package: e.target.value })} /></div></div>
-            {unitCostPreview() && <div className="rounded-xl bg-green-50 p-3 text-sm text-green-800">Auto unit cost: <strong>{currency} {unitCostPreview()}</strong> per {purchaseItem.unit}</div>}
-            <div><label className="mb-1 block text-sm font-medium text-slate-700">Notes</label><input type="text" className="input" value={purchaseForm.notes} onChange={(e) => setPurchaseForm({ ...purchaseForm, notes: e.target.value })} /></div>
-            <div className="flex gap-3 pt-2"><button type="button" onClick={() => setPurchaseModal(false)} className="btn-secondary flex-1">Cancel</button><button type="submit" disabled={purchaseSaving} className="btn-primary flex-1">{purchaseSaving ? 'Saving...' : 'Record Purchase'}</button></div>
+            
+            {!purchaseItem && (
+              <div>
+                <label className="mb-1 block text-sm font-medium text-slate-700">Select Supply Item *</label>
+                <select
+                  className="input"
+                  onChange={(e) => {
+                    const found = supplyItems.find(i => i.id === e.target.value);
+                    if (found) {
+                      setPurchaseItem(found);
+                      setPurchaseError('');
+                    }
+                  }}
+                  defaultValue=""
+                  required
+                >
+                  <option value="" disabled>Select an item...</option>
+                  {supplyItems.map(i => <option key={i.id} value={i.id}>{i.name} ({i.unit})</option>)}
+                </select>
+                <p className="mt-1 text-xs text-slate-500">Pick the existing stock item you are purchasing.</p>
+              </div>
+            )}
+
+            {purchaseItem && (
+              <>
+                <div><label className="mb-1 block text-sm font-medium text-slate-700">Date *</label><input type="date" className="input" value={purchaseForm.date} onChange={(e) => setPurchaseForm({ ...purchaseForm, date: e.target.value })} required /></div>
+                <div className="grid grid-cols-2 gap-4"><div><label className="mb-1 block text-sm font-medium text-slate-700">Qty ({purchaseItem?.unit || 'units'}s) *</label><input type="number" step="1" min="0" className="input" value={purchaseForm.quantity_purchased} onChange={(e) => setPurchaseForm({ ...purchaseForm, quantity_purchased: e.target.value })} /></div><div><label className="mb-1 block text-sm font-medium text-slate-700">Total Cost ({currency}) *</label><input type="number" step="0.01" min="0.01" className="input" value={purchaseForm.total_cost} onChange={(e) => setPurchaseForm({ ...purchaseForm, total_cost: e.target.value })} required /></div></div>
+                <div className="grid grid-cols-2 gap-4"><div><label className="mb-1 block text-sm font-medium text-slate-700">Number of Packs</label><input type="number" step="1" min="0" className="input" value={purchaseForm.package_count} onChange={(e) => setPurchaseForm({ ...purchaseForm, package_count: e.target.value })} /></div><div><label className="mb-1 block text-sm font-medium text-slate-700">Units per Pack</label><input type="number" step="0.1" min="0" className="input" value={purchaseForm.units_per_package} onChange={(e) => setPurchaseForm({ ...purchaseForm, units_per_package: e.target.value })} /></div></div>
+                {unitCostPreview() && <div className="rounded-xl bg-green-50 p-3 text-sm text-green-800">Auto unit cost: <strong>{currency} {unitCostPreview()}</strong> per {purchaseItem?.unit || 'units'}</div>}
+                <div><label className="mb-1 block text-sm font-medium text-slate-700">Notes</label><input type="text" className="input" value={purchaseForm.notes} onChange={(e) => setPurchaseForm({ ...purchaseForm, notes: e.target.value })} /></div>
+              </>
+            )}
+            
+            <div className="flex gap-3 pt-2"><button type="button" onClick={() => setPurchaseModal(false)} className="btn-secondary flex-1">Cancel</button><button type="submit" disabled={purchaseSaving || !purchaseItem} className="btn-primary flex-1">{purchaseSaving ? 'Saving...' : 'Record Purchase'}</button></div>
           </form>
         </Modal>
       )}
@@ -1102,6 +1132,7 @@ export default function RoomSupplies() {
             <p className="text-sm text-gray-600">Current store stock: <strong>{fmtQty(adjustItem.current_stock)} {adjustItem.unit}</strong></p>
             <div><label className="mb-1 block text-sm font-medium text-gray-700">Adjustment ({adjustItem.unit}) *</label><input type="number" step="0.1" className="input" value={adjustDelta} onChange={(e) => setAdjustDelta(e.target.value)} required /></div>
             <div><label className="mb-1 block text-sm font-medium text-gray-700">Reason</label><input type="text" className="input" value={adjustNotes} onChange={(e) => setAdjustNotes(e.target.value)} /></div>
+            <div><label className="mb-1 block text-sm font-medium text-gray-700">Manager PIN *</label><input type="password" className="input" value={adjustPin} onChange={(e) => setAdjustPin(e.target.value)} required placeholder="Manager PIN" /></div>
             <div className="flex gap-3 pt-2"><button type="button" onClick={() => setAdjustModal(false)} className="btn-secondary flex-1">Cancel</button><button type="submit" disabled={adjustSaving} className="btn-primary flex-1">{adjustSaving ? 'Saving...' : 'Apply Adjustment'}</button></div>
           </form>
         </Modal>
@@ -1129,3 +1160,4 @@ export default function RoomSupplies() {
     </div>
   )
 }
+

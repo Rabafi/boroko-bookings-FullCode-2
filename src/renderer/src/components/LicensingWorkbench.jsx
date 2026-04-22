@@ -131,7 +131,7 @@ function PlanCatalog({ licenses }) {
   )
 }
 
-function AssignmentDesk({ companies, licenses, onRefresh }) {
+function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill }) {
   const [editingLicense, setEditingLicense] = useState(null)
   const [form, setForm] = useState({
     lodge_id: '',
@@ -143,10 +143,24 @@ function AssignmentDesk({ companies, licenses, onRefresh }) {
     currency: 'BWP',
     expires_at: '',
     next_due_date: '',
-    notes: ''
+    notes: '',
+    duration: ''
   })
   const [saving, setSaving] = useState(false)
   const [filter, setFilter] = useState('')
+  const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+
+  useEffect(() => {
+    if (prefill) {
+      setForm((prev) => ({
+        ...prev,
+        ...prefill
+      }))
+      setFilter(prefill.lodge_name || '')
+      clearPrefill()
+    }
+  }, [prefill, clearPrefill])
 
   const companyById = useMemo(() => {
     return new Map((companies || []).map((company) => [company.lodge_id, company]))
@@ -156,7 +170,7 @@ function AssignmentDesk({ companies, licenses, onRefresh }) {
     const activeLicenses = new Map()
     ;(licenses || []).forEach((license) => {
       if (license.is_active === false) return
-      activeLicenses.set(license.lodge_id, license)
+      if (!activeLicenses.has(license.lodge_id)) activeLicenses.set(license.lodge_id, license)
     })
 
     return (companies || []).map((company) => ({
@@ -172,6 +186,8 @@ function AssignmentDesk({ companies, licenses, onRefresh }) {
 
   const startCreate = (company) => {
     setEditingLicense(null)
+    setError('')
+    setNotice('')
     setForm({
       lodge_id: company?.lodge_id || '',
       lodge_name: company?.lodge_name || '',
@@ -182,13 +198,16 @@ function AssignmentDesk({ companies, licenses, onRefresh }) {
       currency: 'BWP',
       expires_at: '',
       next_due_date: '',
-      notes: ''
+      notes: '',
+      duration: ''
     })
   }
 
   const startEdit = (license) => {
     const company = companyById.get(license.lodge_id)
     setEditingLicense(license)
+    setError('')
+    setNotice('')
     setForm({
       lodge_id: license.lodge_id || '',
       lodge_name: license.lodge_name || company?.lodge_name || '',
@@ -199,16 +218,19 @@ function AssignmentDesk({ companies, licenses, onRefresh }) {
       currency: license.currency || 'BWP',
       expires_at: license.expires_at ? String(license.expires_at).slice(0, 10) : '',
       next_due_date: license.next_due_date ? String(license.next_due_date).slice(0, 10) : '',
-      notes: license.notes || ''
+      notes: license.notes || '',
+      duration: ''
     })
   }
 
   const submit = async (event) => {
     event.preventDefault()
+    setError('')
+    setNotice('')
     setSaving(true)
     try {
       if (editingLicense) {
-        await window.api.admin.updateLicense(editingLicense.id, {
+        const result = await window.api.admin.updateLicense(editingLicense.id, {
           lodge_id: form.lodge_id,
           lodge_name: form.lodge_name,
           subscription_plan: form.subscription_plan,
@@ -219,23 +241,31 @@ function AssignmentDesk({ companies, licenses, onRefresh }) {
           next_due_date: form.next_due_date || null,
           notes: form.notes || null
         })
+        if (!result?.success) throw new Error(result?.error || 'Could not update license assignment')
+        setNotice('License assignment updated.')
       } else {
-        await window.api.admin.createLicense({
-          lodge_id: form.lodge_id,
-          lodge_name: form.lodge_name,
-          business_type: form.business_type,
-          subscription_plan: form.subscription_plan,
-          payment_status: form.payment_status,
-          monthly_fee: Number(form.monthly_fee || 0),
-          currency: form.currency,
-          expires_at: form.expires_at || null,
-          next_due_date: form.next_due_date || null,
-          notes: form.notes || null
+        const result = await window.api.admin.issueSubscriptionContract({
+          license: {
+            lodge_id: form.lodge_id,
+            lodge_name: form.lodge_name,
+            business_type: form.business_type,
+            subscription_plan: form.subscription_plan,
+            payment_status: form.payment_status,
+            monthly_fee: Number(form.monthly_fee || 0),
+            currency: form.currency,
+            expires_at: form.expires_at || null,
+            next_due_date: form.next_due_date || null,
+            notes: form.notes || null
+          }
         })
+        if (!result?.success) throw new Error(result?.error || 'Could not generate license')
+        setNotice(`Generated ${form.subscription_plan} license${result?.license?.license_key ? `: ${result.license.license_key}` : '.'}`)
       }
       setEditingLicense(null)
       startCreate(null)
-      onRefresh()
+      await onRefresh()
+    } catch (err) {
+      setError(err?.message || 'Could not save license assignment')
     } finally {
       setSaving(false)
     }
@@ -292,6 +322,18 @@ function AssignmentDesk({ companies, licenses, onRefresh }) {
           <p className="text-sm text-gray-400 mt-1">Generate a fresh key or update an existing subscription record for a client.</p>
         </div>
 
+        {error && (
+          <div className="rounded-xl border border-red-700 bg-red-950/40 px-3 py-2 text-sm text-red-300">
+            {error}
+          </div>
+        )}
+
+        {notice && (
+          <div className="rounded-xl border border-green-700 bg-green-950/40 px-3 py-2 text-sm text-green-300">
+            {notice}
+          </div>
+        )}
+
         <div>
           <label className="text-xs text-gray-400 block mb-1">Client</label>
           <select
@@ -341,12 +383,43 @@ function AssignmentDesk({ companies, licenses, onRefresh }) {
             <input className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-sm text-white" value={form.currency} onChange={(event) => setForm((current) => ({ ...current, currency: event.target.value }))} />
           </div>
           <div>
+            <label className="text-xs text-gray-400 block mb-1">Duration</label>
+            <select
+              className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-sm text-white"
+              value={form.duration}
+              onChange={(e) => {
+                const dur = e.target.value
+                const d = new Date()
+                let nextVal = ''
+                if (dur === 'monthly') d.setMonth(d.getMonth() + 1)
+                else if (dur === 'quarterly') d.setMonth(d.getMonth() + 3)
+                else if (dur === 'half_year') d.setMonth(d.getMonth() + 6)
+                else if (dur === 'yearly') d.setFullYear(d.getFullYear() + 1)
+                
+                if (dur) nextVal = d.toISOString().split('T')[0]
+                
+                setForm(f => ({
+                  ...f,
+                  duration: dur,
+                  expires_at: nextVal || f.expires_at,
+                  next_due_date: nextVal || f.next_due_date
+                }))
+              }}
+            >
+              <option value="">Manual Selection</option>
+              <option value="monthly">Monthly</option>
+              <option value="quarterly">Quarterly</option>
+              <option value="half_year">Half-Year</option>
+              <option value="yearly">Yearly</option>
+            </select>
+          </div>
+          <div>
             <label className="text-xs text-gray-400 block mb-1">Next due date</label>
-            <input type="date" className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-sm text-white" value={form.next_due_date} onChange={(event) => setForm((current) => ({ ...current, next_due_date: event.target.value }))} />
+            <input type="date" className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-sm text-white" value={form.next_due_date} onChange={(event) => setForm((current) => ({ ...current, next_due_date: event.target.value, duration: '' }))} />
           </div>
           <div>
             <label className="text-xs text-gray-400 block mb-1">Expiry date</label>
-            <input type="date" className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-sm text-white" value={form.expires_at} onChange={(event) => setForm((current) => ({ ...current, expires_at: event.target.value }))} />
+            <input type="date" className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-sm text-white" value={form.expires_at} onChange={(event) => setForm((current) => ({ ...current, expires_at: event.target.value, duration: '' }))} />
           </div>
         </div>
 
@@ -549,7 +622,7 @@ function OverrideDesk({ companies, licenses }) {
   )
 }
 
-function ClientHealthDesk({ companies, licenses, tickets }) {
+function ClientHealthDesk({ companies, licenses, tickets, onApprove }) {
   const today = new Date()
   const activeLicenses = (licenses || []).filter((license) => license.is_active !== false)
   const assignedLodgeIds = new Set(activeLicenses.map((license) => license.lodge_id))
@@ -652,6 +725,12 @@ function ClientHealthDesk({ companies, licenses, tickets }) {
                   <span className="rounded-full bg-purple-500/15 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-purple-300">
                     {String(ticket.status || 'open').replace(/_/g, ' ')}
                   </span>
+                  <button
+                    onClick={() => onApprove(ticket)}
+                    className="mt-2 text-[10px] bg-purple-600 hover:bg-purple-500 text-white px-2 py-1 rounded-md font-bold uppercase tracking-wider"
+                  >
+                    Approve & License
+                  </button>
                 </div>
               </div>
             )
@@ -665,6 +744,18 @@ function ClientHealthDesk({ companies, licenses, tickets }) {
 
 export default function LicensingWorkbench({ companies, licenses, tickets, onRefresh }) {
   const [tab, setTab] = useState('plans')
+  const [prefill, setPrefill] = useState(null)
+
+  const handleApprove = (ticket) => {
+    const parsed = parseUpgradeRequest(ticket.description)
+    setPrefill({
+      lodge_id: ticket.lodge_id,
+      lodge_name: ticket.lodge_name || ticket.lodge_id,
+      subscription_plan: parsed.requestedPlan || 'Standard',
+      notes: `Approved upgrade request: ${ticket.id}. ${parsed.businessNeed || ''}`
+    })
+    setTab('assignments')
+  }
 
   const tabs = [
     { key: 'plans', label: 'Plans', icon: Layers3 },
@@ -704,9 +795,9 @@ export default function LicensingWorkbench({ companies, licenses, tickets, onRef
       </div>
 
       {tab === 'plans' && <PlanCatalog licenses={licenses} />}
-      {tab === 'assignments' && <AssignmentDesk companies={companies} licenses={licenses} onRefresh={onRefresh} />}
+      {tab === 'assignments' && <AssignmentDesk companies={companies} licenses={licenses} onRefresh={onRefresh} prefill={prefill} clearPrefill={() => setPrefill(null)} />}
       {tab === 'overrides' && <OverrideDesk companies={companies} licenses={licenses} />}
-      {tab === 'health' && <ClientHealthDesk companies={companies} licenses={licenses} tickets={tickets} />}
+      {tab === 'health' && <ClientHealthDesk companies={companies} licenses={licenses} tickets={tickets} onApprove={handleApprove} />}
     </div>
   )
 }

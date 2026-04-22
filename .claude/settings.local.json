@@ -45,7 +45,14 @@
       "Bash(NETLIFY_AUTH_TOKEN=nfp_G4JdkC6xw1tkWZPmuJFawbHFBuzPhqQwb5c3 npx netlify status)",
       "Bash(NETLIFY_AUTH_TOKEN=nfp_G4JdkC6xw1tkWZPmuJFawbHFBuzPhqQwb5c3 npx netlify link --id luminous-flan-27fdac)",
       "Bash(NETLIFY_AUTH_TOKEN=nfp_G4JdkC6xw1tkWZPmuJFawbHFBuzPhqQwb5c3 npx netlify sites:list)",
-      "Bash(NETLIFY_AUTH_TOKEN=nfp_G4JdkC6xw1tkWZPmuJFawbHFBuzPhqQwb5c3 npx netlify link --id 29d20c46-e260-4f04-9025-aa606e2512bb)"
+      "Bash(NETLIFY_AUTH_TOKEN=nfp_G4JdkC6xw1tkWZPmuJFawbHFBuzPhqQwb5c3 npx netlify link --id 29d20c46-e260-4f04-9025-aa606e2512bb)",
+      "Bash(node -e \"const d=require\\('C:/Users/BOTSWA~1/.claude/projects/C--Users-Botswapelo-Studios-Documents-Work-Boroko-Bookings/ac0005f1-ddba-41b8-9e61-95e4418dcf3f/tool-results/toolu_011x1MDXFJuoE7YMMiLX8NXG.json'\\); console.log\\(d[0].text\\)\")",
+      "Bash(npx.cmd playwright:*)",
+      "Bash(grep -l \"order_number\\\\|pos_order.*sequence\\\\|get_next.*order\\\\|receipt.*sequence\" supabase/migrations/*.sql)",
+      "Bash(grep -n \"create_pos_order\\\\|insert.*pos_order\" supabase/migrations/*.sql)",
+      "Bash(npx supabase:*)",
+      "Bash(grep -r \"event.*booking\\\\|conference.*booking\" ./supabase/migrations/*.sql)",
+      "Bash(find ./supabase/migrations -name \"*.sql\" -exec grep -l \"conference\\\\|event.*booking\" {} \\\\;)"
     ]
   }
 }

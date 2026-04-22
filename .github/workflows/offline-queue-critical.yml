@@ -1,0 +1,38 @@
+name: Offline Queue Critical
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: offline-queue-critical-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run production guardrails
+        run: npm test
+
+      - name: Run critical offline queue regression suite
+        run: npm run test:offline-queue-critical
+
+      - name: Run critical offline POS regression suite
+        run: npm run test:offline-pos-critical
+
+      - name: Build desktop app
+        run: npm run build

@@ -13,6 +13,7 @@
  *   SMTP_USER                  – sender email address
  *   SMTP_PASS                  – sender email password / app password
  *   SMTP_FROM_NAME             – display name, e.g. "Boroko Bookings"
+ *   BOOKING_FUNCTION_SECRET    – shared secret required in x-boroko-function-secret
  */
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
@@ -24,10 +25,28 @@ const SMTP_PORT    = parseInt(Deno.env.get('SMTP_PORT') || '587')
 const SMTP_USER    = Deno.env.get('SMTP_USER') || ''
 const SMTP_PASS    = Deno.env.get('SMTP_PASS') || ''
 const FROM_NAME    = Deno.env.get('SMTP_FROM_NAME') || 'Boroko Bookings'
+const FUNCTION_SECRET = Deno.env.get('BOOKING_FUNCTION_SECRET') || ''
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'content-type'
+  'Access-Control-Allow-Headers': 'content-type, x-boroko-function-secret'
+}
+
+function jsonResponse(body: Record<string, unknown>, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+  })
+}
+
+function requireFunctionSecret(req: Request) {
+  if (!FUNCTION_SECRET) {
+    return jsonResponse({ error: 'Booking confirmation function is not configured for secure delivery' }, 503)
+  }
+  if (req.headers.get('x-boroko-function-secret') !== FUNCTION_SECRET) {
+    return jsonResponse({ error: 'Unauthorized' }, 401)
+  }
+  return null
 }
 
 Deno.serve(async (req) => {
@@ -36,13 +55,13 @@ Deno.serve(async (req) => {
   }
 
   try {
+    const authError = requireFunctionSecret(req)
+    if (authError) return authError
+
     const { booking_id, guest_email } = await req.json()
 
     if (!booking_id) {
-      return new Response(JSON.stringify({ error: 'booking_id is required' }), {
-        status: 400,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-      })
+      return jsonResponse({ error: 'booking_id is required' }, 400)
     }
 
     // Fetch booking details using service role (bypasses RLS)
@@ -68,10 +87,7 @@ Deno.serve(async (req) => {
 
     if (fetchError || !booking) {
       console.error('Booking fetch error:', fetchError)
-      return new Response(JSON.stringify({ error: 'Booking not found' }), {
-        status: 404,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-      })
+      return jsonResponse({ error: 'Booking not found' }, 404)
     }
 
     // Fetch lodge name from settings via lodge_id in bookings table
@@ -97,12 +113,15 @@ Deno.serve(async (req) => {
       }
     }
 
-    const toEmail = guest_email || booking.customers?.email
+    const customerEmail = String(booking.customers?.email || '').trim().toLowerCase()
+    const requestedEmail = String(guest_email || '').trim().toLowerCase()
+    if (requestedEmail && requestedEmail !== customerEmail) {
+      return jsonResponse({ error: 'Guest email does not match booking' }, 403)
+    }
+
+    const toEmail = booking.customers?.email
     if (!toEmail) {
-      return new Response(JSON.stringify({ error: 'No guest email available' }), {
-        status: 422,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-      })
+      return jsonResponse({ error: 'No guest email available' }, 422)
     }
 
     const guestName = [booking.customers?.first_name, booking.customers?.last_name].filter(Boolean).join(' ') || 'Guest'
@@ -182,10 +201,7 @@ Deno.serve(async (req) => {
     if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
       console.log(`[send-booking-confirmation] SMTP not configured — would send to ${toEmail}`)
       console.log(`Subject: ${subject}`)
-      return new Response(JSON.stringify({ sent: false, reason: 'SMTP not configured' }), {
-        status: 200,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-      })
+      return jsonResponse({ sent: false, reason: 'SMTP not configured' })
     }
 
     // Send email via SMTP using fetch to a simple relay
@@ -210,16 +226,10 @@ Deno.serve(async (req) => {
 
     await client.close()
 
-    return new Response(JSON.stringify({ sent: true, to: toEmail, reference }), {
-      status: 200,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-    })
+    return jsonResponse({ sent: true, to: toEmail, reference })
 
   } catch (err) {
     console.error('[send-booking-confirmation] error:', err)
-    return new Response(JSON.stringify({ error: err.message }), {
-      status: 500,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-    })
+    return jsonResponse({ error: err.message }, 500)
   }
 })

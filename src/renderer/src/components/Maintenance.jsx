@@ -31,6 +31,7 @@ export default function Maintenance() {
   const [editing, setEditing] = useState(null)
   const [saving, setSaving] = useState(false)
   const [resolving, setResolving] = useState(null)
+  const [error, setError] = useState('')
 
   const [form, setForm] = useState({
     room_id: '',
@@ -84,10 +85,17 @@ export default function Maintenance() {
   const handleCreate = async (e) => {
     e.preventDefault()
     setSaving(true)
-    await window.api.maintenance.create({ ...form, room_id: Number(form.room_id) }).catch(console.error)
-    setSaving(false)
-    setFormOpen(false)
-    loadData()
+    setError('')
+    try {
+      const result = await window.api.maintenance.create({ ...form, room_id: form.room_id || null })
+      if (result?.success === false) throw new Error(result.error || 'Failed to create ticket')
+      setFormOpen(false)
+      loadData()
+    } catch (err) {
+      setError(err.message || 'Failed to create ticket')
+    } finally {
+      setSaving(false)
+    }
   }
 
   const handleUpdate = async (id, data) => {
@@ -142,6 +150,10 @@ export default function Maintenance() {
           )
         )}
       </div>
+
+      {error && (
+        <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>
+      )}
 
       {/* Ticket Grid */}
       {loading ? (

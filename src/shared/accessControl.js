@@ -301,7 +301,7 @@ export function normalizeAppRole(role) {
   return 'receptionist'
 }
 
-export function getRoleDefinition(role) {
+function getRoleDefinition(role) {
   return ROLE_DEFINITIONS[normalizeAppRole(role)] || ROLE_DEFINITIONS.receptionist
 }
 

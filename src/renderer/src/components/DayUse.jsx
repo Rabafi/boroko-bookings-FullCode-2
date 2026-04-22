@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Waves, Plus, Trash2, X, Users, TrendingUp } from 'lucide-react'
 import { PAYMENT_METHOD_PLAIN_OPTIONS } from '../constants/paymentMethods'
-import { useSettings } from '../App'
+import { useSettings } from '../app-context'
 
 const PAYMENT_METHODS = PAYMENT_METHOD_PLAIN_OPTIONS
 
@@ -32,14 +32,25 @@ export default function DayUse() {
   const [error, setError] = useState('')
   const [deleting, setDeleting] = useState(null)
 
-  const load = async () => {
-    setLoading(true)
-    const data = await window.api.dayuse.getAll(selectedDate, selectedDate).catch(() => [])
-    setEntries(data)
-    setLoading(false)
+  const load = async (silent = false) => {
+    if (!silent) setLoading(true)
+    try {
+      const data = await window.api.dayuse.getAll(selectedDate, selectedDate).catch(() => [])
+      setEntries(data)
+    } finally {
+      setLoading(false)
+    }
   }
 
   useEffect(() => { load() }, [selectedDate])
+  
+  // Refresh on sync events
+  useEffect(() => {
+    const unsubscribe = window.api.sync.onStatusChanged(() => {
+      load(true)
+    })
+    return () => unsubscribe?.()
+  }, [selectedDate])
 
   const set = (f, v) => setForm((prev) => ({ ...prev, [f]: v }))
 
@@ -92,7 +103,8 @@ export default function DayUse() {
 
   return (
     <div className="p-6 max-w-4xl mx-auto">
-      {/* Header */}
+
+{/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-3">
           <Waves size={26} className="text-cyan-600" />

@@ -12,7 +12,7 @@ import {
   Hash,
   Lock
 } from 'lucide-react'
-import { useAccess, useAuth, useSettings } from '../App'
+import { useAccess, useAuth, useSettings } from '../app-context'
 import {
   APP_FEATURES,
   FEATURE_LABELS,

@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react'
-import { useAuth } from '../App'
+import { useAuth } from '../app-context'
 import LicensingWorkbench from './LicensingWorkbench'
 import {
   SUBSCRIPTION_PLAN_ORDER,
@@ -12,7 +12,7 @@ import {
   Copy, CheckCircle, XCircle, Key, ChevronRight, X, AlertTriangle,
   Clock, TrendingUp, Users, Home, Wrench, DollarSign, Edit3,
   Mail, Send, CheckCircle2, Eye, EyeOff, Receipt, FileText,
-  BarChart3, Filter
+  BarChart3, Filter, Wallet, Printer
 } from 'lucide-react'
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -269,12 +269,16 @@ function Companies({ companies, licenses, loading, onReload }) {
   const [statsLoading, setStatsLoading] = useState(false)
 
   const [showDisabled, setShowDisabled] = useState(false)
-  const visibleCompanies = showDisabled ? companies : companies.filter(c => !c.deleted)
+  const visibleCompanies = showDisabled 
+    ? companies.filter(c => c.deleted) 
+    : companies.filter(c => !c.deleted)
 
-  // ─── delete state ───────────────────────────────────────────────────────────
+  // ─── Lifecycle (Archive/Restore/Delete) ─────────────────────────────────────
+  const [lifecycleMode, setLifecycleMode] = useState('archive') // 'archive' | 'restore' | 'delete'
   const [companyTarget,   setCompanyTarget]   = useState(null)
   const [confirmName,     setConfirmName]     = useState('')
-  const [deletingCompany, setDeletingCompany] = useState(false)
+  const [lifecycleLoading, setLifecycleLoading] = useState(false)
+  const [repairLoading, setRepairLoading] = useState(false)
 
   // ─── reset state ────────────────────────────────────────────────────────────
   const [resetTarget,  setResetTarget]  = useState(null)
@@ -337,21 +341,60 @@ function Companies({ companies, licenses, loading, onReload }) {
     await loadCompanyUsers(company.lodge_id)
   }
 
-  const confirmDeleteCompany = async () => {
-    if (deletingCompany) return
-    setDeletingCompany(true)
+  const handleLifecycleAction = async () => {
+    if (lifecycleLoading || !companyTarget) return
+    setLifecycleLoading(true)
     try {
-      await window.api.admin.updateCompany(companyTarget.lodge_id, { deleted: true })
-      alert('Company disabled successfully')
+      if (lifecycleMode === 'archive') {
+        const res = await window.api.admin.archiveCompany(companyTarget.lodge_id)
+        if (res?.success === false) throw new Error(res.error)
+        alert('Company archived successfully')
+      } else if (lifecycleMode === 'restore') {
+        const res = await window.api.admin.restoreCompany(companyTarget.lodge_id)
+        if (res?.success === false) throw new Error(res.error)
+        alert('Company restored successfully')
+      } else if (lifecycleMode === 'delete') {
+        const res = await window.api.admin.permanentlyDeleteCompany(companyTarget.lodge_id)
+        if (res?.success === false) throw new Error(res.error)
+        alert(`Company permanently deleted. Removed ${res?.deleted_count || 0} Supabase row(s) and local cache/profile data for this lodge.`)
+      }
+      
       setCompanyTarget(null)
       setConfirmName('')
       setSelected(null)
       onReload?.()
     } catch (err) {
       console.error(err)
-      alert('Failed to delete company')
+      alert(`Action failed: ${err.message || 'Unknown error'}`)
     } finally {
-      setDeletingCompany(false)
+      setLifecycleLoading(false)
+    }
+  }
+
+  const handleRepairDuplicateEvents = async (company) => {
+    if (!company || repairLoading) return
+    setRepairLoading(true)
+    try {
+      const repairDuplicateEventBookings = window.api?.admin?.repairDuplicateEventBookings
+      if (typeof repairDuplicateEventBookings !== 'function') {
+        throw new Error('This Boroko Bookings window is still using the old desktop bridge. Fully quit and reopen the app, then try Repair Duplicate Events again.')
+      }
+
+      const res = await repairDuplicateEventBookings(company.lodge_id)
+      if (res?.success === false) throw new Error(res.error)
+      const repaired = Array.isArray(res?.repaired) ? res.repaired : []
+      const removed = repaired.reduce((sum, row) => sum + Number(row.removed_booking_count || 0), 0)
+      alert(removed > 0
+        ? `Repaired ${repaired.length} event group(s). Removed ${removed} duplicate booking row(s).`
+        : 'No duplicate event booking groups found for this company.'
+      )
+      onReload?.()
+      if (selected?.lodge_id === company.lodge_id) openDetail(company)
+    } catch (err) {
+      console.error(err)
+      alert(`Repair failed: ${err.message || 'Unknown error'}`)
+    } finally {
+      setRepairLoading(false)
     }
   }
 
@@ -425,13 +468,21 @@ function Companies({ companies, licenses, loading, onReload }) {
       {/* Table */}
       <div className={`flex-1 min-w-0 bg-gray-800 rounded-xl overflow-hidden ${selected ? 'hidden md:block' : ''}`}>
         <div className="flex items-center justify-between px-4 py-3 border-b border-gray-700">
-          <p className="text-xs text-gray-400">{visibleCompanies.length} {showDisabled ? 'total' : 'active'} {visibleCompanies.length === 1 ? 'company' : 'companies'}</p>
-          <button
-            onClick={() => setShowDisabled(v => !v)}
-            className={`text-xs px-3 py-1.5 rounded-lg transition-colors ${showDisabled ? 'bg-red-900/40 text-red-400 hover:bg-red-900/60' : 'text-gray-400 hover:text-white hover:bg-gray-700'}`}
-          >
-            {showDisabled ? 'Hide Disabled' : 'Show Disabled'}
-          </button>
+          <div className="flex gap-1 bg-gray-900 rounded-lg p-1">
+            <button
+              onClick={() => setShowDisabled(false)}
+              className={`text-xs px-3 py-1.5 rounded-md transition-colors ${!showDisabled ? 'bg-gray-700 text-white font-medium' : 'text-gray-400 hover:text-white'}`}
+            >
+              Active ({companies.filter(c => !c.deleted).length})
+            </button>
+            <button
+              onClick={() => setShowDisabled(true)}
+              className={`text-xs px-3 py-1.5 rounded-md transition-colors ${showDisabled ? 'bg-red-900/40 text-red-400 font-medium' : 'text-gray-400 hover:text-white'}`}
+            >
+              Archived ({companies.filter(c => c.deleted).length})
+            </button>
+          </div>
+          <p className="text-[10px] text-gray-500 uppercase tracking-wider">{showDisabled ? 'Archived Companies' : 'Operational Lodges'}</p>
         </div>
         {visibleCompanies.length === 0 && !loading ? (
           <div className="px-6 py-16 text-center text-gray-500">
@@ -465,7 +516,7 @@ function Companies({ companies, licenses, loading, onReload }) {
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-1 flex-wrap">
                       {(() => { const t = getTrialInfo(c, licenses); return <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${t.color}`}>{t.label}</span> })()}
-                      {c.deleted && <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-red-900/40 text-red-400">Disabled</span>}
+                      {c.deleted && <span className="text-[10px] px-2 py-0.5 rounded bg-red-900/40 text-red-400 font-bold uppercase tracking-tight">Archived</span>}
                     </div>
                   </td>
                   <td className="px-4 py-3 text-gray-400 text-xs">{[c.city, c.country].filter(Boolean).join(', ') || '—'}</td>
@@ -540,42 +591,72 @@ function Companies({ companies, licenses, loading, onReload }) {
           </div>
           {/* Admin actions */}
           <div className="border-t border-gray-700 pt-3 flex gap-2">
+            {!selected.deleted ? (
+              <button
+                onClick={() => { setLifecycleMode('archive'); setCompanyTarget(selected); setConfirmName('') }}
+                className="flex-1 text-xs py-2 px-3 rounded-lg bg-gray-700 hover:bg-red-600/30 text-gray-300 hover:text-red-300 transition-all"
+              >
+                Archive
+              </button>
+            ) : (
+              <button
+                onClick={() => { setLifecycleMode('restore'); setCompanyTarget(selected); setConfirmName('') }}
+                className="flex-1 text-xs py-2 px-3 rounded-lg bg-green-600/20 hover:bg-green-600 text-green-300 hover:text-white transition-all"
+              >
+                Restore
+              </button>
+            )}
             <button
-              onClick={() => { setResetTarget(selected); setNewPassword(''); setShowResetPassword(false) }}
-              className="flex-1 text-xs py-2 px-3 rounded-lg bg-blue-600 hover:bg-blue-700 text-white transition-colors"
+              onClick={() => { setLifecycleMode('delete'); setCompanyTarget(selected); setConfirmName('') }}
+              className="flex-1 text-xs py-2 px-3 rounded-lg bg-red-600/20 hover:bg-red-600 text-red-300 hover:text-white transition-all"
             >
-              Reset Admin Password
-            </button>
-            <button
-              onClick={() => openPwaManager(selected)}
-              className="flex-1 text-xs py-2 px-3 rounded-lg bg-purple-600 hover:bg-purple-700 text-white transition-colors"
-            >
-              Manage Manager PWA
-            </button>
-            <button
-              onClick={() => { setCompanyTarget(selected); setConfirmName('') }}
-              className="flex-1 text-xs py-2 px-3 rounded-lg bg-red-600 hover:bg-red-700 text-white transition-colors"
-            >
-              Delete Company
+              Delete
             </button>
           </div>
+          <button
+            onClick={() => handleRepairDuplicateEvents(selected)}
+            disabled={repairLoading}
+            className="w-full text-xs py-2 px-3 rounded-lg bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white transition-all disabled:opacity-50"
+          >
+            {repairLoading ? 'Repairing Events...' : 'Repair Duplicate Events'}
+          </button>
         </div>
       )}
 
-      {/* Delete company modal */}
+      {/* Lifecycle (Archive/Restore/Delete) Modal */}
       {companyTarget && (
-        <Modal title="Delete Company" onClose={() => { setCompanyTarget(null); setConfirmName('') }}>
+        <Modal 
+          title={
+            lifecycleMode === 'archive' ? 'Archive Company' :
+            lifecycleMode === 'restore' ? 'Restore Company' :
+            'Permanently Delete Company'
+          }
+          onClose={() => { setCompanyTarget(null); setConfirmName('') }}
+        >
           <div className="space-y-4">
-            <div className="bg-red-900/40 text-red-300 p-3 rounded-lg text-sm">
-              This will disable this company from accessing the system.
-            </div>
+            {lifecycleMode === 'archive' && (
+              <div className="bg-amber-900/40 text-amber-300 p-3 rounded-lg text-sm">
+                <b>Archiving</b> will disable system access for this company. It will move to the Archived folder and can be restored later.
+              </div>
+            )}
+            {lifecycleMode === 'restore' && (
+              <div className="bg-green-900/40 text-green-300 p-3 rounded-lg text-sm">
+                <b>Restoring</b> will re-enable all system access for this company immediately.
+              </div>
+            )}
+            {lifecycleMode === 'delete' && (
+              <div className="bg-red-950/70 border border-red-800 text-red-200 p-3 rounded-lg text-sm space-y-2">
+                <p><b>Permanent deletion cannot be undone.</b></p>
+                <p>This deletes this company from Supabase and removes the matching local profile/cache from this computer.</p>
+              </div>
+            )}
             <p className="text-sm text-gray-300">
               Type <b className="text-white">{companyTarget.lodge_name}</b> to confirm
             </p>
             <input
               value={confirmName}
               onChange={(e) => setConfirmName(e.target.value)}
-              className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
+              className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
               placeholder="Type company name"
               autoFocus
             />
@@ -587,11 +668,18 @@ function Companies({ companies, licenses, loading, onReload }) {
                 Cancel
               </button>
               <button
-                onClick={confirmDeleteCompany}
-                disabled={confirmName.trim() !== companyTarget.lodge_name || deletingCompany}
-                className="flex-1 py-2 px-4 rounded-lg text-sm font-medium text-white bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                onClick={handleLifecycleAction}
+                disabled={confirmName.trim() !== companyTarget.lodge_name || lifecycleLoading}
+                className={`flex-1 py-2 px-4 rounded-lg text-sm font-medium text-white transition-colors disabled:opacity-50 ${
+                  lifecycleMode === 'archive' ? 'bg-amber-600 hover:bg-amber-700' :
+                  lifecycleMode === 'restore' ? 'bg-green-600 hover:bg-green-700' :
+                  'bg-red-700 hover:bg-red-800'
+                }`}
               >
-                {deletingCompany ? 'Deleting...' : 'Delete Company'}
+                {lifecycleLoading ? 'Processing...' : 
+                 lifecycleMode === 'archive' ? 'Archive Company' : 
+                 lifecycleMode === 'restore' ? 'Restore Company' :
+                 'Delete Permanently'}
               </button>
             </div>
           </div>
@@ -798,17 +886,17 @@ const INVOICE_CURRENCIES = ['USD', 'BWP', 'ZAR', 'EUR', 'GBP', 'N$', 'ZK']
 function LicenseBilling({ licenses, companies, onRefresh }) {
   const [showForm, setShowForm] = useState(false)
   const [form, setForm] = useState({ lodge_id: '', lodge_name: '', business_type: 'lodge', expires_at: '', notes: '', subscription_plan: DEFAULT_PLAN })
+  const today = new Date().toISOString().split('T')[0]
   const [selectedCompany, setSelectedCompany] = useState('')
   const [selectedPeriod, setSelectedPeriod] = useState(null) // '3d'|'7d'|'paid'
+  const [duration, setDuration] = useState('') // 'monthly'|'quarterly'|'half_year'|'yearly'
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
-  const [invoiceForm, setInvoiceForm] = useState({ package_name: DEFAULT_PLAN, amount: '', currency: 'BWP', paid_date: new Date().toISOString().split('T')[0], description: '' })
+  const [invoiceForm, setInvoiceForm] = useState({ package_name: DEFAULT_PLAN, amount: '', currency: 'BWP', paid_date: today, description: '', billing_cycle: 'monthly' })
   const [billingModal, setBillingModal] = useState(null) // license to edit billing
   const [billingForm, setBillingForm] = useState({})
   const [emailStatus, setEmailStatus] = useState({}) // { [licenseId]: 'sending'|'sent'|'error' }
   const requiresInvoice = selectedPeriod && selectedPeriod !== '3d' && selectedPeriod !== '7d'
-
-  const today = new Date().toISOString().split('T')[0]
 
   const sendEmail = async (lic) => {
     const company = companies.find(c => c.lodge_id === lic.lodge_id)
@@ -848,6 +936,7 @@ function LicenseBilling({ licenses, companies, onRefresh }) {
         ...form,
         lodge_id: companyLodgeId || null,
         subscription_plan: selectedPlan,
+        billing_cycle: invoiceForm.billing_cycle || 'monthly',
         expires_at: form.expires_at || null,
         notes: form.notes || null,
         payment_status: requiresInvoice ? 'active' : 'free',
@@ -872,12 +961,13 @@ function LicenseBilling({ licenses, companies, onRefresh }) {
     }).catch(e => ({ error: e.message }))
     const issuedLicense = r?.license_key ? r : r?.license || null
     const issuedInvoice = r?.invoice || null
-    if (issuedLicense?.license_key) {
+    if (issuedLicense?.id || issuedLicense?.license_key) {
       setShowForm(false)
       setForm({ lodge_id: '', lodge_name: '', business_type: 'lodge', expires_at: '', notes: '', subscription_plan: DEFAULT_PLAN })
       setSelectedCompany('')
       setSelectedPeriod(null)
-      setInvoiceForm({ package_name: DEFAULT_PLAN, amount: '', currency: 'BWP', paid_date: new Date().toISOString().split('T')[0], description: '' })
+      setDuration('')
+      setInvoiceForm({ package_name: DEFAULT_PLAN, amount: '', currency: 'BWP', paid_date: today, description: '' })
       onRefresh()
       // Auto-send email if company has a registered email
       const company = companies.find(c => c.lodge_id === companyLodgeId)
@@ -887,6 +977,7 @@ function LicenseBilling({ licenses, companies, onRefresh }) {
           licenseKey: issuedLicense.license_key,
           lodgeName: form.lodge_name,
           plan: selectedPlan,
+          billingCycle: invoiceForm.billing_cycle || 'monthly',
           expiresAt: form.expires_at || null,
           lodgeId: companyLodgeId,
           notes: form.notes || null,
@@ -896,7 +987,7 @@ function LicenseBilling({ licenses, companies, onRefresh }) {
           if (!res.success) console.warn('[Email] License email failed:', res.error)
         })
       }
-    } else setError(r?.error || 'Failed')
+    } else setError(r?.error || 'Failed to issue license. Please try again.')
     setSaving(false)
   }
 
@@ -985,62 +1076,65 @@ function LicenseBilling({ licenses, companies, onRefresh }) {
                 </div>
               </Field>
               <Field label="License Period">
-                <div className="space-y-2">
-                  <div className="flex flex-wrap gap-1.5">
-                    {[
-                      { label: '3 Days',   days: 3,  periodId: '3d' },
-                      { label: '7 Days',   days: 7,  periodId: '7d' },
-                      { label: '1 Month',  months: 1, periodId: 'paid' },
-                      { label: '3 Months', months: 3, periodId: 'paid' },
-                      { label: '6 Months', months: 6, periodId: 'paid' },
-                      { label: '1 Year',   years: 1,  periodId: 'paid' },
-                      { label: '2 Years',  years: 2,  periodId: 'paid' },
-                    ].map(({ label, days, months, years, periodId }) => {
-                      const getDate = () => {
-                        const d = new Date()
-                        if (days)   d.setDate(d.getDate() + days)
-                        if (months) d.setMonth(d.getMonth() + months)
-                        if (years)  d.setFullYear(d.getFullYear() + years)
-                        return d.toISOString().split('T')[0]
-                      }
-                      const val = getDate()
-                      const active = form.expires_at === val
-                      return (
-                        <button
-                          key={label}
-                          type="button"
-                          onClick={() => {
-                            const newVal = active ? '' : val
-                            setForm({ ...form, expires_at: newVal })
-                            setSelectedPeriod(newVal ? periodId : null)
-                          }}
-                          className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
-                            active
-                              ? 'bg-purple-600 border-purple-500 text-white'
-                              : 'bg-gray-700 border-gray-600 text-gray-300 hover:border-purple-500 hover:text-purple-300'
-                          }`}
-                        >
-                          {label}
-                        </button>
-                      )
-                    })}
+                <div className="space-y-3">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[10px] text-gray-500 uppercase tracking-wider mb-1">Duration</label>
+                      <select
+                        className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+                        value={duration}
+                        onChange={e => {
+                          const dur = e.target.value
+                          setDuration(dur)
+                          if (!dur) {
+                            setForm({ ...form, expires_at: '' })
+                            setSelectedPeriod(null)
+                            return
+                          }
+                          const d = new Date()
+                          if (dur === '3d') d.setDate(d.getDate() + 3)
+                          else if (dur === '7d') d.setDate(d.getDate() + 7)
+                          else if (dur === 'monthly') d.setMonth(d.getMonth() + 1)
+                          else if (dur === 'quarterly') d.setMonth(d.getMonth() + 3)
+                          else if (dur === 'half_year') d.setMonth(d.getMonth() + 6)
+                          else if (dur === 'yearly') d.setFullYear(d.getFullYear() + 1)
+                          
+                          const val = d.toISOString().split('T')[0]
+                          setForm({ ...form, expires_at: val })
+                          setSelectedPeriod(dur === '3d' || dur === '7d' ? dur : 'paid')
+                        }}
+                      >
+                        <option value="">— Select Duration —</option>
+                        <option value="3d">Trial: 3 Days</option>
+                        <option value="7d">Trial: 7 Days</option>
+                        <option value="monthly">1 Month (Monthly)</option>
+                        <option value="quarterly">3 Months (Quarterly)</option>
+                        <option value="half_year">6 Months (Half-Year)</option>
+                        <option value="yearly">1 Year (Yearly)</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-[10px] text-gray-500 uppercase tracking-wider mb-1">Custom Expiry</label>
+                      <input
+                        type="date"
+                        className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+                        value={form.expires_at}
+                        onChange={e => {
+                          setForm({ ...form, expires_at: e.target.value })
+                          setSelectedPeriod(e.target.value ? 'paid' : null)
+                          setDuration('')
+                        }}
+                      />
+                    </div>
                   </div>
-                  <input
-                    type="date"
-                    className={`${inp} text-xs`}
-                    value={form.expires_at}
-                    onChange={e => {
-                      setForm({ ...form, expires_at: e.target.value })
-                      setSelectedPeriod(e.target.value ? 'paid' : null)
-                    }}
-                    placeholder="Or pick a custom date"
-                  />
                   {form.expires_at && (
-                    <p className="text-xs text-gray-500">
-                      Expires: {new Date(form.expires_at + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}
-                      {' · '}
-                      <button type="button" onClick={() => { setForm({ ...form, expires_at: '' }); setSelectedPeriod(null) }} className="text-red-400 hover:text-red-300">clear</button>
-                    </p>
+                    <div className="bg-gray-900/40 rounded-lg p-2 flex items-center justify-between border border-gray-700">
+                      <p className="text-xs text-gray-300">
+                        <span className="text-gray-500 uppercase text-[10px] mr-2">Expires</span>
+                        {new Date(form.expires_at + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}
+                      </p>
+                      <button type="button" onClick={() => { setForm({ ...form, expires_at: '' }); setSelectedPeriod(null); setDuration('') }} className="text-red-400 hover:text-red-300 text-xs font-medium">Clear</button>
+                    </div>
                   )}
                 </div>
               </Field>
@@ -1081,9 +1175,19 @@ function LicenseBilling({ licenses, companies, onRefresh }) {
                       </select>
                     </Field>
                   </div>
-                  <Field label="Description (optional)">
-                    <input className={inp} placeholder="e.g. Annual subscription payment" value={invoiceForm.description} onChange={e => setInvoiceForm({ ...invoiceForm, description: e.target.value })} />
-                  </Field>
+                  <div className="grid grid-cols-2 gap-3">
+                    <Field label="Billing Cycle">
+                      <select className={inp} value={invoiceForm.billing_cycle} onChange={e => setInvoiceForm({ ...invoiceForm, billing_cycle: e.target.value })}>
+                        <option value="monthly">Monthly</option>
+                        <option value="quarterly">Quarterly</option>
+                        <option value="half_year">Half-Year</option>
+                        <option value="yearly">Yearly</option>
+                      </select>
+                    </Field>
+                    <Field label="Description (optional)">
+                      <input className={inp} placeholder="e.g. Annual subscription payment" value={invoiceForm.description} onChange={e => setInvoiceForm({ ...invoiceForm, description: e.target.value })} />
+                    </Field>
+                  </div>
                 </div>
               )}
             </div>
@@ -1947,6 +2051,114 @@ function EmailSettings() {
 // ════════════════════════════════════════════════════════════════════
 // SECTION: Bookkeeping
 // ════════════════════════════════════════════════════════════════════
+function InvoicePreview({ invoice, onClose }) {
+  if (!invoice) return null
+  
+  return (
+    <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 overflow-y-auto">
+      <div className="bg-white text-gray-900 rounded-2xl w-full max-w-2xl shadow-2xl overflow-hidden print:shadow-none print:rounded-none print:w-full print:max-w-none">
+        {/* Header Controls */}
+        <div className="bg-gray-100 px-6 py-3 flex justify-between items-center print:hidden">
+          <div className="flex items-center gap-3">
+            <button onClick={() => window.print()} className="flex items-center gap-2 bg-purple-600 text-white px-4 py-1.5 rounded-lg text-sm font-semibold hover:bg-purple-700 transition-colors">
+              <Printer size={16} /> Print / Save PDF
+            </button>
+            <p className="text-xs text-gray-500">Press Esc or click X to close</p>
+          </div>
+          <button onClick={onClose} className="p-1.5 hover:bg-gray-200 rounded-full transition-colors text-gray-600">
+            <X size={20} />
+          </button>
+        </div>
+
+        {/* Invoice Body */}
+        <div className="p-8 md:p-12 space-y-8 print:p-0 print:space-y-6">
+          <div className="flex justify-between items-start">
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <div className="w-10 h-10 bg-purple-600 rounded-xl flex items-center justify-center text-white font-black text-xl">B</div>
+                <h1 className="text-2xl font-black tracking-tighter text-purple-900">BOROKO BOOKINGS</h1>
+              </div>
+              <p className="text-xs text-gray-500 font-medium">Software License & Support Services</p>
+            </div>
+            <div className="text-right">
+              <h2 className="text-3xl font-light text-gray-400 uppercase tracking-widest mb-1">INVOICE</h2>
+              <p className="text-sm font-mono font-bold text-gray-800">#{invoice.invoice_number}</p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-8 text-sm">
+            <div>
+              <p className="text-[10px] uppercase tracking-wider text-gray-400 font-bold mb-2">Billed To</p>
+              <p className="font-bold text-gray-900 text-base">{invoice.lodge_name || invoice.lodge_id}</p>
+              <p className="text-gray-600 mt-1 whitespace-pre-wrap">{invoice.description?.split('\n')[0]}</p>
+            </div>
+            <div className="text-right">
+              <p className="text-[10px] uppercase tracking-wider text-gray-400 font-bold mb-2">Invoice Details</p>
+              <div className="space-y-1">
+                <div className="flex justify-between text-xs"><span className="text-gray-400">Date Issued:</span> <span className="font-semibold">{new Date(invoice.issued_date).toLocaleDateString('en-GB')}</span></div>
+                <div className="flex justify-between text-xs"><span className="text-gray-400">Due Date:</span> <span className="font-semibold">{invoice.due_date ? new Date(invoice.due_date).toLocaleDateString('en-GB') : 'Upon Receipt'}</span></div>
+                <div className="flex justify-between text-xs"><span className="text-gray-400">Status:</span> <span className={`font-bold uppercase tracking-tighter ${invoice.status === 'paid' ? 'text-green-600' : 'text-amber-600'}`}>{invoice.status}</span></div>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-10">
+            <table className="w-full border-collapse">
+              <thead>
+                <tr className="border-b-2 border-gray-900 text-left text-[10px] uppercase tracking-widest text-gray-500">
+                  <th className="py-3 font-bold">Item Description</th>
+                  <th className="py-3 text-right font-bold">Qty</th>
+                  <th className="py-3 text-right font-bold">Price</th>
+                  <th className="py-3 text-right font-bold">Total</th>
+                </tr>
+              </thead>
+              <tbody className="text-sm">
+                <tr className="border-b border-gray-100">
+                  <td className="py-5">
+                    <p className="font-bold text-gray-900">{normalizePlanName(invoice.package_name)} Subscription</p>
+                    <p className="text-xs text-gray-500 mt-1">Boroko Bookings Cloud License Fee</p>
+                  </td>
+                  <td className="py-5 text-right">1</td>
+                  <td className="py-5 text-right">{invoice.currency} {Number(invoice.amount).toFixed(2)}</td>
+                  <td className="py-5 text-right font-bold">{invoice.currency} {Number(invoice.amount).toFixed(2)}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div className="flex justify-end pt-6">
+            <div className="w-64 space-y-3">
+              <div className="flex justify-between text-sm">
+                <span className="text-gray-500">Subtotal:</span>
+                <span className="font-semibold text-gray-900">{invoice.currency} {Number(invoice.amount).toFixed(2)}</span>
+              </div>
+              <div className="flex justify-between text-sm">
+                <span className="text-gray-500">Tax (0%):</span>
+                <span className="font-semibold text-gray-900">{invoice.currency} 0.00</span>
+              </div>
+              <div className="flex justify-between pt-3 border-t-2 border-gray-900">
+                <span className="font-black uppercase tracking-tighter text-gray-900">Total Amount:</span>
+                <span className="font-black text-xl text-purple-900">{invoice.currency} {Number(invoice.amount).toFixed(2)}</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="pt-12 border-t border-gray-100">
+            <p className="text-[10px] uppercase tracking-wider text-gray-400 font-bold mb-2">Notes & Instructions</p>
+            <p className="text-xs text-gray-600 leading-relaxed italic">
+              {invoice.notes || "Thank you for your business. Please include the invoice number in your bank transfer reference. Access to software features is maintained subject to active subscription status."}
+            </p>
+          </div>
+          
+          <div className="pt-8 text-center text-[10px] text-gray-300 print:text-gray-400">
+            &copy; {new Date().getFullYear()} Boroko Bookings. All rights reserved.
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 const STATUS_COLORS = {
   paid:      'bg-green-800 text-green-200',
   draft:     'bg-gray-700 text-gray-300',
@@ -1973,15 +2185,31 @@ function Bookkeeping({ companies }) {
   })
   const [createSaving, setCreateSaving] = useState(false)
   const [createError, setCreateError] = useState('')
+  
+  // Expenses state
+  const [expenses, setExpenses] = useState([])
+  const [showCreateExpense, setShowCreateExpense] = useState(false)
+  const [editExpense, setEditExpense] = useState(null)
+  const [expenseForm, setExpenseForm] = useState({
+    date: new Date().toISOString().split('T')[0],
+    category: 'Infrastructure',
+    amount: '',
+    currency: 'BWP',
+    description: '',
+    vendor: ''
+  })
+  const [viewingInvoice, setViewingInvoice] = useState(null)
 
   const loadData = useCallback(async () => {
     setLoading(true)
-    const [invs, sum] = await Promise.all([
+    const [invs, sum, exps] = await Promise.all([
       window.api.admin.getInvoices({}).catch(() => []),
-      window.api.admin.getInvoiceSummary().catch(() => null)
+      window.api.admin.getInvoiceSummary().catch(() => null),
+      window.api.admin.getExpenses().catch(() => [])
     ])
     setInvoices(invs)
     setSummary(sum)
+    setExpenses(exps)
     setLoading(false)
   }, [])
 
@@ -2044,11 +2272,30 @@ function Bookkeeping({ companies }) {
   const thisMonthTotal = summary?.byMonth?.find(m => m.month === thisMonth)?.amount || 0
   const pendingCount = invoices.filter(i => ['draft', 'sent', 'overdue'].includes(i.status)).length
 
+  const handleCreateExpense = async (e) => {
+    e.preventDefault()
+    if (!expenseForm.amount || Number(expenseForm.amount) <= 0) return
+    await window.api.admin.createExpense(expenseForm)
+    setExpenseForm({ date: new Date().toISOString().split('T')[0], category: 'Infrastructure', amount: '', currency: 'BWP', description: '', vendor: '' })
+    setShowCreateExpense(false)
+    loadData()
+  }
+
+  const handleDeleteExpense = async (id) => {
+    if (!confirm('Delete this expense?')) return
+    await window.api.admin.deleteExpense(id)
+    loadData()
+  }
+
   return (
     <div className="space-y-4">
       {/* Sub-tab bar */}
-      <div className="flex gap-1 bg-gray-800 rounded-xl p-1">
-        {[{ id: 'invoices', label: 'Invoices', icon: FileText }, { id: 'reports', label: 'Reports', icon: BarChart3 }].map(t => (
+      <div className="flex gap-1 bg-gray-800 rounded-xl p-1 print:hidden">
+        {[
+          { id: 'invoices', label: 'Invoices', icon: FileText },
+          { id: 'expenses', label: 'Expenses', icon: Wallet },
+          { id: 'reports', label: 'Reports', icon: BarChart3 }
+        ].map(t => (
           <button key={t.id} type="button" onClick={() => setSubTab(t.id)}
             className={`flex-1 flex items-center justify-center gap-2 py-2 px-4 rounded-lg text-sm font-medium transition-all ${subTab === t.id ? 'bg-purple-600 text-white' : 'text-gray-400 hover:text-white'}`}>
             <t.icon size={14} /> {t.label}
@@ -2171,6 +2418,10 @@ function Bookkeeping({ companies }) {
                       <td className="px-4 py-3 text-gray-400 text-xs">{fmt(inv.issued_date)}</td>
                       <td className="px-4 py-3">
                         <div className="flex items-center justify-center gap-1">
+                          <button title="View / Print" onClick={() => setViewingInvoice(inv)}
+                            className="p-1.5 rounded hover:bg-gray-700 text-gray-400 hover:text-white transition-colors">
+                            <Eye size={14} />
+                          </button>
                           <button title="Send email" onClick={() => handleSendEmail(inv)} disabled={sendingEmail[inv.id]}
                             className="p-1.5 rounded hover:bg-gray-700 text-gray-400 hover:text-blue-400 transition-colors disabled:opacity-50">
                             {emailSent[inv.id] ? <CheckCircle2 size={14} className="text-green-400" /> : sendingEmail[inv.id] ? <RefreshCw size={14} className="animate-spin" /> : <Mail size={14} />}
@@ -2190,6 +2441,87 @@ function Bookkeeping({ companies }) {
                 </tbody>
               </table>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* ── EXPENSES SUB-TAB ── */}
+      {subTab === 'expenses' && (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+             <div className="flex items-center gap-2">
+                <Wallet className="text-purple-400" size={18} />
+                <h2 className="text-white font-semibold">Operational Expenses</h2>
+             </div>
+             <button onClick={() => setShowCreateExpense(v => !v)} className={`flex items-center gap-1.5 ${btn()} px-3 py-2 rounded-lg text-xs font-medium transition-colors whitespace-nowrap`}>
+              <Plus size={13} /> Add Expense
+            </button>
+          </div>
+
+          {showCreateExpense && (
+            <div className="bg-gray-800 border border-gray-700 rounded-xl p-4">
+               <h3 className="text-sm font-semibold text-white mb-3 flex items-center gap-2">New Operational Expense</h3>
+               <form onSubmit={handleCreateExpense} className="space-y-3">
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                     <Field label="Date">
+                        <input type="date" className={inp} value={expenseForm.date} onChange={e => setExpenseForm({...expenseForm, date: e.target.value})} required />
+                     </Field>
+                     <Field label="Category">
+                        <select className={inp} value={expenseForm.category} onChange={e => setExpenseForm({...expenseForm, category: e.target.value})}>
+                           {['Infrastructure', 'Development', 'Marketing', 'Legal', 'Payroll', 'Other'].map(c => <option key={c} value={c}>{c}</option>)}
+                        </select>
+                     </Field>
+                     <Field label="Amount">
+                        <input type="number" step="0.01" className={inp} value={expenseForm.amount} onChange={e => setExpenseForm({...expenseForm, amount: e.target.value})} required placeholder="0.00" />
+                     </Field>
+                     <Field label="Vendor">
+                        <input className={inp} value={expenseForm.vendor} onChange={e => setExpenseForm({...expenseForm, vendor: e.target.value})} placeholder="e.g. AWS, GitHub" />
+                     </Field>
+                  </div>
+                  <Field label="Description">
+                     <input className={inp} value={expenseForm.description} onChange={e => setExpenseForm({...expenseForm, description: e.target.value})} placeholder="Purpose of expense" required />
+                  </Field>
+                  <div className="flex gap-2">
+                     <button type="button" onClick={() => setShowCreateExpense(false)} className={`flex-1 ${btn('ghost')} py-2 rounded-lg text-sm`}>Cancel</button>
+                     <button type="submit" className={`flex-1 ${btn()} py-2 rounded-lg text-sm`}>Save Expense</button>
+                  </div>
+               </form>
+            </div>
+          )}
+
+          <div className="bg-gray-800 rounded-xl overflow-hidden">
+             {expenses.length === 0 ? (
+               <div className="p-8 text-center text-gray-500 text-sm">No expenses recorded yet.</div>
+             ) : (
+               <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-xs text-gray-500 border-b border-gray-700">
+                      <th className="px-4 py-3 text-left font-medium">Date</th>
+                      <th className="px-4 py-3 text-left font-medium">Category</th>
+                      <th className="px-4 py-3 text-left font-medium">Vendor</th>
+                      <th className="px-4 py-3 text-left font-medium">Description</th>
+                      <th className="px-4 py-3 text-right font-medium">Amount</th>
+                      <th className="px-4 py-3 text-center font-medium">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {expenses.map(exp => (
+                      <tr key={exp.id} className="border-t border-gray-700 hover:bg-gray-750">
+                        <td className="px-4 py-3 text-gray-400 text-xs">{fmt(exp.date)}</td>
+                        <td className="px-4 py-3 text-purple-300 text-xs">{exp.category}</td>
+                        <td className="px-4 py-3 text-gray-200 text-xs">{exp.vendor}</td>
+                        <td className="px-4 py-3 text-gray-300 text-xs">{exp.description}</td>
+                        <td className="px-4 py-3 text-right font-semibold text-white text-xs">{exp.currency} {Number(exp.amount).toFixed(2)}</td>
+                        <td className="px-4 py-3 text-center">
+                           <button onClick={() => handleDeleteExpense(exp.id)} className="p-1.5 rounded hover:bg-gray-700 text-gray-400 hover:text-red-400 transition-colors">
+                              <Trash2 size={14} />
+                           </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+               </table>
+             )}
           </div>
         </div>
       )}
@@ -2222,7 +2554,7 @@ function Bookkeeping({ companies }) {
           {/* Revenue by Plan */}
           <div className="bg-gray-800 rounded-xl overflow-hidden print:border print:border-gray-300">
             <div className="px-4 py-3 border-b border-gray-700 print:border-gray-300">
-              <p className="text-sm font-semibold text-white">Revenue by Plan</p>
+              <p className="text-sm font-semibold text-white print:text-black">Revenue by Plan</p>
             </div>
             <table className="w-full text-sm">
               <thead>
@@ -2240,16 +2572,16 @@ function Bookkeeping({ companies }) {
                   const planCount = invoices.filter(i => normalizePlanName(i.package_name) === plan && i.status === 'paid').length
                   return (
                     <tr key={plan} className="border-t border-gray-700 print:border-gray-300">
-                      <td className="px-4 py-3 text-gray-200 font-medium">{plan}</td>
-                      <td className="px-4 py-3 text-right text-white font-semibold">{summary?.currency || 'USD'} {Number(planTotal).toFixed(2)}</td>
-                      <td className="px-4 py-3 text-right text-gray-400">{planCount}</td>
+                      <td className="px-4 py-3 text-gray-200 font-medium print:text-black">{plan}</td>
+                      <td className="px-4 py-3 text-right text-white font-semibold print:text-black">{summary?.currency || 'USD'} {Number(planTotal).toFixed(2)}</td>
+                      <td className="px-4 py-3 text-right text-gray-400 print:text-gray-600">{planCount}</td>
                     </tr>
                   )
                 })}
                 <tr className="border-t-2 border-gray-600 print:border-gray-400 bg-gray-700/50 print:bg-gray-50">
-                  <td className="px-4 py-3 text-white font-bold">Total</td>
-                  <td className="px-4 py-3 text-right text-green-400 font-bold">{summary?.currency || 'USD'} {Number(summary?.total || 0).toFixed(2)}</td>
-                  <td className="px-4 py-3 text-right text-gray-400 font-semibold">{invoices.filter(i => i.status === 'paid').length}</td>
+                  <td className="px-4 py-3 text-white font-bold print:text-black">Total</td>
+                  <td className="px-4 py-3 text-right text-green-400 font-bold print:text-green-700">{summary?.currency || 'USD'} {Number(summary?.total || 0).toFixed(2)}</td>
+                  <td className="px-4 py-3 text-right text-gray-400 font-semibold print:text-gray-700">{invoices.filter(i => i.status === 'paid').length}</td>
                 </tr>
               </tbody>
             </table>
@@ -2259,7 +2591,7 @@ function Bookkeeping({ companies }) {
           {summary?.byMonth?.length > 0 && (
             <div className="bg-gray-800 rounded-xl overflow-hidden print:border print:border-gray-300">
               <div className="px-4 py-3 border-b border-gray-700 print:border-gray-300">
-                <p className="text-sm font-semibold text-white">Monthly Revenue</p>
+                <p className="text-sm font-semibold text-white print:text-black">Monthly Revenue</p>
               </div>
               <table className="w-full text-sm">
                 <thead>
@@ -2271,8 +2603,8 @@ function Bookkeeping({ companies }) {
                 <tbody>
                   {[...summary.byMonth].reverse().map(({ month, amount }) => (
                     <tr key={month} className="border-t border-gray-700 print:border-gray-300">
-                      <td className="px-4 py-3 text-gray-200">{new Date(month + '-01').toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })}</td>
-                      <td className="px-4 py-3 text-right text-white font-semibold">{summary.currency} {Number(amount).toFixed(2)}</td>
+                      <td className="px-4 py-3 text-gray-200 print:text-black">{new Date(month + '-01').toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })}</td>
+                      <td className="px-4 py-3 text-right text-white font-semibold print:text-black">{summary.currency} {Number(amount).toFixed(2)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -2333,6 +2665,7 @@ function Bookkeeping({ companies }) {
           </div>
         </div>
       )}
+      <InvoicePreview invoice={viewingInvoice} onClose={() => setViewingInvoice(null)} />
     </div>
   )
 }
@@ -2700,9 +3033,9 @@ export default function AdminCentral() {
   const upgradeCount = tickets.filter(t => t.category === 'Upgrade Request' && (t.status === 'open' || t.status === 'in_progress')).length
 
   return (
-    <div className="min-h-screen bg-gray-950 text-white flex flex-col">
+    <div className="min-h-screen bg-gray-950 text-white flex flex-col print:bg-white print:text-black print:min-h-0">
       {/* Top bar */}
-      <div className="bg-gray-900 border-b border-gray-800 px-6 py-3 flex items-center justify-between shrink-0">
+      <div className="bg-gray-900 border-b border-gray-800 px-6 py-3 flex items-center justify-between shrink-0 print:hidden">
         <div className="flex items-center gap-3">
           <div className="w-8 h-8 rounded-lg bg-purple-600 flex items-center justify-center">
             <Shield size={16} />
@@ -2722,9 +3055,9 @@ export default function AdminCentral() {
         </div>
       </div>
 
-      <div className="flex flex-1 min-h-0">
+      <div className="flex flex-1 min-h-0 print:block">
         {/* Sidebar */}
-        <div className="w-52 shrink-0 bg-gray-900 border-r border-gray-800 flex flex-col py-4 gap-1 px-2">
+        <div className="w-52 shrink-0 bg-gray-900 border-r border-gray-800 flex flex-col py-4 gap-1 px-2 print:hidden">
           {NAV_ITEMS.map(({ id, label, icon: Icon }) => {
             // Badge logic: support ticket count (orange) + upgrade request count (purple)
             const ticketBadge  = id === 'tickets' && openTickets > 0 ? openTickets : null
@@ -2753,7 +3086,7 @@ export default function AdminCentral() {
         </div>
 
         {/* Main content */}
-        <div className="flex-1 min-w-0 p-6 overflow-y-auto">
+        <div className="flex-1 min-w-0 p-6 overflow-y-auto print:p-0 print:overflow-visible print:block">
           {section === 'dashboard'     && <Dashboard companies={companies} licenses={licenses} tickets={tickets} activityLogs={activityLogs} />}
           {section === 'companies'     && <Companies companies={companies} licenses={licenses} loading={loading} onReload={loadAll} />}
           {section === 'licensing'     && <LicensingWorkbench companies={companies} licenses={licenses} tickets={tickets} onRefresh={loadAll} />}

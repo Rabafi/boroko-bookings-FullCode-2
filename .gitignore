@@ -3,8 +3,12 @@ dist
 out
 .env
 .env.local
+.env.release
 *.log
 .DS_Store
 
 # Local Netlify folder
 .netlify
+
+.vercel
+.env*.local

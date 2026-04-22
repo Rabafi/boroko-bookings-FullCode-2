@@ -1,7 +1,7 @@
 import { createContext, useContext, useState, useEffect } from 'react'
 import { authenticateManager, logoutManagerSession, validateManagerSession } from '../lib/api'
 import { clearSession, getSession, setSession } from '../lib/runtime'
-import { clearSupabaseSessionToken, setSupabaseSessionToken } from '../lib/supabase'
+import { clearSupabaseSessionToken, setSupabaseSessionToken, signOutSupabaseAuth } from '../lib/supabase'
 
 const AuthContext = createContext(null)
 export const useAuth = () => useContext(AuthContext)
@@ -10,6 +10,10 @@ function isSessionExpired(expiresAt) {
   if (!expiresAt) return false
   const timestamp = new Date(expiresAt).getTime()
   return Number.isFinite(timestamp) && timestamp <= Date.now()
+}
+
+function isOffline() {
+  return typeof navigator !== 'undefined' && navigator.onLine === false
 }
 
 export function AuthProvider({ children }) {
@@ -34,6 +38,9 @@ export function AuthProvider({ children }) {
       role: row.role,
       lodge_id: row.lodge_id,
       lodge_display_name: row.lodge_display_name || row.lodge_name || 'Your Lodge',
+      pwa_enabled: row.pwa_enabled === true,
+      pwa_feature_enabled: row.pwa_feature_enabled !== false,
+      plan: row.plan || row.pwa_plan || 'Starter',
       session_token: row.session_token,
       session_expires_at: row.session_expires_at || null,
       started_at: row.started_at || getSession()?.started_at || new Date().toISOString()
@@ -72,7 +79,13 @@ export function AuthProvider({ children }) {
         }
 
         setSupabaseSessionToken(saved.session_token)
-        const profile = await validateManagerSession(saved.session_token)
+        let profile = null
+        try {
+          profile = await validateManagerSession(saved.session_token)
+        } catch (error) {
+          if (!isOffline()) throw error
+          profile = saved?.trusted_device ? saved : null
+        }
         if (cancelled) return
 
         if (!profile?.pwa_enabled || isSessionExpired(profile.session_expires_at)) {
@@ -150,6 +163,7 @@ export function AuthProvider({ children }) {
     } catch {
       // Local cleanup still needs to happen.
     }
+    await signOutSupabaseAuth()
     clearAuthSession()
   }
 

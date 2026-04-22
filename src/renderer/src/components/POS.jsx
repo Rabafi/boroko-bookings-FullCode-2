@@ -1,9 +1,10 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Plus, Pencil, Trash2, ShoppingCart, X, ChevronDown, ChevronUp, Scan, Eye, EyeOff } from 'lucide-react'
+import { Plus, Pencil, Trash2, ShoppingCart, X, ChevronDown, ChevronUp, Scan, Eye, EyeOff, Keyboard, Printer } from 'lucide-react'
 import { Modal } from './shared/Modal'
+import { POSReceipt } from './shared/POSReceipt'
 import HorizontalScrollArea from './shared/HorizontalScrollArea'
 import { DESKTOP_PAYMENT_METHODS, formatPaymentMethod } from '../constants/paymentMethods'
-import { useSettings, useAccess, useAuth } from '../App'
+import { useSettings, useAccess, useAuth } from '../app-context'
 import { canAccessCapability } from '../../../shared/accessControl'
 
 const MENU_CATEGORIES = ['Food', 'Drinks', 'Other']
@@ -13,6 +14,7 @@ const BAR_PACK_TEMPLATES = [
   { size: 24, label: 'Case (24)' }
 ]
 const POS_LIVE_REFRESH_MS = 5000
+const POS_TOUCH_MODE_STORAGE_KEY = 'bb_pos_touch_mode'
 
 const formatLocalDate = (value = new Date()) => {
   const date = value instanceof Date ? value : new Date(value)
@@ -24,13 +26,50 @@ const formatLocalDate = (value = new Date()) => {
 
 const today = () => formatLocalDate()
 
-function fmt(v) {
-  return Number(v || 0).toFixed(2)
+const currency = 'P'
+const fmt = (v) => Number(v || 0).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+
+/**
+ * Sanitize raw sync error strings for POS operators.
+ * Priorities:
+ * 1. Targeted business logic rejections (e.g. out of stock)
+ * 2. Sanitize transport-level noise (e.g. fetch failed)
+ * 3. Fallback to a generic retry prompt if msg is empty
+ */
+function sanitizePosError(raw) {
+  if (!raw) return 'Operation failed to sync. Please retry from System Health.'
+  const msg = String(raw)
+
+  // ── Network / Transport Fallbacks ──────────────────────────────────────────
+  if (/fetch failed|network error|not reachable|failed to fetch/i.test(msg)) {
+    return 'Could not reach the server. Please check your connection and retry from System Health.'
+  }
+
+  // ── System / Auth Fallbacks ────────────────────────────────────────────────
+  if (/session.*expired|authentication.*required|authenticated.*required/i.test(msg)) {
+    return 'Your session has expired. Please sign out and sign in again before retrying.'
+  }
+
+  // ── Duplicate / Conflict Check ───────────────────────────────────────────
+  if (/unique.*violation|duplicate key/i.test(msg)) {
+    return 'This order may have already synced. Refresh the POS and check history.'
+  }
+
+  // ── Business Rejections (Stock) ──────────────────────────────────────────
+  // If the backend returned a specific stock error, it usually contains the item name.
+  // We clean up UUIDs but leave the descriptive text.
+  const cleaned = msg
+    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, '…')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  return cleaned.length > 160 ? `${cleaned.slice(0, 157)}…` : cleaned
 }
 
 function normalizeOrderSyncState(order) {
   if (order?._sync_state === 'failed') return 'failed'
   if (order?._sync_state === 'pending') return 'pending'
+  if (order?._sync_state === 'manual_review_required') return 'needs_attention'
   if (order?._pending_sync === true) return 'pending'
   return 'synced'
 }
@@ -78,6 +117,13 @@ export default function POS() {
   const currency = settings?.currency || 'P'
   const access = useAccess()
   const { user: currentUser } = useAuth()
+  const [touchMode, setTouchMode] = useState(() => {
+    try {
+      return window.localStorage.getItem(POS_TOUCH_MODE_STORAGE_KEY) === 'touch'
+    } catch {
+      return false
+    }
+  })
 
   // Permission flags
   const canVoid       = canAccessCapability(access, 'pos.void')
@@ -94,11 +140,13 @@ export default function POS() {
   // Menu items
   const [menuItems, setMenuItems] = useState([])
   const [menuLoading, setMenuLoading] = useState(false)
+  const [menuRefreshing, setMenuRefreshing] = useState(false)
   const [menuSearch, setMenuSearch] = useState('')
+  const [activeTerminalCategory, setActiveTerminalCategory] = useState('All')
 
   // Current order (terminal)
   const [orderItems, setOrderItems] = useState([])
-  const [customerType, setCustomerType] = useState('room') // room | walkin
+  const [customerType, setCustomerType] = useState('walkin') // walkin | room
   const [rooms, setRooms] = useState([])
   const [selectedRoom, setSelectedRoom] = useState('')
   const [walkInName, setWalkInName] = useState('')
@@ -132,6 +180,7 @@ export default function POS() {
   const [voidError, setVoidError] = useState('')
   const [voidLoading, setVoidLoading] = useState(false)
   const [showVoidPin, setShowVoidPin] = useState(false)
+  const [showReceiptOrder, setShowReceiptOrder] = useState(null)
 
   // Inventory items (for depletion linking)
   const [inventoryItems, setInventoryItems] = useState([])
@@ -146,6 +195,14 @@ export default function POS() {
   const [menuSaving, setMenuSaving] = useState(false)
   const [menuError, setMenuError] = useState('')
   const [barTemplateSavingKey, setBarTemplateSavingKey] = useState('')
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(POS_TOUCH_MODE_STORAGE_KEY, touchMode ? 'touch' : 'desktop')
+    } catch {
+      // Best-effort only.
+    }
+  }, [touchMode])
 
   // Outlets filtered to what this user is allowed to access
   // access.allowedOutletIds === null means full access (manager/admin)
@@ -230,12 +287,15 @@ export default function POS() {
   }, [inventoryItems])
 
   const loadMenu = useCallback(async () => {
-    setMenuLoading(true)
+    const hasExistingMenu = (menuItemsRef.current || []).length > 0
+    if (hasExistingMenu) setMenuRefreshing(true)
+    else setMenuLoading(true)
     try {
       const data = await window.api.pos.getMenuItems().catch(() => [])
       setMenuItems(data || [])
     } finally {
       setMenuLoading(false)
+      setMenuRefreshing(false)
     }
   }, [])
 
@@ -305,7 +365,14 @@ export default function POS() {
 
     loadSyncStatus()
     const unsubscribe = window.api.sync.onStatusChanged((status) => {
-      if (mounted) setSyncStatus(status || null)
+      if (mounted) {
+        setSyncStatus(status || null)
+        if (tab === 'history') loadOrders()
+        if (tab === 'terminal') {
+          loadMenu()
+          loadInventoryItems()
+        }
+      }
     })
 
     return () => {
@@ -317,7 +384,7 @@ export default function POS() {
   const offlineMode = isSyncOffline(syncStatus)
   const walkInPaymentNeedsVerification = offlineMode && customerType === 'walkin' && paymentMethod !== 'cash'
   const refreshLivePosState = useCallback(async ({ includeOrders = true } = {}) => {
-    if (offlineMode || liveRefreshBusyRef.current) return
+    if (liveRefreshBusyRef.current) return
     liveRefreshBusyRef.current = true
     try {
       const tasks = [loadMenu(), loadInventoryItems()]
@@ -475,7 +542,6 @@ export default function POS() {
     if (orderItems.length === 0) return
     if (outletsError || !selectedOutlet) { alert('No outlet is selected. Select Kitchen or Bar before completing the order.'); return }
     if (customerType === 'room' && !selectedRoom) { alert('Select a room first.'); return }
-    if (customerType === 'walkin' && !walkInName.trim()) { alert('Enter the guest name.'); return }
     if (orderStockIssues.length > 0) {
       alert(`${orderStockIssues[0].itemName} no longer has enough stock for this order. Refresh the quantities and try again.`)
       return
@@ -494,7 +560,7 @@ export default function POS() {
 
       const result = await window.api.pos.createOrder({
         room_id: customerType === 'room' ? selectedRoom : null,
-        walk_in_name: customerType === 'walkin' ? walkInName.trim() : null,
+        walk_in_name: customerType === 'walkin' ? (walkInName.trim() || 'Walk-in') : null,
         items: orderItems,
         notes: orderNotes.trim() || null,
         payment_method: customerType === 'room' ? 'folio' : paymentMethod,
@@ -565,7 +631,7 @@ export default function POS() {
             <button
               key={o.id}
               onClick={() => setSelectedOutlet(o)}
-              className={`flex-1 rounded-xl py-3 text-sm font-semibold transition-all ${isActive ? c.active : c.idle}`}
+              className={`flex-1 rounded-xl font-semibold transition-all ${touchMode ? 'min-h-[3.75rem] px-3 py-3.5 text-base' : 'py-3 text-sm'} ${isActive ? c.active : c.idle}`}
             >
               {icon} {o.name}
             </button>
@@ -710,6 +776,23 @@ export default function POS() {
     acc[cat] = filteredVisibleMenuItems.filter((m) => m.category === cat && m.is_available !== false)
     return acc
   }, {})
+  const terminalCategoryTabs = useMemo(
+    () => ['All', ...MENU_CATEGORIES.filter((cat) => (menuByCategory[cat] || []).length > 0)],
+    [menuByCategory]
+  )
+  const visibleTerminalCategories = touchMode
+    ? terminalCategoryTabs.filter((cat) => cat === 'All' || cat === activeTerminalCategory)
+    : MENU_CATEGORIES
+  const hasTerminalMenuData = filteredVisibleMenuItems.length > 0 || fallbackBarMenuItems.length > 0 || menuItems.length > 0
+  const showInitialMenuLoading = menuLoading && !hasTerminalMenuData
+
+  useEffect(() => {
+    if (!touchMode) return
+    if (activeTerminalCategory === 'All') return
+    if (!terminalCategoryTabs.includes(activeTerminalCategory)) {
+      setActiveTerminalCategory('All')
+    }
+  }, [activeTerminalCategory, terminalCategoryTabs, touchMode])
 
   // Returns the name of the outlet an item belongs to if it's different from selectedOutlet.
   // Used for cross-outlet blocking on tap and barcode scan.
@@ -782,48 +865,107 @@ export default function POS() {
     }
   }
 
+  const terminalShellClass = touchMode
+    ? 'grid min-h-[calc(100vh-12.5rem)] grid-cols-1 gap-4 overflow-hidden xl:grid-cols-[minmax(0,1.5fr)_minmax(21rem,0.88fr)]'
+    : 'grid grid-cols-1 gap-6 xl:grid-cols-3'
+  const terminalLayoutClass = touchMode
+    ? 'flex min-h-0 flex-col gap-4 overflow-hidden'
+    : 'space-y-4 xl:col-span-2'
+  const menuPanelClass = touchMode ? 'min-h-0 space-y-3 overflow-hidden' : 'space-y-5 xl:col-span-2'
+  const orderPanelClass = touchMode
+    ? 'bb-card flex min-h-0 flex-col overflow-hidden p-4'
+    : 'bb-card sticky top-6 flex h-fit flex-col p-5'
+  const touchButtonClass = touchMode ? 'min-h-[3.15rem] rounded-2xl text-[15px]' : ''
+  const touchInputClass = touchMode ? 'min-h-[3rem] text-[15px]' : 'text-sm'
+  const touchItemGridClass = touchMode ? 'grid grid-cols-2 gap-2.5 lg:grid-cols-3' : 'grid grid-cols-2 gap-2 sm:grid-cols-3'
+  const touchItemCardClass = touchMode
+    ? 'bb-card min-h-[7.2rem] p-3 text-left transition-all active:scale-[0.99]'
+    : 'bb-card p-3 text-left transition-all'
+  const qtyButtonClass = touchMode
+    ? 'flex h-9 w-9 items-center justify-center rounded-xl bg-slate-100 text-base font-bold text-slate-700 active:scale-[0.98]'
+    : 'flex h-6 w-6 items-center justify-center rounded bg-slate-100 text-sm font-bold text-slate-600 hover:bg-red-50 hover:text-red-600'
+  const qtyButtonPlusClass = touchMode
+    ? 'flex h-9 w-9 items-center justify-center rounded-xl bg-green-50 text-base font-bold text-green-700 active:scale-[0.98]'
+    : 'flex h-6 w-6 items-center justify-center rounded bg-slate-100 text-sm font-bold text-slate-600 hover:bg-green-50 hover:text-green-600'
+  const showTouchCategoryRail = touchMode && (showInitialMenuLoading || outletsLoading || terminalCategoryTabs.length > 1)
+  const orderItemCount = orderItems.reduce((sum, item) => sum + Number(item.quantity || 0), 0)
+  const openNativeKeyboard = useCallback(async () => {
+    try {
+      await window.api?.app?.showTouchKeyboard?.()
+    } catch {
+      // Best-effort only.
+    }
+  }, [])
+
   return (
-    <div className="mx-auto flex max-w-7xl flex-col gap-6">
-      <div className="bb-page-header">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-emerald-700/70">Bar & Kitchen</p>
-          <h1 className="bb-page-header-title mt-2">Point of Sale</h1>
-          <p className="bb-page-header-subtitle">Take guest and walk-in orders, manage menu items, and review recent POS history.</p>
-        </div>
-        <div className="flex flex-wrap items-center gap-3">
-          <div className={`rounded-2xl border px-3.5 py-3 text-sm shadow-sm ${
-            offlineMode
-              ? 'border-amber-200 bg-amber-50 text-amber-900'
-              : 'border-emerald-200 bg-emerald-50 text-emerald-800'
-          }`}>
-            <p className="font-semibold">{offlineMode ? 'Offline POS mode' : 'POS synced and live'}</p>
-            <p className="mt-1 text-xs opacity-80">
-              {offlineMode ? 'Stock and remote payment confirmation may be delayed.' : 'Stock and sales are updating from the latest synced state.'}
-            </p>
+    <div className="mx-auto flex max-w-none flex-col gap-4">
+      <div className="bb-card flex flex-col gap-3 p-3 sm:p-4">
+        <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+          <div className="flex min-w-0 flex-wrap items-center gap-2.5">
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-emerald-700/70">POS Terminal</p>
+              <h1 className="text-xl font-semibold tracking-[-0.03em] text-slate-900">Point of Sale</h1>
+            </div>
+            <div className={`rounded-2xl border px-3 py-2 text-sm shadow-sm ${
+              offlineMode
+                ? 'border-amber-200 bg-amber-50 text-amber-900'
+                : 'border-emerald-200 bg-emerald-50 text-emerald-800'
+            }`}>
+              <p className="font-semibold">{offlineMode ? 'Offline POS mode' : 'POS synced and live'}</p>
+              <p className="mt-0.5 text-xs opacity-80">
+                {offlineMode ? 'Stock and remote payment confirmation may be delayed.' : 'Stock and sales are updating from the latest synced state.'}
+              </p>
+            </div>
           </div>
-          <div className="bb-card flex gap-1 p-2">
-          {[['terminal', 'Terminal'], ...(canManageMenu ? [['menu', 'Menu Items']] : []), ['history', 'History']].map(([v, l]) => (
-            <button
-              key={v}
-              onClick={() => setTab(v)}
-              className={`rounded-xl px-4 py-2 transition-all ${
-                tab === v
-                  ? 'bg-gradient-to-b from-green-500 to-green-700 text-white shadow-[0_10px_24px_rgba(22,101,52,0.2)]'
-                  : 'text-slate-600 hover:bg-slate-50'
-              }`}
-            >
-              {l}
-            </button>
-          ))}
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="bb-card flex gap-1 p-1.5">
+              {[
+                ['desktop', 'Desktop'],
+                ['touch', 'Touch']
+              ].map(([mode, label]) => {
+                const active = (mode === 'touch') === touchMode
+                return (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => setTouchMode(mode === 'touch')}
+                    className={`rounded-xl px-3.5 py-2 text-sm font-semibold transition-all ${
+                      active
+                        ? 'bg-slate-900 text-white shadow-sm'
+                        : 'text-slate-600 hover:bg-slate-50'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                )
+              })}
+            </div>
+            <div className="bb-card flex gap-1 p-1.5">
+              {[['terminal', 'Terminal'], ...(canManageMenu ? [['menu', 'Menu Items']] : []), ['history', 'History']].map(([v, l]) => (
+                <button
+                  key={v}
+                  onClick={() => setTab(v)}
+                  className={`rounded-xl transition-all ${
+                    touchMode ? 'min-h-[3rem] px-4 py-2.5 text-base' : 'px-3.5 py-2 text-sm'
+                  } ${
+                    tab === v
+                      ? 'bg-gradient-to-b from-green-500 to-green-700 text-white shadow-[0_10px_24px_rgba(22,101,52,0.2)]'
+                      : 'text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  {l}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
       </div>
 
       {/* ── Terminal ── */}
       {tab === 'terminal' && (
-        <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
+        <div className={terminalShellClass}>
           {/* Menu items panel */}
-          <div className="xl:col-span-2 space-y-5">
+          <div className={menuPanelClass}>
 
             {/* ── Outlet selector ── */}
             {renderOutletSelector()}
@@ -858,129 +1000,201 @@ export default function POS() {
               </div>
             )}
 
-            <div className="bb-card p-4">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className={`bb-card relative overflow-visible p-3 ${touchMode ? 'min-h-[7.75rem]' : ''}`}>
+              {menuRefreshing && hasTerminalMenuData && (
+                <div className="pointer-events-none absolute right-4 top-4 z-10">
+                  <div className="rounded-full border border-emerald-200 bg-white/95 px-3 py-1.5 text-xs font-medium text-emerald-700 shadow-sm backdrop-blur">
+                    Refreshing menu and stock...
+                  </div>
+                </div>
+              )}
+              <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <p className="text-sm font-semibold text-slate-800">Find products quickly</p>
                   <p className="text-xs text-slate-500">Search by product name or barcode inside the active outlet.</p>
                 </div>
-                <input
-                  type="text"
-                  className="input w-full sm:max-w-sm"
-                  placeholder="Search products or barcode..."
-                  value={menuSearch}
-                  onChange={(e) => setMenuSearch(e.target.value)}
-                />
+                <div className="flex w-full gap-2 sm:max-w-md">
+                  <input
+                    type="text"
+                    className="input w-full"
+                    placeholder="Search products or barcode..."
+                    value={menuSearch}
+                    onChange={(e) => setMenuSearch(e.target.value)}
+                  />
+                  {touchMode && (
+                    <button
+                      type="button"
+                      onClick={openNativeKeyboard}
+                      className="inline-flex min-h-[3rem] shrink-0 items-center justify-center gap-1 rounded-2xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-600 transition-colors hover:bg-slate-50"
+                      title="Open touch keyboard"
+                    >
+                      <Keyboard size={16} />
+                      <span className="hidden sm:inline">Keyboard</span>
+                    </button>
+                  )}
+                </div>
               </div>
+              {showTouchCategoryRail && (
+                <div className="mt-4 flex flex-wrap gap-2">
+                  {(showInitialMenuLoading || outletsLoading ? ['All', 'Food', 'Drinks', 'Other'] : terminalCategoryTabs).map((category) => {
+                    const active = activeTerminalCategory === category
+                    return (
+                      <button
+                        key={category}
+                        type="button"
+                        onClick={() => {
+                          if (showInitialMenuLoading || outletsLoading) return
+                          setActiveTerminalCategory(category)
+                        }}
+                        disabled={showInitialMenuLoading || outletsLoading}
+                        className={`min-h-[3rem] rounded-2xl px-4 py-2.5 text-sm font-semibold transition-all ${
+                          active
+                            ? 'bg-slate-900 text-white shadow-sm'
+                            : 'border border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                        } ${showInitialMenuLoading || outletsLoading ? 'opacity-60' : ''}`}
+                      >
+                        {category}
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
             </div>
 
-            {menuLoading ? (
-              <div className="bb-empty-state min-h-[180px]">
-                <p className="text-sm font-medium text-slate-500">Loading menu…</p>
-              </div>
-            ) : (
-              MENU_CATEGORIES.map((cat) => {
-                const items = menuByCategory[cat]
-                if (items.length === 0) return null
-                return (
-                <div key={cat} className="bb-card p-4">
-                    <div className="mb-3 flex items-center justify-between">
-                      <h3 className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">{cat}</h3>
-                      <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-500">
-                        {items.length} item{items.length === 1 ? '' : 's'}
-                      </span>
-                    </div>
-                    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                      {items.map((item) => {
-                        const crossOutlet = getCrossOutletName(item)
-                        const availableUnits = getInventoryAvailableUnits(inventoryById, item.inventory_item_id, item.depletion_qty)
-                        const soldOut = !isOrderableMenuItem(item, inventoryById)
-                        return (
-                        <button
-                          key={item.id}
-                          disabled={soldOut || !!crossOutlet}
-                          onClick={() => {
-                            if (crossOutlet) {
-                              alert(`"${item.name}" belongs to ${crossOutlet}. Switch outlets to add it.`)
-                              return
-                            }
-                            if (soldOut) {
-                              alert(`"${item.name}" is sold out on the latest synced stock.`)
-                              return
-                            }
-                            addToOrder(item)
-                          }}
-                          className={`bb-card p-3 text-left transition-all ${soldOut ? 'cursor-not-allowed opacity-60' : 'hover:-translate-y-[1px] hover:ring-2 hover:ring-green-400'}`}
-                        >
-                          <p className="truncate text-sm font-medium text-slate-800">{item.name}</p>
-                          <p className="text-green-700 font-semibold text-sm mt-0.5">
-                            {currency} {fmt(item.price)}
-                          </p>
-                          {Number.isFinite(availableUnits) && (
-                            <p className={`mt-0.5 text-xs ${soldOut ? 'text-red-600' : availableUnits <= 3 ? 'text-amber-600' : 'text-slate-400'}`}>
-                              {soldOut ? 'Sold out' : `${availableUnits} left`}
-                            </p>
-                          )}
-                          {item.barcode && (
-                            <p className="mt-0.5 flex items-center gap-1 text-xs text-slate-400">
-                              <Scan size={10} /> {item.barcode}
-                            </p>
-                          )}
-                        </button>
-                        )
-                      })}
-                    </div>
+            <div className={terminalLayoutClass}>
+              <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+                {showInitialMenuLoading ? (
+                  <div className={`bb-empty-state ${touchMode ? 'min-h-[320px]' : 'min-h-[180px]'}`}>
+                    <p className="text-sm font-medium text-slate-500">Loading menu…</p>
                   </div>
-                )
-              })
-            )}
-            {filteredVisibleMenuItems.filter((m) => m.is_available !== false).length === 0 && !menuLoading && !outletsLoading && (
-              <div className="bb-empty-state min-h-[220px]">
-                <ShoppingCart size={32} className="mx-auto mb-2 opacity-30" />
-                <p className="text-base font-semibold text-slate-800">
-                  {normalizedMenuSearch ? 'No matching products' : 'No menu items yet'}
-                </p>
-                <p className="text-sm text-slate-500">
-                  {normalizedMenuSearch
-                    ? 'Try a different name, barcode, or switch outlets.'
-                    : 'Go to Menu Items to add products before taking orders.'}
-                </p>
+                ) : (
+                  <div className="space-y-3">
+                    {visibleTerminalCategories.map((cat) => {
+                      const items = cat === 'All'
+                        ? MENU_CATEGORIES.flatMap((category) => menuByCategory[category] || [])
+                        : menuByCategory[cat]
+                      if (items.length === 0) return null
+                      return (
+                      <div key={cat} className="bb-card p-3">
+                          <div className="mb-2 flex items-center justify-between">
+                            <h3 className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">{cat === 'All' ? 'All Products' : cat}</h3>
+                            <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] font-medium text-slate-500">
+                              {items.length} item{items.length === 1 ? '' : 's'}
+                            </span>
+                          </div>
+                          <div className={touchItemGridClass}>
+                            {items.map((item) => {
+                              const crossOutlet = getCrossOutletName(item)
+                              const availableUnits = getInventoryAvailableUnits(inventoryById, item.inventory_item_id, item.depletion_qty)
+                              const soldOut = !isOrderableMenuItem(item, inventoryById)
+                              return (
+                              <button
+                                key={item.id}
+                                disabled={soldOut || !!crossOutlet}
+                                onClick={() => {
+                                  if (crossOutlet) {
+                                    alert(`"${item.name}" belongs to ${crossOutlet}. Switch outlets to add it.`)
+                                    return
+                                  }
+                                  if (soldOut) {
+                                    alert(`"${item.name}" is sold out on the latest synced stock.`)
+                                    return
+                                  }
+                                  addToOrder(item)
+                                }}
+                                className={`${touchItemCardClass} ${soldOut ? 'cursor-not-allowed opacity-60' : touchMode ? 'hover:ring-2 hover:ring-green-300' : 'hover:-translate-y-[1px] hover:ring-2 hover:ring-green-400'}`}
+                            >
+                                <p className={`truncate font-medium text-slate-800 ${touchMode ? 'text-[15px]' : 'text-sm'}`}>{item.name}</p>
+                                <p className={`mt-0.5 text-green-700 font-semibold ${touchMode ? 'text-base' : 'text-sm'}`}>
+                                  {currency} {fmt(item.price)}
+                                </p>
+                                {Number.isFinite(availableUnits) && (
+                                  <p className={`mt-1 ${touchMode ? 'text-xs' : 'text-xs'} ${soldOut ? 'text-red-600' : availableUnits <= 3 ? 'text-amber-600' : 'text-slate-400'}`}>
+                                    {soldOut ? 'Sold out' : `${availableUnits} left`}
+                                  </p>
+                                )}
+                                {item.barcode && !touchMode && (
+                                  <p className="mt-1 flex items-center gap-1 text-xs text-slate-400">
+                                    <Scan size={10} /> {item.barcode}
+                                  </p>
+                                )}
+                              </button>
+                              )
+                            })}
+                          </div>
+                        </div>
+                      )
+                    })}
+                    {filteredVisibleMenuItems.filter((m) => m.is_available !== false).length === 0 && !menuLoading && !outletsLoading && (
+                      <div className="bb-empty-state min-h-[220px]">
+                        <ShoppingCart size={32} className="mx-auto mb-2 opacity-30" />
+                        <p className="text-base font-semibold text-slate-800">
+                          {normalizedMenuSearch ? 'No matching products' : 'No menu items yet'}
+                        </p>
+                        <p className="text-sm text-slate-500">
+                          {normalizedMenuSearch
+                            ? 'Try a different name, barcode, or switch outlets.'
+                            : 'Go to Menu Items to add products before taking orders.'}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
-            )}
 
-            {/* Barcode scanner hint */}
-            {menuItems.some((m) => m.barcode && m.is_available) && (
-              <p className="flex items-center gap-1 text-xs text-slate-400">
-                <Scan size={12} /> Barcode scanner ready — click outside inputs and scan
-              </p>
-            )}
+              {/* Barcode scanner hint */}
+              {menuItems.some((m) => m.barcode && m.is_available) && (
+                <p className="flex items-center gap-1 text-xs text-slate-400">
+                  <Scan size={12} /> Barcode scanner ready — click outside inputs and scan
+                </p>
+              )}
+            </div>
           </div>
 
           {/* Order panel */}
-            <div className="bb-card sticky top-6 flex h-fit flex-col p-5">
-            <h2 className="mb-3 flex items-center gap-2 font-semibold text-slate-700">
-              <ShoppingCart size={16} /> Current Order
+            <div className={orderPanelClass}>
+            <h2 className={`mb-2 flex items-center gap-2 font-semibold text-slate-700 ${touchMode ? 'text-base' : ''}`}>
+              <ShoppingCart size={touchMode ? 18 : 16} /> Current Order
             </h2>
+            {touchMode && (
+              <div className="mb-3 rounded-[1.2rem] border border-emerald-200 bg-emerald-50 px-3 py-3 shadow-sm">
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-[0.16em] text-emerald-700/75">Live Summary</p>
+                    <p className="mt-1 text-xl font-bold text-emerald-950">{currency} {fmt(orderTotal)}</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-xs font-semibold uppercase tracking-[0.16em] text-emerald-700/75">Items</p>
+                    <p className="mt-1 text-xl font-bold text-emerald-950">{orderItemCount}</p>
+                  </div>
+                </div>
+                <p className="mt-1.5 text-xs text-emerald-800">
+                  {customerType === 'room'
+                    ? 'Charges will be staged against the selected room folio.'
+                    : `${formatPaymentMethod(paymentMethod)} will be used for this walk-in sale.`}
+                </p>
+              </div>
+            )}
 
             {/* Customer type */}
-            <div className="mb-3 flex overflow-hidden rounded-xl border border-slate-200 text-xs">
-              <button
-                onClick={() => setCustomerType('room')}
-                className={`flex-1 py-1.5 transition-colors ${customerType === 'room' ? 'bg-green-600 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
-              >
-                Room Guest
-              </button>
+            <div className={`mb-2 flex overflow-hidden rounded-xl border border-slate-200 ${touchMode ? 'text-sm' : 'text-xs'}`}>
               <button
                 onClick={() => setCustomerType('walkin')}
-                className={`flex-1 py-1.5 transition-colors ${customerType === 'walkin' ? 'bg-green-600 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
+                className={`flex-1 transition-colors ${touchMode ? 'py-2.5' : 'py-1.5'} ${customerType === 'walkin' ? 'bg-green-600 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
               >
                 Walk-in
+              </button>
+              <button
+                onClick={() => setCustomerType('room')}
+                className={`flex-1 transition-colors ${touchMode ? 'py-2.5' : 'py-1.5'} ${customerType === 'room' ? 'bg-green-600 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
+              >
+                Charge to Room
               </button>
             </div>
 
             {customerType === 'room' ? (
                 <select
-                className="input mb-3 text-sm"
+                className={`input mb-2 ${touchInputClass}`}
                 value={selectedRoom}
                 onChange={(e) => setSelectedRoom(e.target.value)}
               >
@@ -993,16 +1207,17 @@ export default function POS() {
               </select>
             ) : (
               <>
-                <input
-                  type="text"
-                  className="input mb-2 text-sm"
-                  placeholder="Guest name..."
-                  value={walkInName}
-                  onChange={(e) => setWalkInName(e.target.value)}
-                />
                 <div className="mb-3">
+                  <div className={`grid grid-cols-1 gap-2 ${touchMode ? 'sm:grid-cols-[minmax(0,1fr)_11rem_auto]' : 'sm:grid-cols-[minmax(0,1fr)_11rem]'}`}>
+                  <input
+                    type="text"
+                    className={`input ${touchInputClass}`}
+                    placeholder="Guest name (optional)..."
+                    value={walkInName}
+                    onChange={(e) => setWalkInName(e.target.value)}
+                  />
                   <select
-                    className="input text-sm"
+                    className={`input ${touchInputClass}`}
                     value={paymentMethod}
                     onChange={(e) => setPaymentMethod(e.target.value)}
                   >
@@ -1010,6 +1225,18 @@ export default function POS() {
                       <option key={method.value} value={method.value}>{method.label}</option>
                     ))}
                   </select>
+                  {touchMode && (
+                    <button
+                      type="button"
+                      onClick={openNativeKeyboard}
+                      className="inline-flex min-h-[3rem] items-center justify-center gap-1 rounded-2xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-600 transition-colors hover:bg-slate-50"
+                      title="Open touch keyboard"
+                    >
+                      <Keyboard size={16} />
+                      <span className="hidden lg:inline">Keyboard</span>
+                    </button>
+                  )}
+                  </div>
                   {paymentMethod === 'bank_transfer' && (
                     <p className="mt-1 text-xs text-slate-500">
                       Bank transfer payments must include proof of payment before completion.
@@ -1020,38 +1247,40 @@ export default function POS() {
             )}
 
             {/* Order items */}
-            <div className="flex-1 space-y-2 min-h-[80px] mb-3">
+            <div className="mb-3 min-h-[80px] flex-1 overflow-y-auto rounded-2xl border border-slate-100 bg-slate-50/45 p-2">
               {orderItems.length === 0 ? (
-                <div className="bb-card-muted py-6 text-center">
+                <div className="bb-card-muted py-5 text-center">
                 <p className="text-xs text-slate-500">
-                  Tap items or scan barcodes to add them
+                  {touchMode ? 'Tap products on the left to build the order' : 'Tap items or scan barcodes to add them'}
                 </p>
                 </div>
               ) : (
-                orderItems.map((item, idx) => (
-                  <div key={item.order_key} className="rounded-xl border border-slate-100 bg-slate-50/70 p-2.5">
+                <div className="space-y-2">
+                {orderItems.map((item, idx) => (
+                  <div key={item.order_key} className={`rounded-xl border border-slate-100 bg-white ${touchMode ? 'p-3' : 'p-2.5'}`}>
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex-1 min-w-0">
-                      <p className="truncate text-sm text-slate-800">{item.item_name}</p>
-                      <p className="text-xs text-slate-400">{currency} {fmt(item.unit_price)} ea</p>
+                      <p className={`truncate text-slate-800 ${touchMode ? 'text-[15px] font-medium' : 'text-sm'}`}>{item.item_name}</p>
+                      <p className={`${touchMode ? 'text-xs' : 'text-xs'} text-slate-400`}>{currency} {fmt(item.unit_price)} ea</p>
                     </div>
-                    <div className="flex items-center gap-1 shrink-0">
+                    <div className={`flex items-center shrink-0 ${touchMode ? 'gap-2' : 'gap-1'}`}>
                       <button
                         onClick={() => updateQty(idx, -1)}
-                        className="flex h-6 w-6 items-center justify-center rounded bg-slate-100 text-sm font-bold text-slate-600 hover:bg-red-50 hover:text-red-600"
+                        className={touchMode ? qtyButtonClass : 'flex h-6 w-6 items-center justify-center rounded bg-slate-100 text-sm font-bold text-slate-600 hover:bg-red-50 hover:text-red-600'}
                       >−</button>
-                      <span className="w-6 text-center text-sm font-medium">{item.quantity}</span>
+                      <span className={`${touchMode ? 'w-7 text-sm' : 'w-6 text-sm'} text-center font-medium`}>{item.quantity}</span>
                       <button
                         onClick={() => updateQty(idx, 1)}
-                        className="flex h-6 w-6 items-center justify-center rounded bg-slate-100 text-sm font-bold text-slate-600 hover:bg-green-50 hover:text-green-600"
+                        className={touchMode ? qtyButtonPlusClass : 'flex h-6 w-6 items-center justify-center rounded bg-slate-100 text-sm font-bold text-slate-600 hover:bg-green-50 hover:text-green-600'}
                       >+</button>
                     </div>
-                    <span className="w-16 shrink-0 text-right text-sm font-semibold text-slate-800">
+                    <span className={`${touchMode ? 'w-[4.5rem] text-sm' : 'w-16 text-sm'} shrink-0 text-right font-semibold text-slate-800`}>
                       {currency} {fmt(item.quantity * item.unit_price)}
                     </span>
                   </div>
                   </div>
-                ))
+                ))}
+                </div>
               )}
             </div>
 
@@ -1068,20 +1297,20 @@ export default function POS() {
             {orderItems.length > 0 && (
               <>
                 <textarea
-                  className="input text-sm mb-3 resize-none"
-                  rows={2}
+                  className={`input mb-2 resize-none ${touchMode ? 'text-sm' : 'text-sm'}`}
+                  rows={touchMode ? 2 : 2}
                   placeholder="Notes (optional)..."
                   value={orderNotes}
                   onChange={(e) => setOrderNotes(e.target.value)}
                 />
-                <div className="mb-3 border-t border-slate-100 pt-3">
+                <div className="mb-2 border-t border-slate-100 pt-2">
                   <div className="flex justify-between font-bold text-slate-800">
                     <span>Total</span>
                     <span>{currency} {fmt(orderTotal)}</span>
                   </div>
                   {customerType === 'room' && selectedRoom ? (
                     offlineMode ? (
-                      <div className="mt-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 text-xs text-amber-900">
+                        <div className="mt-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
                         <p className="font-semibold">Offline folio charge</p>
                         <p className="mt-1">
                           This room charge is only being staged on this machine for now. It will reach the guest folio after sync succeeds when internet returns.
@@ -1111,18 +1340,18 @@ export default function POS() {
                     </p>
                   )}
                 </div>
-                <div className="flex gap-2">
+                <div className={touchMode ? 'grid grid-cols-2 gap-2' : 'flex gap-2'}>
                   <button
                     onClick={() => setOrderItems([])}
                     disabled={submitting}
-                    className="btn-secondary flex-1 flex items-center justify-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
+                    className={`btn-secondary flex items-center justify-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed ${touchMode ? 'min-h-[3rem] text-sm' : ''}`}
                   >
                     <X size={14} /> Clear
                   </button>
                   <button
                     onClick={completeOrder}
                     disabled={submitting || orderStockIssues.length > 0}
-                    className="btn-primary flex-1"
+                    className={`btn-primary ${touchMode ? 'min-h-[3rem] text-sm' : ''}`}
                   >
                     {submitting ? 'Processing...' : 'Complete Order'}
                   </button>
@@ -1286,39 +1515,41 @@ export default function POS() {
                       ])
                     )
                     return (
-                      <div key={inventoryItem.id} className="bb-card p-5">
-                        <div className="flex items-start justify-between gap-4">
+                      <div key={inventoryItem.id} className="bb-card p-4">
+                        <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
                           <div>
-                            <p className="text-lg font-semibold text-slate-900">{inventoryItem.name}</p>
-                            <p className="mt-1 text-sm text-slate-500">
-                              Bottle price: <span className="font-semibold text-slate-800">{currency} {fmt(inventoryItem.selling_price)}</span>
-                            </p>
-                            <p className="mt-1 text-xs text-slate-500">
-                              Stock: {inventoryItem.current_stock} {inventoryItem.unit}
-                            </p>
+                            <p className="text-base font-semibold text-slate-900">{inventoryItem.name}</p>
+                            <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
+                              <p className="text-sm text-slate-500">
+                                Bottle: <span className="font-semibold text-slate-800">{currency} {fmt(inventoryItem.selling_price)}</span>
+                              </p>
+                              <p className="text-xs text-slate-500">
+                                Stock: {inventoryItem.current_stock} {inventoryItem.unit}
+                              </p>
+                            </div>
                           </div>
                           <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ${singleItem ? 'border border-emerald-200 bg-emerald-50 text-emerald-700' : 'border border-amber-200 bg-amber-50 text-amber-700'}`}>
-                            {singleItem ? 'Single bottle live in POS' : 'Waiting for POS bottle sync'}
+                            {singleItem ? 'Bottle live' : 'Bottle syncing'}
                           </span>
                         </div>
 
-                        <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
-                          <div className="flex items-center justify-between gap-3">
+                        <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50/70 p-3">
+                          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                             <div>
                               <p className="text-sm font-semibold text-slate-800">Bottle barcode</p>
-                              <p className="text-xs text-slate-500">Keep scanning on the bottle item only. Packs stay barcode-free by default.</p>
+                              <p className="text-xs text-slate-500">Scan bottles only. Packs stay barcode-free.</p>
                             </div>
                             {singleItem && !singleItem._virtual_inventory_item ? (
                               <button
                                 onClick={() => openEditMenu(singleItem)}
                                 disabled={menuMutationsDisabled}
                                 title={offlineMode ? 'Requires internet connection' : undefined}
-                                className="btn-secondary disabled:cursor-not-allowed disabled:opacity-60"
+                                className="btn-secondary min-h-[2.75rem] px-3 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-60"
                               >
                                 Edit Barcode
                               </button>
                             ) : singleItem?._virtual_inventory_item ? (
-                              <span className="text-xs text-emerald-600">Ready to sell from inventory pricing</span>
+                              <span className="text-xs text-emerald-600">Ready from inventory pricing</span>
                             ) : (
                               <span className="text-xs text-slate-400">Available after bottle sync</span>
                             )}
@@ -1326,22 +1557,29 @@ export default function POS() {
                           <p className="mt-2 text-xs font-mono text-slate-500">{singleItem?.barcode || 'No barcode set'}</p>
                         </div>
 
-                        <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
+                        <div className="mt-3 grid grid-cols-2 gap-2 xl:grid-cols-3">
                           {BAR_PACK_TEMPLATES.map(({ size, label }) => {
                             const packItem = packRows[size]
                             const saving = barTemplateSavingKey === `${inventoryItem.id}:${size}`
                             return (
-                              <div key={size} className="rounded-2xl border border-slate-200 p-4">
-                                <p className="text-sm font-semibold text-slate-800">{label}</p>
-                                <p className="mt-1 text-sm text-slate-500">{currency} {fmt(Number(inventoryItem.selling_price || 0) * size)}</p>
-                                <p className="mt-1 text-xs text-slate-400">Deducts {size} bottles from stock</p>
+                              <div key={size} className="rounded-2xl border border-slate-200 bg-white p-3">
+                                <div className="flex items-start justify-between gap-2">
+                                  <div>
+                                    <p className="text-sm font-semibold text-slate-800">{label}</p>
+                                    <p className="mt-0.5 text-sm text-slate-500">{currency} {fmt(Number(inventoryItem.selling_price || 0) * size)}</p>
+                                  </div>
+                                  <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${packItem ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-500'}`}>
+                                    {packItem ? 'On' : 'Off'}
+                                  </span>
+                                </div>
+                                <p className="mt-1 text-[11px] text-slate-400">Uses {size} bottles</p>
                                 <button
                                   onClick={() => toggleBarPackTemplate(inventoryItem.id, size, !packItem)}
                                   disabled={saving || !singleItem || menuMutationsDisabled}
                                   title={offlineMode ? 'Requires internet connection' : undefined}
-                                  className={`mt-3 w-full rounded-xl px-3 py-2 text-sm font-semibold transition-colors ${packItem ? 'bg-blue-600 text-white hover:bg-blue-700' : 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-50'} disabled:cursor-not-allowed disabled:opacity-60`}
+                                  className={`mt-2 min-h-[2.75rem] w-full rounded-xl px-3 py-2 text-sm font-semibold transition-colors ${packItem ? 'bg-blue-600 text-white hover:bg-blue-700' : 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-50'} disabled:cursor-not-allowed disabled:opacity-60`}
                                 >
-                                  {saving ? 'Saving...' : packItem ? 'Disable Template' : 'Enable Template'}
+                                  {saving ? 'Saving...' : packItem ? 'Disable' : 'Enable'}
                                 </button>
                               </div>
                             )
@@ -1451,8 +1689,19 @@ export default function POS() {
                               'bg-yellow-100 text-yellow-700'
                             }`}>{o.status}</span>
                             {syncState === 'failed' && (
-                              <span className="rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-700">
+                              <span
+                                className="rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-700 cursor-help"
+                                title={o._sync_error || 'Sync failed'}
+                              >
                                 Failed Sync
+                              </span>
+                            )}
+                            {syncState === 'needs_attention' && (
+                              <span
+                                className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-700 cursor-help"
+                                title={o._sync_error || 'Manual review required'}
+                              >
+                                Needs Attention
                               </span>
                             )}
                             {syncState === 'pending' && (
@@ -1465,8 +1714,23 @@ export default function POS() {
                         <td className="px-5 py-3 text-right font-semibold text-slate-800">
                           {currency} {fmt(o.total)}
                         </td>
-                        <td className="px-5 py-3 text-center text-slate-400">
-                          {expandedOrder === o.id ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                        <td className="px-5 py-3 text-center">
+                          <div className="flex items-center justify-center gap-2">
+                            <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-600">
+                              {(o.pos_order_items || o.items || []).length}
+                            </span>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                setShowReceiptOrder(o)
+                              }}
+                              className="p-1.5 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors"
+                              title="Print Receipt"
+                            >
+                              <Printer size={15} />
+                            </button>
+                            {expandedOrder === o.id ? <ChevronUp size={16} className="text-slate-400" /> : <ChevronDown size={16} className="text-slate-400" />}
+                          </div>
                         </td>
                       </tr>
                       {expandedOrder === o.id && (
@@ -1502,8 +1766,15 @@ export default function POS() {
                             {syncState === 'failed' && syncError && (
                               <div className="mt-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
                                 <p className="font-semibold">Failed Sync</p>
-                                <p className="mt-1">{syncError}</p>
-                                <p className="mt-1 text-red-600">Retry from System Health</p>
+                                <p className="mt-1">{sanitizePosError(syncError)}</p>
+                                <p className="mt-1 text-red-600 font-medium">Retry from System Health</p>
+                              </div>
+                            )}
+                            {syncState === 'needs_attention' && syncError && (
+                              <div className="mt-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                                <p className="font-semibold">Needs Attention</p>
+                                <p className="mt-1">{sanitizePosError(syncError)}</p>
+                                <p className="mt-1 text-amber-700 font-medium tracking-tight">Open System Health to resolve this issue</p>
                               </div>
                             )}
                             {o.status === 'voided' && (
@@ -1519,7 +1790,11 @@ export default function POS() {
                               </div>
                             )}
                             {o.status !== 'voided' && (
-                              canVoid ? (
+                              (syncState === 'needs_attention' || syncState === 'pending' || syncState === 'failed') ? (
+                                <p className="mt-2 text-xs text-amber-700">
+                                  Resolve sync issue in System Health before voiding.
+                                </p>
+                              ) : canVoid ? (
                                 <button
                                   onClick={async () => {
                                     if (offlineMode) return
@@ -1648,7 +1923,7 @@ export default function POS() {
                   >
                     <option value="">— Unassigned —</option>
                     {posOutlets.map((o) => (
-                      <option key={o.id} value={o.id}>{o.name}</option>
+                      <option key={o.id || o.name} value={o.id || ''}>{o.name}</option>
                     ))}
                   </select>
                   <p className="mt-1 text-xs text-slate-500">
@@ -1799,6 +2074,13 @@ export default function POS() {
             </div>
           </form>
         </Modal>
+      )}
+
+      {showReceiptOrder && (
+        <POSReceipt
+          order={showReceiptOrder}
+          onClose={() => setShowReceiptOrder(null)}
+        />
       )}
     </div>
   )

@@ -1,4 +1,4 @@
-import { supabase } from './supabase'
+import { signInWithSupabaseAuth, supabase } from './supabase'
 import { assertCapability, getStoredEntitlement, normalizeSessionUser, storeEntitlement } from './access'
 import { getSubscriptionPlan } from '@shared/subscriptionPlans'
 import { titleCase } from './format'
@@ -36,7 +36,7 @@ const STARTER_FEATURE_FLAGS = {
 
 const PWA_PLAN_REQUIRED_MESSAGE = `Manager PWA is available on the ${getSubscriptionPlan('Pro').name} plan for this lodge because ${getSubscriptionPlan('Pro').pitch.toLowerCase()}. Ask Command Central to upgrade or enable an override.`
 export const FRONT_DESK_ONLY_MESSAGE = 'This action is only available in the Front Desk system.'
-export const READ_ONLY_MANAGER_MESSAGE = 'This screen is read-only in the Manager PWA. Use Front Desk for changes.'
+const READ_ONLY_MANAGER_MESSAGE = 'This screen is read-only in the Manager PWA. Use Front Desk for changes.'
 const MAX_FINANCIAL_AMOUNT = 1000000
 const queueFlushLocks = new Map()
 
@@ -613,6 +613,16 @@ async function executeSupport(payload) {
 
 async function queueOrRun({ lodgeId, type, label, payload, execute, optimistic }) {
   if (isOfflineMode()) {
+    if (BLOCKED_PWA_MUTATION_TYPES.has(type)) {
+      appendIssueLog(lodgeId, {
+        scope: type,
+        severity: 'warn',
+        message: `"${label}" attempted while offline — not saved`,
+        detail: FRONT_DESK_ONLY_MESSAGE,
+        context: { type, label, payload }
+      })
+      throw new Error(`${label} requires an internet connection and cannot be saved offline. Use Front Desk when back online.`)
+    }
     if (optimistic) optimistic()
     enqueueOfflineOperation(lodgeId, createQueuedOperation(type, label, payload))
     return { success: true, queued: true }
@@ -620,7 +630,7 @@ async function queueOrRun({ lodgeId, type, label, payload, execute, optimistic }
   return execute()
 }
 
-export async function getSettings(lodgeId) {
+async function getSettings(lodgeId) {
   return queryWithCache({
     lodgeId,
     key: 'settings',
@@ -740,51 +750,13 @@ export async function listBookings(lodgeId, options = {}) {
   })
 }
 
-export async function listCustomers(lodgeId) {
+async function listCustomers(lodgeId) {
   return queryWithCache({
     lodgeId,
     key: 'customers',
     fallback: [],
     fetcher: () => safeSelect(supabase.from('customers').select('*').eq('lodge_id', lodgeId).order('name'), [])
   })
-}
-
-export async function createCustomer(lodgeId, payload) {
-  assertCapability('guests.manage')
-  const customer = {
-    id: payload.id || crypto.randomUUID(),
-    lodge_id: lodgeId,
-    name: payload.name,
-    email: payload.email || '',
-    phone: payload.phone || '',
-    id_number: payload.id_number || '',
-    nationality: payload.nationality || ''
-  }
-  const result = await executeCreateCustomer(customer)
-  mutateCachedList(lodgeId, 'customers', (rows) => upsertById(rows, { ...customer, id: result.id || customer.id }))
-  return result
-}
-
-export async function createBooking(lodgeId, payload) {
-  void lodgeId
-  void payload
-  rejectFrontDeskOnlyAction()
-}
-
-export async function updateBookingStatus(lodgeId, booking, status) {
-  void lodgeId
-  void booking
-  void status
-  rejectFrontDeskOnlyAction()
-}
-
-export async function recordBookingPayment(lodgeId, booking, amount, method = 'cash', intentKey = crypto.randomUUID()) {
-  void lodgeId
-  void booking
-  void amount
-  void method
-  void intentKey
-  rejectFrontDeskOnlyAction()
 }
 
 export async function getBookingPayments(lodgeId, bookingId) {
@@ -797,22 +769,7 @@ export async function getBookingPayments(lodgeId, bookingId) {
   return data || []
 }
 
-export async function refundBooking(lodgeId, bookingId, options) {
-  void lodgeId
-  void bookingId
-  void options
-  rejectFrontDeskOnlyAction()
-}
-
-export async function updateRoomHousekeeping(lodgeId, roomId, status, notes) {
-  void lodgeId
-  void roomId
-  void status
-  void notes
-  throw new Error(READ_ONLY_MANAGER_MESSAGE)
-}
-
-export async function listMaintenance(lodgeId) {
+async function listMaintenance(lodgeId) {
   return queryWithCache({
     lodgeId,
     key: 'maintenance',
@@ -845,12 +802,6 @@ export async function createMaintenance(lodgeId, payload) {
   })
 }
 
-export async function resolveMaintenance(lodgeId, ticket) {
-  void lodgeId
-  void ticket
-  throw new Error(READ_ONLY_MANAGER_MESSAGE)
-}
-
 export async function listQuotations(lodgeId) {
   assertCapability('quotations.view')
   return queryWithCache({
@@ -859,29 +810,6 @@ export async function listQuotations(lodgeId) {
     fallback: [],
     fetcher: () => safeSelect(supabase.from('quotations').select('*').eq('lodge_id', lodgeId).order('created_at', { ascending: false }), [])
   })
-}
-
-export async function saveQuotation(lodgeId, user, mode, payload) {
-  void lodgeId
-  void user
-  void mode
-  void payload
-  rejectFrontDeskOnlyAction()
-}
-
-export async function markQuotationSent(lodgeId, quotation) {
-  void lodgeId
-  void quotation
-  rejectFrontDeskOnlyAction()
-}
-
-export async function convertQuotation(lodgeId, quotationId, depositAmount, paymentMethod, userId) {
-  void lodgeId
-  void quotationId
-  void depositAmount
-  void paymentMethod
-  void userId
-  rejectFrontDeskOnlyAction()
 }
 
 export async function listExpenses(lodgeId, start, end, options = {}) {
@@ -900,13 +828,6 @@ export async function listExpenses(lodgeId, start, end, options = {}) {
   })
 }
 
-export async function saveExpense(lodgeId, mode, payload) {
-  void lodgeId
-  void mode
-  void payload
-  throw new Error(READ_ONLY_MANAGER_MESSAGE)
-}
-
 export async function listGuests(lodgeId) {
   assertCapability('guests.view')
   return listCustomers(lodgeId)
@@ -918,14 +839,6 @@ export async function getGuestHistory(lodgeId, customerId) {
     supabase.from('bookings').select('*').eq('lodge_id', lodgeId).eq('customer_id', customerId).order('check_in', { ascending: false }),
     []
   )
-}
-
-export async function updateGuestBlacklist(lodgeId, customerId, isBlacklisted, reason) {
-  void lodgeId
-  void customerId
-  void isBlacklisted
-  void reason
-  throw new Error(READ_ONLY_MANAGER_MESSAGE)
 }
 
 export async function listStaff(lodgeId) {
@@ -953,13 +866,6 @@ export async function listConferenceBookings(lodgeId, start, end) {
   })
 }
 
-export async function saveConferenceBooking(lodgeId, mode, payload) {
-  void lodgeId
-  void mode
-  void payload
-  rejectFrontDeskOnlyAction()
-}
-
 export async function listDayUseEntries(lodgeId, start, end) {
   assertCapability('pool.view')
   return queryWithCache({
@@ -975,13 +881,6 @@ export async function listDayUseEntries(lodgeId, start, end) {
   })
 }
 
-export async function saveDayUseEntry(lodgeId, mode, payload) {
-  void lodgeId
-  void mode
-  void payload
-  throw new Error(READ_ONLY_MANAGER_MESSAGE)
-}
-
 export async function listInventory(lodgeId) {
   assertCapability('inventory.view')
   return queryWithCache({
@@ -990,25 +889,6 @@ export async function listInventory(lodgeId) {
     fallback: [],
     fetcher: () => safeSelect(supabase.from('inventory_items').select('*').eq('lodge_id', lodgeId).order('name'), [])
   })
-}
-
-export async function saveInventoryItem(lodgeId, mode, payload) {
-  void lodgeId
-  void mode
-  void payload
-  throw new Error(READ_ONLY_MANAGER_MESSAGE)
-}
-
-export async function addInventoryPurchase(lodgeId, payload) {
-  void lodgeId
-  void payload
-  throw new Error(READ_ONLY_MANAGER_MESSAGE)
-}
-
-export async function adjustInventoryStock(lodgeId, payload) {
-  void lodgeId
-  void payload
-  throw new Error(READ_ONLY_MANAGER_MESSAGE)
 }
 
 export async function listInvoices(lodgeId, options = {}) {
@@ -1135,7 +1015,7 @@ export async function getRefundHistory(lodgeId, limit = 20) {
   return Array.isArray(data) ? data : []
 }
 
-export async function getInvoiceDeliveryHistory(lodgeId, limit = 20) {
+async function getInvoiceDeliveryHistory(lodgeId, limit = 20) {
   assertCapability('invoices.view')
   const { data, error } = await supabase.rpc('get_invoice_delivery_history', {
     p_lodge_id: lodgeId,
@@ -1146,7 +1026,7 @@ export async function getInvoiceDeliveryHistory(lodgeId, limit = 20) {
   return Array.isArray(data) ? data : []
 }
 
-export async function getFinancialValidationAlerts(lodgeId, limit = 10) {
+async function getFinancialValidationAlerts(lodgeId, limit = 10) {
   assertCapability('dashboard.view')
   try {
     const { data, error } = await supabase.rpc('get_financial_validation_alerts', {
@@ -1421,11 +1301,35 @@ function extractManagerCandidates(data, email = '') {
 
 export async function authenticateManager(identifier, password, lodgeId = null) {
   const email = identifier.trim().toLowerCase()
-  const { data, error } = await supabase.rpc('authenticate_manager', {
-    p_email: email,
-    p_password: password,
-    p_lodge_id: lodgeId
-  })
+  let data
+  let error
+
+  try {
+    await signInWithSupabaseAuth(email, password)
+    const result = await supabase.rpc('authenticate_manager_from_supabase', {
+      p_lodge_id: lodgeId
+    })
+    data = result.data
+    error = result.error
+
+    if (error && /could not find the function|schema cache|authenticate_manager_from_supabase/i.test(error.message || '')) {
+      const legacy = await supabase.rpc('authenticate_manager', {
+        p_email: email,
+        p_password: password,
+        p_lodge_id: lodgeId
+      })
+      data = legacy.data
+      error = legacy.error
+    }
+  } catch (authError) {
+    const legacy = await supabase.rpc('authenticate_manager', {
+      p_email: email,
+      p_password: password,
+      p_lodge_id: lodgeId
+    })
+    data = legacy.data
+    error = legacy.error || authError
+  }
 
   if (error) {
     throw new Error('Login failed. Please try again.')
@@ -1492,11 +1396,4 @@ export async function logoutManagerSession(sessionToken = null) {
   })
   if (error) throw error
   return data
-}
-
-export function normalizeAuthResult(data, email = '') {
-  const validRows = extractManagerCandidates(data, email)
-  if (validRows.length > 1) return { success: true, lodges: validRows }
-  if (validRows.length === 1) return { success: true, user: validRows[0] }
-  return { success: false, error: 'No lodge account was returned for this user.' }
 }

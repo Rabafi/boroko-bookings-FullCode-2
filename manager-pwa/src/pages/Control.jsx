@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react'
 import { LifeBuoy, RefreshCw, Wifi, WifiOff } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { createSupportTicket, flushOfflineQueue, getControlSnapshot, getSupportRequests } from '../lib/api'
-import { getNotificationSettings, listCacheEntries, setNotificationSettings, subscribeRuntimeEvent } from '../lib/runtime'
+import { supabase } from '../lib/supabase'
+import { getNotificationSettings, getPwaQueueHealth, listCacheEntries, publishPwaHealth, setNotificationSettings, subscribeRuntimeEvent } from '../lib/runtime'
 import { shortDateTime, titleCase } from '../lib/format'
 import { useToast } from '../App'
 
@@ -17,6 +18,7 @@ export default function Control() {
   const [ticket, setTicket] = useState({ title: '', description: '', category: 'Support', priority: 'Normal' })
   const [sending, setSending] = useState(false)
   const [notifications, setNotifications] = useState(() => getNotificationSettings())
+  const [queueHealth, setQueueHealth] = useState(() => null)
 
   const load = async () => {
     setLoading(true)
@@ -29,6 +31,12 @@ export default function Control() {
       setSnapshot(control)
       setRequests(requestRows)
       setCaches(listCacheEntries(user.lodge_id))
+      const health = getPwaQueueHealth(user.lodge_id)
+      setQueueHealth(health)
+      const isOnline = typeof navigator !== 'undefined' && navigator.onLine !== false
+      if (isOnline) {
+        publishPwaHealth(user.lodge_id, supabase, health)
+      }
     } catch (error) {
       setLoadError(error?.message || 'Control view could not load.')
     }
@@ -74,7 +82,7 @@ export default function Control() {
             </p>
           </div>
           <div className="bg-gray-800 rounded-2xl p-4">
-            <p className="text-xs text-gray-400">Queued Changes</p>
+            <p className="text-xs text-gray-400">Queued Changes (this device only)</p>
             <p className="text-xl font-bold text-white mt-1">{snapshot?.queue?.count || 0}</p>
             <p className="text-[11px] text-gray-500 mt-1">
               {snapshot?.lastSync?.processed
@@ -82,6 +90,61 @@ export default function Control() {
                 : snapshot?.online ? 'No recent sync yet' : 'Waiting for connection'}
             </p>
           </div>
+        </div>
+
+        {/* Offline Queue Health — device-local state only, not reflected in desktop System Health */}
+        <div className="bg-gray-800 rounded-2xl p-4">
+          <div className="flex items-center justify-between mb-1">
+            <p className="text-sm font-semibold text-white">Offline Queue Health (this device only)</p>
+            <span className="text-xs text-gray-500">device-local</span>
+          </div>
+          <p className="text-[11px] text-gray-500 mb-3">
+            This reflects the offline queue stored on this browser only. It is NOT synced to the desktop System Health panel and does not represent the state of other devices.
+          </p>
+          {queueHealth ? (
+            <div className="space-y-2">
+              <div className="grid grid-cols-3 gap-2">
+                <div className="bg-gray-900 rounded-xl p-3 text-center">
+                  <p className="text-xl font-bold text-white">{queueHealth.queueLength}</p>
+                  <p className="text-[11px] text-gray-400 mt-1">Queued (this device only)</p>
+                </div>
+                <div className="bg-gray-900 rounded-xl p-3 text-center">
+                  <p className={`text-xl font-bold ${queueHealth.blockedCount > 0 ? 'text-yellow-400' : 'text-white'}`}>{queueHealth.blockedCount}</p>
+                  <p className="text-[11px] text-gray-400 mt-1">Blocked</p>
+                </div>
+                <div className="bg-gray-900 rounded-xl p-3 text-center">
+                  <p className={`text-xl font-bold ${queueHealth.deadLetterCount > 0 ? 'text-red-400' : 'text-white'}`}>{queueHealth.deadLetterCount}</p>
+                  <p className="text-[11px] text-gray-400 mt-1">Dead Letters</p>
+                </div>
+              </div>
+              {queueHealth.blockedCount > 0 && (
+                <p className="text-xs text-yellow-300 bg-yellow-950/30 rounded-xl px-3 py-2">
+                  {queueHealth.blockedCount} operation(s) are blocked from sending. These will not sync until the blocking condition is resolved.
+                </p>
+              )}
+              {queueHealth.deadLetterCount > 0 && (
+                <p className="text-xs text-red-300 bg-red-950/30 rounded-xl px-3 py-2">
+                  {queueHealth.deadLetterCount} operation(s) have failed too many times or have errors. Manual review may be required.
+                </p>
+              )}
+              {queueHealth.unresolvedItems.length > 0 && (
+                <div className="space-y-1 mt-2">
+                  <p className="text-xs text-gray-400 font-medium">Unresolved items (this device only):</p>
+                  {queueHealth.unresolvedItems.map((item, index) => (
+                    <div key={item.id || index} className="bg-gray-900 rounded-xl px-3 py-2">
+                      <p className="text-xs text-white">{item.label}</p>
+                      {item.lastError && <p className="text-[11px] text-red-400 mt-1">{item.lastError}</p>}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {queueHealth.queueLength === 0 && (
+                <p className="text-sm text-gray-500">No pending operations in the offline queue on this device.</p>
+              )}
+            </div>
+          ) : (
+            <p className="text-sm text-gray-500">Queue health not loaded yet.</p>
+          )}
         </div>
 
         <div className="bg-gray-800 rounded-2xl p-4">

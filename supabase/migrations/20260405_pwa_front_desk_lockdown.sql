@@ -64,8 +64,8 @@ begin
   ) values (
     (payload->>'lodge_id')::uuid,
     (payload->>'booking_date')::date,
-    payload->>'start_time',
-    payload->>'end_time',
+    (payload->>'start_time')::time,
+    (payload->>'end_time')::time,
     payload->>'client_name',
     nullif(payload->>'company', ''),
     coalesce((payload->>'attendees')::integer, 0),
@@ -149,8 +149,8 @@ begin
 
   update public.conference_bookings
      set booking_date      = case when payload ? 'booking_date' then (payload->>'booking_date')::date else booking_date end,
-         start_time        = case when payload ? 'start_time' then payload->>'start_time' else start_time end,
-         end_time          = case when payload ? 'end_time' then payload->>'end_time' else end_time end,
+         start_time        = case when payload ? 'start_time' then (payload->>'start_time')::time else start_time end,
+         end_time          = case when payload ? 'end_time'   then (payload->>'end_time')::time else end_time end,
          client_name       = case when payload ? 'client_name' then payload->>'client_name' else client_name end,
          company           = case when payload ? 'company' then nullif(payload->>'company', '') else company end,
          attendees         = case when payload ? 'attendees' then coalesce((payload->>'attendees')::integer, 0) else attendees end,

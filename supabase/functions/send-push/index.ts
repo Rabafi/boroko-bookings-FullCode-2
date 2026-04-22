@@ -5,17 +5,41 @@ const VAPID_PUBLIC_KEY  = Deno.env.get('VAPID_PUBLIC_KEY')!
 const VAPID_PRIVATE_KEY = Deno.env.get('VAPID_PRIVATE_KEY')!
 const SUPABASE_URL      = Deno.env.get('SUPABASE_URL')!
 const SUPABASE_KEY      = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+const FUNCTION_SECRET   = Deno.env.get('PUSH_FUNCTION_SECRET') || ''
 
 webpush.setVapidDetails('mailto:admin@boroko.com', VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY)
 
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, content-type, x-boroko-function-secret',
+  'Content-Type': 'application/json'
+}
+
+function jsonResponse(body: Record<string, unknown>, status = 200) {
+  return new Response(JSON.stringify(body), { status, headers: corsHeaders })
+}
+
+function requireFunctionSecret(req: Request) {
+  if (!FUNCTION_SECRET) {
+    return jsonResponse({ error: 'Push function is not configured for secure delivery' }, 503)
+  }
+  if (req.headers.get('x-boroko-function-secret') !== FUNCTION_SECRET) {
+    return jsonResponse({ error: 'Unauthorized' }, 401)
+  }
+  return null
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
-    return new Response(null, { headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, content-type' } })
+    return new Response(null, { headers: corsHeaders })
   }
 
   try {
+    const authError = requireFunctionSecret(req)
+    if (authError) return authError
+
     const { lodge_id, title, body, url = '/#/alerts' } = await req.json()
-    if (!lodge_id || !title) return new Response(JSON.stringify({ error: 'lodge_id and title required' }), { status: 400 })
+    if (!lodge_id || !title) return jsonResponse({ error: 'lodge_id and title required' }, 400)
 
     const supabase = createClient(SUPABASE_URL, SUPABASE_KEY)
     const { data: subs } = await supabase
@@ -23,7 +47,7 @@ Deno.serve(async (req) => {
       .select('endpoint, p256dh, auth')
       .eq('lodge_id', lodge_id)
 
-    if (!subs?.length) return new Response(JSON.stringify({ sent: 0, pruned: 0 }), { status: 200 })
+    if (!subs?.length) return jsonResponse({ sent: 0, pruned: 0 })
 
     const payload = JSON.stringify({ title, body, url })
     const results = await Promise.allSettled(
@@ -51,8 +75,8 @@ Deno.serve(async (req) => {
 
     const sent = results.filter(r => r.status === 'fulfilled').length
     const failed = results.length - sent - pruned
-    return new Response(JSON.stringify({ sent, pruned, failed }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    return jsonResponse({ sent, pruned, failed })
   } catch (e) {
-    return new Response(JSON.stringify({ error: e.message }), { status: 500 })
+    return jsonResponse({ error: e.message }, 500)
   }
 })

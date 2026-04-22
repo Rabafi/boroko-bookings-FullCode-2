@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useAuth } from '../contexts/AuthContext'
-import { Eye, EyeOff, LogIn, Building2, ChevronRight } from 'lucide-react'
+import { Eye, EyeOff, LogIn, Building2, ChevronRight, Mail } from 'lucide-react'
+import { sendPasswordResetEmail } from '../lib/supabase'
 
 export default function Login() {
   const { login, pendingLodges, selectLodge } = useAuth()
@@ -8,11 +9,14 @@ export default function Login() {
   const [password, setPassword] = useState('')
   const [showPass, setShowPass] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [resetLoading, setResetLoading] = useState(false)
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
 
   const submit = async (e) => {
     e.preventDefault()
     setError('')
+    setNotice('')
     setLoading(true)
     try {
       await login(email, password)
@@ -21,6 +25,25 @@ export default function Login() {
       setError(err.message)
     } finally {
       setLoading(false)
+    }
+  }
+
+  const requestReset = async () => {
+    const targetEmail = email.trim().toLowerCase()
+    setError('')
+    setNotice('')
+    if (!targetEmail) {
+      setError('Enter your email address first.')
+      return
+    }
+    setResetLoading(true)
+    try {
+      await sendPasswordResetEmail(targetEmail)
+      setNotice(`Password reset email sent to ${targetEmail}.`)
+    } catch (err) {
+      setError(err.message || 'Could not send password reset email.')
+    } finally {
+      setResetLoading(false)
     }
   }
 
@@ -81,7 +104,7 @@ export default function Login() {
           />
         </div>
         <div>
-          <label className="text-xs text-gray-400 block mb-1.5">Manager PWA Password</label>
+          <label className="text-xs text-gray-400 block mb-1.5">Password</label>
           <div className="relative">
             <input
               className={`${inp} pr-11`}
@@ -100,12 +123,18 @@ export default function Login() {
               {showPass ? <EyeOff size={18} /> : <Eye size={18} />}
             </button>
           </div>
-          <p className="mt-1.5 text-xs text-gray-500">Use the Manager PWA password set in Staff. It can be different from the desktop password.</p>
+          <p className="mt-1.5 text-xs text-gray-500">Use your account password. Admins can send a reset link from Staff.</p>
         </div>
 
         {error && (
           <div className={`${error.includes('Pro plan') ? 'bg-purple-900/40 border-purple-700/50 text-purple-200' : 'bg-red-900/40 border-red-700/50 text-red-300'} border rounded-xl px-4 py-3 text-sm`}>
             {error}
+          </div>
+        )}
+
+        {notice && (
+          <div className="bg-green-900/40 border border-green-700/50 text-green-200 rounded-xl px-4 py-3 text-sm">
+            {notice}
           </div>
         )}
 
@@ -116,6 +145,16 @@ export default function Login() {
         >
           <LogIn size={18} />
           {loading ? 'Signing in…' : 'Sign In'}
+        </button>
+
+        <button
+          type="button"
+          onClick={requestReset}
+          disabled={resetLoading}
+          className="w-full text-green-400 hover:text-green-300 py-2 text-sm font-semibold flex items-center justify-center gap-2 disabled:opacity-60"
+        >
+          <Mail size={15} />
+          {resetLoading ? 'Sending reset email...' : 'Forgot password?'}
         </button>
       </form>
 

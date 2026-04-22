@@ -21,6 +21,11 @@ export function isFinancialSyncItem(item = {}) {
     'delete_booking_charge',
     'create_pos_order',
     'void_pos_order',
-    'approve_booking_refund'
+    'approve_booking_refund',
+    'create_conference_booking',
+    'update_conference_booking',
+    'delete_conference_booking',
+    'add_pool_day_use',
+    'delete_pool_day_use'
   ]).has(table)
 }

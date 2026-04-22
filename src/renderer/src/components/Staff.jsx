@@ -21,10 +21,11 @@ import {
   Lock,
   Users2,
   Eye,
-  EyeOff
+  EyeOff,
+  Mail
 } from 'lucide-react'
 import { Modal } from './shared/Modal'
-import { useAccess, useAuth } from '../App'
+import { useAccess, useAuth } from '../app-context'
 import {
   CAPABILITY_LABELS,
   ROLE_DEFINITIONS,
@@ -121,6 +122,8 @@ function StaffMembers() {
   const [resetForm, setResetForm] = useState(emptyResetForm)
   const [resetError, setResetError] = useState('')
   const [resetLoading, setResetLoading] = useState(false)
+  const [inviteLoadingId, setInviteLoadingId] = useState(null)
+  const [inviteNotice, setInviteNotice] = useState('')
   const [deleteTarget, setDeleteTarget] = useState(null)
   const [deleteError, setDeleteError] = useState('')
   const [deleteLoading, setDeleteLoading] = useState(false)
@@ -331,7 +334,27 @@ function StaffMembers() {
 
     setResetTarget(null)
     setResetForm(emptyResetForm)
+    setInviteNotice(`Password updated for ${resetTarget?.email || 'staff account'}.`)
     await load()
+  }
+
+  const handleSendInvite = async (staffUser) => {
+    setInviteLoadingId(staffUser.id)
+    setInviteNotice('')
+    try {
+      const result = await window.api.users.sendInvite(staffUser.id)
+      if (result?.success === false) {
+        setInviteNotice(result.error || 'Could not send invite or reset link.')
+        return
+      }
+      const action = result.mode === 'invite' ? 'Invite' : 'Password reset link'
+      setInviteNotice(`${action} sent to ${staffUser.email}.`)
+      await load()
+    } catch (e) {
+      setInviteNotice(e.message || 'Could not send invite or reset link.')
+    } finally {
+      setInviteLoadingId(null)
+    }
   }
 
   const handleDelete = async () => {
@@ -356,6 +379,11 @@ function StaffMembers() {
         <div>
           <p className="text-sm text-slate-500">{users.length} staff member{users.length !== 1 ? 's' : ''}</p>
           <p className="mt-1 text-xs text-slate-400">Role templates control what each team member can see, do, and access across Boroko.</p>
+          {inviteNotice && (
+            <p className={`mt-2 text-xs ${/could not|requires|failed|error/i.test(inviteNotice) ? 'text-red-600' : 'text-emerald-600'}`}>
+              {inviteNotice}
+            </p>
+          )}
         </div>
         <div className="flex items-center gap-3">
           <select
@@ -433,6 +461,13 @@ function StaffMembers() {
                       className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700"
                     >
                       <Lock size={13} /> Reset Password
+                    </button>
+                    <button
+                      onClick={() => handleSendInvite(staffUser)}
+                      disabled={inviteLoadingId === staffUser.id}
+                      className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs text-slate-500 transition-colors hover:bg-emerald-50 hover:text-emerald-700 disabled:opacity-60"
+                    >
+                      <Mail size={13} /> {inviteLoadingId === staffUser.id ? 'Sending...' : (staffUser.auth_user_id ? 'Send Reset Link' : 'Send Invite')}
                     </button>
                     <button
                       onClick={() => openDelete(staffUser)}
@@ -759,7 +794,7 @@ function StaffMembers() {
               </div>
             </div>
             <p className="text-xs text-slate-500">
-              This changes the staff member&apos;s desktop sign-in password only. It does not change any Manager PWA password.
+              This changes the staff member&apos;s sign-in password. For linked Supabase Auth users, it also updates their Auth password when Command Central service access is available.
             </p>
             {resetError && <div className="rounded-xl bg-red-50 px-4 py-2 text-sm text-red-600">{resetError}</div>}
             <div className="flex gap-3 pt-2">

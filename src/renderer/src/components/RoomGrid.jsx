@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { ChevronLeft, ChevronRight, CreditCard, DoorClosed, DoorOpen, ExternalLink } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
-import { useSettings } from '../App'
+import { useSettings } from '../app-context'
 
 const DAYS_SHOWN = 14
 

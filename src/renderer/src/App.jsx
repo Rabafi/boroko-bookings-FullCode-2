@@ -1,8 +1,18 @@
-import { useState, useEffect, createContext, useContext, useRef, useCallback, lazy, Suspense } from 'react'
-import { HashRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { useState, useEffect, useRef, useCallback, useContext, lazy, Suspense } from 'react'
+import { HashRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom'
 import { buildCapabilitySnapshot, isPosFullAccessRole } from '../../shared/accessControl'
 import { getFeatureRequiredPlan, getSubscriptionPlan } from '../../shared/subscriptionPlans'
 import AppErrorBoundary from './components/AppErrorBoundary'
+import {
+  AuthContext,
+  SettingsContext,
+  ProfilesContext,
+  FeaturesContext,
+  AccessContext,
+  OnlineRequestsContext,
+  useAuth,
+  useProfiles
+} from './app-context'
 
 // ── Lazy — split into separate chunks, loaded on first visit ──────────────────
 const Welcome     = lazy(() => import('./components/Welcome'))
@@ -54,12 +64,7 @@ function Lazy({ children }) {
   return <Suspense fallback={<PageLoader />}>{children}</Suspense>
 }
 
-const AuthContext = createContext(null)
-const SettingsContext = createContext(null)
-const ProfilesContext = createContext(null)
-const FeaturesContext = createContext({}) // { pos: true, inventory: true, ... }
-const AccessContext = createContext(null)
-const OnlineRequestsContext = createContext({ count: 0, requests: [], refresh: () => {} })
+// { pos: true, inventory: true, ... }
 const INPUT_FOCUS_DEBUG = false
 const DEFAULT_TRIAL_STATUS = { status: 'trial', daysLeft: 3, expired: false }
 const USER_SCOPE_KEY = 'bb_user_scope'
@@ -248,6 +253,7 @@ function BroadcastBanner() {
 
 // ── Sync Fail Banner ───────────────────────────────────────────────────────────
 function SyncFailBanner() {
+  const navigate = useNavigate()
   const [syncStatus, setSyncStatus] = useState({ failed: 0, cacheStale: { active: false, names: [] } })
 
   useEffect(() => {
@@ -277,24 +283,37 @@ function SyncFailBanner() {
   if (failedCount === 0 && !hasStaleCache) return null
 
   const staleLabel = staleNames.join(', ')
-  const tone = failedCount > 0 ? 'bg-amber-500 hover:bg-amber-600' : 'bg-sky-600 hover:bg-sky-700'
+  const tone = failedCount > 0 ? 'bg-amber-500 shadow-amber-500/20' : 'bg-sky-600 shadow-sky-600/20'
 
   return (
-    <div className="fixed top-[40px] left-0 right-0 z-[9996] pointer-events-none">
-      <div 
-        className={`${tone} text-white text-xs flex items-center justify-center px-4 py-1.5 shadow-md pointer-events-auto cursor-pointer transition-colors`} 
-        onClick={() => {
-          const btn = document.querySelector('button[title="System Health"]') || document.getElementById('btn-system-health');
-          if (btn) btn.click();
-        }}
+    <div className="fixed top-[52px] left-1/2 -translate-x-1/2 z-[9996] pointer-events-none w-full max-w-md px-4">
+      <div
+        className={`${tone} text-white flex items-center justify-between gap-4 px-4 py-3 shadow-2xl rounded-2xl border border-white/20 backdrop-blur-md pointer-events-auto cursor-pointer transition-all hover:scale-[1.02] active:scale-[0.98] select-none`}
+        onClick={() => navigate('/settings', { state: { activeTab: 'system' } })}
+        title={failedCount > 0 ? 'Open System Health to review issues' : 'Opening System Health'}
       >
-        <span className="font-semibold">
-          {failedCount > 0 ? (
-            <>⚠️ {failedCount} offline action(s) failed to sync — tap <span className="underline decoration-white/50">System Health</span> to review</>
-          ) : (
-            <>⚠️ Fresh {staleLabel} data could not load yet. <span className="underline decoration-white/50">System Health</span> will keep retrying in the background.</>
-          )}
-        </span>
+        <div className="flex items-center gap-3">
+          <div className="bg-white/20 p-2 rounded-xl">
+            {failedCount > 0 ? (
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+            ) : (
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/><path d="M22 4 12 14.01l-3-3"/></svg>
+            )}
+          </div>
+          <div>
+            <p className="font-bold text-sm leading-tight">
+              {failedCount > 0
+                ? `${failedCount} sync issue${failedCount === 1 ? '' : 's'} need attention`
+                : `Fresh ${staleLabel} data is loading...`}
+            </p>
+            <p className="text-[11px] opacity-80 mt-0.5">
+              {failedCount > 0 ? 'Tap to open System Health and resolve issues' : 'Reviewing status in System Health'}
+            </p>
+          </div>
+        </div>
+        <div className="bg-white/20 px-2.5 py-1.5 rounded-lg font-bold uppercase tracking-wider text-[10px]">
+          {failedCount > 0 ? 'Review' : 'Open'}
+        </div>
       </div>
     </div>
   )
@@ -302,27 +321,19 @@ function SyncFailBanner() {
 
 // ── Financial Health Banner ───────────────────────────────────────────────────
 function FinancialHealthBanner() {
-  const [state, setState] = useState({ alerts: 0, critical: 0 })
+  const [errors, setErrors] = useState([])
 
   useEffect(() => {
     let mounted = true
-
     const load = async () => {
       try {
-        const [alerts, criticalErrors] = await Promise.all([
-          window.api.reports?.financialValidationAlerts?.(3).catch(() => []) || Promise.resolve([]),
-          window.api.reports?.criticalErrors?.(3).catch(() => []) || Promise.resolve([])
-        ])
+        const criticalErrors = await (window.api.reports?.criticalErrors?.(3).catch(() => []) || Promise.resolve([]))
         if (!mounted) return
-        setState({
-          alerts: Array.isArray(alerts) ? alerts.length : 0,
-          critical: Array.isArray(criticalErrors) ? criticalErrors.length : 0
-        })
+        setErrors(Array.isArray(criticalErrors) ? criticalErrors : [])
       } catch {
-        if (mounted) setState({ alerts: 0, critical: 0 })
+        if (mounted) setErrors([])
       }
     }
-
     load()
     const interval = setInterval(load, 60_000)
     return () => {
@@ -331,22 +342,30 @@ function FinancialHealthBanner() {
     }
   }, [])
 
-  if ((state.alerts || 0) === 0 && (state.critical || 0) === 0) return null
+  if (errors.length === 0) return null
 
-  const tone = state.critical > 0 ? 'bg-rose-700 hover:bg-rose-800' : 'bg-amber-600 hover:bg-amber-700'
+  const hasFinancial = errors.some(e => e.scope?.toLowerCase().includes('financial') || e.operation?.toLowerCase().includes('financial'))
+  const hasHighSeverity = errors.some(e => e.severity === 'error' || e.scope?.toLowerCase().includes('db_init'))
+  const isTrulyCritical = hasFinancial || hasHighSeverity
+
+  const tone = isTrulyCritical
+    ? 'border-rose-200 bg-rose-50 text-rose-800 hover:bg-rose-100'
+    : 'border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100'
+  const count = errors.length
+  const label = isTrulyCritical ? 'critical error' : 'system warning'
+  const dotTone = isTrulyCritical ? 'bg-rose-500' : 'bg-amber-500 animate-pulse'
 
   return (
-    <div className="fixed top-[68px] left-0 right-0 z-[9995] pointer-events-none">
-      <div
-        className={`${tone} text-white text-xs flex items-center justify-center px-4 py-1.5 shadow-md pointer-events-auto cursor-pointer transition-colors`}
+    <div className="fixed top-[72px] right-4 z-[9995] pointer-events-none">
+      <button
+        type="button"
+        className={`${tone} pointer-events-auto inline-flex items-center gap-3 rounded-full border px-3 py-2 text-xs shadow-lg backdrop-blur-sm transition-colors`}
         onClick={() => { window.location.hash = '#/settings' }}
       >
-        <span className="font-semibold">
-          {state.critical > 0
-            ? `Financial health needs attention: ${state.critical} recent critical app error(s) logged. Open Settings > System Health.`
-            : `Financial validation found ${state.alerts} recent alert(s). Open Settings > System Health to review them.`}
-        </span>
-      </div>
+        <div className={`h-2.5 w-2.5 rounded-full ${dotTone}`} />
+        <span className="font-semibold">{count} {label}{count === 1 ? '' : 's'}</span>
+        <span className="text-[11px] font-medium opacity-75">System Health</span>
+      </button>
     </div>
   )
 }
@@ -494,35 +513,11 @@ function TrialBanner({ daysLeft }) {
   )
 }
 
-export function useAuth() {
-  return useContext(AuthContext)
-}
-
-export function useSettings() {
-  return useContext(SettingsContext)
-}
-
-export function useProfiles() {
-  return useContext(ProfilesContext)
-}
-
-export function useFeatures() {
-  return useContext(FeaturesContext)
-}
-
-export function useAccess() {
-  return useContext(AccessContext)
-}
-
-export function useOnlineRequests() {
-  return useContext(OnlineRequestsContext)
-}
-
-function ProtectedRoute({ children, fallbackPath = '/login' }) {
+function ProtectedRoute({ children, fallbackPath = '/login', isTransitioning = false }) {
   const { user } = useAuth()
   const { activeProfile, loading } = useProfiles()
 
-  if (loading) return <PageLoader />
+  if (loading || isTransitioning) return <PageLoader />
   if (!user) return <Navigate to={fallbackPath} replace />
   if (!user?.isMasterAdmin && (!activeProfile || activeProfile.status !== 'ready')) {
     return <Navigate to={fallbackPath} replace />
@@ -759,18 +754,25 @@ export default function App() {
     }
   }, [activeProfile?.lodge_id, activeProfile?.status, applyEntitlement, isBrowserPreview, profilesLoading])
 
+  const [isLoggingIn, setIsLoggingIn] = useState(false)
+
   useEffect(() => {
-    if (isBrowserPreview || profilesLoading || !user || user.isMasterAdmin) return
+    if (isBrowserPreview || profilesLoading || !user || user.isMasterAdmin || isLoggingIn) return
 
     const storedScope = localStorage.getItem(USER_SCOPE_KEY) || ''
     const activeLodgeId = activeProfile?.lodge_id || ''
     const currentUserLodgeId = String(user?.lodge_id || '').trim().toLowerCase()
 
     if (!activeLodgeId || storedScope !== activeLodgeId || (currentUserLodgeId && currentUserLodgeId !== activeLodgeId)) {
+      console.warn('[AUTH] Security scope mismatch - forcing logout', {
+        activeLodgeId,
+        storedScope,
+        currentUserLodgeId
+      })
       clearStoredRendererSession()
       window.api.auth.logout().catch(() => {})
     }
-  }, [activeProfile?.lodge_id, clearStoredRendererSession, isBrowserPreview, profilesLoading, user])
+  }, [activeProfile?.lodge_id, clearStoredRendererSession, isBrowserPreview, isLoggingIn, profilesLoading, user])
 
   // Re-establish main-process currentUser on startup using the session nonce.
   // After an Electron restart, currentUser in database.js is null even though
@@ -788,10 +790,18 @@ export default function App() {
 
     restoreAttemptedRef.current = true
     const nonce = localStorage.getItem('bb_session_nonce') || ''
-    window.api.auth.restoreSession(nonce).then((restored) => {
+    const restorePromise = nonce
+      ? window.api.auth.restoreSession(nonce).then((restored) => ({ user: restored, nonce }))
+      : (window.api.auth.restoreSavedSession?.() || Promise.resolve({ user: null, nonce: '' }))
+
+    restorePromise.then((result) => {
+      const restored = result?.user || result
       if (!restored) {
         clearStoredRendererSession()
         return null
+      }
+      if (result?.nonce) {
+        localStorage.setItem('bb_session_nonce', result.nonce)
       }
       return window.api.auth.validateSession?.()
         .then((validated) => {
@@ -859,20 +869,34 @@ export default function App() {
     }
   }, [isBrowserPreview, runFocusRecovery])
 
-  const login = useCallback((userData, nonce) => {
-    localStorage.setItem('bb_user', JSON.stringify(userData))
-    localStorage.setItem('bb_session_nonce', nonce || '')
-    const scope = userData?.isMasterAdmin
-      ? 'master_admin'
-      : (activeProfile?.lodge_id || userData?.lodge_id || '')
-    if (scope) {
-      localStorage.setItem(USER_SCOPE_KEY, scope)
-    } else {
-      localStorage.removeItem(USER_SCOPE_KEY)
+  const login = useCallback(async (userData, nonce) => {
+    setIsLoggingIn(true)
+    try {
+      localStorage.setItem('bb_user', JSON.stringify(userData))
+      localStorage.setItem('bb_session_nonce', nonce || '')
+      
+      // Force refresh from main process (especially important for offline login)
+      const refreshed = await reloadProfiles()
+      const currentProfile = refreshed.activeProfile
+
+      const scope = userData?.isMasterAdmin
+        ? 'master_admin'
+        : (currentProfile?.lodge_id || userData?.lodge_id || '')
+        
+      if (scope) {
+        localStorage.setItem(USER_SCOPE_KEY, scope)
+      } else {
+        localStorage.removeItem(USER_SCOPE_KEY)
+      }
+      
+      restoreAttemptedRef.current = false
+      setUser(userData)
+    } finally {
+      // Small delay to ensure React has finished re-rendering with the new activeProfile
+      // before we re-enable the security scope check
+      setTimeout(() => setIsLoggingIn(false), 200)
     }
-    restoreAttemptedRef.current = false
-    setUser(userData)
-  }, [activeProfile?.lodge_id])
+  }, [reloadProfiles])
 
   const handleSetupComplete = useCallback(async (newSettings) => {
     setSettings(newSettings)
@@ -896,7 +920,7 @@ export default function App() {
     )
   }
 
-  const appLoading = profilesLoading || settingsLoading
+  const appLoading = (profilesLoading || settingsLoading) && !isLoggingIn
   const preAuthFallbackPath = profiles.length === 0
     ? '/welcome'
     : activeProfile?.status === 'draft'
@@ -965,20 +989,20 @@ export default function App() {
   return (
     <AuthContext.Provider value={authContextValue}>
       <ProfilesContext.Provider value={profilesContextValue}>
-      <UpdateBanner />
-      <BroadcastBanner />
-      <SyncFailBanner />
-      <FinancialHealthBanner />
-      <BookingSyncConflictNotification />
-      {user && trialStatus?.status === 'trial' && trialStatus?.lodge_id && !user?.isMasterAdmin && (
-        <TrialBanner daysLeft={trialStatus.daysLeft} />
-      )}
       <AccessContext.Provider value={accessContextValue}>
       <FeaturesContext.Provider value={features}>
       <OnlineRequestsContext.Provider value={{ count: onlineRequests.length, requests: onlineRequests, refresh: refreshOnlineRequests }}>
       <SettingsContext.Provider value={settingsContextValue}>
         <AppErrorBoundary>
           <HashRouter>
+            <UpdateBanner />
+            <BroadcastBanner />
+            <SyncFailBanner />
+            <FinancialHealthBanner />
+            <BookingSyncConflictNotification />
+            {user && trialStatus?.status === 'trial' && trialStatus?.lodge_id && !user?.isMasterAdmin && (
+              <TrialBanner daysLeft={trialStatus.daysLeft} />
+            )}
             <Routes>
               <Route
                 path="/welcome"
@@ -1007,7 +1031,7 @@ export default function App() {
               <Route
                 path="/"
                 element={
-                  <ProtectedRoute fallbackPath={preAuthFallbackPath}>
+                  <ProtectedRoute fallbackPath={preAuthFallbackPath} isTransitioning={isLoggingIn}>
                     <Lazy><Layout /></Lazy>
                   </ProtectedRoute>
                 }

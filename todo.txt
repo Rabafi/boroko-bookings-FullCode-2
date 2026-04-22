@@ -1,0 +1,44 @@
+00:10 20/04/2026
+errors and features
+1.done. Abe tried to add inventory and error (invalid input syntax for type uuid: "Bar") appeared. he restarted the app then it worked (my side from terminal didnt experience this error)
+
+2. done. Concider adding manager password for damages and any stock adjustments really IN INVENTORY
+
+3. done. Purchase should maybe not create new products but only fetch existing produccts. filter by low stock
+
+4. done. Selling items in Pos does not reduce stock in inventory (it works for me in terminal, so confirm if it works for him too)
+
+5. done.for actions that require internet connecctions to be performed, whenever the pc in offline, the note should appear on the page showing that while offline, listed tasks wont be able to be performed for stability reasons)
+
+7. done. Day use & Conference Booking doesnt work offline.
+
+8. done. while offline, i succesfully created an event/lodge booking, but the app crashed when i pressed the red warning at the top that told be how much is owed for the current bookings. this crash seems to happen a lot when i am offline and gets fixed as soon as i get online and reload the app. also in invoices tab, i see 6 separate invoices (there are 6 rooms for this lodge) but i need this TO APPEAR AS ONE TRANSACTION IN Reccords and financial statements. this 6 payments also appear on the (ccollecct payment) reminders. another hng is that for the receipt of the booking, the description says that "room 1" is booked, which does not reflect the whole truth as the whole lodge is booked.
+
+9. done. Run sync inside system health doesnt seem to emmediatly sync pending bookings and other things to supabase. eg, quotations still shows that its pending a sync. automatically syncing even a single booking/invoice takes a long time too. pressing run sync or restating the app doesnt seem to work
+
+10. done. inside room board, when i press a booking inside the calender, there is a section for "notes" and inside its written ( GROUP:evt-1776639532951) what is it? 
+
+11. done. BOOKING ACTIVITY inside receipts should be moved somewhere else, customers dont need to see it. and except for POS. reciepts should be in an a4 formats like a proper invoice.
+
+12. done. Printing a night Audit report returns a blank document but preview works fine. also add save as pdf and excel.
+
+13. Review Roles and Permissions
+
+14. done. .in Backups under data management, remove the option to export json files. retain export for excell with multiple sheets and the exell should contain as much information/records about the ccompany as possible. all transactions and history. make it mandatory for the user to export this file once a week.
+
+15. done. Before Login, add the option for the user to be able to update software, since  the auto update is not always triggered. also concider deleting the (Device Repair) thing
+
+16. done. When i try to assign a pro license to a company inside command central, nothing happens.. also add a drop down for duration of license and auto select dates in calenders. fees can be montlhy, quaterly, half a year and yearly. this should be linked to bookeeping.
+
+17. done. Add expenses to command central inside bookeeping
+
+18. done. alllow me to view invoices and print/save them. command central
+
+19. done. i want an option to permanently delete ccompanies both in local cache and in supabase. so maybe have an archived companies folder that stay there forever and restorable and then and also have the option to pemernantly delete an archived ccompany from supabase and everywhere else.
+
+20. consider changing authflow to use supabase's authentication
+
+21. logging in while offline doesnt work.. this is for an account i have repeatedly logged in with while online so it should have been long cached.
+
+
+

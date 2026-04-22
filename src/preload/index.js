@@ -2,18 +2,12 @@ import { contextBridge, ipcRenderer } from 'electron'
 
 const api = {
   auth: {
-    login:          (email, password) => {
-      console.log('[AUTH TRACE] preload login invoke', {
-        email,
-        normalizedEmail: String(email || '').trim().toLowerCase(),
-        passwordLength: typeof password === 'string' ? password.length : null,
-        hasPassword: typeof password === 'string' ? password.length > 0 : false
-      })
-      return ipcRenderer.invoke('auth:login', email, password)
-    },
+    login:          (email, password) => ipcRenderer.invoke('auth:login', email, password),
     getStatus:      (email)           => ipcRenderer.invoke('auth:status', email),
     healthCheck:    (email)           => ipcRenderer.invoke('auth:healthCheck', email),
+    sendPasswordReset: (email)         => ipcRenderer.invoke('auth:sendPasswordReset', email),
     restoreSession: (nonce)           => ipcRenderer.invoke('auth:restoreSession', nonce),
+    restoreSavedSession: (email, password) => ipcRenderer.invoke('auth:restoreSavedSession', email, password),
     validateSession: ()               => ipcRenderer.invoke('auth:validateSession'),
     logout:         ()                => ipcRenderer.invoke('auth:logout')
   },
@@ -32,6 +26,7 @@ const api = {
     create: (data) => ipcRenderer.invoke('users:create', data),
     update: (id, data) => ipcRenderer.invoke('users:update', id, data),
     resetPassword: (id, password) => ipcRenderer.invoke('users:resetPassword', id, password),
+    sendInvite: (id) => ipcRenderer.invoke('users:sendInvite', id),
     delete: (id) => ipcRenderer.invoke('users:delete', id)
   },
   rooms: {
@@ -116,6 +111,7 @@ const api = {
     financialValidationRuns: (limit) => ipcRenderer.invoke('reports:financialValidationRuns', limit),
     financialValidationAlerts: (limit) => ipcRenderer.invoke('reports:financialValidationAlerts', limit),
     criticalErrors: (limit) => ipcRenderer.invoke('reports:criticalErrors', limit),
+    clearCriticalErrors: () => ipcRenderer.invoke('reports:clearCriticalErrors'),
     saveSupportBundle: (limit) => ipcRenderer.invoke('reports:saveSupportBundle', limit),
     runFinancialValidation: () => ipcRenderer.invoke('reports:runFinancialValidation'),
     savePDF: () => ipcRenderer.invoke('reports:savePDF'),
@@ -126,7 +122,8 @@ const api = {
     nightAudit: (date) => ipcRenderer.invoke('reports:nightAudit', date),
     profitLoss: (start, end) => ipcRenderer.invoke('reports:profitLoss', start, end),
     outletProfitLoss: (start, end) => ipcRenderer.invoke('reports:outletProfitLoss', start, end),
-    roomProfitability: (start, end) => ipcRenderer.invoke('reports:roomProfitability', start, end)
+    roomProfitability: (start, end) => ipcRenderer.invoke('reports:roomProfitability', start, end),
+    exportOfflineSafetyManifest: () => ipcRenderer.invoke('reports:exportOfflineSafetyManifest')
   },
   dashboard: {
     stats: () => ipcRenderer.invoke('dashboard:stats'),
@@ -150,6 +147,14 @@ const api = {
       ipcRenderer.on('window:focus-recovery', listener)
       return () => ipcRenderer.off('window:focus-recovery', listener)
     }
+  },
+  app: {
+    getVersion: () => ipcRenderer.invoke('app:getVersion'),
+    logRendererError: (payload) => ipcRenderer.invoke('app:logRendererError', payload),
+    getRendererErrors: (limit) => ipcRenderer.invoke('app:getRendererErrors', limit),
+    clearRendererErrors: () => ipcRenderer.invoke('app:clearRendererErrors'),
+    setTestOfflineMode: (forceOffline) => ipcRenderer.invoke('app:setTestOfflineMode', forceOffline),
+    showTouchKeyboard: () => ipcRenderer.invoke('app:showTouchKeyboard')
   },
   activity: {
     getAll: () => ipcRenderer.invoke('activity:getAll'),
@@ -177,12 +182,14 @@ const api = {
     getDetails: () => ipcRenderer.invoke('sync:getDetails'),
     retryFailed: (queueIds) => ipcRenderer.invoke('sync:retryFailed', queueIds),
     clearFailed: (queueIds) => ipcRenderer.invoke('sync:clearFailed', queueIds),
+    runNow: () => ipcRenderer.invoke('sync:runNow'),
+    clearHealthFault: (id) => ipcRenderer.invoke('sync:clearHealthFault', id),
+    getDeviceHealthRollup: () => ipcRenderer.invoke('sync:getDeviceHealthRollup'),
     onStatusChanged: (cb) => {
       const listener = (_, payload) => cb(payload)
       ipcRenderer.on('sync:status-changed', listener)
       return () => ipcRenderer.off('sync:status-changed', listener)
     },
-    // P0-4: Listen for booking sync conflicts so staff can take action
     onBookingConflict: (cb) => {
       const listener = (_, payload) => cb(payload)
       ipcRenderer.on('booking:sync-conflict', listener)
@@ -227,7 +234,7 @@ const api = {
     deleteItem: (id) => ipcRenderer.invoke('inventory:deleteItem', id),
     addPurchase: (data) => ipcRenderer.invoke('inventory:addPurchase', data),
     getPurchases: (itemId) => ipcRenderer.invoke('inventory:getPurchases', itemId),
-    adjustStock: (itemId, delta, notes) => ipcRenderer.invoke('inventory:adjustStock', itemId, delta, notes),
+    adjustStock: (itemId, delta, notes, managerPin) => ipcRenderer.invoke('inventory:adjustStock', itemId, delta, notes, managerPin),
     getLowStock: () => ipcRenderer.invoke('inventory:getLowStock'),
     getStocktakes: (limit) => ipcRenderer.invoke('inventory:getStocktakes', limit),
     createStocktake: (data) => ipcRenderer.invoke('inventory:createStocktake', data),
@@ -242,7 +249,7 @@ const api = {
     deleteItem: (id) => ipcRenderer.invoke('supplies:deleteItem', id),
     addPurchase: (data) => ipcRenderer.invoke('supplies:addPurchase', data),
     getPurchases: (itemId) => ipcRenderer.invoke('supplies:getPurchases', itemId),
-    adjustStock: (itemId, delta, notes) => ipcRenderer.invoke('supplies:adjustStock', itemId, delta, notes),
+    adjustStock: (itemId, delta, notes, managerPin) => ipcRenderer.invoke('supplies:adjustStock', itemId, delta, notes, managerPin),
     getRoomStock: () => ipcRenderer.invoke('supplies:getRoomStock'),
     loadToRoom: (data) => ipcRenderer.invoke('supplies:loadToRoom', data),
     useInRoom: (data) => ipcRenderer.invoke('supplies:useInRoom', data),
@@ -312,7 +319,17 @@ const api = {
     updateCompany: (lodgeId, updates) => ipcRenderer.invoke('admin:updateCompany', lodgeId, updates),
     getCompanyUsers: (lodgeId) => ipcRenderer.invoke('admin:getCompanyUsers', lodgeId),
     resetCompanyUserPassword: (lodgeId, userId, password) => ipcRenderer.invoke('admin:resetCompanyUserPassword', lodgeId, userId, password),
-    updateCompanyUserPwaAccess: (lodgeId, userId, payload) => ipcRenderer.invoke('admin:updateCompanyUserPwaAccess', lodgeId, userId, payload)
+    updateCompanyUserPwaAccess: (lodgeId, userId, payload) => ipcRenderer.invoke('admin:updateCompanyUserPwaAccess', lodgeId, userId, payload),
+    // Lifecycle
+    archiveCompany: (lodgeId) => ipcRenderer.invoke('admin:archiveCompany', lodgeId),
+    restoreCompany: (lodgeId) => ipcRenderer.invoke('admin:restoreCompany', lodgeId),
+    permanentlyDeleteCompany: (lodgeId) => ipcRenderer.invoke('admin:permanentlyDeleteCompany', lodgeId),
+    repairDuplicateEventBookings: (lodgeId) => ipcRenderer.invoke('admin:repairDuplicateEventBookings', lodgeId),
+    // Expenses
+    getExpenses: () => ipcRenderer.invoke('admin:getExpenses'),
+    createExpense: (data) => ipcRenderer.invoke('admin:createExpense', data),
+    updateExpense: (id, data) => ipcRenderer.invoke('admin:updateExpense', id, data),
+    deleteExpense: (id) => ipcRenderer.invoke('admin:deleteExpense', id)
   },
   conference: {
     getAll: (start, end) => ipcRenderer.invoke('conference:getAll', start, end),
@@ -347,11 +364,6 @@ const api = {
     saveConfig: (config) => ipcRenderer.invoke('email:saveConfig', config),
     test: (config) => ipcRenderer.invoke('email:test', config),
     sendLicense: (payload) => ipcRenderer.invoke('email:sendLicense', payload)
-  },
-  app: {
-    getVersion: () => ipcRenderer.invoke('app:getVersion'),
-    logRendererError: (payload) => ipcRenderer.invoke('app:logRendererError', payload),
-    getRendererErrors: (limit) => ipcRenderer.invoke('app:getRendererErrors', limit)
   },
 }
 

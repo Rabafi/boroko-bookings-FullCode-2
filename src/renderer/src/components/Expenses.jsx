@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Plus, Pencil, Trash2, Search } from 'lucide-react'
 import { Modal } from './shared/Modal'
 import HorizontalScrollArea from './shared/HorizontalScrollArea'
-import { useSettings } from '../App'
+import { useSettings } from '../app-context'
 
 const CATEGORIES = [
   'Food & Beverage',
@@ -66,8 +66,8 @@ export default function Expenses() {
     load()
   }, [start, end, selectedOutlet])
 
-  const load = async () => {
-    setLoading(true)
+  const load = async (silent = false) => {
+    if (!silent) setLoading(true)
     setPageError('')
     try {
       const showSupplyCosts = !selectedOutlet || selectedOutlet === 'all' || selectedOutlet === 'unassigned'
@@ -89,6 +89,14 @@ export default function Expenses() {
       setLoading(false)
     }
   }
+
+  useEffect(() => {
+    if (!window.api?.sync?.onStatusChanged) return
+    const unsubscribe = window.api.sync.onStatusChanged(() => {
+      load(true)
+    })
+    return () => unsubscribe?.()
+  }, [start, end, selectedOutlet])
 
   const expenseMatchesCurrentOutlet = (expense) => {
     if (!selectedOutlet || selectedOutlet === 'all') return true
@@ -307,7 +315,7 @@ export default function Expenses() {
         >
           <option value="all">All Outlets</option>
           {outlets.map((o) => (
-            <option key={o.id} value={o.id}>{o.name}</option>
+            <option key={o.id || o.name} value={o.id || ''}>{o.name}</option>
           ))}
           <option value="unassigned">Unassigned</option>
         </select>
@@ -656,7 +664,7 @@ export default function Expenses() {
               >
                 <option value="">— Unassigned —</option>
                 {outlets.map((o) => (
-                  <option key={o.id} value={o.id}>{o.name}</option>
+                  <option key={o.id || o.name} value={o.id || ''}>{o.name}</option>
                 ))}
               </select>
             </div>

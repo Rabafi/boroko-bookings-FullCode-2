@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import { CreditCard, FileText, Mail, Printer, Receipt, RefreshCw, RotateCcw, Search } from 'lucide-react'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { Modal } from './shared/Modal'
 import { Receipt as BookingReceipt } from './shared/Receipt'
 import HorizontalScrollArea from './shared/HorizontalScrollArea'
 import { DESKTOP_PAYMENT_METHODS } from '../constants/paymentMethods'
-import { useAuth, useSettings } from '../App'
+import { useAuth, useSettings } from '../app-context'
 
 const PAYMENT_STATUS_STYLES = {
   paid: 'bg-green-100 text-green-700',
@@ -108,6 +108,14 @@ function buildAuditSummary(row, currency) {
 }
 
 function formatStay(invoice) {
+  // Consolidated lodge/event booking — show 'Full Lodge (N rooms)' instead of a single room number
+  if (invoice._event_group || invoice.room_type === 'Full Lodge') {
+    const roomLabel = invoice.room_count ? `Full Lodge (${invoice.room_count} rooms)` : 'Full Lodge'
+    const checkIn = fmtDate(invoice.check_in)
+    const checkOut = fmtDate(invoice.check_out)
+    const nights = Number(invoice.nights || 0)
+    return `${roomLabel} · ${checkIn} - ${checkOut} · ${nights}N`
+  }
   const room = invoice.room_number ? `Room ${invoice.room_number}` : 'Room —'
   const checkIn = fmtDate(invoice.check_in)
   const checkOut = fmtDate(invoice.check_out)
@@ -118,6 +126,17 @@ function formatStay(invoice) {
 function canRefundBooking(invoice) {
   const status = String(invoice?.status || '').toLowerCase()
   return ['pending', 'confirmed', 'cancelled'].includes(status)
+}
+
+function invoiceNeedsAttention(invoice) {
+  const total = Math.max(0, Number(invoice.total_amount || 0) + Number(invoice.charges_total || 0))
+  const paid = Math.max(0, Number(invoice.amount_paid || 0))
+  const status = String(invoice.payment_status || 'unpaid')
+  if (paid > total + 0.01) return true
+  if (status === 'paid' && paid < total - 0.01) return true
+  if (status === 'unpaid' && paid > 0.01) return true
+  if (status === 'partial' && (paid <= 0.01 || paid >= total - 0.01)) return true
+  return false
 }
 
 function Badge({ value, styles }) {
@@ -560,9 +579,11 @@ export default function BookingInvoices() {
   const { user } = useAuth()
   const currency = settings?.currency || 'P'
   const navigate = useNavigate()
+  const location = useLocation()
 
   const [invoices, setInvoices] = useState([])
   const [loading, setLoading] = useState(false)
+  const [isOffline, setIsOffline] = useState(false)
   const [search, setSearch] = useState('')
   const [paymentFilter, setPaymentFilter] = useState('all')
   const [bookingFilter, setBookingFilter] = useState('all')
@@ -582,14 +603,42 @@ export default function BookingInvoices() {
 
   const loadInvoices = async () => {
     setLoading(true)
+    setIsOffline(false)
     const data = await window.api.invoices.getBookingInvoices().catch(() => [])
-    setInvoices(Array.isArray(data) ? data : [])
+    const fresh = Array.isArray(data) ? data : []
+    // Detect offline: if we got 0 rows but there are bookings, or check sync status
+    const syncStatus = await window.api.sync.getStatus().catch(() => null)
+    setIsOffline(syncStatus?.isOnline === false)
+    setInvoices(fresh)
+    // Keep selectedInvoice in sync so the modal reflects the latest financial state
+    setSelectedInvoice((prev) => {
+      if (!prev) return prev
+      return fresh.find((inv) => inv.booking_id === prev.booking_id) ?? prev
+    })
     setLoading(false)
   }
 
   useEffect(() => {
     loadInvoices()
   }, [])
+
+  // Handle incoming navigation state from Bookings page (Process Refund button)
+  useEffect(() => {
+    const refundBookingId = location.state?.refundBookingId
+    if (!refundBookingId || !invoices.length) return
+    const invoice = invoices.find((inv) => String(inv.booking_id) === String(refundBookingId))
+    if (!invoice) {
+      pushFlash('error', 'Could not find that booking invoice. Please refresh and try again.')
+    } else if (isFinanciallySyncBlocked(invoice.booking_id)) {
+      pushFlash('error', FINANCIAL_SYNC_BLOCK_MESSAGE)
+    } else if (!canRefundBooking(invoice)) {
+      pushFlash('error', 'This booking cannot be refunded at this stage.')
+    } else {
+      setRefundInvoice(invoice)
+    }
+    navigate(location.pathname, { replace: true, state: {} })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [invoices, location.state])
 
   useEffect(() => {
     let cancelled = false
@@ -707,6 +756,10 @@ export default function BookingInvoices() {
     if (invoice.payment_status !== 'paid') acc.openCount += 1
     return acc
   }, { total: 0, paid: 0, balance: 0, openCount: 0 })
+  const needsAttentionCount = useMemo(
+    () => invoices.filter((invoice) => financialFailedIds.has(invoice.booking_id) || invoiceNeedsAttention(invoice)).length,
+    [financialFailedIds, invoices]
+  )
 
   const collectionQueue = useMemo(() => (
     [...filteredInvoices]
@@ -730,7 +783,8 @@ export default function BookingInvoices() {
             View lodge booking invoices, payment history, refunds, and guest delivery in one place.
           </p>
         </div>
-        <button
+
+<button
           type="button"
           onClick={loadInvoices}
           disabled={loading}
@@ -748,6 +802,16 @@ export default function BookingInvoices() {
             : 'border border-red-200 bg-red-50 text-red-700'
         }`}>
           {flash.text}
+        </div>
+      )}
+
+      {isOffline && (
+        <div className="flex items-start gap-3 rounded-2xl border border-slate-300 bg-slate-100 px-5 py-4 text-sm text-slate-700 font-medium shadow-sm">
+          <span className="text-lg leading-none">📶</span>
+          <div>
+            <p className="font-semibold">Offline mode — invoice data may be incomplete</p>
+            <p className="mt-1 text-xs font-normal text-slate-600">Invoice totals are read from the local cache. Payment collection and refunds are locked. Reconnect and refresh to get live data.</p>
+          </div>
         </div>
       )}
 
@@ -781,6 +845,11 @@ export default function BookingInvoices() {
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-gray-500">Outstanding</p>
           <p className="mt-2 text-3xl font-bold text-amber-700">{fmtMoney(currency, totals.balance)}</p>
           <p className="mt-1 text-sm text-gray-500">{totals.openCount} invoice{totals.openCount === 1 ? '' : 's'} still open</p>
+        </div>
+        <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-gray-200">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-gray-500">Needs Attention</p>
+          <p className="mt-2 text-3xl font-bold text-amber-700">{needsAttentionCount}</p>
+          <p className="mt-1 text-sm text-gray-500">Invoices with payment totals that need review</p>
         </div>
       </div>
 
@@ -889,7 +958,7 @@ export default function BookingInvoices() {
         </div>
       </div>
 
-      <div className="overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-gray-200">
+      <div className="overflow-visible rounded-2xl bg-white shadow-sm ring-1 ring-gray-200">
         {loading ? (
           <div className="flex items-center justify-center gap-3 px-6 py-16 text-sm text-gray-500">
             <RefreshCw size={16} className="animate-spin" />
@@ -904,7 +973,7 @@ export default function BookingInvoices() {
             </p>
           </div>
         ) : (
-          <HorizontalScrollArea>
+          <HorizontalScrollArea viewportClassName="overflow-y-visible">
             <table className="min-w-[1180px] w-full text-sm">
               <thead className="bg-gray-50 text-left text-xs uppercase tracking-[0.16em] text-gray-500">
                 <tr>
@@ -953,15 +1022,28 @@ export default function BookingInvoices() {
                         {fmtMoney(currency, invoice.balance_due)}
                       </p>
                       <p className="mt-1 text-xs text-gray-500">Paid {fmtMoney(currency, invoice.amount_paid)}</p>
-                      {Number(invoice.balance_due || 0) > 0 && (
+                      {Number(invoice.balance_due || 0) > 0 && invoice.status !== 'cancelled' && (
                         <p className="mt-1 text-xs font-semibold text-amber-700">Needs collection</p>
+                      )}
+                      {invoice.status === 'cancelled' && Number(invoice.amount_paid || 0) > 0.01 && invoice.payment_status !== 'paid' && (
+                        <p className="mt-1 text-xs font-semibold text-rose-600">Refund pending</p>
                       )}
                     </td>
                     <td className="px-5 py-4">
                       <Badge value={invoice.payment_status} styles={PAYMENT_STATUS_STYLES} />
+                      {(financialFailedIds.has(invoice.booking_id) || invoiceNeedsAttention(invoice)) && (
+                        <span className="ml-2 inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-2.5 py-0.5 text-xs font-semibold text-amber-700">
+                          ⚠️ Needs Attention
+                        </span>
+                      )}
                     </td>
                     <td className="px-5 py-4">
                       <Badge value={invoice.status} styles={BOOKING_STATUS_STYLES} />
+                      {invoice.status === 'cancelled' && Number(invoice.amount_paid || 0) > 0.01 && invoice.payment_status !== 'paid' && (
+                        <span className="mt-1 inline-flex items-center rounded-full border border-rose-200 bg-rose-50 px-2 py-0.5 text-[10px] font-semibold text-rose-700 whitespace-nowrap">
+                          ⚠️ Refund Pending
+                        </span>
+                      )}
                     </td>
                     <td className="px-5 py-4 text-gray-600">
                       {fmtDate(invoice.issued_at)}
@@ -1014,6 +1096,23 @@ export default function BookingInvoices() {
                           <CreditCard size={12} />
                           Collect
                         </button>
+                        {invoice.status === 'cancelled' && Number(invoice.amount_paid || 0) > 0.01 && invoice.payment_status !== 'paid' && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (isFinanciallySyncBlocked(invoice.booking_id)) {
+                                pushFlash('error', FINANCIAL_SYNC_BLOCK_MESSAGE)
+                                return
+                              }
+                              setRefundInvoice(invoice)
+                            }}
+                            disabled={isFinanciallySyncBlocked(invoice.booking_id)}
+                            className="inline-flex items-center gap-1 rounded-lg border border-rose-300 bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-700 transition hover:border-rose-400 hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            <RotateCcw size={12} />
+                            Refund
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={() => setReceiptInvoice(invoice)}
@@ -1046,6 +1145,11 @@ export default function BookingInvoices() {
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <Badge value={selectedInvoice.payment_status} styles={PAYMENT_STATUS_STYLES} />
+                  {(financialFailedIds.has(selectedInvoice.booking_id) || invoiceNeedsAttention(selectedInvoice)) && (
+                    <span className="inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-700">
+                      ⚠️ Needs Attention
+                    </span>
+                  )}
                   <Badge value={selectedInvoice.status} styles={BOOKING_STATUS_STYLES} />
                 </div>
               </div>
@@ -1091,6 +1195,35 @@ export default function BookingInvoices() {
                   >
                     <CreditCard size={15} />
                     Collect Payment
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {selectedInvoice.status === 'cancelled' && Number(selectedInvoice.amount_paid || 0) > 0.01 && selectedInvoice.payment_status !== 'paid' && (
+              <div className="rounded-2xl border-2 border-rose-300 bg-rose-50 px-5 py-4 text-sm text-rose-900">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="font-semibold">⚠️ Refund must be processed</p>
+                    <p className="mt-1 text-rose-700">
+                      This booking was cancelled with {fmtMoney(currency, selectedInvoice.amount_paid)} on record.
+                      Process the refund to clear the guest balance and close this record.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={isFinanciallySyncBlocked(selectedInvoice.booking_id)}
+                    onClick={() => {
+                      if (isFinanciallySyncBlocked(selectedInvoice.booking_id)) {
+                        pushFlash('error', FINANCIAL_SYNC_BLOCK_MESSAGE)
+                        return
+                      }
+                      setRefundInvoice(selectedInvoice)
+                    }}
+                    className="inline-flex items-center gap-2 rounded-xl bg-rose-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-rose-700 disabled:opacity-60"
+                  >
+                    <RotateCcw size={15} />
+                    Process Refund
                   </button>
                 </div>
               </div>
@@ -1204,6 +1337,15 @@ export default function BookingInvoices() {
           currency={currency}
           onClose={() => setRefundInvoice(null)}
           onSaved={(result) => {
+            const bookingId = refundInvoice.booking_id
+            const settledAmount = Number(result?.retained_amount ?? 0)
+            const settledStatus = settledAmount > 0.001 ? 'paid' : 'unpaid'
+            // Optimistic patch — clears warnings immediately without waiting for the full reload
+            setInvoices((prev) => prev.map((inv) =>
+              inv.booking_id === bookingId
+                ? { ...inv, payment_status: settledStatus, amount_paid: settledAmount, total_amount: settledAmount, balance_due: 0, status: 'cancelled' }
+                : inv
+            ))
             setRefundInvoice(null)
             setSelectedInvoice(null)
             pushFlash('success', `Refund recorded for ${refundInvoice.customer_name || 'guest'} and approved by ${result?.approved_by_name || 'manager'}.`)

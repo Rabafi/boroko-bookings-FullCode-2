@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Building2, Loader2, Plus, Trash2 } from 'lucide-react'
-import { useProfiles } from '../App'
+import { useProfiles } from '../app-context'
 
 function formatProfileStatus(status) {
   return status === 'draft' ? 'Draft Setup' : 'Ready'

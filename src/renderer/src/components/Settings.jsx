@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef, lazy, Suspense } from 'react'
-import { Building2, Phone, Mail, MapPin, Globe, Hash, Save, Upload, X, Image, Moon, Plus, Pencil, Trash2, Calendar, RefreshCw, CheckCircle2, AlertTriangle, Key, ShieldCheck, Clock, CreditCard, Copy, TrendingUp, ArrowUpCircle, Settings as SettingsIcon, MessageCircle, FileText, Info, Send, Sparkles } from 'lucide-react'
-import { useSettings } from '../App'
+import { useLocation } from 'react-router-dom'
+import { Building2, Phone, Mail, MapPin, Globe, Hash, Save, Upload, X, Image, Moon, RefreshCw, CheckCircle2, AlertTriangle, Key, ShieldCheck, Clock, CreditCard, Copy, TrendingUp, ArrowUpCircle, Settings as SettingsIcon, MessageCircle, FileText, Info, Send, Sparkles } from 'lucide-react'
+import { useSettings } from '../app-context'
 const SystemHealthPanel = lazy(() => import('./SystemHealthPanel'))
 const SubscriptionAccessPanel = lazy(() => import('./SubscriptionAccessPanel'))
 
@@ -66,7 +67,8 @@ function normalizePlanName(plan) {
 
 export default function Settings() {
   const { settings: globalSettings, setSettings: setGlobalSettings } = useSettings()
-  const [activeTab, setActiveTab] = useState('general')
+  const location = useLocation()
+  const [activeTab, setActiveTab] = useState(() => location.state?.activeTab || 'general')
   const [form, setForm] = useState(null)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -254,11 +256,6 @@ export default function Settings() {
   const [upgradeSending, setUpgradeSending] = useState(false)
   const [upgradeSent, setUpgradeSent] = useState(false)
   const [invoices, setInvoices] = useState([])
-  const [rateOverrides, setRateOverrides] = useState([])
-  const [rooms, setRooms] = useState([])
-  const [rateForm, setRateForm] = useState(null) // null = closed, {} = open
-  const [editingRate, setEditingRate] = useState(null)
-  const [rateSaving, setRateSaving] = useState(false)
   const [generalDataLoaded, setGeneralDataLoaded] = useState(false)
   const [licenseDataLoaded, setLicenseDataLoaded] = useState(false)
 
@@ -283,8 +280,6 @@ export default function Settings() {
 
   useEffect(() => {
     if (activeTab !== 'general' || generalDataLoaded) return
-    window.api.rateOverrides.getAll().then(setRateOverrides).catch(() => {})
-    window.api.rooms.getAll().then(setRooms).catch(() => {})
     setGeneralDataLoaded(true)
   }, [activeTab, generalDataLoaded])
 
@@ -333,41 +328,6 @@ export default function Settings() {
       // silently fail — user can try again
     }
     setUpgradeSending(false)
-  }
-
-  // Seasonal pricing
-
-  const openRateCreate = () => {
-    setEditingRate(null)
-    setRateForm({ room_id: rooms[0]?.id || '', start_date: '', end_date: '', rate_per_night: '', name: '' })
-  }
-
-  const openRateEdit = (r) => {
-    setEditingRate(r)
-    setRateForm({ room_id: r.room_id, start_date: r.start_date, end_date: r.end_date, rate_per_night: String(r.rate_per_night), name: r.name || '' })
-  }
-
-  const handleRateSave = async (e) => {
-    e.preventDefault()
-    setRateSaving(true)
-    const payload = { ...rateForm, room_id: Number(rateForm.room_id), rate_per_night: parseFloat(rateForm.rate_per_night) }
-    if (editingRate) {
-      await window.api.rateOverrides.update(editingRate.id, payload).catch(console.error)
-    } else {
-      await window.api.rateOverrides.create(payload).catch(console.error)
-    }
-    const data = await window.api.rateOverrides.getAll().catch(() => [])
-    setRateOverrides(data || [])
-    setRateSaving(false)
-    setRateForm(null)
-    setEditingRate(null)
-  }
-
-  const handleRateDelete = async (id) => {
-    if (!confirm('Delete this rate override?')) return
-    await window.api.rateOverrides.delete(id).catch(console.error)
-    const data = await window.api.rateOverrides.getAll().catch(() => [])
-    setRateOverrides(data || [])
   }
 
   useEffect(() => {
@@ -579,13 +539,14 @@ export default function Settings() {
         <h1 className="text-2xl font-bold text-gray-800">Settings</h1>
       </div>
 
-      {/* ── Tab bar ─────────────────────────────────────────────────────── */}
+{/* ── Tab bar ─────────────────────────────────────────────────────── */}
       <div className="flex gap-1 bg-gray-100 rounded-xl p-1 mb-6">
         {tabs.map(tab => (
           <button
             key={tab.id}
             type="button"
             onClick={() => setActiveTab(tab.id)}
+            data-testid={`settings-tab-${tab.id}`}
             className={`flex-1 flex items-center justify-center gap-2 py-2 px-4 rounded-lg text-sm font-medium transition-all ${
               activeTab === tab.id
                 ? 'bg-white text-gray-800 shadow-sm'
@@ -1020,77 +981,6 @@ export default function Settings() {
                   </div>
                 </div>
               </div>
-            </div>
-
-            {/* ── Seasonal / Event Pricing ──────────────────────────────────── */}
-            <div className="bg-white rounded-xl shadow-sm p-6">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wider flex items-center gap-2">
-                  <Calendar size={15} className="text-green-600" /> Seasonal & Event Pricing
-                </h2>
-                <button type="button" onClick={openRateCreate} className="flex items-center gap-1 text-sm text-green-600 hover:text-green-700">
-                  <Plus size={14} /> Add Override
-                </button>
-              </div>
-
-              {rateOverrides.length === 0 ? (
-                <p className="text-sm text-gray-400">No rate overrides set. Add seasonal, holiday, or weekend rates here.</p>
-              ) : (
-                <div className="space-y-2">
-                  {rateOverrides.map((r) => {
-                    const room = rooms.find((rm) => rm.id === r.room_id)
-                    return (
-                      <div key={r.id} className="flex items-center justify-between bg-gray-50 rounded-lg px-4 py-2.5 text-sm">
-                        <div>
-                          <p className="font-medium text-gray-800">{r.name || 'Rate override'} — Room {room?.room_number || r.room_id}</p>
-                          <p className="text-xs text-gray-400">{r.start_date} → {r.end_date}</p>
-                        </div>
-                        <div className="flex items-center gap-3">
-                          <span className="font-semibold text-green-700">{form?.currency || 'P'} {Number(r.rate_per_night).toFixed(2)}/night</span>
-                          <button type="button" onClick={() => openRateEdit(r)} className="p-1 text-blue-400 hover:text-blue-600"><Pencil size={14} /></button>
-                          <button type="button" onClick={() => handleRateDelete(r.id)} className="p-1 text-red-400 hover:text-red-600"><Trash2 size={14} /></button>
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
-              )}
-
-              {rateForm && (
-                <form onSubmit={handleRateSave} className="mt-4 border-t pt-4 space-y-3">
-                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
-                    {editingRate ? 'Edit Rate Override' : 'New Rate Override'}
-                  </p>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-xs font-medium text-gray-600 mb-1">Room *</label>
-                      <select className="input" value={rateForm.room_id} onChange={(e) => setRateForm({ ...rateForm, room_id: e.target.value })} required>
-                        {rooms.map((r) => (<option key={r.id} value={r.id}>Room {r.room_number} — {r.room_type}</option>))}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-600 mb-1">Name / Label</label>
-                      <input type="text" className="input" placeholder="e.g. Christmas, Weekend" value={rateForm.name} onChange={(e) => setRateForm({ ...rateForm, name: e.target.value })} />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-600 mb-1">Start Date *</label>
-                      <input type="date" className="input" value={rateForm.start_date} onChange={(e) => setRateForm({ ...rateForm, start_date: e.target.value })} required />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-600 mb-1">End Date *</label>
-                      <input type="date" className="input" value={rateForm.end_date} min={rateForm.start_date} onChange={(e) => setRateForm({ ...rateForm, end_date: e.target.value })} required />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-600 mb-1">Rate per Night ({form?.currency || 'P'}) *</label>
-                      <input type="number" step="0.01" min="0" className="input" value={rateForm.rate_per_night} onChange={(e) => setRateForm({ ...rateForm, rate_per_night: e.target.value })} required placeholder="0.00" />
-                    </div>
-                  </div>
-                  <div className="flex gap-3">
-                    <button type="button" onClick={() => { setRateForm(null); setEditingRate(null) }} className="btn-secondary flex-1">Cancel</button>
-                    <button type="submit" disabled={rateSaving} className="btn-primary flex-1">{rateSaving ? 'Saving...' : editingRate ? 'Update' : 'Add Override'}</button>
-                  </div>
-                </form>
-              )}
             </div>
 
             {/* ── Online Booking Site ──────────────────────────────────────── */}

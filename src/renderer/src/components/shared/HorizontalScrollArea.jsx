@@ -62,8 +62,7 @@ export default function HorizontalScrollArea({
       </div>
 
       {canScrollLeft && (
-        <>
-          <div className="bb-scroll-area__edge bb-scroll-area__edge--left" />
+        <div className="bb-scroll-area__edge bb-scroll-area__edge--left">
           <button
             type="button"
             className="bb-scroll-area__button bb-scroll-area__button--left"
@@ -73,12 +72,11 @@ export default function HorizontalScrollArea({
           >
             <ChevronLeft size={18} />
           </button>
-        </>
+        </div>
       )}
 
       {canScrollRight && (
-        <>
-          <div className="bb-scroll-area__edge bb-scroll-area__edge--right" />
+        <div className="bb-scroll-area__edge bb-scroll-area__edge--right">
           <button
             type="button"
             className="bb-scroll-area__button bb-scroll-area__button--right"
@@ -88,7 +86,7 @@ export default function HorizontalScrollArea({
           >
             <ChevronRight size={18} />
           </button>
-        </>
+        </div>
       )}
     </div>
   )
