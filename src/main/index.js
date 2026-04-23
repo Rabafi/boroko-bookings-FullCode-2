@@ -467,35 +467,111 @@ function showDesktopNotification({ title = 'Boroko Bookings', body = '', sound =
 }
 
 // ── Auto-updater setup ───────────────────────────────────────────────────────
-autoUpdater.autoDownload = true        // download silently in background
+autoUpdater.autoDownload = false       // let the user review the release before downloading
 autoUpdater.autoInstallOnAppQuit = true // install when user quits naturally
+
+const updateState = {
+  phase: 'idle',
+  currentVersion: app.getVersion(),
+  version: null,
+  releaseName: '',
+  releaseDate: '',
+  releaseNotes: '',
+  progress: null,
+  error: ''
+}
+
+function normalizeReleaseNotes(notes) {
+  if (!notes) return ''
+  if (typeof notes === 'string') return notes.trim()
+  if (Array.isArray(notes)) {
+    return notes
+      .map((entry) => {
+        if (typeof entry === 'string') return entry.trim()
+        if (!entry || typeof entry !== 'object') return ''
+        return String(entry.note || entry.text || entry.name || '').trim()
+      })
+      .filter(Boolean)
+      .join('\n\n')
+      .trim()
+  }
+  if (typeof notes === 'object') {
+    return String(notes.note || notes.text || notes.name || '').trim()
+  }
+  return String(notes).trim()
+}
+
+function setUpdateState(patch = {}) {
+  Object.assign(updateState, patch)
+  updateState.currentVersion = app.getVersion()
+  return { ...updateState }
+}
 
 function setupAutoUpdater(mainWindow) {
   // Only run in production (not dev mode)
   if (is.dev) return
 
   autoUpdater.on('update-available', (info) => {
-    mainWindow.webContents.send('update:available', {
+    const payload = setUpdateState({
+      phase: 'available',
       version: info.version,
-      releaseNotes: info.releaseNotes || ''
+      releaseName: info.releaseName || '',
+      releaseDate: info.releaseDate || '',
+      releaseNotes: normalizeReleaseNotes(info.releaseNotes),
+      progress: null,
+      error: ''
     })
+    mainWindow.webContents.send('update:available', payload)
+  })
+
+  autoUpdater.on('update-not-available', (info) => {
+    const payload = setUpdateState({
+      phase: 'uptodate',
+      version: info?.version || app.getVersion(),
+      releaseName: '',
+      releaseDate: '',
+      releaseNotes: '',
+      progress: null,
+      error: ''
+    })
+    mainWindow.webContents.send('update:not-available', payload)
   })
 
   autoUpdater.on('download-progress', (progress) => {
-    mainWindow.webContents.send('update:progress', {
+    const progressPayload = {
       percent: Math.round(progress.percent),
       transferred: progress.transferred,
-      total: progress.total
+      total: progress.total,
+      bytesPerSecond: progress.bytesPerSecond
+    }
+    const payload = setUpdateState({
+      phase: 'downloading',
+      progress: progressPayload,
+      error: ''
     })
+    mainWindow.webContents.send('update:progress', { ...payload, ...progressPayload })
   })
 
   autoUpdater.on('update-downloaded', (info) => {
-    mainWindow.webContents.send('update:ready', { version: info.version })
+    const payload = setUpdateState({
+      phase: 'ready',
+      version: info.version,
+      releaseName: info.releaseName || updateState.releaseName,
+      releaseDate: info.releaseDate || updateState.releaseDate,
+      releaseNotes: normalizeReleaseNotes(info.releaseNotes) || updateState.releaseNotes,
+      error: ''
+    })
+    mainWindow.webContents.send('update:ready', payload)
   })
 
   autoUpdater.on('error', (err) => {
     console.error('Auto-updater error:', err.message)
+    const payload = setUpdateState({
+      phase: 'error',
+      error: err?.message || 'Could not check for updates.'
+    })
     mainWindow.webContents.send('update:error', {
+      ...payload,
       message: err?.message || 'Could not check for updates.'
     })
   })
@@ -3560,13 +3636,35 @@ app.whenReady().then(async () => {
   ipcMain.handle('update:check', async () => {
     if (is.dev) return { success: true, updateAvailable: false, dev: true }
     try {
+      setUpdateState({ phase: 'checking', error: '' })
       const result = await autoUpdater.checkForUpdates()
-      const latestVersion = result?.updateInfo?.version
+      const info = result?.updateInfo || {}
+      const latestVersion = info.version
       const updateAvailable = latestVersion && latestVersion !== app.getVersion()
-      return { success: true, updateAvailable, latestVersion }
+      return {
+        success: true,
+        updateAvailable,
+        latestVersion,
+        releaseName: info.releaseName || '',
+        releaseDate: info.releaseDate || '',
+        releaseNotes: normalizeReleaseNotes(info.releaseNotes),
+        state: { ...updateState }
+      }
     }
     catch (e) { return { success: false, error: e.message } }
   })
+  ipcMain.handle('update:download', async () => {
+    if (is.dev) return { success: true, dev: true }
+    try {
+      setUpdateState({ phase: 'downloading', error: '' })
+      await autoUpdater.downloadUpdate()
+      return { success: true }
+    } catch (e) {
+      setUpdateState({ phase: 'error', error: e.message || 'Download failed.' })
+      return { success: false, error: e.message || 'Download failed.' }
+    }
+  })
+  ipcMain.handle('update:getState', () => ({ ...updateState }))
   ipcMain.handle('app:getVersion', () => app.getVersion())
   ipcMain.handle('app:notify', async (_, payload = {}) => {
     showDesktopNotification({

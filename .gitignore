@@ -4,6 +4,7 @@ out
 .env
 .env.local
 .env.release
+.release/
 *.log
 .DS_Store
 .claude/

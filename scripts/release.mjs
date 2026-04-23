@@ -1,4 +1,4 @@
-import { readFileSync, existsSync } from 'fs'
+import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'fs'
 import path from 'path'
 import { spawnSync } from 'child_process'
 import { fileURLToPath } from 'url'
@@ -10,6 +10,16 @@ const projectRoot = path.resolve(__dirname, '..')
 const args = process.argv.slice(2)
 const mode = ['patch', 'minor', 'major', 'publish'].includes(args[0]) ? args[0] : 'patch'
 const remindPwa = args.includes('--remind-pwa')
+
+function getArgValue(flagName) {
+  const index = args.indexOf(flagName)
+  if (index === -1) return ''
+  return args[index + 1] || ''
+}
+
+const notesFileArg = getArgValue('--notes-file')
+const notesArg = getArgValue('--notes')
+const notesTitleArg = getArgValue('--notes-title')
 
 function parseEnvFile(filePath) {
   if (!existsSync(filePath)) return {}
@@ -67,6 +77,89 @@ function run(command, commandArgs, extraEnv = {}) {
   }
 }
 
+function runCapture(command, commandArgs, extraEnv = {}) {
+  const isWindows = process.platform === 'win32'
+  const result = spawnSync(
+    isWindows ? process.env.ComSpec || 'cmd.exe' : command,
+    isWindows ? ['/c', command, ...commandArgs] : commandArgs,
+    {
+      cwd: projectRoot,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      encoding: 'utf8',
+      env: { ...process.env, ...extraEnv }
+    }
+  )
+  if (result.error) return ''
+  if (result.status !== 0) return ''
+  return String(result.stdout || '').trim()
+}
+
+function readPackageVersion() {
+  const pkgPath = path.join(projectRoot, 'package.json')
+  const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'))
+  return String(pkg.version || '').trim()
+}
+
+function getRecentCommitSubjects(limit = 8) {
+  const output = runCapture('git', ['log', '--no-merges', `-n=${limit}`, '--pretty=format:%s'])
+  return output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+}
+
+function buildGeneratedReleaseNotes({ version, title }) {
+  const commits = getRecentCommitSubjects()
+  const heading = title || `Boroko Bookings ${version}`
+  const lines = [
+    `## ${heading}`,
+    '',
+    '### Highlights',
+    ...(commits.length > 0
+      ? commits.map((commit) => `- ${commit}`)
+      : ['- Maintenance release with quality improvements and fixes.']),
+    '',
+    '### Operator Notes',
+    '- Update when the front desk has a quiet moment.',
+    '- Restart the desktop app after download completes to apply the update.',
+    '- Review the updated areas briefly after install.'
+  ]
+  return `${lines.join('\n').trim()}\n`
+}
+
+function resolveReleaseNotesContent() {
+  if (notesArg.trim()) return notesArg.trim()
+
+  if (notesFileArg.trim()) {
+    const resolvedFile = path.resolve(projectRoot, notesFileArg.trim())
+    if (!existsSync(resolvedFile)) {
+      console.error(`Release notes file not found: ${resolvedFile}`)
+      process.exit(1)
+    }
+    return readFileSync(resolvedFile, 'utf8').trim()
+  }
+
+  const defaultNotesFile = path.join(projectRoot, 'release-notes.md')
+  if (existsSync(defaultNotesFile)) {
+    return readFileSync(defaultNotesFile, 'utf8').trim()
+  }
+
+  return buildGeneratedReleaseNotes({
+    version: readPackageVersion(),
+    title: notesTitleArg.trim()
+  }).trim()
+}
+
+function writeReleaseNotesFile() {
+  const releaseDir = path.join(projectRoot, '.release')
+  mkdirSync(releaseDir, { recursive: true })
+  const filePath = path.join(releaseDir, 'release-notes.md')
+  const content = `${resolveReleaseNotesContent()}\n`
+  writeFileSync(filePath, content, 'utf8')
+  console.log(`Using release notes file: ${filePath}`)
+  return filePath
+}
+
 const ghToken = resolveGhToken()
 if (!ghToken) {
   console.error('GH_TOKEN was not found.')
@@ -79,13 +172,14 @@ if (!ghToken) {
 }
 
 if (mode === 'publish') {
+  const releaseNotesFile = writeReleaseNotesFile()
   run('npm.cmd', ['run', 'build'], {
     GH_TOKEN: ghToken,
     EP_DRAFT: 'false',
     EP_PRE_RELEASE: 'false',
     EP_CHANNEL: 'latest'
   })
-  run('npx.cmd', ['electron-builder', '--win', 'nsis', '--publish', 'always'], {
+  run('npx.cmd', ['electron-builder', '--win', 'nsis', '--publish', 'always', `--config.releaseInfo.releaseNotesFile=${releaseNotesFile}`], {
     GH_TOKEN: ghToken,
     EP_DRAFT: 'false',
     EP_PRE_RELEASE: 'false',

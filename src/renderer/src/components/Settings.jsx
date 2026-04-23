@@ -1,7 +1,9 @@
 import { useEffect, useState, useRef, lazy, Suspense } from 'react'
 import { useLocation } from 'react-router-dom'
-import { Building2, Phone, Mail, MapPin, Globe, Hash, Save, Upload, X, Image, Moon, RefreshCw, CheckCircle2, AlertTriangle, Key, ShieldCheck, Clock, CreditCard, Copy, TrendingUp, ArrowUpCircle, Settings as SettingsIcon, MessageCircle, FileText, Info, Send, Sparkles } from 'lucide-react'
+import { Building2, Phone, Mail, MapPin, Globe, Hash, Save, Upload, X, Image, Moon, RefreshCw, CheckCircle2, AlertTriangle, Key, ShieldCheck, Clock, CreditCard, Copy, TrendingUp, ArrowUpCircle, Settings as SettingsIcon, MessageCircle, FileText, Info, Send, Sparkles, Download, RotateCcw } from 'lucide-react'
 import { useSettings } from '../app-context'
+import { Modal } from './shared/Modal'
+import { extractReleaseHighlights, formatReleaseDate, normalizeReleaseNotes, toReleaseSections } from '../utils/updatePresentation'
 const SystemHealthPanel = lazy(() => import('./SystemHealthPanel'))
 const SubscriptionAccessPanel = lazy(() => import('./SubscriptionAccessPanel'))
 
@@ -66,6 +68,7 @@ function normalizePlanName(plan) {
 
 
 export default function Settings() {
+  const UPDATE_SNOOZE_KEY = 'bb_update_snooze_until'
   const { settings: globalSettings, setSettings: setGlobalSettings } = useSettings()
   const location = useLocation()
   const [activeTab, setActiveTab] = useState(() => location.state?.activeTab || 'general')
@@ -90,6 +93,10 @@ export default function Settings() {
   const [updateMessage, setUpdateMessage] = useState('')
   const [downloadProgress, setDownloadProgress] = useState(null) // null | { percent, transferred, total }
   const [updateReady, setUpdateReady] = useState(false)
+  const [updateMeta, setUpdateMeta] = useState(null)
+  const [releaseNotesOpen, setReleaseNotesOpen] = useState(false)
+  const [updateSnoozedUntil, setUpdateSnoozedUntil] = useState('')
+  const updateListenersAdded = useRef(false)
   const [emailConfig, setEmailConfig] = useState({
     provider: 'gmail',
     host: 'smtp.gmail.com',
@@ -118,6 +125,41 @@ export default function Settings() {
   useEffect(() => {
     if (activeTab !== 'general') return
     window.api.updates.getVersion().then(setAppVersion).catch(() => {})
+    try {
+      const raw = window.localStorage.getItem(UPDATE_SNOOZE_KEY)
+      const until = Number(raw)
+      if (Number.isFinite(until) && until > Date.now()) {
+        setUpdateSnoozedUntil(new Date(until).toLocaleString())
+      } else {
+        setUpdateSnoozedUntil('')
+      }
+    } catch {
+      setUpdateSnoozedUntil('')
+    }
+  }, [activeTab])
+
+  useEffect(() => {
+    if (activeTab !== 'general') return
+    window.api.updates.getState()
+      .then((info) => {
+        if (!info) return
+        if (['available', 'downloading', 'ready', 'error'].includes(info.phase)) {
+          setUpdateMeta(info)
+        }
+        if (info.phase === 'downloading') {
+          setUpdateStatus('available')
+          setUpdateMessage(info.progress?.bytesPerSecond > 0 ? `Downloading at ${formatBytes(info.progress.bytesPerSecond)}/s` : 'Downloading update…')
+          setDownloadProgress(info.progress || null)
+        } else if (info.phase === 'ready') {
+          setUpdateReady(true)
+          setUpdateStatus('available')
+          setUpdateMessage('Download complete. Restart to install.')
+        } else if (info.phase === 'error') {
+          setUpdateStatus('error')
+          setUpdateMessage(info.error || 'Update failed.')
+        }
+      })
+      .catch(() => {})
   }, [activeTab])
 
   useEffect(() => {
@@ -149,14 +191,17 @@ export default function Settings() {
   }, [activeTab])
 
   useEffect(() => {
-    if (activeTab !== 'general') return
+    if (activeTab !== 'general' || updateListenersAdded.current) return
+    updateListenersAdded.current = true
     window.api.updates.onAvailable((info) => {
+      setUpdateMeta(info)
       setUpdateStatus('available')
-      setUpdateMessage(`v${info.version} found. Downloading now...`)
-      setDownloadProgress({ percent: 0, transferred: 0, total: 0, bytesPerSecond: 0 })
+      setUpdateMessage(`v${info.version} is available to download.`)
+      setDownloadProgress(null)
       setUpdateReady(false)
     })
     window.api.updates.onNotAvailable(() => {
+      setUpdateMeta(null)
       setUpdateStatus('uptodate')
       setUpdateMessage('You\'re running the latest version.')
       setDownloadProgress(null)
@@ -165,9 +210,11 @@ export default function Settings() {
     window.api.updates.onProgress((p) => {
       setUpdateStatus('available')
       setDownloadProgress(p)
+      setUpdateMeta((current) => ({ ...(current || {}), progress: p }))
       setUpdateMessage(p.bytesPerSecond > 0 ? `Downloading at ${formatBytes(p.bytesPerSecond)}/s` : 'Preparing download...')
     })
-    window.api.updates.onReady(() => {
+    window.api.updates.onReady((info) => {
+      setUpdateMeta(info)
       setUpdateReady(true)
       setUpdateStatus('available')
       setUpdateMessage('Download complete. Restart to install.')
@@ -193,9 +240,16 @@ export default function Settings() {
         setUpdateStatus('error')
         setUpdateMessage(res.error || 'Could not reach update server.')
       } else if (res.updateAvailable) {
+        setUpdateMeta({
+          version: res.latestVersion,
+          releaseName: res.releaseName || '',
+          releaseDate: res.releaseDate || '',
+          releaseNotes: normalizeReleaseNotes(res.releaseNotes)
+        })
         setUpdateStatus('available')
-        setUpdateMessage(`v${res.latestVersion} is available — download started.`)
+        setUpdateMessage(`v${res.latestVersion} is available to download.`)
       } else {
+        setUpdateMeta(null)
         setUpdateStatus('uptodate')
         setUpdateMessage('You\'re running the latest version.')
       }
@@ -203,6 +257,33 @@ export default function Settings() {
       setUpdateStatus('error')
       setUpdateMessage(e.message || 'Update check failed.')
     }
+  }
+
+  const downloadUpdate = async () => {
+    setUpdateStatus('available')
+    setUpdateMessage('Preparing download...')
+    setDownloadProgress({ percent: 0, transferred: 0, total: 0, bytesPerSecond: 0 })
+    setUpdateReady(false)
+    try {
+      const res = await window.api.updates.download()
+      if (!res?.success) {
+        setUpdateStatus('error')
+        setUpdateMessage(res?.error || 'Could not start the update download.')
+        setDownloadProgress(null)
+      }
+    } catch (error) {
+      setUpdateStatus('error')
+      setUpdateMessage(error?.message || 'Could not start the update download.')
+      setDownloadProgress(null)
+    }
+  }
+
+  const snoozeUpdate = () => {
+    const until = Date.now() + 24 * 60 * 60 * 1000
+    try {
+      window.localStorage.setItem(UPDATE_SNOOZE_KEY, String(until))
+    } catch {}
+    setUpdateSnoozedUntil(new Date(until).toLocaleString())
   }
 
   const toggleDarkMode = () => {
@@ -592,7 +673,7 @@ export default function Settings() {
 
           {/* ── App Updates ─────────────────────────────────────────────── */}
           <div className="bg-white rounded-xl shadow-sm p-5 mb-6">
-            <div className="flex items-center justify-between">
+            <div className="flex items-start justify-between gap-4">
               <div className="flex items-center gap-3">
                 <div className="w-9 h-9 bg-blue-50 rounded-lg flex items-center justify-center">
                   <RefreshCw size={17} className="text-blue-600" />
@@ -602,17 +683,34 @@ export default function Settings() {
                   <p className="text-xs text-gray-400">
                     Current version: <span className="font-mono font-medium text-gray-600">v{appVersion || '…'}</span>
                   </p>
+                  {updateMeta?.version && updateMeta.version !== appVersion && (
+                    <p className="mt-1 text-xs text-blue-600">
+                      Latest available: <span className="font-mono font-medium">v{updateMeta.version}</span>
+                    </p>
+                  )}
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={checkForUpdates}
-                disabled={updateStatus === 'checking'}
-                className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold px-4 py-2 rounded-lg transition-colors disabled:opacity-60"
-              >
-                <RefreshCw size={13} className={updateStatus === 'checking' ? 'animate-spin' : ''} />
-                {updateStatus === 'checking' ? 'Checking…' : 'Check for Updates'}
-              </button>
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={checkForUpdates}
+                  disabled={updateStatus === 'checking'}
+                  className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold px-4 py-2 rounded-lg transition-colors disabled:opacity-60"
+                >
+                  <RefreshCw size={13} className={updateStatus === 'checking' ? 'animate-spin' : ''} />
+                  {updateStatus === 'checking' ? 'Checking…' : 'Check for Updates'}
+                </button>
+                {updateMeta?.releaseNotes && (
+                  <button
+                    type="button"
+                    onClick={() => setReleaseNotesOpen(true)}
+                    className="flex items-center gap-2 border border-slate-200 bg-white text-slate-700 text-xs font-semibold px-4 py-2 rounded-lg transition-colors hover:bg-slate-50"
+                  >
+                    <FileText size={13} />
+                    View Details
+                  </button>
+                )}
+              </div>
             </div>
 
             {updateMessage && (
@@ -625,6 +723,69 @@ export default function Settings() {
                 {updateStatus === 'available' && <RefreshCw size={13} className="flex-shrink-0 mt-0.5 animate-spin" />}
                 {updateStatus === 'error'     && <AlertTriangle size={13} className="flex-shrink-0 mt-0.5" />}
                 <span>{updateMessage}</span>
+              </div>
+            )}
+
+            {updateMeta?.version && (
+              <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-800">Boroko Bookings v{updateMeta.version}</p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      {[updateMeta.releaseName, formatReleaseDate(updateMeta.releaseDate)].filter(Boolean).join(' · ') || 'Latest desktop release'}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {!updateReady && updateMeta.version !== appVersion && (
+                      <button
+                        type="button"
+                        onClick={downloadUpdate}
+                        className="flex items-center gap-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold px-3 py-2 rounded-lg transition-colors"
+                      >
+                        <Download size={13} />
+                        Download Update
+                      </button>
+                    )}
+                    {!updateReady && updateMeta.version !== appVersion && (
+                      <button
+                        type="button"
+                        onClick={snoozeUpdate}
+                        className="flex items-center gap-2 border border-slate-200 bg-white text-slate-700 text-xs font-semibold px-3 py-2 rounded-lg transition-colors hover:bg-slate-50"
+                      >
+                        Remind Tomorrow
+                      </button>
+                    )}
+                    {updateReady && (
+                      <button
+                        type="button"
+                        onClick={() => window.api.updates.install()}
+                        className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white text-xs font-semibold px-3 py-2 rounded-lg transition-colors"
+                      >
+                        <RotateCcw size={13} />
+                        Restart to Install
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {extractReleaseHighlights(updateMeta.releaseNotes).length > 0 && (
+                  <div className="mt-4 space-y-2">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">What this update is about</p>
+                    <div className="grid gap-2">
+                      {extractReleaseHighlights(updateMeta.releaseNotes).map((item) => (
+                        <div key={item} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700">
+                          {item}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {updateSnoozedUntil && !updateReady && updateMeta.version !== appVersion && (
+                  <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                    Update reminders are snoozed until {updateSnoozedUntil}.
+                  </div>
+                )}
               </div>
             )}
 
@@ -657,6 +818,37 @@ export default function Settings() {
               </button>
             )}
           </div>
+
+          {releaseNotesOpen && (
+            <Modal title={`Boroko Bookings v${updateMeta?.version || ''}`} onClose={() => setReleaseNotesOpen(false)} size="lg">
+              <div className="space-y-5">
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
+                  <p className="text-sm font-semibold text-slate-900">Release notes</p>
+                  <p className="mt-1 text-sm text-slate-600">
+                    {[updateMeta?.releaseName, formatReleaseDate(updateMeta?.releaseDate)].filter(Boolean).join(' · ') || 'Latest desktop release'}
+                  </p>
+                </div>
+                {toReleaseSections(updateMeta?.releaseNotes).length > 0 ? (
+                  <div className="space-y-4">
+                    {toReleaseSections(updateMeta?.releaseNotes).map((section) => (
+                      <div key={section.title} className="rounded-2xl border border-slate-200 bg-white px-4 py-4">
+                        <p className="text-sm font-semibold text-slate-900">{section.title}</p>
+                        <div className="mt-3 space-y-2">
+                          {section.items.map((item) => (
+                            <p key={item} className="text-sm leading-6 text-slate-700">• {item}</p>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <pre className="whitespace-pre-wrap break-words rounded-2xl border border-slate-200 bg-white px-4 py-4 text-sm leading-6 text-slate-700">
+                    {normalizeReleaseNotes(updateMeta?.releaseNotes) || 'No release notes were published for this update.'}
+                  </pre>
+                )}
+              </div>
+            </Modal>
+          )}
 
           <form onSubmit={handleSave} className="space-y-6">
 

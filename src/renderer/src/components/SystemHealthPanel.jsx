@@ -632,7 +632,7 @@ export default function SystemHealthPanel() {
           <p className="mt-1 text-sm text-gray-500">
             Recent activity, money checks, backups, and account status.
             <span className="ml-2 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-500">
-              This view shows only this computer.
+              This device only — does not reflect PWA/browser queue state
             </span>
           </p>
         </div>
@@ -645,12 +645,12 @@ export default function SystemHealthPanel() {
           <button type="button" onClick={runSyncNow} disabled={actionBusy === 'run-sync'}
             className="inline-flex items-center gap-2 rounded-xl bg-blue-700 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-800 disabled:opacity-60">
             <Play size={14} />
-            {actionBusy === 'run-sync' ? 'Checking…' : 'Check Now'}
+            {actionBusy === 'run-sync' ? 'Checking…' : 'Run Sync Now'}
           </button>
           <button type="button" onClick={exportSupportBundle} disabled={actionBusy === 'support-bundle'}
             className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-60">
             <Download size={14} />
-            {actionBusy === 'support-bundle' ? 'Saving…' : 'Save Report'}
+            {actionBusy === 'support-bundle' ? 'Saving…' : 'Export Bundle'}
           </button>
           <button type="button" onClick={sendReportToCommandCentral} disabled={actionBusy === 'send-report'}
             className="inline-flex items-center gap-2 rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-800 disabled:opacity-60">
@@ -846,6 +846,7 @@ export default function SystemHealthPanel() {
                   {!health?.online && ' The app is offline.'}
                   {health?.online && !replayAuthReady && ' Sending is paused until sign-in is restored.'}
                   {pendingCount > 0 && ' Some items are still waiting to send.'}
+                  {' Local state acknowledgement not yet proven.'}
                 </p>
               )}
               {localStateAcknowledged && (
@@ -865,9 +866,9 @@ export default function SystemHealthPanel() {
                 {failedCount > 0
                   ? 'Some items need review before staff can trust the latest data.'
                   : manualClearFaults.length > 0
-                    ? 'Some items were cleared manually, so they still need checking.'
+                    ? 'Manual Clear Left Integrity Unproven'
                     : ghostFaults.length > 0
-                      ? 'The online copy and this computer do not match yet.'
+                      ? 'Server Mismatch Detected During Replay'
                       : convergenceFaults.length > 0
                         ? 'The refreshed data is different from what this device expected.'
                   : cacheStale
@@ -876,7 +877,7 @@ export default function SystemHealthPanel() {
               </p>
               <p className={`mt-1 text-sm ${failedCount > 0 ? 'text-red-800/80' : 'text-amber-800/80'}`}>
                 {failedCount > 0 && `${failedCount} item${failedCount === 1 ? '' : 's'} need review. `}
-                {manualClearFaults.length > 0 && `${manualClearFaults.length} manually cleared item${manualClearFaults.length === 1 ? '' : 's'} still need checking. `}
+                {manualClearFaults.length > 0 && `${manualClearFaults.length} manually cleared item${manualClearFaults.length === 1 ? '' : 's'} still need checking. integrity alert(s) were recorded because remote persistence is still unconfirmed. `}
                 {ghostFaults.length > 0 && `${ghostFaults.length} mismatch alert${ghostFaults.length === 1 ? '' : 's'} detected. `}
                 {convergenceFaults.length > 0 && !ghostFaults.length && `${convergenceFaults.length} data mismatch alert${convergenceFaults.length === 1 ? '' : 's'} saved. `}
                 {pendingCount > 0 && `${pendingCount} item${pendingCount === 1 ? '' : 's'} still sending. `}
@@ -1173,7 +1174,7 @@ export default function SystemHealthPanel() {
                         {item.isFinancial ? 'Money' : 'General'}
                       </span>
                       <span className="rounded-full bg-slate-100 px-2 py-1 font-semibold text-slate-700">
-                        State: {plainStatusLabel(item.dependencyState || 'unknown')}
+                        Dependency: {item.dependencyState || 'unknown'}
                       </span>
                       {item._depends_on && (
                         <span className="rounded-full bg-slate-100 px-2 py-1 font-semibold text-slate-700">
@@ -1330,7 +1331,7 @@ export default function SystemHealthPanel() {
               {/* P0-3: never show green when offline */}
               {reconciliationLocalOnly ? (
                 <span className="inline-flex items-center rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-800">
-                  Cannot verify offline
+                  Cannot verify financial agreement — offline
                 </span>
               ) : !reconciliationValid ? (
                 <span className="inline-flex items-center rounded-full bg-gray-100 px-2.5 py-1 text-xs font-semibold text-gray-600">
@@ -1446,7 +1447,7 @@ export default function SystemHealthPanel() {
             {/* Validation alerts */}
             <div className="mt-5 border-t border-gray-100 pt-4" data-testid="system-health-validation-alerts">
               <div className="flex items-center justify-between gap-3">
-                <h4 className="text-sm font-semibold text-gray-900">Alerts</h4>
+                <h4 className="text-sm font-semibold text-gray-900">Validation Alerts</h4>
                 <StatusPill ok={validationAlerts.length === 0} label={validationAlerts.length === 0 ? 'No alerts' : `${validationAlerts.length} saved`} />
               </div>
               <div className="mt-3 space-y-3">
@@ -1509,7 +1510,7 @@ export default function SystemHealthPanel() {
           <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-gray-200">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <h3 className="text-sm font-semibold text-gray-900">Important errors</h3>
+                  <h3 className="text-sm font-semibold text-gray-900">Critical Error Log</h3>
                 <p className="mt-1 text-xs text-gray-500">Important desktop issues with helpful details.</p>
               </div>
               <StatusPill ok={criticalErrors.length === 0} label={criticalErrors.length === 0 ? 'No issues' : `${criticalErrors.length} saved`} />

@@ -1,8 +1,11 @@
 import { useState, useEffect, useRef, useCallback, useContext, lazy, Suspense } from 'react'
 import { HashRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom'
+import { BellRing, ChevronDown, ChevronUp, Download, FileText, RefreshCw, RotateCcw, X } from 'lucide-react'
 import { buildCapabilitySnapshot, isPosFullAccessRole } from '../../shared/accessControl'
 import { getFeatureRequiredPlan, getSubscriptionPlan } from '../../shared/subscriptionPlans'
 import AppErrorBoundary from './components/AppErrorBoundary'
+import { Modal } from './components/shared/Modal'
+import { extractReleaseHighlights, formatReleaseDate, toReleaseSections } from './utils/updatePresentation'
 import {
   AuthContext,
   SettingsContext,
@@ -110,10 +113,14 @@ function UpgradeWall({ feature, children }) {
 
 // ── Update Banner ─────────────────────────────────────────────────────────────
 function UpdateBanner() {
-  const [state, setState] = useState(null) // null | 'downloading' | 'ready' | 'error'
-  const [version, setVersion] = useState('')
+  const UPDATE_SNOOZE_KEY = 'bb_update_snooze_until'
+  const [state, setState] = useState(null) // null | 'available' | 'downloading' | 'ready' | 'error'
+  const [updateInfo, setUpdateInfo] = useState(null)
   const [progress, setProgress] = useState({ percent: 0, transferred: 0, total: 0, bytesPerSecond: 0 })
   const [message, setMessage] = useState('')
+  const [minimized, setMinimized] = useState(false)
+  const [detailsOpen, setDetailsOpen] = useState(false)
+  const [snoozed, setSnoozed] = useState(false)
   const listenersAdded = useRef(false)
 
   const formatBytes = (bytes = 0) => {
@@ -127,91 +134,265 @@ function UpdateBanner() {
     if (listenersAdded.current || !window.api?.updates) return
     listenersAdded.current = true
 
+    const isSnoozed = () => {
+      try {
+        const raw = window.localStorage.getItem(UPDATE_SNOOZE_KEY)
+        if (!raw) return false
+        const until = Number(raw)
+        if (!Number.isFinite(until) || until <= Date.now()) {
+          window.localStorage.removeItem(UPDATE_SNOOZE_KEY)
+          return false
+        }
+        return true
+      } catch {
+        return false
+      }
+    }
+
+    window.api.updates.getState().then((info) => {
+      if (!info?.phase || ['idle', 'checking', 'uptodate'].includes(info.phase)) return
+      const snoozedNow = isSnoozed() && info.phase === 'available'
+      setSnoozed(snoozedNow)
+      setUpdateInfo(info)
+      setState(info.phase)
+      setProgress(info.progress || { percent: 0, transferred: 0, total: 0, bytesPerSecond: 0 })
+      if (info.phase === 'available') setMessage('New version available')
+      if (info.phase === 'downloading') setMessage('Downloading update…')
+      if (info.phase === 'ready') setMessage('Restart when you are ready to install.')
+      if (info.phase === 'error') setMessage(info.error || 'The update failed.')
+    }).catch(() => {})
+
     window.api.updates.onAvailable((info) => {
-      setVersion(info.version)
-      setMessage('Preparing download…')
-      setState('downloading')
+      setSnoozed(isSnoozed())
+      setUpdateInfo(info)
+      setMessage('New version available')
+      setState('available')
+      setMinimized(isSnoozed())
     })
     window.api.updates.onProgress((p) => {
+      setSnoozed(false)
       setProgress(p)
+      setState('downloading')
       setMessage(p.bytesPerSecond > 0 ? `${formatBytes(p.bytesPerSecond)}/s` : 'Downloading…')
     })
     window.api.updates.onReady((info) => {
-      setVersion(info.version)
+      setUpdateInfo(info)
       setState('ready')
+      setMessage('Ready to install')
+      setMinimized(false)
     })
     window.api.updates.onError((info) => {
+      setUpdateInfo(info)
       setMessage(info?.message || 'The update failed.')
       setState('error')
+      setMinimized(false)
     })
   }, [])
 
   if (!state) return null
+  const version = updateInfo?.version || ''
+  const releaseDate = formatReleaseDate(updateInfo?.releaseDate)
+  const highlights = extractReleaseHighlights(updateInfo?.releaseNotes)
+  const sections = toReleaseSections(updateInfo?.releaseNotes)
 
-  if (state === 'downloading') {
-    return (
-      <div className="fixed top-0 left-0 right-0 z-[9999] pointer-events-none">
-        <div className="max-w-6xl mx-auto flex items-center justify-between gap-4 bg-slate-950/95 backdrop-blur text-white px-4 py-3 shadow-2xl border-b border-cyan-400/20 pointer-events-auto">
-          <div className="min-w-0">
-            <p className="text-sm font-semibold text-white">Downloading Boroko Bookings v{version}</p>
-            <p className="text-xs text-slate-300">
-              {message} {progress.total > 0 ? `· ${formatBytes(progress.transferred)} of ${formatBytes(progress.total)}` : ''}
-            </p>
-          </div>
-          <div className="flex items-center gap-3 min-w-[220px]">
-            <div className="flex-1">
-              <div className="w-full bg-slate-800 rounded-full h-2 overflow-hidden">
-                <div className="h-2 rounded-full bg-gradient-to-r from-cyan-400 via-sky-400 to-emerald-400 transition-all duration-300"
-                  style={{ width: `${progress.percent}%` }}
-                />
-              </div>
-            </div>
-            <span className="text-cyan-200 text-xs tabular-nums w-12 text-right">{progress.percent}%</span>
-          </div>
-        </div>
-      </div>
-    )
+  const snoozeForDay = () => {
+    try {
+      window.localStorage.setItem(UPDATE_SNOOZE_KEY, String(Date.now() + 24 * 60 * 60 * 1000))
+    } catch {}
+    setSnoozed(true)
+    setMinimized(true)
   }
 
-  if (state === 'error') {
+  const dismiss = () => {
+    setState(null)
+    setDetailsOpen(false)
+  }
+
+  const downloadUpdate = async () => {
+    setState('downloading')
+    setMessage('Preparing download…')
+    const result = await window.api.updates.download().catch((error) => ({
+      success: false,
+      error: error?.message || 'Download failed.'
+    }))
+    if (!result?.success) {
+      setState('error')
+      setMessage(result?.error || 'Download failed.')
+    }
+  }
+
+  if (minimized || (snoozed && state === 'available')) {
     return (
-      <div className="fixed top-0 left-0 right-0 z-[9999] pointer-events-none">
-        <div className="bg-red-600 text-white text-sm flex items-center justify-between px-4 py-2 shadow-lg pointer-events-auto">
-          <span>{message}</span>
-          <button
-            onClick={() => setState(null)}
-            className="text-red-100 hover:text-white text-xs px-1"
-          >
-            ✕
-          </button>
-        </div>
+      <div className="fixed bottom-5 right-5 z-[9999] pointer-events-none">
+        <button
+          type="button"
+          onClick={() => {
+            setSnoozed(false)
+            setMinimized(false)
+          }}
+          className="pointer-events-auto inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white/95 px-4 py-2 text-xs font-semibold text-slate-700 shadow-[0_18px_40px_rgba(15,23,42,0.16)] backdrop-blur transition hover:-translate-y-0.5 hover:bg-white"
+        >
+          <BellRing size={14} className={state === 'downloading' ? 'animate-pulse text-sky-600' : state === 'ready' ? 'text-emerald-600' : state === 'error' ? 'text-red-600' : 'text-amber-600'} />
+          <span>{state === 'ready' ? `Restart to install v${version}` : state === 'downloading' ? `Downloading v${version}` : state === 'error' ? 'Update failed' : `Update available v${version}`}</span>
+          <ChevronUp size={14} />
+        </button>
       </div>
     )
   }
 
   return (
-    <div className="fixed top-0 left-0 right-0 z-[9999] pointer-events-none">
-      <div className="bg-emerald-600 text-white text-sm flex items-center justify-between px-4 py-2 shadow-lg pointer-events-auto">
-        <span>
-          ✅ <strong>Boroko Bookings v{version}</strong> is ready to install
-        </span>
-        <div className="flex items-center gap-3">
-          <span className="text-emerald-100 text-xs">Downloaded successfully</span>
-          <button
-            onClick={() => window.api.updates.install()}
-            className="bg-white text-emerald-700 font-semibold text-xs px-3 py-1 rounded hover:bg-emerald-50 transition-colors"
-          >
-            Restart Now
-          </button>
-          <button
-            onClick={() => setState(null)}
-            className="text-emerald-100 hover:text-white text-xs px-1"
-          >
-            ✕
-          </button>
+    <>
+      <div className="fixed bottom-5 right-5 z-[9999] pointer-events-none">
+        <div className="pointer-events-auto w-[360px] overflow-hidden rounded-[22px] border border-slate-200/80 bg-white/95 shadow-[0_28px_80px_rgba(15,23,42,0.22)] backdrop-blur">
+          <div className="border-b border-slate-200/80 bg-gradient-to-r from-slate-900 via-slate-800 to-emerald-900 px-4 py-3 text-white">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-white/70">App update</p>
+                <p className="mt-1 text-sm font-semibold">
+                  {state === 'ready'
+                    ? `Boroko Bookings v${version} is ready`
+                    : state === 'downloading'
+                      ? `Downloading v${version}`
+                      : state === 'error'
+                        ? 'Update needs attention'
+                        : `Boroko Bookings v${version} is available`}
+                </p>
+              </div>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => setMinimized(true)}
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-white/70 transition hover:bg-white/10 hover:text-white"
+                  aria-label="Minimize update card"
+                >
+                  <ChevronDown size={16} />
+                </button>
+                <button
+                  type="button"
+                  onClick={dismiss}
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-white/70 transition hover:bg-white/10 hover:text-white"
+                  aria-label="Dismiss update card"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-4 px-4 py-4">
+            <div className="space-y-1">
+              <p className="text-sm text-slate-700">{message}</p>
+              {(updateInfo?.releaseName || releaseDate) && (
+                <p className="text-xs text-slate-500">
+                  {[updateInfo?.releaseName, releaseDate].filter(Boolean).join(' · ')}
+                </p>
+              )}
+            </div>
+
+            {state === 'downloading' && (
+              <div className="rounded-2xl border border-sky-100 bg-sky-50 px-3 py-3">
+                <div className="mb-2 flex items-center justify-between text-xs font-semibold text-sky-800">
+                  <span>Download progress</span>
+                  <span>{progress.percent}%</span>
+                </div>
+                <div className="h-2 overflow-hidden rounded-full bg-white">
+                  <div
+                    className="h-full rounded-full bg-gradient-to-r from-sky-500 via-cyan-500 to-emerald-500 transition-all duration-300"
+                    style={{ width: `${progress.percent}%` }}
+                  />
+                </div>
+                <div className="mt-2 flex items-center justify-between text-[11px] text-sky-700">
+                  <span>{formatBytes(progress.transferred)} of {progress.total ? formatBytes(progress.total) : 'calculating...'}</span>
+                  <span>{progress.bytesPerSecond > 0 ? `${formatBytes(progress.bytesPerSecond)}/s` : 'starting...'}</span>
+                </div>
+              </div>
+            )}
+
+            {highlights.length > 0 && state !== 'error' && (
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+                <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">What changed</p>
+                <div className="space-y-1.5">
+                  {highlights.map((item) => (
+                    <p key={item} className="text-xs text-slate-700">• {item}</p>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="flex items-center gap-2">
+              {state === 'available' && (
+                <button type="button" onClick={downloadUpdate} className="btn-primary flex-1 justify-center">
+                  <Download size={15} />
+                  Download update
+                </button>
+              )}
+              {state === 'ready' && (
+                <button type="button" onClick={() => window.api.updates.install()} className="btn-primary flex-1 justify-center">
+                  <RotateCcw size={15} />
+                  Restart to install
+                </button>
+              )}
+              {state === 'error' && (
+                <button type="button" onClick={() => window.api.updates.check()} className="btn-primary flex-1 justify-center">
+                  <RefreshCw size={15} />
+                  Try again
+                </button>
+              )}
+              {updateInfo?.releaseNotes && (
+                <button type="button" onClick={() => setDetailsOpen(true)} className="btn-secondary justify-center">
+                  <FileText size={15} />
+                  Details
+                </button>
+              )}
+            </div>
+
+            {state === 'available' && (
+              <div className="flex items-center justify-between gap-3 border-t border-slate-200 pt-1">
+                <p className="text-[11px] text-slate-500">You can keep working and install later.</p>
+                <button
+                  type="button"
+                  onClick={snoozeForDay}
+                  className="text-xs font-semibold text-slate-600 transition hover:text-slate-900"
+                >
+                  Remind me tomorrow
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
-    </div>
+
+      {detailsOpen && (
+        <Modal title={`Boroko Bookings v${version}`} onClose={() => setDetailsOpen(false)} size="lg">
+          <div className="space-y-5">
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
+              <p className="text-sm font-semibold text-slate-900">Update details</p>
+              <p className="mt-1 text-sm text-slate-600">
+                {[updateInfo?.releaseName, releaseDate].filter(Boolean).join(' · ') || 'Release notes from the latest desktop update.'}
+              </p>
+            </div>
+            {sections.length > 0 ? (
+              <div className="space-y-4">
+                {sections.map((section) => (
+                  <div key={section.title} className="rounded-2xl border border-slate-200 bg-white px-4 py-4">
+                    <p className="text-sm font-semibold text-slate-900">{section.title}</p>
+                    <div className="mt-3 space-y-2">
+                      {section.items.map((item) => (
+                        <p key={item} className="text-sm leading-6 text-slate-700">• {item}</p>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <pre className="whitespace-pre-wrap break-words rounded-2xl border border-slate-200 bg-white px-4 py-4 text-sm leading-6 text-slate-700">
+                {updateInfo?.releaseNotes}
+              </pre>
+            )}
+          </div>
+        </Modal>
+      )}
+    </>
   )
 }
 

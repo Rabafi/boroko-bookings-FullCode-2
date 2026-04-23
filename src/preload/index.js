@@ -214,6 +214,8 @@ const api = {
     onError: (cb) => ipcRenderer.on('update:error', (_, info) => cb(info)),
     install: () => ipcRenderer.invoke('update:install'),
     check: () => ipcRenderer.invoke('update:check'),
+    download: () => ipcRenderer.invoke('update:download'),
+    getState: () => ipcRenderer.invoke('update:getState'),
     getVersion: () => ipcRenderer.invoke('app:getVersion')
   },
   outlets: {
