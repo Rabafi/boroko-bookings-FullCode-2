@@ -3,6 +3,34 @@ const CACHE_PREFIX = 'boroko_pwa_cache'
 const QUEUE_PREFIX = 'boroko_pwa_queue'
 const META_PREFIX = 'boroko_pwa_meta'
 const ISSUE_LOG_LIMIT = 100
+const NOTIFICATION_LIMIT = 40
+
+function normalizeNotificationPart(value) {
+  return String(value ?? '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48)
+}
+
+function hashNotificationParts(value) {
+  let hash = 0
+  for (let index = 0; index < value.length; index += 1) {
+    hash = ((hash << 5) - hash + value.charCodeAt(index)) | 0
+  }
+  return Math.abs(hash).toString(36)
+}
+
+export function buildPwaNotificationSourceKey(scope, ...parts) {
+  const normalized = parts
+    .map((part) => String(part ?? '').trim().replace(/\s+/g, ' '))
+    .filter(Boolean)
+    .join('|')
+  const slug = normalizeNotificationPart(parts[0] || 'item') || 'item'
+  return `${scope || 'notification'}:${slug}:${normalized ? hashNotificationParts(normalized) : 'global'}`
+}
 
 function readStorage(area, key, fallback) {
   if (!area) return fallback
@@ -214,7 +242,8 @@ export function getNotificationSettings() {
     urgentAlerts: true,
     refunds: true,
     balances: true,
-    maintenance: true
+    maintenance: true,
+    frontDeskRequests: true
   })
 }
 
@@ -223,13 +252,81 @@ export function setNotificationSettings(settings) {
   emit('boroko:pwa-notification-settings', settings)
 }
 
-// Maximum retries before a PWA queue item is considered a dead letter.
+function notificationStoreKey(lodgeId) {
+  return scoped(META_PREFIX, lodgeId, 'notifications')
+}
+
+export function listPwaNotifications(lodgeId, limit = NOTIFICATION_LIMIT) {
+  const current = readLocalJson(notificationStoreKey(lodgeId), [])
+  return (Array.isArray(current) ? current : [])
+    .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))
+    .slice(0, Math.max(Number(limit) || NOTIFICATION_LIMIT, 1))
+}
+
+export function getUnreadPwaNotificationCount(lodgeId) {
+  return listPwaNotifications(lodgeId).filter((item) => !item?.readAt).length
+}
+
+export function upsertPwaNotification(lodgeId, notification) {
+  const key = notificationStoreKey(lodgeId)
+  const current = readLocalJson(key, [])
+  const list = Array.isArray(current) ? [...current] : []
+  const sourceKey = notification?.sourceKey || notification?.id || crypto.randomUUID()
+  const index = list.findIndex((item) => (item?.sourceKey || item?.id) === sourceKey)
+  const previous = index >= 0 ? list[index] : null
+  const nextItem = {
+    id: previous?.id || notification?.id || crypto.randomUUID(),
+    sourceKey,
+    title: notification?.title || 'Boroko update',
+    message: notification?.message || '',
+    tone: notification?.tone || 'info',
+    category: notification?.category || 'general',
+    href: notification?.href || null,
+    meta: notification?.meta || previous?.meta || null,
+    createdAt: notification?.createdAt || previous?.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    readAt: previous?.readAt || null
+  }
+  if (previous?.meta && notification?.meta && typeof previous.meta === 'object' && typeof notification.meta === 'object') {
+    nextItem.meta = { ...previous.meta, ...notification.meta }
+  }
+  if (index >= 0) list[index] = { ...previous, ...nextItem }
+  else list.unshift(nextItem)
+  const trimmed = list
+    .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))
+    .slice(0, NOTIFICATION_LIMIT)
+  writeLocalJson(key, trimmed)
+  emit('boroko:pwa-notifications', { lodgeId, items: trimmed, latest: nextItem })
+  return nextItem
+}
+
+export function removePwaNotification(lodgeId, sourceKey) {
+  const key = notificationStoreKey(lodgeId)
+  const current = readLocalJson(key, [])
+  const next = (Array.isArray(current) ? current : []).filter((item) => (item?.sourceKey || item?.id) !== sourceKey)
+  writeLocalJson(key, next)
+  emit('boroko:pwa-notifications', { lodgeId, items: next, removed: sourceKey })
+}
+
+export function markPwaNotificationRead(lodgeId, notificationId) {
+  const key = notificationStoreKey(lodgeId)
+  const current = readLocalJson(key, [])
+  const next = (Array.isArray(current) ? current : []).map((item) => (
+    item?.id === notificationId && !item?.readAt
+      ? { ...item, readAt: new Date().toISOString() }
+      : item
+  ))
+  writeLocalJson(key, next)
+  emit('boroko:pwa-notifications', { lodgeId, items: next, readId: notificationId })
+}
+
+// Maximum retries before a saved change is considered stuck.
 const PWA_MAX_RETRIES = 3
 
 /**
  * Scan the offline queue for this device and return items that are unresolved:
  * - blocked === true
- * - retryCount >= PWA_MAX_RETRIES (dead letters)
+ * - retryCount >= PWA_MAX_RETRIES (stuck items)
  * - lastError is set
  *
  * NOTE: This is device-local state only. It does NOT reflect the desktop Electron
@@ -290,7 +387,7 @@ export async function publishPwaHealth(lodgeId, supabase, summary) {
       p_raw_summary: {}
     })
   } catch (e) {
-    console.warn('[PWA DeviceHealth] Publish failed:', e)
+    console.warn('[Manager mobile app DeviceHealth] Publish failed:', e)
   }
 }
 

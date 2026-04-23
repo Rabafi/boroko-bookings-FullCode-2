@@ -254,19 +254,19 @@ function StaffMembers() {
 
     if (form.pwa_password && form.pwa_password.length < 6) {
       setLoading(false)
-      setError('Manager PWA password must be at least 6 characters.')
+      setError('Manager mobile app password must be at least 6 characters.')
       return
     }
 
     if (form.pwa_enabled && !isPwaEligibleRole(form.role)) {
       setLoading(false)
-      setError('Only Manager and Admin roles can receive Manager PWA access.')
+      setError('Only Manager and Admin roles can receive manager mobile app access.')
       return
     }
 
     if (form.pwa_enabled && !form.pwa_password && !editingUser?.pwa_password_set_at) {
       setLoading(false)
-      setError('Set a separate Manager PWA password before enabling mobile access.')
+      setError('Set a separate manager mobile app password before enabling access.')
       return
     }
 
@@ -395,7 +395,7 @@ function StaffMembers() {
             <option value="name_asc">Name A-Z</option>
             <option value="name_desc">Name Z-A</option>
             <option value="created_desc">Newest added</option>
-            <option value="pwa_first">PWA enabled first</option>
+            <option value="pwa_first">Manager mobile app enabled first</option>
           </select>
           {canManageStaff && (
             <button
@@ -499,12 +499,12 @@ function StaffMembers() {
                   <span className={`text-xs px-2 py-1 rounded-full ${
                     pwaEnabled ? 'bg-indigo-100 text-indigo-700' : 'bg-amber-100 text-amber-700'
                   }`}>
-                    {pwaEnabled ? 'Manager PWA ready' : 'Manager PWA turned off'}
+                    {pwaEnabled ? 'Manager mobile app ready' : 'Manager mobile app turned off'}
                   </span>
                 )}
                 {staffUser.pwa_password_set_at && (
                   <span className="rounded-full bg-slate-100 px-2 py-1 text-xs text-slate-500">
-                    PWA password updated {formatShortDate(staffUser.pwa_password_set_at)}
+                    Mobile app password updated {formatShortDate(staffUser.pwa_password_set_at)}
                   </span>
                 )}
               </div>
@@ -613,7 +613,7 @@ function StaffMembers() {
                     pwa_enabled: isPwaEligibleRole(nextRole) ? current.pwa_enabled : false,
                     pwa_disabled_reason: isPwaEligibleRole(nextRole)
                       ? current.pwa_disabled_reason
-                      : 'Only Manager and Admin roles can use the Manager PWA.'
+                      : 'Only Manager and Admin roles can use the manager mobile app.'
                   }))
                 }}
               >
@@ -661,8 +661,8 @@ function StaffMembers() {
             {isPwaEligibleRole(form.role) && (
               <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
                 <div>
-                  <p className="text-sm font-medium text-slate-800">Manager PWA Access</p>
-                  <p className="mt-1 text-xs text-slate-500">This sets up separate access for the browser-based Manager PWA, independent of the desktop password.</p>
+                  <p className="text-sm font-medium text-slate-800">Manager mobile app access</p>
+                  <p className="mt-1 text-xs text-slate-500">This sets up separate access for the manager mobile app, independent of the desktop password.</p>
                 </div>
 
                 <>
@@ -673,19 +673,19 @@ function StaffMembers() {
                       onChange={(event) => setForm((current) => ({
                         ...current,
                         pwa_enabled: event.target.checked,
-                        pwa_disabled_reason: event.target.checked ? '' : (current.pwa_disabled_reason || 'Manager PWA access has been turned off.')
+                        pwa_disabled_reason: event.target.checked ? '' : (current.pwa_disabled_reason || 'Manager mobile app access has been turned off.')
                       }))}
                       className="mt-1"
                     />
                     <span>
-                      Enable Manager PWA for this user
+                      Enable manager mobile app for this user
                       <span className="mt-1 block text-xs text-slate-500">Only Manager and Admin roles can sign in to the browser-based manager app.</span>
                     </span>
                   </label>
 
                   <div>
                       <label className="mb-1 block text-sm font-medium text-slate-700">
-                        Manager PWA Password {editingId && <span className="font-normal text-slate-400">(leave blank to keep current)</span>}
+                        Manager mobile app password {editingId && <span className="font-normal text-slate-400">(leave blank to keep current)</span>}
                     </label>
                     <div className="relative">
                       <input
@@ -693,7 +693,7 @@ function StaffMembers() {
                         className="input pr-10"
                         value={form.pwa_password}
                         onChange={(event) => setForm({ ...form, pwa_password: event.target.value })}
-                        placeholder={editingUser?.pwa_password_set_at ? 'Leave blank to keep current PWA password' : 'Min 6 characters'}
+                        placeholder={editingUser?.pwa_password_set_at ? 'Leave blank to keep current password' : 'Min 6 characters'}
                       />
                       <button
                         type="button"
@@ -705,8 +705,8 @@ function StaffMembers() {
                     </div>
                     <p className="mt-2 text-xs text-slate-500">
                       {editingUser?.pwa_password_set_at
-                        ? `Current PWA password last updated ${formatShortDate(editingUser.pwa_password_set_at)}.`
-                        : 'Set a separate password for the Manager PWA.'}
+                        ? `Current mobile app password last updated ${formatShortDate(editingUser.pwa_password_set_at)}.`
+                        : 'Set a separate password for the manager mobile app.'}
                     </p>
                   </div>
 
@@ -717,7 +717,7 @@ function StaffMembers() {
                         className="input"
                         value={form.pwa_disabled_reason}
                         onChange={(event) => setForm({ ...form, pwa_disabled_reason: event.target.value })}
-                        placeholder="Why is Manager PWA access turned off"
+                        placeholder="Why is manager mobile app access turned off?"
                       />
                     </div>
                   )}

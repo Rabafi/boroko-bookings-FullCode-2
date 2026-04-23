@@ -48,6 +48,8 @@ let lodgeId = null
 let syncInProgress = false
 let replayAuthReady = false   // P0-5: set to true only after a user is authenticated
 let backendSession = null
+let consecutiveConnectivityFailures = 0
+let connectivityCheckInProgress = false
 let syncRefreshState = {
   stale: false,
   names: [],
@@ -81,8 +83,8 @@ const PLAN_FEATURE_MAP = {
     inventory: true, supplies: true
   }
 }
-const PWA_DISABLED_MESSAGE = 'Manager PWA access disabled.'
-const PWA_ROLE_DISABLED_MESSAGE = 'Only manager and admin roles can use the manager PWA.'
+const PWA_DISABLED_MESSAGE = 'Manager mobile app access disabled.'
+const PWA_ROLE_DISABLED_MESSAGE = 'Only manager and admin roles can use the manager mobile app.'
 const DEFAULT_SUBSCRIPTION_GRACE_DAYS = 7
 const DEFAULT_OFFLINE_LEASE_DAYS = 7
 const LOCAL_TIME_ZONE = 'Africa/Gaborone'
@@ -94,7 +96,11 @@ const SYNC_META_FILE = 'sync-meta.json'
 const HEALTH_FAULTS_FILE = 'health-faults.json'
 const CACHE_FRESHNESS_FILE = 'cache-freshness.json'
 const SYNC_DRIFT_FAULT_TYPES = ['customer_drift', 'room_drift', 'quotation_drift', 'pos_drift']
-const PERIODIC_SYNC_INTERVAL_MS = 5 * 60 * 1000   // 5 min — auto-retry retryable dead letters
+const CONNECTIVITY_CHECK_INTERVAL_MS = 3000
+const CONNECTIVITY_PROBE_TIMEOUT_MS = 1500
+const CONNECTIVITY_OFFLINE_FAILURE_THRESHOLD = 2
+const PERIODIC_SYNC_INTERVAL_MS = 15000
+const DEBUG_CACHE_FALLBACKS = process.env.BOROKO_DEBUG_CACHE_FALLBACKS === 'true'
 const BACKUP_POLICY_DEFAULT = {
   enabled: false,
   target_dir: '',
@@ -1234,6 +1240,17 @@ function normalizeUserRecord(user) {
   }
 }
 
+function sanitizeUserForRenderer(user) {
+  if (!user || typeof user !== 'object') return user
+  const {
+    password_hash: _passwordHash,
+    pin_hash: _pinHash,
+    pwa_password_hash: _pwaPasswordHash,
+    ...safeUser
+  } = user
+  return safeUser
+}
+
 function isBackendAuthSchemaError(message = '') {
   return /authenticate_user|authenticate_manager|get_manager_pwa_profile|validate_app_session|set_user_pwa_access|get_lodge_auth_context|schema cache|returned record type|structure of query does not match|contract_version|column .*deleted|column .*lodge_id|column .*password_hash|column .*pwa_|permission denied/i.test(message)
 }
@@ -1337,9 +1354,14 @@ function buildReadOnlySessionTouchMessage(featureLabel = 'This screen') {
 /** True when the Supabase project is reachable over the network (not whether RLS allows reading rooms). */
 async function checkOnline() {
   if (process.env.BOROKO_TEST_FORCE_OFFLINE === 'true') {
+    const wasOnline = isOnline
     isOnline = false
+    consecutiveConnectivityFailures = CONNECTIVITY_OFFLINE_FAILURE_THRESHOLD
+    if (wasOnline) broadcastSyncStatus()
     return isOnline
   }
+  const wasOnline = isOnline
+  let rawOnline = false
   const base = SUPABASE_URL.replace(/\/$/, '')
   const headers = {
     apikey: SUPABASE_ANON_KEY,
@@ -1347,7 +1369,7 @@ async function checkOnline() {
   }
   const fetchWithTimeout = async (url, init = {}) => {
     const ctrl = new AbortController()
-    const t = setTimeout(() => ctrl.abort(), 10000)
+    const t = setTimeout(() => ctrl.abort(), CONNECTIVITY_PROBE_TIMEOUT_MS)
     try {
       return await fetch(url, { ...init, headers, signal: ctrl.signal })
     } finally {
@@ -1361,15 +1383,27 @@ async function checkOnline() {
     if (res.status >= 500) {
       res = await fetchWithTimeout(`${base}/rest/v1/`, { method: 'GET' })
     }
-    isOnline = reachable(res)
+    rawOnline = reachable(res)
   } catch {
     try {
       const res = await fetchWithTimeout(`${base}/rest/v1/`, { method: 'GET' })
-      isOnline = reachable(res)
+      rawOnline = reachable(res)
     } catch {
+      rawOnline = false
+    }
+  }
+
+  if (rawOnline) {
+    consecutiveConnectivityFailures = 0
+    isOnline = true
+  } else {
+    consecutiveConnectivityFailures += 1
+    if (!wasOnline || consecutiveConnectivityFailures >= CONNECTIVITY_OFFLINE_FAILURE_THRESHOLD) {
       isOnline = false
     }
   }
+
+  if (wasOnline !== isOnline) broadcastSyncStatus()
   return isOnline
 }
 
@@ -1386,7 +1420,7 @@ async function refreshCache(...names) {
 // Full refresh — used only at startup, reconnect, and after bulk operations.
 async function refreshAllCaches() {
   if (!lodgeId) return
-  await refreshCache('users', 'rooms', 'customers', 'bookings')
+  await refreshCache('users', 'rooms', 'customers', 'bookings', 'maintenance')
 }
 
 const MAX_SYNC_RETRIES = 5
@@ -1456,10 +1490,15 @@ function clearSyncRefreshStale(names = []) {
 async function refreshCacheStrict(...names) {
   if (!lodgeId) return
   const fetchers = {
-    users:      () => supabase.from('users').select('id, auth_user_id, name, email, role, lodge_id, created_at, pwa_enabled, pwa_password_set_at, pwa_disabled_reason, pwa_password_reset_by, allowed_outlet_ids').eq('lodge_id', lodgeId).order('name'),
+    users:      () => supabase.from('users').select('id, auth_user_id, name, email, role, lodge_id, created_at, pwa_enabled, pwa_password_set_at, pwa_disabled_reason, pwa_password_reset_by, allowed_outlet_ids, pin_hash').eq('lodge_id', lodgeId).order('name'),
     rooms:      () => supabase.from('rooms').select('*').eq('lodge_id', lodgeId).order('room_number'),
     customers:  () => supabase.from('customers').select('*').eq('lodge_id', lodgeId).order('name'),
     bookings:   () => supabase.from('bookings').select('*').eq('lodge_id', lodgeId).order('check_in', { ascending: false }),
+    maintenance: () => supabase
+      .from('maintenance_tickets')
+      .select('*, rooms(room_number, room_type)')
+      .eq('lodge_id', lodgeId)
+      .order('created_at', { ascending: false }),
     'inventory-items': () => supabase.from('inventory_items').select('*').eq('lodge_id', lodgeId).order('category').order('name'),
     'inventory-purchases': () => supabase.from('inventory_purchases').select('*').eq('lodge_id', lodgeId).order('date', { ascending: false }),
     quotations: () => supabase.from('quotations').select('*').eq('lodge_id', lodgeId).order('created_at', { ascending: false }),
@@ -1617,13 +1656,21 @@ function isPosCreateOrderQueueItem(item) {
   return item?.type === 'rpc' && item?.table === 'create_pos_order'
 }
 
+function isPosVoidQueueItem(item) {
+  return item?.type === 'rpc' && item?.table === 'approve_pos_void_with_pin'
+}
+
 function getQueuedPosOrderId(item) {
-  const payloadId = String(item?.data?.payload?.id || '').trim()
+  const payloadId = String(item?.data?.payload?.id || item?.data?.payload?.order_id || '').trim()
   if (payloadId) return payloadId
 
   const queueId = String(item?._queue_id || '').trim()
   if (queueId.startsWith('pos-order-')) {
     const parsedId = queueId.slice('pos-order-'.length).trim()
+    if (parsedId) return parsedId
+  }
+  if (queueId.startsWith('pos-void-')) {
+    const parsedId = queueId.slice('pos-void-'.length).trim()
     if (parsedId) return parsedId
   }
 
@@ -1663,6 +1710,8 @@ function getSyncItemUserId(item) {
 }
 
 function getSyncItemQuotationId(item) {
+  const quotationId = String(item?.data?.p_quotation_id || '').trim()
+  if (quotationId) return quotationId
   return getSyncItemEntityId(item, 'quotation')
 }
 
@@ -1684,7 +1733,10 @@ function patchCachedPosOrderSyncState(orderId, patch = {}) {
   }
 
   const existing = cachedOrders[index] || {}
-  if (existing._sync_state === 'synced' && patch._sync_state !== 'failed') {
+  if (existing._sync_state === 'synced'
+      && patch._sync_state !== 'failed'
+      && patch._pending_sync !== true
+      && !Object.prototype.hasOwnProperty.call(patch, 'status')) {
     return false
   }
 
@@ -1699,6 +1751,10 @@ function patchCachedPosOrderSyncState(orderId, patch = {}) {
 
 function isCreateBookingQueueItem(item) {
   return item?.type === 'rpc' && item?.table === 'create_booking'
+}
+
+function isConvertQuotationQueueItem(item) {
+  return item?.type === 'rpc' && item?.table === 'convert_quotation_to_booking'
 }
 
 function getQueuedBookingId(item) {
@@ -1719,7 +1775,7 @@ function getQueuedBookingId(item) {
 }
 
 function isRoomConflictError(message = '') {
-  return /no_overlapping_bookings|room is already booked|room.*conflict/i.test(String(message || ''))
+  return /no_overlapping_bookings|room is already booked|room is not available|room.*conflict/i.test(String(message || ''))
 }
 
 function patchCachedBookingSyncState(bookingId, patch = {}) {
@@ -1743,6 +1799,61 @@ function patchCachedBookingSyncState(bookingId, patch = {}) {
   }
   writeCache('bookings', next)
   return true
+}
+
+function rewriteQueuedBookingReferenceItem(item, localBookingId, serverBookingId) {
+  if (!item || !localBookingId || !serverBookingId || localBookingId === serverBookingId) return item
+  const next = { ...item, data: { ...(item?.data || {}) } }
+  let changed = false
+  if (next.data.p_booking_id === localBookingId) {
+    next.data.p_booking_id = serverBookingId
+    changed = true
+  }
+  if (next.data.p_id === localBookingId) {
+    next.data.p_id = serverBookingId
+    changed = true
+  }
+  if (next._depends_on === `booking-${localBookingId}`) {
+    next._depends_on = `booking-${serverBookingId}`
+    changed = true
+  }
+  return changed ? next : item
+}
+
+function normalizeQueuedSyncItemForReplay(item = {}) {
+  if (!item) return item
+  const next = { ...item, data: { ...(item.data || {}) } }
+
+  if (next.type === 'rpc' && next.table === 'update_quotation' && !('p_expected_updated_at' in next.data)) {
+    next.data.p_expected_updated_at = null
+  }
+
+  if (next.type === 'rpc'
+      && next.table === 'update_booking_status'
+      && String(next._depends_on || '').startsWith('booking-')) {
+    next.data.p_expected_updated_at = null
+  }
+
+  return next
+}
+
+function replaceQueuedBookingReference(localBookingId, serverBookingId) {
+  if (!localBookingId || !serverBookingId || localBookingId === serverBookingId) return false
+
+  const queued = readSyncQueue()
+  const rewrittenQueue = queued.map((item) => rewriteQueuedBookingReferenceItem(item, localBookingId, serverBookingId))
+  if (JSON.stringify(queued) !== JSON.stringify(rewrittenQueue)) {
+    writeSyncQueue(rewrittenQueue)
+  }
+
+  const failed = readFailedSyncQueue()
+  const rewrittenFailed = failed.map((item) => rewriteQueuedBookingReferenceItem(item, localBookingId, serverBookingId))
+  if (JSON.stringify(failed) !== JSON.stringify(rewrittenFailed)) {
+    writeFailedSyncQueue(rewrittenFailed)
+  }
+
+  return JSON.stringify(queued) !== JSON.stringify(rewrittenQueue)
+    || JSON.stringify(failed) !== JSON.stringify(rewrittenFailed)
 }
 
 function patchCachedRowSyncState(cacheName, entityId, patch = {}) {
@@ -1842,6 +1953,21 @@ function valuesEqualForDrift(left, right) {
   return String(left) === String(right)
 }
 
+function hasDriftBaselineValue(value) {
+  return value !== undefined && value !== null && String(value).trim() !== ''
+}
+
+function isBenignBookingDriftFault(fault = {}) {
+  if (fault?.type !== 'booking_drift') return false
+  const drifts = Array.isArray(fault?.context?.drifts)
+    ? fault.context.drifts
+    : String(fault?.message || '').split(';').map((entry) => entry.trim()).filter(Boolean)
+  if (drifts.length === 0) return false
+  return drifts.every((entry) =>
+    /^(customer_id|room_id): local (undefined|null|) ?→ server [0-9a-f-]+$/i.test(String(entry || '').trim())
+  )
+}
+
 function queueItemNeedsBookingRefresh(item) {
   if (!item) return false
   if (isPosCreateOrderQueueItem(item)) {
@@ -1853,14 +1979,15 @@ function queueItemNeedsBookingRefresh(item) {
       'update_booking',
       'update_booking_status',
       'update_booking_payment',
-      'create_booking_record'
+      'create_booking_record',
+      'convert_quotation_to_booking'
     ]).has(item.table)
   }
   return item?.table === 'bookings'
 }
 
 function queueItemNeedsInventoryRefresh(item) {
-  if (!isPosCreateOrderQueueItem(item)) return false
+  if (!isPosCreateOrderQueueItem(item) && !isPosVoidQueueItem(item)) return false
   const items = Array.isArray(item?.data?.payload?.items) ? item.data.payload.items : []
   return items.some((entry) => !!entry?.menu_item_id || !!entry?.inventory_item_id)
 }
@@ -1874,11 +2001,14 @@ function isAlreadyAppliedInsertError(item, error) {
 
 function isAlreadyAppliedRpcError(item, errorOrMessage) {
   if (item?.type !== 'rpc') return false
-  const payloadId = item?.data?.payload?.id || item?.data?.p_booking_id || null
+  const message = getErrorMessage(errorOrMessage)
+  if (isConvertQuotationQueueItem(item) && /quotation is already converted|quotation is already .*converted|already converted/i.test(message)) {
+    return true
+  }
+  const payloadId = item?.data?.payload?.id || item?.data?.p_booking_id || item?.data?.p_quotation_id || null
   if (!payloadId) return false
 
   const code = String(errorOrMessage?.code || '').trim()
-  const message = getErrorMessage(errorOrMessage)
   return SYNC_ALREADY_APPLIED_CODES.has(code)
     || /duplicate key|unique constraint|already exists|already applied|23505/i.test(message)
 }
@@ -1921,7 +2051,9 @@ async function processSyncQueue() {
 
 async function _runSyncQueue() {
   await requeueEligibleFailedSyncItems()
-  let queue = readSyncQueue().map((item) => ensureQueuedItem(item, item?.type || 'op'))
+  let queue = readSyncQueue()
+    .map((item) => ensureQueuedItem(item, item?.type || 'op'))
+    .map(normalizeQueuedSyncItemForReplay)
   if (queue.length === 0) return
 
   // Normalize items left over from a previous (possibly crashed) run.
@@ -2037,6 +2169,7 @@ async function _runSyncQueue() {
     writeSyncQueue([{ ...item, _state: 'in_flight' }, ...pending])
 
     let supabaseError = null
+    let rpcResultData = null
     try {
       if (item.type === 'insert') {
         const payload = {
@@ -2084,6 +2217,7 @@ async function _runSyncQueue() {
         ;({ error: supabaseError } = await supabase.from(item.table).delete().eq('id', item.id).eq('lodge_id', itemLodgeId))
       } else if (item.type === 'rpc') {
         const { data, error } = await supabase.rpc(item.table, item.data)
+        rpcResultData = data || null
         if (error) {
           if (isAlreadyAppliedRpcError(item, error)) {
             console.warn(`↻ RPC ${item.table} already applied remotely for queued id; treating as synced`, item._queue_id)
@@ -2117,6 +2251,22 @@ async function _runSyncQueue() {
         if (orderId) {
           console.warn('[POS SYNC] Failed order', orderId, errorMessage)
           patchCachedPosOrderSyncState(orderId, {
+            _pending_sync: true,
+            _sync_state: 'failed',
+            _sync_error: errorMessage
+          })
+        }
+      }
+      if (isPosVoidQueueItem(item)) {
+        const orderId = getQueuedPosOrderId(item)
+        if (orderId) {
+          console.warn('[POS VOID SYNC] Failed void', orderId, errorMessage)
+          patchCachedPosOrderSyncState(orderId, {
+            _pending_sync: true,
+            _sync_state: 'failed',
+            _sync_error: `POS void rejected by server: ${errorMessage}`
+          })
+          patchLocalPosVoidHistory(item?.data?.payload?.override_log_id, {
             _pending_sync: true,
             _sync_state: 'failed',
             _sync_error: errorMessage
@@ -2163,15 +2313,39 @@ async function _runSyncQueue() {
           }
         }
       }
+      if (isConvertQuotationQueueItem(item)) {
+        const quotationId = getSyncItemQuotationId(item)
+        const localBookingId = item._local_booking_id || null
+        const isConflict = isRoomConflictError(errorMessage)
+        if (quotationId) {
+          patchCachedQuotationSyncState(quotationId, {
+            status: item._previous_status || 'accepted',
+            converted_booking_id: null,
+            _pending_sync: true,
+            _pending_conversion: false,
+            _sync_state: isConflict ? 'sync_failed' : 'failed',
+            _sync_error: errorMessage
+          })
+        }
+        if (localBookingId) {
+          patchCachedBookingSyncState(localBookingId, {
+            _pending_sync: true,
+            _sync_state: isConflict ? 'sync_failed' : 'failed',
+            _sync_error: errorMessage
+          })
+        }
+      }
       const retryCount = (item.retryCount || 0) + 1
-      const manualReviewOnly = shouldManualReviewSyncItem(item, errorMessage) || (isCreateBookingQueueItem(item) && isRoomConflictError(errorMessage)) || item.manualRetryOnly === true
+      const manualReviewOnly = shouldManualReviewSyncItem(item, errorMessage)
+        || ((isCreateBookingQueueItem(item) || isConvertQuotationQueueItem(item)) && isRoomConflictError(errorMessage))
+        || item.manualRetryOnly === true
       const updatedItem = {
         ...item,
         _state: 'pending',   // reset from in_flight
         retryCount: manualReviewOnly ? MAX_SYNC_RETRIES : retryCount,
         lastError: errorMessage,
         lastAttemptedAt: new Date().toISOString(),
-        manualRetryOnly
+        manualRetryOnly: manualReviewOnly
       }
       if (updatedItem.retryCount >= MAX_SYNC_RETRIES) {
         console.error(`[Sync] Dead-lettered after ${MAX_SYNC_RETRIES} attempts — ${item.type} ${item.table}:`, errorMessage)
@@ -2194,6 +2368,24 @@ async function _runSyncQueue() {
           console.log('[POS SYNC] Synced order', orderId)
         }
       }
+      if (isPosVoidQueueItem(item)) {
+        const orderId = getQueuedPosOrderId(item)
+        if (orderId) {
+          patchCachedPosOrderSyncState(orderId, {
+            _pending_sync: false,
+            _sync_state: 'synced',
+            _sync_error: null,
+            _pending_void: false,
+            _synced_at: new Date().toISOString()
+          })
+          patchLocalPosVoidHistory(item?.data?.payload?.override_log_id, {
+            _pending_sync: false,
+            _sync_state: 'synced',
+            _sync_error: null
+          })
+          console.log('[POS VOID SYNC] Synced void', orderId)
+        }
+      }
       if (isCreateBookingQueueItem(item)) {
         const bookingId = getQueuedBookingId(item)
         if (bookingId) {
@@ -2206,14 +2398,44 @@ async function _runSyncQueue() {
           console.log('[BOOKING SYNC] Synced booking', bookingId)
         }
       }
+      if (isConvertQuotationQueueItem(item)) {
+        const quotationId = getSyncItemQuotationId(item)
+        const localBookingId = item._local_booking_id || null
+        const serverBookingId = rpcResultData?.booking_id || rpcResultData?.id || null
+        if (quotationId) {
+          patchCachedQuotationSyncState(quotationId, {
+            ...(serverBookingId ? { converted_booking_id: serverBookingId } : {}),
+            _pending_sync: false,
+            _pending_conversion: false,
+            _sync_state: 'synced',
+            _sync_error: null,
+            _synced_at: new Date().toISOString()
+          })
+        }
+        if (localBookingId) {
+          replaceQueuedBookingReference(localBookingId, serverBookingId)
+          if (serverBookingId) {
+            for (let i = 0; i < pending.length; i += 1) {
+              pending[i] = rewriteQueuedBookingReferenceItem(pending[i], localBookingId, serverBookingId)
+            }
+          }
+          patchCachedBookingSyncState(localBookingId, {
+            ...(serverBookingId ? { id: serverBookingId } : {}),
+            _pending_sync: false,
+            _sync_state: 'synced',
+            _sync_error: null,
+            _synced_at: new Date().toISOString()
+          })
+        }
+      }
       if (queueItemNeedsInventoryRefresh(item)) shouldRefreshInventory = true
       if (queueItemNeedsBookingRefresh(item)) shouldRefreshBookings = true
       // P1-8: widen refresh to cover all domains touched by this operation
       if (item.type === 'rpc' && ['create_customer', 'update_customer'].includes(item.table)) shouldRefreshCustomers = true
       if (item.table === 'rooms' || (item.type === 'rpc' && item.table?.startsWith?.('update_room'))) shouldRefreshRooms = true
       if (item.type === 'rpc' && ['create_user', 'update_user_profile', 'set_user_pwa_access'].includes(item.table)) shouldRefreshUsers = true
-      if (item.type === 'rpc' && ['create_quotation', 'update_quotation', 'convert_quotation'].includes(item.table)) shouldRefreshQuotations = true
-      if (isPosCreateOrderQueueItem(item)) shouldRefreshPosOrders = true
+      if (item.type === 'rpc' && ['create_quotation', 'update_quotation', 'convert_quotation', 'convert_quotation_to_booking'].includes(item.table)) shouldRefreshQuotations = true
+      if (isPosCreateOrderQueueItem(item) || isPosVoidQueueItem(item)) shouldRefreshPosOrders = true
       if (item.type === 'rpc' && ['create_conference_booking', 'update_conference_booking', 'delete_conference_booking'].includes(item.table)) shouldRefreshConference = true
       if (item.type === 'rpc' && ['add_pool_day_use', 'delete_pool_day_use'].includes(item.table)) shouldRefreshPoolDayUse = true
       // Phase 1: persist committed state before removing from queue file.
@@ -2256,7 +2478,14 @@ async function _runSyncQueue() {
     ? readCache('bookings')
         .filter((b) => !b._pending_sync)
         .reduce((map, b) => {
-          map[b.id] = { total_amount: b.total_amount, amount_paid: b.amount_paid, status: b.status, payment_status: b.payment_status }
+          map[b.id] = {
+            total_amount: b.total_amount,
+            amount_paid: b.amount_paid,
+            customer_id: b.customer_id,
+            room_id: b.room_id,
+            status: b.status,
+            payment_status: b.payment_status
+          }
           return map
         }, {})
     : null
@@ -2285,8 +2514,8 @@ async function _runSyncQueue() {
         const drifts = []
         if (!valuesEqualForDrift(pre.total_amount, b.total_amount)) drifts.push(`total_amount: local ${pre.total_amount} → server ${b.total_amount}`)
         if (!valuesEqualForDrift(pre.amount_paid, b.amount_paid)) drifts.push(`amount_paid: local ${pre.amount_paid} → server ${b.amount_paid}`)
-        if (!valuesEqualForDrift(pre.customer_id, b.customer_id)) drifts.push(`customer_id: local ${pre.customer_id} → server ${b.customer_id}`)
-        if (!valuesEqualForDrift(pre.room_id, b.room_id)) drifts.push(`room_id: local ${pre.room_id} → server ${b.room_id}`)
+        if (hasDriftBaselineValue(pre.customer_id) && !valuesEqualForDrift(pre.customer_id, b.customer_id)) drifts.push(`customer_id: local ${pre.customer_id} → server ${b.customer_id}`)
+        if (hasDriftBaselineValue(pre.room_id) && !valuesEqualForDrift(pre.room_id, b.room_id)) drifts.push(`room_id: local ${pre.room_id} → server ${b.room_id}`)
         if (!valuesEqualForDrift(pre.status, b.status)) drifts.push(`status: local ${pre.status} → server ${b.status}`)
         if (!valuesEqualForDrift(pre.payment_status, b.payment_status)) drifts.push(`payment_status: local ${pre.payment_status} → server ${b.payment_status}`)
         if (drifts.length > 0) {
@@ -2332,12 +2561,13 @@ export function getSyncStatus() {
   const failed = readFailedSyncQueue()
   const faults = readHealthFaults()
   const syncMeta = readSyncMeta()
-  const financialTables = new Set(['create_booking', 'create_booking_record', 'update_booking', 'update_booking_status', 'update_booking_payment'])
+  const financialTables = new Set(['create_booking', 'create_booking_record', 'update_booking', 'update_booking_status', 'update_booking_payment', 'convert_quotation_to_booking', 'create_pos_order', 'approve_pos_void_with_pin'])
   const extractBookingId = (item) => (
     item?.data?.p_booking_id
     || item?.data?.payload?.booking_id
     || item?.data?.payload?.id
     || item?.data?.p_id
+    || item?._local_booking_id
     || null
   )
   const failedBookingIds = failed
@@ -2511,9 +2741,19 @@ function appendHealthFault(fault = {}) {
 
 function readHealthFaults() {
   if (!cacheDir) return []
+  const filePath = path.join(cacheDir, HEALTH_FAULTS_FILE)
   try {
-    const parsed = JSON.parse(fs.readFileSync(path.join(cacheDir, HEALTH_FAULTS_FILE), 'utf-8'))
-    return Array.isArray(parsed) ? parsed : []
+    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8'))
+    if (!Array.isArray(parsed)) return []
+    const next = parsed.filter((fault) => !isBenignBookingDriftFault(fault))
+    if (next.length !== parsed.length) {
+      try {
+        fs.writeFileSync(filePath, JSON.stringify(next, null, 2), 'utf-8')
+      } catch (writeError) {
+        console.warn('[Health Fault] Could not prune benign booking drift faults:', writeError?.message || writeError)
+      }
+    }
+    return next
   } catch {
     return []
   }
@@ -2588,9 +2828,9 @@ export function getSyncDetails() {
   }
 
   // P1-10: financial entity IDs
-  const financialTables = new Set(['create_booking', 'create_booking_record', 'update_booking', 'update_booking_status', 'update_booking_payment'])
+  const financialTables = new Set(['create_booking', 'create_booking_record', 'update_booking', 'update_booking_status', 'update_booking_payment', 'convert_quotation_to_booking', 'create_pos_order', 'approve_pos_void_with_pin'])
   const extractBookingId = (item) => (
-    item?.data?.p_booking_id || item?.data?.payload?.booking_id || item?.data?.payload?.id || item?.data?.p_id || null
+    item?.data?.p_booking_id || item?.data?.payload?.booking_id || item?.data?.payload?.id || item?.data?.p_id || item?._local_booking_id || null
   )
   const financialPendingBookingIds = [...new Set(pending.filter((i) => financialTables.has(i?.table)).map(extractBookingId).filter(Boolean))]
   const financialFailedBookingIds  = [...new Set(failed.filter((i) => financialTables.has(i?.table)).map(extractBookingId).filter(Boolean))]
@@ -2662,13 +2902,13 @@ async function requeueEligibleFailedSyncItems(minAgeMs = DEAD_LETTER_AUTO_RETRY_
       continue
     }
 
-    const cleanItem = {
+    const cleanItem = normalizeQueuedSyncItemForReplay({
       ...item,
       _state: 'pending',
       retryCount: 0,
       lastError: '',
       lastAttemptedAt: null
-    }
+    })
 
     if (!existingIds.has(cleanItem._queue_id)) {
       queue.push(cleanItem)
@@ -2708,12 +2948,13 @@ export async function retrySyncItems(queueIds = []) {
   const queue = readSyncQueue().map((item) => ensureQueuedItem(item, item?.type || 'op'))
   const existingIds = new Set(queue.map((item) => item._queue_id))
   for (const item of retryItems) {
-    const cleanItem = {
+    const cleanItem = normalizeQueuedSyncItemForReplay({
       ...item,
+      _state: 'pending',
       retryCount: Math.max(0, Number(item.retryCount || 1) - 1),
       lastError: '',
       lastAttemptedAt: null
-    }
+    })
     if (isPosCreateOrderQueueItem(cleanItem)) {
       const orderId = getQueuedPosOrderId(cleanItem)
       if (orderId) {
@@ -2904,8 +3145,15 @@ function appendAuxiliaryLog(filename, row, limit = 200) {
   writeAuxiliaryLog(filename, current.slice(0, limit))
 }
 
+function isNonCriticalOperationalError(scope, errorOrMessage = '') {
+  const message = errorOrMessage?.message || String(errorOrMessage || '')
+  return scope === 'booking.refund'
+    && /Refund approvals require an internet connection/i.test(message)
+}
+
 function recordCriticalError(scope, error, details = {}, { limit = 300, level = 'error' } = {}) {
   const message = error?.message || String(error || 'Unknown error')
+  if (isNonCriticalOperationalError(scope, message)) return null
   const row = {
     id: randomUUID(),
     at: new Date().toISOString(),
@@ -3030,6 +3278,110 @@ export function getBackupInfo() {
     return { backupDir, backups, policy: buildManagedBackupStatus(getManagedBackupPolicy()) }
   } catch {
     return { backupDir: '', backups: [], policy: buildManagedBackupStatus(getManagedBackupPolicy()) }
+  }
+}
+
+function getBackupHealthSummary(backupsInfo = getBackupInfo()) {
+  const policy = backupsInfo?.policy || buildManagedBackupStatus(getManagedBackupPolicy())
+  const newestLocalBackup = Array.isArray(backupsInfo?.backups) && backupsInfo.backups.length > 0
+    ? backupsInfo.backups[0]
+    : null
+  const warnings = []
+  if (policy.enabled && policy.compliance_state !== 'healthy') {
+    warnings.push(policy.requires_setup
+      ? 'Weekly managed backup is enabled but no synced folder is selected.'
+      : 'Weekly managed backup is overdue or has not completed yet.')
+  }
+  if (!policy.enabled) {
+    warnings.push('Weekly managed backup is disabled.')
+  }
+  if (!newestLocalBackup) {
+    warnings.push('No local JSON backup has been created on this computer.')
+  }
+  return {
+    ok: warnings.length === 0,
+    warnings,
+    newest_local_backup: newestLocalBackup,
+    policy
+  }
+}
+
+export function verifyLocalBackup(name) {
+  try {
+    const safeName = path.basename(String(name || ''))
+    if (!safeName || !safeName.endsWith('.json')) {
+      return { success: false, error: 'Choose a local JSON backup to verify.' }
+    }
+
+    const backupDir = path.join(app.getPath('userData'), 'boroko-backups')
+    const backupPath = path.join(backupDir, safeName)
+    if (!fs.existsSync(backupPath)) {
+      return { success: false, error: 'Backup file was not found on this computer.' }
+    }
+
+    const stats = fs.statSync(backupPath)
+    const raw = fs.readFileSync(backupPath, 'utf-8')
+    const parsed = JSON.parse(raw)
+    const tables = parsed?.tables && typeof parsed.tables === 'object' ? parsed.tables : {}
+    const requiredTables = ['settings', 'rooms', 'customers', 'bookings']
+    const missingTables = requiredTables.filter((key) => !(key in tables))
+    const counts = Object.fromEntries(
+      Object.entries(tables).map(([key, value]) => [key, Array.isArray(value) ? value.length : (value && typeof value === 'object' ? 1 : 0)])
+    )
+    const issues = []
+    if (!parsed?.timestamp) issues.push('Missing backup timestamp.')
+    if (!parsed?.lodge_id) issues.push('Missing lodge id.')
+    if (missingTables.length > 0) issues.push(`Missing required table snapshots: ${missingTables.join(', ')}.`)
+
+    return {
+      success: issues.length === 0,
+      filePath: backupPath,
+      name: safeName,
+      created: stats.mtime.toISOString(),
+      size: stats.size,
+      timestamp: parsed?.timestamp || null,
+      version: parsed?.version || 'unknown',
+      lodge_id: parsed?.lodge_id || null,
+      table_count: Object.keys(tables).length,
+      counts,
+      issues
+    }
+  } catch (error) {
+    return { success: false, error: error?.message || 'Backup verification failed.' }
+  }
+}
+
+export function previewLocalBackupRestore(name) {
+  const verification = verifyLocalBackup(name)
+  if (!verification.name) return verification
+  const destructiveTables = Object.entries(verification.counts || {})
+    .filter(([, count]) => Number(count || 0) > 0)
+    .map(([table, count]) => ({ table, count }))
+  return {
+    ...verification,
+    mode: 'preview',
+    can_restore_live: false,
+    recommendation: 'Restore is intentionally preview-only in this build. Use this report to confirm contents before support-led recovery.',
+    restore_plan: destructiveTables
+  }
+}
+
+export function createRestoreRehearsalPackage(name) {
+  const preview = previewLocalBackupRestore(name)
+  if (!preview.name) return preview
+  try {
+    const backupDir = path.join(app.getPath('userData'), 'boroko-backups')
+    const sourcePath = path.join(backupDir, preview.name)
+    const rehearsalDir = path.join(backupDir, 'restore-rehearsals')
+    ensureDir(rehearsalDir)
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+    const targetPath = path.join(rehearsalDir, `restore-preview-${stamp}-${preview.name}`)
+    fs.copyFileSync(sourcePath, targetPath)
+    const reportPath = path.join(rehearsalDir, `restore-preview-${stamp}.json`)
+    fs.writeFileSync(reportPath, JSON.stringify(preview, null, 2), 'utf-8')
+    return { success: true, filePath: targetPath, reportPath, preview }
+  } catch (error) {
+    return { success: false, error: error?.message || 'Could not create restore rehearsal package.' }
   }
 }
 
@@ -3179,14 +3531,17 @@ export async function initDatabase() {
 
     // Reconnect detection: fires sync on network return
     setInterval(async () => {
+      if (connectivityCheckInProgress) return
+      connectivityCheckInProgress = true
       try {
         const wasOffline = !isOnline
         const nowOnline = await checkOnline()
-        if (wasOffline && nowOnline && lodgeId) {
+        const hasPendingSync = readSyncQueue().length > 0 || readFailedSyncQueue().some((item) => item?.manualRetryOnly !== true)
+        if (nowOnline && lodgeId && replayAuthReady && (wasOffline || hasPendingSync)) {
           console.log('Back online — syncing changes...')
           await requeueEligibleFailedSyncItems()
           await processSyncQueue()
-          await refreshAllCaches()
+          if (wasOffline) await refreshAllCaches()
         }
       } catch (error) {
         const message = getErrorMessage(error)
@@ -3203,8 +3558,10 @@ export async function initDatabase() {
           lastSyncOutcome: 'timer_error',
           lastSyncError: message
         })
+      } finally {
+        connectivityCheckInProgress = false
       }
-    }, 30000)
+    }, CONNECTIVITY_CHECK_INTERVAL_MS)
 
     // P0-6: Periodic sync — ensures retryable dead letters are replayed even when
     // the app never transitions offline→online (i.e., stays continuously online).
@@ -4302,14 +4659,14 @@ export async function getAllUsers() {
   if (isOnline) {
     const { data } = await supabase
       .from('users')
-      .select('id, auth_user_id, name, email, role, lodge_id, created_at, pwa_enabled, pwa_password_set_at, pwa_disabled_reason, pwa_password_reset_by, allowed_outlet_ids')
+      .select('id, auth_user_id, name, email, role, lodge_id, created_at, pwa_enabled, pwa_password_set_at, pwa_disabled_reason, pwa_password_reset_by, allowed_outlet_ids, pin_hash')
       .eq('lodge_id', lodgeId)
       .order('name')
     const normalized = (data || []).map(normalizeUserRecord).filter(Boolean)
     if (data) writeCache('users', normalized)
-    return normalized
+    return normalized.map(sanitizeUserForRenderer)
   }
-  return readCache('users').map(normalizeUserRecord).filter(Boolean)
+  return readCache('users').map(normalizeUserRecord).filter(Boolean).map(sanitizeUserForRenderer)
 }
 
 export async function getUsers() {
@@ -4321,14 +4678,15 @@ export async function getUserById(id) {
   try {
     const { data, error } = await supabase
       .from('users')
-      .select('id, auth_user_id, name, email, role, lodge_id, created_at, pwa_enabled, pwa_password_set_at, pwa_disabled_reason, pwa_password_reset_by, allowed_outlet_ids')
+      .select('id, auth_user_id, name, email, role, lodge_id, created_at, pwa_enabled, pwa_password_set_at, pwa_disabled_reason, pwa_password_reset_by, allowed_outlet_ids, pin_hash')
       .eq('id', id)
       .eq('lodge_id', lodgeId)
       .single()
     if (error) throw error
-    return normalizeUserRecord(data)
+    return sanitizeUserForRenderer(normalizeUserRecord(data))
   } catch {
-    return readCache('users').map(normalizeUserRecord).filter(Boolean).find((user) => user.id === id) || null
+    const user = readCache('users').map(normalizeUserRecord).filter(Boolean).find((entry) => entry.id === id) || null
+    return sanitizeUserForRenderer(user)
   }
 }
 
@@ -4535,7 +4893,7 @@ function resolvePwaAccessUpdate(existingUser = {}, data = {}) {
   const password_hash = hasPassword ? bcrypt.hashSync(nextPassword, 10) : null
   const hasExistingPassword = Boolean(existingUser?.pwa_password_set_at || existingUser?.pwa_password_hash)
   if (enabled && !password_hash && !hasExistingPassword) {
-    throw createAppError('pwa_password_required', 'Set a separate Manager PWA password before enabling mobile access.')
+    throw createAppError('pwa_password_required', 'Set a separate manager mobile app password before enabling access.')
   }
 
   return {
@@ -4662,7 +5020,7 @@ export async function createUser(data) {
         p_reset_by: currentUser?.id || null
       })
       if (pwaError) {
-        throw createAppError('pwa_access_update_failed', pwaError.message || 'Could not prepare Manager PWA access.', {
+        throw createAppError('pwa_access_update_failed', pwaError.message || 'Could not prepare manager mobile app access.', {
           email: emailLower,
           lodge_id: lodgeId,
           user_id: result.id
@@ -4671,7 +5029,7 @@ export async function createUser(data) {
       if (!pwaResult?.success) {
         throw createAppError(
           'pwa_access_update_failed',
-          pwaResult?.error || 'Could not prepare Manager PWA access.',
+          pwaResult?.error || 'Could not prepare manager mobile app access.',
           { email: emailLower, lodge_id: lodgeId, user_id: result.id }
         )
       }
@@ -4683,6 +5041,7 @@ export async function createUser(data) {
       email: user.email,
       role: user.role,
       lodge_id: user.lodge_id,
+      pin_hash: user.pin_hash || null,
       pwa_enabled: user.pwa_enabled,
       pwa_password_set_at: user.pwa_password_set_at,
       pwa_password_reset_by: user.pwa_password_reset_by,
@@ -4698,6 +5057,7 @@ export async function createUser(data) {
         email: user.email,
         role: user.role,
         lodge_id: user.lodge_id,
+        pin_hash: user.pin_hash || null,
         pwa_enabled: user.pwa_enabled,
         pwa_password_set_at: user.pwa_password_set_at,
         pwa_password_reset_by: user.pwa_password_reset_by,
@@ -4707,7 +5067,7 @@ export async function createUser(data) {
     }
     if (pwaAccess.requested) {
       const action = user.pwa_enabled ? 'enabled' : 'prepared'
-      logActivity('pwa_access_updated', `${user.name || user.email} · Manager PWA ${action}`)
+      logActivity('pwa_access_updated', `${user.name || user.email} · manager mobile app ${action}`)
     }
     return result?.id
   } else {
@@ -4718,9 +5078,7 @@ const newUser = {
   created_at: new Date().toISOString()
 }
 
-const { pin_hash: _pinHash, ...cachedUser } = newUser
-
-cached.push(cachedUser)
+cached.push(newUser)
 writeCache('users', cached)
 
 // IMPORTANT: send ID to Supabase too
@@ -4740,7 +5098,7 @@ if (pwaAccess.requested) {
 
 if (pwaAccess.requested) {
   const action = user.pwa_enabled ? 'enabled' : 'prepared'
-  logActivity('pwa_access_updated', `${user.name || user.email} · Manager PWA ${action}`)
+  logActivity('pwa_access_updated', `${user.name || user.email} · manager mobile app ${action}`)
 }
 
 return id
@@ -4793,15 +5151,14 @@ export async function updateUser(id, data) {
         p_reset_by: currentUser?.id || null
       })
       if (pwaError) throw new Error(pwaError.message)
-      if (!pwaResult?.success) throw new Error(pwaResult?.error || 'Could not update Manager PWA access')
+      if (!pwaResult?.success) throw new Error(pwaResult?.error || 'Could not update manager mobile app access')
     }
     await refreshCache('users')
   } else {
     const cached = [...cachedUsers]
     const idx = cached.findIndex((u) => u.id === id)
     if (idx >= 0) {
-      const { pin_hash: _pinHash, ...safeUpdate } = update
-      cached[idx] = { ...cached[idx], ...safeUpdate }
+      cached[idx] = { ...cached[idx], ...update }
       if (password_hash) cached[idx].password_hash = password_hash
       if (pwaAccess.requested) {
         cached[idx].pwa_enabled = pwaAccess.enabled
@@ -4849,9 +5206,9 @@ export async function updateUser(id, data) {
   if (pwaAccess.requested) {
     const subject = update.name || existingUser?.name || update.email || existingUser?.email || 'Staff account'
     const action = pwaAccess.enabled
-      ? (pwaAccess.password_hash ? 'enabled with a new PWA password' : 'enabled')
+      ? (pwaAccess.password_hash ? 'enabled with a new mobile app password' : 'enabled')
       : (pwaAccess.autoDisableForRole ? `suspended because the role changed to ${update.role || existingUser?.role}` : 'disabled')
-    logActivity('pwa_access_updated', `${subject} · Manager PWA ${action}`)
+    logActivity('pwa_access_updated', `${subject} · manager mobile app ${action}`)
   }
 }
 
@@ -5320,7 +5677,9 @@ export async function getAllBookings() {
 
     const cached = readCache('bookings')
     if ((data || []).length === 0 && cached.length > 0) {
-      console.warn('getAllBookings received empty live result; using cached bookings instead')
+      if (DEBUG_CACHE_FALLBACKS) {
+        console.warn('getAllBookings received empty live result; using cached bookings instead')
+      }
       return cached
     }
 
@@ -5896,7 +6255,7 @@ export async function updateBookingStatus(id, status) {
       p_id: id,
       p_lodge_id: lodgeId,
       p_status: status,
-      p_expected_updated_at: expectedUpdatedAt
+      p_expected_updated_at: _stDepend ? null : expectedUpdatedAt
     }, null, _stDepend ? { _depends_on: _stDepend } : {})
     // Cache SECOND — booking
     if (idx >= 0) bookings[idx] = { ...bookings[idx], ...update }
@@ -6145,6 +6504,7 @@ export async function getSystemHealth() {
   const diagnostics = await getLodgeDiagnostics(lodgeId || '').catch((error) => ({ error: error.message }))
   const sync = getSyncStatus()
   const backups = getBackupInfo()
+  const backup_health = getBackupHealthSummary(backups)
   const faults = readHealthFaults()
   const finance = {
     payments_rpc: { ok: false, message: 'Offline or not checked yet.' },
@@ -6300,6 +6660,7 @@ export async function getSystemHealth() {
     replayAuthReady,
     sync,
     backups,
+    backup_health,
     diagnostics,
     finance,
     faults
@@ -6847,24 +7208,27 @@ export async function getTodayBookingPaymentMix(dateValue = null) {
 }
 
 async function getProfitLossLocal(start, end) {
-  const [rev, pos, exps, inv, sup, conf, pool] = await Promise.all([
+  const [rev, pos, exps, inv, sup, conf, pool, maintenanceRows] = await Promise.all([
     getRevenueReport(start, end),
     getPosRevenueSummary(start, end),
     getExpenses(start, end),
     getInventorySpend(start, end),
     getSupplySpend(start, end),
     getConferenceRevenueSummary(start, end),
-    getPoolRevenueSummary(start, end)
+    getPoolRevenueSummary(start, end),
+    getMaintenanceRowsForPeriod(start, end)
   ])
   const bookingRevenue    = rev.total_revenue || 0
   const posRevenue        = pos?.direct_revenue || 0
   const conferenceRevenue = conf.total || 0
   const poolRevenue       = pool.total || 0
-  const totalRevenue      = bookingRevenue + posRevenue + conferenceRevenue + poolRevenue
+  const retainedRevenue   = Number(rev.retained_revenue || 0)
+  const totalRevenue      = bookingRevenue + posRevenue + conferenceRevenue + poolRevenue + retainedRevenue
   const totalExpenses     = exps.reduce((s, e) => s + Number(e.amount || 0), 0)
   const invCosts          = inv.total || 0
   const supCosts          = sup.total || 0
-  const totalCosts        = invCosts + supCosts
+  const maintenanceCosts  = (maintenanceRows || []).reduce((s, row) => s + Number(row.total_cost || 0), 0)
+  const totalCosts        = invCosts + supCosts + maintenanceCosts
   const grossProfit       = totalRevenue - totalExpenses - totalCosts
   const expByCategory     = exps.reduce((acc, e) => {
     acc[e.category] = (acc[e.category] || 0) + Number(e.amount || 0)
@@ -6872,14 +7236,47 @@ async function getProfitLossLocal(start, end) {
   }, {})
   const vatAmount = rev.vat_amount || 0
   return {
-    bookingRevenue, posRevenue, conferenceRevenue, poolRevenue, totalRevenue,
+    bookingRevenue, posRevenue, conferenceRevenue, poolRevenue, retainedRevenue, totalRevenue,
     totalExpenses, expByCategory,
-    invCosts, supCosts, totalCosts,
+    invCosts, supCosts, maintenanceCosts, totalCosts,
     grossProfit,
     vatAmount,
     vatEnabled: rev.vat_enabled || false,
     vatRate:    rev.vat_rate    || 0,
     vatMixed:   rev.vat_mixed   || false,
+    netRevenue: +(totalRevenue - vatAmount).toFixed(2)
+  }
+}
+
+function finalizeProfitLossSummary(summary = {}, retainedRevenueFallback = 0) {
+  const bookingRevenue = Number(summary.bookingRevenue || 0)
+  const posRevenue = Number(summary.posRevenue || 0)
+  const conferenceRevenue = Number(summary.conferenceRevenue || 0)
+  const poolRevenue = Number(summary.poolRevenue || 0)
+  const retainedRevenue = Number(summary.retainedRevenue ?? retainedRevenueFallback ?? 0)
+  const totalExpenses = Number(summary.totalExpenses || 0)
+  const invCosts = Number(summary.invCosts || 0)
+  const supCosts = Number(summary.supCosts || 0)
+  const maintenanceCosts = Number(summary.maintenanceCosts || 0)
+  const totalCosts = invCosts + supCosts + maintenanceCosts
+  const totalRevenue = bookingRevenue + posRevenue + conferenceRevenue + poolRevenue + retainedRevenue
+  const vatAmount = Number(summary.vatAmount || 0)
+
+  return {
+    ...summary,
+    bookingRevenue,
+    posRevenue,
+    conferenceRevenue,
+    poolRevenue,
+    retainedRevenue,
+    totalRevenue,
+    totalExpenses,
+    invCosts,
+    supCosts,
+    maintenanceCosts,
+    totalCosts,
+    grossProfit: totalRevenue - totalExpenses - totalCosts,
+    vatAmount,
     netRevenue: +(totalRevenue - vatAmount).toFixed(2)
   }
 }
@@ -6894,7 +7291,23 @@ export async function getProfitLoss(start, end) {
         p_end_date: end
       })
       if (error) throw error
-      if (data && typeof data === 'object') return { ...data, source: 'server', as_of_range: { start, end } }
+      if (data && typeof data === 'object') {
+        const normalized = { ...data }
+        if (typeof normalized.maintenanceCosts === 'undefined') {
+          const maintenanceRows = await getMaintenanceRowsForPeriod(start, end)
+          normalized.maintenanceCosts = (maintenanceRows || []).reduce((sum, row) => sum + Number(row.total_cost || 0), 0)
+        }
+        let retainedRevenue = normalized.retainedRevenue
+        if (typeof retainedRevenue === 'undefined') {
+          const revenue = await getRevenueReport(start, end).catch(() => null)
+          retainedRevenue = Number(revenue?.retained_revenue || 0)
+        }
+        return {
+          ...finalizeProfitLossSummary(normalized, retainedRevenue),
+          source: 'server',
+          as_of_range: { start, end }
+        }
+      }
       throw new Error('Profit and loss summary was empty.')
     } catch (error) {
       recordCriticalError('reports.profit_loss', error, {
@@ -6944,14 +7357,15 @@ export async function getReportsSnapshot(today = getLocalDateKey(new Date(), LOC
   const lastMonthStart = getLocalDateKey(new Date(todayDate.getFullYear(), todayDate.getMonth() - 1, 1), LOCAL_TIME_ZONE)
   const lastMonthEnd = getLocalDateKey(new Date(todayDate.getFullYear(), todayDate.getMonth(), 0), LOCAL_TIME_ZONE)
 
-  const [rooms, bookings, payments, expenses, posOrders, conferenceBookings, poolDayUse] = await Promise.all([
+  const [rooms, bookings, payments, expenses, posOrders, conferenceBookings, poolDayUse, maintenanceRows] = await Promise.all([
     getAllRooms().catch(() => []),
     getAllBookings().catch(() => []),
-    getAllPayments().catch(() => []),
+    Promise.resolve(readCache('payments') || []),
     getAllExpenses().catch(() => []),
     getAllPOSOrders().catch(() => []),
     getAllConferenceBookings().catch(() => []),
-    getAllPoolDayUse().catch(() => [])
+    getAllPoolDayUse().catch(() => []),
+    getMaintenanceRowsForPeriod(monthStart, monthEnd).catch(() => [])
   ])
 
   const totalRooms = Array.isArray(rooms) ? rooms.length : 0
@@ -6966,6 +7380,32 @@ export async function getReportsSnapshot(today = getLocalDateKey(new Date(), LOC
   const refundsInRange = (start, end) => payments
     .filter((payment) => inRange(payment.paid_at, start, end) && (Number(payment.amount || 0) < 0 || String(payment.type || '').toLowerCase() === 'refund'))
     .reduce((sum, payment) => sum + Math.abs(Number(payment.amount || 0)), 0)
+  const cancelledBookingIds = new Set(
+    bookings
+      .filter((booking) => String(booking?.status || '') === 'cancelled')
+      .map((booking) => booking.id)
+      .filter(Boolean)
+  )
+  const retainedForRange = (start, end) => {
+    let retained = 0
+    let count = 0
+    const seenBookingIds = new Set()
+    for (const payment of payments) {
+      if (!inRange(payment.paid_at, start, end)) continue
+      const amount = Number(payment.amount || 0)
+      if (amount <= 0) continue
+      if (String(payment.type || '').toLowerCase() === 'refund') continue
+      if (!cancelledBookingIds.has(payment.booking_id)) continue
+      retained += amount
+      if (payment.booking_id && !seenBookingIds.has(payment.booking_id)) {
+        seenBookingIds.add(payment.booking_id)
+        count += 1
+      }
+    }
+    return { retained, count }
+  }
+  const monthRetained = retainedForRange(monthStart, monthEnd)
+  const lastMonthRetained = retainedForRange(lastMonthStart, lastMonthEnd)
   const overlapNights = (start, end) => bookings
     .filter((booking) => booking?.status !== 'cancelled' && booking?.check_in < end && booking?.check_out > start)
     .reduce((sum, booking) => {
@@ -6977,6 +7417,7 @@ export async function getReportsSnapshot(today = getLocalDateKey(new Date(), LOC
   const monthDays = new Date(todayDate.getFullYear(), todayDate.getMonth() + 1, 0).getDate()
   const lastMonthDays = new Date(todayDate.getFullYear(), todayDate.getMonth(), 0).getDate()
   const unpaidBookings = bookings.filter((booking) => booking?.status !== 'cancelled' && ['partial', 'unpaid', ''].includes(String(booking?.payment_status || 'unpaid')))
+  const maintenanceCosts = (maintenanceRows || []).reduce((sum, row) => sum + Number(row.total_cost || 0), 0)
 
   return {
     todayRev: revenueInRange(today, today),
@@ -6985,6 +7426,10 @@ export async function getReportsSnapshot(today = getLocalDateKey(new Date(), LOC
     lastMonthRev: revenueInRange(lastMonthStart, lastMonthEnd),
     monthRefunds: refundsInRange(monthStart, monthEnd),
     lastMonthRefunds: refundsInRange(lastMonthStart, lastMonthEnd),
+    monthRetainedRevenue: monthRetained.retained,
+    lastMonthRetainedRevenue: lastMonthRetained.retained,
+    monthRetainedCount: monthRetained.count,
+    lastMonthRetainedCount: lastMonthRetained.count,
     monthOcc: totalRooms > 0 && monthDays > 0 ? Math.round((overlapNights(monthStart, getLocalDateKey(new Date(todayDate.getFullYear(), todayDate.getMonth() + 1, 1), LOCAL_TIME_ZONE)) / (totalRooms * monthDays)) * 100) : 0,
     lastMonthOcc: totalRooms > 0 && lastMonthDays > 0 ? Math.round((overlapNights(lastMonthStart, monthStart) / (totalRooms * lastMonthDays)) * 100) : 0,
     currentOcc: bookings.filter((booking) => booking?.status === 'checked_in').length,
@@ -6992,6 +7437,7 @@ export async function getReportsSnapshot(today = getLocalDateKey(new Date(), LOC
     unpaidTotal: unpaidBookings.reduce((sum, booking) => sum + Math.max(0, Number(booking.total_amount || 0) + Number(booking.charges_total || 0) - Number(booking.amount_paid || 0)), 0),
     unpaidCount: unpaidBookings.length,
     monthExpenses: expenses.filter((expense) => inRange(expense.date, monthStart, monthEnd)).reduce((sum, expense) => sum + Number(expense.amount || 0), 0),
+    maintenanceCosts,
     posRevenue: posOrders.filter((order) => order?.status !== 'voided' && inRange(order.created_at, monthStart, monthEnd)).reduce((sum, order) => sum + Number(order.total || 0), 0),
     conferenceRevenue: conferenceBookings.filter((booking) => String(booking?.payment_status || '').toLowerCase() !== 'cancelled' && inRange(booking.booking_date, monthStart, monthEnd)).reduce((sum, booking) => sum + Number(booking.total_amount || 0), 0),
     poolRevenue: poolDayUse.filter((entry) => inRange(entry.date, monthStart, monthEnd)).reduce((sum, entry) => sum + Number(entry.total || 0), 0),
@@ -7057,6 +7503,7 @@ export async function getOutletProfitLoss(startDate, endDate) {
     .reduce((sum, row) => sum + Number(row.total_cost || 0), 0)
   const cachedExpenseRows = readCache('expenses')
     .filter((row) => (!startDate || row.date >= startDate) && (!endDate || row.date <= endDate))
+  const maintenanceRows = await getMaintenanceRowsForPeriod(startDate, endDate).catch(() => [])
   let outletRows = []
   let posRows = []
   let purchaseRows = []
@@ -7139,10 +7586,10 @@ export async function getOutletProfitLoss(startDate, endDate) {
 
   // B. Initialize buckets — always present, even if zero
   const buckets = {
-    kitchen:    { key: 'kitchen',    name: 'Kitchen',    posRevenue: 0, bookingRevenue: 0, revenue: 0, inventoryCost: 0, supplyCost: 0, expenses: 0, profit: 0 },
-    bar:        { key: 'bar',        name: 'Bar',        posRevenue: 0, bookingRevenue: 0, revenue: 0, inventoryCost: 0, supplyCost: 0, expenses: 0, profit: 0 },
-    front_desk: { key: 'front_desk', name: 'Front Desk', posRevenue: 0, bookingRevenue: 0, revenue: 0, inventoryCost: 0, supplyCost: 0, expenses: 0, profit: 0 },
-    unassigned: { key: 'unassigned', name: 'Unassigned', posRevenue: 0, bookingRevenue: 0, revenue: 0, inventoryCost: 0, supplyCost: 0, expenses: 0, profit: 0 }
+    kitchen:    { key: 'kitchen',    name: 'Kitchen',    posRevenue: 0, bookingRevenue: 0, revenue: 0, inventoryCost: 0, supplyCost: 0, maintenanceCost: 0, expenses: 0, profit: 0 },
+    bar:        { key: 'bar',        name: 'Bar',        posRevenue: 0, bookingRevenue: 0, revenue: 0, inventoryCost: 0, supplyCost: 0, maintenanceCost: 0, expenses: 0, profit: 0 },
+    front_desk: { key: 'front_desk', name: 'Front Desk', posRevenue: 0, bookingRevenue: 0, revenue: 0, inventoryCost: 0, supplyCost: 0, maintenanceCost: 0, expenses: 0, profit: 0 },
+    unassigned: { key: 'unassigned', name: 'Unassigned', posRevenue: 0, bookingRevenue: 0, revenue: 0, inventoryCost: 0, supplyCost: 0, maintenanceCost: 0, expenses: 0, profit: 0 }
   }
 
   // C–F: Fetch all raw data in parallel
@@ -7177,23 +7624,30 @@ export async function getOutletProfitLoss(startDate, endDate) {
     buckets[key].expenses += Number(e.amount || 0)
   })
 
-  // G. Room supplies are accommodation costs, so keep them under Front Desk.
-  buckets.front_desk.supplyCost += Number(supResult?.total || 0)
-
-  // H. Per-outlet totals
-  Object.values(buckets).forEach(b => {
-    b.revenue = b.posRevenue + b.bookingRevenue
-    b.profit  = b.revenue - b.inventoryCost - b.supplyCost - b.expenses
+  // G. Room-based maintenance is a Front Desk cost; property-wide work stays Unassigned.
+  ;(maintenanceRows || []).forEach((row) => {
+    const key = row.room_id || row.room_number ? 'front_desk' : 'unassigned'
+    buckets[key].maintenanceCost += Number(row.total_cost || 0)
   })
 
-  // I. Combined — built by summing outlet rows so reconciliation is guaranteed
-  const combined = { posRevenue: 0, bookingRevenue: 0, revenue: 0, inventoryCost: 0, supplyCost: 0, expenses: 0, profit: 0 }
+  // H. Room supplies are accommodation costs, so keep them under Front Desk.
+  buckets.front_desk.supplyCost += Number(supResult?.total || 0)
+
+  // I. Per-outlet totals
+  Object.values(buckets).forEach(b => {
+    b.revenue = b.posRevenue + b.bookingRevenue
+    b.profit  = b.revenue - b.inventoryCost - b.supplyCost - b.maintenanceCost - b.expenses
+  })
+
+  // J. Combined — built by summing outlet rows so reconciliation is guaranteed
+  const combined = { posRevenue: 0, bookingRevenue: 0, revenue: 0, inventoryCost: 0, supplyCost: 0, maintenanceCost: 0, expenses: 0, profit: 0 }
   Object.values(buckets).forEach(b => {
     combined.posRevenue     += b.posRevenue
     combined.bookingRevenue += b.bookingRevenue
     combined.revenue        += b.revenue
     combined.inventoryCost  += b.inventoryCost
     combined.supplyCost     += b.supplyCost
+    combined.maintenanceCost += b.maintenanceCost
     combined.expenses       += b.expenses
     combined.profit         += b.profit
   })
@@ -7706,6 +8160,20 @@ export async function deleteAdminExpense(id) {
 
 // ─── MAINTENANCE TICKETS ──────────────────────────────────────────────────────
 
+function normalizeMaintenanceTicketRow(ticket = {}) {
+  if (!ticket || typeof ticket !== 'object') return ticket
+  return {
+    ...ticket,
+    title: ticket.title || ticket.issue || '',
+    description: ticket.description || ticket.notes || '',
+    room_number: ticket.rooms?.room_number,
+    room_type: ticket.rooms?.room_type,
+    labour_cost: Number(ticket.labour_cost || 0),
+    parts_cost: Number(ticket.parts_cost || 0),
+    total_cost: Number(ticket.total_cost || 0)
+  }
+}
+
 export async function getMaintenanceTickets() {
   if (isOnline) {
     const { data } = await supabase
@@ -7713,18 +8181,11 @@ export async function getMaintenanceTickets() {
       .select('*, rooms(room_number, room_type)')
       .eq('lodge_id', lodgeId)
       .order('created_at', { ascending: false })
-    return (data || []).map((t) => ({
-      ...t,
-      title: t.title || t.issue || '',
-      description: t.description || t.notes || '',
-      room_number: t.rooms?.room_number,
-      room_type: t.rooms?.room_type,
-      labour_cost: Number(t.labour_cost || 0),
-      parts_cost: Number(t.parts_cost || 0),
-      total_cost: Number(t.total_cost || 0)
-    }))
+    const rows = (data || []).map(normalizeMaintenanceTicketRow)
+    writeCache('maintenance', data || [], { source: 'remote' })
+    return rows
   }
-  return []
+  return readCache('maintenance').map(normalizeMaintenanceTicketRow)
 }
 
 export async function getMaintenanceTicketById(id) {
@@ -7770,6 +8231,7 @@ export async function createMaintenanceTicket(data) {
       if (!roomResult?.success) throw new Error(roomResult?.error || 'Could not update room status')
       await refreshCache('rooms')
     }
+    await refreshCache('maintenance')
     return { success: true, id: result?.id }
   }
   return { success: false, error: 'Requires internet connection' }
@@ -7797,6 +8259,7 @@ export async function updateMaintenanceTicket(id, data) {
     })
     if (error) throw new Error(error.message)
     if (!result?.success) throw new Error(result?.error || 'Could not update maintenance ticket')
+    await refreshCache('maintenance')
     return { success: true }
   }
   return { success: false, error: 'Requires internet connection' }
@@ -7830,6 +8293,7 @@ export async function resolveMaintenanceTicket(id, roomId) {
       }
       await refreshCache('rooms')
     }
+    await refreshCache('maintenance')
     return { success: true }
   }
   return { success: false, error: 'Requires internet connection' }
@@ -8016,16 +8480,71 @@ function applyOfflinePosInventoryReservation(items = [], { outletId = null } = {
   return getOfflinePosInventoryReservation(items, { outletId })
 }
 
+function restoreOfflinePosInventoryReservation(items = [], { outletId = null } = {}) {
+  const usage = buildQueuedPosInventoryUsage(items, { outletId })
+  if (usage.size === 0) return []
+  const inventory = readCache('inventory-items')
+  const next = inventory.map((item) => {
+    const restored = usage.get(item?.id) || 0
+    if (!restored) return item
+    return {
+      ...item,
+      current_stock: normalizeInventoryStockValue(item.current_stock) + restored,
+      _pending_sync: true,
+      _sync_state: 'pending'
+    }
+  })
+  writeCache('inventory-items', next, { source: 'local' })
+  return [...usage.entries()].map(([inventory_item_id, quantity]) => ({ inventory_item_id, quantity }))
+}
+
+function readLocalPosVoidHistory() {
+  return readCache('pos-void-history')
+}
+
+function writeLocalPosVoidHistory(rows = []) {
+  writeCache('pos-void-history', rows)
+}
+
+function upsertLocalPosVoidHistory(entry = {}) {
+  if (!entry?.id && !entry?.order_id) return null
+  const rows = readLocalPosVoidHistory()
+  const normalized = {
+    ...entry,
+    id: entry.id || `local-void-${entry.order_id}-${Date.now()}`,
+    action: entry.action || 'void',
+    created_at: entry.created_at || new Date().toISOString()
+  }
+  const next = [
+    normalized,
+    ...rows.filter((row) => row?.id !== normalized.id && row?.order_id !== normalized.order_id)
+  ]
+  writeLocalPosVoidHistory(next)
+  return normalized
+}
+
+function patchLocalPosVoidHistory(logId, patch = {}) {
+  if (!logId) return false
+  const rows = readLocalPosVoidHistory()
+  const index = rows.findIndex((row) => row?.id === logId)
+  if (index < 0) return false
+  const next = [...rows]
+  next[index] = { ...next[index], ...patch }
+  writeLocalPosVoidHistory(next)
+  return true
+}
+
 function applyQueuedPosInventoryReservations(remoteInventoryRows = []) {
-  const queuedOrders = readSyncQueue().filter(isPosCreateOrderQueueItem)
-  if (queuedOrders.length === 0) return remoteInventoryRows || []
+  const queuedItems = readSyncQueue().filter((item) => isPosCreateOrderQueueItem(item) || isPosVoidQueueItem(item))
+  if (queuedItems.length === 0) return remoteInventoryRows || []
 
   const usage = new Map()
-  for (const item of queuedOrders) {
+  for (const item of queuedItems) {
     const payload = item?.data?.payload || {}
     const orderUsage = buildQueuedPosInventoryUsage(payload.items || [], { outletId: payload.outlet_id || null })
     for (const [inventoryItemId, quantity] of orderUsage.entries()) {
-      usage.set(inventoryItemId, (usage.get(inventoryItemId) || 0) + quantity)
+      const multiplier = isPosVoidQueueItem(item) ? -1 : 1
+      usage.set(inventoryItemId, (usage.get(inventoryItemId) || 0) + (quantity * multiplier))
     }
   }
 
@@ -8213,11 +8732,30 @@ export async function getPosOrders(startDate, endDate, outletFilter = null) {
 }
 
 export async function getPosVoidHistory(startDate, endDate, outletFilter = null) {
-  if (!isOnline) return []
+  const applyVoidFilters = (rows = []) => {
+    let filtered = rows || []
+    if (startDate) filtered = filtered.filter((row) => String(row.created_at || '') >= `${startDate}T00:00:00`)
+    if (endDate) filtered = filtered.filter((row) => String(row.created_at || '') <= `${endDate}T23:59:59`)
+    if (outletFilter !== null && outletFilter.length === 0) return []
+    if (outletFilter !== null) filtered = filtered.filter((row) => !row.outlet_id || outletFilter.includes(row.outlet_id))
+    return filtered.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')))
+  }
+
+  const attachApproverNames = (rows = [], userRows = readCache('users')) => {
+    const userMap = new Map((userRows || []).map((user) => [user?.id, user?.name]).filter(([id]) => !!id))
+    return (rows || []).map((row) => ({
+      ...row,
+      approver_name: row?.approver_name || userMap.get(row?.approved_by) || null
+    }))
+  }
+
+  const localRows = applyVoidFilters(attachApproverNames(readLocalPosVoidHistory()))
+
+  if (!isOnline) return localRows
 
   let query = supabase
     .from('pos_override_log')
-    .select('id, order_id, action, requested_by, approved_by, reason, outlet_id, created_at, users!pos_override_log_approved_by_fkey(name)')
+    .select('id, order_id, action, requested_by, approved_by, reason, outlet_id, created_at')
     .eq('lodge_id', lodgeId)
     .eq('action', 'void')
 
@@ -8229,10 +8767,23 @@ export async function getPosVoidHistory(startDate, endDate, outletFilter = null)
   const { data, error } = await query.order('created_at', { ascending: false })
   if (error) throw new Error(error.message)
 
-  return (data || []).map((row) => ({
-    ...row,
-    approver_name: row?.users?.name || null
-  }))
+  const approvedByIds = [...new Set((data || []).map((row) => row?.approved_by).filter(Boolean))]
+  let remoteUsers = readCache('users')
+  if (approvedByIds.length > 0) {
+    const { data: usersData } = await supabase
+      .from('users')
+      .select('id, name')
+      .in('id', approvedByIds)
+      .eq('lodge_id', lodgeId)
+    if (usersData) remoteUsers = usersData
+  }
+
+  const remoteRows = attachApproverNames(data || [], remoteUsers)
+  const remoteIds = new Set(remoteRows.map((row) => row?.id).filter(Boolean))
+  const pendingLocalRows = localRows.filter((row) =>
+    row?._pending_sync || row?._sync_state === 'pending' || !remoteIds.has(row?.id)
+  )
+  return applyVoidFilters([...pendingLocalRows.filter((row) => !remoteIds.has(row?.id)), ...remoteRows])
 }
 
 export async function getOutlets() {
@@ -8485,45 +9036,45 @@ export async function createPosOrder(data) {
 }
 
 export async function voidPosOrder(id) {
-  try {
-    // Check if order is already voided in cache
-    const cachedOrders = readCache('pos-orders')
-    const cachedOrder = cachedOrders.find((o) => o?.id === id && o?.lodge_id === lodgeId)
-    if (cachedOrder?.status === 'voided') {
-      return { success: false, error: 'This order is already voided.' }
-    }
-
-    if (isOnline) {
-      const { data: result, error } = await supabase.rpc('void_pos_order', {
-        p_id: id,
-        p_lodge_id: lodgeId
-      })
-      if (error) throw new Error(error.message)
-      if (!result?.success) return { success: false, error: result?.error || 'Could not void order' }
-      return { success: true }
-    }
-    return { success: false, error: 'Requires internet connection' }
-  } catch (error) {
-    recordCriticalError('pos.order.void', error, { order_id: id })
-    throw error
+  return {
+    success: false,
+    error: 'POS voids require supervisor, manager, or admin PIN approval.'
   }
 }
 
 async function _getApproverCandidates() {
+  const cachedCandidates = () => readCache('users')
+    .map(normalizeUserRecord)
+    .filter(Boolean)
+    .filter((user) => user?.pin_hash)
+    .filter((user) => ['supervisor', 'manager', 'admin', 'super_admin'].includes(normalizeAppRole(user.role)))
+
+  if (!isOnline) return cachedCandidates()
+
   const { data, error } = await supabase
     .from('users')
-    .select('id, role, pin_hash')
+    .select('id, name, role, pin_hash, allowed_outlet_ids')
     .eq('lodge_id', lodgeId)
     .not('pin_hash', 'is', null)
     .in('role', ['supervisor', 'manager', 'admin', 'super_admin'])
 
-  if (error) throw new Error(error.message)
-  return data || []
+  if (error) {
+    const fallback = cachedCandidates()
+    if (fallback.length > 0) return fallback
+    throw new Error(error.message)
+  }
+  return (data || []).map(normalizeUserRecord).filter(Boolean)
+}
+
+function approverCanApproveOutlet(approver, outletId = null) {
+  const role = normalizeAppRole(approver?.role)
+  if (isPosFullAccessRole(role)) return true
+  if (role !== 'supervisor') return false
+  if (!outletId) return true
+  return Array.isArray(approver?.allowed_outlet_ids) && approver.allowed_outlet_ids.includes(outletId)
 }
 
 export async function approvePosVoidWithPin(payload) {
-  if (!isOnline) return { success: false, error: 'Requires internet connection' }
-
   const { order_id, pin, reason, cashier_user_id, outlet_id } = payload || {}
 
   if (!order_id || !pin) {
@@ -8549,6 +9100,87 @@ export async function approvePosVoidWithPin(payload) {
   if (!approverCaps?.['pos.void']) {
     return { success: false, error: 'Invalid PIN or unauthorized approver' }
   }
+  if (!approverCanApproveOutlet(approver, outlet_id || null)) {
+    return { success: false, error: 'Invalid PIN or unauthorized approver for this outlet' }
+  }
+
+  const cachedOrders = readCache('pos-orders')
+  const cachedOrder = cachedOrders.find((order) => order?.id === order_id)
+  if (!cachedOrder && !isOnline) {
+    return { success: false, error: 'Order not found on this computer' }
+  }
+
+  const orderItems = Array.isArray(cachedOrder?.pos_order_items)
+    ? cachedOrder.pos_order_items
+    : Array.isArray(cachedOrder?.items)
+      ? cachedOrder.items
+      : []
+  const logId = payload?.override_log_id || randomUUID()
+  const createdAt = payload?.created_at || new Date().toISOString()
+
+  if (!isOnline) {
+    if (cachedOrder?.status === 'voided') {
+      return { success: false, error: 'Order is already voided' }
+    }
+
+    const queueMeta = {
+      _queue_id: `pos-void-${order_id}`,
+      ...(cachedOrder?._pending_sync || cachedOrder?._sync_created_offline ? { _depends_on: `pos-order-${order_id}` } : {})
+    }
+    queueOperation('rpc', 'approve_pos_void_with_pin', {
+      payload: {
+        order_id,
+        lodge_id: lodgeId,
+        requested_by: cashier_user_id || null,
+        approved_by: approver.id,
+        reason: reason || null,
+        outlet_id: outlet_id || cachedOrder?.outlet_id || null,
+        override_log_id: logId,
+        created_at: createdAt,
+        items: orderItems.map((item) => ({
+          menu_item_id: item.menu_item_id || null,
+          inventory_item_id: item.inventory_item_id || null,
+          depletion_qty: Math.max(1, Number(item.depletion_qty || 1)),
+          item_name: item.item_name,
+          quantity: Number(item.quantity || 0),
+          unit_price: Number(item.unit_price || 0)
+        }))
+      }
+    }, null, queueMeta)
+
+    patchCachedPosOrderSyncState(order_id, {
+      status: 'voided',
+      _pending_sync: true,
+      _sync_state: 'pending',
+      _sync_error: null,
+      _pending_void: true,
+      _void_reason: reason || null,
+      _void_approved_by: approver.id,
+      _void_approver_name: approver.name || null
+    })
+    restoreOfflinePosInventoryReservation(orderItems, { outletId: outlet_id || cachedOrder?.outlet_id || null })
+    upsertLocalPosVoidHistory({
+      id: logId,
+      order_id,
+      action: 'void',
+      requested_by: cashier_user_id || null,
+      approved_by: approver.id,
+      approver_name: approver.name || null,
+      reason: reason || null,
+      outlet_id: outlet_id || cachedOrder?.outlet_id || null,
+      created_at: createdAt,
+      _pending_sync: true,
+      _sync_state: 'pending'
+    })
+    return {
+      success: true,
+      offline: true,
+      override_log_id: logId,
+      approved_by: approver.id,
+      approver_name: approver.name || null,
+      reason: reason || null
+    }
+  }
 
   const { data: result, error } = await supabase.rpc('approve_pos_void_with_pin', {
     payload: {
@@ -8557,13 +9189,35 @@ export async function approvePosVoidWithPin(payload) {
       requested_by: cashier_user_id || null,
       approved_by: approver.id,
       reason: reason || null,
-      outlet_id: outlet_id || null
+      outlet_id: outlet_id || null,
+      override_log_id: logId,
+      created_at: createdAt
     }
   })
 
   if (error) throw new Error(error.message)
   if (!result?.success) return { success: false, error: result?.error || 'Could not void order' }
-  return { success: true }
+  upsertLocalPosVoidHistory({
+    id: logId,
+    order_id,
+    action: 'void',
+    requested_by: cashier_user_id || null,
+    approved_by: approver.id,
+    approver_name: approver.name || null,
+    reason: reason || null,
+    outlet_id: outlet_id || cachedOrder?.outlet_id || null,
+    created_at: createdAt,
+    _pending_sync: false,
+    _sync_state: 'synced'
+  })
+  await refreshCache('pos-orders', 'inventory-items', 'inventory-purchases').catch(() => {})
+  return {
+    success: true,
+    override_log_id: logId,
+    approved_by: approver.id,
+    approver_name: approver.name || null,
+    reason: reason || null
+  }
 }
 
 // ─── INVENTORY ────────────────────────────────────────────────────────────────
@@ -8712,24 +9366,65 @@ export async function addInventoryPurchase(data) {
 }
 
 export async function getInventoryPurchases(itemId) {
-  if (!isOnline) return []
-  const { data, error } = await supabase
-    .from('inventory_purchases')
-    .select('*')
-    .eq('lodge_id', lodgeId)
-    .eq('item_id', itemId)
-    .order('date', { ascending: false })
-  if (!error) {
-    const cached = readCache('inventory-purchases').filter((row) => row.item_id !== itemId)
-    writeCache('inventory-purchases', [...(data || []), ...cached])
-    return data || []
-  }
   const cached = readCache('inventory-purchases').filter((row) => row.item_id === itemId)
-  if (cached.length > 0) {
-    console.warn('getInventoryPurchases falling back to cache:', error.message)
+  if (!isOnline) {
     return cached.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
   }
-  throw new Error(error.message)
+
+  try {
+    const { data, error } = await supabase
+      .from('inventory_purchases')
+      .select('*')
+      .eq('lodge_id', lodgeId)
+      .eq('item_id', itemId)
+      .order('date', { ascending: false })
+    if (error) throw error
+
+    const liveRows = Array.isArray(data) ? data : []
+    const otherCachedRows = readCache('inventory-purchases').filter((row) => row.item_id !== itemId)
+    if (liveRows.length === 0 && cached.length > 0) {
+      console.warn('getInventoryPurchases received empty live result; using cached purchases instead')
+      return cached.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
+    }
+
+    writeCache('inventory-purchases', [...liveRows, ...otherCachedRows])
+    return liveRows
+  } catch (error) {
+    if (cached.length > 0) {
+      console.warn('getInventoryPurchases falling back to cache:', error.message)
+      return cached.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
+    }
+    throw new Error(error.message)
+  }
+}
+
+export async function getAllInventoryPurchases() {
+  const cached = readCache('inventory-purchases')
+  if (!isOnline) {
+    return cached.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('inventory_purchases')
+      .select('*')
+      .eq('lodge_id', lodgeId)
+      .order('date', { ascending: false })
+    if (error) throw error
+    const liveRows = Array.isArray(data) ? data : []
+    if (liveRows.length === 0 && cached.length > 0) {
+      console.warn('getAllInventoryPurchases received empty live result; using cached purchases instead')
+      return cached.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
+    }
+    writeCache('inventory-purchases', liveRows)
+    return liveRows
+  } catch (error) {
+    if (cached.length > 0) {
+      console.warn('getAllInventoryPurchases falling back to cache:', error?.message || error)
+      return cached.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
+    }
+    throw new Error(error?.message || 'Failed to load inventory purchases')
+  }
 }
 
 export async function adjustInventoryStock(itemId, delta, notes) {
@@ -9023,6 +9718,35 @@ export async function getSupplyPurchases(itemId) {
       return cached.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
     }
     if (!isOnline) return []
+    throw new Error(error?.message || 'Failed to load supply purchases')
+  }
+}
+
+export async function getAllSupplyPurchases() {
+  const cached = readCache('supply-purchases')
+  if (!isOnline) {
+    return cached.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('supply_purchases')
+      .select('*')
+      .eq('lodge_id', lodgeId)
+      .order('date', { ascending: false })
+    if (error) throw error
+    const liveRows = Array.isArray(data) ? data : []
+    if (liveRows.length === 0 && cached.length > 0) {
+      console.warn('getAllSupplyPurchases received empty live result; using cached purchases instead')
+      return cached.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
+    }
+    writeCache('supply-purchases', liveRows)
+    return liveRows
+  } catch (error) {
+    if (cached.length > 0) {
+      console.warn('getAllSupplyPurchases falling back to cache:', error?.message || error)
+      return cached.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
+    }
     throw new Error(error?.message || 'Failed to load supply purchases')
   }
 }
@@ -9529,19 +10253,7 @@ export async function getRoomProfitabilityReport(startDate, endDate) {
     supplyRows = []
   }
 
-  let maintenanceRows = []
-  try {
-    const { data, error } = await supabase
-      .from('maintenance_tickets')
-      .select('room_id, status, reported_date, total_cost')
-      .eq('lodge_id', lodgeId)
-      .gte('reported_date', startDate)
-      .lte('reported_date', endDate)
-    if (error) throw error
-    maintenanceRows = data || []
-  } catch {
-    maintenanceRows = []
-  }
+  const maintenanceRows = await getMaintenanceRowsForPeriod(startDate, endDate)
 
   const supplyByRoom = {}
   for (const row of supplyRows) {
@@ -9567,7 +10279,8 @@ export async function getRoomProfitabilityReport(startDate, endDate) {
     const revenue = Number(occ.actual_revenue || 0)
     const supplyCost = Number(supply.cost || 0)
     const maintenanceCost = Number(maintenance.cost || 0)
-    const contribution = revenue - supplyCost - maintenanceCost
+    const runningCost = supplyCost + maintenanceCost
+    const contribution = revenue - runningCost
     return {
       id: room.id,
       room_number: room.room_number,
@@ -9579,6 +10292,7 @@ export async function getRoomProfitabilityReport(startDate, endDate) {
       supply_cost: supplyCost,
       supply_units_used: Number(supply.units || 0),
       maintenance_cost: maintenanceCost,
+      running_cost: runningCost,
       maintenance_count: Number(maintenance.count || 0),
       open_maintenance_count: Number(maintenance.open || 0),
       contribution,
@@ -9933,6 +10647,51 @@ export async function getSupplySpend(startDate, endDate) {
     purchases,
     source: 'local',
     as_of_range: { start: startDate, end: endDate }
+  }
+}
+
+export async function getMaintenanceRowsForPeriod(startDate, endDate) {
+  const cachedRows = readCache('maintenance')
+    .filter((row) => (!startDate || String(row.reported_date || '').slice(0, 10) >= startDate) && (!endDate || String(row.reported_date || '').slice(0, 10) <= endDate))
+    .map((row) => ({
+      id: row.id || row._queue_id || null,
+      room_id: row.room_id || null,
+      room_number: row.room_number || row.rooms?.room_number || null,
+      room_type: row.room_type || row.rooms?.room_type || null,
+      title: row.title || row.issue || '',
+      description: row.description || row.notes || '',
+      status: row.status || 'open',
+      reported_date: row.reported_date || null,
+      total_cost: Number(row.total_cost || 0)
+    }))
+    .sort((a, b) => String(b.reported_date || '').localeCompare(String(a.reported_date || '')))
+
+  if (!startDate || !endDate || !lodgeId || !isOnline) return cachedRows
+
+  try {
+    const { data, error } = await supabase
+      .from('maintenance_tickets')
+      .select('*, rooms(room_number, room_type)')
+      .eq('lodge_id', lodgeId)
+      .gte('reported_date', startDate)
+      .lte('reported_date', endDate)
+    if (error) throw error
+    const liveRows = Array.isArray(data)
+      ? data.map((row) => ({
+        id: row.id || row._queue_id || null,
+        room_id: row.room_id || null,
+        room_number: row.room_number || row.rooms?.room_number || null,
+        room_type: row.room_type || row.rooms?.room_type || null,
+        title: row.title || row.issue || '',
+        description: row.description || row.notes || '',
+        status: row.status || 'open',
+        reported_date: row.reported_date || null,
+        total_cost: Number(row.total_cost || 0)
+      }))
+      : []
+    return liveRows.length > 0 ? liveRows : cachedRows
+  } catch {
+    return cachedRows
   }
 }
 
@@ -11009,7 +11768,7 @@ export async function updateCompanyUserPwaAccess(targetLodgeId, userId, payload 
     p_reset_by: currentUser?.id || null
   })
   if (error) throw new Error(error.message)
-  if (!result?.success) throw new Error(result?.error || 'Could not update Manager PWA access')
+  if (!result?.success) throw new Error(result?.error || 'Could not update manager mobile app access')
 
   await logAdminActivity(targetLodgeId, null, 'company_user_pwa_access_updated', {
     actor_id: currentUser?.id || null,
@@ -12169,7 +12928,9 @@ export async function getFinancialValidationAlerts(limit = 30) {
 }
 
 export function getCriticalErrorLog(limit = 100) {
-  return readAuxiliaryLog(CRITICAL_ERROR_LOG_FILE).slice(0, limit)
+  return readAuxiliaryLog(CRITICAL_ERROR_LOG_FILE)
+    .filter((entry) => !isNonCriticalOperationalError(entry?.scope, entry?.message))
+    .slice(0, limit)
 }
 
 export function clearCriticalErrorLog() {
@@ -12869,11 +13630,14 @@ export async function updateQuotation(id, data) {
     })
   }
 
+  const expectedUpdatedAt = current?.updated_at || null
+
   if (isOnline) {
     const { data: result, error } = await supabase.rpc('update_quotation', {
       p_id: id,
       p_lodge_id: lodgeId,
-      payload: update
+      payload: update,
+      p_expected_updated_at: expectedUpdatedAt
     })
     if (error) throw new Error(error.message)
     if (!result?.success) throw new Error(result?.error || 'Could not update quotation')
@@ -12892,7 +13656,8 @@ export async function updateQuotation(id, data) {
     queueOperation('rpc', 'update_quotation', {
       p_id: id,
       p_lodge_id: lodgeId,
-      payload: update
+      payload: update,
+      p_expected_updated_at: expectedUpdatedAt
     })
   }
 
@@ -12964,7 +13729,97 @@ export async function getQuotationById(id) {
 }
 
 export async function convertQuotationToBooking(quotationId, depositAmount = 0, paymentMethod = 'cash') {
-  if (!isOnline) throw new Error('Internet connection required to convert a quotation to a booking')
+  const deposit = Number(depositAmount) || 0
+  const method = paymentMethod || 'cash'
+
+  if (!isOnline) {
+    const quotation = readCache('quotations').find((q) => q.id === quotationId)
+    if (!quotation) throw new Error('Quotation not found')
+    if (quotation.converted_booking_id || quotation.status === 'converted') {
+      throw new Error('This quotation has already been converted to a booking.')
+    }
+    if (!['sent', 'accepted'].includes(quotation.status)) {
+      throw new Error('Quotation must be sent or accepted before conversion.')
+    }
+    if (quotation.room_id && quotation.check_in && quotation.check_out) {
+      await checkRoomConflict(quotation.room_id, quotation.check_in, quotation.check_out)
+    }
+
+    const localBookingId = randomUUID()
+    const now = new Date().toISOString()
+    const total = Number(quotation.total_amount || 0)
+    const optimisticPayment = buildOfflineBookingFinancialState(total, deposit)
+    const room = quotation.room_id
+      ? readCache('rooms').find((entry) => entry.id === quotation.room_id)
+      : null
+    const localBooking = {
+      id: localBookingId,
+      lodge_id: lodgeId,
+      customer_id: quotation.customer_id || null,
+      customer_name: quotation.customer_name || '',
+      customer_phone: quotation.customer_phone || '',
+      room_id: quotation.room_id || null,
+      room_number: room?.room_number || quotation.room_name || '',
+      room_name: quotation.room_name || (room?.room_number ? `Room ${room.room_number}` : ''),
+      check_in: quotation.check_in || null,
+      check_out: quotation.check_out || null,
+      adults: Number(quotation.adults) || 1,
+      children: Number(quotation.children) || 0,
+      total_amount: total,
+      amount_paid: optimisticPayment.amount_paid,
+      deposit_amount: deposit,
+      payment_status: optimisticPayment.payment_status,
+      payment_method: deposit > 0 ? method : null,
+      status: 'confirmed',
+      invoice_number: null,
+      quotation_id: quotationId,
+      created_by: currentUser?.id || null,
+      notes: quotation.notes || '',
+      _local_invoice_number: buildLocalPendingInvoiceNumber(localBookingId),
+      _pending_sync: true,
+      _pending_payment: deposit > 0,
+      _sync_created_offline: true,
+      _sync_state: 'pending',
+      _sync_error: null,
+      _sync_source: 'quotation_conversion',
+      created_at: now,
+      updated_at: now
+    }
+
+    writeCache('bookings', [
+      localBooking,
+      ...readCache('bookings').filter((booking) => booking.id !== localBookingId)
+    ])
+    patchCachedQuotationSyncState(quotationId, {
+      status: 'converted',
+      converted_booking_id: localBookingId,
+      _pending_sync: true,
+      _pending_conversion: true,
+      _local_converted_booking_id: localBookingId,
+      _sync_state: 'pending',
+      _sync_error: null,
+      updated_at: now
+    })
+
+    queueOperation('rpc', 'convert_quotation_to_booking', {
+      p_quotation_id: quotationId,
+      p_lodge_id: lodgeId,
+      p_deposit_amount: deposit,
+      p_payment_method: method,
+      p_created_by: currentUser?.id || null
+    }, null, {
+      _queue_id: `quotation-convert-${quotationId}`,
+      _local_booking_id: localBookingId,
+      _previous_status: quotation.status || 'accepted'
+    })
+
+    logActivity('quotation_converted', `(Offline) Quotation ${quotationId} queued for conversion to booking ${localBookingId}`)
+    return {
+      booking_id: localBookingId,
+      invoice_number: localBooking._local_invoice_number,
+      pendingSync: true
+    }
+  }
 
   const { data: quotation } = await supabase
     .from('quotations')
@@ -12980,8 +13835,8 @@ export async function convertQuotationToBooking(quotationId, depositAmount = 0, 
   const { data: result, error } = await supabase.rpc('convert_quotation_to_booking', {
     p_quotation_id:   quotationId,
     p_lodge_id:       lodgeId,
-    p_deposit_amount: Number(depositAmount) || 0,
-    p_payment_method: paymentMethod || 'cash',
+    p_deposit_amount: deposit,
+    p_payment_method: method,
     p_created_by:     currentUser?.id || null
   })
 
@@ -12991,12 +13846,12 @@ export async function convertQuotationToBooking(quotationId, depositAmount = 0, 
   await refreshCache('bookings')
   await refreshCache('quotations')
 
-  const bookingId = result.booking_id
+  const bookingId = result.booking_id || result.id
 
   // P2: Explicitly record deposit if provided.
-  if (Number(depositAmount) > 0) {
+  if (deposit > 0) {
     try {
-      await updateBookingPayment(bookingId, depositAmount, paymentMethod, 'deposit')
+      await updateBookingPayment(bookingId, deposit, method, 'deposit')
     } catch (depError) {
       logActivity('quotation_converted', `Quotation ${quotationId} converted to booking ${bookingId} (Deposit failed: ${depError.message})`)
       return { 
@@ -13012,8 +13867,8 @@ export async function convertQuotationToBooking(quotationId, depositAmount = 0, 
 
 // ── Data Import ───────────────────────────────────────────────────────────────
 
-export function generateImportTemplate() {
-  return [
+const IMPORT_TEMPLATES = {
+  bookings: [
     { key: 'guest_name',     label: 'Guest Name',       required: true  },
     { key: 'email',          label: 'Email',             required: false },
     { key: 'phone',          label: 'Phone',             required: false },
@@ -13029,7 +13884,57 @@ export function generateImportTemplate() {
     { key: 'payment_method', label: 'Payment Method',     required: false },
     { key: 'status',         label: 'Booking Status',     required: false },
     { key: 'notes',          label: 'Notes',              required: false },
+  ],
+  guests: [
+    { key: 'name',        label: 'Guest Name',      required: true },
+    { key: 'email',       label: 'Email',           required: false },
+    { key: 'phone',       label: 'Phone',           required: false },
+    { key: 'id_number',   label: 'ID / Passport No', required: false },
+    { key: 'nationality', label: 'Nationality',     required: false }
+  ],
+  rooms: [
+    { key: 'room_number', label: 'Room Number', required: true },
+    { key: 'room_type',   label: 'Room Type',   required: false },
+    { key: 'rate',        label: 'Rate',        required: false },
+    { key: 'max_adults',  label: 'Max Adults',  required: false },
+    { key: 'max_children', label: 'Max Children', required: false }
+  ],
+  inventory: [
+    { key: 'name',          label: 'Item Name',     required: true },
+    { key: 'category',      label: 'Category',      required: false },
+    { key: 'unit',          label: 'Unit',          required: false },
+    { key: 'current_stock', label: 'Current Stock', required: false },
+    { key: 'reorder_level', label: 'Reorder Level', required: false }
+  ],
+  supplies: [
+    { key: 'name',          label: 'Supply Item',   required: true },
+    { key: 'category',      label: 'Category',      required: false },
+    { key: 'unit',          label: 'Unit',          required: false },
+    { key: 'current_stock', label: 'Current Stock', required: false },
+    { key: 'reorder_level', label: 'Reorder Level', required: false }
+  ],
+  expenses: [
+    { key: 'date',        label: 'Date',        required: true },
+    { key: 'category',    label: 'Category',    required: true },
+    { key: 'description', label: 'Description', required: false },
+    { key: 'amount',      label: 'Amount',      required: true },
+    { key: 'paid_by',     label: 'Paid By',     required: false }
   ]
+}
+
+export function getSupportedImportTypes() {
+  return [
+    { key: 'bookings', label: 'Bookings', executable: true },
+    { key: 'guests', label: 'Guests', executable: true },
+    { key: 'rooms', label: 'Rooms', executable: true },
+    { key: 'inventory', label: 'Inventory Items', executable: true },
+    { key: 'supplies', label: 'Room Supply Items', executable: true },
+    { key: 'expenses', label: 'Expenses', executable: true }
+  ]
+}
+
+export function generateImportTemplate(type = 'bookings') {
+  return IMPORT_TEMPLATES[type] || IMPORT_TEMPLATES.bookings
 }
 
 export async function checkImportDuplicates(rows) {
@@ -13049,6 +13954,179 @@ export async function checkImportDuplicates(rows) {
         b.check_out > row.check_in
     )
   })
+}
+
+export function dryRunBookingImport(rows = []) {
+  const rooms = readCache('rooms')
+  const bookings = readCache('bookings')
+  const customers = readCache('customers')
+  const roomMap = {}
+  rooms.forEach((r) => { roomMap[String(r.room_number).trim()] = r })
+
+  const report = {
+    total: Array.isArray(rows) ? rows.length : 0,
+    valid: 0,
+    would_create_customers: 0,
+    would_reuse_customers: 0,
+    overlaps: 0,
+    errors: [],
+    warnings: []
+  }
+
+  ;(Array.isArray(rows) ? rows : []).forEach((row, index) => {
+    const rowNum = index + 1
+    const guestName = String(row.guest_name || '').trim()
+    const room = roomMap[String(row.room_number || '').trim()]
+    const rowErrors = []
+    if (!guestName) rowErrors.push('Guest name is required.')
+    if (!room) rowErrors.push('Room number was not found.')
+    if (!row.check_in || !row.check_out) rowErrors.push('Check-in and check-out dates are required.')
+    if (row.check_in && row.check_out && row.check_in >= row.check_out) rowErrors.push('Check-out must be after check-in.')
+
+    const overlap = room && bookings.some((booking) =>
+      booking.room_id === room.id &&
+      booking.status !== 'cancelled' &&
+      booking.check_in < row.check_out &&
+      booking.check_out > row.check_in
+    )
+    if (overlap) {
+      report.overlaps += 1
+      rowErrors.push('Room overlaps with an existing booking.')
+    }
+
+    const emailNorm = String(row.email || '').trim().toLowerCase()
+    const existingCustomer = emailNorm
+      ? customers.find((c) => c.email?.toLowerCase() === emailNorm)
+      : customers.find((c) => c.name?.toLowerCase() === guestName.toLowerCase() || c.full_name?.toLowerCase() === guestName.toLowerCase())
+
+    if (rowErrors.length > 0) {
+      report.errors.push({ row: rowNum, guest: guestName, errors: rowErrors })
+    } else {
+      report.valid += 1
+      if (existingCustomer) report.would_reuse_customers += 1
+      else report.would_create_customers += 1
+    }
+  })
+
+  return report
+}
+
+function normalizeImportType(type = 'bookings') {
+  return Object.prototype.hasOwnProperty.call(IMPORT_TEMPLATES, type) ? type : 'bookings'
+}
+
+function importRowValue(row = {}, ...keys) {
+  for (const key of keys) {
+    const value = row?.[key]
+    if (value !== undefined && value !== null && String(value).trim() !== '') return String(value).trim()
+  }
+  return ''
+}
+
+function importNumber(row = {}, keys = [], fallback = 0) {
+  for (const key of keys) {
+    const value = row?.[key]
+    if (value !== undefined && value !== null && String(value).trim() !== '') {
+      const numeric = Number(value)
+      return Number.isFinite(numeric) ? numeric : fallback
+    }
+  }
+  return fallback
+}
+
+function findImportDuplicate(type, row = {}) {
+  if (type === 'guests') {
+    const name = importRowValue(row, 'name', 'guest_name').toLowerCase()
+    const email = importRowValue(row, 'email').toLowerCase()
+    const phone = importRowValue(row, 'phone')
+    return readCache('customers').find((customer) =>
+      (email && String(customer.email || '').toLowerCase() === email) ||
+      (phone && name && String(customer.phone || '') === phone && String(customer.name || customer.full_name || '').toLowerCase() === name) ||
+      (!email && !phone && name && String(customer.name || customer.full_name || '').toLowerCase() === name)
+    )
+  }
+  if (type === 'rooms') {
+    const roomNumber = importRowValue(row, 'room_number')
+    return readCache('rooms').find((room) => String(room.room_number || '').trim() === roomNumber)
+  }
+  if (type === 'inventory') {
+    const name = importRowValue(row, 'name', 'item_name').toLowerCase()
+    const category = importRowValue(row, 'category').toLowerCase()
+    return readCache('inventory-items').find((item) =>
+      String(item.name || item.item_name || '').toLowerCase() === name &&
+      String(item.category || '').toLowerCase() === category
+    )
+  }
+  if (type === 'supplies') {
+    const name = importRowValue(row, 'name', 'item_name').toLowerCase()
+    const category = importRowValue(row, 'category').toLowerCase()
+    return readCache('supply-items').find((item) =>
+      String(item.name || item.item_name || '').toLowerCase() === name &&
+      String(item.category || '').toLowerCase() === category
+    )
+  }
+  if (type === 'expenses') {
+    const date = importRowValue(row, 'date')
+    const category = importRowValue(row, 'category').toLowerCase()
+    const description = importRowValue(row, 'description').toLowerCase()
+    const amount = importNumber(row, ['amount'], 0)
+    return readCache('expenses').find((expense) =>
+      String(expense.date || '') === date &&
+      String(expense.category || '').toLowerCase() === category &&
+      String(expense.description || '').toLowerCase() === description &&
+      Number(expense.amount || 0) === amount
+    )
+  }
+  return null
+}
+
+function validateImportRow(type, row = {}) {
+  const errors = []
+  if (type === 'guests') {
+    if (!importRowValue(row, 'name', 'guest_name')) errors.push('Guest name is required.')
+  } else if (type === 'rooms') {
+    if (!importRowValue(row, 'room_number')) errors.push('Room number is required.')
+    if (importNumber(row, ['rate_per_night', 'rate'], 0) < 0) errors.push('Room rate cannot be negative.')
+  } else if (type === 'inventory' || type === 'supplies') {
+    if (!importRowValue(row, 'name', 'item_name')) errors.push('Item name is required.')
+    if (importNumber(row, ['current_stock'], 0) < 0) errors.push('Current stock cannot be negative.')
+    if (importNumber(row, ['reorder_level'], 0) < 0) errors.push('Reorder level cannot be negative.')
+  } else if (type === 'expenses') {
+    if (!importRowValue(row, 'date')) errors.push('Date is required.')
+    if (!importRowValue(row, 'category')) errors.push('Category is required.')
+    if (importNumber(row, ['amount'], 0) <= 0) errors.push('Amount must be greater than zero.')
+  }
+  return errors
+}
+
+export function dryRunImport(type = 'bookings', rows = []) {
+  const normalizedType = normalizeImportType(type)
+  if (normalizedType === 'bookings') return dryRunBookingImport(rows)
+
+  const report = {
+    type: normalizedType,
+    total: Array.isArray(rows) ? rows.length : 0,
+    valid: 0,
+    duplicates: 0,
+    would_create: 0,
+    errors: []
+  }
+
+  ;(Array.isArray(rows) ? rows : []).forEach((row, index) => {
+    const errors = validateImportRow(normalizedType, row)
+    if (errors.length > 0) {
+      report.errors.push({ row: index + 1, guest: importRowValue(row, 'name', 'guest_name', 'room_number', 'description'), errors })
+      return
+    }
+    if (findImportDuplicate(normalizedType, row)) {
+      report.duplicates += 1
+      return
+    }
+    report.valid += 1
+    report.would_create += 1
+  })
+
+  return report
 }
 
 function friendlyImportError(msg = '') {
@@ -13198,6 +14276,109 @@ export async function bulkImportBookings(rows, { filename = '', onProgress } = {
   return { imported, skipped, errors, batchId: imported > 0 ? batchId : null }
 }
 
+async function createImportedEntity(type, row) {
+  if (type === 'guests') {
+    return await createCustomer({
+      name: importRowValue(row, 'name', 'guest_name'),
+      email: importRowValue(row, 'email'),
+      phone: importRowValue(row, 'phone'),
+      id_number: importRowValue(row, 'id_number'),
+      nationality: importRowValue(row, 'nationality')
+    })
+  }
+  if (type === 'rooms') {
+    return await createRoom({
+      room_number: importRowValue(row, 'room_number'),
+      room_type: importRowValue(row, 'room_type') || 'Standard',
+      rate_per_night: importNumber(row, ['rate_per_night', 'rate'], 0),
+      max_occupancy: Math.max(1, importNumber(row, ['max_occupancy', 'max_adults'], 2) + importNumber(row, ['max_children'], 0)),
+      status: 'available'
+    })
+  }
+  if (type === 'inventory') {
+    const result = await createInventoryItem({
+      name: importRowValue(row, 'name', 'item_name'),
+      category: importRowValue(row, 'category') || 'Bar',
+      unit: importRowValue(row, 'unit') || 'unit',
+      current_stock: importNumber(row, ['current_stock'], 0),
+      reorder_level: importNumber(row, ['reorder_level'], 0),
+      selling_price: importNumber(row, ['selling_price'], 0)
+    })
+    return result?.id || null
+  }
+  if (type === 'supplies') {
+    const result = await createSupplyItem({
+      name: importRowValue(row, 'name', 'item_name'),
+      category: importRowValue(row, 'category') || 'Bathroom',
+      unit: importRowValue(row, 'unit') || 'piece',
+      current_stock: importNumber(row, ['current_stock'], 0),
+      reorder_level: importNumber(row, ['reorder_level'], 0)
+    })
+    return result?.id || null
+  }
+  if (type === 'expenses') {
+    const result = await createExpense({
+      date: importRowValue(row, 'date'),
+      category: importRowValue(row, 'category'),
+      description: importRowValue(row, 'description') || 'Imported expense',
+      amount: importNumber(row, ['amount'], 0),
+      notes: importRowValue(row, 'notes', 'paid_by')
+    })
+    return result?.id || null
+  }
+  throw new Error('Unsupported import type.')
+}
+
+export async function bulkImportTyped(type = 'bookings', rows, { filename = '', onProgress } = {}) {
+  const normalizedType = normalizeImportType(type)
+  if (normalizedType === 'bookings') return bulkImportBookings(rows, { filename, onProgress })
+  if (!isOnline) throw new Error(`Internet connection required to import ${normalizedType}.`)
+
+  const batchId = randomUUID()
+  const createdIds = []
+  const errors = []
+  let imported = 0
+  let skipped = 0
+
+  for (let i = 0; i < rows.length; i += 1) {
+    const row = rows[i]
+    if (onProgress) onProgress({ current: i + 1, total: rows.length })
+    try {
+      const rowErrors = validateImportRow(normalizedType, row)
+      if (rowErrors.length > 0) throw new Error(rowErrors.join(' '))
+      if (findImportDuplicate(normalizedType, row)) {
+        skipped += 1
+        continue
+      }
+      const id = await createImportedEntity(normalizedType, row)
+      if (id) createdIds.push(id)
+      imported += 1
+    } catch (error) {
+      errors.push({
+        row: i + 1,
+        guest: importRowValue(row, 'name', 'guest_name', 'room_number', 'description'),
+        error: friendlyImportError(error.message)
+      })
+      skipped += 1
+    }
+  }
+
+  const batches = readCache('import-batches')
+  batches.unshift({
+    id: batchId,
+    filename: filename || 'unknown',
+    entity_type: normalizedType,
+    row_count: imported,
+    error_count: errors.length,
+    created_ids: createdIds,
+    created_at: new Date().toISOString()
+  })
+  writeCache('import-batches', batches)
+
+  logActivity('data_imported', `Imported ${imported} ${normalizedType} records from "${filename || 'file'}" (${errors.length} errors, ${skipped} skipped)`)
+  return { imported, skipped, errors, batchId: imported > 0 ? batchId : null }
+}
+
 export async function getImportBatches() {
   return readCache('import-batches')
 }
@@ -13209,29 +14390,65 @@ export async function undoImportBatch(batchId) {
   const batch = batches.find((b) => b.id === batchId)
   if (!batch) return { error: 'Import batch not found.' }
 
+  const type = normalizeImportType(batch.entity_type || 'bookings')
   const bookingIds = batch.booking_ids || []
+  const createdIds = batch.created_ids || []
   const errors = []
 
-  for (const bookingId of bookingIds) {
-    const { error } = await supabase
-      .from('bookings')
-      .delete()
-      .eq('id', bookingId)
-      .eq('lodge_id', lodgeId)
-    if (error) errors.push(bookingId)
+  if (type === 'bookings') {
+    for (const bookingId of bookingIds) {
+      const { error } = await supabase
+        .from('bookings')
+        .delete()
+        .eq('id', bookingId)
+        .eq('lodge_id', lodgeId)
+      if (error) errors.push(bookingId)
+    }
+  } else if (type === 'guests') {
+    for (const id of createdIds) {
+      const hasBookings = readCache('bookings').some((booking) => booking.customer_id === id)
+      if (hasBookings) {
+        errors.push(id)
+        continue
+      }
+      const { error } = await supabase.from('customers').delete().eq('id', id).eq('lodge_id', lodgeId)
+      if (error) errors.push(id)
+    }
+  } else if (type === 'rooms') {
+    for (const id of createdIds) {
+      const hasBookings = readCache('bookings').some((booking) => booking.room_id === id)
+      if (hasBookings) {
+        errors.push(id)
+        continue
+      }
+      try { await deleteRoom(id) } catch { errors.push(id) }
+    }
+  } else if (type === 'inventory') {
+    for (const id of createdIds) {
+      try { await deleteInventoryItem(id) } catch { errors.push(id) }
+    }
+  } else if (type === 'supplies') {
+    for (const id of createdIds) {
+      try { await deleteSupplyItem(id) } catch { errors.push(id) }
+    }
+  } else if (type === 'expenses') {
+    for (const id of createdIds) {
+      try { await deleteExpense(id) } catch { errors.push(id) }
+    }
   }
 
-  if (errors.length === bookingIds.length && bookingIds.length > 0) {
-    return { error: 'Could not delete any bookings from this batch.' }
+  const targetIds = type === 'bookings' ? bookingIds : createdIds
+  if (errors.length === targetIds.length && targetIds.length > 0) {
+    return { error: `Could not delete any ${type} records from this batch.` }
   }
 
   // Remove batch from local store
   writeCache('import-batches', batches.filter((b) => b.id !== batchId))
 
-  await refreshCache('bookings')
-  await refreshCache('customers')
+  await refreshAllCaches().catch(() => {})
+  await refreshCache('inventory-items', 'supply-items', 'expenses').catch(() => {})
 
-  logActivity('import_undone', `Undid import batch "${batch.filename}" (${bookingIds.length - errors.length} bookings deleted)`)
+  logActivity('import_undone', `Undid import batch "${batch.filename}" (${targetIds.length - errors.length} ${type} records deleted)`)
 
-  return { success: true, deleted: bookingIds.length - errors.length }
+  return { success: true, deleted: targetIds.length - errors.length, failed: errors.length }
 }

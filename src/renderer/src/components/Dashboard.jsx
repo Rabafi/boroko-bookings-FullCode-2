@@ -94,6 +94,7 @@ export default function Dashboard() {
 
   const [stats, setStats] = useState(null)
   const [recentBookings, setRecentBookings] = useState([])
+  const [loading, setLoading] = useState(false)
   const [bookingHealth, setBookingHealth] = useState({ outstandingTotal: 0, unpaidCount: 0 })
   const [overdueBalances, setOverdueBalances] = useState([])
   const [activeBalanceCount, setActiveBalanceCount] = useState(0)
@@ -107,6 +108,11 @@ export default function Dashboard() {
   const [requestStatus, setRequestStatus] = useState('open')
   const [requestNote, setRequestNote] = useState('')
   const [requestSaving, setRequestSaving] = useState(false)
+  const pendingOnlineRequests = onlineRequests || []
+  const pendingFrontDeskRequests = useMemo(
+    () => frontDeskRequests.filter((request) => request.status !== 'resolved'),
+    [frontDeskRequests]
+  )
 
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -377,6 +383,105 @@ export default function Dashboard() {
                 </div>
               )
             })}
+          </div>
+        </section>
+      )}
+
+      {(pendingOnlineRequests.length > 0 || pendingFrontDeskRequests.length > 0) && (
+        <section className="rounded-[26px] border-2 border-emerald-300 bg-[linear-gradient(135deg,rgba(236,253,245,0.98),rgba(209,250,229,0.92))] px-5 py-4 shadow-[0_16px_42px_rgba(16,185,129,0.16)]">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-xs font-semibold uppercase tracking-[0.22em] text-emerald-700">Action Inbox</p>
+              <h2 className="mt-2 text-xl font-semibold text-emerald-950">
+                {pendingOnlineRequests.length > 0
+                  ? `${pendingOnlineRequests.length} online booking request${pendingOnlineRequests.length === 1 ? '' : 's'} waiting`
+                  : 'No online booking requests'}
+                {' · '}
+                {pendingFrontDeskRequests.length > 0
+                  ? `${pendingFrontDeskRequests.length} front desk request${pendingFrontDeskRequests.length === 1 ? '' : 's'} waiting`
+                  : 'no front desk requests'}
+              </h2>
+              <p className="mt-1 text-sm text-emerald-900/80">
+                Online booking requests and manager mobile app messages are surfaced here first so they are harder to miss.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {pendingOnlineRequests.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => navigate('/bookings', { state: { showPendingOnline: true } })}
+                  className="inline-flex items-center gap-2 rounded-xl border border-emerald-300 bg-white px-3 py-2 text-xs font-semibold text-emerald-800 transition-colors hover:bg-emerald-50"
+                >
+                  Open booking queue <ArrowRight size={13} />
+                </button>
+              )}
+              {pendingFrontDeskRequests.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => openRequestDialog(pendingFrontDeskRequests[0])}
+                  className="inline-flex items-center gap-2 rounded-xl bg-emerald-700 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-emerald-800"
+                >
+                  Review front desk
+                </button>
+              )}
+            </div>
+          </div>
+          <div className="mt-3 grid gap-2 sm:grid-cols-2">
+            {pendingOnlineRequests.slice(0, 1).map((booking) => {
+              const ageMeta = getRequestAgeMeta(booking.created_at)
+              return (
+                <button
+                  key={`online-${booking.id}`}
+                  type="button"
+                  onClick={() => navigate('/bookings', { state: { showPendingOnline: true } })}
+                  className="rounded-2xl border border-amber-100 bg-white/90 px-4 py-3 text-left shadow-sm transition-colors hover:bg-white"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-slate-900">{booking.customer_name || 'Guest'} booking</p>
+                      <p className="mt-1 text-xs text-slate-500">
+                        {booking.room_number || 'Room TBD'} · {booking.room_type || 'Online request'} · {ageMeta.label}
+                      </p>
+                    </div>
+                    <span className="shrink-0 rounded-full bg-amber-100 px-2.5 py-1 text-[11px] font-semibold text-amber-800">
+                      Online
+                    </span>
+                  </div>
+                  <p className="mt-2 text-sm text-slate-700 line-clamp-2">
+                    {ageMeta.detail}
+                  </p>
+                </button>
+              )
+            })}
+            {pendingFrontDeskRequests.slice(0, 3).map((request) => (
+              <button
+                key={`top-${request.id}`}
+                type="button"
+                onClick={() => openRequestDialog(request)}
+                className="rounded-2xl border border-emerald-100 bg-white/90 px-4 py-3 text-left shadow-sm transition-colors hover:bg-white"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-slate-900">{request.title}</p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      {request.category || 'Request'} · {request.updated_at || request.created_at ? new Date(request.updated_at || request.created_at).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : 'Just now'}
+                    </p>
+                  </div>
+                  <span className={`shrink-0 rounded-full px-2.5 py-1 text-[11px] font-semibold ${requestStatusTone(request.status)}`}>
+                    {requestStatusLabel(request.status)}
+                  </span>
+                </div>
+                <p className="mt-2 text-sm text-slate-700 line-clamp-2">{request.description || 'No extra detail was added.'}</p>
+                {request.admin_notes ? (
+                  <div className="mt-3 rounded-xl bg-emerald-50 px-3 py-2">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-700">Latest desk note</p>
+                    <p className="mt-1 text-xs text-emerald-950">{request.admin_notes}</p>
+                  </div>
+                ) : (
+                  <p className="mt-3 text-xs text-slate-500">No desk update added yet.</p>
+                )}
+              </button>
+            ))}
           </div>
         </section>
       )}
@@ -707,53 +812,6 @@ export default function Dashboard() {
         </section>
       )}
 
-      {frontDeskRequests.length > 0 && (
-        <section className="rounded-[22px] border border-sky-200 bg-[linear-gradient(135deg,rgba(239,246,255,0.98),rgba(224,242,254,0.82))] p-4 shadow-sm">
-          <div className="flex flex-wrap items-start justify-between gap-4">
-            <div>
-              <p className="text-sm font-semibold text-sky-950">Front Desk Requests</p>
-              <p className="mt-1 text-sm text-sky-900/80">
-                Requests sent from the Manager PWA appear here. Update the status so the manager can follow progress on mobile.
-              </p>
-            </div>
-            <span className="rounded-full border border-sky-200 bg-white/80 px-3 py-1 text-xs font-semibold text-sky-800">
-              {frontDeskRequests.filter((request) => request.status !== 'resolved').length} active
-            </span>
-          </div>
-          <div className="mt-4 grid grid-cols-1 gap-3 xl:grid-cols-2">
-            {frontDeskRequests.map((request) => (
-              <button
-                key={request.id}
-                type="button"
-                onClick={() => openRequestDialog(request)}
-                className="rounded-2xl border border-sky-100 bg-white/85 px-4 py-4 text-left shadow-sm transition-colors hover:bg-white"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="text-sm font-semibold text-slate-900">{request.title}</p>
-                    <p className="mt-1 text-xs text-slate-500">
-                      {request.category || 'Request'} · {request.updated_at || request.created_at ? new Date(request.updated_at || request.created_at).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : 'Just now'}
-                    </p>
-                  </div>
-                  <span className={`shrink-0 rounded-full px-2.5 py-1 text-[11px] font-semibold ${requestStatusTone(request.status)}`}>
-                    {requestStatusLabel(request.status)}
-                  </span>
-                </div>
-                <p className="mt-3 text-sm text-slate-700">{request.description || 'No extra detail was added.'}</p>
-                {request.admin_notes ? (
-                  <div className="mt-3 rounded-xl bg-sky-50 px-3 py-2">
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-sky-700">Latest desk note</p>
-                    <p className="mt-1 text-xs text-sky-900">{request.admin_notes}</p>
-                  </div>
-                ) : (
-                  <p className="mt-3 text-xs text-slate-500">No desk update added yet.</p>
-                )}
-              </button>
-            ))}
-          </div>
-        </section>
-      )}
-
       {/* Low Stock Alert */}
       {lowStock.length > 0 && (
         <section className="rounded-[22px] border border-amber-200 bg-[linear-gradient(135deg,rgba(255,251,235,0.96),rgba(254,243,199,0.76))] p-4 shadow-sm">
@@ -1000,7 +1058,7 @@ export default function Dashboard() {
                 onChange={(event) => setRequestNote(event.target.value)}
                 placeholder="Short update for the manager, for example: Guest was called and promised to settle before 18:00."
               />
-              <p className="mt-2 text-xs text-slate-500">Keep it short and practical. This note is shown back in the Manager PWA.</p>
+              <p className="mt-2 text-xs text-slate-500">Keep it short and practical. This note is shown back in the manager mobile app.</p>
             </div>
 
             <div className="mt-6 flex flex-wrap gap-3">

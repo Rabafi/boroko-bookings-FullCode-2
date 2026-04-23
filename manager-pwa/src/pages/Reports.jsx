@@ -70,6 +70,10 @@ export default function Reports() {
 
   const fmt = (n) => `P ${Number(n || 0).toLocaleString()}`
   const pct = (n) => `${n}%`
+  const maintenanceTotal = Number(data?.maintenanceCosts || 0)
+  const retainedThisMonth = Number(data?.monthRetainedRevenue || 0)
+  const retainedLastMonth = Number(data?.lastMonthRetainedRevenue || 0)
+  const expenseTotal = Number(data?.monthExpenses || 0) + maintenanceTotal
 
   return (
     <div className="flex flex-col min-h-screen bg-gray-950 pb-24">
@@ -107,13 +111,25 @@ export default function Reports() {
           </div>
 
           <Section title="Cash Collected">
-            <p className="text-xs text-gray-500 mb-2">Actual payments received · not total booking value</p>
+            <p className="text-xs text-gray-500 mb-2">Actual payments received · not total booking value. Fees kept from refunds are shown separately.</p>
             <StatRow label="Today" value={fmt(data.todayRev)} color="text-emerald-400" />
             <StatRow label="This Week" value={fmt(data.weekRev)} color="text-emerald-400" />
             <StatRow label="This Month" value={fmt(data.monthRev)} color="text-emerald-400" />
             <StatRow label="Refunds (this month)" value={fmt(data.monthRefunds)} color="text-rose-300" />
+            <StatRow
+              label="Fees kept from refunds (this month)"
+              value={fmt(retainedThisMonth)}
+              sub={Number(data.monthRetainedCount || 0) > 0 ? `${Number(data.monthRetainedCount || 0)} cancelled booking${Number(data.monthRetainedCount || 0) === 1 ? '' : 's'}` : 'No fees kept'}
+              color="text-amber-300"
+            />
             <StatRow label="Last Month" value={fmt(data.lastMonthRev)} color="text-gray-300" />
             <StatRow label="Refunds (last month)" value={fmt(data.lastMonthRefunds)} color="text-gray-400" />
+            <StatRow
+              label="Fees kept from refunds (last month)"
+              value={fmt(retainedLastMonth)}
+              sub={Number(data.lastMonthRetainedCount || 0) > 0 ? `${Number(data.lastMonthRetainedCount || 0)} cancelled booking${Number(data.lastMonthRetainedCount || 0) === 1 ? '' : 's'}` : 'No fees kept'}
+              color="text-amber-300"
+            />
             {isEnabled('pos') && <StatRow label="POS Revenue (this month)" value={fmt(data.posRevenue)} color="text-blue-400" />}
             {isEnabled('conference') && data.conferenceRevenue > 0 && <StatRow label="Conference (this month)" value={fmt(data.conferenceRevenue)} color="text-indigo-400" />}
             {isEnabled('pool') && data.poolRevenue > 0 && <StatRow label="Pool / Day Use (this month)" value={fmt(data.poolRevenue)} color="text-cyan-400" />}
@@ -126,11 +142,13 @@ export default function Reports() {
 
           {isEnabled('expenses') && (
             <Section title="Expenses (this month)">
-              <StatRow label="Total Expenses" value={fmt(data.monthExpenses)} color="text-red-400" />
+              <StatRow label="Manual Expenses" value={fmt(data.monthExpenses)} color="text-red-400" />
+              <StatRow label="Maintenance Repairs" value={fmt(maintenanceTotal)} color="text-rose-300" sub="Read-only repair costs" />
+              <StatRow label="Total Expenses" value={fmt(expenseTotal)} color="text-red-400" />
               <StatRow
                 label="Net Cash (All Revenue − Expenses)"
-                value={fmt(data.monthRev + data.posRevenue + data.conferenceRevenue + data.poolRevenue - data.monthExpenses)}
-                color={(data.monthRev + data.posRevenue + data.conferenceRevenue + data.poolRevenue) >= data.monthExpenses ? 'text-green-400' : 'text-red-400'}
+                value={fmt(data.monthRev + data.posRevenue + data.conferenceRevenue + data.poolRevenue - expenseTotal)}
+                color={(data.monthRev + data.posRevenue + data.conferenceRevenue + data.poolRevenue) >= expenseTotal ? 'text-green-400' : 'text-red-400'}
               />
             </Section>
           )}

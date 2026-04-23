@@ -4,7 +4,7 @@ import { ArrowRight, FileText, HandCoins, ReceiptText, RefreshCw, ScrollText, X 
 import { useAuth } from '../contexts/AuthContext'
 import { createSupportTicket, getNightAudit, getRefundHistory, listExpenses, listInvoices, listQuotations } from '../lib/api'
 import { money, paymentStatusClass, shortDate, shortDateTime, titleCase } from '../lib/format'
-import { readCacheEntry } from '../lib/runtime'
+import { buildPwaNotificationSourceKey, readCacheEntry, upsertPwaNotification } from '../lib/runtime'
 import { useToast } from '../App'
 
 function RouteCard({ to, title, value, sub, icon: Icon }) {
@@ -44,6 +44,7 @@ export default function Money() {
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
   const [sendingRequest, setSendingRequest] = useState('')
+  const [requestNote, setRequestNote] = useState('')
   const [lastUpdated, setLastUpdated] = useState(null)
   const [sheet, setSheet] = useState(null)
   const [snapshot, setSnapshot] = useState({
@@ -123,25 +124,59 @@ export default function Money() {
     const templates = {
       balance: {
         title: 'Balance follow-up request',
-        description: 'Please review the top outstanding balances and confirm today’s collection plan with the manager.',
+        description: 'Please check the top outstanding balances and confirm today’s collection plan.',
         category: 'Front Desk Request',
         priority: 'High'
       },
       refund: {
         title: 'Refund clarification request',
-        description: 'Please explain the most recent refund activity and confirm guest communication is complete.',
+        description: 'Please review the latest refund activity and confirm guest communication is complete.',
         category: 'Front Desk Request',
         priority: 'Normal'
       },
       expense: {
         title: 'Expense clarification request',
-        description: 'Please confirm today’s major expense entries and attach any missing notes or receipts in desktop.',
+        description: 'Please review today’s main expense entries and add any missing notes or receipts on the desktop.',
         category: 'Front Desk Request',
         priority: 'Normal'
       }
     }
     try {
-      const result = await createSupportTicket(user.lodge_id, { ...templates[type], lodge_name: user.lodge_display_name })
+      const note = requestNote.trim()
+      const description = note
+        ? `${templates[type].description}\n\nAdded note: ${note}`
+        : templates[type].description
+      const now = new Date().toISOString()
+      const result = await createSupportTicket(user.lodge_id, {
+        ...templates[type],
+        description,
+        lodge_name: user.lodge_display_name
+      })
+      upsertPwaNotification(user.lodge_id, {
+        sourceKey: buildPwaNotificationSourceKey(
+          'frontdesk-request',
+          templates[type].title,
+          description,
+          templates[type].category,
+          templates[type].priority
+        ),
+        title: `Sent to front desk: ${templates[type].title}`,
+        message: description,
+        tone: 'info',
+        category: 'frontDeskRequest',
+        href: '/control',
+        meta: {
+          requestTitle: templates[type].title,
+          requestBody: description,
+          deskResponse: '',
+          requestStatus: 'open',
+          requestCategory: templates[type].category,
+          requestPriority: templates[type].priority,
+          sentAt: now,
+          updatedAt: now
+        }
+      })
+      if (!result?.queued) setRequestNote('')
       showToast({
         title: result?.queued ? 'Request saved offline' : 'Request sent',
         message: result?.queued
@@ -253,6 +288,13 @@ export default function Money() {
             <span className="text-xs text-gray-500">Lightweight only</span>
           </div>
           <p className="mb-3 text-xs text-gray-500">These requests appear on the front-desk desktop dashboard so the team can reply without giving mobile access to money-changing actions.</p>
+          <textarea
+            className="mb-3 w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-3 text-white text-sm h-24 resize-none"
+            placeholder="Optional note for front desk"
+            value={requestNote}
+            onChange={(event) => setRequestNote(event.target.value)}
+            maxLength={500}
+          />
           <div className="grid grid-cols-1 gap-2">
             <button onClick={() => sendRequest('balance')} disabled={sendingRequest !== ''} className="bg-gray-900 text-white rounded-xl px-3 py-3 text-sm font-medium text-left disabled:opacity-60">
               {sendingRequest === 'balance' ? 'Sending…' : 'Ask front desk to follow up outstanding balances'}

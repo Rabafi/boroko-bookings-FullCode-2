@@ -407,6 +407,7 @@ declare
   v_pos_revenue numeric := 0;
   v_conference_revenue numeric := 0;
   v_pool_revenue numeric := 0;
+  v_retained_revenue numeric := 0;
   v_total_revenue numeric := 0;
   v_total_expenses numeric := 0;
   v_inv_costs numeric := 0;
@@ -429,6 +430,7 @@ begin
 
   v_revenue := public.get_revenue_report(p_lodge_id, p_start_date, p_end_date);
   v_booking_revenue := coalesce((v_revenue ->> 'total_revenue')::numeric, 0);
+  v_retained_revenue := coalesce((v_revenue ->> 'retained_revenue')::numeric, 0);
 
   select coalesce(sum(total), 0)
     into v_pos_revenue
@@ -484,12 +486,13 @@ begin
     and date >= p_start_date
     and date <= p_end_date;
 
-  v_total_revenue := coalesce(v_booking_revenue, 0) + coalesce(v_pos_revenue, 0) + coalesce(v_conference_revenue, 0) + coalesce(v_pool_revenue, 0);
+  v_total_revenue := coalesce(v_booking_revenue, 0) + coalesce(v_pos_revenue, 0) + coalesce(v_conference_revenue, 0) + coalesce(v_pool_revenue, 0) + coalesce(v_retained_revenue, 0);
   v_total_costs := coalesce(v_inv_costs, 0) + coalesce(v_sup_costs, 0);
   v_gross_profit := v_total_revenue - coalesce(v_total_expenses, 0) - v_total_costs;
 
   return jsonb_build_object(
     'bookingRevenue', coalesce(v_booking_revenue, 0),
+    'retainedRevenue', coalesce(v_retained_revenue, 0),
     'posRevenue', coalesce(v_pos_revenue, 0),
     'conferenceRevenue', coalesce(v_conference_revenue, 0),
     'poolRevenue', coalesce(v_pool_revenue, 0),

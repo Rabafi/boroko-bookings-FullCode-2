@@ -2,7 +2,15 @@ import { useEffect, useState } from 'react'
 import { Database, Upload, Download, FileSpreadsheet, Users, BedDouble, Receipt, ShoppingCart, CheckCircle2, AlertCircle, Loader2, HardDrive, ShieldCheck } from 'lucide-react'
 import DataImport from './DataImport'
 
-const TABS = ['Import Data', 'Export Data', 'Backups']
+const TABS = ['Import Bookings', 'Export Data', 'Backups']
+
+const EXPORT_PRESETS = [
+  { key: 'full', label: 'Full Backup Export', desc: 'Everything needed for archiving and support-led recovery.' },
+  { key: 'finance', label: 'Finance Export', desc: 'Invoices, expenses, POS, purchases, conference, and day-use income.' },
+  { key: 'bookingGuest', label: 'Bookings & Guests', desc: 'Bookings, guests, invoices, and quotations.' },
+  { key: 'operations', label: 'Operations Export', desc: 'Rooms, maintenance, stock, supplies, conference, and day-use records.' },
+  { key: 'inventory', label: 'Inventory & Supplies', desc: 'Stock items and purchase history only.' },
+]
 
 const EXPORT_SECTIONS = [
   { icon: FileSpreadsheet, label: 'Bookings',   desc: 'All booking records — guest, room, dates, status, payments' },
@@ -18,12 +26,28 @@ const EXPORT_SECTIONS = [
 function ExportTab() {
   const [loading, setLoading] = useState(false)
   const [result, setResult]   = useState(null) // { success, filePath, error, canceled }
+  const [preset, setPreset] = useState('full')
+  const [startDate, setStartDate] = useState('')
+  const [endDate, setEndDate] = useState('')
+  const [privacyMode, setPrivacyMode] = useState(false)
+  const [progress, setProgress] = useState(null)
+
+  useEffect(() => {
+    if (!window.api.data.onExportProgress) return undefined
+    return window.api.data.onExportProgress((next) => setProgress(next))
+  }, [])
 
   const handleExport = async () => {
     setLoading(true)
     setResult(null)
+    setProgress(null)
     try {
-      const res = await window.api.data.exportAll()
+      const res = await window.api.data.exportAll({
+        preset,
+        startDate: startDate || undefined,
+        endDate: endDate || undefined,
+        privacyMode
+      })
       setResult(res)
     } catch (e) {
       setResult({ success: false, error: e.message })
@@ -33,13 +57,71 @@ function ExportTab() {
   }
 
   return (
-    <div className="p-6 max-w-2xl">
+    <div className="p-6 max-w-3xl">
       <p className="text-gray-500 text-sm mb-6">
-        Export a complete snapshot of your lodge data into a single Excel workbook. Each category
-        becomes its own sheet — ready for archiving, migration, or offline analysis.
+        Export lodge data into a multi-sheet Excel workbook. Choose a focused export when you do
+        not need the full backup snapshot.
       </p>
 
-      {/* Sections list */}
+      <div className="mb-6 grid gap-3 md:grid-cols-2">
+        {EXPORT_PRESETS.map((option) => (
+          <label
+            key={option.key}
+            className={`rounded-xl border px-4 py-3 transition ${
+              preset === option.key ? 'border-green-300 bg-green-50' : 'border-gray-200 bg-white hover:bg-gray-50'
+            }`}
+          >
+            <div className="flex items-start gap-3">
+              <input
+                type="radio"
+                name="exportPreset"
+                value={option.key}
+                checked={preset === option.key}
+                onChange={(e) => setPreset(e.target.value)}
+                className="mt-1"
+              />
+              <div>
+                <p className="text-sm font-semibold text-gray-800">{option.label}</p>
+                <p className="mt-1 text-xs text-gray-500">{option.desc}</p>
+              </div>
+            </div>
+          </label>
+        ))}
+      </div>
+
+      <div className="mb-6 rounded-xl border border-gray-200 bg-gray-50 px-4 py-4">
+        <p className="text-sm font-semibold text-gray-800">Optional export controls</p>
+        <div className="mt-3 grid gap-3 md:grid-cols-2">
+          <label className="text-xs font-medium text-gray-600">
+            Start date
+            <input
+              type="date"
+              value={startDate}
+              onChange={(e) => setStartDate(e.target.value)}
+              className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-800"
+            />
+          </label>
+          <label className="text-xs font-medium text-gray-600">
+            End date
+            <input
+              type="date"
+              value={endDate}
+              onChange={(e) => setEndDate(e.target.value)}
+              className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-800"
+            />
+          </label>
+        </div>
+        <label className="mt-3 flex items-start gap-2 text-sm text-gray-700">
+          <input
+            type="checkbox"
+            checked={privacyMode}
+            onChange={(e) => setPrivacyMode(e.target.checked)}
+            className="mt-1"
+          />
+          <span>Privacy mode: hide guest email, phone, and ID/passport fields in the export.</span>
+        </label>
+      </div>
+
       <div className="space-y-2 mb-8">
         {EXPORT_SECTIONS.map(({ icon: Icon, label, desc }) => (
           <div key={label} className="flex items-start gap-3 bg-gray-50 rounded-lg px-4 py-3">
@@ -61,6 +143,9 @@ function ExportTab() {
           <div>
             <p className="text-sm font-medium text-green-800">Export complete</p>
             <p className="text-xs text-green-600 mt-0.5 break-all">{result.filePath}</p>
+            {Array.isArray(result.sections) && (
+              <p className="mt-1 text-xs text-green-700">{result.sections.length} workbook section{result.sections.length === 1 ? '' : 's'} exported.</p>
+            )}
           </div>
         </div>
       )}
@@ -68,6 +153,11 @@ function ExportTab() {
         <div className="flex items-start gap-3 bg-red-50 border border-red-200 rounded-lg px-4 py-3 mb-4">
           <AlertCircle size={18} className="text-red-600 shrink-0 mt-0.5" />
           <p className="text-sm text-red-700">{result.error}</p>
+        </div>
+      )}
+      {loading && progress?.stage && (
+        <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-700">
+          Export progress: {progress.stage}
         </div>
       )}
 
@@ -78,7 +168,7 @@ function ExportTab() {
       >
         {loading
           ? <><Loader2 size={16} className="animate-spin" /> Exporting…</>
-          : <><Download size={16} /> Export All Data</>
+          : <><Download size={16} /> Export Workbook</>
         }
       </button>
     </div>
@@ -92,6 +182,9 @@ function BackupsTab() {
   const [policySaving, setPolicySaving] = useState(false)
   const [policyRunning, setPolicyRunning] = useState(false)
   const [policyResult, setPolicyResult] = useState(null)
+  const [verifying, setVerifying] = useState('')
+  const [verifyResult, setVerifyResult] = useState(null)
+  const [restoreResult, setRestoreResult] = useState(null)
   const [policy, setPolicy] = useState({
     enabled: false,
     target_dir: '',
@@ -176,6 +269,31 @@ function BackupsTab() {
     }
   }
 
+  const verifyBackup = async (name) => {
+    setVerifying(name)
+    setVerifyResult(null)
+    try {
+      const res = await window.api.backup.verify(name)
+      setVerifyResult(res)
+    } catch (e) {
+      setVerifyResult({ success: false, error: e.message || 'Backup verification failed.' })
+    } finally {
+      setVerifying('')
+    }
+  }
+
+  const previewRestore = async (name) => {
+    setRestoreResult(null)
+    const res = await window.api.backup.previewRestore(name).catch((e) => ({ success: false, error: e.message }))
+    setRestoreResult(res)
+  }
+
+  const createRestoreRehearsal = async (name) => {
+    setRestoreResult(null)
+    const res = await window.api.backup.createRestoreRehearsal(name).catch((e) => ({ success: false, error: e.message }))
+    setRestoreResult(res)
+  }
+
   const policyStatus = info.policy || {}
   const statusTone =
     policyStatus.compliance_state === 'healthy' ? 'green' :
@@ -199,9 +317,9 @@ function BackupsTab() {
       <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-gray-200">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 className="text-lg font-bold text-gray-900">Mandatory Weekly Data Archiving</h2>
+            <h2 className="text-lg font-bold text-gray-900">Weekly Data Archiving</h2>
             <p className="mt-1 text-sm text-gray-500">
-              Create a complete Excel snapshot of all lodge transactions, guests, and operational history. This is mandatory once a week to ensure you have an offline backup for recovery and auditing.
+              Create a complete Excel snapshot of all lodge transactions, guests, and operational history. Keep this enabled so System Health can warn you when a fresh off-device backup is overdue.
             </p>
           </div>
           <span className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-semibold ${statusClass}`}>
@@ -230,7 +348,7 @@ function BackupsTab() {
             <p className="text-sm font-semibold text-blue-900">Export Format</p>
             <div className="mt-2 flex items-center gap-2 text-sm text-blue-700">
               <ShieldCheck size={16} />
-              <span>Full Multi-Sheet Excel Workbook (Mandatory)</span>
+              <span>Full Multi-Sheet Excel Workbook</span>
             </div>
           </div>
         </div>
@@ -351,6 +469,46 @@ function BackupsTab() {
             {result.error}
           </div>
         )}
+        {verifyResult && (
+          <div className={`mt-4 rounded-xl border px-4 py-3 text-sm ${
+            verifyResult.success ? 'border-green-200 bg-green-50 text-green-700' : 'border-amber-200 bg-amber-50 text-amber-700'
+          }`}>
+            <p className="font-semibold">
+              {verifyResult.success ? 'Backup verified' : 'Backup needs attention'}
+            </p>
+            {verifyResult.error && <p className="mt-1">{verifyResult.error}</p>}
+            {verifyResult.name && (
+              <p className="mt-1">
+                {verifyResult.name} · {verifyResult.table_count || 0} table snapshots · {(Number(verifyResult.size || 0) / 1024).toFixed(1)} KB
+              </p>
+            )}
+            {verifyResult.counts && (
+              <p className="mt-1 text-xs">
+                Bookings: {verifyResult.counts.bookings || 0} · Guests: {verifyResult.counts.customers || 0} · Rooms: {verifyResult.counts.rooms || 0} · POS: {verifyResult.counts.pos_orders || 0}
+              </p>
+            )}
+            {Array.isArray(verifyResult.issues) && verifyResult.issues.length > 0 && (
+              <p className="mt-1 text-xs">{verifyResult.issues.join(' ')}</p>
+            )}
+          </div>
+        )}
+        {restoreResult && (
+          <div className={`mt-4 rounded-xl border px-4 py-3 text-sm ${
+            restoreResult.success ? 'border-blue-200 bg-blue-50 text-blue-700' : 'border-amber-200 bg-amber-50 text-amber-700'
+          }`}>
+            <p className="font-semibold">
+              {restoreResult.mode === 'preview' ? 'Restore preview' : restoreResult.success ? 'Restore rehearsal package created' : 'Restore preview needs attention'}
+            </p>
+            {restoreResult.error && <p className="mt-1">{restoreResult.error}</p>}
+            {restoreResult.recommendation && <p className="mt-1">{restoreResult.recommendation}</p>}
+            {restoreResult.reportPath && <p className="mt-1 break-all text-xs">Report: {restoreResult.reportPath}</p>}
+            {Array.isArray(restoreResult.restore_plan) && (
+              <p className="mt-1 text-xs">
+                Would restore: {restoreResult.restore_plan.map((entry) => `${entry.table} (${entry.count})`).join(', ') || 'no table data'}
+              </p>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-gray-200">
@@ -358,11 +516,33 @@ function BackupsTab() {
         <p className="mt-1 text-xs text-gray-500">{info.backupDir || 'Backup directory unavailable'}</p>
         <div className="mt-4 space-y-3">
           {(info.backups || []).map((backup) => (
-            <div key={backup.name} className="rounded-xl bg-gray-50 px-4 py-3">
-              <p className="text-sm font-semibold text-gray-900">{backup.name}</p>
-              <p className="mt-1 text-xs text-gray-500">
-                {new Date(backup.created).toLocaleString('en-GB')} · {(Number(backup.size || 0) / 1024).toFixed(1)} KB
-              </p>
+            <div key={backup.name} className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-gray-50 px-4 py-3">
+              <div>
+                <p className="text-sm font-semibold text-gray-900">{backup.name}</p>
+                <p className="mt-1 text-xs text-gray-500">
+                  {new Date(backup.created).toLocaleString('en-GB')} · {(Number(backup.size || 0) / 1024).toFixed(1)} KB
+                </p>
+              </div>
+              <button
+                onClick={() => verifyBackup(backup.name)}
+                disabled={verifying === backup.name}
+                className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 transition hover:bg-gray-50 disabled:opacity-60"
+              >
+                {verifying === backup.name ? <Loader2 size={13} className="animate-spin" /> : <ShieldCheck size={13} />}
+                {verifying === backup.name ? 'Checking...' : 'Verify'}
+              </button>
+              <button
+                onClick={() => previewRestore(backup.name)}
+                className="inline-flex items-center gap-2 rounded-lg border border-blue-200 bg-white px-3 py-1.5 text-xs font-semibold text-blue-700 transition hover:bg-blue-50"
+              >
+                Preview Restore
+              </button>
+              <button
+                onClick={() => createRestoreRehearsal(backup.name)}
+                className="inline-flex items-center gap-2 rounded-lg border border-purple-200 bg-white px-3 py-1.5 text-xs font-semibold text-purple-700 transition hover:bg-purple-50"
+              >
+                Rehearsal Copy
+              </button>
             </div>
           ))}
           {!info.backups?.length && (

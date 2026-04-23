@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   AlertTriangle,
   ClipboardCheck,
+  FileDown,
   FileSpreadsheet,
   Package2,
   Pencil,
@@ -113,6 +114,7 @@ export default function RoomSupplies() {
   const [reportData, setReportData] = useState([])
   const [reportLoading, setReportLoading] = useState(false)
   const [reportExporting, setReportExporting] = useState(false)
+  const [reportPdfExporting, setReportPdfExporting] = useState(false)
   const [reportMessage, setReportMessage] = useState(null)
 
   const [stocktakes, setStocktakes] = useState([])
@@ -204,6 +206,22 @@ export default function RoomSupplies() {
     const data = await window.api.supplies.getAllocations(reportStart, reportEnd).catch(() => [])
     setReportData(data || [])
     setReportLoading(false)
+  }
+
+  function buildReportExportPayload() {
+    return {
+      start: reportStart,
+      end: reportEnd,
+      currency,
+      allocations: reportData,
+      byRoom: Object.values(reportByRoom),
+      byItem: Object.values(reportByItem),
+      grandTotal,
+      reportTitle: 'Room Supplies Cost Report',
+      lodgeName: settings?.lodge_name || '',
+      companyName: settings?.company_name || '',
+      generatedAt: new Date().toLocaleString()
+    }
   }
 
   async function loadStocktakes(scope = stocktakeScope) {
@@ -652,21 +670,27 @@ export default function RoomSupplies() {
     setReportExporting(true)
     setReportMessage(null)
     try {
-      const result = await window.api.supplies.exportReport({
-        start: reportStart,
-        end: reportEnd,
-        currency,
-        allocations: reportData,
-        byRoom: Object.values(reportByRoom),
-        byItem: Object.values(reportByItem),
-        grandTotal
-      })
+      const result = await window.api.supplies.exportReport(buildReportExportPayload())
       if (!result?.success) throw new Error(result?.error || 'Could not export room supply report.')
       setReportMessage({ tone: 'success', text: result?.filePath ? `Report exported to ${result.filePath}.` : 'Report exported.' })
     } catch (err) {
       setReportMessage({ tone: 'error', text: err.message || 'Could not export room supply report.' })
     } finally {
       setReportExporting(false)
+    }
+  }
+
+  async function exportReportPdf() {
+    setReportPdfExporting(true)
+    setReportMessage(null)
+    try {
+      const result = await window.api.supplies.exportReportPdf(buildReportExportPayload())
+      if (!result?.success) throw new Error(result?.error || 'Could not export room supply report as PDF.')
+      setReportMessage({ tone: 'success', text: result?.filePath ? `PDF exported to ${result.filePath}.` : 'PDF exported.' })
+    } catch (err) {
+      setReportMessage({ tone: 'error', text: err.message || 'Could not export room supply report as PDF.' })
+    } finally {
+      setReportPdfExporting(false)
     }
   }
 
@@ -720,7 +744,6 @@ export default function RoomSupplies() {
             </div>
             <div className="ml-auto flex items-center gap-2">
               <button onClick={refreshBaseData} className="btn-secondary"><RefreshCw size={14} /> Refresh</button>
-              <button onClick={openCreate} className="btn-primary"><Plus size={15} /> Add Item</button>
             </div>
           </div>
 
@@ -1053,7 +1076,11 @@ export default function RoomSupplies() {
         <div className="flex flex-col gap-5">
           <div className="bb-filter-bar mb-5 flex-wrap">
             <div className="flex items-center gap-2 text-sm"><label className="text-slate-500">From</label><input type="date" className="input text-sm" value={reportStart} onChange={(e) => setReportStart(e.target.value)} /><label className="text-slate-500">To</label><input type="date" className="input text-sm" value={reportEnd} onChange={(e) => setReportEnd(e.target.value)} /></div>
-            <div className="flex items-center gap-2"><button type="button" onClick={loadReport} disabled={reportLoading} className="btn-secondary"><RefreshCw size={14} /> {reportLoading ? 'Refreshing…' : 'Refresh'}</button><button type="button" onClick={exportReport} disabled={reportLoading || reportData.length === 0 || reportExporting} className="btn-primary"><FileSpreadsheet size={15} /> {reportExporting ? 'Exporting…' : 'Export Excel'}</button></div>
+            <div className="flex items-center gap-2">
+              <button type="button" onClick={loadReport} disabled={reportLoading} className="btn-secondary"><RefreshCw size={14} /> {reportLoading ? 'Refreshing…' : 'Refresh'}</button>
+              <button type="button" onClick={exportReport} disabled={reportLoading || reportExporting} className="btn-primary"><FileSpreadsheet size={15} /> {reportExporting ? 'Exporting…' : 'Export Excel'}</button>
+              <button type="button" onClick={exportReportPdf} disabled={reportLoading || reportPdfExporting} className="btn-secondary"><FileDown size={15} /> {reportPdfExporting ? 'Saving…' : 'Export PDF'}</button>
+            </div>
             {grandTotal > 0 && <div className="ml-auto rounded-xl bg-green-50 px-4 py-2 text-sm font-semibold text-green-800">Total Supply Cost: {currency} {fmt(grandTotal)}</div>}
             {reportMessage && <div className={`w-full rounded-xl border px-3 py-2 text-sm ${reportMessage.tone === 'success' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-red-200 bg-red-50 text-red-700'}`}>{reportMessage.text}</div>}
           </div>

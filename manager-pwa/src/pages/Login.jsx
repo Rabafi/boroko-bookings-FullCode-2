@@ -86,7 +86,7 @@ export default function Login() {
     <div className="min-h-screen bg-gray-950 flex flex-col items-center justify-center px-6">
       <div className="mb-8 text-center">
         <div className="text-5xl mb-3">🏕️</div>
-        <h1 className="text-2xl font-bold text-white">Boroko Manager PWA</h1>
+        <h1 className="text-2xl font-bold text-white">Boroko Manager Mobile App</h1>
         <p className="text-gray-400 text-sm mt-1">Leadership access for lodge managers and admins</p>
       </div>
 

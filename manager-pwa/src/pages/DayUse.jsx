@@ -31,7 +31,7 @@ export default function DayUse() {
 
       <div className="px-4 py-4 space-y-3">
         <div className="rounded-2xl border border-blue-900 bg-blue-950/30 px-4 py-3 text-sm text-blue-100">
-          Day-use entries are view-only in the Manager PWA. Use Front Desk to add or remove walk-ins.
+          Day-use entries are view-only in the manager mobile app. Use the front desk to add or remove walk-ins.
         </div>
         {entries.map((entry) => (
           <div key={entry.id} className="bg-gray-800 rounded-2xl p-4">

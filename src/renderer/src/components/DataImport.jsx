@@ -17,7 +17,8 @@ import {
 } from 'lucide-react'
 
 // ── Field definitions ────────────────────────────────────────────────────────
-const APP_FIELDS = [
+const IMPORT_FIELD_SETS = {
+  bookings: [
   { key: 'guest_name',      label: 'Guest Name',       required: true,  hint: 'Full name of the guest' },
   { key: 'email',           label: 'Email',             required: false, hint: 'Guest email address' },
   { key: 'phone',           label: 'Phone',             required: false, hint: 'Contact phone number' },
@@ -33,7 +34,47 @@ const APP_FIELDS = [
   { key: 'payment_method',  label: 'Payment Method',     required: false, hint: 'Cash, Card, Orange Money, etc.' },
   { key: 'status',          label: 'Booking Status',     required: false, hint: 'confirmed, checked_in, checked_out (default: checked_out)' },
   { key: 'notes',           label: 'Notes',              required: false, hint: 'Any additional notes' },
-]
+  ],
+  guests: [
+    { key: 'name', label: 'Guest Name', required: true, hint: 'Full name of the guest' },
+    { key: 'email', label: 'Email', required: false, hint: 'Guest email address' },
+    { key: 'phone', label: 'Phone', required: false, hint: 'Contact phone number' },
+    { key: 'id_number', label: 'ID / Passport No', required: false, hint: 'National ID or passport number' },
+    { key: 'nationality', label: 'Nationality', required: false, hint: 'Country of origin' },
+  ],
+  rooms: [
+    { key: 'room_number', label: 'Room Number', required: true, hint: 'Must be unique' },
+    { key: 'room_type', label: 'Room Type', required: false, hint: 'Standard, Deluxe, Family, etc.' },
+    { key: 'rate', label: 'Rate', required: false, hint: 'Nightly room rate' },
+    { key: 'max_adults', label: 'Max Adults', required: false, hint: 'Used for occupancy setup' },
+    { key: 'max_children', label: 'Max Children', required: false, hint: 'Used for occupancy setup' },
+  ],
+  inventory: [
+    { key: 'name', label: 'Item Name', required: true, hint: 'POS or stock item name' },
+    { key: 'category', label: 'Category', required: false, hint: 'Bar, Kitchen, Drinks, etc.' },
+    { key: 'unit', label: 'Unit', required: false, hint: 'bottle, pack, kg, unit' },
+    { key: 'current_stock', label: 'Current Stock', required: false, hint: 'Opening stock quantity' },
+    { key: 'reorder_level', label: 'Reorder Level', required: false, hint: 'Low-stock threshold' },
+    { key: 'selling_price', label: 'Selling Price', required: false, hint: 'Optional POS selling price' },
+  ],
+  supplies: [
+    { key: 'name', label: 'Supply Item', required: true, hint: 'Room supply item name' },
+    { key: 'category', label: 'Category', required: false, hint: 'Linen, Bathroom, Cleaning, etc.' },
+    { key: 'unit', label: 'Unit', required: false, hint: 'piece, bottle, pack, unit' },
+    { key: 'current_stock', label: 'Current Stock', required: false, hint: 'Opening stock quantity' },
+    { key: 'reorder_level', label: 'Reorder Level', required: false, hint: 'Low-stock threshold' },
+  ],
+  expenses: [
+    { key: 'date', label: 'Date', required: true, hint: 'YYYY-MM-DD or DD/MM/YYYY' },
+    { key: 'category', label: 'Category', required: true, hint: 'Expense category' },
+    { key: 'description', label: 'Description', required: false, hint: 'Expense description' },
+    { key: 'amount', label: 'Amount', required: true, hint: 'Expense amount' },
+    { key: 'paid_by', label: 'Paid By', required: false, hint: 'Optional payment note' },
+    { key: 'notes', label: 'Notes', required: false, hint: 'Optional extra notes' },
+  ]
+}
+
+const getFieldsForType = (type) => IMPORT_FIELD_SETS[type] || IMPORT_FIELD_SETS.bookings
 
 const STEPS = ['Upload File', 'Map Columns', 'Preview & Edit', 'Import']
 
@@ -71,6 +112,20 @@ function smartGuess(columns, fieldKey) {
     payment_method: ['payment method', 'method', 'payment type', 'how paid'],
     status:         ['status', 'booking status', 'state'],
     notes:          ['notes', 'note', 'remarks', 'comments', 'comment', 'special requests'],
+    name:           ['name', 'item name', 'supply item', 'guest name', 'full name'],
+    room_type:      ['room type', 'type'],
+    rate:           ['rate', 'nightly rate', 'rate per night', 'price'],
+    max_adults:     ['max adults', 'adults', 'maximum adults'],
+    max_children:   ['max children', 'children', 'maximum children'],
+    category:       ['category', 'type', 'group'],
+    unit:           ['unit', 'uom', 'measure'],
+    current_stock:  ['current stock', 'stock', 'quantity', 'opening stock'],
+    reorder_level:  ['reorder level', 'minimum stock', 'low stock'],
+    selling_price:  ['selling price', 'price'],
+    date:           ['date', 'expense date'],
+    description:    ['description', 'details', 'item', 'expense'],
+    amount:         ['amount', 'cost', 'total'],
+    paid_by:        ['paid by', 'method', 'payment method'],
   }
   const patterns = aliases[fieldKey] || []
   for (const pat of patterns) {
@@ -80,13 +135,13 @@ function smartGuess(columns, fieldKey) {
   return ''
 }
 
-function applyMapping(rawRows, mapping) {
+function applyMapping(rawRows, mapping, fields = IMPORT_FIELD_SETS.bookings) {
   return rawRows.map((raw) => {
     const row = {}
-    APP_FIELDS.forEach(({ key }) => {
+    fields.forEach(({ key }) => {
       const col = mapping[key]
       let val = col ? raw[col] : ''
-      if (key === 'check_in' || key === 'check_out') val = normaliseDate(val)
+      if (key === 'check_in' || key === 'check_out' || key === 'date') val = normaliseDate(val)
       row[key] = val !== undefined && val !== null ? String(val) : ''
     })
     return row
@@ -115,7 +170,7 @@ function StepIndicator({ current }) {
 }
 
 // Step 1 ─ Upload
-function UploadStep({ onParsed }) {
+function UploadStep({ onParsed, importType, setImportType, importTypes }) {
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState('')
   const [templateSaving, setTemplateSaving] = useState(false)
@@ -137,7 +192,7 @@ function UploadStep({ onParsed }) {
   const handleTemplate = async () => {
     setTemplateSaving(true)
     try {
-      const res = await window.api.import.downloadTemplate()
+      const res = await window.api.import.downloadTemplate(importType)
       if (res?.error) setErr(res.error)
     } catch (e) {
       setErr(e.message)
@@ -152,11 +207,35 @@ function UploadStep({ onParsed }) {
         <FileSpreadsheet size={40} className="text-green-600" />
       </div>
       <div className="text-center">
-        <h2 className="text-xl font-bold text-gray-800 mb-2">Import Historical Booking Data</h2>
+        <h2 className="text-xl font-bold text-gray-800 mb-2">Import Data Safely</h2>
         <p className="text-gray-500 text-sm max-w-md">
           Upload an Excel file (.xlsx or .xls) containing past guest bookings.
-          You'll map the columns and review the data before anything is saved.
+          This import saves directly to Supabase, so it must be done while online.
         </p>
+      </div>
+      <div className="w-full max-w-md">
+        <label className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+          Import template type
+          <select
+            value={importType}
+            onChange={(e) => {
+              setImportType(e.target.value)
+              setErr('')
+            }}
+            className="mt-1 w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm text-gray-800"
+          >
+            {importTypes.map((type) => (
+              <option key={type.key} value={type.key}>
+                {type.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        {importType !== 'bookings' && (
+          <p className="mt-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-700">
+            This importer creates new records only. Existing matches are skipped so spreadsheet data cannot overwrite live records.
+          </p>
+        )}
       </div>
       <div className="flex gap-3">
         <button
@@ -188,21 +267,22 @@ function UploadStep({ onParsed }) {
         <p>• Room numbers must match rooms already set up in the system</p>
         <p>• Optional "Total Amount" column overrides calculated rate x nights</p>
         <p>• Maximum 500 rows per import</p>
+        <p>• Import and undo both require an internet connection</p>
       </div>
     </div>
   )
 }
 
 // Step 2 ─ Map Columns
-function MappingStep({ parsed, onMapped, onBack }) {
+function MappingStep({ parsed, onMapped, onBack, fields }) {
   const { columns, fileName, sheetName } = parsed
   const [mapping, setMapping] = useState(() => {
     const m = {}
-    APP_FIELDS.forEach(({ key }) => { m[key] = smartGuess(columns, key) })
+    fields.forEach(({ key }) => { m[key] = smartGuess(columns, key) })
     return m
   })
 
-  const missingRequired = APP_FIELDS.filter((f) => f.required && !mapping[f.key])
+  const missingRequired = fields.filter((f) => f.required && !mapping[f.key])
 
   const inp = "w-full bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
 
@@ -223,7 +303,7 @@ function MappingStep({ parsed, onMapped, onBack }) {
       </p>
 
       <div className="space-y-2 max-h-[400px] overflow-y-auto pr-1">
-        {APP_FIELDS.map(({ key, label, required, hint }) => (
+        {fields.map(({ key, label, required, hint }) => (
           <div key={key} className="grid grid-cols-[1fr_32px_1fr] items-center gap-2">
             <div className={`p-2 rounded-lg border text-sm ${mapping[key] ? 'border-green-300 bg-green-50' : required ? 'border-red-300 bg-red-50' : 'border-gray-200 bg-gray-50'}`}>
               <span className="font-medium text-gray-800">{label}</span>
@@ -267,7 +347,7 @@ function MappingStep({ parsed, onMapped, onBack }) {
 }
 
 // Step 3 ─ Preview & Edit (with duplicate detection)
-function PreviewStep({ rows, onBack, onImport }) {
+function PreviewStep({ rows, onBack, onImport, dryRunReport, onDryRun, dryRunning, fields, importType }) {
   const [data, setData] = useState(rows.map((r, i) => ({ ...r, _id: i, _skip: false, _duplicate: false })))
   const [editCell, setEditCell] = useState(null)
   const [checking, setChecking] = useState(false)
@@ -318,9 +398,9 @@ function PreviewStep({ rows, onBack, onImport }) {
     setData((prev) => prev.map((r) => r._duplicate ? { ...r, _skip: true } : r))
   }
 
-  const visibleFields = APP_FIELDS.filter((f) =>
-    ['guest_name','room_number','check_in','check_out','adults','total_amount','amount_paid','payment_method','status','notes'].includes(f.key)
-  )
+  const visibleFields = importType === 'bookings'
+    ? fields.filter((f) => ['guest_name','room_number','check_in','check_out','adults','total_amount','amount_paid','payment_method','status','notes'].includes(f.key))
+    : fields
 
   const thCls = "px-3 py-2 text-left text-xs font-semibold text-gray-600 border-b border-gray-200 whitespace-nowrap bg-gray-50"
   const tdCls = "px-2 py-1 text-xs text-gray-800 border-b border-gray-100"
@@ -343,6 +423,14 @@ function PreviewStep({ rows, onBack, onImport }) {
           >
             <ShieldAlert size={12} />
             {checking ? 'Checking...' : checked ? 'Re-check Duplicates' : 'Check for Duplicates'}
+          </button>
+          <button
+            onClick={() => onDryRun(activeRows.map(({ _id: _i, _skip: _s, _duplicate: _d, ...rest }) => rest))}
+            disabled={dryRunning || activeRows.length === 0}
+            className="flex items-center gap-1 text-xs bg-purple-50 text-purple-700 border border-purple-200 hover:bg-purple-100 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-60"
+          >
+            <ShieldAlert size={12} />
+            {dryRunning ? 'Checking...' : 'Dry Run Report'}
           </button>
           {skippedRows.length > 0 && (
             <button onClick={resetAll} className="flex items-center gap-1 text-xs text-gray-600 border hover:bg-gray-50 px-3 py-1.5 rounded-lg transition-colors">
@@ -370,6 +458,20 @@ function PreviewStep({ rows, onBack, onImport }) {
         <div className="flex items-center gap-2 mb-3 p-3 bg-green-50 border border-green-200 rounded-xl text-sm text-green-700">
           <CheckCircle2 size={16} />
           No duplicate bookings found — safe to import.
+        </div>
+      )}
+      {dryRunReport && (
+        <div className="mb-3 rounded-xl border border-purple-200 bg-purple-50 p-3 text-sm text-purple-800">
+          <p className="font-semibold">Dry-run report</p>
+          <p className="mt-1 text-xs">
+            {dryRunReport.valid || 0} valid of {dryRunReport.total || 0} rows
+            {importType === 'bookings'
+              ? ` · ${dryRunReport.would_create_customers || 0} new guests · ${dryRunReport.would_reuse_customers || 0} existing guests · ${dryRunReport.overlaps || 0} overlaps`
+              : ` · ${dryRunReport.would_create || 0} new records · ${dryRunReport.duplicates || 0} duplicates skipped`}
+          </p>
+          {Array.isArray(dryRunReport.errors) && dryRunReport.errors.length > 0 && (
+            <p className="mt-1 text-xs">{dryRunReport.errors.length} rows need correction before import.</p>
+          )}
         </div>
       )}
 
@@ -451,7 +553,7 @@ function PreviewStep({ rows, onBack, onImport }) {
           disabled={activeRows.length === 0}
           className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-6 py-2 rounded-xl font-semibold disabled:opacity-50 transition-colors"
         >
-          Import {activeRows.length} Booking{activeRows.length !== 1 ? 's' : ''} <ChevronRight size={16} />
+          Import {activeRows.length} Record{activeRows.length !== 1 ? 's' : ''} <ChevronRight size={16} />
         </button>
       </div>
     </div>
@@ -642,11 +744,22 @@ export default function DataImport() {
   const [progress, setProgress] = useState(null)
   const [undoing, setUndoing] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
+  const [importType, setImportType] = useState('bookings')
+  const [importTypes, setImportTypes] = useState([{ key: 'bookings', label: 'Bookings', executable: true }])
+  const [dryRunReport, setDryRunReport] = useState(null)
+  const [dryRunning, setDryRunning] = useState(false)
+  const fields = useMemo(() => getFieldsForType(importType), [importType])
 
   // Listen for progress events from main process
   useEffect(() => {
     const cleanup = window.api.import.onProgress((p) => setProgress(p))
     return cleanup
+  }, [])
+
+  useEffect(() => {
+    window.api.import.getTypes?.()
+      .then((types) => setImportTypes(Array.isArray(types) && types.length ? types : [{ key: 'bookings', label: 'Bookings', executable: true }]))
+      .catch(() => {})
   }, [])
 
   const handleParsed = (data) => {
@@ -656,9 +769,22 @@ export default function DataImport() {
 
   const handleMapped = (m) => {
     setMapping(m)
-    const mapped = applyMapping(parsed.rows, m)
+    const mapped = applyMapping(parsed.rows, m, fields)
     setPreviewRows(mapped)
+    setDryRunReport(null)
     setStep(2)
+  }
+
+  const handleDryRun = async (rows) => {
+    setDryRunning(true)
+    try {
+      const report = await window.api.import.dryRun(rows, importType)
+      setDryRunReport(report)
+    } catch (e) {
+      setDryRunReport({ error: e.message, errors: [{ row: 0, errors: [e.message] }] })
+    } finally {
+      setDryRunning(false)
+    }
   }
 
   const handleImport = async (rows) => {
@@ -667,7 +793,7 @@ export default function DataImport() {
     setResult(null)
     setProgress(null)
     try {
-      const res = await window.api.import.execute(rows, parsed?.fileName)
+      const res = await window.api.import.execute(rows, parsed?.fileName, importType)
       setResult(res)
     } catch (e) {
       setResult({ error: e.message })
@@ -698,6 +824,7 @@ export default function DataImport() {
     setImporting(false)
     setProgress(null)
     setUndoing(false)
+    setDryRunReport(null)
   }
 
   return (
@@ -709,7 +836,7 @@ export default function DataImport() {
             Data Import
           </h1>
           <p className="text-gray-500 text-sm mt-1">
-            Import historical guest and booking records from an Excel spreadsheet
+            Import historical guest and booking records from an Excel spreadsheet. Online only.
           </p>
         </div>
         <button
@@ -735,12 +862,20 @@ export default function DataImport() {
         <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-8">
           <StepIndicator current={step} />
 
-          {step === 0 && <UploadStep onParsed={handleParsed} />}
+          {step === 0 && (
+            <UploadStep
+              onParsed={handleParsed}
+              importType={importType}
+              setImportType={setImportType}
+              importTypes={importTypes}
+            />
+          )}
           {step === 1 && parsed && (
             <MappingStep
               parsed={parsed}
               onMapped={handleMapped}
               onBack={() => setStep(0)}
+              fields={fields}
             />
           )}
           {step === 2 && previewRows && (
@@ -748,6 +883,11 @@ export default function DataImport() {
               rows={previewRows}
               onBack={() => setStep(1)}
               onImport={handleImport}
+              dryRunReport={dryRunReport}
+              onDryRun={handleDryRun}
+              dryRunning={dryRunning}
+              fields={fields}
+              importType={importType}
             />
           )}
           {step === 3 && (

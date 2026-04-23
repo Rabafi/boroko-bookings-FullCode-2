@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Outlet, NavLink, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth, useSettings, useAccess, useOnlineRequests } from '../app-context'
 import {
@@ -257,7 +257,7 @@ export default function Layout() {
   const { user, logout } = useAuth()
   const { settings } = useSettings()
   const access = useAccess()
-  const { count: onlineRequestCount } = useOnlineRequests()
+  const { count: onlineRequestCount, requests: onlineRequests } = useOnlineRequests()
   const navigate = useNavigate()
   const location = useLocation()
   const [collapsed, setCollapsed] = useState(false)
@@ -267,6 +267,11 @@ export default function Layout() {
   const [collectionSummary, setCollectionSummary] = useState({ count: 0, amount: 0 })
   const [backupStatus, setBackupStatus] = useState({ latestAt: null, overdue: false, enabled: false })
   const [paletteOpen, setPaletteOpen] = useState(false)
+  const onlineRequestIdsRef = useRef(new Set())
+  const supportRequestIdsRef = useRef(new Map())
+  const onlineRequestsPrimedRef = useRef(false)
+  const supportRequestsPrimedRef = useRef(false)
+  const isBrowserPreview = typeof window === 'undefined' || !window.api?.settings
 
   useEffect(() => {
     const checkSync = async () => {
@@ -380,6 +385,87 @@ export default function Layout() {
     }
   }, [])
 
+  useEffect(() => {
+    onlineRequestIdsRef.current = new Set()
+    supportRequestIdsRef.current = new Map()
+    onlineRequestsPrimedRef.current = false
+    supportRequestsPrimedRef.current = false
+  }, [settings?.lodge_id, user?.id])
+
+  useEffect(() => {
+    if (isBrowserPreview || !user || !window.api?.app?.notify) return undefined
+
+    const currentIds = new Set((onlineRequests || []).map((request) => request.id))
+    if (!onlineRequestsPrimedRef.current) {
+      onlineRequestIdsRef.current = currentIds
+      onlineRequestsPrimedRef.current = true
+      return undefined
+    }
+
+    const newRequests = (onlineRequests || []).filter((request) => request?.id && !onlineRequestIdsRef.current.has(request.id))
+    if (newRequests.length > 0) {
+      newRequests.slice(0, 3).forEach((request) => {
+        const guestName = request.guest_name || request.customer_name || 'Guest'
+        const roomLabel = request.room_number ? `Room ${request.room_number}` : 'Room TBD'
+        const checkIn = request.check_in ? ` • ${request.check_in}` : ''
+        window.api.app.notify({
+          title: 'New online booking request',
+          body: `${guestName} • ${roomLabel}${checkIn}`,
+          sound: true,
+          flash: true
+        }).catch(() => {})
+      })
+    }
+
+    onlineRequestIdsRef.current = currentIds
+  }, [isBrowserPreview, onlineRequests, user?.id])
+
+  useEffect(() => {
+    if (isBrowserPreview || !user || !window.api?.requests?.getAll || !window.api?.app?.notify) return undefined
+
+    let cancelled = false
+    const loadSupportRequests = async () => {
+      try {
+        const rows = await window.api.requests.getAll(12)
+        if (cancelled) return
+        const nextRows = Array.isArray(rows) ? rows : []
+        if (!supportRequestsPrimedRef.current) {
+          supportRequestIdsRef.current = new Map(nextRows.map((row) => [row.id, row]))
+          supportRequestsPrimedRef.current = true
+          return
+        }
+
+        const newFrontDeskRequests = nextRows.filter((row) => {
+          if (String(row.category || '').trim().toLowerCase() !== 'front desk request') return false
+          return !supportRequestIdsRef.current.has(row.id)
+        })
+
+        if (newFrontDeskRequests.length > 0) {
+          newFrontDeskRequests.slice(0, 3).forEach((request) => {
+            const note = request.description || request.admin_notes || 'A new request arrived from the manager mobile app.'
+            window.api.app.notify({
+              title: `Front desk request: ${request.title}`,
+              body: note,
+              sound: true,
+              flash: true
+            }).catch(() => {})
+          })
+        }
+
+        supportRequestIdsRef.current = new Map(nextRows.map((row) => [row.id, row]))
+      } catch {
+        // Best-effort only.
+      }
+    }
+
+    loadSupportRequests()
+    const interval = setInterval(loadSupportRequests, 45_000)
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+    }
+  }, [isBrowserPreview, user?.id])
+
   const bizType = settings?.business_type || 'lodge'
 
   useEffect(() => {
@@ -446,7 +532,7 @@ export default function Layout() {
     '/bookings': [
       'Receiving new website bookings',
       'Processing guest refunds',
-      'Converting quotes to bookings',
+      'Final cloud confirmation for offline-created bookings',
       'Real-time multi-device availability sync'
     ],
     '/pos': [
@@ -460,7 +546,7 @@ export default function Layout() {
       'Remote supplier price updates'
     ],
     '/quotations': [
-      'Converting quotes to bookings',
+      'Final invoice number confirmation after offline conversion',
       'Emailing digital documents to clients',
       'Live currency rate verification'
     ],
@@ -847,7 +933,7 @@ export default function Layout() {
           </div>
         )}
         <div className={`flex-1 overflow-auto ${isPosRoute ? 'px-3 pb-3 pt-3 md:px-4 md:pb-4 md:pt-4' : 'px-4 pb-4 pt-4 md:px-6 md:pb-6'}`}>
-          <OfflineNotice tasks={currentOfflineTasks} />
+          {!isPosRoute && <OfflineNotice tasks={currentOfflineTasks} />}
           <Outlet />
         </div>
       </div>

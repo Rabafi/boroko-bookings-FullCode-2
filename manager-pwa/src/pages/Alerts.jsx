@@ -4,7 +4,7 @@ import { useFeatures } from '../contexts/FeaturesContext'
 import { supabase } from '../lib/supabase'
 import { normalizeMaintenanceTicket } from '../lib/maintenance'
 import { RefreshCw, AlertTriangle, Wrench, CreditCard, Package, Check, XCircle } from 'lucide-react'
-import { getNotificationSettings, subscribeRuntimeEvent } from '../lib/runtime'
+import { getNotificationSettings, removePwaNotification, subscribeRuntimeEvent, upsertPwaNotification } from '../lib/runtime'
 
 function AlertCard({ icon: Icon, iconColor, title, sub, badge, badgeColor = 'bg-orange-500', action, actionLabel, actionColor = 'bg-orange-700 hover:bg-orange-600' }) {
   const [loading, setLoading] = useState(false)
@@ -91,14 +91,50 @@ export default function Alerts({ onCountChange }) {
 
   useEffect(() => {
     const urgentCount = data.overdue.length + data.maintenance.filter((item) => item.priority === 'urgent').length
-    if (notificationSettings.urgentAlerts !== false && urgentCount > previousCountRef.current && typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+    if (notificationSettings.urgentAlerts !== false && urgentCount > 0) {
       const body = data.overdue.length > 0
         ? `${data.overdue.length} overdue checkout${data.overdue.length === 1 ? '' : 's'} need attention`
         : `${urgentCount} urgent issue${urgentCount === 1 ? '' : 's'} need attention`
-      new Notification('Boroko Manager Alert', { body })
+      upsertPwaNotification(user.lodge_id, {
+        sourceKey: 'urgent-alerts',
+        title: 'Urgent lodge attention needed',
+        message: body,
+        tone: 'error',
+        category: 'urgent',
+        href: '/alerts'
+      })
+    } else {
+      removePwaNotification(user.lodge_id, 'urgent-alerts')
     }
     previousCountRef.current = urgentCount
-  }, [data, notificationSettings.urgentAlerts])
+  }, [data, notificationSettings.urgentAlerts, user.lodge_id])
+
+  useEffect(() => {
+    if (notificationSettings.balances !== false && data.unpaid.length > 0) {
+      upsertPwaNotification(user.lodge_id, {
+        sourceKey: 'balances',
+        title: 'Outstanding balances need follow-up',
+        message: `${data.unpaid.length} booking${data.unpaid.length === 1 ? '' : 's'} still have unpaid or partial balances.`,
+        tone: 'warn',
+        category: 'balances',
+        href: '/alerts'
+      })
+    } else {
+      removePwaNotification(user.lodge_id, 'balances')
+    }
+    if (notificationSettings.maintenance !== false && data.maintenance.length > 0) {
+      upsertPwaNotification(user.lodge_id, {
+        sourceKey: 'maintenance',
+        title: 'Maintenance board has open work',
+        message: `${data.maintenance.length} maintenance ticket${data.maintenance.length === 1 ? '' : 's'} are still open.`,
+        tone: data.maintenance.some((item) => item.priority === 'urgent') ? 'error' : 'warn',
+        category: 'maintenance',
+        href: '/alerts'
+      })
+    } else {
+      removePwaNotification(user.lodge_id, 'maintenance')
+    }
+  }, [data.maintenance, data.unpaid.length, notificationSettings.balances, notificationSettings.maintenance, user.lodge_id])
 
   const allClear = !loading && data.overdue.length === 0 && data.maintenance.length === 0 && data.unpaid.length === 0 && data.lowStock.length === 0 && data.blockedDemand.length === 0
 

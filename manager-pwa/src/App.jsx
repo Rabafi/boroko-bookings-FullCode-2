@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState, lazy, Suspense, createContext, useContext, useMemo } from 'react'
 import { HashRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom'
-import { Moon, RefreshCw, Sun, X } from 'lucide-react'
+import { Bell, Moon, RefreshCw, Sun, X } from 'lucide-react'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { FeaturesProvider, useFeatures } from './contexts/FeaturesContext'
 import { getSubscriptionPlan, normalizeSubscriptionPlan } from '@shared/subscriptionPlans'
 import { supabase } from './lib/supabase'
 import BottomNav from './components/BottomNav'
 import { flushOfflineQueue, getQueueStatus } from './lib/api'
-import { getRuntimeMeta, subscribeRuntimeEvent } from './lib/runtime'
+import { getRuntimeMeta, getUnreadPwaNotificationCount, listPwaNotifications, markPwaNotificationRead, removePwaNotification, subscribeRuntimeEvent } from './lib/runtime'
 
 import Login from './pages/Login'
 import ResetPassword from './pages/ResetPassword'
@@ -205,6 +205,297 @@ function SyncBanner() {
   )
 }
 
+function NotificationDetailSheet({ item, onClose, onClear }) {
+  if (!item) return null
+
+  const prettify = (value) => String(value || '')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/_/g, ' ')
+    .trim() || 'general'
+  const sentAt = item.meta?.sentAt || item.createdAt || null
+  const updatedAt = item.meta?.updatedAt || item.updatedAt || null
+  const requestBody = item.meta?.requestBody || item.message || ''
+  const deskResponse = item.meta?.deskResponse || ''
+  const requestStatus = prettify(item.meta?.requestStatus || (item.category === 'frontDeskRequest' ? 'open' : 'info'))
+  const requestCategory = prettify(item.meta?.requestCategory || item.category || 'general')
+  const isFrontDeskThread = Boolean(item.meta?.requestBody || item.meta?.deskResponse || item.category === 'frontDeskRequest')
+
+  return (
+    <div className="fixed inset-0 z-[80] flex items-end bg-black/60 backdrop-blur-sm" onClick={onClose}>
+      <div
+        className="w-full max-h-[88vh] overflow-y-auto overscroll-contain rounded-t-[28px] border border-white/10 bg-gray-950 px-4 pb-8 pt-4 shadow-[0_-24px_90px_rgba(0,0,0,0.45)]"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="mx-auto mb-4 h-1.5 w-12 rounded-full bg-gray-700" />
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-emerald-300">Notification</p>
+            <h2 className="mt-1 text-lg font-bold text-white">{item.title}</h2>
+            <p className="mt-1 text-xs text-gray-400">{requestCategory} • {requestStatus}</p>
+          </div>
+          <button onClick={onClose} className="rounded-full bg-white/5 p-2 text-gray-300">
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="mt-4 space-y-3">
+          <div className="rounded-2xl border border-gray-800 bg-gray-900 px-4 py-3">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-400">What was sent</p>
+            <p className="mt-2 whitespace-pre-wrap text-sm text-white">{requestBody || 'No request text was recorded.'}</p>
+          </div>
+
+          <div className="rounded-2xl border border-sky-900/60 bg-sky-950/30 px-4 py-3">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-sky-300">Front desk response</p>
+            <p className="mt-2 whitespace-pre-wrap text-sm text-sky-50">{deskResponse || 'Waiting for front desk to reply.'}</p>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div className="rounded-2xl border border-gray-800 bg-gray-900 px-4 py-3">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-400">Sent</p>
+              <p className="mt-1 text-sm text-white">{sentAt ? new Date(sentAt).toLocaleString() : 'Just now'}</p>
+            </div>
+            <div className="rounded-2xl border border-gray-800 bg-gray-900 px-4 py-3">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-400">Updated</p>
+              <p className="mt-1 text-sm text-white">{updatedAt ? new Date(updatedAt).toLocaleString() : 'Waiting'}</p>
+            </div>
+          </div>
+
+          {item.message && item.message !== requestBody && (
+            <div className="rounded-2xl border border-gray-800 bg-gray-900 px-4 py-3">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-400">Summary</p>
+              <p className="mt-2 whitespace-pre-wrap text-sm text-gray-200">{item.message}</p>
+            </div>
+          )}
+
+          <div className="flex flex-wrap gap-2">
+            {item.href && (
+              <button
+                type="button"
+                onClick={() => {
+                  window.location.hash = `#${item.href}`
+                  onClose()
+                }}
+                className="rounded-2xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white"
+              >
+                Open related screen
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => onClear(item)}
+              className="rounded-2xl border border-red-900/60 bg-red-950/40 px-4 py-2 text-sm font-semibold text-red-200"
+            >
+              Clear from inbox
+            </button>
+          </div>
+
+          {!isFrontDeskThread && (
+            <p className="text-xs text-gray-500">
+              This is a general alert. Front desk requests show the sent note and reply together.
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function NotificationCard({ item, onOpen, onClear }) {
+  const [dragX, setDragX] = useState(0)
+  const gestureRef = useRef({ active: false, startX: 0, startY: 0, swiped: false, pointerId: null })
+  const isRead = Boolean(item.readAt)
+  const toneClasses = item.tone === 'error'
+    ? 'border-red-900 bg-red-950/45 text-red-100'
+    : item.tone === 'warn'
+      ? 'border-amber-900 bg-amber-950/45 text-amber-100'
+      : 'border-blue-900 bg-blue-950/45 text-blue-100'
+
+  const handlePointerDown = (event) => {
+    if (event.pointerType === 'mouse' && event.button !== 0) return
+    gestureRef.current = {
+      active: true,
+      startX: event.clientX,
+      startY: event.clientY,
+      swiped: false,
+      pointerId: event.pointerId,
+      offsetX: 0
+    }
+    event.currentTarget.setPointerCapture?.(event.pointerId)
+  }
+
+  const handlePointerMove = (event) => {
+    if (!gestureRef.current.active) return
+    const deltaX = event.clientX - gestureRef.current.startX
+    const deltaY = event.clientY - gestureRef.current.startY
+    if (Math.abs(deltaY) > Math.abs(deltaX) && Math.abs(deltaY) > 12) {
+      gestureRef.current.active = false
+      gestureRef.current.offsetX = 0
+      setDragX(0)
+      return
+    }
+    if (deltaX < 0) {
+      const next = Math.max(deltaX, -120)
+      gestureRef.current.offsetX = next
+      setDragX(next)
+    } else {
+      const next = Math.min(deltaX * 0.15, 24)
+      gestureRef.current.offsetX = next
+      setDragX(next)
+    }
+  }
+
+  const finishGesture = () => {
+    if (!gestureRef.current.active) {
+      setDragX(0)
+      return
+    }
+    const shouldDismiss = Number(gestureRef.current.offsetX || dragX || 0) <= -88
+    gestureRef.current.active = false
+    gestureRef.current.swiped = shouldDismiss
+    gestureRef.current.offsetX = 0
+    setDragX(0)
+    if (shouldDismiss) {
+      onClear(item)
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={(event) => {
+        if (gestureRef.current.swiped) {
+          gestureRef.current.swiped = false
+          event.preventDefault()
+          return
+        }
+        onOpen(item)
+      }}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={finishGesture}
+      onPointerCancel={finishGesture}
+      style={{
+        transform: `translateX(${dragX}px)`,
+        touchAction: 'pan-y'
+      }}
+      className={`w-full rounded-2xl border px-4 py-3 text-left shadow-sm transition-transform duration-150 ${toneClasses} ${isRead ? 'opacity-80' : 'shadow-lg'}`}
+    >
+      <div className="flex items-start gap-3">
+        <div className="mt-0.5 rounded-xl bg-white/10 p-2">
+          <Bell size={15} />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-start justify-between gap-2">
+            <p className="text-sm font-semibold">{item.title}</p>
+            <span className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] ${isRead ? 'bg-white/10 text-white/70' : 'bg-white/15 text-white'}`}>
+              {isRead ? 'Read' : 'New'}
+            </span>
+          </div>
+          {item.message ? <p className="mt-1 text-xs opacity-90">{item.message}</p> : null}
+          <div className="mt-2 flex items-center justify-between gap-3 text-[11px] font-medium uppercase tracking-[0.16em] opacity-70">
+            <span>Tap to open</span>
+            <span>Swipe left to clear</span>
+          </div>
+        </div>
+      </div>
+    </button>
+  )
+}
+
+function NotificationCenter({ notificationCount, setNotificationCount }) {
+  const { user } = useAuth()
+  const { showToast } = useToast()
+  const [notifications, setNotifications] = useState([])
+  const lastAnnouncedRef = useRef(null)
+  const [activeNotification, setActiveNotification] = useState(null)
+
+  useEffect(() => {
+    if (!user?.lodge_id) return undefined
+    const refresh = (detail) => {
+      const next = listPwaNotifications(user.lodge_id, 6)
+      setNotifications(next)
+      setNotificationCount(getUnreadPwaNotificationCount(user.lodge_id))
+      const latest = detail?.latest
+      if (
+        latest &&
+        latest.id !== lastAnnouncedRef.current &&
+        !latest.readAt
+      ) {
+        lastAnnouncedRef.current = latest.id
+        showToast({
+          title: latest.title,
+          message: latest.message,
+          tone: latest.tone === 'error' ? 'error' : latest.tone === 'warn' ? 'queued' : 'success',
+          duration: 4200
+        })
+        if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+          new Notification(latest.title, { body: latest.message || 'Open Boroko Manager for details.' })
+        }
+      }
+    }
+    refresh({})
+    const unsubscribe = subscribeRuntimeEvent('boroko:pwa-notifications', refresh)
+    return () => unsubscribe?.()
+  }, [setNotificationCount, showToast, user?.lodge_id])
+
+  useEffect(() => {
+    if (activeNotification && !notifications.some((item) => item.id === activeNotification.id)) {
+      setActiveNotification(null)
+    }
+  }, [activeNotification, notifications])
+
+  useEffect(() => {
+    if (!activeNotification) return
+    const latest = notifications.find((item) => item.id === activeNotification.id)
+    if (latest && latest.updatedAt !== activeNotification.updatedAt) {
+      setActiveNotification(latest)
+    }
+  }, [activeNotification, notifications])
+
+  if (!notifications.length) return null
+
+  const clearNotification = (item) => {
+    removePwaNotification(user.lodge_id, item.sourceKey || item.id)
+    if (activeNotification?.id === item.id) {
+      setActiveNotification(null)
+    }
+  }
+
+  return (
+    <div className="mx-3 mt-2 space-y-2">
+      <div className="rounded-3xl border border-white/10 bg-gray-900/90 px-4 py-3 shadow-xl">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-sm font-semibold text-white">Notification inbox</p>
+            <p className="text-xs text-gray-400 mt-1">
+              Open a card to see the thread. Swipe left on mobile to clear it from the inbox.
+            </p>
+          </div>
+          <span className="rounded-full bg-white/10 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-white/80">
+            {notificationCount} unread
+          </span>
+        </div>
+      </div>
+      {notifications.slice(0, 4).map((item) => (
+        <NotificationCard
+          key={item.id}
+          item={item}
+          onOpen={(notification) => {
+            markPwaNotificationRead(user.lodge_id, notification.id)
+            setActiveNotification(notification)
+          }}
+          onClear={clearNotification}
+        />
+      ))}
+      <NotificationDetailSheet
+        item={activeNotification}
+        onClose={() => setActiveNotification(null)}
+        onClear={clearNotification}
+      />
+    </div>
+  )
+}
+
 function LockedView({ title = 'Access Restricted' }) {
   return (
     <div className="min-h-[60vh] flex flex-col items-center justify-center px-6 text-center">
@@ -309,12 +600,12 @@ function ManagerPwaPlanLocked() {
       <div className="w-full max-w-md rounded-3xl border border-purple-900/60 bg-gray-900/90 p-6 text-center shadow-2xl">
         <div className="text-5xl mb-4">🔒</div>
         <p className="text-xs uppercase tracking-[0.25em] text-purple-300">Pro Feature</p>
-        <h1 className="text-2xl font-bold text-white mt-3">Manager PWA Locked</h1>
+        <h1 className="text-2xl font-bold text-white mt-3">Manager mobile app locked</h1>
         <p className="text-sm text-gray-300 mt-3">
-          {user?.lodge_display_name || entitlement?.lodge_name || 'This lodge'} is not currently entitled to the Manager PWA.
+          {user?.lodge_display_name || entitlement?.lodge_name || 'This lodge'} is not currently entitled to the manager mobile app.
         </p>
         <p className="text-sm text-gray-400 mt-2">
-          The Manager PWA sits inside the {proPlan.name} plan because {proPlan.pitch.toLowerCase()}.
+          The manager mobile app sits inside the {proPlan.name} plan because {proPlan.pitch.toLowerCase()}.
         </p>
         <div className="rounded-2xl bg-purple-950/40 border border-purple-900/60 px-4 py-3 mt-5 text-sm text-purple-200">
           Current plan: {normalizeSubscriptionPlan(entitlement?.plan || 'Starter')}
@@ -330,7 +621,7 @@ function ManagerPwaPlanLocked() {
   )
 }
 
-function AuthenticatedShell({ alertCount, dark, setDark, setAlertCount }) {
+function AuthenticatedShell({ alertCount, dark, setDark, setAlertCount, notificationCount, setNotificationCount }) {
   const { user } = useAuth()
   const { entitlement, loading: entitlementLoading } = useFeatures()
   const lastUserRef = useRef(null)
@@ -371,8 +662,9 @@ function AuthenticatedShell({ alertCount, dark, setDark, setAlertCount }) {
 
       <SyncBanner />
       <BroadcastBanners />
+      <NotificationCenter notificationCount={notificationCount} setNotificationCount={setNotificationCount} />
 
-      <div className="flex-1">
+      <div className="flex-1 pwa-page-shell">
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/rooms" element={<Suspense fallback={<PageLoader />}><Rooms /></Suspense>} />
@@ -395,7 +687,7 @@ function AuthenticatedShell({ alertCount, dark, setDark, setAlertCount }) {
         </Routes>
       </div>
       <GlobalStatusFooter />
-      <BottomNav alertCount={alertCount} />
+      <BottomNav alertCount={alertCount} notificationCount={notificationCount} />
     </div>
   )
 }
@@ -404,6 +696,7 @@ function AppShell() {
   const { user, loading } = useAuth()
   const location = useLocation()
   const [alertCount, setAlertCount] = useState(0)
+  const [notificationCount, setNotificationCount] = useState(0)
   const [dark, setDark] = useDarkMode()
   const browserPath = typeof window === 'undefined' ? '' : window.location.pathname
   const browserHash = typeof window === 'undefined' ? '' : window.location.hash
@@ -437,8 +730,10 @@ function AppShell() {
       <AuthenticatedShell
         alertCount={alertCount}
         dark={dark}
+        notificationCount={notificationCount}
         setAlertCount={setAlertCount}
         setDark={setDark}
+        setNotificationCount={setNotificationCount}
       />
     </FeaturesProvider>
   )

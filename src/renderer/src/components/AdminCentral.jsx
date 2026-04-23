@@ -20,7 +20,7 @@ const BIZ_EMOJI  = { lodge: '🏕️', restaurant: '🍽️', retail: '🛒', se
 const BIZ_LABEL  = { lodge: 'Lodge', restaurant: 'Restaurant', retail: 'Retail', service_provider: 'Service Provider' }
 const ALL_FEATURES = ['reports', 'expenses', 'staff', 'pwa', 'audit', 'conference', 'pool', 'import', 'pos', 'inventory', 'supplies']
 const FEAT_LABEL   = {
-  reports: 'Reports', expenses: 'Expenses', staff: 'Staff Management', pwa: 'Manager PWA',
+  reports: 'Reports', expenses: 'Expenses', staff: 'Staff Management', pwa: 'Manager mobile app',
   audit: 'Night Audit', import: 'Data Import',
   pos: 'POS / Bar', inventory: 'Inventory', supplies: 'Room Supplies',
   conference: 'Conference', pool: 'Pool / Day Use'
@@ -431,11 +431,11 @@ function Companies({ companies, licenses, loading, onReload }) {
   const savePwaAccess = async () => {
     if (!pwaTarget || !selectedCompanyUserId) return
     if (pwaPassword && pwaPassword.trim().length < 6) {
-      alert('Manager PWA password must be at least 6 characters')
+      alert('Manager mobile app password must be at least 6 characters')
       return
     }
     if (pwaEnabled && !pwaPassword.trim() && !activePwaUser?.pwa_password_set_at) {
-      alert('Set a Manager PWA password before enabling access')
+      alert('Set a manager mobile app password before enabling access')
       return
     }
 
@@ -451,13 +451,13 @@ function Companies({ companies, licenses, loading, onReload }) {
         }
       )
       if (result?.success === false) {
-        throw new Error(result.error || 'Could not update Manager PWA access')
+        throw new Error(result.error || 'Could not update manager mobile app access')
       }
       await loadCompanyUsers(pwaTarget.lodge_id)
-      alert('Manager PWA access updated')
+      alert('Manager mobile app access updated')
     } catch (err) {
       console.error(err)
-      alert(err.message || 'Failed to update Manager PWA access')
+      alert(err.message || 'Failed to update manager mobile app access')
     } finally {
       setPwaSaving(false)
     }
@@ -731,7 +731,7 @@ function Companies({ companies, licenses, loading, onReload }) {
 
       {pwaTarget && (
         <Modal
-          title={`Manager PWA Access — ${pwaTarget.lodge_name}`}
+          title={`Manager mobile app access — ${pwaTarget.lodge_name}`}
           onClose={() => {
             setPwaTarget(null)
             setCompanyUsers([])
@@ -747,7 +747,7 @@ function Companies({ companies, licenses, loading, onReload }) {
               <p className="text-sm text-gray-400">Loading eligible company users…</p>
             ) : eligibleUsers.length === 0 ? (
               <div className="bg-amber-900/30 border border-amber-700 rounded-lg p-4 text-sm text-amber-200">
-                This company does not currently have any Manager or Admin users who are eligible for the Manager PWA.
+                This company does not currently have any Manager or Admin users who are eligible for the manager mobile app.
               </div>
             ) : (
               <>
@@ -776,7 +776,7 @@ function Companies({ companies, licenses, loading, onReload }) {
                         <p className="text-xs text-gray-400 mt-1">{activePwaUser.email} · {activePwaUser.role}</p>
                       </div>
                       <span className={`text-xs px-2 py-1 rounded-full font-semibold ${activePwaUser.pwa_enabled ? 'bg-indigo-500/20 text-indigo-300' : 'bg-gray-700 text-gray-300'}`}>
-                        {activePwaUser.pwa_enabled ? 'Manager PWA enabled' : 'Manager PWA disabled'}
+                        {activePwaUser.pwa_enabled ? 'Manager mobile app enabled' : 'Manager mobile app disabled'}
                       </span>
                     </div>
 
@@ -791,12 +791,12 @@ function Companies({ companies, licenses, loading, onReload }) {
                         className="mt-1"
                       />
                       <span>
-                        Enable Manager PWA for this user
+                        Enable manager mobile app for this user
                         <span className="block text-xs text-gray-500 mt-1">Command Central can override the lodge plan, but login still stays limited to Manager and Admin roles.</span>
                       </span>
                     </label>
 
-                    <Field label={`Manager PWA Password${activePwaUser.pwa_password_set_at ? ' (leave blank to keep current)' : ''}`}>
+                    <Field label={`Manager mobile app password${activePwaUser.pwa_password_set_at ? ' (leave blank to keep current)' : ''}`}>
                       <div className="relative">
                         <input
                           type={showPwaPassword ? 'text' : 'password'}
@@ -817,8 +817,8 @@ function Companies({ companies, licenses, loading, onReload }) {
 
                     <p className="text-xs text-gray-500">
                       {activePwaUser.pwa_password_set_at
-                        ? `Current Manager PWA password last updated ${fmt(activePwaUser.pwa_password_set_at)}.`
-                        : 'No Manager PWA password has been set yet.'}
+                        ? `Current manager mobile app password last updated ${fmt(activePwaUser.pwa_password_set_at)}.`
+                        : 'No manager mobile app password has been set yet.'}
                     </p>
 
                     {!pwaEnabled && (
@@ -827,7 +827,7 @@ function Companies({ companies, licenses, loading, onReload }) {
                           className={inp}
                           value={pwaDisabledReason}
                           onChange={(event) => setPwaDisabledReason(event.target.value)}
-                          placeholder="Why is Manager PWA disabled for this user?"
+                          placeholder="Why is manager mobile app access turned off for this user?"
                         />
                       </Field>
                     )}
@@ -852,7 +852,7 @@ function Companies({ companies, licenses, loading, onReload }) {
                     disabled={pwaSaving || !activePwaUser}
                     className="flex-1 py-2 px-4 rounded-lg text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 disabled:opacity-50 transition-colors"
                   >
-                    {pwaSaving ? 'Saving...' : 'Save Manager PWA'}
+                    {pwaSaving ? 'Saving...' : 'Save manager mobile app access'}
                   </button>
                 </div>
               </>

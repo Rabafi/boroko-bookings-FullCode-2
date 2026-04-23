@@ -27,6 +27,22 @@ function fmt(v) {
   return Number(v || 0).toFixed(2)
 }
 
+function normalizeMaintenanceRow(row = {}) {
+  const date = String(row.reported_date || row.created_at || row.date || '').slice(0, 10)
+  const title = row.title || row.issue || row.description || 'Maintenance repair'
+  const roomLabel = row.room_number ? `Room ${row.room_number}` : (row.room_type || '')
+  const status = String(row.status || 'open').replace(/_/g, ' ')
+  return {
+    id: `maintenance-${row.id || row._queue_id || date || title}`,
+    date,
+    description: title,
+    category: 'Maintenance & Repairs',
+    outlet_id: null,
+    notes: [roomLabel, `Status: ${status}`, row.description || ''].filter(Boolean).join(' · '),
+    amount: Number(row.total_cost || 0)
+  }
+}
+
 export default function Expenses() {
   const { settings } = useSettings()
   const currency = settings?.currency || 'P'
@@ -34,6 +50,7 @@ export default function Expenses() {
   const [expenses, setExpenses] = useState([])
   const [inventorySpend, setInventorySpend] = useState({ total: 0, purchases: [] })
   const [supplySpend, setSupplySpend] = useState({ total: 0, purchases: [] })
+  const [maintenanceSpend, setMaintenanceSpend] = useState({ total: 0, rows: [] })
   const [loading, setLoading] = useState(false)
   const [pageError, setPageError] = useState('')
   const [start, setStart] = useState(monthStart())
@@ -71,20 +88,30 @@ export default function Expenses() {
     setPageError('')
     try {
       const showSupplyCosts = !selectedOutlet || selectedOutlet === 'all' || selectedOutlet === 'unassigned'
-      const [expenseData, inventoryData, supplyData] = await Promise.all([
+      const showMaintenanceCosts = !selectedOutlet || selectedOutlet === 'all' || selectedOutlet === 'unassigned'
+      const [expenseData, inventoryData, supplyData, maintenanceData] = await Promise.all([
         window.api.expenses.getAll(start, end, selectedOutlet),
         window.api.reports.inventorySpend(start, end, selectedOutlet).catch(() => ({ total: 0, purchases: [] })),
         showSupplyCosts
           ? window.api.reports.supplySpend(start, end).catch(() => ({ total: 0, purchases: [] }))
-          : Promise.resolve({ total: 0, purchases: [] })
+          : Promise.resolve({ total: 0, purchases: [] }),
+        showMaintenanceCosts
+          ? window.api.reports.maintenanceRows(start, end).catch(() => [])
+          : Promise.resolve([])
       ])
       setExpenses(expenseData || [])
       setInventorySpend(inventoryData || { total: 0, purchases: [] })
       setSupplySpend(supplyData || { total: 0, purchases: [] })
+      const rows = (maintenanceData || []).map(normalizeMaintenanceRow).sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
+      setMaintenanceSpend({
+        total: rows.reduce((sum, row) => sum + Number(row.amount || 0), 0),
+        rows
+      })
     } catch (err) {
       setPageError(err?.message || 'Could not load expenses right now.')
       setInventorySpend({ total: 0, purchases: [] })
       setSupplySpend({ total: 0, purchases: [] })
+      setMaintenanceSpend({ total: 0, rows: [] })
     } finally {
       setLoading(false)
     }
@@ -217,10 +244,12 @@ export default function Expenses() {
   const total = filtered.reduce((s, e) => s + Number(e.amount || 0), 0)
   const manualPeriodTotal = expenses.reduce((s, e) => s + Number(e.amount || 0), 0)
   const showSupplyCosts = !selectedOutlet || selectedOutlet === 'all' || selectedOutlet === 'unassigned'
+  const showMaintenanceCosts = !selectedOutlet || selectedOutlet === 'all' || selectedOutlet === 'unassigned'
   const inventoryTotal = Number(inventorySpend?.total || 0)
   const roomSupplyTotal = showSupplyCosts ? Number(supplySpend?.total || 0) : 0
+  const maintenanceTotal = showMaintenanceCosts ? Number(maintenanceSpend?.total || 0) : 0
   const stockTotal = inventoryTotal + roomSupplyTotal
-  const totalOutgoings = manualPeriodTotal + stockTotal
+  const totalOutgoings = manualPeriodTotal + stockTotal + maintenanceTotal
   const outletNameById = Object.fromEntries((outlets || []).map((row) => [row.id, row.name]))
   const stockRows = [
     ...((inventorySpend?.purchases || []).map((row) => ({
@@ -244,6 +273,7 @@ export default function Expenses() {
       amount: Number(row.total_cost || 0)
     })) : [])
   ].sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
+  const maintenanceRows = showMaintenanceCosts ? maintenanceSpend.rows || [] : []
 
   const byCategory = filtered.reduce((acc, e) => {
     acc[e.category] = (acc[e.category] || 0) + Number(e.amount || 0)
@@ -331,11 +361,11 @@ export default function Expenses() {
           <option value="description_asc">Description A-Z</option>
         </select>
         <div className="ml-auto text-xs text-slate-500">
-          Date and outlet filters update all costs. Search and category filters apply to manual expenses only.
+          Date and outlet filters update the costs shown here. Search and category filters apply to manual expenses only.
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
         <div className="bb-card p-5">
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Manual Expenses</p>
           <p className="mt-3 text-2xl font-bold text-slate-900">{currency} {fmt(manualPeriodTotal)}</p>
@@ -355,10 +385,19 @@ export default function Expenses() {
               : 'Shown in All Outlets or Unassigned view because room supplies are property-wide.'}
           </p>
         </div>
+        <div className="bb-card p-5">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Maintenance Repairs</p>
+          <p className="mt-3 text-2xl font-bold text-slate-900">{currency} {fmt(maintenanceTotal)}</p>
+          <p className="mt-2 text-xs text-slate-500">
+            {showMaintenanceCosts
+              ? `${maintenanceRows.length || 0} repair entry${maintenanceRows.length === 1 ? '' : 's'} in this period.`
+              : 'Shown in All Outlets or Unassigned view because maintenance is property-wide.'}
+          </p>
+        </div>
         <div className="bb-card border-slate-900 bg-slate-900 p-5 text-white">
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-white/70">Total Outgoings</p>
           <p className="mt-3 text-2xl font-bold">{currency} {fmt(totalOutgoings)}</p>
-          <p className="mt-2 text-xs text-white/70">Manual expenses plus inventory and room-supply purchases.</p>
+          <p className="mt-2 text-xs text-white/70">Manual expenses plus inventory, room-supply, and maintenance costs.</p>
         </div>
       </div>
 
@@ -591,6 +630,72 @@ export default function Expenses() {
           </table>
         </HorizontalScrollArea>
       </div>
+
+      {showMaintenanceCosts && (
+        <div className="bb-table-shell">
+          <div className="border-b border-slate-200 px-5 py-4">
+            <p className="text-sm font-semibold text-slate-800">Maintenance repair entries</p>
+            <p className="mt-1 text-xs text-slate-500">Read-only repair costs that flow into reporting and P&amp;L automatically.</p>
+          </div>
+          <HorizontalScrollArea>
+            <table className="w-full text-sm">
+              <thead className="sticky top-0 z-10 bg-slate-50 text-xs uppercase tracking-[0.16em] text-slate-500">
+                <tr>
+                  <th className="px-5 py-3 text-left">Date</th>
+                  <th className="px-5 py-3 text-left">Room</th>
+                  <th className="px-5 py-3 text-left">Description</th>
+                  <th className="px-5 py-3 text-left">Status</th>
+                  <th className="px-5 py-3 text-right">Amount</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {maintenanceRows.map((row) => (
+                  <tr key={row.id} className="hover:bg-slate-50">
+                    <td className="whitespace-nowrap px-5 py-3 text-slate-600">{row.date || '—'}</td>
+                    <td className="px-5 py-3 text-slate-600">
+                      {row.notes?.split(' · ')?.[0] || 'Property-wide'}
+                    </td>
+                    <td className="px-5 py-3">
+                      <p className="font-medium text-slate-800">{row.description}</p>
+                      {row.notes && <p className="mt-0.5 text-xs text-slate-400">{row.notes}</p>}
+                    </td>
+                    <td className="px-5 py-3">
+                      <span className="inline-flex items-center rounded-full border border-rose-200 bg-rose-50 px-2.5 py-1 text-xs font-semibold text-rose-700">
+                        Maintenance
+                      </span>
+                    </td>
+                    <td className="px-5 py-3 text-right font-semibold text-slate-800">
+                      {currency} {fmt(row.amount)}
+                    </td>
+                  </tr>
+                ))}
+                {maintenanceRows.length === 0 && (
+                  <tr>
+                    <td colSpan={5} className="px-5 py-12">
+                      <div className="bb-empty-state py-10">
+                        <p className="text-base font-semibold text-slate-800">No maintenance costs found</p>
+                        <p className="text-sm text-slate-500">Repair costs will appear here once they are recorded for the selected period.</p>
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+              {maintenanceRows.length > 0 && (
+                <tfoot>
+                  <tr className="border-t-2 border-slate-200 bg-slate-50">
+                    <td colSpan={4} className="px-5 py-3 text-sm font-semibold text-slate-700">
+                      Total Maintenance Costs
+                    </td>
+                    <td className="px-5 py-3 text-right font-bold text-slate-800">
+                      {currency} {fmt(maintenanceTotal)}
+                    </td>
+                  </tr>
+                </tfoot>
+              )}
+            </table>
+          </HorizontalScrollArea>
+        </div>
+      )}
 
       {/* Form Modal */}
       {formOpen && (

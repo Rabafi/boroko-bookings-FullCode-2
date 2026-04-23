@@ -107,12 +107,318 @@ async function assertResourceBelongsToCurrentLodge(resourceLabel, resourceId, lo
   return resource
 }
 
+function slugifyFilenamePart(value, fallback = 'report') {
+  return String(value || fallback)
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .replace(/-+/g, '-')
+    .toLowerCase() || fallback
+}
+
+function formatFilenameStamp(date = new Date()) {
+  const d = date instanceof Date ? date : new Date(date)
+  const pad = (value) => String(value).padStart(2, '0')
+  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}-${String(d.getMilliseconds()).padStart(3, '0')}`
+}
+
+function buildReportExportFilename({ prefix = 'boroko', reportTitle = 'report', period = '', extension = 'pdf' } = {}) {
+  const parts = [
+    slugifyFilenamePart(prefix, 'boroko'),
+    slugifyFilenamePart(reportTitle, 'report'),
+    period ? slugifyFilenamePart(period, 'period') : null,
+    formatFilenameStamp()
+  ].filter(Boolean)
+  return `${parts.join('-')}.${extension}`
+}
+
+function buildWorkbookMetaRows({ lodgeName, companyName, periodLabel, outletLabel, generatedAt, includeOutlet = false }) {
+  const resolvedLodge = lodgeName || companyName || 'Boroko Lodge'
+  const rows = [
+    ['Lodge', resolvedLodge]
+  ]
+  if (companyName && companyName !== resolvedLodge) {
+    rows.push(['Company', companyName])
+  }
+  if (periodLabel) {
+    rows.push(['Period', periodLabel])
+  }
+  if (includeOutlet && outletLabel) {
+    rows.push(['Outlet', outletLabel])
+  }
+  if (generatedAt) {
+    rows.push(['Generated', generatedAt])
+  }
+  rows.push([])
+  return rows
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+function formatReportMoney(currency, value) {
+  return `${currency} ${Number(value || 0).toFixed(2)}`
+}
+
+function buildRoomSuppliesPdfHtml({
+  reportTitle,
+  lodgeName,
+  companyName,
+  periodLabel,
+  generatedAt,
+  currency,
+  grandTotal,
+  allocations = [],
+  byRoom = [],
+  byItem = []
+} = {}) {
+  const resolvedTitle = reportTitle || 'Room Supplies Report'
+  const resolvedLodge = lodgeName || companyName || 'Boroko Lodge'
+  const resolvedCompany = companyName && companyName !== resolvedLodge ? companyName : ''
+  const rows = Array.isArray(allocations) ? allocations : []
+  const roomRows = Array.isArray(byRoom) ? byRoom : []
+  const itemRows = Array.isArray(byItem) ? byItem : []
+  const fmtMoney = (value) => formatReportMoney(currency || 'P', value)
+  const usageTable = rows.length
+    ? rows.map((row) => `
+        <tr>
+          <td>${escapeHtml(row.entry_date || row.week_start || '')}</td>
+          <td>${escapeHtml(row.room_number || '')}</td>
+          <td>${escapeHtml(row.supply_name || '')}</td>
+          <td>${escapeHtml(row.supply_category || '')}</td>
+          <td class="num">${escapeHtml(Number(row.units_used || 0))}</td>
+          <td>${escapeHtml(row.supply_unit || '')}</td>
+          <td class="num">${escapeHtml(fmtMoney(row.unit_cost || 0))}</td>
+          <td class="num">${escapeHtml(fmtMoney(row.total_cost || 0))}</td>
+        </tr>
+      `).join('')
+    : '<tr><td colspan="8" class="empty">No room supply usage was recorded in this period.</td></tr>'
+  const roomTable = roomRows.length
+    ? roomRows.map((row) => `
+        <tr>
+          <td>Room ${escapeHtml(row.room_number || '')}</td>
+          <td class="num">${escapeHtml(fmtMoney(row.total || row.total_cost || 0))}</td>
+          <td class="num">${escapeHtml(Number(row.item_count || 0))}</td>
+          <td class="num">${escapeHtml(Number(row.total_units || 0))}</td>
+        </tr>
+      `).join('')
+    : '<tr><td colspan="4" class="empty">No room totals to show for this period.</td></tr>'
+  const itemTable = itemRows.length
+    ? itemRows.map((row) => `
+        <tr>
+          <td>${escapeHtml(row.name || '')}</td>
+          <td>${escapeHtml(row.unit || '')}</td>
+          <td class="num">${escapeHtml(Number(row.total_units || 0))}</td>
+          <td class="num">${escapeHtml(Number(row.room_count || 0))}</td>
+          <td class="num">${escapeHtml(fmtMoney(row.total_cost || 0))}</td>
+        </tr>
+      `).join('')
+    : '<tr><td colspan="5" class="empty">No supply item totals to show for this period.</td></tr>'
+
+  return `<!DOCTYPE html>
+  <html>
+    <head>
+      <meta charset="utf-8" />
+      <title>${escapeHtml(resolvedTitle)}</title>
+      <style>
+        @page { size: A4; margin: 16mm; }
+        * { box-sizing: border-box; }
+        body {
+          margin: 0;
+          font-family: Arial, Helvetica, sans-serif;
+          color: #0f172a;
+          background: #fff;
+          font-size: 12px;
+          line-height: 1.45;
+        }
+        .page { width: 100%; }
+        .header {
+          display: flex;
+          justify-content: space-between;
+          gap: 16px;
+          border-bottom: 2px solid #15803d;
+          padding-bottom: 12px;
+          margin-bottom: 16px;
+        }
+        .eyebrow {
+          font-size: 10px;
+          text-transform: uppercase;
+          letter-spacing: 0.18em;
+          color: #047857;
+          font-weight: 700;
+          margin-bottom: 6px;
+        }
+        h1 {
+          margin: 0;
+          font-size: 20px;
+          line-height: 1.2;
+        }
+        .meta {
+          margin-top: 6px;
+          color: #475569;
+        }
+        .meta div { margin-top: 2px; }
+        .generated {
+          color: #64748b;
+          font-size: 11px;
+          text-align: right;
+          white-space: nowrap;
+        }
+        .summary {
+          display: grid;
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+          gap: 10px;
+          margin-bottom: 16px;
+        }
+        .card {
+          border: 1px solid #dbe4ee;
+          border-radius: 10px;
+          padding: 10px 12px;
+          background: #f8fafc;
+        }
+        .card .label {
+          color: #64748b;
+          font-size: 10px;
+          text-transform: uppercase;
+          letter-spacing: 0.12em;
+          font-weight: 700;
+        }
+        .card .value {
+          margin-top: 6px;
+          font-size: 16px;
+          font-weight: 700;
+          color: #0f172a;
+        }
+        .section {
+          margin-top: 14px;
+          page-break-inside: avoid;
+        }
+        .section h2 {
+          margin: 0 0 8px;
+          font-size: 13px;
+          text-transform: uppercase;
+          letter-spacing: 0.12em;
+          color: #475569;
+        }
+        table {
+          width: 100%;
+          border-collapse: collapse;
+          font-size: 11px;
+        }
+        th, td {
+          border: 1px solid #dbe4ee;
+          padding: 6px 8px;
+          vertical-align: top;
+        }
+        th {
+          background: #f1f5f9;
+          color: #334155;
+          text-align: left;
+        }
+        td.num, th.num { text-align: right; white-space: nowrap; }
+        tr:nth-child(even) td { background: #fafcff; }
+        .empty {
+          text-align: center;
+          color: #64748b;
+          font-style: italic;
+          padding: 12px 8px;
+        }
+        .note {
+          margin-top: 12px;
+          color: #64748b;
+          font-size: 10px;
+        }
+      </style>
+    </head>
+    <body>
+      <div class="page">
+        <div class="header">
+          <div>
+            <div class="eyebrow">Report Export</div>
+            <h1>${escapeHtml(resolvedLodge)} - ${escapeHtml(resolvedTitle)}</h1>
+            ${resolvedCompany ? `<div class="meta"><div>${escapeHtml(resolvedCompany)}</div></div>` : ''}
+            <div class="meta"><div>Period: ${escapeHtml(periodLabel || '')}</div></div>
+          </div>
+          <div class="generated">Generated: ${escapeHtml(generatedAt || new Date().toLocaleString())}</div>
+        </div>
+
+        <div class="summary">
+          <div class="card"><div class="label">Total Supply Cost</div><div class="value">${escapeHtml(fmtMoney(grandTotal))}</div></div>
+          <div class="card"><div class="label">Rooms Captured</div><div class="value">${roomRows.length}</div></div>
+          <div class="card"><div class="label">Supply Items Used</div><div class="value">${itemRows.length}</div></div>
+          <div class="card"><div class="label">Usage Entries</div><div class="value">${rows.length}</div></div>
+        </div>
+
+        <div class="section">
+          <h2>Usage Entries</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Room</th>
+                <th>Supply Item</th>
+                <th>Category</th>
+                <th class="num">Units Used</th>
+                <th>Unit</th>
+                <th class="num">Unit Cost</th>
+                <th class="num">Total Cost</th>
+              </tr>
+            </thead>
+            <tbody>${usageTable}</tbody>
+          </table>
+        </div>
+
+        <div class="section">
+          <h2>Cost By Room</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Room</th>
+                <th class="num">Supply Cost</th>
+                <th class="num">Items Logged</th>
+                <th class="num">Units Used</th>
+              </tr>
+            </thead>
+            <tbody>${roomTable}</tbody>
+          </table>
+        </div>
+
+        <div class="section">
+          <h2>Cost By Item</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Supply Item</th>
+                <th>Unit</th>
+                <th class="num">Units Used</th>
+                <th class="num">Rooms Logged</th>
+                <th class="num">Total Cost</th>
+              </tr>
+            </thead>
+            <tbody>${itemTable}</tbody>
+          </table>
+        </div>
+
+        <div class="note">Room Supplies cost report generated from live allocation history.</div>
+      </div>
+    </body>
+  </html>`
+}
+
 // ── Push notification helper ─────────────────────────────────────────────────
 const EDGE_FN_URL = process.env.SUPABASE_URL
   ? `${process.env.SUPABASE_URL}/functions/v1`
   : null
 
 function notifyLodge(lodgeId, title, body) {
+  showDesktopNotification({ title, body, sound: true, flash: true })
   if (!EDGE_FN_URL || !lodgeId) return
   fetch(`${EDGE_FN_URL}/send-push`, {
     method: 'POST',
@@ -122,6 +428,42 @@ function notifyLodge(lodgeId, title, body) {
     },
     body: JSON.stringify({ lodge_id: lodgeId, title, body })
   }).catch(() => {})
+}
+
+function showDesktopNotification({ title = 'Boroko Bookings', body = '', sound = true, flash = true } = {}) {
+  const safeTitle = String(title || 'Boroko Bookings')
+  const safeBody = String(body || '')
+
+  try {
+    if (sound !== false) shell.beep()
+  } catch {}
+
+  try {
+    if (flash !== false) {
+      BrowserWindow.getAllWindows().forEach((win) => {
+        if (!win.isDestroyed()) {
+          win.flashFrame(true)
+          setTimeout(() => {
+            try {
+              if (!win.isDestroyed()) win.flashFrame(false)
+            } catch {}
+          }, 4500)
+        }
+      })
+    }
+  } catch {}
+
+  try {
+    if (Notification.isSupported()) {
+      new Notification({
+        title: safeTitle,
+        body: safeBody,
+        silent: sound === false
+      }).show()
+    }
+  } catch (error) {
+    console.warn('Desktop notification failed:', error?.message || error)
+  }
 }
 
 // ── Auto-updater setup ───────────────────────────────────────────────────────
@@ -289,9 +631,60 @@ function createWindow() {
   return mainWindow
 }
 
-async function collectFullExportData() {
+const EXPORT_SECTION_LABELS = {
+  bookings: 'Bookings',
+  customers: 'Guests',
+  rooms: 'Rooms',
+  expenses: 'Expenses',
+  posOrders: 'POS Orders',
+  bookingInvoices: 'Booking Invoices',
+  quotations: 'Quotations',
+  maintenance: 'Maintenance',
+  inventoryItems: 'Inventory Items',
+  inventoryPurchases: 'Inventory Purchases',
+  supplyItems: 'Supply Items',
+  supplyPurchases: 'Supply Purchases',
+  conferenceBookings: 'Conference',
+  dayUseEntries: 'Pool Day Use',
+  users: 'Staff',
+  activityLog: 'Activity Log'
+}
+
+const EXPORT_PRESETS = {
+  full: Object.keys(EXPORT_SECTION_LABELS),
+  finance: ['bookingInvoices', 'expenses', 'posOrders', 'inventoryPurchases', 'supplyPurchases', 'conferenceBookings', 'dayUseEntries'],
+  bookingGuest: ['bookings', 'customers', 'bookingInvoices', 'quotations'],
+  operations: ['rooms', 'maintenance', 'inventoryItems', 'inventoryPurchases', 'supplyItems', 'supplyPurchases', 'conferenceBookings', 'dayUseEntries'],
+  inventory: ['inventoryItems', 'inventoryPurchases', 'supplyItems', 'supplyPurchases']
+}
+
+function normalizeExportOptions(options = {}) {
+  const preset = Object.hasOwn(EXPORT_PRESETS, options?.preset) ? options.preset : 'full'
+  const selected = Array.isArray(options?.sections) && options.sections.length > 0
+    ? options.sections.filter((section) => Object.hasOwn(EXPORT_SECTION_LABELS, section))
+    : EXPORT_PRESETS[preset]
+  return {
+    preset,
+    sections: [...new Set(selected)],
+    startDate: /^\d{4}-\d{2}-\d{2}$/.test(String(options?.startDate || '')) ? options.startDate : '2000-01-01',
+    endDate: /^\d{4}-\d{2}-\d{2}$/.test(String(options?.endDate || '')) ? options.endDate : '2099-12-31',
+    privacyMode: options?.privacyMode === true
+  }
+}
+
+function includesSection(options, key) {
+  return options.sections.includes(key)
+}
+
+async function collectFullExportData(options = {}) {
+  const normalized = normalizeExportOptions(options)
+  const onProgress = typeof options?.onProgress === 'function' ? options.onProgress : null
+  const progress = (stage, current = null, total = null) => {
+    if (onProgress) onProgress({ stage, current, total })
+  }
   const safe = async (label, loader, fallback) => {
     try {
+      progress(label)
       return await loader()
     } catch (error) {
       console.error(`[EXPORT] ${label} failed:`, error?.message || error)
@@ -300,41 +693,39 @@ async function collectFullExportData() {
   }
 
   const [bookings, customers, rooms, expenses, posOrders, quotations, bookingInvoices, maintenance, inventoryItems, supplyItems, conferenceBookings, dayUseEntries, users, activityLog] = await Promise.all([
-    safe('bookings', () => db.getAllBookings(), []),
-    safe('customers', () => db.getAllCustomers(), []),
-    safe('rooms', () => db.getAllRooms(), []),
-    safe('expenses', () => db.getExpenses('2000-01-01', '2099-12-31'), []),
-    safe('posOrders', () => db.getPosOrders('2000-01-01', '2099-12-31'), []),
-    safe('quotations', () => db.getAllQuotations(), []),
-    safe('bookingInvoices', () => db.getBookingInvoices(), []),
-    safe('maintenance', () => db.getMaintenanceTickets(), []),
-    safe('inventoryItems', () => db.getInventoryItems(), []),
-    safe('supplyItems', () => db.getSupplyItems(), []),
-    safe('conferenceBookings', () => db.getConferenceBookings('2000-01-01', '2099-12-31'), []),
-    safe('dayUseEntries', () => db.getPoolDayUse('2000-01-01', '2099-12-31'), []),
-    safe('users', () => db.getUsers?.() || [], []),
-    safe('activityLog', () => db.getActivityLog?.(5000) || [], [])
+    includesSection(normalized, 'bookings') ? safe('bookings', () => db.getAllBookings(), []) : [],
+    includesSection(normalized, 'customers') ? safe('customers', () => db.getAllCustomers(), []) : [],
+    includesSection(normalized, 'rooms') ? safe('rooms', () => db.getAllRooms(), []) : [],
+    includesSection(normalized, 'expenses') ? safe('expenses', () => db.getExpenses(normalized.startDate, normalized.endDate), []) : [],
+    includesSection(normalized, 'posOrders') ? safe('posOrders', () => db.getPosOrders(normalized.startDate, normalized.endDate), []) : [],
+    includesSection(normalized, 'quotations') ? safe('quotations', () => db.getAllQuotations(), []) : [],
+    includesSection(normalized, 'bookingInvoices') ? safe('bookingInvoices', () => db.getBookingInvoices(), []) : [],
+    includesSection(normalized, 'maintenance') ? safe('maintenance', () => db.getMaintenanceTickets(), []) : [],
+    includesSection(normalized, 'inventoryItems') || includesSection(normalized, 'inventoryPurchases') ? safe('inventoryItems', () => db.getInventoryItems(), []) : [],
+    includesSection(normalized, 'supplyItems') || includesSection(normalized, 'supplyPurchases') ? safe('supplyItems', () => db.getSupplyItems(), []) : [],
+    includesSection(normalized, 'conferenceBookings') ? safe('conferenceBookings', () => db.getConferenceBookings(normalized.startDate, normalized.endDate), []) : [],
+    includesSection(normalized, 'dayUseEntries') ? safe('dayUseEntries', () => db.getPoolDayUse(normalized.startDate, normalized.endDate), []) : [],
+    includesSection(normalized, 'users') ? safe('users', () => db.getUsers?.() || [], []) : [],
+    includesSection(normalized, 'activityLog') ? safe('activityLog', () => db.getActivityLog?.(5000) || [], []) : []
   ])
 
-  const inventoryPurchases = []
-  for (const item of inventoryItems || []) {
-    const purchases = await db.getInventoryPurchases(item.id).catch(() => [])
-    inventoryPurchases.push(...(purchases || []).map((purchase) => ({
-      ...purchase,
-      item_name: item.name || item.item_name || ''
-    })))
-  }
-
-  const supplyPurchases = []
-  for (const item of supplyItems || []) {
-    const purchases = await db.getSupplyPurchases(item.id).catch(() => [])
-    supplyPurchases.push(...(purchases || []).map((purchase) => ({
-      ...purchase,
-      item_name: item.name || item.item_name || ''
-    })))
-  }
+  const inventoryNameMap = new Map((inventoryItems || []).map((item) => [item.id, item.name || item.item_name || '']))
+  const supplyNameMap = new Map((supplyItems || []).map((item) => [item.id, item.name || item.item_name || '']))
+  const inventoryPurchases = includesSection(normalized, 'inventoryPurchases')
+    ? (await safe('inventory purchases', () => db.getAllInventoryPurchases(), [])).map((purchase) => ({
+        ...purchase,
+        item_name: purchase.item_name || inventoryNameMap.get(purchase.item_id) || ''
+      }))
+    : []
+  const supplyPurchases = includesSection(normalized, 'supplyPurchases')
+    ? (await safe('supply purchases', () => db.getAllSupplyPurchases(), [])).map((purchase) => ({
+        ...purchase,
+        item_name: purchase.item_name || supplyNameMap.get(purchase.item_id) || ''
+      }))
+    : []
 
   return {
+    options: normalized,
     bookings,
     customers,
     rooms,
@@ -356,8 +747,10 @@ async function collectFullExportData() {
 
 function buildFullExportWorkbook(data) {
   const wb = XLSX.utils.book_new()
+  const hasSection = (key) => !data.options || data.options.sections.includes(key)
+  const hidePrivate = data.options?.privacyMode === true
 
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
+  if (hasSection('bookings')) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
     (data.bookings || []).map(b => ({
       'Booking #': b.booking_number || '',
       'Guest': b.customer_name || '',
@@ -375,18 +768,18 @@ function buildFullExportWorkbook(data) {
     }))
   ), 'Bookings')
 
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
+  if (hasSection('customers')) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
     (data.customers || []).map(c => ({
       'Name': c.full_name || '',
-      'Email': c.email || '',
-      'Phone': c.phone || '',
-      'ID Number': c.id_number || '',
+      'Email': hidePrivate ? '' : (c.email || ''),
+      'Phone': hidePrivate ? '' : (c.phone || ''),
+      'ID Number': hidePrivate ? '' : (c.id_number || ''),
       'Nationality': c.nationality || '',
       'Blacklisted': c.is_blacklisted ? 'Yes' : 'No'
     }))
   ), 'Guests')
 
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
+  if (hasSection('rooms')) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
     (data.rooms || []).map(r => ({
       'Room #': r.room_number || '',
       'Type': r.room_type || '',
@@ -397,7 +790,7 @@ function buildFullExportWorkbook(data) {
     }))
   ), 'Rooms')
 
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
+  if (hasSection('expenses')) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
     (data.expenses || []).map(e => ({
       'Date': e.date || '',
       'Category': e.category || '',
@@ -407,7 +800,7 @@ function buildFullExportWorkbook(data) {
     }))
   ), 'Expenses')
 
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
+  if (hasSection('posOrders')) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
     (data.posOrders || []).map(o => ({
       'Date': o.created_at || '',
       'Room / Guest': o.walk_in_name || (o.room_number ? `Room ${o.room_number}` : ''),
@@ -417,12 +810,12 @@ function buildFullExportWorkbook(data) {
     }))
   ), 'POS Orders')
 
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
+  if (hasSection('bookingInvoices')) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
     (data.bookingInvoices || []).map(inv => ({
       'Invoice #': inv.invoice_number || '',
       'Guest': inv.customer_name || '',
-      'Guest Email': inv.customer_email || '',
-      'Guest Phone': inv.customer_phone || '',
+      'Guest Email': hidePrivate ? '' : (inv.customer_email || ''),
+      'Guest Phone': hidePrivate ? '' : (inv.customer_phone || ''),
       'Room': inv.room_number || '',
       'Check-in': inv.check_in || '',
       'Check-out': inv.check_out || '',
@@ -435,12 +828,12 @@ function buildFullExportWorkbook(data) {
     }))
   ), 'Booking Invoices')
 
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
+  if (hasSection('quotations')) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
     (data.quotations || []).map(q => ({
       'Quotation #': q.quotation_number || '',
       'Guest': q.customer_name || '',
-      'Email': q.customer_email || '',
-      'Phone': q.customer_phone || '',
+      'Email': hidePrivate ? '' : (q.customer_email || ''),
+      'Phone': hidePrivate ? '' : (q.customer_phone || ''),
       'Room': q.room_number || '',
       'Check-in': q.check_in || '',
       'Check-out': q.check_out || '',
@@ -450,7 +843,7 @@ function buildFullExportWorkbook(data) {
     }))
   ), 'Quotations')
 
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
+  if (hasSection('maintenance')) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
     (data.maintenance || []).map(ticket => ({
       'Created': ticket.created_at || '',
       'Room': ticket.room_number || '',
@@ -462,7 +855,7 @@ function buildFullExportWorkbook(data) {
     }))
   ), 'Maintenance')
 
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
+  if (hasSection('inventoryItems')) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
     (data.inventoryItems || []).map(item => ({
       'Item': item.name || item.item_name || '',
       'Category': item.category || '',
@@ -473,7 +866,7 @@ function buildFullExportWorkbook(data) {
     }))
   ), 'Inventory Items')
 
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
+  if (hasSection('inventoryPurchases')) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
     (data.inventoryPurchases || []).map(purchase => ({
       'Item': purchase.item_name || '',
       'Date': purchase.purchase_date || purchase.created_at || '',
@@ -485,7 +878,7 @@ function buildFullExportWorkbook(data) {
     }))
   ), 'Inventory Purchases')
 
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
+  if (hasSection('supplyItems')) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
     (data.supplyItems || []).map(item => ({
       'Item': item.name || item.item_name || '',
       'Category': item.category || '',
@@ -495,7 +888,7 @@ function buildFullExportWorkbook(data) {
     }))
   ), 'Supply Items')
 
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
+  if (hasSection('supplyPurchases')) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
     (data.supplyPurchases || []).map(purchase => ({
       'Item': purchase.item_name || '',
       'Date': purchase.purchase_date || purchase.created_at || '',
@@ -507,7 +900,7 @@ function buildFullExportWorkbook(data) {
     }))
   ), 'Supply Purchases')
 
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
+  if (hasSection('conferenceBookings')) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
     (data.conferenceBookings || []).map(entry => ({
       'Event': entry.event_name || '',
       'Customer': entry.customer_name || '',
@@ -518,7 +911,7 @@ function buildFullExportWorkbook(data) {
     }))
   ), 'Conference')
 
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
+  if (hasSection('dayUseEntries')) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
     (data.dayUseEntries || []).map(entry => ({
       'Date': entry.date || entry.created_at || '',
       'Guest': entry.customer_name || entry.walk_in_name || '',
@@ -529,17 +922,17 @@ function buildFullExportWorkbook(data) {
     }))
   ), 'Pool Day Use')
 
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
+  if (hasSection('users')) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
     (data.users || []).map(u => ({
       'Name': u.name || '',
       'Email': u.email || '',
       'Role': u.role || '',
-      'PWA Access': u.pwa_enabled ? 'Yes' : 'No',
+      'Manager mobile app access': u.pwa_enabled ? 'Yes' : 'No',
       'Created': u.created_at || ''
     }))
   ), 'Staff')
 
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
+  if (hasSection('activityLog')) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
     (data.activityLog || []).map(entry => ({
       'Timestamp': entry.timestamp || '',
       'Action': entry.action || '',
@@ -551,12 +944,14 @@ function buildFullExportWorkbook(data) {
   return wb
 }
 
-async function exportAllDataWorkbookToPath(filePath) {
-  const data = await collectFullExportData()
+async function exportAllDataWorkbookToPath(filePath, options = {}) {
+  const data = await collectFullExportData(options)
+  if (typeof options?.onProgress === 'function') options.onProgress({ stage: 'writing workbook' })
   const wb = buildFullExportWorkbook(data)
   fs.mkdirSync(dirname(filePath), { recursive: true })
   XLSX.writeFile(wb, filePath)
-  return { success: true, filePath }
+  if (typeof options?.onProgress === 'function') options.onProgress({ stage: 'complete' })
+  return { success: true, filePath, sections: data.options.sections }
 }
 
 function emailAutomationEnabled(key) {
@@ -1587,6 +1982,10 @@ app.whenReady().then(async () => {
     try { await requireCapability('reports.view'); return await db.getProfitLoss(start, end) }
     catch (e) { throw new Error(e?.message || 'Failed to load profit and loss report') }
   })
+  ipcMain.handle('reports:maintenanceRows', async (_, start, end) => {
+    try { await requireCapability('reports.view'); return await db.getMaintenanceRowsForPeriod(start, end) }
+    catch (e) { throw new Error(e?.message || 'Failed to load maintenance costs report') }
+  })
   ipcMain.handle('reports:outletProfitLoss', async (_, start, end) => {
     try {
       await requireCapability('reports.view')
@@ -1623,13 +2022,20 @@ app.whenReady().then(async () => {
     try { await requireCapability('dashboard.view'); return await db.getDashboardStats() }
     catch { return null }
   })
-  ipcMain.handle('reports:savePDF', async (event) => {
+  ipcMain.handle('reports:savePDF', async (event, payload = {}) => {
     await requireCapability('reports.view')
     const win = BrowserWindow.fromWebContents(event.sender)
-    const today = new Date().toISOString().split('T')[0]
+    const {
+      reportType = 'report',
+      reportTitle = 'Report',
+      start = '',
+      end = '',
+      date = ''
+    } = payload || {}
+    const period = start && end ? `${start}-to-${end}` : date || ''
     const result = await dialog.showSaveDialog(win, {
-      title: 'Save Report as PDF',
-      defaultPath: `boroko-report-${today}.pdf`,
+      title: `Save ${reportTitle} as PDF`,
+      defaultPath: buildReportExportFilename({ prefix: 'boroko', reportTitle: reportTitle || reportType, period, extension: 'pdf' }),
       filters: [{ name: 'PDF Files', extensions: ['pdf'] }]
     })
     if (result.canceled || !result.filePath) return { success: false }
@@ -1666,13 +2072,30 @@ app.whenReady().then(async () => {
   })
 
   // ── Excel Export ──────────────────────────────────────────────────────────
-  ipcMain.handle('reports:saveExcel', async (event, { occupancy, revenue, expenses, posSales, invSpend, supSpend, profitLoss, start, end, currency }) => {
+  ipcMain.handle('reports:saveExcel', async (event, payload = {}) => {
     await requireCapability('reports.view')
     const win = BrowserWindow.fromWebContents(event.sender)
-    const today = new Date().toISOString().split('T')[0]
+    const {
+      occupancy = [],
+      revenue = null,
+      expenses = [],
+      posSales = null,
+      invSpend = null,
+      supSpend = null,
+      profitLoss = null,
+      start = '',
+      end = '',
+      currency,
+      reportTitle = 'Finance Workbook',
+      lodgeName = '',
+      companyName = '',
+      outletLabel = '',
+      generatedAt = new Date().toLocaleString()
+    } = payload || {}
+    const period = start && end ? `${start}-to-${end}` : ''
     const { filePath, canceled } = await dialog.showSaveDialog(win, {
-      title: 'Export Report to Excel',
-      defaultPath: `boroko-report-${today}.xlsx`,
+      title: `Export ${reportTitle} to Excel`,
+      defaultPath: buildReportExportFilename({ prefix: 'boroko', reportTitle, period, extension: 'xlsx' }),
       filters: [{ name: 'Excel Files', extensions: ['xlsx'] }]
     })
     if (canceled || !filePath) return { success: false }
@@ -1680,18 +2103,20 @@ app.whenReady().then(async () => {
       const wb = XLSX.utils.book_new()
       const sym = currency || 'P'
       const totalDays = Math.max(1, Math.ceil((new Date(end) - new Date(start)) / 86400000))
+      const resolvedLodge = lodgeName || companyName || 'Boroko Lodge'
+      const sharedMeta = { lodgeName: resolvedLodge, companyName, periodLabel: `${start} to ${end}`, generatedAt }
+      const outletMeta = { ...sharedMeta, outletLabel }
 
       // Revenue Summary sheet
       const revRows = [
-        ['Boroko Bookings — Revenue Report'],
-        [`Period: ${start}  to  ${end}`],
-        [],
+        [`${resolvedLodge} — Revenue Report`],
+        ...buildWorkbookMetaRows(sharedMeta),
         ['Metric', 'Value'],
         ['Total Revenue',      `${sym} ${Number(revenue?.total_revenue || 0).toFixed(2)}`],
         ['Regular Bookings',   (revenue?.total_bookings || 0) - (revenue?.event_count || 0)],
         ['Exclusive Events',   revenue?.event_count || 0],
         ['Total Bookings',     revenue?.total_bookings || 0],
-        ['Avg Booking Value',  `${sym} ${Number(revenue?.avg_booking_value || 0).toFixed(2)}`],
+        ['Avg Booking Value',  `${sym} ${Number(revenue?.avg_booking_value || 0).toFixed(2)}`]
       ]
       if ((revenue?.event_count || 0) > 0) {
         revRows.push([], ['EXCLUSIVE EVENTS'])
@@ -1729,15 +2154,15 @@ app.whenReady().then(async () => {
         ['Net Cash Collected', `${sym} ${Number(revenue?.paid_revenue      || 0).toFixed(2)}`],
         ['Gross Cash Received',`${sym} ${Number(revenue?.gross_collected   || 0).toFixed(2)}`],
         ['Refunds Issued',     `${sym} ${Number(revenue?.refunds_issued    || 0).toFixed(2)}`],
+        ['Fees Kept From Refunds', `${sym} ${Number(revenue?.retained_revenue || 0).toFixed(2)}`],
         ['Outstanding',        `${sym} ${Number(revenue?.outstanding_amount || 0).toFixed(2)}`]
       )
       XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(revRows), 'Revenue Summary')
 
       // Room Occupancy sheet
       const occRows = [
-        ['Room Occupancy Report'],
-        [`Period: ${start}  to  ${end}  (${totalDays} days)`],
-        [],
+        [`${resolvedLodge} — Room Occupancy Report`],
+        ...buildWorkbookMetaRows(sharedMeta),
         ['Room', 'Type', `Rate/Night (${sym})`, 'Nights Occupied', 'Total Period Days', 'Occupancy %', `Revenue (${sym})`, 'Note'],
         ...(occupancy || []).map((r) => [
           `Room ${r.room_number}`,
@@ -1755,11 +2180,10 @@ app.whenReady().then(async () => {
       // Expenses sheet
       if (expenses && expenses.length > 0) {
         const expRows = [
-          ['Expenses Report'],
-          [`Period: ${start}  to  ${end}`],
-          [],
+          [`${resolvedLodge} — Expenses Report`],
+          ...buildWorkbookMetaRows({ ...outletMeta, includeOutlet: true }),
           ['Date', 'Category', 'Description', `Amount (${sym})`],
-          ...expenses.map(e => [e.date || '', e.category || '', e.description || '', Number(e.amount || 0).toFixed(2)]),
+          ...expenses.map((e) => [e.date || '', e.category || '', e.description || '', Number(e.amount || 0).toFixed(2)]),
           [],
           ['TOTAL', '', '', expenses.reduce((s, e) => s + Number(e.amount || 0), 0).toFixed(2)]
         ]
@@ -1769,13 +2193,12 @@ app.whenReady().then(async () => {
       // POS Sales sheet
       if (posSales) {
         const posRows = [
-          ['POS Sales Report'],
-          [`Period: ${start}  to  ${end}`],
-          [],
+          [`${resolvedLodge} — POS Sales Report`],
+          ...buildWorkbookMetaRows({ ...outletMeta, includeOutlet: true }),
           ['Metric', 'Value'],
           ['Total Revenue',  `${sym} ${Number(posSales.total_revenue || 0).toFixed(2)}`],
           ['Total Orders',   posSales.total_orders || 0],
-          ['Avg Order Value',`${sym} ${Number(posSales.avg_order || 0).toFixed(2)}`],
+          ['Avg Order Value',`${sym} ${Number(posSales.avg_order || 0).toFixed(2)}`]
         ]
         if (posSales.by_payment && Object.keys(posSales.by_payment).length > 0) {
           posRows.push([], ['PAYMENT METHOD BREAKDOWN'])
@@ -1795,13 +2218,12 @@ app.whenReady().then(async () => {
       // Stock Costs sheet
       if (invSpend || supSpend) {
         const costRows = [
-          ['Stock Costs Report'],
-          [`Period: ${start}  to  ${end}`],
-          [],
+          [`${resolvedLodge} — Stock Costs Report`],
+          ...buildWorkbookMetaRows({ ...outletMeta, includeOutlet: true }),
           ['Category', `Amount (${sym})`],
           ['Inventory Purchases', Number(invSpend?.total || 0).toFixed(2)],
           ['Room Supplies', Number(supSpend?.total || 0).toFixed(2)],
-          ['TOTAL', (Number(invSpend?.total || 0) + Number(supSpend?.total || 0)).toFixed(2)],
+          ['TOTAL', (Number(invSpend?.total || 0) + Number(supSpend?.total || 0)).toFixed(2)]
         ]
         if (invSpend?.by_category && Object.keys(invSpend.by_category).length > 0) {
           costRows.push([], ['INVENTORY BY CATEGORY'])
@@ -1816,13 +2238,13 @@ app.whenReady().then(async () => {
       if (profitLoss) {
         const pl = profitLoss
         const plRows = [
-          ['Profit & Loss Statement'],
-          [`Period: ${start}  to  ${end}`],
-          [],
+          [`${resolvedLodge} — Profit & Loss Statement`],
+          ...buildWorkbookMetaRows(sharedMeta),
           ['REVENUE', `${sym}`],
           ['Booking Revenue',  Number(pl.bookingRevenue || 0).toFixed(2)],
+          ['Fees Kept From Refunds', Number(pl.retainedRevenue || 0).toFixed(2)],
           ['POS Revenue',      Number(pl.posRevenue || 0).toFixed(2)],
-          ['Total Revenue',    Number(pl.totalRevenue || 0).toFixed(2)],
+          ['Total Revenue',    Number(pl.totalRevenue || 0).toFixed(2)]
         ]
         if (pl.vatEnabled) {
           plRows.push([`VAT (${pl.vatRate}% inclusive)`, `-${Number(pl.vatAmount || 0).toFixed(2)}`])
@@ -1832,7 +2254,10 @@ app.whenReady().then(async () => {
           [],
           ['EXPENSES', ''],
           ['Operating Expenses', Number(pl.totalExpenses || 0).toFixed(2)],
-          ['Stock Costs',        Number(pl.totalCosts || 0).toFixed(2)],
+          ['Inventory Purchases', Number(pl.invCosts || 0).toFixed(2)],
+          ['Room Supplies',      Number(pl.supCosts || 0).toFixed(2)],
+          ['Maintenance Repairs', Number(pl.maintenanceCosts || 0).toFixed(2)],
+          ['Total Stock & Maintenance Costs', Number(pl.totalCosts || 0).toFixed(2)],
           ['Total Outgoings',    Number((pl.totalExpenses || 0) + (pl.totalCosts || 0)).toFixed(2)],
           [],
           ['GROSS PROFIT', Number(pl.grossProfit || 0).toFixed(2)]
@@ -1854,18 +2279,30 @@ app.whenReady().then(async () => {
   })
 
   // ── Full Data Export ───────────────────────────────────────────────────────
-  ipcMain.handle('data:exportAll', async (event) => {
-    await requireCapability('data.import')
+  ipcMain.handle('data:exportAll', async (event, options = {}) => {
+    await requireCapability('data.export')
     const win = BrowserWindow.fromWebContents(event.sender)
     try {
       const today = new Date().toISOString().split('T')[0]
+      const normalized = normalizeExportOptions(options)
+      const presetLabel = String(normalized.preset || 'full').replace(/[^a-z0-9]+/gi, '-').toLowerCase()
+      const rangeLabel = normalized.startDate === '2000-01-01' && normalized.endDate === '2099-12-31'
+        ? 'all-dates'
+        : `${normalized.startDate}-to-${normalized.endDate}`
+      const privacyLabel = normalized.privacyMode ? '-redacted' : ''
       const { filePath, canceled } = await dialog.showSaveDialog(win, {
         title: 'Export All Lodge Data',
-        defaultPath: `lodge-data-export-${today}.xlsx`,
+        defaultPath: `boroko-${presetLabel}-export-${rangeLabel}-${today}${privacyLabel}.xlsx`,
         filters: [{ name: 'Excel Workbook', extensions: ['xlsx'] }]
       })
       if (canceled || !filePath) return { canceled: true }
-      return await exportAllDataWorkbookToPath(filePath)
+      const sender = event.sender
+      return await exportAllDataWorkbookToPath(filePath, {
+        ...normalized,
+        onProgress: (progress) => {
+          try { sender.send('data:exportProgress', progress) } catch {}
+        }
+      })
     } catch (e) {
       return { success: false, error: e.message }
     }
@@ -1941,6 +2378,24 @@ app.whenReady().then(async () => {
     try {
       await requireCapability('backup.manage')
       return await db.createManualBackup()
+    } catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('backup:verify', async (_, name) => {
+    try {
+      await requireCapability('backup.manage')
+      return db.verifyLocalBackup(name)
+    } catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('backup:previewRestore', async (_, name) => {
+    try {
+      await requireCapability('backup.manage')
+      return db.previewLocalBackupRestore(name)
+    } catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('backup:createRestoreRehearsal', async (_, name) => {
+    try {
+      await requireCapability('backup.manage')
+      return db.createRestoreRehearsalPackage(name)
     } catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('backup:openFolder', async () => {
@@ -2446,10 +2901,11 @@ app.whenReady().then(async () => {
     try {
       await requireCapability('supplies.view')
       const win = BrowserWindow.fromWebContents(event.sender)
-      const today = new Date().toISOString().split('T')[0]
+      const reportTitle = payload.reportTitle || 'Room Supplies Cost Report'
+      const period = payload.start && payload.end ? `${payload.start}-to-${payload.end}` : ''
       const { filePath, canceled } = await dialog.showSaveDialog(win, {
-        title: 'Export Room Supplies Report',
-        defaultPath: `room-supplies-report-${today}.xlsx`,
+        title: `Export ${reportTitle} to Excel`,
+        defaultPath: buildReportExportFilename({ prefix: 'boroko', reportTitle, period, extension: 'xlsx' }),
         filters: [{ name: 'Excel Files', extensions: ['xlsx'] }]
       })
       if (canceled || !filePath) return { success: false }
@@ -2459,12 +2915,20 @@ app.whenReady().then(async () => {
       const byRoom = Array.isArray(payload.byRoom) ? payload.byRoom : []
       const byItem = Array.isArray(payload.byItem) ? payload.byItem : []
       const grandTotal = Number(payload.grandTotal || 0)
+      const resolvedLodge = payload.lodgeName || payload.companyName || 'Boroko Lodge'
+      const resolvedCompany = payload.companyName && payload.companyName !== resolvedLodge ? payload.companyName : ''
+      const generatedAt = payload.generatedAt || new Date().toLocaleString()
 
       const wb = XLSX.utils.book_new()
 
       const summaryRows = [
-        ['Boroko Bookings — Room Supplies Report'],
-        [`Period: ${payload.start || ''} to ${payload.end || ''}`],
+        [`${resolvedLodge} — ${reportTitle}`],
+        ...buildWorkbookMetaRows({
+          lodgeName: resolvedLodge,
+          companyName: resolvedCompany,
+          periodLabel: `${payload.start || ''} to ${payload.end || ''}`,
+          generatedAt
+        }),
         [],
         ['Metric', 'Value'],
         ['Total Supply Cost', `${currency} ${grandTotal.toFixed(2)}`],
@@ -2520,6 +2984,59 @@ app.whenReady().then(async () => {
 
       XLSX.writeFile(wb, filePath)
       return { success: true, filePath }
+    } catch (e) {
+      return { success: false, error: e.message }
+    }
+  })
+  ipcMain.handle('supplies:exportReportPdf', async (event, payload = {}) => {
+    try {
+      await requireCapability('supplies.view')
+      const parentWin = BrowserWindow.fromWebContents(event.sender)
+      const reportTitle = payload.reportTitle || 'Room Supplies Cost Report'
+      const period = payload.start && payload.end ? `${payload.start}-to-${payload.end}` : ''
+      const { filePath, canceled } = await dialog.showSaveDialog(parentWin, {
+        title: `Export ${reportTitle} as PDF`,
+        defaultPath: buildReportExportFilename({ prefix: 'boroko', reportTitle, period, extension: 'pdf' }),
+        filters: [{ name: 'PDF Files', extensions: ['pdf'] }]
+      })
+      if (canceled || !filePath) return { success: false }
+
+      const pdfWindow = new BrowserWindow({
+        show: false,
+        width: 1280,
+        height: 1600,
+        autoHideMenuBar: true,
+        webPreferences: {
+          sandbox: false,
+          contextIsolation: true,
+          nodeIntegration: false
+        }
+      })
+
+      try {
+        const html = buildRoomSuppliesPdfHtml({
+          reportTitle,
+          lodgeName: payload.lodgeName || '',
+          companyName: payload.companyName || '',
+          periodLabel: `${payload.start || ''} to ${payload.end || ''}`,
+          generatedAt: payload.generatedAt || new Date().toLocaleString(),
+          currency: payload.currency || 'P',
+          grandTotal: Number(payload.grandTotal || 0),
+          allocations: Array.isArray(payload.allocations) ? payload.allocations : [],
+          byRoom: Array.isArray(payload.byRoom) ? payload.byRoom : [],
+          byItem: Array.isArray(payload.byItem) ? payload.byItem : []
+        })
+        await pdfWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
+        const pdfBuffer = await pdfWindow.webContents.printToPDF({
+          pageSize: 'A4',
+          printBackground: true,
+          margins: { marginType: 'default' }
+        })
+        fs.writeFileSync(filePath, pdfBuffer)
+        return { success: true, filePath }
+      } finally {
+        if (!pdfWindow.isDestroyed()) pdfWindow.destroy()
+      }
     } catch (e) {
       return { success: false, error: e.message }
     }
@@ -2663,38 +3180,56 @@ app.whenReady().then(async () => {
     catch (e) { throw new Error(e?.message || 'Failed to load night audit report') }
   })
 
-  ipcMain.handle('reports:saveNightAuditExcel', async (event, { data, date, currency }) => {
+  ipcMain.handle('reports:saveNightAuditExcel', async (event, payload = {}) => {
     await requireCapability('audit.view')
     const win = BrowserWindow.fromWebContents(event.sender)
+    const {
+      data = {},
+      date = '',
+      currency,
+      lodgeName = '',
+      companyName = '',
+      generatedAt = new Date().toLocaleString(),
+      reportTitle = 'Night Audit'
+    } = payload || {}
     const { filePath, canceled } = await dialog.showSaveDialog(win, {
-      title: 'Export Night Audit to Excel',
-      defaultPath: `night-audit-${date}.xlsx`,
+      title: `Export ${reportTitle} to Excel`,
+      defaultPath: buildReportExportFilename({ prefix: 'boroko', reportTitle, period: date, extension: 'xlsx' }),
       filters: [{ name: 'Excel Files', extensions: ['xlsx'] }]
     })
     if (canceled || !filePath) return { success: false }
     try {
       const wb = XLSX.utils.book_new()
       const sym = currency || 'P'
+      const safeData = data || {}
+      const resolvedLodge = lodgeName || companyName || 'Boroko Lodge'
+      const sharedMeta = {
+        lodgeName: resolvedLodge,
+        companyName,
+        periodLabel: date ? `Date: ${date}` : '',
+        generatedAt
+      }
 
       // 1. Summary
       const summaryRows = [
-        ['Night Audit Summary'],
-        [`Date: ${date}`],
-        [],
+        [`${resolvedLodge} — Night Audit Summary`],
+        ...buildWorkbookMetaRows(sharedMeta),
         ['Category', 'Count', `Revenue (${sym})`],
-        ['Check-ins Today', data.check_ins.length, '—'],
-        ['Check-outs Today', data.check_outs.length, '—'],
-        ['New Bookings Created', data.new_bookings.length, '—'],
-        ['POS Orders Completed', data.pos_orders.length, Number(data.pos_revenue || 0).toFixed(2)],
-        ['Outstanding Balances', data.outstanding.length, Number(data.outstanding_total || 0).toFixed(2)],
-        [],
-        ['Printed at', new Date().toLocaleString()]
+        ['Check-ins Today', (safeData.check_ins || []).length, '—'],
+        ['Check-outs Today', (safeData.check_outs || []).length, '—'],
+        ['New Bookings Created', (safeData.new_bookings || []).length, '—'],
+        ['POS Orders Completed', (safeData.pos_orders || []).length, Number(safeData.pos_revenue || 0).toFixed(2)],
+        ['Outstanding Balances', (safeData.outstanding || []).length, Number(safeData.outstanding_total || 0).toFixed(2)]
       ]
       XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(summaryRows), 'Summary')
 
       // 2. Check-ins
-      const checkinRows = [['#', 'Guest', 'Room', 'Type', 'Adults', 'Children', `Total (${sym})`, `Paid (${sym})`, 'Status']]
-      ;(data.check_ins || []).forEach(b => {
+      const checkinRows = [
+        [`${resolvedLodge} — Check-ins`],
+        ...buildWorkbookMetaRows(sharedMeta),
+        ['#', 'Guest', 'Room', 'Type', 'Adults', 'Children', `Total (${sym})`, `Paid (${sym})`, 'Status']
+      ]
+      ;(safeData.check_ins || []).forEach((b) => {
         const roomDisp = b._event_group ? `${b.room_count} rooms` : (b.room_number ? `Room ${b.room_number}` : '—')
         checkinRows.push([
           b.booking_number || '—', b.customer_name, roomDisp, b.room_type || '—',
@@ -2704,8 +3239,12 @@ app.whenReady().then(async () => {
       XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(checkinRows), 'Check-ins')
 
       // 3. Check-outs
-      const checkoutRows = [['#', 'Guest', 'Room', 'Type', 'Adults', 'Children', `Total (${sym})`, `Paid (${sym})`, 'Status']]
-      ;(data.check_outs || []).forEach(b => {
+      const checkoutRows = [
+        [`${resolvedLodge} — Check-outs`],
+        ...buildWorkbookMetaRows(sharedMeta),
+        ['#', 'Guest', 'Room', 'Type', 'Adults', 'Children', `Total (${sym})`, `Paid (${sym})`, 'Status']
+      ]
+      ;(safeData.check_outs || []).forEach((b) => {
         const roomDisp = b._event_group ? `${b.room_count} rooms` : (b.room_number ? `Room ${b.room_number}` : '—')
         checkoutRows.push([
           b.booking_number || '—', b.customer_name, roomDisp, b.room_type || '—',
@@ -2715,8 +3254,12 @@ app.whenReady().then(async () => {
       XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(checkoutRows), 'Check-outs')
 
       // 4. New Bookings
-      const newBookRows = [['#', 'Guest', 'Room', 'Check-in', 'Check-out', `Total (${sym})`, 'Status']]
-      ;(data.new_bookings || []).forEach(b => {
+      const newBookRows = [
+        [`${resolvedLodge} — New Bookings`],
+        ...buildWorkbookMetaRows(sharedMeta),
+        ['#', 'Guest', 'Room', 'Check-in', 'Check-out', `Total (${sym})`, 'Status']
+      ]
+      ;(safeData.new_bookings || []).forEach((b) => {
         const roomDisp = b._event_group ? `${b.room_count} rooms` : (b.room_number ? `Room ${b.room_number}` : '—')
         newBookRows.push([
           b.booking_number || '—', b.customer_name, roomDisp, b.check_in, b.check_out,
@@ -2726,17 +3269,25 @@ app.whenReady().then(async () => {
       XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(newBookRows), 'New Bookings')
 
       // 5. POS
-      const posRows = [['Time', 'Guest/Room', 'Payment', `Total (${sym})`, 'Items']]
-      ;(data.pos_orders || []).forEach(o => {
+      const posRows = [
+        [`${resolvedLodge} — POS Orders`],
+        ...buildWorkbookMetaRows(sharedMeta),
+        ['Time', 'Guest/Room', 'Payment', `Total (${sym})`, 'Items']
+      ]
+      ;(safeData.pos_orders || []).forEach((o) => {
         const time = new Date(o.created_at).toLocaleTimeString()
-        const items = (o.pos_order_items || []).map(i => `${i.quantity}x ${i.item_name}`).join(', ')
+        const items = (o.pos_order_items || []).map((i) => `${i.quantity}x ${i.item_name}`).join(', ')
         posRows.push([time, o.walk_in_name || (o.room_number ? `Room ${o.room_number}` : 'Walk-in'), o.payment_method, Number(o.total || 0).toFixed(2), items])
       })
       XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(posRows), 'POS Orders')
 
       // 6. Outstanding
-      const outstandingRows = [['#', 'Guest', 'Room', 'Check-in', 'Check-out', `Total (${sym})`, `Paid (${sym})`, `Balance (${sym})`]]
-      ;(data.outstanding || []).forEach(b => {
+      const outstandingRows = [
+        [`${resolvedLodge} — Outstanding Balances`],
+        ...buildWorkbookMetaRows(sharedMeta),
+        ['#', 'Guest', 'Room', 'Check-in', 'Check-out', `Total (${sym})`, `Paid (${sym})`, `Balance (${sym})`]
+      ]
+      ;(safeData.outstanding || []).forEach((b) => {
         const balance = Math.max(0, Number(b.total_amount || 0) + Number(b.charges_total || 0) - Number(b.amount_paid || 0))
         const roomDisp = b._event_group ? `${b.room_count} rooms` : (b.room_number ? `Room ${b.room_number}` : '—')
         outstandingRows.push([
@@ -2799,8 +3350,8 @@ app.whenReady().then(async () => {
     catch (e) { return { success: false, code: e.code || 'setup_failed', error: e.message || 'Setup failed.' } }
   })
   ipcMain.handle('sync:getStatus', async () => {
-    try { await requireCapability('system.health'); return await db.getSyncStatus() }
-    catch { return { pending: 0, failed: 0 } }
+    try { return await db.getSyncStatus() }
+    catch { return { pending: 0, failed: 0, isOnline: false } }
   })
   ipcMain.handle('sync:getDetails', async () => {
     try { await requireCapability('system.health'); return await db.getSyncDetails() }
@@ -2870,11 +3421,11 @@ app.whenReady().then(async () => {
     }
   })
 
-  ipcMain.handle('import:execute', async (event, mappedRows, filename) => {
+  ipcMain.handle('import:execute', async (event, mappedRows, filename, type = 'bookings') => {
     try {
       await requireCapability('data.import')
       const sender = event.sender
-      return await db.bulkImportBookings(mappedRows, {
+      return await db.bulkImportTyped(type, mappedRows, {
         filename,
         onProgress: (progress) => {
           try { sender.send('import:progress', progress) } catch {}
@@ -2888,6 +3439,20 @@ app.whenReady().then(async () => {
         : 'Import could not be started. Please restart the app and try again.'
       return { error: friendly }
     }
+  })
+
+  ipcMain.handle('import:dryRun', async (_, mappedRows, type = 'bookings') => {
+    try {
+      await requireCapability('data.import')
+      return db.dryRunImport(type, mappedRows || [])
+    } catch (e) { return { error: e.message } }
+  })
+
+  ipcMain.handle('import:getTypes', async () => {
+    try {
+      await requireCapability('data.import')
+      return db.getSupportedImportTypes()
+    } catch { return [{ key: 'bookings', label: 'Bookings', executable: true }] }
   })
 
   ipcMain.handle('import:checkDuplicates', async (_, rows) => {
@@ -2914,13 +3479,14 @@ app.whenReady().then(async () => {
     catch (e) { return [] }
   })
 
-  ipcMain.handle('import:downloadTemplate', async (event) => {
+  ipcMain.handle('import:downloadTemplate', async (event, type = 'bookings') => {
     await requireCapability('data.import')
     const win = BrowserWindow.fromWebContents(event.sender)
-    const fields = db.generateImportTemplate()
+    const fields = db.generateImportTemplate(type)
     const headerRow = {}
     fields.forEach((f) => { headerRow[f.label] = '' })
-    const sampleRow = {
+    const samples = {
+      bookings: {
       'Guest Name': 'John Smith',
       'Email': 'john@example.com',
       'Phone': '+675 7000 0000',
@@ -2936,13 +3502,19 @@ app.whenReady().then(async () => {
       'Payment Method': 'Cash',
       'Booking Status': 'checked_out',
       'Notes': 'Early check-in'
+      },
+      guests: { 'Guest Name': 'John Smith', 'Email': 'john@example.com', 'Phone': '+675 7000 0000', 'ID / Passport No': 'A12345678', 'Nationality': 'Papua New Guinea' },
+      rooms: { 'Room Number': '101', 'Room Type': 'Standard', 'Rate': 650, 'Max Adults': 2, 'Max Children': 1 },
+      inventory: { 'Item Name': 'Coke 330ml', 'Category': 'Drinks', 'Unit': 'bottle', 'Current Stock': 24, 'Reorder Level': 6 },
+      supplies: { 'Supply Item': 'Bath Towel', 'Category': 'Linen', 'Unit': 'piece', 'Current Stock': 30, 'Reorder Level': 8 },
+      expenses: { 'Date': '2026-04-23', 'Category': 'Repairs', 'Description': 'Plumbing repair', 'Amount': 450, 'Paid By': 'Cash' }
     }
-    const ws = XLSX.utils.json_to_sheet([sampleRow])
+    const ws = XLSX.utils.json_to_sheet([{ ...headerRow, ...(samples[type] || samples.bookings) }])
     const wb = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(wb, ws, 'Booking Import Template')
+    XLSX.utils.book_append_sheet(wb, ws, 'Import Template')
     const result = await dialog.showSaveDialog(win, {
       title: 'Save Import Template',
-      defaultPath: 'boroko-import-template.xlsx',
+      defaultPath: `boroko-${String(type || 'bookings')}-import-template.xlsx`,
       filters: [{ name: 'Excel Files', extensions: ['xlsx'] }]
     })
     if (result.canceled || !result.filePath) return { canceled: true }
@@ -2996,6 +3568,15 @@ app.whenReady().then(async () => {
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('app:getVersion', () => app.getVersion())
+  ipcMain.handle('app:notify', async (_, payload = {}) => {
+    showDesktopNotification({
+      title: payload?.title || 'Boroko Bookings',
+      body: payload?.body || '',
+      sound: payload?.sound !== false,
+      flash: payload?.flash !== false
+    })
+    return { success: true }
+  })
   ipcMain.handle('app:logRendererError', async (_, payload) => appendRendererErrorLog(payload || {}))
   ipcMain.handle('app:getRendererErrors', async (_, limit) => getRendererErrorLog(limit))
   ipcMain.handle('app:clearRendererErrors', async () => clearRendererErrorLog())

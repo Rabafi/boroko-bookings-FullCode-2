@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { AlertTriangle, Briefcase, CalendarClock, CreditCard, RefreshCw, TrendingUp, Wrench, X } from 'lucide-react'
+import { AlertTriangle, BellRing, Briefcase, CalendarClock, CreditCard, RefreshCw, TrendingUp, Wrench, X } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { useFeatures } from '../contexts/FeaturesContext'
-import { getDashboardSnapshot, getFinancialActivityFeed } from '../lib/api'
+import { getDashboardSnapshot, getFinancialActivityFeed, getSupportRequests } from '../lib/api'
 import { money, shortDate, shortDateTime } from '../lib/format'
-import { getSession, readCacheEntry } from '../lib/runtime'
+import { getSession, listPwaNotifications, readCacheEntry, subscribeRuntimeEvent } from '../lib/runtime'
 
 function MetricCard({ label, value, sub, accent = 'text-white' }) {
   return (
@@ -51,17 +51,22 @@ export default function Dashboard() {
   const [lastUpdated, setLastUpdated] = useState(null)
   const [loadError, setLoadError] = useState('')
   const [sheet, setSheet] = useState(null)
+  const [requestFeed, setRequestFeed] = useState([])
+  const [notificationFeed, setNotificationFeed] = useState([])
 
   const load = async () => {
     setLoading(true)
     setLoadError('')
     try {
-      const [snapshot, feed] = await Promise.all([
+      const [snapshot, feed, requests] = await Promise.all([
         getDashboardSnapshot(user.lodge_id),
-        getFinancialActivityFeed(user.lodge_id, 8).catch(() => [])
+        getFinancialActivityFeed(user.lodge_id, 8).catch(() => []),
+        getSupportRequests(user.lodge_id, 6).catch(() => [])
       ])
       setData(snapshot)
       setActivity(feed)
+      setRequestFeed(Array.isArray(requests) ? requests : [])
+      setNotificationFeed(listPwaNotifications(user.lodge_id, 4))
       setLastUpdated(readCacheEntry(user.lodge_id, 'dashboard', null)?.updatedAt || null)
     } catch (error) {
       setLoadError(error?.message || 'Dashboard could not load.')
@@ -70,6 +75,13 @@ export default function Dashboard() {
   }
 
   useEffect(() => { load() }, [user.lodge_id])
+  useEffect(() => {
+    const refreshNotifications = () => {
+      setNotificationFeed(listPwaNotifications(user.lodge_id, 4))
+    }
+    const unsubscribe = subscribeRuntimeEvent('boroko:pwa-notifications', refreshNotifications)
+    return () => unsubscribe?.()
+  }, [user.lodge_id])
   const dailySummary = useMemo(() => {
     const arrivals = (data?.upcomingArrivals || []).filter((booking) => booking.check_in === new Date().toISOString().slice(0, 10)).length
     const departures = (data?.upcomingArrivals || []).filter((booking) => booking.check_out === new Date().toISOString().slice(0, 10)).length
@@ -116,10 +128,71 @@ export default function Dashboard() {
             {loadError}
           </div>
         )}
+        {notificationFeed.length > 0 && (
+          <div className="rounded-3xl border border-amber-300 bg-[linear-gradient(135deg,rgba(255,251,235,0.98),rgba(254,243,199,0.84))] px-4 py-4 shadow-[0_16px_40px_rgba(245,158,11,0.18)]">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-amber-950 flex items-center gap-2">
+                  <BellRing size={16} /> Important Notifications
+                </p>
+                <p className="mt-1 text-sm text-amber-900/80">
+                  Tap a card to see the request thread. Swipe it away in Control when you no longer need it.
+                </p>
+              </div>
+              <Link
+                to="/control"
+                className="shrink-0 rounded-full border border-amber-300 bg-white/90 px-3 py-1.5 text-xs font-semibold text-amber-800"
+              >
+                Open inbox
+              </Link>
+            </div>
+            <div className="mt-3 space-y-2">
+              {notificationFeed.slice(0, 3).map((item) => (
+                <div key={item.id} className="rounded-2xl border border-amber-200 bg-white/80 px-3 py-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-slate-900">{item.title}</p>
+                      <p className="mt-1 text-xs text-slate-600">{item.message}</p>
+                    </div>
+                    <span className="rounded-full bg-amber-100 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-amber-700">
+                      {item.readAt ? 'Read' : 'New'}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
         {data?.urgentMaintenanceCount > 0 && (
           <div className="bg-red-950/40 border border-red-900 rounded-2xl px-4 py-3 flex items-center gap-2 text-sm text-red-200">
             <AlertTriangle size={16} />
             {data.urgentMaintenanceCount} urgent maintenance issue{data.urgentMaintenanceCount === 1 ? '' : 's'} needs attention.
+          </div>
+        )}
+
+        {requestFeed.some((request) => String(request.status || 'open') !== 'open' || String(request.admin_notes || '').trim()) && (
+          <div className="bg-blue-950/40 border border-blue-900 rounded-2xl px-4 py-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold text-blue-100 flex items-center gap-2"><BellRing size={16} /> Front Desk Responses</p>
+                <p className="text-xs text-blue-300/80 mt-1">Managers can now see desk replies without digging through Control.</p>
+              </div>
+              <Link to="/control" className="text-xs text-blue-300">Open</Link>
+            </div>
+            <div className="mt-3 space-y-2">
+              {requestFeed
+                .filter((request) => String(request.status || 'open') !== 'open' || String(request.admin_notes || '').trim())
+                .slice(0, 3)
+                .map((request) => (
+                  <div key={request.id} className="bg-gray-900/70 rounded-xl px-3 py-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-sm font-semibold text-white">{request.title}</p>
+                      <span className="text-[11px] text-blue-300 uppercase tracking-wide">{request.status || 'open'}</span>
+                    </div>
+                    <p className="text-xs text-gray-400 mt-1">{request.admin_notes || 'Front desk updated this request.'}</p>
+                  </div>
+                ))}
+            </div>
           </div>
         )}
 
@@ -235,7 +308,7 @@ export default function Dashboard() {
             <p className="text-sm font-semibold text-white flex items-center gap-2"><CalendarClock size={16} className="text-green-300" /> Upcoming Arrivals</p>
             <Link to="/bookings" className="text-xs text-green-400">Bookings</Link>
           </div>
-          <p className="mb-3 text-xs text-gray-500">Online requests stay clearly marked here until front desk confirms them in the desktop app.</p>
+          <p className="mb-3 text-xs text-gray-500">Online requests stay clearly marked here until front desk confirms them on desktop.</p>
           <div className="space-y-2">
             {(data?.upcomingArrivals || []).map((booking) => (
               <div key={booking.id} className="bg-gray-900 rounded-xl px-3 py-3 flex items-center justify-between gap-3">

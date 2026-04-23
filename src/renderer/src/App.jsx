@@ -321,6 +321,7 @@ function SyncFailBanner() {
 
 // ── Financial Health Banner ───────────────────────────────────────────────────
 function FinancialHealthBanner() {
+  const navigate = useNavigate()
   const [errors, setErrors] = useState([])
 
   useEffect(() => {
@@ -360,7 +361,7 @@ function FinancialHealthBanner() {
       <button
         type="button"
         className={`${tone} pointer-events-auto inline-flex items-center gap-3 rounded-full border px-3 py-2 text-xs shadow-lg backdrop-blur-sm transition-colors`}
-        onClick={() => { window.location.hash = '#/settings' }}
+        onClick={() => navigate('/settings', { state: { activeTab: 'system' } })}
       >
         <div className={`h-2.5 w-2.5 rounded-full ${dotTone}`} />
         <span className="font-semibold">{count} {label}{count === 1 ? '' : 's'}</span>
@@ -910,10 +911,10 @@ export default function App() {
           <div className="text-5xl mb-4">🖥️</div>
           <h1 className="text-2xl font-bold text-gray-800 mb-3">Desktop App Required</h1>
           <p className="text-sm text-gray-600 leading-6">
-            This Boroko Bookings screen is the Electron desktop app interface. It needs the local desktop bridge and cannot run fully inside a normal browser tab through ngrok.
+            This Boroko Bookings screen is the desktop version. It needs the app installed on your computer and cannot run fully inside a browser tab.
           </p>
           <div className="mt-5 rounded-xl bg-amber-50 border border-amber-200 px-4 py-3 text-sm text-amber-800 text-left">
-            Use this link only for static visual review, or share the Manager PWA if your partner needs a browser-based experience.
+            Use this link only for visual review, or share the manager mobile app link if your partner needs browser access.
           </div>
         </div>
       </div>

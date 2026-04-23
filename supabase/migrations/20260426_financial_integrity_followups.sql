@@ -2390,6 +2390,10 @@ declare
   v_last_month_rev numeric := 0;
   v_month_refunds numeric := 0;
   v_last_month_refunds numeric := 0;
+  v_month_retained_revenue numeric := 0;
+  v_last_month_retained_revenue numeric := 0;
+  v_month_retained_count integer := 0;
+  v_last_month_retained_count integer := 0;
   v_month_occ integer := 0;
   v_last_month_occ integer := 0;
   v_month_room_nights numeric := 0;
@@ -2454,6 +2458,50 @@ begin
     and paid_at >= v_last_month_start::timestamptz
     and paid_at < v_month_start::timestamptz
     and (amount < 0 or lower(coalesce(type, '')) = 'refund');
+
+  with cancelled_bookings as (
+    select id
+    from public.bookings
+    where lodge_id = p_lodge_id
+      and coalesce(status, '') = 'cancelled'
+  )
+  select
+    coalesce(sum(case
+      when p.amount > 0 and lower(coalesce(p.type, '')) <> 'refund' and cb.id is not null then p.amount
+      else 0
+    end), 0),
+    count(distinct case
+      when p.amount > 0 and lower(coalesce(p.type, '')) <> 'refund' and cb.id is not null then p.booking_id
+      else null
+    end)
+    into v_month_retained_revenue, v_month_retained_count
+  from public.payments p
+  left join cancelled_bookings cb on cb.id = p.booking_id
+  where p.lodge_id = p_lodge_id
+    and p.paid_at >= v_month_start::timestamptz
+    and p.paid_at < v_month_end_exclusive::timestamptz;
+
+  with cancelled_bookings as (
+    select id
+    from public.bookings
+    where lodge_id = p_lodge_id
+      and coalesce(status, '') = 'cancelled'
+  )
+  select
+    coalesce(sum(case
+      when p.amount > 0 and lower(coalesce(p.type, '')) <> 'refund' and cb.id is not null then p.amount
+      else 0
+    end), 0),
+    count(distinct case
+      when p.amount > 0 and lower(coalesce(p.type, '')) <> 'refund' and cb.id is not null then p.booking_id
+      else null
+    end)
+    into v_last_month_retained_revenue, v_last_month_retained_count
+  from public.payments p
+  left join cancelled_bookings cb on cb.id = p.booking_id
+  where p.lodge_id = p_lodge_id
+    and p.paid_at >= v_last_month_start::timestamptz
+    and p.paid_at < v_month_start::timestamptz;
 
   select coalesce(sum(amount), 0) into v_month_expenses
   from public.expenses
@@ -2522,6 +2570,10 @@ begin
     'lastMonthRev', coalesce(v_last_month_rev, 0),
     'monthRefunds', coalesce(v_month_refunds, 0),
     'lastMonthRefunds', coalesce(v_last_month_refunds, 0),
+    'monthRetainedRevenue', coalesce(v_month_retained_revenue, 0),
+    'lastMonthRetainedRevenue', coalesce(v_last_month_retained_revenue, 0),
+    'monthRetainedCount', coalesce(v_month_retained_count, 0),
+    'lastMonthRetainedCount', coalesce(v_last_month_retained_count, 0),
     'monthOcc', v_month_occ,
     'lastMonthOcc', v_last_month_occ,
     'currentOcc', v_current_occ,

@@ -74,6 +74,50 @@ function groupEventBookings(rows = []) {
   return grouped
 }
 
+const REPORT_TITLES = {
+  bookings: 'Occupancy & Revenue Report',
+  expenses: 'Expenses Report',
+  pos: 'POS Sales Report',
+  costs: 'Stock Costs Report',
+  pl: 'Profit & Loss Report'
+}
+
+function formatFilenameStamp(date = new Date()) {
+  const d = date instanceof Date ? date : new Date(date)
+  const pad = (value) => String(value).padStart(2, '0')
+  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}-${String(d.getMilliseconds()).padStart(3, '0')}`
+}
+
+function slugifyFilenamePart(value, fallback = 'report') {
+  return String(value || fallback)
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .replace(/-+/g, '-')
+    .toLowerCase() || fallback
+}
+
+function normalizeMaintenanceExpense(row = {}) {
+  const date = String(row.reported_date || row.created_at || row.date || '').slice(0, 10)
+  const title = row.title || row.issue || row.description || 'Maintenance repair'
+  const details = [
+    row.room_number ? `Room ${row.room_number}` : '',
+    row.status ? `Status: ${String(row.status).replace(/_/g, ' ')}` : '',
+    row.description || ''
+  ].filter(Boolean)
+  return {
+    id: `maintenance-${row.id || row._queue_id || date || title}`,
+    date,
+    description: title,
+    category: 'Maintenance & Repairs',
+    notes: details.join(' · '),
+    amount: Number(row.total_cost || 0),
+    outlet_id: null,
+    source: 'Maintenance'
+  }
+}
+
 export default function Reports() {
   const { settings } = useSettings()
   const currency = settings?.currency || 'P'
@@ -96,14 +140,6 @@ export default function Reports() {
   const [savingPDF, setSavingPDF]   = useState(false)
   const [savingXLSX, setSavingXLSX] = useState(false)
   const [exportSuccess, setExportSuccess] = useState('')
-  const [strictFinanceMode, setStrictFinanceMode] = useState(() => {
-    try {
-      // Default ON — only disable if staff has explicitly turned it off
-      return localStorage.getItem('bb_strict_finance_reports') !== 'false'
-    } catch {
-      return true
-    }
-  })
 
   // Expenses tab
   const [expenses, setExpenses]     = useState([])
@@ -127,18 +163,18 @@ export default function Reports() {
   // Outlet filter — applies to POS, Expenses, and Costs (inventory) tabs only
   const [outlets, setOutlets]           = useState([])
   const [selectedOutlet, setSelectedOutlet] = useState('all')
+  const reportTitle = REPORT_TITLES[activeTab] || 'Report'
+  const companyDisplayName = settings?.lodge_name || settings?.company_name || 'Boroko Lodge'
+  const companyLegalName = settings?.company_name && settings?.company_name !== companyDisplayName ? settings.company_name : ''
+  const selectedOutletLabel = useMemo(() => {
+    if (selectedOutlet === 'all') return 'All Outlets'
+    if (selectedOutlet === 'unassigned') return 'Unassigned'
+    return outlets.find((outlet) => String(outlet.id) === String(selectedOutlet))?.name || 'Selected Outlet'
+  }, [outlets, selectedOutlet])
 
   useEffect(() => {
     window.api.outlets.getAll().then(d => setOutlets(d || [])).catch(() => {})
   }, [])
-
-  useEffect(() => {
-    try {
-      localStorage.setItem('bb_strict_finance_reports', String(strictFinanceMode))
-    } catch {
-      /* local preference persistence is best-effort */
-    }
-  }, [strictFinanceMode])
 
   useEffect(() => { runReport(start, end) }, [start, end])
 
@@ -148,8 +184,18 @@ export default function Reports() {
       if (activeTab === 'expenses') {
         setExpLoading(true)
         try {
-          const data = await window.api.expenses.getAll(start, end, selectedOutlet)
-          setExpenses(data || [])
+          const showPropertyWideCosts = !selectedOutlet || selectedOutlet === 'all' || selectedOutlet === 'unassigned'
+          const [expenseData, maintenanceData] = await Promise.all([
+            window.api.expenses.getAll(start, end, selectedOutlet),
+            showPropertyWideCosts
+              ? window.api.reports.maintenanceRows(start, end).catch(() => [])
+              : Promise.resolve([])
+          ])
+          const combinedExpenses = [
+            ...(expenseData || []),
+            ...(maintenanceData || []).map(normalizeMaintenanceExpense)
+          ].sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
+          setExpenses(combinedExpenses)
         } catch (err) {
           setExpenses([])
           setTabError(`Could not load expenses: ${err?.message || 'Unknown error'}`)
@@ -224,8 +270,8 @@ export default function Reports() {
       setSnapshot(reportsSnapshot && typeof reportsSnapshot === 'object' ? reportsSnapshot : null)
       const roomRows = await window.api.reports.roomProfitability(s, e).catch(() => [])
       setRoomProfitability(Array.isArray(roomRows) ? roomRows : [])
-      if (strictFinanceMode && rev?.source === 'local') {
-        throw new Error(`Strict finance mode is on, and the revenue report for ${s} to ${e} fell back to local data. Restore server-authoritative reporting before using this screen.`)
+      if (rev?.source === 'local') {
+        throw new Error(`The revenue report for ${s} to ${e} fell back to local data. Restore server-authoritative reporting before using this screen.`)
       }
     } catch (err) {
       setError(`Could not load report: ${err?.message || 'Unknown error'}`)
@@ -242,9 +288,13 @@ export default function Reports() {
     const totalNights = Math.max(1, Math.ceil((new Date(end) - new Date(start)) / 86400000))
     const avgOcc = occupancy.length
       ? Math.round(occupancy.reduce((s, r) => s + r.occupancy_rate, 0) / occupancy.length) : 0
+    const csvStamp = formatFilenameStamp()
     const rows = [
-      ['Boroko Bookings — Report'],
-      [`Period: ${start} to ${end}`],
+      [`${companyDisplayName} — Bookings Report`],
+      ['Lodge', companyDisplayName],
+      ...(companyLegalName ? [['Company', companyLegalName]] : []),
+      [`Period: ${exportPeriod}`],
+      [`Generated: ${new Date().toLocaleString()}`],
       [],
       ['REVENUE SUMMARY'],
       ['Total Revenue',      `${currency} ${Number(revenue?.total_revenue || 0).toFixed(2)}`],
@@ -266,9 +316,11 @@ export default function Reports() {
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
-    a.href = url; a.download = `boroko-report-${start}-to-${end}.csv`; a.click()
+    a.href = url
+    a.download = `boroko-bookings-report-${start}-to-${end}-${csvStamp}.csv`
+    a.click()
     URL.revokeObjectURL(url)
-    setExportSuccess(`CSV export started for ${start} to ${end}. Your download should begin shortly.`)
+    setExportSuccess(`CSV export started for the bookings report (${exportPeriod}). Your download should begin shortly.`)
     setTimeout(() => setExportSuccess(''), 4000)
   }
 
@@ -280,9 +332,27 @@ export default function Reports() {
     setSavingXLSX(true); setError('')
     try {
       const result = await window.api.reports.saveExcel({
-        occupancy, revenue, expenses, posSales, invSpend, supSpend, profitLoss: pl, start, end, currency
+        occupancy,
+        revenue,
+        expenses,
+        posSales,
+        invSpend,
+        supSpend,
+        profitLoss: pl,
+        start,
+        end,
+        currency,
+        reportType: 'finance-workbook',
+        reportTitle: 'Finance Workbook',
+        lodgeName: settings?.lodge_name || '',
+        companyName: settings?.company_name || '',
+        outletLabel: selectedOutletLabel,
+        generatedAt: new Date().toLocaleString()
       })
-      if (result.success) { setExportSuccess(`Excel saved: ${result.filePath}`); setTimeout(() => setExportSuccess(''), 5000) }
+      if (result.success) {
+        setExportSuccess(`Excel workbook saved: ${result.filePath}. It includes separate sheets for bookings, occupancy, expenses, POS sales, stock costs, and P&L.`)
+        setTimeout(() => setExportSuccess(''), 6500)
+      }
       else if (result.error) setError(`Excel export could not be completed: ${result.error}`)
     } catch (err) { setError(`Excel export could not be completed: ${err?.message}`) }
     setSavingXLSX(false)
@@ -295,8 +365,20 @@ export default function Reports() {
     }
     setSavingPDF(true); setExportSuccess(''); setError('')
     try {
-      const result = await window.api.reports.savePDF()
-      if (result.success) { setExportSuccess(`PDF saved: ${result.filePath}`); setTimeout(() => setExportSuccess(''), 5000) }
+      const result = await window.api.reports.savePDF({
+        reportType: activeTab,
+        reportTitle,
+        start,
+        end,
+        lodgeName: settings?.lodge_name || '',
+        companyName: settings?.company_name || '',
+        outletLabel: ['expenses', 'pos', 'costs'].includes(activeTab) ? selectedOutletLabel : '',
+        generatedAt: new Date().toLocaleString()
+      })
+      if (result.success) {
+        setExportSuccess(`PDF saved for ${reportTitle}: ${result.filePath}`)
+        setTimeout(() => setExportSuccess(''), 5000)
+      }
       else if (result.error) setError(`PDF export could not be completed: ${result.error}`)
     } catch (err) { setError(`PDF export could not be completed: ${err?.message}`) }
     setSavingPDF(false)
@@ -307,7 +389,7 @@ export default function Reports() {
       setError('Cannot print reports while using local fallback data. Please restore internet connection and refresh the report.')
       return
     }
-    setExportSuccess('Print dialog opened for the current report. Review the preview before confirming.')
+    setExportSuccess(`Print dialog opened for the ${reportTitle}. Review the preview before confirming.`)
     setTimeout(() => setExportSuccess(''), 3500)
     window.print()
   }
@@ -344,6 +426,8 @@ export default function Reports() {
   const summaryOutstandingCount = Number(summarySnapshot?.unpaidCount ?? (Number(revenue?.unpaid_count || 0) + Number(revenue?.partial_count || 0) || collectionQueue.length))
   const summaryNetCash = Number(summarySnapshot?.monthRev ?? revenue?.paid_revenue ?? 0)
   const summaryRefunds = Number(summarySnapshot?.monthRefunds ?? revenue?.refunds_issued ?? 0)
+  const summaryRetained = Number(summarySnapshot?.monthRetainedRevenue ?? revenue?.retained_revenue ?? 0)
+  const summaryGrossCash = summaryNetCash + summaryRefunds
   const summaryRooms = Number(summarySnapshot?.totalRooms ?? occupancy.length)
   const summaryCheckedIn = Number(summarySnapshot?.currentOcc ?? revenue?.checked_in_count ?? 0)
   const revenueSource = revenue?.source === 'server' ? 'server-authoritative' : revenue?.source === 'local' ? 'local fallback' : ''
@@ -353,6 +437,97 @@ export default function Reports() {
   const posSalesSource = posSales?.source === 'server' ? 'server-authoritative' : posSales?.source === 'local' ? 'local fallback' : ''
   const inventorySpendSource = invSpend?.source === 'server' ? 'server-authoritative' : invSpend?.source === 'local' ? 'local fallback' : ''
   const supplySpendSource = supSpend?.source === 'server' ? 'server-authoritative' : supSpend?.source === 'local' ? 'local fallback' : ''
+  const exportPeriod = `${start} to ${end}`
+  const reportSourceBadges = useMemo(() => {
+    const badges = []
+    const addBadge = ({ key, label, value, tone, title }) => {
+      if (!value) return
+      badges.push({ key, label, value, tone, title })
+    }
+
+    if (summarySnapshot) {
+      addBadge({
+        key: 'snapshot',
+        label: 'Snapshot',
+        value: summarySnapshot.source === 'server' ? 'server' : 'local',
+        tone: summarySnapshot.source === 'server' ? 'green' : 'amber',
+        title: `Shared reports snapshot in use: ${summarySnapshot.source === 'server' ? 'server-authoritative' : 'local fallback'} as of ${summarySnapshot.as_of || end}.`
+      })
+    }
+    if (activeTab === 'bookings' && revenueSource) {
+      addBadge({
+        key: 'revenue',
+        label: 'Revenue',
+        value: revenueSource.replace('-authoritative', ''),
+        tone: revenue?.source === 'server' ? 'green' : 'amber',
+        title: `Revenue source: ${revenueSource} for ${start} to ${end}.`
+      })
+    }
+    if (activeTab === 'bookings' && roomProfitabilitySource) {
+      addBadge({
+        key: 'room-profit',
+        label: 'Room profit',
+        value: roomProfitabilitySource.replace('-authoritative', ''),
+        tone: roomProfitability[0]?.source === 'server' ? 'green' : 'amber',
+        title: `Room profitability source: ${roomProfitabilitySource} for ${start} to ${end}.`
+      })
+    }
+    if (activeTab === 'pl' && profitLossSource) {
+      addBadge({
+        key: 'pl',
+        label: 'P&L',
+        value: profitLossSource.replace('-authoritative', ''),
+        tone: pl?.source === 'server' ? 'green' : 'amber',
+        title: `Profit and loss source: ${profitLossSource} for ${start} to ${end}.`
+      })
+    }
+    if (activeTab === 'pl' && outletProfitLossSource && canViewCombinedReports) {
+      addBadge({
+        key: 'outlet-pl',
+        label: 'Outlet P&L',
+        value: outletProfitLossSource.replace('-authoritative', ''),
+        tone: outletPL?.source === 'server' ? 'green' : 'amber',
+        title: `Outlet profit and loss source: ${outletProfitLossSource} for ${start} to ${end}.`
+      })
+    }
+    if (activeTab === 'pos' && posSalesSource) {
+      addBadge({
+        key: 'pos',
+        label: 'POS',
+        value: posSalesSource.replace('-authoritative', ''),
+        tone: posSales?.source === 'server' ? 'green' : 'amber',
+        title: `POS sales source: ${posSalesSource} for ${start} to ${end}.`
+      })
+    }
+    if (activeTab === 'costs' && (inventorySpendSource || supplySpendSource)) {
+      addBadge({
+        key: 'costs',
+        label: 'Costs',
+        value: `${inventorySpendSource || 'unknown'} / ${supplySpendSource || 'unknown'}`,
+        tone: inventorySpendSource === 'server-authoritative' && supplySpendSource === 'server-authoritative' ? 'green' : 'amber',
+        title: `Inventory spend source: ${inventorySpendSource || 'unknown'} for ${start} to ${end}. Room supplies source: ${supplySpendSource || 'unknown'} for ${start} to ${end}.`
+      })
+    }
+    return badges
+  }, [
+    activeTab,
+    canViewCombinedReports,
+    end,
+    inventorySpendSource,
+    outletPL?.source,
+    outletProfitLossSource,
+    pl?.source,
+    posSales?.source,
+    posSalesSource,
+    profitLossSource,
+    revenue?.source,
+    revenueSource,
+    roomProfitabilitySource,
+    roomProfitability,
+    start,
+    summarySnapshot,
+    supplySpendSource
+  ])
 
   const PRESETS = [
     { label: 'This Month', fn: () => [monthStart(), monthEnd()] },
@@ -391,13 +566,13 @@ export default function Reports() {
           {/* Disable all exports when data is from local fallback — money numbers must be authoritative */}
           <button onClick={exportCSV} disabled={!revenue || loading || revenue?.source !== 'server'}
             className="btn-secondary disabled:opacity-40"
-            title={revenue?.source !== 'server' ? 'Export blocked: report is using local fallback data, not server-authoritative data' : ''}>
+            title={revenue?.source !== 'server' ? 'Export blocked: report is using local fallback data, not server-authoritative data' : 'CSV export for the bookings report'}>
             <Download size={14} /> CSV
           </button>
           <button onClick={handleSaveExcel} disabled={!revenue || loading || savingXLSX || revenue?.source !== 'server'}
             className="inline-flex items-center gap-2 rounded-2xl border border-emerald-300 bg-emerald-50 px-4 py-2.5 text-sm font-medium text-emerald-700 transition-colors hover:bg-emerald-100 disabled:opacity-40"
-            title={revenue?.source !== 'server' ? 'Export blocked: report is using local fallback data, not server-authoritative data' : ''}>
-            <Table size={14} /> {savingXLSX ? 'Saving…' : 'Excel'}
+            title={revenue?.source !== 'server' ? 'Export blocked: report is using local fallback data, not server-authoritative data' : 'Excel workbook exports the full report pack in separate sheets'}>
+            <Table size={14} /> {savingXLSX ? 'Saving…' : 'Excel Workbook'}
           </button>
           <button onClick={handlePrint} disabled={!revenue || loading || revenue?.source !== 'server'}
             className="btn-secondary disabled:opacity-40"
@@ -408,14 +583,6 @@ export default function Reports() {
             className="btn-primary disabled:opacity-40"
             title={revenue?.source !== 'server' ? 'Export blocked: report is using local fallback data, not server-authoritative data' : ''}>
             <FileDown size={14} /> {savingPDF ? 'Saving…' : 'Save PDF'}
-          </button>
-          <button
-            type="button"
-            onClick={() => setStrictFinanceMode((value) => !value)}
-            className={`rounded-2xl border px-4 py-2.5 text-sm font-medium transition-colors ${strictFinanceMode ? 'border-rose-300 bg-rose-50 text-rose-700 hover:bg-rose-100' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'}`}
-            title="When enabled, the bookings report will fail instead of using local fallback values."
-          >
-            {strictFinanceMode ? 'Strict Finance Mode On' : 'Strict Finance Mode Off'}
           </button>
         </div>
       </div>
@@ -476,6 +643,24 @@ export default function Reports() {
         </div>
         <div className="w-full text-xs text-slate-500">
           Choose a date range or use a preset to refresh the currently selected report. Exports always use the active tab and current dates.
+          <span className="mt-1 block">Excel export bundles the report pack into separate sheets for bookings, occupancy, expenses, POS sales, stock costs, and P&amp;L.</span>
+        </div>
+      </div>
+
+      <div className="print-only mb-6 border-b-2 border-green-700 pb-4">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-emerald-700/70">Report Export</p>
+            <h2 className="text-xl font-bold text-slate-800">{companyDisplayName} - {reportTitle}</h2>
+            {companyLegalName && (
+              <p className="mt-1 text-sm text-slate-500">{companyLegalName}</p>
+            )}
+            <p className="mt-1 text-sm text-slate-500">Period: {exportPeriod}</p>
+            {['expenses', 'pos', 'costs'].includes(activeTab) && (
+              <p className="mt-1 text-sm text-slate-500">Outlet: {selectedOutletLabel}</p>
+            )}
+          </div>
+          <p className="text-xs text-slate-400">Generated: {new Date().toLocaleString()}</p>
         </div>
       </div>
 
@@ -494,9 +679,26 @@ export default function Reports() {
           ✓ {exportSuccess}
         </div>
       )}
-      {summarySnapshot && (
-        <div className="no-print rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs text-slate-600">
-          Shared reports snapshot in use: {summarySnapshot.source === 'server' ? 'server-authoritative' : 'local fallback'} as of {summarySnapshot.as_of || end}.
+      {reportSourceBadges.length > 0 && (
+        <div className="no-print overflow-x-auto rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2">
+          <div className="flex min-w-max items-center gap-2 text-[11px] text-slate-600">
+            <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">Data source</span>
+            {reportSourceBadges.map((badge) => (
+              <span
+                key={badge.key}
+                title={badge.title}
+                className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2.5 py-1 font-medium ${
+                  badge.tone === 'green'
+                    ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                    : 'border-amber-200 bg-amber-50 text-amber-800'
+                }`}
+              >
+                <span className="font-semibold">{badge.label}</span>
+                <span>•</span>
+                <span>{badge.value}</span>
+              </span>
+            ))}
+          </div>
         </div>
       )}
       {activeTab === 'bookings' && revenueSource && revenue?.source !== 'server' && (
@@ -506,36 +708,6 @@ export default function Reports() {
             <p className="font-semibold">Financial data is using local fallback — NOT server-authoritative</p>
             <p className="mt-1 text-xs font-normal text-red-700">Exports are blocked. Restore server connectivity and reload to get verified numbers. Do not make financial decisions based on this data.</p>
           </div>
-        </div>
-      )}
-      {activeTab === 'bookings' && revenueSource && revenue?.source === 'server' && (
-        <div className="no-print rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs text-emerald-700">
-          Revenue source: server-authoritative for {start} to {end}.
-        </div>
-      )}
-      {activeTab === 'pl' && profitLossSource && (
-        <div className={`no-print rounded-2xl border px-4 py-3 text-xs ${pl?.source === 'server' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-amber-200 bg-amber-50 text-amber-800'}`}>
-          Profit and loss source: {profitLossSource} for {start} to {end}.
-        </div>
-      )}
-      {activeTab === 'pl' && outletProfitLossSource && canViewCombinedReports && (
-        <div className={`no-print rounded-2xl border px-4 py-3 text-xs ${outletPL?.source === 'server' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-amber-200 bg-amber-50 text-amber-800'}`}>
-          Outlet profit and loss source: {outletProfitLossSource} for {start} to {end}.
-        </div>
-      )}
-      {activeTab === 'bookings' && roomProfitabilitySource && (
-        <div className={`no-print rounded-2xl border px-4 py-3 text-xs ${roomProfitability[0]?.source === 'server' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-amber-200 bg-amber-50 text-amber-800'}`}>
-          Room profitability source: {roomProfitabilitySource} for {start} to {end}.
-        </div>
-      )}
-      {activeTab === 'pos' && posSalesSource && (
-        <div className={`no-print rounded-2xl border px-4 py-3 text-xs ${posSales?.source === 'server' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-amber-200 bg-amber-50 text-amber-800'}`}>
-          POS sales source: {posSalesSource} for {start} to {end}.
-        </div>
-      )}
-      {activeTab === 'costs' && (inventorySpendSource || supplySpendSource) && (
-        <div className="no-print rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs text-slate-600">
-          Inventory spend source: {inventorySpendSource || 'unknown'} for {start} to {end}. Room supplies source: {supplySpendSource || 'unknown'} for {start} to {end}.
         </div>
       )}
 
@@ -912,14 +1084,6 @@ export default function Reports() {
 
       {/* ── BOOKINGS TAB ─────────────────────────────────────────────────────── */}
       {activeTab === 'bookings' && <>
-
-        <div className="print-only mb-6 border-b-2 border-green-700 pb-4 text-center">
-        <h2 className="text-xl font-bold text-slate-800">
-          {settings?.lodge_name || 'Lodge'} — Occupancy &amp; Revenue Report
-        </h2>
-        <p className="mt-1 text-sm text-slate-500">Period: {start} to {end}</p>
-      </div>
-
       {revenue && (
         <div className="grid grid-cols-2 lg:grid-cols-6 gap-4 mb-6">
           <SummaryCard icon={DollarSign}  label="Total Revenue"
@@ -934,9 +1098,9 @@ export default function Reports() {
           <SummaryCard icon={BedDouble}   label="Avg Occupancy"
             value={`${avgOccupancy}%`}
             color="bg-orange-50 text-orange-600" />
-          <SummaryCard icon={PiggyBank}   label="Net Cash Collected"
-            value={`${currency} ${Number(revenue.paid_revenue || 0).toFixed(2)}`}
-            sub={`Refunds ${currency} ${Number(revenue.refunds_issued || 0).toFixed(2)}`}
+        <SummaryCard icon={PiggyBank}   label="Net Cash Collected"
+          value={`${currency} ${Number(revenue.paid_revenue || 0).toFixed(2)}`}
+            sub={`Refunds ${currency} ${Number(revenue.refunds_issued || 0).toFixed(2)} · kept ${currency} ${Number(revenue.retained_revenue || 0).toFixed(2)}`}
             color="bg-emerald-50 text-emerald-600" />
           <SummaryCard icon={DollarSign}  label="Outstanding"
             value={`${currency} ${Number(revenue.outstanding_amount || 0).toFixed(2)}`}
@@ -957,8 +1121,8 @@ export default function Reports() {
           sub={`${summaryOutstandingCount} booking${summaryOutstandingCount === 1 ? '' : 's'} still open`}
           color={summaryOutstanding > 0 ? 'bg-rose-50 text-rose-600' : 'bg-slate-50 text-slate-600'} />
         <SummaryCard icon={PiggyBank} label="Shared Net Cash"
-          value={`${currency} ${(summaryNetCash - summaryRefunds).toFixed(2)}`}
-          sub={`Cash ${currency} ${summaryNetCash.toFixed(2)} · refunds ${currency} ${summaryRefunds.toFixed(2)}`}
+          value={`${currency} ${summaryNetCash.toFixed(2)}`}
+          sub={`Gross ${currency} ${summaryGrossCash.toFixed(2)} · refunds ${currency} ${summaryRefunds.toFixed(2)} · kept ${currency} ${summaryRetained.toFixed(2)}`}
           color="bg-emerald-50 text-emerald-600" />
       </div>
 
@@ -1002,7 +1166,7 @@ export default function Reports() {
       {revenue && revenue.paid_revenue !== undefined && (
         <div className="bb-card mb-6 p-5">
           <h2 className="mb-4 text-lg font-semibold tracking-[-0.02em] text-slate-800">Cash Movement & Open Balances</h2>
-          <div className="mb-4 grid gap-3 md:grid-cols-3">
+          <div className="mb-4 grid gap-3 md:grid-cols-4">
             <div className="rounded-2xl bg-emerald-50 px-4 py-3">
               <p className="text-xs font-semibold uppercase tracking-[0.16em] text-emerald-700">Net Cash</p>
               <p className="mt-1 text-lg font-semibold text-emerald-800">{currency} {Number(revenue.paid_revenue || 0).toFixed(2)}</p>
@@ -1015,9 +1179,13 @@ export default function Reports() {
               <p className="text-xs font-semibold uppercase tracking-[0.16em] text-rose-600">Refunds</p>
               <p className="mt-1 text-lg font-semibold text-rose-700">{currency} {Number(revenue.refunds_issued || 0).toFixed(2)}</p>
             </div>
+            <div className="rounded-2xl bg-amber-50 px-4 py-3">
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-amber-700">Fees kept from refunds</p>
+              <p className="mt-1 text-lg font-semibold text-amber-800">{currency} {Number(revenue.retained_revenue || 0).toFixed(2)}</p>
+            </div>
           </div>
           <p className="mb-4 text-xs text-slate-500">
-            Revenue is based on booked stay value for this period. Cash movement is based on payment events recorded during this period.
+            Revenue is based on booked stay value for this period. Cash movement is based on payment events recorded during this period, and fees kept from refunds are shown separately.
           </p>
           <div className="grid grid-cols-3 gap-4">
             <StatusStat label="Paid"    value={revenue.paid_count    || 0} color="bg-green-500" />
@@ -1223,55 +1391,60 @@ export default function Reports() {
         </HorizontalScrollArea>
       </div>
 
-      <div className="bb-table-shell mt-6">
-        <div className="flex items-center justify-between border-b border-slate-200/80 px-5 py-4">
-          <div>
-            <h2 className="text-lg font-semibold tracking-[-0.02em] text-slate-800">Room Profitability</h2>
-            <p className="mt-1 text-xs text-slate-500">Uses tracked room revenue minus tracked room-supply cost and recorded maintenance cost.</p>
+        <div className="bb-table-shell mt-6">
+          <div className="flex items-center justify-between border-b border-slate-200/80 px-5 py-4">
+            <div>
+              <h2 className="text-lg font-semibold tracking-[-0.02em] text-slate-800">Room Profitability</h2>
+              <p className="mt-1 text-xs text-slate-500">Uses tracked room revenue minus tracked room-supply cost and recorded maintenance cost. Running cost combines both.</p>
+            </div>
+            {topRoomContribution && topRoomContribution.contribution > 0 && (
+              <span className="text-xs bg-emerald-100 text-emerald-700 px-2 py-1 rounded-full font-medium">
+                Top contribution: Room {topRoomContribution.room_number}
+              </span>
+            )}
           </div>
-          {topRoomContribution && topRoomContribution.contribution > 0 && (
-            <span className="text-xs bg-emerald-100 text-emerald-700 px-2 py-1 rounded-full font-medium">
-              Top contribution: Room {topRoomContribution.room_number}
-            </span>
-          )}
-        </div>
-        <HorizontalScrollArea>
-          <table className="min-w-[1180px] w-full text-sm">
-            <thead className="sticky top-0 z-10 bg-slate-50 text-xs uppercase tracking-[0.16em] text-slate-500">
-              <tr>
-                <th className="px-5 py-3 text-left">Room</th>
-                <th className="px-5 py-3 text-left">Type</th>
-                <th className="px-5 py-3 text-right">Occupancy</th>
-                <th className="px-5 py-3 text-right">Revenue</th>
-                <th className="px-5 py-3 text-right">Supply Cost</th>
-                <th className="px-5 py-3 text-right">Maintenance Cost</th>
-                <th className="px-5 py-3 text-right">Contribution</th>
-                <th className="px-5 py-3 text-right">Margin</th>
-                <th className="px-5 py-3 text-right">Supply Units</th>
-                <th className="px-5 py-3 text-right">Maintenance</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {loading && <tr><td colSpan={10} className="px-5 py-10"><div className="bb-empty-state py-8"><p className="text-sm font-medium text-slate-500">Loading room profitability…</p></div></td></tr>}
-              {!loading && roomProfitability.map((room) => (
-                <tr key={room.id} className="hover:bg-slate-50">
-                  <td className="px-5 py-3 font-medium text-slate-800">Room {room.room_number}</td>
-                  <td className="px-5 py-3 text-slate-600">{room.room_type}</td>
-                  <td className="px-5 py-3 text-right text-slate-700">{room.occupancy_rate}%</td>
-                  <td className="px-5 py-3 text-right font-medium text-slate-800">{currency} {Number(room.revenue || 0).toFixed(2)}</td>
-                  <td className="px-5 py-3 text-right text-amber-700">{currency} {Number(room.supply_cost || 0).toFixed(2)}</td>
-                  <td className="px-5 py-3 text-right text-rose-700">{currency} {Number(room.maintenance_cost || 0).toFixed(2)}</td>
-                  <td className={`px-5 py-3 text-right font-semibold ${Number(room.contribution || 0) >= 0 ? 'text-emerald-700' : 'text-red-600'}`}>{currency} {Number(room.contribution || 0).toFixed(2)}</td>
-                  <td className={`px-5 py-3 text-right font-semibold ${Number(room.margin_pct || 0) >= 50 ? 'text-emerald-700' : Number(room.margin_pct || 0) >= 0 ? 'text-slate-700' : 'text-red-600'}`}>{Number(room.margin_pct || 0)}%</td>
-                  <td className="px-5 py-3 text-right text-slate-600">{Number(room.supply_units_used || 0).toFixed(0)}</td>
-                  <td className="px-5 py-3 text-right text-slate-600">
-                    {room.maintenance_count || 0}
-                    {room.open_maintenance_count > 0 && <span className="ml-1 text-[11px] font-semibold text-red-500">({room.open_maintenance_count} open)</span>}
-                  </td>
+          <HorizontalScrollArea>
+          <table className="min-w-[1280px] w-full text-sm">
+              <thead className="sticky top-0 z-10 bg-slate-50 text-xs uppercase tracking-[0.16em] text-slate-500">
+                <tr>
+                  <th className="px-5 py-3 text-left">Room</th>
+                  <th className="px-5 py-3 text-left">Type</th>
+                  <th className="px-5 py-3 text-right">Occupancy</th>
+                  <th className="px-5 py-3 text-right">Revenue</th>
+                  <th className="px-5 py-3 text-right">Supply Cost</th>
+                  <th className="px-5 py-3 text-right">Maintenance Cost</th>
+                  <th className="px-5 py-3 text-right">Running Cost</th>
+                  <th className="px-5 py-3 text-right">Contribution</th>
+                  <th className="px-5 py-3 text-right">Margin</th>
+                  <th className="px-5 py-3 text-right">Supply Units</th>
+                  <th className="px-5 py-3 text-right">Maintenance</th>
                 </tr>
-              ))}
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+              {loading && <tr><td colSpan={11} className="px-5 py-10"><div className="bb-empty-state py-8"><p className="text-sm font-medium text-slate-500">Loading room profitability…</p></div></td></tr>}
+              {!loading && roomProfitability.map((room) => {
+                const runningCost = Number(room.running_cost ?? (Number(room.supply_cost || 0) + Number(room.maintenance_cost || 0)))
+                return (
+                  <tr key={room.id} className="hover:bg-slate-50">
+                    <td className="px-5 py-3 font-medium text-slate-800">Room {room.room_number}</td>
+                    <td className="px-5 py-3 text-slate-600">{room.room_type}</td>
+                    <td className="px-5 py-3 text-right text-slate-700">{room.occupancy_rate}%</td>
+                    <td className="px-5 py-3 text-right font-medium text-slate-800">{currency} {Number(room.revenue || 0).toFixed(2)}</td>
+                    <td className="px-5 py-3 text-right text-amber-700">{currency} {Number(room.supply_cost || 0).toFixed(2)}</td>
+                    <td className="px-5 py-3 text-right text-rose-700">{currency} {Number(room.maintenance_cost || 0).toFixed(2)}</td>
+                    <td className="px-5 py-3 text-right font-semibold text-slate-700">{currency} {runningCost.toFixed(2)}</td>
+                    <td className={`px-5 py-3 text-right font-semibold ${Number(room.contribution || 0) >= 0 ? 'text-emerald-700' : 'text-red-600'}`}>{currency} {Number(room.contribution || 0).toFixed(2)}</td>
+                    <td className={`px-5 py-3 text-right font-semibold ${Number(room.margin_pct || 0) >= 50 ? 'text-emerald-700' : Number(room.margin_pct || 0) >= 0 ? 'text-slate-700' : 'text-red-600'}`}>{Number(room.margin_pct || 0)}%</td>
+                    <td className="px-5 py-3 text-right text-slate-600">{Number(room.supply_units_used || 0).toFixed(0)}</td>
+                    <td className="px-5 py-3 text-right text-slate-600">
+                      {room.maintenance_count || 0}
+                      {room.open_maintenance_count > 0 && <span className="ml-1 text-[11px] font-semibold text-red-500">({room.open_maintenance_count} open)</span>}
+                    </td>
+                  </tr>
+                )
+              })}
               {!loading && roomProfitability.length === 0 && !error && (
-                <tr><td colSpan={10} className="px-5 py-10"><div className="bb-empty-state py-10"><p className="text-base font-semibold text-slate-800">No room profitability data yet</p><p className="text-sm text-slate-500">You will see room-level contribution here once bookings and room-supply usage have been recorded.</p></div></td></tr>
+                <tr><td colSpan={11} className="px-5 py-10"><div className="bb-empty-state py-10"><p className="text-base font-semibold text-slate-800">No room profitability data yet</p><p className="text-sm text-slate-500">You will see room-level contribution here once bookings, room-supply usage, and maintenance have been recorded.</p></div></td></tr>
               )}
             </tbody>
           </table>
@@ -1297,6 +1470,7 @@ export default function Reports() {
                 <h2 className="mb-4 text-sm font-semibold uppercase tracking-[0.18em] text-slate-500">Revenue</h2>
                 <div className="space-y-2">
                   <PLRow label="Booking Revenue"   value={`${currency} ${Number(pl.bookingRevenue).toFixed(2)}`} />
+                  <PLRow label="Fees Kept From Refunds" value={`${currency} ${Number(pl.retainedRevenue || 0).toFixed(2)}`} />
                   <PLRow label="POS Revenue"        value={`${currency} ${Number(pl.posRevenue).toFixed(2)}`} />
                   {(pl.conferenceRevenue > 0) && (
                     <PLRow label="Conference Revenue" value={`${currency} ${Number(pl.conferenceRevenue).toFixed(2)}`} />
@@ -1328,16 +1502,17 @@ export default function Reports() {
 
               {/* Stock Costs */}
               <div className="bb-card mb-4 p-5">
-                <h2 className="mb-4 text-sm font-semibold uppercase tracking-[0.18em] text-slate-500">Stock Costs</h2>
+                <h2 className="mb-4 text-sm font-semibold uppercase tracking-[0.18em] text-slate-500">Stock & Maintenance Costs</h2>
                 <div className="space-y-2">
-                  <PLRow label="Inventory Purchases" value={`${currency} ${Number(pl.invCosts).toFixed(2)}`} />
-                  <PLRow label="Room Supplies"       value={`${currency} ${Number(pl.supCosts).toFixed(2)}`} />
-                  <PLRow label="Total Stock Costs"   value={`${currency} ${Number(pl.totalCosts).toFixed(2)}`} bold />
+                  <PLRow label="Inventory Purchases" value={`${currency} ${Number(pl.invCosts || 0).toFixed(2)}`} />
+                  <PLRow label="Room Supplies"       value={`${currency} ${Number(pl.supCosts || 0).toFixed(2)}`} />
+                  <PLRow label="Maintenance Repairs" value={`${currency} ${Number(pl.maintenanceCosts || 0).toFixed(2)}`} />
+                  <PLRow label="Total Stock & Maintenance Costs"   value={`${currency} ${Number(pl.totalCosts || 0).toFixed(2)}`} bold />
                 </div>
               </div>
 
               {/* Gross Profit */}
-              <div className={`rounded-xl p-5 ${pl.grossProfit >= 0 ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200'}`}>
+                <div className={`rounded-xl p-5 ${pl.grossProfit >= 0 ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200'}`}>
                 <div className="flex items-center justify-between">
                   <span className={`text-base font-bold ${pl.grossProfit >= 0 ? 'text-green-800' : 'text-red-800'}`}>
                     Gross Profit
@@ -1346,7 +1521,7 @@ export default function Reports() {
                     {pl.grossProfit < 0 ? '- ' : ''}{currency} {Math.abs(pl.grossProfit).toFixed(2)}
                   </span>
                 </div>
-                <p className="mt-1 text-xs text-slate-500">Revenue − Expenses − Stock Costs</p>
+                <p className="mt-1 text-xs text-slate-500">Revenue, including fees kept from refunds, minus expenses and stock & maintenance costs.</p>
               </div>
 
               {/* Outlet P&L Breakdown — only for users with combined report access */}
@@ -1354,7 +1529,7 @@ export default function Reports() {
                 <div className="bb-card mt-4 p-5">
                   <h2 className="mb-4 text-sm font-semibold uppercase tracking-[0.18em] text-slate-500">Profit &amp; Loss by Outlet</h2>
                   <HorizontalScrollArea>
-                    <table className="min-w-[980px] w-full text-sm">
+                    <table className="min-w-[1100px] w-full text-sm">
                       <thead>
                         <tr className="border-b border-slate-200 text-xs font-semibold uppercase tracking-wide text-slate-400">
                           <th className="pb-2 text-left">Outlet</th>
@@ -1363,6 +1538,7 @@ export default function Reports() {
                           <th className="pb-2 text-right">Total Revenue</th>
                           <th className="pb-2 text-right">Inventory Cost</th>
                           <th className="pb-2 text-right">Room Supplies</th>
+                          <th className="pb-2 text-right">Maintenance Cost</th>
                           <th className="pb-2 text-right">Expenses</th>
                           <th className="pb-2 text-right">Profit</th>
                         </tr>
@@ -1376,6 +1552,7 @@ export default function Reports() {
                             <td className="py-2 text-right font-semibold text-slate-700">{currency} {Number(row.revenue).toFixed(2)}</td>
                             <td className="py-2 text-right text-slate-600">{currency} {Number(row.inventoryCost).toFixed(2)}</td>
                             <td className="py-2 text-right text-slate-600">{currency} {Number(row.supplyCost).toFixed(2)}</td>
+                            <td className="py-2 text-right text-rose-700">{currency} {Number(row.maintenanceCost || 0).toFixed(2)}</td>
                             <td className="py-2 text-right text-slate-600">{currency} {Number(row.expenses).toFixed(2)}</td>
                             <td className={`py-2 text-right font-semibold ${row.profit >= 0 ? 'text-green-700' : 'text-red-600'}`}>
                               {row.profit < 0 ? '- ' : ''}{currency} {Math.abs(row.profit).toFixed(2)}
@@ -1390,6 +1567,7 @@ export default function Reports() {
                           <td className="py-2.5 text-right text-slate-800">{currency} {Number(outletPL.combined.revenue).toFixed(2)}</td>
                           <td className="py-2.5 text-right text-slate-700">{currency} {Number(outletPL.combined.inventoryCost).toFixed(2)}</td>
                           <td className="py-2.5 text-right text-slate-700">{currency} {Number(outletPL.combined.supplyCost).toFixed(2)}</td>
+                          <td className="py-2.5 text-right text-rose-700">{currency} {Number(outletPL.combined.maintenanceCost || 0).toFixed(2)}</td>
                           <td className="py-2.5 text-right text-slate-700">{currency} {Number(outletPL.combined.expenses).toFixed(2)}</td>
                           <td className={`rounded-r-lg py-2.5 pr-0 text-right ${outletPL.combined.profit >= 0 ? 'text-green-700' : 'text-red-600'}`}>
                             {outletPL.combined.profit < 0 ? '- ' : ''}{currency} {Math.abs(outletPL.combined.profit).toFixed(2)}
@@ -1398,7 +1576,7 @@ export default function Reports() {
                       </tbody>
                     </table>
                   </HorizontalScrollArea>
-                  <p className="mt-3 text-xs text-slate-400">Room supply costs are grouped under Front Desk. Booking revenue is attributed to Front Desk only.</p>
+                  <p className="mt-3 text-xs text-slate-400">Room supply and room-based maintenance costs are grouped under Front Desk. Booking revenue is attributed to Front Desk only.</p>
                 </div>
               )}
             </>

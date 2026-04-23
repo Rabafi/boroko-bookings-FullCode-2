@@ -773,7 +773,9 @@ export default function Quotations() {
     )
     setConverting(false)
     if (res.success) {
-      setConvertSuccess(`Booking created! Invoice: ${res.invoice_number || '—'}`)
+      setConvertSuccess(res.pendingSync
+        ? `Booking queued offline. Local reference: ${res.invoice_number || 'PENDING'}`
+        : `Booking created! Invoice: ${res.invoice_number || '—'}`)
       setQuotations((prev) => prev.map((row) => row.id === convertTarget.id
         ? normalizeQuotationRow({ ...row, status: 'converted', converted_booking_id: res.booking_id || true, updated_at: new Date().toISOString() })
         : row

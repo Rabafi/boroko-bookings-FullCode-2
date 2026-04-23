@@ -202,7 +202,7 @@ export default function Bookings() {
         <div className="mt-3">
           <FrontDeskNotice compact />
         </div>
-        <p className="mt-2 text-[11px] text-gray-500">Online requests stay marked as pending until front desk accepts them in the desktop app.</p>
+        <p className="mt-2 text-[11px] text-gray-500">Online requests stay marked as pending until front desk accepts them on desktop.</p>
       </div>
 
       {view === 'calendar' && !loading ? (

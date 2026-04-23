@@ -32,7 +32,7 @@ export default function Inventory() {
 
       <div className="px-4 py-4 space-y-3">
         <div className="rounded-2xl border border-blue-900 bg-blue-950/30 px-4 py-3 text-sm text-blue-100">
-          Inventory is view-only in the Manager PWA. Use Front Desk or desktop to adjust stock.
+          Inventory is view-only in the manager mobile app. Use the front desk or desktop to adjust stock.
         </div>
         {items.map((item) => {
           const low = Number(item.reorder_level || 0) > 0 && Number(item.current_stock || 0) <= Number(item.reorder_level || 0)

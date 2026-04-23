@@ -14,6 +14,10 @@ body {
   padding-bottom: env(safe-area-inset-bottom);
 }
 
+:root {
+  --pwa-bottom-nav-reserve: calc(6.75rem + env(safe-area-inset-bottom));
+}
+
 #root {
   min-height: 100svh;
   display: flex;
@@ -54,6 +58,14 @@ html.light-mode .border-gray-800 { border-color: #e2e8f0 !important; }
 
 /* Bottom nav */
 html.light-mode nav.bg-gray-900 { background-color: #ffffff !important; border-color: #e2e8f0 !important; }
+
+.pwa-bottom-nav {
+  min-height: calc(4.25rem + env(safe-area-inset-bottom));
+}
+
+.pwa-page-shell > * {
+  padding-bottom: var(--pwa-bottom-nav-reserve) !important;
+}
 
 /* Input fields */
 html.light-mode input,

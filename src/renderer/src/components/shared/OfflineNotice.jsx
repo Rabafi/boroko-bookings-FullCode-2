@@ -1,28 +1,48 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { WifiOff, Info, FileDown } from 'lucide-react'
 
 export default function OfflineNotice({ tasks = [] }) {
   const [isOnline, setIsOnline] = useState(true)
+  const [showOfflineNotice, setShowOfflineNotice] = useState(false)
+  const offlineNoticeTimerRef = useRef(null)
 
   useEffect(() => {
+    const applyOnlineState = (online) => {
+      setIsOnline(online)
+      if (offlineNoticeTimerRef.current) {
+        clearTimeout(offlineNoticeTimerRef.current)
+        offlineNoticeTimerRef.current = null
+      }
+      if (online) {
+        setShowOfflineNotice(false)
+        return
+      }
+      offlineNoticeTimerRef.current = setTimeout(() => {
+        setShowOfflineNotice(true)
+      }, 1200)
+    }
+
     const checkStatus = async () => {
       try {
         const status = await window.api.sync.getStatus()
-        setIsOnline(status?.isOnline !== false)
+        applyOnlineState(status?.isOnline !== false)
       } catch {
-        setIsOnline(true)
+        applyOnlineState(true)
       }
     }
 
     checkStatus()
     const unsubscribe = window.api.sync.onStatusChanged((status) => {
-      setIsOnline(status?.isOnline !== false)
+      applyOnlineState(status?.isOnline !== false)
     })
 
-    return () => unsubscribe?.()
+    return () => {
+      unsubscribe?.()
+      if (offlineNoticeTimerRef.current) clearTimeout(offlineNoticeTimerRef.current)
+    }
   }, [])
 
-  if (isOnline) return null
+  if (isOnline || !showOfflineNotice) return null
 
   return (
     <div className="mb-4 flex flex-col gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-amber-800 shadow-sm sm:flex-row sm:items-center">
@@ -32,7 +52,7 @@ export default function OfflineNotice({ tasks = [] }) {
       <div className="flex-1 min-w-0">
         <p className="text-sm font-bold">Offline Mode — Stability Notice</p>
         <p className="mt-0.5 text-xs opacity-90">
-          You are currently offline. For stability reasons, the following tasks cannot be performed until internet connection is restored:
+          You are currently offline. Work saved on this computer will queue safely and sync when the internet returns. These tasks still need a live connection:
         </p>
         {tasks.length > 0 && (
           <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1">

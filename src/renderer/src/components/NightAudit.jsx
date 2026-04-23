@@ -112,7 +112,14 @@ export default function NightAudit() {
   const handleSavePDF = async () => {
     setSavingPDF(true); setError(null); setSuccess('')
     try {
-      const res = await window.api.reports.savePDF()
+      const res = await window.api.reports.savePDF({
+        reportType: 'night-audit',
+        reportTitle: 'Night Audit',
+        date,
+        lodgeName: settings?.lodge_name || '',
+        companyName: settings?.company_name || '',
+        generatedAt: new Date().toLocaleString()
+      })
       if (res.success) setSuccess(`PDF saved: ${res.filePath}`)
       else if (res.error) setError(res.error)
     } catch (e) { setError(e.message) }
@@ -131,7 +138,11 @@ export default function NightAudit() {
           outstanding: groupedOutstanding
         },
         date,
-        currency
+        currency,
+        lodgeName: settings?.lodge_name || '',
+        companyName: settings?.company_name || '',
+        generatedAt: new Date().toLocaleString(),
+        reportTitle: 'Night Audit'
       })
       if (res.success) setSuccess(`Excel saved: ${res.filePath}`)
       else if (res.error) setError(res.error)
@@ -211,6 +222,9 @@ export default function NightAudit() {
         <div className="flex justify-between items-start">
           <div>
             <h1 className="text-xl font-bold">{settings?.lodge_name || 'Boroko Lodge'} — Night Audit</h1>
+            {settings?.company_name && settings.company_name !== settings?.lodge_name && (
+              <p className="text-sm text-gray-500">{settings.company_name}</p>
+            )}
             <p className="text-sm text-gray-500">Date: {date}</p>
           </div>
           <p className="text-xs text-gray-400">Printed: {new Date().toLocaleString()}</p>

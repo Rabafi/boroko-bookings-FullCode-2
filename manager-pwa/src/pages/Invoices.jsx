@@ -12,8 +12,12 @@ function LedgerSheet({ lodgeId, invoice, onClose }) {
   }, [invoice.booking_id, lodgeId])
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end bg-black/60" onClick={onClose}>
-      <div className="bg-gray-900 rounded-t-3xl p-5 w-full max-h-[90vh] overflow-y-auto" onClick={(event) => event.stopPropagation()}>
+    <div className="fixed inset-0 z-[80] flex items-end bg-black/60" onClick={onClose}>
+      <div
+        className="bg-gray-900 rounded-t-3xl p-5 w-full max-h-[90vh] overflow-y-auto"
+        style={{ paddingBottom: 'max(env(safe-area-inset-bottom), 24px)' }}
+        onClick={(event) => event.stopPropagation()}
+      >
         <div className="w-10 h-1 bg-gray-700 rounded-full mx-auto mb-4" />
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-bold text-white">Payment Ledger</h2>

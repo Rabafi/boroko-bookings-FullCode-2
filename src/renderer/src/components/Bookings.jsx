@@ -605,7 +605,12 @@ export default function Bookings() {
 
   const handleStatusChange = async (id, status) => {
     const booking = bookings.find((entry) => entry.id === id)
-    if ((status === 'checked_out' || status === 'cancelled') && isFinanciallySyncBlocked(id)) {
+    const isOfflineCreatedPendingBooking = booking?._pending_sync && booking?._sync_created_offline
+    if (status === 'checked_out' && isFinanciallySyncBlocked(id)) {
+      setWarning(FINANCIAL_SYNC_BLOCK_MESSAGE)
+      return
+    }
+    if (status === 'cancelled' && isFinanciallySyncBlocked(id) && !isOfflineCreatedPendingBooking) {
       setWarning(FINANCIAL_SYNC_BLOCK_MESSAGE)
       return
     }

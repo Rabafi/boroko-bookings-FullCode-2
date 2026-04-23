@@ -34,9 +34,9 @@ const STARTER_FEATURE_FLAGS = {
   supplies: false
 }
 
-const PWA_PLAN_REQUIRED_MESSAGE = `Manager PWA is available on the ${getSubscriptionPlan('Pro').name} plan for this lodge because ${getSubscriptionPlan('Pro').pitch.toLowerCase()}. Ask Command Central to upgrade or enable an override.`
+const PWA_PLAN_REQUIRED_MESSAGE = `Manager mobile app access is available on the ${getSubscriptionPlan('Pro').name} plan for this lodge because ${getSubscriptionPlan('Pro').pitch.toLowerCase()}. Ask Command Central to upgrade or enable an override.`
 export const FRONT_DESK_ONLY_MESSAGE = 'This action is only available in the Front Desk system.'
-const READ_ONLY_MANAGER_MESSAGE = 'This screen is read-only in the Manager PWA. Use Front Desk for changes.'
+const READ_ONLY_MANAGER_MESSAGE = 'This screen is view only in the manager mobile app. Use the front desk for changes.'
 const MAX_FINANCIAL_AMOUNT = 1000000
 const queueFlushLocks = new Map()
 
@@ -234,6 +234,7 @@ async function buildDashboardSnapshotLegacy(lodgeId, today = formatDate(new Date
     .filter((payment) => Number(payment.amount || 0) < 0)
     .reduce((sum, payment) => sum + Math.abs(Number(payment.amount || 0)), 0)
   const monthRevenue = monthGrossCollected - monthRefunds
+  const maintenanceCosts = maintenanceCostsForRange(maintenance, monthStart, monthEnd)
 
   const revenueTrend = previousWeek.map((day) => {
     const amount = payments
@@ -261,6 +262,7 @@ async function buildDashboardSnapshotLegacy(lodgeId, today = formatDate(new Date
     unpaidCount: unpaidBookings.length,
     outstandingTotal,
     monthExpenses,
+    maintenanceCosts,
     monthGrossCollected,
     monthRefunds,
     monthRevenue,
@@ -295,8 +297,8 @@ async function buildReportsSnapshotLegacy(lodgeId, today = formatDate(new Date()
 
   const [rooms, bookings, payments, expenses, posOrders, conferenceBookings, poolDayUse] = await Promise.all([
     safeSelect(supabase.from('rooms').select('id').eq('lodge_id', lodgeId), []),
-    safeSelect(supabase.from('bookings').select('check_in, check_out, total_amount, charges_total, amount_paid, payment_status, status').eq('lodge_id', lodgeId), []),
-    safeSelect(supabase.from('payments').select('amount, paid_at').eq('lodge_id', lodgeId).gte('paid_at', reportCashStart).lte('paid_at', reportCashEnd), []),
+    safeSelect(supabase.from('bookings').select('id, check_in, check_out, total_amount, charges_total, amount_paid, payment_status, status').eq('lodge_id', lodgeId), []),
+    safeSelect(supabase.from('payments').select('booking_id, amount, paid_at, type').eq('lodge_id', lodgeId).gte('paid_at', reportCashStart).lte('paid_at', reportCashEnd), []),
     safeSelect(supabase.from('expenses').select('amount, date').eq('lodge_id', lodgeId).gte('date', monthStart).lte('date', monthEnd), []),
     safeSelect(supabase.from('pos_orders').select('total, created_at').eq('lodge_id', lodgeId).gte('created_at', monthStart).neq('status', 'voided'), []),
     safeSelect(supabase.from('conference_bookings').select('total_amount, payment_status').eq('lodge_id', lodgeId).gte('booking_date', monthStart).lte('booking_date', monthEnd).neq('payment_status', 'cancelled'), []),
@@ -317,6 +319,33 @@ async function buildReportsSnapshotLegacy(lodgeId, today = formatDate(new Date()
       return paidAt >= start && paidAt <= end && Number(payment.amount || 0) < 0
     })
     .reduce((sum, payment) => sum + Math.abs(Number(payment.amount || 0)), 0)
+  const cancelledBookingIds = new Set(
+    bookings
+      .filter((booking) => String(booking.status || '') === 'cancelled')
+      .map((booking) => booking.id)
+      .filter(Boolean)
+  )
+  const retainedForPeriod = (start, end) => {
+    let retained = 0
+    let count = 0
+    const seenBookingIds = new Set()
+    for (const payment of payments) {
+      const paidAt = String(payment.paid_at || '').slice(0, 10)
+      if (paidAt < start || paidAt > end) continue
+      const amount = Number(payment.amount || 0)
+      if (amount <= 0) continue
+      if (String(payment.type || '').toLowerCase() === 'refund') continue
+      if (!cancelledBookingIds.has(payment.booking_id)) continue
+      retained += amount
+      if (payment.booking_id && !seenBookingIds.has(payment.booking_id)) {
+        seenBookingIds.add(payment.booking_id)
+        count += 1
+      }
+    }
+    return { retained, count }
+  }
+  const monthRetained = retainedForPeriod(monthStart, monthEnd)
+  const lastMonthRetained = retainedForPeriod(lastMonthStart, lastMonthEnd)
 
   const occupancyForPeriod = (start, end) => {
     const occ = bookings.filter((booking) => booking.status === 'checked_in' && booking.check_in <= end && booking.check_out >= start).length
@@ -336,6 +365,10 @@ async function buildReportsSnapshotLegacy(lodgeId, today = formatDate(new Date()
     lastMonthRev: revForPeriod(lastMonthStart, lastMonthEnd),
     monthRefunds: refundsForPeriod(monthStart, monthEnd),
     lastMonthRefunds: refundsForPeriod(lastMonthStart, lastMonthEnd),
+    monthRetainedRevenue: monthRetained.retained,
+    lastMonthRetainedRevenue: lastMonthRetained.retained,
+    monthRetainedCount: monthRetained.count,
+    lastMonthRetainedCount: lastMonthRetained.count,
     monthOcc: occupancyForPeriod(monthStart, monthEnd),
     lastMonthOcc: occupancyForPeriod(lastMonthStart, lastMonthEnd),
     currentOcc: bookings.filter((booking) => booking.status === 'checked_in').length,
@@ -703,6 +736,9 @@ export async function getDashboardSnapshot(lodgeId) {
 export async function getReportsSnapshot(lodgeId, options = {}) {
   assertCapability('dashboard.view')
   const today = options.today || formatDate(new Date())
+  const todayDate = new Date(`${today}T00:00:00`)
+  const monthStart = `${today.slice(0, 7)}-01`
+  const monthEnd = formatDate(new Date(todayDate.getFullYear(), todayDate.getMonth() + 1, 0))
   return queryWithCache({
     lodgeId,
     key: 'reports_snapshot',
@@ -718,10 +754,22 @@ export async function getReportsSnapshot(lodgeId, options = {}) {
         if (!snapshot || typeof snapshot !== 'object') {
           throw new Error('Reports snapshot was empty.')
         }
-        return snapshot
+        const maintenanceRows = await listMaintenanceTickets(lodgeId, { forceFresh: options.forceFresh === true }).catch(() => [])
+        return {
+          ...snapshot,
+          maintenanceCosts: maintenanceCostsForRange(maintenanceRows, monthStart, monthEnd)
+        }
       } catch (rpcError) {
         try {
-          return await buildReportsSnapshotLegacy(lodgeId, today)
+          const snapshot = await buildReportsSnapshotLegacy(lodgeId, today)
+          if (typeof snapshot.maintenanceCosts !== 'number') {
+            const maintenanceRows = await listMaintenanceTickets(lodgeId, { forceFresh: options.forceFresh === true }).catch(() => [])
+            return {
+              ...snapshot,
+              maintenanceCosts: maintenanceCostsForRange(maintenanceRows, monthStart, monthEnd)
+            }
+          }
+          return snapshot
         } catch (fallbackError) {
           recordPwaIssue(lodgeId, 'reports.load', rpcError, { fallbackError, source: 'reports' })
           throw new Error(describeReadError('Reports', fallbackError, getErrorMessage(rpcError)))
@@ -769,13 +817,27 @@ export async function getBookingPayments(lodgeId, bookingId) {
   return data || []
 }
 
-async function listMaintenance(lodgeId) {
+export async function listMaintenanceTickets(lodgeId, options = {}) {
   return queryWithCache({
     lodgeId,
     key: 'maintenance',
     fallback: [],
+    forceFresh: options.forceFresh === true,
     fetcher: () => safeSelect(supabase.from('maintenance_tickets').select('*').eq('lodge_id', lodgeId).order('created_at', { ascending: false }), [])
   })
+}
+
+function maintenanceTicketDate(ticket = {}) {
+  return String(ticket.reported_date || ticket.created_at || ticket.date || '').slice(0, 10)
+}
+
+function maintenanceCostsForRange(rows = [], startDate, endDate) {
+  return (rows || [])
+    .filter((row) => {
+      const day = maintenanceTicketDate(row)
+      return (!startDate || day >= startDate) && (!endDate || day <= endDate)
+    })
+    .reduce((sum, row) => sum + Number(row.total_cost || 0), 0)
 }
 
 export async function createMaintenance(lodgeId, payload) {
@@ -1220,7 +1282,7 @@ async function performOfflineQueueFlush(lodgeId) {
   await Promise.allSettled([
     listBookings(lodgeId),
     listRooms(lodgeId),
-    listMaintenance(lodgeId),
+    listMaintenanceTickets(lodgeId),
     listCustomers(lodgeId),
     listQuotations(lodgeId).catch(() => []),
     listInventory(lodgeId).catch(() => []),
@@ -1337,17 +1399,17 @@ export async function authenticateManager(identifier, password, lodgeId = null) 
 
   const rows = extractManagerCandidates(data, email)
   if (rows.length === 0) {
-    throw new Error('That email or Manager PWA password is incorrect.')
+    throw new Error('That email or mobile app password is incorrect.')
   }
 
   const authedRows = rows.filter((row) => row.authenticated === true)
   if (authedRows.length === 0) {
-    throw new Error('That email or Manager PWA password is incorrect.')
+    throw new Error('That email or mobile app password is incorrect.')
   }
 
   const enabledRows = authedRows.filter((row) => row.pwa_enabled === true)
   if (enabledRows.length === 0) {
-    throw new Error(authedRows[0]?.pwa_disabled_reason || 'Manager PWA access is disabled for this account.')
+    throw new Error(authedRows[0]?.pwa_disabled_reason || 'Manager mobile app access is disabled for this account.')
   }
 
   const entitledRows = enabledRows.filter((row) => row.pwa_feature_enabled !== false)
@@ -1369,7 +1431,7 @@ export async function authenticateManager(identifier, password, lodgeId = null) 
     throw new Error('That lodge is no longer available for this account.')
   }
   if (!selected.session_token) {
-    throw new Error('The server did not issue a valid Manager PWA session.')
+    throw new Error('The server did not issue a valid mobile app session.')
   }
 
   return { user: selected }

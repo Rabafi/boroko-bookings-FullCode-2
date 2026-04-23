@@ -521,6 +521,17 @@ export default function POS() {
     })
   }
 
+  const setQty = (idx, rawValue) => {
+    const parsed = Number.parseInt(String(rawValue || '').replace(/[^\d]/g, ''), 10)
+    const quantity = Number.isFinite(parsed) && parsed > 0 ? parsed : 1
+    setOrderItems((prev) => {
+      if (!prev[idx]) return prev
+      const updated = [...prev]
+      updated[idx] = { ...updated[idx], quantity }
+      return updated
+    })
+  }
+
   const orderTotal = orderItems.reduce((s, i) => s + i.quantity * i.unit_price, 0)
   const menuMutationsDisabled = offlineMode || menuSaving || !!barTemplateSavingKey
   const orderStockIssues = useMemo(() => {
@@ -824,10 +835,6 @@ export default function POS() {
 
   async function submitVoidApproval(e) {
     e.preventDefault()
-    if (offlineMode) {
-      setVoidError('Requires internet connection')
-      return
-    }
     if (!voidTarget?.id) {
       setVoidError('Order not found')
       return
@@ -853,6 +860,26 @@ export default function POS() {
       })
 
       if (res?.success) {
+        const voidedAt = new Date().toISOString()
+        setVoidHistory((prev) => [
+          {
+            id: res?.override_log_id || `local-void-${voidTarget.id}-${voidedAt}`,
+            order_id: voidTarget.id,
+            action: 'void',
+            requested_by: currentUser?.id || null,
+            approved_by: res?.approved_by || null,
+            approver_name: res?.approver_name || null,
+            reason: res?.reason || voidReason.trim(),
+            outlet_id: voidTarget.outlet_id || selectedOutlet?.id || null,
+            created_at: voidedAt,
+            _pending_sync: res?.offline === true,
+            _sync_state: res?.offline === true ? 'pending' : 'synced'
+          },
+          ...prev.filter((entry) => entry.order_id !== voidTarget.id)
+        ])
+        setOrders((prev) => prev.map((order) => (
+          order.id === voidTarget.id ? { ...order, status: 'voided' } : order
+        )))
         closeVoidModal(true)
         await refreshLivePosState({ includeOrders: true })
       } else {
@@ -1268,7 +1295,16 @@ export default function POS() {
                         onClick={() => updateQty(idx, -1)}
                         className={touchMode ? qtyButtonClass : 'flex h-6 w-6 items-center justify-center rounded bg-slate-100 text-sm font-bold text-slate-600 hover:bg-red-50 hover:text-red-600'}
                       >−</button>
-                      <span className={`${touchMode ? 'w-7 text-sm' : 'w-6 text-sm'} text-center font-medium`}>{item.quantity}</span>
+                      <input
+                        type="number"
+                        min="1"
+                        step="1"
+                        inputMode="numeric"
+                        value={item.quantity}
+                        onChange={(e) => setQty(idx, e.target.value)}
+                        className={`input px-2 text-center font-medium ${touchMode ? 'w-16 py-2 text-sm' : 'w-12 py-1 text-xs'}`}
+                        aria-label={`Quantity for ${item.item_name}`}
+                      />
                       <button
                         onClick={() => updateQty(idx, 1)}
                         className={touchMode ? qtyButtonPlusClass : 'flex h-6 w-6 items-center justify-center rounded bg-slate-100 text-sm font-bold text-slate-600 hover:bg-green-50 hover:text-green-600'}
@@ -1781,34 +1817,22 @@ export default function POS() {
                               <div className="mt-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
                                 <p className="font-semibold">Void record</p>
                                 <p className="mt-1">
-                                  Approved by: {voidEntry?.approver_name || 'Recorded in system'}
+                                  Approved by: {voidEntry?.approver_name || o._void_approver_name || (voidEntry?.approved_by || o._void_approved_by ? 'PIN-approved approver' : 'Awaiting sync record')}
                                   {voidEntry?.created_at ? ` · ${new Date(voidEntry.created_at).toLocaleString()}` : ''}
                                 </p>
                                 <p className="mt-1">
-                                  Reason: {voidEntry?.reason || 'No reason recorded'}
+                                  Reason: {voidEntry?.reason || o._void_reason || 'Awaiting sync record'}
                                 </p>
                               </div>
                             )}
                             {o.status !== 'voided' && (
-                              (syncState === 'needs_attention' || syncState === 'pending' || syncState === 'failed') ? (
+                              (syncState === 'needs_attention' || syncState === 'failed') ? (
                                 <p className="mt-2 text-xs text-amber-700">
-                                  Resolve sync issue in System Health before voiding.
+                                  Resolve this POS sync issue in System Health before voiding.
                                 </p>
                               ) : canVoid ? (
                                 <button
-                                  onClick={async () => {
-                                    if (offlineMode) return
-                                    if (!confirm('Void this order?')) return
-                                    try {
-                                      const res = await window.api.pos.voidOrder(o.id)
-                                      if (!res?.success) alert(res?.error || 'Failed to void order.')
-                                    } catch (err) {
-                                      alert(err?.message || 'Failed to void order.')
-                                    }
-                                    await refreshLivePosState({ includeOrders: true })
-                                  }}
-                                  disabled={offlineMode}
-                                  title={offlineMode ? 'Requires internet connection' : undefined}
+                                  onClick={() => openVoidModal(o)}
                                   className="mt-2 text-xs text-red-500 hover:text-red-700 disabled:cursor-not-allowed disabled:opacity-40"
                                 >
                                   Void Order
@@ -1816,8 +1840,6 @@ export default function POS() {
                               ) : (
                                 <button
                                   onClick={() => openVoidModal(o)}
-                                  disabled={offlineMode}
-                                  title={offlineMode ? 'Requires internet connection' : undefined}
                                   className="mt-2 text-xs text-amber-600 hover:text-amber-800 disabled:cursor-not-allowed disabled:opacity-40"
                                 >
                                   Request Void Approval
@@ -2066,10 +2088,10 @@ export default function POS() {
 
               <button
                 type="submit"
-                disabled={voidLoading || offlineMode}
+                disabled={voidLoading}
                 className="flex-1 rounded-xl bg-red-600 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
               >
-                {voidLoading ? 'Verifying…' : 'Approve Void'}
+                {voidLoading ? 'Verifying...' : offlineMode ? 'Approve Offline Void' : 'Approve Void'}
               </button>
             </div>
           </form>

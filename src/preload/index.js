@@ -114,13 +114,14 @@ const api = {
     clearCriticalErrors: () => ipcRenderer.invoke('reports:clearCriticalErrors'),
     saveSupportBundle: (limit) => ipcRenderer.invoke('reports:saveSupportBundle', limit),
     runFinancialValidation: () => ipcRenderer.invoke('reports:runFinancialValidation'),
-    savePDF: () => ipcRenderer.invoke('reports:savePDF'),
+    savePDF: (payload) => ipcRenderer.invoke('reports:savePDF', payload),
     saveExcel: (data) => ipcRenderer.invoke('reports:saveExcel', data),
     posSales: (start, end, outletId) => ipcRenderer.invoke('reports:posSales', start, end, outletId),
     inventorySpend: (start, end, outletId) => ipcRenderer.invoke('reports:inventorySpend', start, end, outletId),
     supplySpend: (start, end) => ipcRenderer.invoke('reports:supplySpend', start, end),
     nightAudit: (date) => ipcRenderer.invoke('reports:nightAudit', date),
     profitLoss: (start, end) => ipcRenderer.invoke('reports:profitLoss', start, end),
+    maintenanceRows: (start, end) => ipcRenderer.invoke('reports:maintenanceRows', start, end),
     outletProfitLoss: (start, end) => ipcRenderer.invoke('reports:outletProfitLoss', start, end),
     roomProfitability: (start, end) => ipcRenderer.invoke('reports:roomProfitability', start, end),
     exportOfflineSafetyManifest: () => ipcRenderer.invoke('reports:exportOfflineSafetyManifest')
@@ -150,6 +151,7 @@ const api = {
   },
   app: {
     getVersion: () => ipcRenderer.invoke('app:getVersion'),
+    notify: (payload) => ipcRenderer.invoke('app:notify', payload),
     logRendererError: (payload) => ipcRenderer.invoke('app:logRendererError', payload),
     getRendererErrors: (limit) => ipcRenderer.invoke('app:getRendererErrors', limit),
     clearRendererErrors: () => ipcRenderer.invoke('app:clearRendererErrors'),
@@ -166,6 +168,9 @@ const api = {
     savePolicy: (updates) => ipcRenderer.invoke('backup:savePolicy', updates),
     runManagedNow: () => ipcRenderer.invoke('backup:runManagedNow'),
     createManual: () => ipcRenderer.invoke('backup:createManual'),
+    verify: (name) => ipcRenderer.invoke('backup:verify', name),
+    previewRestore: (name) => ipcRenderer.invoke('backup:previewRestore', name),
+    createRestoreRehearsal: (name) => ipcRenderer.invoke('backup:createRestoreRehearsal', name),
     openFolder: () => ipcRenderer.invoke('backup:openFolder'),
     openManagedFolder: () => ipcRenderer.invoke('backup:openManagedFolder')
   },
@@ -260,6 +265,7 @@ const api = {
     getAllocations: (start, end) => ipcRenderer.invoke('supplies:getAllocations', start, end),
     getWeekAllocations: (weekStart) => ipcRenderer.invoke('supplies:getWeekAllocations', weekStart),
     exportReport: (payload) => ipcRenderer.invoke('supplies:exportReport', payload),
+    exportReportPdf: (payload) => ipcRenderer.invoke('supplies:exportReportPdf', payload),
     getStocktakes: (limit) => ipcRenderer.invoke('supplies:getStocktakes', limit),
     createStocktake: (data) => ipcRenderer.invoke('supplies:createStocktake', data),
     getStocktake: (stocktakeId) => ipcRenderer.invoke('supplies:getStocktake', stocktakeId),
@@ -339,11 +345,13 @@ const api = {
   },
   import: {
     parseExcel: () => ipcRenderer.invoke('import:parseExcel'),
-    execute: (rows, filename) => ipcRenderer.invoke('import:execute', rows, filename),
+    execute: (rows, filename, type) => ipcRenderer.invoke('import:execute', rows, filename, type),
+    dryRun: (rows, type) => ipcRenderer.invoke('import:dryRun', rows, type),
+    getTypes: () => ipcRenderer.invoke('import:getTypes'),
     checkDuplicates: (rows) => ipcRenderer.invoke('import:checkDuplicates', rows),
     undoBatch: (batchId) => ipcRenderer.invoke('import:undoBatch', batchId),
     getBatches: () => ipcRenderer.invoke('import:getBatches'),
-    downloadTemplate: () => ipcRenderer.invoke('import:downloadTemplate'),
+    downloadTemplate: (type) => ipcRenderer.invoke('import:downloadTemplate', type),
     onProgress: (cb) => {
       const handler = (_, progress) => cb(progress)
       ipcRenderer.on('import:progress', handler)
@@ -351,7 +359,12 @@ const api = {
     }
   },
   data: {
-    exportAll: () => ipcRenderer.invoke('data:exportAll')
+    exportAll: (options) => ipcRenderer.invoke('data:exportAll', options),
+    onExportProgress: (cb) => {
+      const handler = (_, progress) => cb(progress)
+      ipcRenderer.on('data:exportProgress', handler)
+      return () => ipcRenderer.removeListener('data:exportProgress', handler)
+    }
   },
   dayuse: {
     getAll: (start, end) => ipcRenderer.invoke('dayuse:getAll', start, end),

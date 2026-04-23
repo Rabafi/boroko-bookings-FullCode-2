@@ -9,10 +9,11 @@ const NAV = [
   { to: '/more', label: 'More', icon: Menu }
 ]
 
-export default function BottomNav({ alertCount = 0 }) {
+export default function BottomNav({ alertCount = 0, notificationCount = 0 }) {
+  const moreBadgeCount = alertCount + notificationCount
   return (
     <nav
-      className="fixed bottom-0 left-0 right-0 bg-gray-900 border-t border-gray-800 flex items-center justify-around px-2 pb-safe z-50"
+      className="pwa-bottom-nav fixed bottom-0 left-0 right-0 bg-gray-900 border-t border-gray-800 flex items-center justify-around px-2 z-40"
       style={{ paddingBottom: 'max(env(safe-area-inset-bottom), 8px)' }}
     >
       {NAV.map(({ to, label, icon: Icon, end }) => (
@@ -28,9 +29,9 @@ export default function BottomNav({ alertCount = 0 }) {
         >
           <div className="relative">
             <Icon size={22} />
-            {label === 'More' && alertCount > 0 && (
+            {label === 'More' && moreBadgeCount > 0 && (
               <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[10px] font-bold w-4 h-4 rounded-full flex items-center justify-center">
-                {alertCount > 9 ? '9+' : alertCount}
+                {moreBadgeCount > 9 ? '9+' : moreBadgeCount}
               </span>
             )}
           </div>

@@ -24,7 +24,7 @@ export default function Maintenance() {
   const [tickets, setTickets] = useState([])
   const [rooms, setRooms] = useState([])
   const [loading, setLoading] = useState(false)
-  const [statusFilter, setStatusFilter] = useState('open')
+  const [statusFilter, setStatusFilter] = useState('all')
 
   const [formOpen, setFormOpen] = useState(false)
   const [editOpen, setEditOpen] = useState(false)
@@ -136,7 +136,7 @@ export default function Maintenance() {
 
       {/* Status filter tabs */}
       <div className="bb-filter-bar w-fit">
-        {[['open', 'Open'], ['in_progress', 'In Progress'], ['resolved', 'Resolved'], ['all', 'All']].map(
+        {[['all', 'All'], ['open', 'Open'], ['in_progress', 'In Progress'], ['resolved', 'Resolved']].map(
           ([v, l]) => (
             <button
               key={v}

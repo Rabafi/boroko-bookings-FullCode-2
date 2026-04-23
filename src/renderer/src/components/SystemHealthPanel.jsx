@@ -100,12 +100,12 @@ function HumanContext({ details, rooms, customers }) {
 function sanitizeForOperator(raw) {
   if (!raw) return 'Unknown sync failure'
   const msg = String(raw)
-  if (/room.*conflict|no_overlapping_bookings/i.test(msg)) return 'Room conflict — this room was already booked for the selected dates.'
-  if (/idempotency.*required/i.test(msg)) return 'Operation requires a retry key — retry this item.'
-  if (/authenticated.*required|authentication.*required|session.*required/i.test(msg)) return 'Session expired — sign in again, then retry.'
-  if (/lodge.*role|permission denied|insufficient.*privilege/i.test(msg)) return 'Permission denied — check the account role in Settings.'
-  if (/unique.*violation|duplicate key/i.test(msg)) return 'Duplicate record — this item may already exist on the server.'
-  if (/not found/i.test(msg)) return 'Record not found on server — it may have been deleted remotely.'
+  if (/room.*conflict|no_overlapping_bookings/i.test(msg)) return 'Room already booked for those dates.'
+  if (/idempotency.*required/i.test(msg)) return 'This change needs another try.'
+  if (/authenticated.*required|authentication.*required|session.*required/i.test(msg)) return 'Sign in again, then try once more.'
+  if (/lodge.*role|permission denied|insufficient.*privilege/i.test(msg)) return 'Permission needed. Check the account role.'
+  if (/unique.*violation|duplicate key/i.test(msg)) return 'This item may already exist.'
+  if (/not found/i.test(msg)) return 'This item was not found online.'
   if (/overpay/i.test(msg)) return 'Payment would exceed the booking total — adjust and retry.'
   if (/below zero/i.test(msg)) return 'Adjustment would reduce paid balance below zero.'
   const cleaned = msg
@@ -124,24 +124,100 @@ const SYNC_OP_LABEL = {
   update_booking_payment:   'Payment',
   create_customer:          'New guest',
   update_customer:          'Update guest',
-  update_customer_blacklist:'Update guest blacklist',
+  update_customer_blacklist:'Guest flag update',
   create_room:              'New room',
   update_room:              'Update room',
   update_room_housekeeping: 'Housekeeping update',
-  create_quotation:         'New quotation',
-  update_quotation:         'Update quotation',
-  mark_quotation_sent:      'Quotation sent',
-  convert_quotation:        'Quotation conversion',
+  create_quotation:         'New quote',
+  update_quotation:         'Update quote',
+  mark_quotation_sent:      'Quote sent',
+  convert_quotation:        'Convert quote',
+  convert_quotation_to_booking: 'Quote to booking',
   create_user:              'New staff account',
-  update_user_profile:      'Staff profile update',
-  set_user_password:        'Password change',
+  update_user_profile:      'Update staff profile',
+  set_user_password:        'Reset password',
   delete_user:              'Remove staff account',
-  add_booking_charge:       'Booking charge',
-  void_pos_order:           'POS void',
+  add_booking_charge:       'Add charge',
+  void_pos_order:           'Remove sale',
 }
 
 function syncOpLabel(table) {
   return SYNC_OP_LABEL[table] || table || 'Unknown operation'
+}
+
+const PLAIN_LABEL_OVERRIDES = {
+  payments_rpc: 'Payments',
+  bookings_rpc: 'Bookings',
+  customers_rpc: 'Guests',
+  rooms_rpc: 'Rooms',
+  users_rpc: 'Staff',
+  quotations_rpc: 'Quotes',
+  pos_rpc: 'Sales',
+  db_init: 'Database',
+  replay_auth: 'Sign-in',
+  manager_mobile_app: 'Manager mobile app',
+}
+
+function plainLabel(value) {
+  if (value == null) return 'Item'
+  const raw = String(value).trim()
+  if (!raw) return 'Item'
+  const override = PLAIN_LABEL_OVERRIDES[raw.toLowerCase()]
+  if (override) return override
+  return raw
+    .replace(/_/g, ' ')
+    .replace(/\brpc\b/gi, '')
+    .replace(/\bpos\b/gi, 'sale')
+    .replace(/\bdb\b/gi, 'database')
+    .replace(/\bauth\b/gi, 'sign-in')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, (ch) => ch.toUpperCase())
+}
+
+function plainStatusLabel(value) {
+  const raw = String(value ?? '').trim().toLowerCase()
+  const labels = {
+    ok: 'Clear',
+    good: 'Clear',
+    clear: 'Clear',
+    ready: 'Ready',
+    success: 'Clear',
+    done: 'Clear',
+    complete: 'Clear',
+    completed: 'Clear',
+    matched: 'Clear',
+    match: 'Clear',
+    balanced: 'Clear',
+    pending: 'Waiting',
+    waiting: 'Waiting',
+    in_progress: 'Waiting',
+    partial: 'Partly matched',
+    mismatch: 'Needs review',
+    mismatched: 'Needs review',
+    needs_review: 'Needs review',
+    failed: 'Needs review',
+    bad: 'Needs review',
+    error: 'Needs review',
+    warning: 'Needs review',
+    degraded: 'Needs review',
+    stale: 'Out of date',
+    blocked: 'Blocked',
+    unknown: 'Unknown'
+  }
+  return labels[raw] || plainLabel(value)
+}
+
+function plainOutcomeLabel(value) {
+  const raw = String(value ?? '').trim().toLowerCase()
+  const labels = {
+    success: 'Success',
+    empty: 'Nothing to send',
+    partial: 'Partly sent',
+    failed: 'Needs review',
+    unknown: 'Unknown'
+  }
+  return labels[raw] || plainLabel(value)
 }
 
 // ─── Main component ────────────────────────────────────────────────────────────
@@ -219,7 +295,7 @@ export default function SystemHealthPanel() {
       setRooms(Array.isArray(nextRooms) ? nextRooms : [])
       setCustomers(Array.isArray(nextCustomers) ? nextCustomers : [])
     } catch (error) {
-      pushFlash('error', error?.message || 'Could not refresh system health.')
+      pushFlash('error', error?.message || 'Could not refresh the status page.')
     } finally {
       setLoading(false)
     }
@@ -253,10 +329,10 @@ export default function SystemHealthPanel() {
     try {
       const result = await window.api.sync.runNow().catch((e) => ({ success: false, error: e.message }))
       if (result?.success === false) {
-        pushFlash('error', result.error || 'Could not run sync right now.')
+        pushFlash('error', result.error || 'Could not start sending right now.')
         return
       }
-      pushFlash('success', 'Sync running… status will update automatically.')
+      pushFlash('success', 'Sending now. This page will update automatically.')
       // runNow() fires the sync asynchronously — poll until items drain or
       // sync finishes (up to ~15 s). The onStatusChanged subscription above
       // will also update the panel reactively while we poll here.
@@ -287,10 +363,10 @@ export default function SystemHealthPanel() {
     try {
       const result = await window.api.sync.retryFailed().catch((e) => ({ success: false, error: e.message }))
       if (result?.success === false) {
-        pushFlash('error', result.error || 'Could not retry failed sync items.')
+        pushFlash('error', result.error || 'Could not try again right now.')
         return
       }
-      pushFlash('success', `Moved ${result.retried || 0} failed item(s) back into the sync queue.`)
+      pushFlash('success', `Moved ${result.retried || 0} item(s) back into the list.`)
       await load()
     } finally {
       setActionBusy('')
@@ -303,10 +379,10 @@ export default function SystemHealthPanel() {
     try {
       const result = await window.api.sync.retryFailed([queueId]).catch((e) => ({ success: false, error: e.message }))
       if (result?.success === false) {
-        pushFlash('error', result.error || 'Could not retry this failed sync item.')
+        pushFlash('error', result.error || 'Could not try again for this item.')
         return
       }
-      pushFlash('success', 'Moved that failed item back into the sync queue.')
+      pushFlash('success', 'Moved that item back into the list.')
       await load()
     } finally {
       setActionBusy('')
@@ -318,13 +394,13 @@ export default function SystemHealthPanel() {
     try {
       const result = await window.api.sync.clearFailed().catch((e) => ({ success: false, error: e.message }))
       if (result?.success === false) {
-        pushFlash('error', result.error || 'Could not clear failed sync items.')
+        pushFlash('error', result.error || 'Could not clear the items needing review.')
         return
       }
       const alertCount = Number(result.integrityAlertsRecorded || 0)
       const msg = alertCount > 0
-        ? `Cleared ${result.removed || 0} item(s). Warning: ${alertCount} integrity alert(s) were recorded because remote persistence is still unconfirmed.`
-        : `Cleared ${result.removed || 0} failed item(s).`
+        ? `Cleared ${result.removed || 0} item(s). Warning: ${alertCount} issue alert(s) were saved because the online copy is not confirmed yet.`
+        : `Cleared ${result.removed || 0} item(s) needing review.`
       pushFlash(alertCount > 0 ? 'error' : 'success', msg)
       await load()
     } finally {
@@ -350,10 +426,10 @@ export default function SystemHealthPanel() {
     try {
       const result = await window.api.reports.runFinancialValidation().catch((e) => ({ success: false, error: e.message }))
       if (result?.success === false) {
-        pushFlash('error', result.error || 'Could not run financial validation right now.')
+        pushFlash('error', result.error || 'Could not run the money check right now.')
         return
       }
-      pushFlash('success', 'Financial validation snapshot recorded.')
+      pushFlash('success', 'Money check recorded.')
       await load()
     } finally {
       setActionBusy('')
@@ -365,10 +441,10 @@ export default function SystemHealthPanel() {
     try {
       const result = await window.api.reports.saveSupportBundle?.(25).catch((e) => ({ success: false, error: e.message }))
       if (!result?.success) {
-        pushFlash('error', result?.error || 'Could not export a support bundle right now.')
+        pushFlash('error', result?.error || 'Could not save the report right now.')
         return
       }
-      pushFlash('success', `Support bundle saved to ${result.filePath}`)
+      pushFlash('success', `Report saved to ${result.filePath}`)
     } finally {
       setActionBusy('')
     }
@@ -382,12 +458,12 @@ export default function SystemHealthPanel() {
         window.api.app?.clearRendererErrors?.().catch((e) => ({ success: false, error: e.message })) || Promise.resolve({ success: true })
       ])
       if (criticalResult?.success === false || rendererResult?.success === false) {
-        pushFlash('error', 'Could not clear all error history.')
+        pushFlash('error', 'Could not clear all history.')
         return
       }
       setCriticalErrors([])
       setRendererErrors([])
-      pushFlash('success', 'Critical and screen error history cleared.')
+      pushFlash('success', 'Important issue history cleared.')
       await load()
     } finally {
       setActionBusy('')
@@ -398,58 +474,58 @@ export default function SystemHealthPanel() {
     setActionBusy('send-report')
     try {
       const issues = []
-      if (failedCount > 0) issues.push(`${failedCount} sync item${failedCount === 1 ? '' : 's'} failed and need review`)
-      if (pendingCount > 0) issues.push(`${pendingCount} item${pendingCount === 1 ? '' : 's'} are still waiting to sync`)
-      if (cacheStale) issues.push('fresh server data is still catching up after a refresh problem')
-      if (!financeRpcOk) issues.push('the finance contract check needs attention')
-      if (!contractAllOk) issues.push('one or more replay-critical RPCs are missing')
-      if (financeMismatchCount > 0) issues.push(`${financeMismatchCount} finance mismatch${financeMismatchCount === 1 ? '' : 'es'} were detected`)
-      if (invoiceGapCount > 0) issues.push(`${invoiceGapCount} invoice issue${invoiceGapCount === 1 ? '' : 's'} were detected`)
-      if (validationAlerts.length > 0) issues.push(`${validationAlerts.length} recent validation alert${validationAlerts.length === 1 ? '' : 's'} were logged`)
-      if (criticalErrors.length > 0) issues.push(`${criticalErrors.length} recent critical app error${criticalErrors.length === 1 ? '' : 's'} were logged`)
-      if (rendererErrors.length > 0) issues.push(`${rendererErrors.length} recent screen/app error${rendererErrors.length === 1 ? '' : 's'}`)
-      if (!diagnosticsOk) issues.push('profile diagnostics need review')
-      if (faults.length > 0) issues.push(`${faults.length} system integrity fault${faults.length === 1 ? '' : 's'} recorded`)
-      if (financialFailedCount > 0) issues.push(`${financialFailedCount} financial operation(s) dead-lettered`)
-      if (reconciliationLocalOnly) issues.push('financial reconciliation could not be verified (offline at time of check)')
+      if (failedCount > 0) issues.push(`${failedCount} item${failedCount === 1 ? '' : 's'} need review`)
+      if (pendingCount > 0) issues.push(`${pendingCount} item${pendingCount === 1 ? '' : 's'} are still waiting to send`)
+      if (cacheStale) issues.push('fresh data is still catching up after a refresh problem')
+      if (!financeRpcOk) issues.push('the money check needs attention')
+      if (!contractAllOk) issues.push('one or more required online checks are missing')
+      if (financeMismatchCount > 0) issues.push(`${financeMismatchCount} money difference${financeMismatchCount === 1 ? '' : 's'} were found`)
+      if (invoiceGapCount > 0) issues.push(`${invoiceGapCount} invoice issue${invoiceGapCount === 1 ? '' : 's'} were found`)
+      if (validationAlerts.length > 0) issues.push(`${validationAlerts.length} recent money alert${validationAlerts.length === 1 ? '' : 's'} were saved`)
+      if (criticalErrors.length > 0) issues.push(`${criticalErrors.length} recent important app issue${criticalErrors.length === 1 ? '' : 's'} were saved`)
+      if (rendererErrors.length > 0) issues.push(`${rendererErrors.length} recent screen issue${rendererErrors.length === 1 ? '' : 's'} were saved`)
+      if (!diagnosticsOk) issues.push('the account check needs review')
+      if (faults.length > 0) issues.push(`${faults.length} issue${faults.length === 1 ? '' : 's'} were recorded`)
+      if (financialFailedCount > 0) issues.push(`${financialFailedCount} money item${financialFailedCount === 1 ? '' : 's'} could not be sent`)
+      if (reconciliationLocalOnly) issues.push('the money check could not be verified because the app was offline')
 
       const plainLanguageSummary = issues.length > 0
         ? issues.map((issue) => `- ${issue}`).join('\n')
-        : '- Staff requested a review of system health even though no current issues were detected.'
+        : '- Staff requested a review of this status page even though no current issues were detected.'
 
       const description = [
-        'A staff member asked Command Central to review this lodge health report.',
+        'A staff member asked for a review of this lodge health report.',
         '',
         'Plain-language summary:',
         plainLanguageSummary,
         '',
         'Quick counts:',
-        `- Failed sync items: ${failedCount}`,
-        `- Pending sync items: ${pendingCount}`,
-        `- Financial failed: ${financialFailedCount}`,
-        `- Finance mismatches: ${financeMismatchCount}`,
+        `- Items needing review: ${failedCount}`,
+        `- Items still sending: ${pendingCount}`,
+        `- Money items needing review: ${financialFailedCount}`,
+        `- Money differences: ${financeMismatchCount}`,
         `- Invoice issues: ${invoiceGapCount}`,
-        `- Health faults: ${faults.length}`,
-        `- Validation alerts: ${validationAlerts.length}`,
-        `- Critical app errors: ${criticalErrors.length}`,
-        `- Renderer errors: ${rendererErrors.length}`,
+        `- Problems: ${faults.length}`,
+        `- Money alerts: ${validationAlerts.length}`,
+        `- Important app issues: ${criticalErrors.length}`,
+        `- Screen issues: ${rendererErrors.length}`,
         '',
         `Reporter: ${sessionUser?.name || sessionUser?.email || 'Unknown user'}`,
         `Lodge: ${globalSettings?.lodge_name || health?.lodge_name || 'Unknown'}`,
-        `Lodge ID: ${globalSettings?.lodge_id || health?.lodge_id || 'Unknown'}`,
+        `Lodge reference: ${globalSettings?.lodge_id || health?.lodge_id || 'Unknown'}`,
       ].join('\n')
 
       await window.api.admin.createSupportTicket({
         lodge_id: globalSettings?.lodge_id || health?.lodge_id || 'unknown',
         lodge_name: globalSettings?.lodge_name || health?.lodge_name || '',
-        title: `System Health Review Request${criticalErrors.length > 0 || faults.length > 0 || failedCount > 0 ? ' - Issues Detected' : ''}`,
+        title: `Health Review Request${criticalErrors.length > 0 || faults.length > 0 || failedCount > 0 ? ' - Issues Found' : ''}`,
         description,
         category: 'Technical Support',
         priority: criticalErrors.length > 0 || faults.length > 0 || financialFailedCount > 0 ? 'High' : failedCount > 0 ? 'Normal' : 'Low'
       })
-      pushFlash('success', 'System health report sent to Command Central.')
+      pushFlash('success', 'Health report sent for review.')
     } catch (error) {
-      pushFlash('error', error?.message || 'Could not send the system health report right now.')
+      pushFlash('error', error?.message || 'Could not send the report right now.')
     } finally {
       setActionBusy('')
     }
@@ -480,7 +556,7 @@ export default function SystemHealthPanel() {
   const lastSyncAt         = syncDetails?.syncMeta?.lastSyncFinishedAt || health?.sync?.lastSuccessfulSyncAt || null
   const lastSyncOutcome    = syncMeta?.lastSyncOutcome || null
   const lastSyncError      = syncMeta?.lastSyncError || ''
-  const syncState          = syncRunning ? 'Syncing' : failedCount > 0 ? 'Failed' : 'Idle'
+  const syncState          = syncRunning ? 'Sending' : failedCount > 0 ? 'Needs review' : 'Ready'
   const cacheFreshness     = syncDetails?.cacheFreshness || {}
   const staleCaches        = Object.entries(cacheFreshness).filter(([, m]) => m.stale).map(([k]) => k)
   const needsAttention     = failedCount > 0 || pendingCount > 0 || cacheStale || blockingFaults.length > 0 || integrityRiskFaults.length > 0 || lastSyncOutcome === 'partial' || lastSyncOutcome === 'failed'
@@ -552,11 +628,11 @@ export default function SystemHealthPanel() {
       {/* Header */}
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="text-lg font-bold text-gray-900">System Health</h2>
+          <h2 className="text-lg font-bold text-gray-900">Health Check</h2>
           <p className="mt-1 text-sm text-gray-500">
-            Sync recency, finance RPC readiness, reconciliation, backup availability, and profile diagnostics.
+            Recent activity, money checks, backups, and account status.
             <span className="ml-2 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-500">
-              This device only — does not reflect PWA/browser queue state
+              This view shows only this computer.
             </span>
           </p>
         </div>
@@ -569,22 +645,22 @@ export default function SystemHealthPanel() {
           <button type="button" onClick={runSyncNow} disabled={actionBusy === 'run-sync'}
             className="inline-flex items-center gap-2 rounded-xl bg-blue-700 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-800 disabled:opacity-60">
             <Play size={14} />
-            {actionBusy === 'run-sync' ? 'Running…' : 'Run Sync Now'}
+            {actionBusy === 'run-sync' ? 'Checking…' : 'Check Now'}
           </button>
           <button type="button" onClick={exportSupportBundle} disabled={actionBusy === 'support-bundle'}
             className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-60">
             <Download size={14} />
-            {actionBusy === 'support-bundle' ? 'Saving…' : 'Export Bundle'}
+            {actionBusy === 'support-bundle' ? 'Saving…' : 'Save Report'}
           </button>
           <button type="button" onClick={sendReportToCommandCentral} disabled={actionBusy === 'send-report'}
             className="inline-flex items-center gap-2 rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-800 disabled:opacity-60">
             <ShieldCheck size={14} />
-            {actionBusy === 'send-report' ? 'Sending…' : 'Send To Command Central'}
+            {actionBusy === 'send-report' ? 'Sending…' : 'Send Report'}
           </button>
           <button type="button" onClick={clearErrorHistory} disabled={actionBusy === 'clear-errors'}
             className="inline-flex items-center gap-2 rounded-xl border border-rose-200 bg-rose-50 px-4 py-2 text-sm font-semibold text-rose-800 transition hover:bg-rose-100 disabled:opacity-60">
             <Trash2 size={14} />
-            {actionBusy === 'clear-errors' ? 'Clearing…' : 'Clear Error History'}
+            {actionBusy === 'clear-errors' ? 'Clearing…' : 'Clear History'}
           </button>
         </div>
       </div>
@@ -596,7 +672,7 @@ export default function SystemHealthPanel() {
         </div>
       )}
 
-      {/* P0-4: Blocking fault alerts */}
+      {/* Blocking issues */}
       {blockingFaults.map((fault) => (
         <div key={fault.id} className="rounded-2xl border border-red-300 bg-red-50 px-5 py-4">
           <div className="flex flex-wrap items-start justify-between gap-3">
@@ -604,7 +680,7 @@ export default function SystemHealthPanel() {
               <XCircle size={18} className="mt-0.5 shrink-0 text-red-700" />
               <div>
                 <p className="text-sm font-bold text-red-900">
-                  {fault.type === 'queue_corrupt' ? 'Sync Queue Corruption Detected' : 'Cache Corruption Detected'}
+                  {fault.type === 'queue_corrupt' ? 'Saved changes issue found' : 'Saved data issue found'}
                 </p>
                 <p className="mt-1 text-sm text-red-800/80">{fault.message}</p>
                 <p className="mt-1 text-xs text-red-700/70">{formatTs(fault.at)}</p>
@@ -619,18 +695,18 @@ export default function SystemHealthPanel() {
         </div>
       ))}
 
-      {/* Convergence Drift alerts (booking_drift, quotation_drift, pos_drift) */}
+      {/* Data mismatch alerts */}
       {driftFaults.map((fault) => (
         <div key={fault.id} className="rounded-2xl border border-amber-300 bg-amber-50 px-5 py-4">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="flex items-start gap-3">
               <AlertTriangle size={18} className="mt-0.5 shrink-0 text-amber-700" />
               <div>
-                <p className="text-xs font-semibold uppercase tracking-wide text-amber-600 mb-0.5">Convergence Drift</p>
+                <p className="text-xs font-semibold uppercase tracking-wide text-amber-600 mb-0.5">Data mismatch</p>
                 <p className="text-sm font-bold text-amber-900">
-                  {fault.type === 'quotation_drift' ? 'Post-Sync Quotation Drift Detected'
-                    : fault.type === 'pos_drift' ? 'Post-Sync POS Order Drift Detected'
-                    : 'Post-Sync Booking Drift Detected'}
+                  {fault.type === 'quotation_drift' ? 'Quotation changed after save'
+                    : fault.type === 'pos_drift' ? 'POS order changed after save'
+                    : 'Booking changed after save'}
                 </p>
                 <p className="mt-1 text-sm text-amber-800/80">{fault.message}</p>
                 <p className="mt-1 text-xs text-amber-700/70">{formatTs(fault.at)}</p>
@@ -651,8 +727,8 @@ export default function SystemHealthPanel() {
             <div className="flex items-start gap-3">
               <AlertTriangle size={18} className="mt-0.5 shrink-0 text-rose-700" />
               <div>
-                <p className="text-xs font-semibold uppercase tracking-wide text-rose-600 mb-0.5">Manual Review Required</p>
-                <p className="text-sm font-bold text-rose-900">Server Mismatch Detected During Replay</p>
+                <p className="text-xs font-semibold uppercase tracking-wide text-rose-600 mb-0.5">Needs review</p>
+                <p className="text-sm font-bold text-rose-900">Online copy and this computer do not match</p>
                 <p className="mt-1 text-sm text-rose-800/80">{fault.message}</p>
                 <p className="mt-1 text-xs text-rose-700/70">{formatTs(fault.at)}</p>
               </div>
@@ -684,8 +760,8 @@ export default function SystemHealthPanel() {
             <div className="flex items-start gap-3">
               <AlertTriangle size={18} className="mt-0.5 shrink-0 text-red-700" />
               <div>
-                <p className="text-xs font-semibold uppercase tracking-wide text-red-600 mb-0.5">Manual Review Required</p>
-                <p className="text-sm font-bold text-red-900">Manual Clear Left Integrity Unproven</p>
+                <p className="text-xs font-semibold uppercase tracking-wide text-red-600 mb-0.5">Needs review</p>
+                <p className="text-sm font-bold text-red-900">A manual clear still needs checking</p>
                 <p className="mt-1 text-sm text-red-800/80">{fault.message}</p>
                 <p className="mt-1 text-xs text-red-700/70">{formatTs(fault.at)}</p>
               </div>
@@ -712,7 +788,7 @@ export default function SystemHealthPanel() {
       ))}
 
 
-      {/* Info faults (muted/gray) */}
+      {/* Info items */}
       {infoFaults.map((fault) => (
         <div key={fault.id} className="rounded-2xl border border-slate-200 bg-slate-50 px-5 py-4">
           <div className="flex flex-wrap items-start justify-between gap-3">
@@ -732,7 +808,7 @@ export default function SystemHealthPanel() {
         </div>
       ))}
 
-      {/* Unresolved Local State card */}
+      {/* Saved changes card */}
       {unresolvedLocal && (
         <div className={`rounded-2xl border px-5 py-4 ${localStateAcknowledged ? 'border-slate-200 bg-slate-50' : 'border-amber-200 bg-amber-50'}`}>
           <div className="flex items-start gap-3">
@@ -740,10 +816,10 @@ export default function SystemHealthPanel() {
             <div className="flex-1">
               <p className={`text-sm font-semibold ${localStateAcknowledged ? 'text-slate-600' : 'text-amber-900'}`}>
                 {unresolvedLocal.total > 0
-                  ? `Unresolved Local State (${unresolvedLocal.total} record${unresolvedLocal.total === 1 ? '' : 's'})`
+                  ? `Saved changes still open (${unresolvedLocal.total} item${unresolvedLocal.total === 1 ? '' : 's'})`
                   : localStateAcknowledged
-                    ? 'All local state acknowledged'
-                    : 'Local state acknowledgement not yet proven'}
+                    ? 'All saved changes confirmed'
+                    : 'Saved changes not yet confirmed'}
               </p>
               {unresolvedLocal.total > 0 && (
                 <div className="mt-2 space-y-1">
@@ -756,7 +832,7 @@ export default function SystemHealthPanel() {
                     { key: 'posOrders', label: 'POS Orders' }
                   ].filter(({ key }) => (unresolvedLocal[key]?.count ?? 0) > 0).map(({ key, label }) => (
                     <div key={key} className="text-xs text-amber-800">
-                      <span className="font-medium">{label}:</span> {unresolvedLocal[key].count} unresolved
+                      <span className="font-medium">{label}:</span> {unresolvedLocal[key].count} still open
                       {unresolvedLocal[key].ids?.length > 0 && (
                         <span className="ml-1 text-amber-700/70">({unresolvedLocal[key].ids.slice(0, 3).map(id => String(id).slice(0, 8)).join(', ')}{unresolvedLocal[key].ids.length > 3 ? '…' : ''})</span>
                       )}
@@ -766,10 +842,10 @@ export default function SystemHealthPanel() {
               )}
               {unresolvedLocal.total === 0 && !localStateAcknowledged && (
                 <p className="mt-1 text-xs text-amber-800/80">
-                  Queue is not yet in a state where this device can prove local changes are fully acknowledged remotely.
-                  {!health?.online && ' App is offline.'}
-                  {health?.online && !replayAuthReady && ' Replay is paused until an authenticated session is restored.'}
-                  {pendingCount > 0 && ' Pending queue items still exist.'}
+                  This device cannot yet confirm that all saved changes reached the online copy.
+                  {!health?.online && ' The app is offline.'}
+                  {health?.online && !replayAuthReady && ' Sending is paused until sign-in is restored.'}
+                  {pendingCount > 0 && ' Some items are still waiting to send.'}
                 </p>
               )}
               {localStateAcknowledged && (
@@ -780,30 +856,30 @@ export default function SystemHealthPanel() {
         </div>
       )}
 
-      {/* General attention banner */}
+      {/* Attention banner */}
       {needsAttention && !blockingFaults.length && (
         <div className={`rounded-2xl px-5 py-4 shadow-sm ${failedCount > 0 ? 'border border-red-200 bg-red-50' : 'border border-amber-200 bg-amber-50'}`}>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <p className={`text-sm font-semibold ${failedCount > 0 ? 'text-red-900' : 'text-amber-900'}`}>
                 {failedCount > 0
-                  ? 'Some operations need manual review before staff can trust the latest data.'
+                  ? 'Some items need review before staff can trust the latest data.'
                   : manualClearFaults.length > 0
-                    ? 'Some failed items were cleared manually, so remote persistence is still unproven.'
+                    ? 'Some items were cleared manually, so they still need checking.'
                     : ghostFaults.length > 0
-                      ? 'Replay found server/local mismatch that needs review before the data can be trusted.'
+                      ? 'The online copy and this computer do not match yet.'
                       : convergenceFaults.length > 0
-                        ? 'Replay completed, but the refreshed server state differs from prior local assumptions.'
+                        ? 'The refreshed data is different from what this device expected.'
                   : cacheStale
-                    ? 'Fresh data is still retrying after a refresh failure.'
-                    : 'The app is still syncing local work to the server.'}
+                    ? 'Fresh data is still retrying after a refresh problem.'
+                    : 'The app is still sending saved changes.'}
               </p>
               <p className={`mt-1 text-sm ${failedCount > 0 ? 'text-red-800/80' : 'text-amber-800/80'}`}>
-                {failedCount > 0 && `${failedCount} failed item${failedCount === 1 ? '' : 's'} parked for review. `}
-                {manualClearFaults.length > 0 && `${manualClearFaults.length} manually-cleared item${manualClearFaults.length === 1 ? '' : 's'} still require verification. `}
-                {ghostFaults.length > 0 && `${ghostFaults.length} replay mismatch alert${ghostFaults.length === 1 ? '' : 's'} detected. `}
-                {convergenceFaults.length > 0 && !ghostFaults.length && `${convergenceFaults.length} convergence alert${convergenceFaults.length === 1 ? '' : 's'} logged. `}
-                {pendingCount > 0 && `${pendingCount} pending item${pendingCount === 1 ? '' : 's'} still syncing. `}
+                {failedCount > 0 && `${failedCount} item${failedCount === 1 ? '' : 's'} need review. `}
+                {manualClearFaults.length > 0 && `${manualClearFaults.length} manually cleared item${manualClearFaults.length === 1 ? '' : 's'} still need checking. `}
+                {ghostFaults.length > 0 && `${ghostFaults.length} mismatch alert${ghostFaults.length === 1 ? '' : 's'} detected. `}
+                {convergenceFaults.length > 0 && !ghostFaults.length && `${convergenceFaults.length} data mismatch alert${convergenceFaults.length === 1 ? '' : 's'} saved. `}
+                {pendingCount > 0 && `${pendingCount} item${pendingCount === 1 ? '' : 's'} still sending. `}
                 {cacheStale && `${syncDetails?.cacheStale?.names?.join(', ') || 'Booking'} data may still be catching up.`}
               </p>
             </div>
@@ -812,13 +888,13 @@ export default function SystemHealthPanel() {
                 <button type="button" onClick={retryFailed} disabled={actionBusy === 'retry'}
                   className="inline-flex items-center gap-2 rounded-xl border border-red-300 bg-white px-3 py-2 text-xs font-semibold text-red-800 transition hover:bg-red-50 disabled:opacity-60">
                   <RotateCcw size={13} />
-                  {actionBusy === 'retry' ? 'Retrying…' : 'Retry Failed Items'}
+                  {actionBusy === 'retry' ? 'Retrying…' : 'Try Again for All'}
                 </button>
               )}
               <button type="button" onClick={load} disabled={loading}
                 className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-60">
                 <RefreshCw size={13} className={loading ? 'animate-spin' : ''} />
-                Refresh Health
+                Refresh
               </button>
             </div>
           </div>
@@ -830,8 +906,8 @@ export default function SystemHealthPanel() {
         <div className="rounded-2xl border border-blue-200 bg-blue-50 px-5 py-3">
           <div className="flex items-center gap-3">
             <RefreshCw size={16} className="animate-spin text-blue-600" />
-            <p className="text-sm font-semibold text-blue-900">
-              Sync replay is currently running — queue is draining. Counts will update when finished.
+              <p className="text-sm font-semibold text-blue-900">
+              The app is sending saved changes now. Counts will update when it finishes.
             </p>
           </div>
         </div>
@@ -843,7 +919,7 @@ export default function SystemHealthPanel() {
           <div className="flex items-center gap-3">
             <AlertCircle size={16} className="text-amber-600" />
             <p className="text-sm font-semibold text-amber-900">
-              Queue replay is paused — no authenticated session detected. Log in to allow sync replay.
+              Sending is paused until you sign in again.
             </p>
           </div>
         </div>
@@ -853,18 +929,18 @@ export default function SystemHealthPanel() {
       {(financialFailedCount > 0 || financialPendingCount > 0) && (
         <div className={`rounded-2xl px-5 py-4 shadow-sm ${financialFailedCount > 0 ? 'border border-red-300 bg-red-50' : 'border border-amber-200 bg-amber-50'}`}>
           <p className={`text-sm font-bold ${financialFailedCount > 0 ? 'text-red-900' : 'text-amber-900'}`}>
-            Financial Sync Risk
+            Money check
           </p>
           {financialFailedCount > 0 && (
             <p className="mt-1 text-sm text-red-800/80">
-              {financialFailedCount} financial operation{financialFailedCount === 1 ? '' : 's'} are dead-lettered.
-              The affected booking balances may be incorrect until resolved.
+              {financialFailedCount} money-related item{financialFailedCount === 1 ? '' : 's'} need review.
+              The related balances may be off until resolved.
             </p>
           )}
           {financialPendingCount > 0 && (
             <p className="mt-1 text-sm text-amber-800/80">
-              {financialPendingCount} financial operation{financialPendingCount === 1 ? '' : 's'} are pending sync.
-              Balances shown in the app may not yet reflect server truth.
+              {financialPendingCount} money-related item{financialPendingCount === 1 ? '' : 's'} are still sending.
+              Balances shown here may not be final yet.
             </p>
           )}
           <div className="mt-3 flex flex-wrap gap-2">
@@ -879,7 +955,7 @@ export default function SystemHealthPanel() {
               <button key={id} type="button"
                 onClick={() => navigate('/bookings', { state: { reviewBookingId: id } })}
                 className="inline-flex items-center gap-1.5 rounded-lg border border-amber-200 bg-white px-3 py-1.5 text-xs font-semibold text-amber-800 transition hover:bg-amber-50">
-                Pending: {String(id).slice(0, 8)}…
+                Waiting: {String(id).slice(0, 8)}…
               </button>
             ))}
           </div>
@@ -893,29 +969,29 @@ export default function SystemHealthPanel() {
           <div className="flex items-center gap-3">
             <div className="rounded-xl bg-blue-50 p-2 text-blue-600"><Wifi size={18} /></div>
             <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-gray-500">Sync Status</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-gray-500">Status</p>
               <p className="mt-1 text-lg font-bold text-gray-900">{syncState}</p>
             </div>
           </div>
           <div className="mt-3 grid grid-cols-2 gap-3 text-sm">
             <div className="rounded-xl bg-gray-50 px-3 py-2">
-              <p className="text-[11px] uppercase tracking-[0.12em] text-gray-400">Pending</p>
+              <p className="text-[11px] uppercase tracking-[0.12em] text-gray-400">Waiting</p>
               <p className="mt-1 text-lg font-bold text-gray-900">{pendingCount}</p>
             </div>
             <div className="rounded-xl bg-gray-50 px-3 py-2">
-              <p className="text-[11px] uppercase tracking-[0.12em] text-gray-400">Failed</p>
+              <p className="text-[11px] uppercase tracking-[0.12em] text-gray-400">Needs review</p>
               <p className={`mt-1 text-lg font-bold ${failedCount > 0 ? 'text-red-700' : 'text-gray-900'}`}>{failedCount}</p>
             </div>
           </div>
           <p className="mt-3 text-sm text-gray-600">
-            {syncRunning
-              ? 'Sync is running now.'
+              {syncRunning
+              ? 'The app is sending changes now.'
               : pendingCount > 0
-                ? 'Pending items are waiting to be sent.'
-                : 'No sync activity is running right now.'}
+                ? 'Some items are still waiting to send.'
+                : 'Nothing is sending right now.'}
           </p>
           <p className="mt-1 text-xs text-gray-400">
-            Last successful sync: {lastSyncAt ? formatTs(lastSyncAt) : 'No successful sync recorded yet'}
+            Last successful send: {lastSyncAt ? formatTs(lastSyncAt) : 'No successful send recorded yet'}
           </p>
           {lastSyncError && (
             <p className="mt-1 text-xs text-red-600">{lastSyncError}</p>
@@ -927,9 +1003,9 @@ export default function SystemHealthPanel() {
           <div className="flex items-center gap-3">
             <div className="rounded-xl bg-emerald-50 p-2 text-emerald-600"><ShieldCheck size={18} /></div>
             <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-gray-500">Finance Contract</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-gray-500">Money checks</p>
               <p className={`mt-1 text-lg font-bold ${financeRpcOk && contractAllOk ? 'text-gray-900' : 'text-red-700'}`}>
-                {financeRpcOk && contractAllOk ? 'All RPCs Ready' : 'RPC Unavailable'}
+                {financeRpcOk && contractAllOk ? 'Ready' : 'Needs attention'}
               </p>
             </div>
           </div>
@@ -944,13 +1020,13 @@ export default function SystemHealthPanel() {
           <div className="flex items-center gap-3">
             <div className="rounded-xl bg-amber-50 p-2 text-amber-600"><AlertTriangle size={18} /></div>
             <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-gray-500">Failed Sync Queue</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-gray-500">Needs review</p>
               <p className={`mt-1 text-lg font-bold ${failedCount > 0 ? 'text-red-700' : 'text-gray-900'}`}>{failedCount}</p>
             </div>
           </div>
-          <p className="mt-3 text-sm text-gray-500">Review items that could not sync and check the reason shown below.</p>
+          <p className="mt-3 text-sm text-gray-500">Review items that could not be sent and check the reason shown below.</p>
           {financialFailedCount > 0 && (
-            <p className="mt-1 text-xs font-semibold text-red-700">{financialFailedCount} financial operation{financialFailedCount === 1 ? '' : 's'} affected</p>
+            <p className="mt-1 text-xs font-semibold text-red-700">{financialFailedCount} money-related item{financialFailedCount === 1 ? '' : 's'} affected</p>
           )}
         </div>
 
@@ -959,7 +1035,7 @@ export default function SystemHealthPanel() {
           <div className="flex items-center gap-3">
             <div className="rounded-xl bg-rose-50 p-2 text-rose-600"><Database size={18} /></div>
             <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-gray-500">Reconciliation</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-gray-500">Money check</p>
               {reconciliationLocalOnly ? (
                 <p className="mt-1 text-lg font-bold text-amber-600">Not Verified</p>
               ) : (
@@ -968,9 +1044,9 @@ export default function SystemHealthPanel() {
             </div>
           </div>
           {reconciliationLocalOnly ? (
-            <p className="mt-3 text-xs font-semibold text-amber-700">Cannot verify — offline at time of check. Run again when connected.</p>
+            <p className="mt-3 text-xs font-semibold text-amber-700">Cannot verify while offline. Run again when connected.</p>
           ) : (
-            <p className="mt-3 text-sm text-gray-500">Booking, payment, folio, and invoice mismatches.</p>
+                <p className="mt-3 text-sm text-gray-500">Booking, payment, and invoice differences.</p>
           )}
         </div>
       </div>
@@ -985,18 +1061,18 @@ export default function SystemHealthPanel() {
           <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-gray-200">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <h3 className="text-sm font-semibold text-gray-900">Sync Recovery</h3>
-                <p className="mt-1 text-xs text-gray-500">Operations that failed repeated sync attempts. See the reason under each item, then retry or open the booking to resolve.</p>
+                <h3 className="text-sm font-semibold text-gray-900">Items that need review</h3>
+                <p className="mt-1 text-xs text-gray-500">These changes did not send cleanly. Check the reason under each item, then try again or open the booking.</p>
               </div>
               <div className="flex gap-2">
                 <button type="button" onClick={retryFailed} disabled={actionBusy === 'retry' || !syncDetails?.failed?.length}
                   className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-xs font-semibold text-gray-700 transition hover:border-green-500 hover:text-green-700 disabled:opacity-60">
                   <RotateCcw size={13} />
-                  {actionBusy === 'retry' ? 'Retrying…' : 'Retry All Failed'}
+                  {actionBusy === 'retry' ? 'Retrying…' : 'Try Again for All'}
                 </button>
                 <button type="button" onClick={clearFailed} disabled={actionBusy === 'clear' || !syncDetails?.failed?.length}
                   className="rounded-lg border border-red-200 px-3 py-2 text-xs font-semibold text-red-700 transition hover:bg-red-50 disabled:opacity-60">
-                  {actionBusy === 'clear' ? 'Clearing…' : 'Clear Failed'}
+                  {actionBusy === 'clear' ? 'Clearing…' : 'Clear Items'}
                 </button>
               </div>
             </div>
@@ -1004,7 +1080,7 @@ export default function SystemHealthPanel() {
             <div className="mt-4 space-y-3">
               {!syncDetails?.failed?.length ? (
                 <div className="rounded-xl border border-dashed border-gray-200 px-4 py-8 text-center text-sm text-gray-500">
-                  No failed sync items right now.
+                  No items need review right now.
                 </div>
               ) : (
                 syncDetails.failed.slice(0, 8).map((item) => {
@@ -1012,11 +1088,11 @@ export default function SystemHealthPanel() {
                   const isAutoRetryable = item.isAutoRetryable !== false
                   const retryLabel = isAutoRetryable
                     ? item.autoRetryEligible
-                      ? 'Auto-retry eligible now'
+                      ? 'Ready to try again'
                       : item.nextAutoRetryAt
-                        ? `Auto-retry at ${formatTs(item.nextAutoRetryAt)}`
-                        : 'Auto-retry armed'
-                    : 'Manual retry required'
+                        ? `Will try again at ${formatTs(item.nextAutoRetryAt)}`
+                        : 'Will try again automatically'
+                    : 'Try again manually'
                   return (
                     <div
                       key={item._queue_id}
@@ -1025,12 +1101,12 @@ export default function SystemHealthPanel() {
                     >
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="flex items-center gap-2">
-                          <StatusPill ok={false} label={(item.type || 'op').toUpperCase()} />
+                          <StatusPill ok={false} label={plainLabel(item.type || 'change')} />
                           <span className="text-sm font-semibold text-gray-900">{syncOpLabel(item.table)}</span>
-                          {isFinancial && <span className="rounded-full bg-red-100 px-2 py-0.5 text-[11px] font-semibold text-red-700">Financial</span>}
+                          {isFinancial && <span className="rounded-full bg-red-100 px-2 py-0.5 text-[11px] font-semibold text-red-700">Money</span>}
                         </div>
                         <span className="text-xs text-gray-400">
-                          {item.lastAttemptedAt ? formatTs(item.lastAttemptedAt) : 'Not attempted recently'}
+                          {item.lastAttemptedAt ? formatTs(item.lastAttemptedAt) : 'Not tried recently'}
                         </span>
                       </div>
                       <p className="mt-2 text-sm text-red-700">{sanitizeForOperator(item.lastError)}</p>
@@ -1039,7 +1115,7 @@ export default function SystemHealthPanel() {
                         {retryLabel}
                       </p>
                       <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
-                        <p className="text-xs text-gray-500">Queue ID: {item._queue_id || '—'}</p>
+                        <p className="text-xs text-gray-500">Reference: {item._queue_id || '—'}</p>
                         <div className="flex flex-wrap items-center gap-2">
                           {getSyncItemAction(item) && (
                             <button type="button"
@@ -1055,7 +1131,7 @@ export default function SystemHealthPanel() {
                             disabled={actionBusy === `retry:${item._queue_id}`}
                             className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-semibold text-gray-700 transition hover:border-green-500 hover:text-green-700 disabled:opacity-60">
                             <RotateCcw size={12} />
-                            {actionBusy === `retry:${item._queue_id}` ? 'Retrying…' : 'Retry This Item'}
+                            {actionBusy === `retry:${item._queue_id}` ? 'Retrying…' : 'Try Again'}
                           </button>
                         </div>
                       </div>
@@ -1070,38 +1146,38 @@ export default function SystemHealthPanel() {
           <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-gray-200" data-testid="system-health-pending-queue">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <h3 className="text-sm font-semibold text-gray-900">Pending Sync Queue</h3>
-                <p className="mt-1 text-xs text-gray-500">Local operations still waiting to reach the server.</p>
+                <h3 className="text-sm font-semibold text-gray-900">Items still sending</h3>
+                <p className="mt-1 text-xs text-gray-500">Changes on this device are still on their way.</p>
               </div>
-              <StatusPill ok={pendingCount === 0} label={pendingCount === 0 ? 'Clear' : `${pendingCount} pending`} warn={pendingCount > 0 && failedCount === 0} />
+              <StatusPill ok={pendingCount === 0} label={pendingCount === 0 ? 'Clear' : `${pendingCount} waiting`} warn={pendingCount > 0 && failedCount === 0} />
             </div>
             <div className="mt-4 space-y-3">
               {!syncDetails?.pending?.length ? (
                 <div className="rounded-xl border border-dashed border-gray-200 px-4 py-6 text-center text-sm text-gray-500">
-                  No pending sync items right now.
+                  No items are waiting to send right now.
                 </div>
               ) : (
                 syncDetails.pending.slice(0, 6).map((item) => (
                   <div key={item._queue_id} className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3" data-testid="system-health-pending-item">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="flex items-center gap-2">
-                        <StatusPill ok={false} label={(item.type || 'op').toUpperCase()} warn />
+                        <StatusPill ok={false} label={plainLabel(item.type || 'change')} warn />
                         <span className="text-sm font-semibold text-gray-900">{syncOpLabel(item.table)}</span>
                       </div>
                       <span className="text-xs text-gray-400">
-                        {item.createdAt ? formatTs(item.createdAt) : 'Queued locally'}
+                        {item.createdAt ? formatTs(item.createdAt) : 'Saved on this computer'}
                       </span>
                     </div>
                     <div className="mt-2 flex flex-wrap gap-2 text-[11px]">
                       <span className={`rounded-full px-2 py-1 font-semibold ${item.isFinancial ? 'bg-rose-100 text-rose-800' : 'bg-slate-100 text-slate-700'}`}>
-                        {item.isFinancial ? 'Financial' : 'Operational'}
+                        {item.isFinancial ? 'Money' : 'General'}
                       </span>
                       <span className="rounded-full bg-slate-100 px-2 py-1 font-semibold text-slate-700">
-                        Dependency: {item.dependencyState || 'unknown'}
+                        State: {plainStatusLabel(item.dependencyState || 'unknown')}
                       </span>
                       {item._depends_on && (
                         <span className="rounded-full bg-slate-100 px-2 py-1 font-semibold text-slate-700">
-                          Waits on {item._depends_on}
+                          Waits for {item._depends_on}
                         </span>
                       )}
                     </div>
@@ -1116,10 +1192,10 @@ export default function SystemHealthPanel() {
             <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-gray-200">
               <div className="flex items-center justify-between gap-3">
                 <div>
-                  <h3 className="text-sm font-semibold text-gray-900">Integrity Alerts</h3>
-                  <p className="mt-1 text-xs text-gray-500">Structural issues detected and logged during operation.</p>
+                  <h3 className="text-sm font-semibold text-gray-900">Other issues</h3>
+                  <p className="mt-1 text-xs text-gray-500">Issues found while the app was running.</p>
                 </div>
-                <StatusPill ok={false} label={`${faults.length} logged`} />
+                <StatusPill ok={false} label={`${faults.length} saved`} />
               </div>
               <div className="mt-4 space-y-3">
                 {faults.filter((f) => !['queue_corrupt', 'cache_corrupt'].includes(f.type)).slice(0, 8).map((fault) => {
@@ -1128,7 +1204,7 @@ export default function SystemHealthPanel() {
                   return (
                   <div key={fault.id} className={`rounded-xl px-4 py-3 ${isHighRisk ? 'border border-red-200 bg-red-50' : 'border border-amber-200 bg-amber-50'}`}>
                     <div className="flex flex-wrap items-center justify-between gap-2">
-                      <p className={`text-sm font-semibold ${isHighRisk ? 'text-red-900' : 'text-amber-900'}`}>{fault.type?.replace(/_/g, ' ')}</p>
+                      <p className={`text-sm font-semibold ${isHighRisk ? 'text-red-900' : 'text-amber-900'}`}>{plainLabel(fault.type)}</p>
                       <div className="flex items-center gap-2">
                         <span className={`text-xs ${isHighRisk ? 'text-red-700/80' : 'text-amber-700/80'}`}>{formatTs(fault.at)}</span>
                         {getSyncItemAction(fault) && (
@@ -1162,39 +1238,39 @@ export default function SystemHealthPanel() {
 
           {/* Sync metadata + contract */}
           <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-gray-200">
-            <h3 className="text-sm font-semibold text-gray-900" data-testid="system-health-sync-detail">Sync Status Detail</h3>
+            <h3 className="text-sm font-semibold text-gray-900" data-testid="system-health-sync-detail">Status details</h3>
             <div className="mt-4 space-y-2 text-sm">
               <div className="flex items-center justify-between gap-2">
-                <span className="text-gray-500">Last sync finished</span>
+                <span className="text-gray-500">Last send finished</span>
                 <span className="font-medium text-gray-800 text-right">{formatTs(lastSyncAt) || 'Not recorded'}</span>
               </div>
               <div className="flex items-center justify-between gap-2">
-                <span className="text-gray-500">Last outcome</span>
+                <span className="text-gray-500">Last result</span>
                 <StatusPill
                   ok={lastSyncOutcome === 'success' || lastSyncOutcome === 'empty'}
                   warn={lastSyncOutcome === 'partial'}
-                  label={lastSyncOutcome || 'unknown'}
+                  label={plainOutcomeLabel(lastSyncOutcome)}
                 />
               </div>
               <div className="flex items-center justify-between gap-2">
-                <span className="text-gray-500">Replay auth ready</span>
+                <span className="text-gray-500">Can send</span>
                 <StatusPill ok={replayAuthReady} label={replayAuthReady ? 'Yes' : 'Not yet'} />
               </div>
               <div className="flex items-center justify-between gap-2">
-                <span className="text-gray-500">Sync in progress</span>
-                <StatusPill ok={!syncRunning} warn={syncRunning} label={syncRunning ? 'Running' : 'Idle'} />
+                <span className="text-gray-500">Sending now</span>
+                <StatusPill ok={!syncRunning} warn={syncRunning} label={syncRunning ? 'Sending' : 'Idle'} />
               </div>
               {lastSyncError && (
                 <p className="rounded-xl bg-red-50 px-3 py-2 text-xs text-red-700">{lastSyncError}</p>
               )}
             </div>
 
-            {/* P0-7: RPC contract probes */}
+            {/* Connection checks */}
             {health?.finance?.contract && (
               <div className="mt-5 border-t border-gray-100 pt-4">
                 <div className="flex items-center justify-between gap-3">
-                  <h4 className="text-sm font-semibold text-gray-900">Replay RPC Contract</h4>
-                  <StatusPill ok={contractAllOk} label={contractAllOk ? 'All Ready' : 'Missing RPCs'} />
+                  <h4 className="text-sm font-semibold text-gray-900">Connection checks</h4>
+                  <StatusPill ok={contractAllOk} label={contractAllOk ? 'Ready' : 'Needs attention'} />
                 </div>
                 {!contractAllOk && (
                   <p className="mt-2 text-xs text-red-700">{health.finance.contract.message}</p>
@@ -1202,7 +1278,7 @@ export default function SystemHealthPanel() {
                 <div className="mt-3 grid gap-1">
                   {Object.entries(contractProbes).map(([name, probe]) => (
                     <div key={name} className="flex items-center justify-between gap-2 rounded-lg bg-gray-50 px-3 py-1.5">
-                      <span className="text-xs font-mono text-gray-700">{name}</span>
+                      <span className="text-xs font-medium text-gray-700">{plainLabel(name)}</span>
                       <StatusPill ok={probe.ok} label={probe.ok ? 'OK' : 'Missing'} />
                     </div>
                   ))}
@@ -1216,20 +1292,20 @@ export default function SystemHealthPanel() {
             <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-gray-200">
               <div className="flex items-center justify-between gap-3">
                 <div>
-                  <h3 className="text-sm font-semibold text-gray-900">Cache Freshness</h3>
-                  <p className="mt-1 text-xs text-gray-500">Last time each local cache was refreshed from Supabase.</p>
+                  <h3 className="text-sm font-semibold text-gray-900">Last updated</h3>
+                  <p className="mt-1 text-xs text-gray-500">Last time each saved list was refreshed online.</p>
                 </div>
                 {staleCaches.length > 0 && (
-                  <StatusPill ok={false} warn label={`${staleCaches.length} stale`} />
+                  <StatusPill ok={false} warn label={`${staleCaches.length} out of date`} />
                 )}
               </div>
               <div className="mt-4 grid gap-1.5">
                 {Object.entries(cacheFreshness).map(([name, meta]) => (
                   <div key={name} className={`flex items-center justify-between rounded-lg px-3 py-2 ${meta.stale ? 'bg-amber-50 ring-1 ring-amber-200' : 'bg-gray-50'}`}>
                     <div className="flex items-center gap-2">
-                      <span className="text-xs font-medium text-gray-700">{name}</span>
+                      <span className="text-xs font-medium text-gray-700">{plainLabel(name)}</span>
                       {meta.source === 'remote' && (
-                        <span className="rounded-full bg-green-100 px-1.5 py-0.5 text-[10px] font-medium text-green-700">remote</span>
+                        <span className="rounded-full bg-green-100 px-1.5 py-0.5 text-[10px] font-medium text-green-700">online</span>
                       )}
                     </div>
                     <div className="flex items-center gap-2">
@@ -1248,8 +1324,8 @@ export default function SystemHealthPanel() {
           <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-gray-200">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <h3 className="text-sm font-semibold text-gray-900">Financial Reconciliation</h3>
-                <p className="mt-1 text-xs text-gray-500">Cross-check booking snapshots against payment, folio, and invoice data.</p>
+                <h3 className="text-sm font-semibold text-gray-900">Money check</h3>
+                <p className="mt-1 text-xs text-gray-500">Cross-check bookings against payments and invoice totals.</p>
               </div>
               {/* P0-3: never show green when offline */}
               {reconciliationLocalOnly ? (
@@ -1273,9 +1349,9 @@ export default function SystemHealthPanel() {
                 <div className="flex items-start gap-3">
                   <Info size={16} className="mt-0.5 shrink-0 text-amber-600" />
                   <div>
-                    <p className="text-sm font-semibold text-amber-900">Cannot verify financial agreement — offline</p>
+                    <p className="text-sm font-semibold text-amber-900">Cannot check money totals while offline</p>
                     <p className="mt-1 text-xs text-amber-800/80">
-                      {reconciliation?.message || 'Reconciliation requires an internet connection. Connect and refresh to run a real check.'}
+                      {reconciliation?.message || 'This check needs an internet connection. Connect and refresh to run it again.'}
                     </p>
                   </div>
                 </div>
@@ -1286,40 +1362,40 @@ export default function SystemHealthPanel() {
                   {[
                     ['Payment mismatches', reconciliationSummary.paymentMismatches],
                     ['Charge mismatches', reconciliationSummary.chargeMismatches],
-                    ['Invoice gaps', reconciliationSummary.invoiceGaps],
-                    ['Orphan invoices', reconciliationSummary.orphanInvoices],
-                    ['Pending Refunds', reconciliationSummary.pendingRefunds],
+                    ['Missing invoices', reconciliationSummary.invoiceGaps],
+                    ['Unlinked invoices', reconciliationSummary.orphanInvoices],
+                    ['Refunds waiting', reconciliationSummary.pendingRefunds],
                   ].map(([label, val]) => (
                     <div key={label} className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3">
                       <p className="text-xs font-semibold uppercase tracking-[0.16em] text-gray-500">{label}</p>
-                      <p className={`mt-2 text-2xl font-bold ${Number(val) > 0 ? (label === 'Pending Refunds' ? 'text-amber-700' : 'text-red-700') : 'text-gray-900'}`}>{val || 0}</p>
+                      <p className={`mt-2 text-2xl font-bold ${Number(val) > 0 ? (label === 'Refunds waiting' ? 'text-amber-700' : 'text-red-700') : 'text-gray-900'}`}>{val || 0}</p>
                     </div>
                   ))}
                 </div>
                 {(reconciliation?.paymentMismatches || []).slice(0, 2).map((item) => (
                   <div key={`pay-${item.booking_id}`} className="mt-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3">
-                    <p className="text-sm font-semibold text-rose-900">Payment mismatch · {item.invoice_number || String(item.booking_id).slice(0, 8)}</p>
-                    <p className="mt-1 text-sm text-rose-800/80">Booking shows {Number(item.booking_amount_paid || 0).toFixed(2)} but payment ledger totals {Number(item.payment_ledger_total || 0).toFixed(2)}.</p>
+                    <p className="text-sm font-semibold text-rose-900">Payment difference · {item.invoice_number || String(item.booking_id).slice(0, 8)}</p>
+                    <p className="mt-1 text-sm text-rose-800/80">Booking shows {Number(item.booking_amount_paid || 0).toFixed(2)} but payment total is {Number(item.payment_ledger_total || 0).toFixed(2)}.</p>
                   </div>
                 ))}
                 {(reconciliation?.chargeMismatches || []).slice(0, 2).map((item) => (
                   <div key={`charge-${item.booking_id}`} className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
-                    <p className="text-sm font-semibold text-amber-900">Charge mismatch · {item.invoice_number || String(item.booking_id).slice(0, 8)}</p>
+                    <p className="text-sm font-semibold text-amber-900">Charge difference · {item.invoice_number || String(item.booking_id).slice(0, 8)}</p>
                     <p className="mt-1 text-sm text-amber-800/80">Booking shows {Number(item.booking_charges_total || 0).toFixed(2)} but active charges total {Number(item.charge_ledger_total || 0).toFixed(2)}.</p>
                   </div>
                 ))}
                 {(reconciliation?.pendingRefunds || []).slice(0, 3).map((item) => (
                   <div key={`refund-p-${item.id}`} className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
                     <div className="flex items-center justify-between gap-2">
-                      <p className="text-sm font-semibold text-amber-900">Pending Refund · {item.invoice_number}</p>
+                      <p className="text-sm font-semibold text-amber-900">Refund waiting · {item.invoice_number}</p>
                       <span className="text-xs font-bold text-amber-700">{item.amount_to_refund.toFixed(2)}</span>
                     </div>
-                    <p className="mt-1 text-xs text-amber-800/80">Cancelled booking for {item.customer_name}. Balance needs to be returned to guest.</p>
+                    <p className="mt-1 text-xs text-amber-800/80">Cancelled booking for {item.customer_name}. Money still needs to be returned to the guest.</p>
                   </div>
                 ))}
                 {financeMismatchCount + invoiceGapCount + Number(reconciliationSummary.pendingRefunds || 0) === 0 && reconciliationValid && (
                   <div className="mt-4 rounded-xl border border-dashed border-gray-200 px-4 py-6 text-center text-sm text-gray-500">
-                    No reconciliation mismatches or pending refunds detected.
+                    No money differences or waiting refunds detected.
                   </div>
                 )}
               </>
@@ -1330,19 +1406,19 @@ export default function SystemHealthPanel() {
           <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-gray-200">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <h3 className="text-sm font-semibold text-gray-900">Validation Snapshot</h3>
-                <p className="mt-1 text-xs text-gray-500">Recent refund and charge-void activity surfaced for finance review.</p>
+                <h3 className="text-sm font-semibold text-gray-900">Recent money activity</h3>
+                <p className="mt-1 text-xs text-gray-500">Recent refunds and removed charges.</p>
               </div>
               <div className="flex items-center gap-2">
                 <StatusPill
                   ok={(validationTotals.recent_refunds || 0) + (validationTotals.recent_charge_voids || 0) === 0}
                   warn={(validationTotals.recent_refunds || 0) + (validationTotals.recent_charge_voids || 0) > 0}
-                  label={`${validationTotals.recent_refunds || 0} refunds · ${validationTotals.recent_charge_voids || 0} voids`}
+                  label={`${validationTotals.recent_refunds || 0} refunds · ${validationTotals.recent_charge_voids || 0} removed`}
                 />
                 <button type="button" onClick={runValidationNow} disabled={actionBusy === 'validation'}
                   className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-xs font-semibold text-gray-700 transition hover:border-green-500 hover:text-green-700 disabled:opacity-60">
                   <RefreshCw size={12} className={actionBusy === 'validation' ? 'animate-spin' : ''} />
-                  {actionBusy === 'validation' ? 'Running…' : 'Run Now'}
+                  {actionBusy === 'validation' ? 'Running…' : 'Check Now'}
                 </button>
               </div>
             </div>
@@ -1356,13 +1432,13 @@ export default function SystemHealthPanel() {
               ))}
               {(validation?.recentChargeVoids || []).map((item, index) => (
                 <div key={`void-${item.booking_id || index}`} className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3">
-                  <p className="text-sm font-semibold text-gray-900">Charge voided</p>
+                  <p className="text-sm font-semibold text-gray-900">Charge removed</p>
                   <p className="mt-1 text-sm text-gray-600">Booking {String(item.booking_id || '').slice(0, 8)} · {Number(item.amount_delta || 0).toFixed(2)} · {item.reason || 'No reason recorded'}</p>
                 </div>
               ))}
               {(validation?.recentRefunds || []).length === 0 && (validation?.recentChargeVoids || []).length === 0 && (
                 <div className="rounded-xl border border-dashed border-gray-200 px-4 py-6 text-center text-sm text-gray-500">
-                  No recent refunds or charge voids in the sampled audit window.
+                  No recent refunds or removed charges were found.
                 </div>
               )}
             </div>
@@ -1370,13 +1446,13 @@ export default function SystemHealthPanel() {
             {/* Validation alerts */}
             <div className="mt-5 border-t border-gray-100 pt-4" data-testid="system-health-validation-alerts">
               <div className="flex items-center justify-between gap-3">
-                <h4 className="text-sm font-semibold text-gray-900">Validation Alerts</h4>
-                <StatusPill ok={validationAlerts.length === 0} label={validationAlerts.length === 0 ? 'No alerts' : `${validationAlerts.length} logged`} />
+                <h4 className="text-sm font-semibold text-gray-900">Alerts</h4>
+                <StatusPill ok={validationAlerts.length === 0} label={validationAlerts.length === 0 ? 'No alerts' : `${validationAlerts.length} saved`} />
               </div>
               <div className="mt-3 space-y-3">
                 {validationAlerts.length === 0 ? (
                   <div className="rounded-xl border border-dashed border-gray-200 px-4 py-6 text-center text-sm text-gray-500">
-                    No recent validation alerts were logged.
+                    No recent alerts were found.
                   </div>
                 ) : (
                   validationAlerts.slice(0, 5).map((entry, index) => (
@@ -1386,10 +1462,10 @@ export default function SystemHealthPanel() {
                       data-testid="system-health-validation-alert"
                     >
                       <div className="flex flex-wrap items-center justify-between gap-2">
-                        <p className="text-sm font-semibold text-amber-900">{entry.alert_type || entry.type || 'Validation alert'}</p>
+                        <p className="text-sm font-semibold text-amber-900">{entry.alert_type || entry.type || 'Alert'}</p>
                         <span className="text-xs text-amber-700/80">{formatTs(entry.detected_at) || 'Time unknown'}</span>
                       </div>
-                      <p className="mt-1 text-sm text-amber-800/80">{entry.message || entry.summary || 'Validation alert captured for finance review.'}</p>
+                      <p className="mt-1 text-sm text-amber-800/80">{entry.message || entry.summary || 'Alert saved for review.'}</p>
                     </div>
                   ))
                 )}
@@ -1399,28 +1475,28 @@ export default function SystemHealthPanel() {
             {/* Validation run history */}
             <div className="mt-5 border-t border-gray-100 pt-4">
               <div className="flex items-center justify-between gap-3">
-                <h4 className="text-sm font-semibold text-gray-900">Validation Run History</h4>
-                <StatusPill ok={validationRuns.length > 0} warn={validationRuns.length === 0} label={validationRuns.length > 0 ? `${validationRuns.length} logged` : 'No runs yet'} />
+                <h4 className="text-sm font-semibold text-gray-900">Check history</h4>
+                <StatusPill ok={validationRuns.length > 0} warn={validationRuns.length === 0} label={validationRuns.length > 0 ? `${validationRuns.length} saved` : 'No checks yet'} />
               </div>
               <div className="mt-3 space-y-3">
                 {validationRuns.length === 0 ? (
                   <div className="rounded-xl border border-dashed border-gray-200 px-4 py-6 text-center text-sm text-gray-500">
-                    No validation runs have been recorded yet.
+                    No checks have been recorded yet.
                   </div>
                 ) : (
                   validationRuns.slice(0, 5).map((run) => (
                     <div key={run.id} className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <p className="text-sm font-semibold text-gray-900">
-                          {String(run.trigger_source || 'manual').replace(/_/g, ' ')} run
+                          {String(run.trigger_source || 'manual').replace(/_/g, ' ')} check
                         </p>
                         <span className="text-xs text-gray-400">{formatTs(run.created_at) || 'Time unknown'}</span>
                       </div>
                       <p className="mt-1 text-sm text-gray-600">
-                        Payment mismatches {Number(run.summary?.totals?.payment_mismatches || 0)} · Charge mismatches {Number(run.summary?.totals?.charge_mismatches || 0)} · Invoice gaps {Number(run.summary?.totals?.invoice_gaps || 0)}
+                        Payment mismatches {Number(run.summary?.totals?.payment_mismatches || 0)} · Charge mismatches {Number(run.summary?.totals?.charge_mismatches || 0)} · Missing invoices {Number(run.summary?.totals?.invoice_gaps || 0)}
                       </p>
                       <p className="mt-1 text-xs text-gray-500">
-                        By {run.triggered_by_name || 'System'}{run.local_only ? ' · local-only snapshot' : ''}
+                        By {run.triggered_by_name || 'System'}{run.local_only ? ' · this computer only' : ''}
                       </p>
                     </div>
                   ))
@@ -1433,15 +1509,15 @@ export default function SystemHealthPanel() {
           <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-gray-200">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <h3 className="text-sm font-semibold text-gray-900">Critical Error Log</h3>
-                <p className="mt-1 text-xs text-gray-500">Operation-level failures recorded by the desktop app with support context.</p>
+                <h3 className="text-sm font-semibold text-gray-900">Important errors</h3>
+                <p className="mt-1 text-xs text-gray-500">Important desktop issues with helpful details.</p>
               </div>
-              <StatusPill ok={criticalErrors.length === 0} label={criticalErrors.length === 0 ? 'Quiet' : `${criticalErrors.length} recent`} />
+              <StatusPill ok={criticalErrors.length === 0} label={criticalErrors.length === 0 ? 'No issues' : `${criticalErrors.length} saved`} />
             </div>
             <div className="mt-4 space-y-3">
               {criticalErrors.length === 0 ? (
                 <div className="rounded-xl border border-dashed border-gray-200 px-4 py-6 text-center text-sm text-gray-500">
-                  No critical desktop errors were logged recently.
+                  No important desktop issues were found recently.
                 </div>
               ) : (
                 criticalErrors.map((entry, index) => {
@@ -1452,15 +1528,15 @@ export default function SystemHealthPanel() {
                     <div key={`${entry.at || entry.operation || 'critical'}-${index}`} className={`rounded-xl border border-${tone}-200 bg-${tone}-50 px-4 py-3`}>
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="flex items-center gap-2">
-                          <p className={`text-sm font-semibold text-${tone}-900`}>{entry.scope || entry.operation || 'system'}</p>
-                          {!isCritical && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-amber-700">Warning</span>}
+                          <p className={`text-sm font-semibold text-${tone}-900`}>{plainLabel(entry.scope || entry.operation || 'system')}</p>
+                          {!isCritical && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-amber-700">Note</span>}
                         </div>
                         <span className={`text-xs text-${tone}-700/80`}>{formatTs(entry.at) || 'Time unknown'}</span>
                       </div>
                       <p className={`mt-1 text-sm text-${tone}-800/80`}>{entry.message || 'No message recorded.'}</p>
                       {entry.details && Object.keys(entry.details).length > 0 && (
                         <details className={`mt-2 text-xs text-${tone}-800/80`}>
-                          <summary className={`cursor-pointer font-medium text-${tone}-900`}>Show details</summary>
+                          <summary className={`cursor-pointer font-medium text-${tone}-900`}>Show more</summary>
                           <HumanContext details={entry.details} rooms={rooms} customers={customers} />
                         </details>
                       )}
@@ -1475,27 +1551,27 @@ export default function SystemHealthPanel() {
           <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-gray-200">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <h3 className="text-sm font-semibold text-gray-900">Recent App Errors</h3>
-                <p className="mt-1 text-xs text-gray-500">Renderer crash context for when the recovery screen appears.</p>
+                <h3 className="text-sm font-semibold text-gray-900">Recent crashes</h3>
+                <p className="mt-1 text-xs text-gray-500">Crash details for when the app needs recovery.</p>
               </div>
-              <StatusPill ok={rendererErrors.length === 0} label={rendererErrors.length === 0 ? 'No recent crashes' : `${rendererErrors.length} logged`} />
+              <StatusPill ok={rendererErrors.length === 0} label={rendererErrors.length === 0 ? 'No recent crashes' : `${rendererErrors.length} saved`} />
             </div>
             <div className="mt-4 space-y-3">
               {rendererErrors.length === 0 ? (
                 <div className="rounded-xl border border-dashed border-gray-200 px-4 py-6 text-center text-sm text-gray-500">
-                  No recent renderer crashes were logged on this machine.
+                  No recent crashes were found on this computer.
                 </div>
               ) : (
                 rendererErrors.map((entry, index) => (
                   <div key={`${entry.at || 'crash'}-${index}`} className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3">
                     <div className="flex flex-wrap items-center justify-between gap-2">
-                      <p className="text-sm font-semibold text-gray-900">{entry.message || 'Unknown renderer error'}</p>
+                      <p className="text-sm font-semibold text-gray-900">{entry.message || 'Unknown app issue'}</p>
                       <span className="text-xs text-gray-400">{formatTs(entry.at) || 'Not recorded'}</span>
                     </div>
-                    <p className="mt-1 text-xs text-gray-500">Route: {entry.route || 'Unknown route'}</p>
+                    <p className="mt-1 text-xs text-gray-500">Screen: {entry.route || 'Unknown screen'}</p>
                     {entry.componentStack && (
                       <details className="mt-2 text-xs text-gray-600">
-                        <summary className="cursor-pointer font-medium text-gray-700">Show component stack</summary>
+                        <summary className="cursor-pointer font-medium text-gray-700">Show crash details</summary>
                         <pre className="mt-2 overflow-auto whitespace-pre-wrap rounded-lg bg-white px-3 py-2 text-[11px] leading-5 text-gray-600 ring-1 ring-gray-200">{entry.componentStack}</pre>
                       </details>
                     )}
@@ -1510,21 +1586,21 @@ export default function SystemHealthPanel() {
             <div className="flex items-center gap-3">
               <div className="rounded-xl bg-emerald-50 p-2 text-emerald-600"><CheckCircle2 size={18} /></div>
               <div>
-                <h3 className="text-sm font-semibold text-gray-900">Profile Diagnostics</h3>
-                <p className="mt-1 text-xs text-gray-500">Current lodge linkage and auth profile health.</p>
+                <h3 className="text-sm font-semibold text-gray-900">Account check</h3>
+                <p className="mt-1 text-xs text-gray-500">Checks that this lodge account is linked correctly.</p>
               </div>
             </div>
             <div className="mt-4 space-y-3 text-sm text-gray-600">
               <div className="flex items-center justify-between gap-3">
-                <span>Diagnostics status</span>
+                <span>Check status</span>
                 <StatusPill ok={diagnosticsOk} label={diagnosticsOk ? 'Healthy' : 'Review'} />
               </div>
               <div className="flex items-center justify-between gap-3">
-                <span>Lodge ID</span>
+                <span>Lodge reference</span>
                 <span className="font-mono text-xs text-gray-500">{health?.lodge_id || '—'}</span>
               </div>
               <p className="rounded-xl bg-gray-50 px-3 py-3 text-xs leading-5 text-gray-600">
-                {health?.diagnostics?.error || health?.diagnostics?.message || 'Profile diagnostics loaded successfully.'}
+                {health?.diagnostics?.error || health?.diagnostics?.message || 'Account check loaded successfully.'}
               </p>
             </div>
           </div>
@@ -1534,11 +1610,21 @@ export default function SystemHealthPanel() {
             <div className="flex items-center gap-3">
               <div className="rounded-xl bg-indigo-50 p-2 text-indigo-600"><HardDrive size={18} /></div>
               <div>
-                <h3 className="text-sm font-semibold text-gray-900">Backup Snapshot</h3>
-                <p className="mt-1 text-xs text-gray-500">Recent local backup state on this machine.</p>
+                <h3 className="text-sm font-semibold text-gray-900">Backups</h3>
+                <p className="mt-1 text-xs text-gray-500">Recent backups saved on this computer.</p>
               </div>
             </div>
             <div className="mt-4 space-y-2">
+              {health?.backup_health && (
+                <div className={`rounded-xl border px-3 py-3 text-sm ${
+                  health.backup_health.ok ? 'border-green-200 bg-green-50 text-green-700' : 'border-amber-200 bg-amber-50 text-amber-700'
+                }`}>
+                  <p className="font-semibold">{health.backup_health.ok ? 'Backups are set up correctly' : 'Backups need attention'}</p>
+                  {Array.isArray(health.backup_health.warnings) && health.backup_health.warnings.length > 0 && (
+                    <p className="mt-1 text-xs">{health.backup_health.warnings.join(' ')}</p>
+                  )}
+                </div>
+              )}
               {(health?.backups?.backups || []).slice(0, 5).map((backup) => (
                 <div key={backup.name} className="rounded-xl bg-gray-50 px-3 py-3 text-sm text-gray-600">
                   <p className="font-medium text-gray-900">{backup.name}</p>
@@ -1547,7 +1633,7 @@ export default function SystemHealthPanel() {
               ))}
               {!health?.backups?.backups?.length && (
                 <div className="rounded-xl border border-dashed border-gray-200 px-4 py-6 text-center text-sm text-gray-500">
-                  No local backups found yet.
+                  No backups found yet.
                 </div>
               )}
             </div>
@@ -1561,14 +1647,14 @@ export default function SystemHealthPanel() {
         <div className="mb-4 flex items-center gap-3">
           <div className="rounded-xl bg-blue-50 p-2 text-blue-600"><Wifi size={18} /></div>
           <div>
-            <h3 className="text-sm font-bold text-gray-900">Cross-Device Sync Health</h3>
-            <p className="text-xs text-gray-500">Health reports published by each device for this lodge</p>
+            <h3 className="text-sm font-bold text-gray-900">Other devices</h3>
+            <p className="text-xs text-gray-500">Status reports from each device for this lodge</p>
           </div>
         </div>
         {!deviceHealthRollup?.available ? (
-          <p className="text-sm text-gray-500">Cross-device health unavailable (offline or not reported)</p>
+          <p className="text-sm text-gray-500">No reports are available right now.</p>
         ) : deviceHealthRollup.devices.length === 0 ? (
-          <p className="text-sm text-gray-500">No device health reports found</p>
+          <p className="text-sm text-gray-500">No reports from other devices found</p>
         ) : (
           <div className="space-y-3">
             {deviceHealthRollup.devices.map((device) => {
@@ -1577,22 +1663,22 @@ export default function SystemHealthPanel() {
                 <div key={device.device_id} className={`rounded-xl border p-4 ${isDegraded ? 'border-amber-200 bg-amber-50' : 'border-slate-100 bg-slate-50'}`}>
                   <div className="flex flex-wrap items-start justify-between gap-2">
                     <div>
-                      <span className="text-xs font-semibold text-slate-600 uppercase">{device.client_type}</span>
+                      <span className="text-xs font-semibold text-slate-600 uppercase">{plainLabel(device.client_type)}</span>
                       <span className="ml-2 text-xs text-slate-400">{String(device.device_id || '').slice(0, 24)}</span>
                     </div>
                     <span className="text-xs text-slate-500">{formatTs(device.reported_at)}</span>
                   </div>
                   <div className="mt-2 flex flex-wrap gap-3 text-xs text-slate-700">
-                    <span>Pending: <strong>{device.pending_queue_count}</strong></span>
-                    <span>Failed: <strong className={device.failed_queue_count > 0 ? 'text-red-700' : ''}>{device.failed_queue_count}</strong></span>
-                    <span>Unresolved: <strong className={device.unresolved_local_count > 0 ? 'text-amber-700' : ''}>{device.unresolved_local_count}</strong></span>
-                    <span>Reconciliation: <strong>{device.reconciliation_state}</strong></span>
+                    <span>Waiting: <strong>{device.pending_queue_count}</strong></span>
+                    <span>Needs review: <strong className={device.failed_queue_count > 0 ? 'text-red-700' : ''}>{device.failed_queue_count}</strong></span>
+                    <span>Open: <strong className={device.unresolved_local_count > 0 ? 'text-amber-700' : ''}>{device.unresolved_local_count}</strong></span>
+                    <span>Match: <strong>{plainStatusLabel(device.reconciliation_state)}</strong></span>
                   </div>
                   {Array.isArray(device.top_fault_types) && device.top_fault_types.length > 0 && (
-                    <div className="mt-1 text-xs text-slate-500">Faults: {device.top_fault_types.join(', ')}</div>
+                    <div className="mt-1 text-xs text-slate-500">Issues: {device.top_fault_types.map((type) => plainLabel(type)).join(', ')}</div>
                   )}
                   {device.stale && (
-                    <div className="mt-2 text-xs text-amber-700 font-medium">Report is stale (&gt;10 min old) — may not reflect current state</div>
+                    <div className="mt-2 text-xs text-amber-700 font-medium">This report is over 10 minutes old, so it may not match what is happening now.</div>
                   )}
                 </div>
               )

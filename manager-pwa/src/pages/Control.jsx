@@ -3,9 +3,48 @@ import { LifeBuoy, RefreshCw, Wifi, WifiOff } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { createSupportTicket, flushOfflineQueue, getControlSnapshot, getSupportRequests } from '../lib/api'
 import { supabase } from '../lib/supabase'
-import { getNotificationSettings, getPwaQueueHealth, listCacheEntries, publishPwaHealth, setNotificationSettings, subscribeRuntimeEvent } from '../lib/runtime'
+import { buildPwaNotificationSourceKey, getNotificationSettings, getPwaQueueHealth, listCacheEntries, publishPwaHealth, setNotificationSettings, subscribeRuntimeEvent, upsertPwaNotification } from '../lib/runtime'
 import { shortDateTime, titleCase } from '../lib/format'
 import { useToast } from '../App'
+
+function getFrontDeskNotificationSourceKey(request) {
+  return buildPwaNotificationSourceKey(
+    'frontdesk-request',
+    request?.title || '',
+    request?.description || '',
+    request?.category || 'Front Desk Request',
+    request?.priority || 'Normal'
+  )
+}
+
+function upsertFrontDeskNotification(lodgeId, request) {
+  if (!lodgeId || String(request?.category || '').trim().toLowerCase() !== 'front desk request') return
+  const hasDeskResponse = String(request.status || 'open') !== 'open' || String(request.admin_notes || '').trim()
+  if (!hasDeskResponse) return
+  upsertPwaNotification(lodgeId, {
+    sourceKey: getFrontDeskNotificationSourceKey(request),
+    title: request.admin_notes
+      ? `Front desk updated: ${request.title}`
+      : `Front desk updated: ${request.title}`,
+    message: request.admin_notes
+      ? request.admin_notes
+      : `Status changed to ${titleCase(request.status || 'open')}.`,
+    tone: request.status === 'resolved' ? 'info' : 'warn',
+    category: 'frontDeskRequest',
+    href: '/control',
+    meta: {
+      requestId: request.id || null,
+      requestTitle: request.title || '',
+      requestBody: request.description || '',
+      deskResponse: request.admin_notes || '',
+      requestStatus: request.status || 'open',
+      requestCategory: request.category || 'Front Desk Request',
+      requestPriority: request.priority || 'Normal',
+      sentAt: request.created_at || null,
+      updatedAt: request.updated_at || null
+    }
+  })
+}
 
 export default function Control() {
   const { user } = useAuth()
@@ -16,6 +55,8 @@ export default function Control() {
   const [caches, setCaches] = useState([])
   const [requests, setRequests] = useState([])
   const [ticket, setTicket] = useState({ title: '', description: '', category: 'Support', priority: 'Normal' })
+  const [quickRequestNote, setQuickRequestNote] = useState('')
+  const [frontDeskMessage, setFrontDeskMessage] = useState({ title: '', message: '' })
   const [sending, setSending] = useState(false)
   const [notifications, setNotifications] = useState(() => getNotificationSettings())
   const [queueHealth, setQueueHealth] = useState(() => null)
@@ -37,6 +78,10 @@ export default function Control() {
       if (isOnline) {
         publishPwaHealth(user.lodge_id, supabase, health)
       }
+      requestRows.forEach((request) => {
+        if (notifications.frontDeskRequests === false) return
+        upsertFrontDeskNotification(user.lodge_id, request)
+      })
     } catch (error) {
       setLoadError(error?.message || 'Control view could not load.')
     }
@@ -92,14 +137,14 @@ export default function Control() {
           </div>
         </div>
 
-        {/* Offline Queue Health — device-local state only, not reflected in desktop System Health */}
+        {/* Saved changes — device-local state only, not reflected in desktop health */}
         <div className="bg-gray-800 rounded-2xl p-4">
           <div className="flex items-center justify-between mb-1">
-            <p className="text-sm font-semibold text-white">Offline Queue Health (this device only)</p>
-            <span className="text-xs text-gray-500">device-local</span>
+            <p className="text-sm font-semibold text-white">Saved changes on this device</p>
+            <span className="text-xs text-gray-500">this device only</span>
           </div>
           <p className="text-[11px] text-gray-500 mb-3">
-            This reflects the offline queue stored on this browser only. It is NOT synced to the desktop System Health panel and does not represent the state of other devices.
+            This shows the changes saved on this device only. It does not reflect the desktop health screen or other devices.
           </p>
           {queueHealth ? (
             <div className="space-y-2">
@@ -114,7 +159,7 @@ export default function Control() {
                 </div>
                 <div className="bg-gray-900 rounded-xl p-3 text-center">
                   <p className={`text-xl font-bold ${queueHealth.deadLetterCount > 0 ? 'text-red-400' : 'text-white'}`}>{queueHealth.deadLetterCount}</p>
-                  <p className="text-[11px] text-gray-400 mt-1">Dead Letters</p>
+                  <p className="text-[11px] text-gray-400 mt-1">Stuck changes</p>
                 </div>
               </div>
               {queueHealth.blockedCount > 0 && (
@@ -139,7 +184,7 @@ export default function Control() {
                 </div>
               )}
               {queueHealth.queueLength === 0 && (
-                <p className="text-sm text-gray-500">No pending operations in the offline queue on this device.</p>
+                <p className="text-sm text-gray-500">No changes are waiting to send on this device.</p>
               )}
             </div>
           ) : (
@@ -263,10 +308,11 @@ export default function Control() {
           <p className="text-sm font-semibold text-white">Notification Settings</p>
           <div className="space-y-2 mt-3">
             {[
-              ['urgentAlerts', 'Urgent lodge alerts'],
+              ['urgentAlerts', 'Urgent alerts'],
               ['refunds', 'Refund-related alerts'],
               ['balances', 'Outstanding balance alerts'],
-              ['maintenance', 'Maintenance alerts']
+              ['maintenance', 'Maintenance alerts'],
+              ['frontDeskRequests', 'Front desk responses']
             ].map(([key, label]) => (
               <label key={key} className="bg-gray-900 rounded-xl px-3 py-3 flex items-center justify-between gap-3 text-sm text-white">
                 <span>{label}</span>
@@ -292,6 +338,13 @@ export default function Control() {
         <div className="bg-gray-800 rounded-2xl p-4">
           <p className="text-sm font-semibold text-white">Quick Requests</p>
           <p className="mt-1 text-xs text-gray-500">Use these when you need front desk follow-up without changing bookings from mobile. They appear on the desktop dashboard.</p>
+          <textarea
+            className="mt-3 w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-3 text-white text-sm h-24 resize-none"
+            placeholder="Optional note for front desk"
+            value={quickRequestNote}
+            onChange={(event) => setQuickRequestNote(event.target.value)}
+            maxLength={500}
+          />
           <div className="grid grid-cols-1 gap-2 mt-3">
             {[
               ['Balance follow-up', 'Please confirm which outstanding guest balances are being followed up today.'],
@@ -302,17 +355,42 @@ export default function Control() {
                 key={title}
                 onClick={async () => {
                   setSending(true)
-                  try {
-                    const result = await createSupportTicket(user.lodge_id, {
-                      lodge_name: user.lodge_display_name,
+                try {
+                  const note = quickRequestNote.trim()
+                  const result = await createSupportTicket(user.lodge_id, {
+                    lodge_name: user.lodge_display_name,
+                    title,
+                      description: note ? `${description}\n\nAdded note: ${note}` : description,
+                    category: 'Front Desk Request',
+                    priority: 'Normal'
+                  })
+                  upsertPwaNotification(user.lodge_id, {
+                    sourceKey: getFrontDeskNotificationSourceKey({
                       title,
-                      description,
+                      description: note ? `${description}\n\nAdded note: ${note}` : description,
                       category: 'Front Desk Request',
                       priority: 'Normal'
-                    })
-                    showToast({
-                      title: result?.queued ? 'Request saved offline' : 'Request sent',
-                      message: result?.queued
+                    }),
+                    title: `Sent to front desk: ${title}`,
+                    message: note ? `${description}\n\nAdded note: ${note}` : description,
+                    tone: 'info',
+                    category: 'frontDeskRequest',
+                    href: '/control',
+                    meta: {
+                      requestTitle: title,
+                      requestBody: note ? `${description}\n\nAdded note: ${note}` : description,
+                      deskResponse: '',
+                      requestStatus: 'open',
+                      requestCategory: 'Front Desk Request',
+                      requestPriority: 'Normal',
+                      sentAt: new Date().toISOString(),
+                      updatedAt: new Date().toISOString()
+                    }
+                  })
+                  if (!result?.queued) setQuickRequestNote('')
+                  showToast({
+                    title: result?.queued ? 'Request saved offline' : 'Request sent',
+                    message: result?.queued
                         ? 'It will reach front desk automatically when the internet returns.'
                         : 'Front desk can now see this request on the desktop dashboard.',
                       tone: result?.queued ? 'queued' : 'success'
@@ -334,6 +412,91 @@ export default function Control() {
                 {title}
               </button>
             ))}
+          </div>
+        </div>
+
+        <div className="bg-gray-800 rounded-2xl p-4">
+          <p className="text-sm font-semibold text-white">Custom Front Desk Message</p>
+          <p className="mt-1 text-xs text-gray-500">Send a one-off request or note directly to front desk when the quick actions are not enough.</p>
+          <div className="space-y-3 mt-3">
+            <input
+              className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-3 text-white text-sm"
+              placeholder="Message title"
+              value={frontDeskMessage.title}
+              onChange={(event) => setFrontDeskMessage((current) => ({ ...current, title: event.target.value }))}
+              maxLength={120}
+            />
+            <textarea
+              className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-3 text-white text-sm h-28 resize-none"
+              placeholder="Write your custom message to front desk"
+              value={frontDeskMessage.message}
+              onChange={(event) => setFrontDeskMessage((current) => ({ ...current, message: event.target.value }))}
+              maxLength={1000}
+            />
+            <button
+              onClick={async () => {
+                setSending(true)
+                try {
+                  const title = frontDeskMessage.title.trim() || 'Custom front desk message'
+                  const message = frontDeskMessage.message.trim()
+                  const note = quickRequestNote.trim()
+                  const result = await createSupportTicket(user.lodge_id, {
+                    lodge_name: user.lodge_display_name,
+                    title,
+                    description: note ? `${message}\n\nAdded note: ${note}` : message,
+                    category: 'Front Desk Request',
+                    priority: 'Normal'
+                  })
+                  upsertPwaNotification(user.lodge_id, {
+                    sourceKey: getFrontDeskNotificationSourceKey({
+                      title,
+                      description: note ? `${message}\n\nAdded note: ${note}` : message,
+                      category: 'Front Desk Request',
+                      priority: 'Normal'
+                    }),
+                    title: `Sent to front desk: ${title}`,
+                    message: note ? `${message}\n\nAdded note: ${note}` : message,
+                    tone: 'info',
+                    category: 'frontDeskRequest',
+                    href: '/control',
+                    meta: {
+                      requestTitle: title,
+                      requestBody: note ? `${message}\n\nAdded note: ${note}` : message,
+                      deskResponse: '',
+                      requestStatus: 'open',
+                      requestCategory: 'Front Desk Request',
+                      requestPriority: 'Normal',
+                      sentAt: new Date().toISOString(),
+                      updatedAt: new Date().toISOString()
+                    }
+                  })
+                  if (!result?.queued) {
+                    setFrontDeskMessage({ title: '', message: '' })
+                    setQuickRequestNote('')
+                  }
+                  showToast({
+                    title: result?.queued ? 'Message saved offline' : 'Message sent',
+                    message: result?.queued
+                      ? 'Front desk will receive it when the device reconnects.'
+                      : 'Front desk can now see your custom message on desktop.',
+                    tone: result?.queued ? 'queued' : 'success'
+                  })
+                  await load()
+                } catch (error) {
+                  showToast({
+                    title: 'Message was not sent',
+                    message: error?.message || 'Please try again.',
+                    tone: 'error'
+                  })
+                } finally {
+                  setSending(false)
+                }
+              }}
+              disabled={sending || !frontDeskMessage.message.trim()}
+              className="w-full rounded-xl bg-blue-700 text-white py-3 text-sm font-semibold disabled:opacity-60"
+            >
+              {sending ? 'Sending…' : 'Send Custom Message'}
+            </button>
           </div>
         </div>
 
