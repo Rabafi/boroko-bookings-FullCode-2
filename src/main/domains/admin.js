@@ -1,5 +1,9 @@
 import { state } from '../state.js'
-import { requireAdmin } from './infrastructure.js'
+import {
+  isMissingEntitlementRpcError,
+  logAdminActivity,
+  requireAdmin
+} from './infrastructure.js'
 
 export {
   checkMasterAdmin,
@@ -19,10 +23,6 @@ export {
   issueSubscriptionContract,
   updateLicense,
   deleteLicense,
-  getLodgeFeatures,
-  setLodgeFeature,
-  clearLodgeFeature,
-  getAllLodgeFeatures,
   getTestDataResetPreview,
   runTestDataReset,
   getTestDataResetAudit,
@@ -93,4 +93,94 @@ export async function deleteBroadcast(id) {
   if (error) throw new Error(error.message);
   if (!result?.success) throw new Error(result?.error || 'Could not delete broadcast');
   return { success: true };
+}
+
+// ─── ADMIN: FEATURE FLAGS ──────────────────────────────────────────────────────
+
+export async function getLodgeFeatures(targetLodgeId) {
+  if (!state.isOnline) return [];
+  const { data, error } = await requireAdmin().
+  from('lodge_features').
+  select('feature_name, enabled, reason, expires_at, review_at, granted_at, granted_by, updated_at').
+  eq('lodge_id', targetLodgeId);
+  if (error) throw new Error(error.message);
+  return data || [];
+}
+
+export async function setLodgeFeature(targetLodgeId, featureName, enabled, metadata = {}) {
+  if (!state.isOnline) throw new Error('Requires internet connection');
+  try {
+    const { data, error } = await requireAdmin().rpc('set_subscription_feature_override', {
+      p_lodge_id: targetLodgeId,
+      p_feature_name: featureName,
+      p_enabled: enabled !== false,
+      p_reason: metadata?.reason || null,
+      p_expires_at: metadata?.expires_at || null,
+      p_review_at: metadata?.review_at || null,
+      p_granted_by: state.currentUser?.id || null
+    });
+    if (error) throw error;
+    if (data?.success === false) throw new Error(data.error || 'Could not save feature override');
+  } catch (error) {
+    if (!isMissingEntitlementRpcError(error)) throw new Error(error.message);
+    const { error: fallbackError } = await requireAdmin().
+    from('lodge_features').
+    upsert(
+      {
+        lodge_id: targetLodgeId,
+        feature_name: featureName,
+        enabled,
+        updated_at: new Date().toISOString(),
+        reason: metadata?.reason || null,
+        expires_at: metadata?.expires_at || null,
+        review_at: metadata?.review_at || null,
+        granted_by: state.currentUser?.id || null,
+        granted_at: new Date().toISOString()
+      },
+      { onConflict: 'lodge_id,feature_name' }
+    );
+    if (fallbackError) throw new Error(fallbackError.message);
+  }
+  await logAdminActivity(targetLodgeId, null, 'feature_override_set', {
+    actor_id: state.currentUser?.id || null,
+    actor_role: state.currentUser?.role || null,
+    feature_name: featureName,
+    enabled: enabled !== false,
+    reason: metadata?.reason || null,
+    expires_at: metadata?.expires_at || null,
+    review_at: metadata?.review_at || null
+  });
+  return { success: true };
+}
+
+export async function clearLodgeFeature(targetLodgeId, featureName) {
+  if (!state.isOnline) throw new Error('Requires internet connection');
+  try {
+    const { data, error } = await requireAdmin().rpc('clear_subscription_feature_override', {
+      p_lodge_id: targetLodgeId,
+      p_feature_name: featureName
+    });
+    if (error) throw error;
+    if (data?.success === false) throw new Error(data.error || 'Could not clear feature override');
+  } catch (error) {
+    if (!isMissingEntitlementRpcError(error)) throw new Error(error.message);
+    const { error: fallbackError } = await requireAdmin().
+    from('lodge_features').
+    delete().
+    eq('lodge_id', targetLodgeId).
+    eq('feature_name', featureName);
+    if (fallbackError) throw new Error(fallbackError.message);
+  }
+  await logAdminActivity(targetLodgeId, null, 'feature_override_cleared', {
+    actor_id: state.currentUser?.id || null,
+    actor_role: state.currentUser?.role || null,
+    feature_name: featureName
+  });
+  return { success: true };
+}
+
+export async function getAllLodgeFeatures() {
+  if (!state.isOnline) return [];
+  const { data } = await requireAdmin().from('lodge_features').select('*').order('lodge_id');
+  return data || [];
 }
