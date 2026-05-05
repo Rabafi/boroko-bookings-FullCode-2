@@ -15,6 +15,7 @@ const BAR_PACK_TEMPLATES = [
 ]
 const POS_LIVE_REFRESH_MS = 5000
 const POS_TOUCH_MODE_STORAGE_KEY = 'bb_pos_touch_mode'
+const POS_TOUCH_MODE_DEPRECATED = true
 
 const formatLocalDate = (value = new Date()) => {
   const date = value instanceof Date ? value : new Date(value)
@@ -152,6 +153,10 @@ export default function POS() {
   const { user: currentUser } = useAuth()
   const [touchMode, setTouchMode] = useState(() => {
     try {
+      if (POS_TOUCH_MODE_DEPRECATED) {
+        window.localStorage.removeItem(POS_TOUCH_MODE_STORAGE_KEY)
+        return false
+      }
       return window.localStorage.getItem(POS_TOUCH_MODE_STORAGE_KEY) === 'touch'
     } catch {
       return false
@@ -232,6 +237,10 @@ export default function POS() {
 
   useEffect(() => {
     try {
+      if (POS_TOUCH_MODE_DEPRECATED) {
+        window.localStorage.removeItem(POS_TOUCH_MODE_STORAGE_KEY)
+        return
+      }
       window.localStorage.setItem(POS_TOUCH_MODE_STORAGE_KEY, touchMode ? 'touch' : 'desktop')
     } catch {
       // Best-effort only.
