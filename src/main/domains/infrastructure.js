@@ -736,7 +736,7 @@ function removeLocalCompanyProfile(targetLodgeId) {
 // Returns the admin (service-role) Supabase client, or throws a clear error if
 // the SUPABASE_SERVICE_ROLE_KEY env var was not set on this machine.
 // Use this in any function that queries across all lodges (Command Central only).
-function requireAdmin() {
+export function requireAdmin() {
   if (!state.adminDb) {
     throw new Error(
       'This operation requires Command Central admin access. ' +
@@ -6830,62 +6830,6 @@ export async function deleteLicense(id) {
   if (!state.isOnline) throw new Error('Requires internet connection');
   const { error } = await requireAdmin().from('licenses').delete().eq('id', id);
   if (error) throw new Error(error.message);
-  return { success: true };
-}
-
-// ─── ADMIN: BROADCASTS ────────────────────────────────────────────────────────
-
-export async function getBroadcasts() {
-  if (!state.isOnline) return [];
-  const { data } = await requireAdmin().from('broadcasts').select('*').order('created_at', { ascending: false });
-  return data || [];
-}
-
-export async function getActiveBroadcasts() {
-  if (!state.isOnline) return [];
-  const now = new Date().toISOString();
-  const { data } = await state.supabase.
-  from('broadcasts').
-  select('*').
-  eq('is_active', true).
-  or(`expires_at.is.null,expires_at.gt.${now}`).
-  order('created_at', { ascending: false });
-  return data || [];
-}
-
-export async function createBroadcast({ title, message, expires_at }) {
-  if (!state.isOnline) throw new Error('Requires internet connection');
-  const { data: result, error } = await requireAdmin().rpc('create_broadcast', {
-    payload: {
-      title,
-      message,
-      expires_at: expires_at || null,
-      is_active: true
-    }
-  });
-  if (error) throw new Error(error.message);
-  if (!result?.success) throw new Error(result?.error || 'Could not create broadcast');
-  return result;
-}
-
-export async function updateBroadcast(id, updates) {
-  if (!state.isOnline) throw new Error('Requires internet connection');
-  const { data: result, error } = await requireAdmin().rpc('update_broadcast', {
-    p_id: id,
-    payload: updates || {}
-  });
-  if (error) throw new Error(error.message);
-  if (!result?.success) throw new Error(result?.error || 'Could not update broadcast');
-  return { success: true };
-}
-
-export async function deleteBroadcast(id) {
-  if (!state.isOnline) throw new Error('Requires internet connection');
-  const { data: result, error } = await requireAdmin().rpc('delete_broadcast', {
-    p_id: id
-  });
-  if (error) throw new Error(error.message);
-  if (!result?.success) throw new Error(result?.error || 'Could not delete broadcast');
   return { success: true };
 }
 
