@@ -1,6 +1,6 @@
-const state = {
-  supabase: undefined,      // anon client — used for all lodge-scoped operations
-  adminDb: undefined,       // service-role client — null on lodge customer machines
+export const state = {
+  supabase: undefined,
+  adminDb: undefined,
   isOnline: false,
   cacheRootDir: undefined,
   profilesCacheDir: undefined,
@@ -9,7 +9,7 @@ const state = {
   backupIntervalStarted: false,
   lodgeId: null,
   syncInProgress: false,
-  replayAuthReady: false,   // P0-5: set to true only after a user is authenticated
+  replayAuthReady: false,
   backendSession: null,
   consecutiveConnectivityFailures: 0,
   connectivityCheckInProgress: false,
@@ -26,8 +26,11 @@ const state = {
   _initialized: false
 }
 
-function resetState() {
-  clearTimeout(state.syncRefreshRetryTimer)
+export function resetState() {
+  if (state.syncRefreshRetryTimer) {
+    clearTimeout(state.syncRefreshRetryTimer)
+  }
+
   state.supabase = undefined
   state.adminDb = undefined
   state.isOnline = false
@@ -54,5 +57,3 @@ function resetState() {
   state.lastUsageSyncAt = null
   state._initialized = false
 }
-
-export { state, resetState }
