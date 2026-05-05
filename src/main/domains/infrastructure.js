@@ -6574,68 +6574,7 @@ export async function updateCompanyUserPwaAccess(targetLodgeId, userId, payload 
   return { success: true };
 }
 
-export async function getTestDataResetPreview(targetLodgeId, payload = {}) {
-  if (!state.isOnline) throw new Error('Requires internet connection');
-  const { data, error } = await requireAdmin().rpc('get_test_data_reset_preview', {
-    p_lodge_id: targetLodgeId,
-    p_mode: payload?.mode || 'full_demo_reset',
-    p_days: Number(payload?.days || 30)
-  });
-  if (error) throw new Error(error.message);
-  if (data?.success === false) throw new Error(data.error || 'Could not preview test reset');
-  return data;
-}
 
-export async function runTestDataReset(targetLodgeId, payload = {}) {
-  if (!state.isOnline) throw new Error('Requires internet connection');
-  const { data, error } = await requireAdmin().rpc('reset_test_data', {
-    p_lodge_id: targetLodgeId,
-    p_mode: payload?.mode || 'full_demo_reset',
-    p_days: Number(payload?.days || 30),
-    p_confirmation: payload?.confirmation || '',
-    p_reason: payload?.reason || '',
-    p_triggered_by: state.currentUser?.id || null
-  });
-  if (error) throw new Error(error.message);
-  if (data?.success === false) throw new Error(data.error || 'Could not reset test data');
-  await logAdminActivity(targetLodgeId, payload?.lodge_name || null, 'test_data_reset', {
-    mode: payload?.mode || 'full_demo_reset',
-    days: Number(payload?.days || 30),
-    reason: payload?.reason || '',
-    deleted_counts: data?.deleted_counts || {}
-  });
-  if (targetLodgeId && targetLodgeId === state.lodgeId) {
-    clearCache('bookings');
-    clearCache('customers');
-    clearCache('quotations');
-    clearCache('expenses');
-    clearCache('posOrders');
-    clearCache('maintenance');
-    try {
-      await Promise.allSettled([
-      refreshCache('bookings'),
-      refreshCache('customers'),
-      refreshCache('quotations'),
-      refreshCache('expenses'),
-      refreshCache('posOrders'),
-      refreshCache('maintenance')]
-      );
-    } catch (_) {
-
-      // Non-fatal: the reset already completed remotely, and stale cache will self-heal on next refresh.
-    }}
-  return data;
-}
-
-export async function getTestDataResetAudit(targetLodgeId, limit = 20) {
-  if (!state.isOnline) return [];
-  const { data, error } = await requireAdmin().rpc('get_test_data_reset_audit', {
-    p_lodge_id: targetLodgeId,
-    p_limit: Number(limit || 20)
-  });
-  if (error) throw new Error(error.message);
-  return Array.isArray(data) ? data : [];
-}
 
 // ─── ADMIN: ACTIVITY LOGS ──────────────────────────────────────────────────────
 
