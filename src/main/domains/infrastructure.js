@@ -6574,150 +6574,6 @@ export async function updateCompanyUserPwaAccess(targetLodgeId, userId, payload 
   return { success: true };
 }
 
-// ─── ADMIN: Licenses ───────────────────────────────────────────────────────────
-
-function generateLicenseKey() {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  const bytes = crypto.randomBytes(12);
-  const seg = (offset) => Array.from(bytes.slice(offset, offset + 4), (value) => chars[value % chars.length]).join('');
-  return `BB-${seg(0)}-${seg(4)}-${seg(8)}`;
-}
-
-export async function getLicenses() {
-  if (!state.isOnline) return [];
-  const { data } = await requireAdmin().
-  from('licenses').
-  select('*').
-  order('issued_at', { ascending: false });
-  return (data || []).map((license) => ({
-    ...license,
-    subscription_plan: normalizePlanName(license.subscription_plan)
-  }));
-}
-
-export async function createLicense({ lodge_id, lodge_name, business_type, expires_at, notes, subscription_plan, payment_status, monthly_fee, currency, next_due_date, last_payment_date }) {
-  if (!state.isOnline) throw new Error('Requires internet connection');
-  const normalizedPlan = normalizePlanName(subscription_plan);
-
-  try {
-    const { data, error } = await requireAdmin().rpc('issue_subscription_contract', {
-      p_payload: {
-        lodge_id: lodge_id || null,
-        lodge_name: lodge_name || '',
-        business_type: business_type || 'lodge',
-        expires_at: expires_at || null,
-        notes: notes || null,
-        subscription_plan: normalizedPlan,
-        payment_status: payment_status || 'active',
-        monthly_fee: Number(monthly_fee || 0),
-        currency: currency || 'BWP',
-        next_due_date: next_due_date || null,
-        last_payment_date: last_payment_date || null,
-        create_invoice: false
-      }
-    });
-    if (error) throw error;
-    if (data?.success === false) throw new Error(data.error || 'Could not create subscription');
-    if (data?.license) return data.license;
-  } catch (error) {
-    if (!isMissingEntitlementRpcError(error)) throw new Error(error.message);
-  }
-
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const license_key = generateLicenseKey();
-    const { data, error } = await requireAdmin().from('licenses').insert({
-      lodge_id: lodge_id || 'unassigned',
-      license_key,
-      lodge_name: lodge_name || '',
-      business_type: business_type || 'lodge',
-      expires_at: expires_at || null,
-      notes: notes || null,
-      subscription_plan: normalizedPlan,
-      payment_status: payment_status || 'active',
-      monthly_fee: Number(monthly_fee || 0),
-      currency: currency || 'BWP',
-      next_due_date: next_due_date || null,
-      last_payment_date: last_payment_date || null,
-      is_active: true
-    }).select().single();
-    if (!error) return data;
-    if (String(error.message || '').toLowerCase().includes('license_key')) continue;
-    throw new Error(error.message);
-  }
-
-  throw new Error('Could not generate a unique license key. Please try again.');
-}
-
-export async function issueSubscriptionContract({ license = {}, invoice = null } = {}) {
-  if (!state.isOnline) throw new Error('Requires internet connection');
-  const normalizedPlan = normalizePlanName(license.subscription_plan);
-  const payload = {
-    lodge_id: license.lodge_id || null,
-    lodge_name: license.lodge_name || '',
-    business_type: license.business_type || 'lodge',
-    expires_at: license.expires_at || null,
-    notes: license.notes || null,
-    subscription_plan: normalizedPlan,
-    payment_status: license.payment_status || 'active',
-    monthly_fee: Number(license.monthly_fee || 0),
-    currency: license.currency || 'BWP',
-    next_due_date: license.next_due_date || null,
-    last_payment_date: license.last_payment_date || null,
-    grace_period_days: license.grace_period_days || DEFAULT_SUBSCRIPTION_GRACE_DAYS,
-    offline_lease_days: license.offline_lease_days || DEFAULT_OFFLINE_LEASE_DAYS,
-    create_invoice: !!invoice,
-    invoice: invoice ?
-    {
-      ...invoice,
-      package_name: normalizedPlan
-    } :
-    null
-  };
-
-  try {
-    const { data, error } = await requireAdmin().rpc('issue_subscription_contract', {
-      p_payload: payload
-    });
-    if (error) throw error;
-    if (data?.success === false) throw new Error(data.error || 'Could not create subscription');
-    return data;
-  } catch (error) {
-    if (!isMissingEntitlementRpcError(error)) throw new Error(error.message);
-  }
-
-  const createdLicense = await createLicense({
-    ...license,
-    subscription_plan: normalizedPlan
-  });
-  let createdInvoice = null;
-  if (invoice) {
-    createdInvoice = await createInvoice({
-      ...invoice,
-      license_id: createdLicense?.id || null,
-      package_name: normalizedPlan
-    });
-  }
-  return {
-    success: true,
-    license: createdLicense,
-    invoice: createdInvoice
-  };
-}
-
-export async function updateLicense(id, updates) {
-  if (!state.isOnline) throw new Error('Requires internet connection');
-  const { error } = await requireAdmin().from('licenses').update(updates).eq('id', id);
-  if (error) throw new Error(error.message);
-  return { success: true };
-}
-
-export async function deleteLicense(id) {
-  if (!state.isOnline) throw new Error('Requires internet connection');
-  const { error } = await requireAdmin().from('licenses').delete().eq('id', id);
-  if (error) throw new Error(error.message);
-  return { success: true };
-}
-
 export async function getTestDataResetPreview(targetLodgeId, payload = {}) {
   if (!state.isOnline) throw new Error('Requires internet connection');
   const { data, error } = await requireAdmin().rpc('get_test_data_reset_preview', {
@@ -6883,42 +6739,6 @@ export async function getCompanyStats(targetLodgeId) {
   };
 }
 
-// ─── ADMIN: BILLING ────────────────────────────────────────────────────────────
-
-export async function updateLicenseBilling(id, data) {
-  if (!state.isOnline) throw new Error('Requires internet connection');
-  const update = { ...data };
-  if (Object.prototype.hasOwnProperty.call(update, 'subscription_plan')) {
-    update.subscription_plan = normalizePlanName(update.subscription_plan);
-  }
-  try {
-    const { data: result, error } = await requireAdmin().rpc('update_subscription_contract', {
-      p_license_id: id,
-      p_payload: update
-    });
-    if (error) throw error;
-    if (result?.success === false) throw new Error(result.error || 'Could not update subscription');
-    return { success: true };
-  } catch (error) {
-    if (!isMissingEntitlementRpcError(error)) throw new Error(error.message);
-  }
-  const { error } = await requireAdmin().from('licenses').update(update).eq('id', id);
-  if (error) throw new Error(error.message);
-  return { success: true };
-}
-
-export async function getOverdueLicenses() {
-  if (!state.isOnline) return [];
-  const today = new Date().toISOString().split('T')[0];
-  const { data } = await requireAdmin().
-  from('licenses').
-  select('*').
-  lt('next_due_date', today).
-  neq('payment_status', 'free').
-  eq('is_active', true);
-  return data || [];
-}
-
 // ─── INVOICES ────────────────────────────────────────────────────────────────────
 
 export function isMissingInvoiceNumberRpcError(error) {
@@ -6980,10 +6800,6 @@ export async function getNextInvoiceNumberByLookup(db) {
 
   const next = sequences.length > 0 ? Math.max(...sequences) + 1 : 1;
   return formatInvoiceNumber(year, next);
-}
-
-async function createInvoice(...args) {
-  return (await import('./' + 'finance.js')).createInvoice(...args);
 }
 
 export async function getFinancialAuditLog({ bookingId = null, limit = 100, offset = 0 } = {}) {
