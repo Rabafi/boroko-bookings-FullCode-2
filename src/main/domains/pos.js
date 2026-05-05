@@ -2,10 +2,10 @@ import { randomUUID } from 'crypto'
 import bcrypt from 'bcryptjs'
 import { state } from '../state.js'
 import { getRoleCapabilities, isPosFullAccessRole, normalizeAppRole } from '../../shared/accessControl.js'
+import { getActiveBookingForRoom } from './bookings.js'
 import {
   applyOfflinePosInventoryReservation,
   buildReadOnlySessionTouchMessage,
-  getActiveBookingForRoom,
   getOfflinePosInventoryReservation,
   isReadOnlySessionTouchError,
   normalizeUserRecord,
