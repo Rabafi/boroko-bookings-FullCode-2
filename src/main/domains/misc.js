@@ -3,9 +3,15 @@ import path from 'path'
 import fs from 'fs'
 import { state } from '../state.js'
 import {
+  IMPORT_TEMPLATES,
+  findImportDuplicate,
+  importRowValue,
   isNonCriticalOperationalError,
   logActivity,
+  normalizeImportType,
+  readCache,
   readAuxiliaryLog,
+  validateImportRow,
   writeAuxiliaryLog
 } from './infrastructure.js'
 
@@ -13,11 +19,6 @@ export {
   getSystemHealth,
   writeExpandedBackupToPath,
   createManualBackup,
-  getSupportedImportTypes,
-  generateImportTemplate,
-  checkImportDuplicates,
-  dryRunBookingImport,
-  dryRunImport,
   bulkImportBookings,
   bulkImportTyped,
   getImportBatches,
@@ -87,6 +88,125 @@ export function getCriticalErrorLog(limit = 100) {
 export function clearCriticalErrorLog() {
   writeAuxiliaryLog(CRITICAL_ERROR_LOG_FILE, []);
   return { success: true };
+}
+
+export function getSupportedImportTypes() {
+  return [
+  { key: 'bookings', label: 'Bookings', executable: true },
+  { key: 'guests', label: 'Guests', executable: true },
+  { key: 'rooms', label: 'Rooms', executable: true },
+  { key: 'inventory', label: 'Inventory Items', executable: true },
+  { key: 'supplies', label: 'Room Supply Items', executable: true },
+  { key: 'expenses', label: 'Expenses', executable: true }];
+
+}
+
+export function generateImportTemplate(type = 'bookings') {
+  return IMPORT_TEMPLATES[type] || IMPORT_TEMPLATES.bookings;
+}
+
+export async function checkImportDuplicates(rows) {
+  const rooms = readCache('rooms');
+  const bookings = readCache('bookings');
+  const roomMap = {};
+  rooms.forEach((r) => {roomMap[String(r.room_number).trim()] = r.id;});
+
+  return rows.filter((row) => {
+    const roomId = roomMap[String(row.room_number).trim()];
+    if (!roomId) return false;
+    return bookings.some(
+      (b) =>
+      b.room_id === roomId &&
+      b.status !== 'cancelled' &&
+      b.check_in < row.check_out &&
+      b.check_out > row.check_in
+    );
+  });
+}
+
+export function dryRunBookingImport(rows = []) {
+  const rooms = readCache('rooms');
+  const bookings = readCache('bookings');
+  const customers = readCache('customers');
+  const roomMap = {};
+  rooms.forEach((r) => {roomMap[String(r.room_number).trim()] = r;});
+
+  const report = {
+    total: Array.isArray(rows) ? rows.length : 0,
+    valid: 0,
+    would_create_customers: 0,
+    would_reuse_customers: 0,
+    overlaps: 0,
+    errors: [],
+    warnings: []
+  };
+
+  (Array.isArray(rows) ? rows : []).forEach((row, index) => {
+    const rowNum = index + 1;
+    const guestName = String(row.guest_name || '').trim();
+    const room = roomMap[String(row.room_number || '').trim()];
+    const rowErrors = [];
+    if (!guestName) rowErrors.push('Guest name is required.');
+    if (!room) rowErrors.push('Room number was not found.');
+    if (!row.check_in || !row.check_out) rowErrors.push('Check-in and check-out dates are required.');
+    if (row.check_in && row.check_out && row.check_in >= row.check_out) rowErrors.push('Check-out must be after check-in.');
+
+    const overlap = room && bookings.some((booking) =>
+    booking.room_id === room.id &&
+    booking.status !== 'cancelled' &&
+    booking.check_in < row.check_out &&
+    booking.check_out > row.check_in
+    );
+    if (overlap) {
+      report.overlaps += 1;
+      rowErrors.push('Room overlaps with an existing booking.');
+    }
+
+    const emailNorm = String(row.email || '').trim().toLowerCase();
+    const existingCustomer = emailNorm ?
+    customers.find((c) => c.email?.toLowerCase() === emailNorm) :
+    customers.find((c) => c.name?.toLowerCase() === guestName.toLowerCase() || c.full_name?.toLowerCase() === guestName.toLowerCase());
+
+    if (rowErrors.length > 0) {
+      report.errors.push({ row: rowNum, guest: guestName, errors: rowErrors });
+    } else {
+      report.valid += 1;
+      if (existingCustomer) report.would_reuse_customers += 1;else
+      report.would_create_customers += 1;
+    }
+  });
+
+  return report;
+}
+
+export function dryRunImport(type = 'bookings', rows = []) {
+  const normalizedType = normalizeImportType(type);
+  if (normalizedType === 'bookings') return dryRunBookingImport(rows);
+
+  const report = {
+    type: normalizedType,
+    total: Array.isArray(rows) ? rows.length : 0,
+    valid: 0,
+    duplicates: 0,
+    would_create: 0,
+    errors: []
+  };
+
+  (Array.isArray(rows) ? rows : []).forEach((row, index) => {
+    const errors = validateImportRow(normalizedType, row);
+    if (errors.length > 0) {
+      report.errors.push({ row: index + 1, guest: importRowValue(row, 'name', 'guest_name', 'room_number', 'description'), errors });
+      return;
+    }
+    if (findImportDuplicate(normalizedType, row)) {
+      report.duplicates += 1;
+      return;
+    }
+    report.valid += 1;
+    report.would_create += 1;
+  });
+
+  return report;
 }
 
 function getManagedBackupPolicyPath() {

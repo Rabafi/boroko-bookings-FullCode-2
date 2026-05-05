@@ -7715,7 +7715,7 @@ async function getPoolDayUse(start, end) {
 // Lightweight: only transitions draft → sent. Safe to call multiple times.
 // ── Data Import ───────────────────────────────────────────────────────────────
 
-const IMPORT_TEMPLATES = {
+export const IMPORT_TEMPLATES = {
   bookings: [
   { key: 'guest_name', label: 'Guest Name', required: true },
   { key: 'email', label: 'Email', required: false },
@@ -7770,100 +7770,11 @@ const IMPORT_TEMPLATES = {
 
 };
 
-export function getSupportedImportTypes() {
-  return [
-  { key: 'bookings', label: 'Bookings', executable: true },
-  { key: 'guests', label: 'Guests', executable: true },
-  { key: 'rooms', label: 'Rooms', executable: true },
-  { key: 'inventory', label: 'Inventory Items', executable: true },
-  { key: 'supplies', label: 'Room Supply Items', executable: true },
-  { key: 'expenses', label: 'Expenses', executable: true }];
-
-}
-
-export function generateImportTemplate(type = 'bookings') {
-  return IMPORT_TEMPLATES[type] || IMPORT_TEMPLATES.bookings;
-}
-
-export async function checkImportDuplicates(rows) {
-  const rooms = readCache('rooms');
-  const bookings = readCache('bookings');
-  const roomMap = {};
-  rooms.forEach((r) => {roomMap[String(r.room_number).trim()] = r.id;});
-
-  return rows.filter((row) => {
-    const roomId = roomMap[String(row.room_number).trim()];
-    if (!roomId) return false;
-    return bookings.some(
-      (b) =>
-      b.room_id === roomId &&
-      b.status !== 'cancelled' &&
-      b.check_in < row.check_out &&
-      b.check_out > row.check_in
-    );
-  });
-}
-
-export function dryRunBookingImport(rows = []) {
-  const rooms = readCache('rooms');
-  const bookings = readCache('bookings');
-  const customers = readCache('customers');
-  const roomMap = {};
-  rooms.forEach((r) => {roomMap[String(r.room_number).trim()] = r;});
-
-  const report = {
-    total: Array.isArray(rows) ? rows.length : 0,
-    valid: 0,
-    would_create_customers: 0,
-    would_reuse_customers: 0,
-    overlaps: 0,
-    errors: [],
-    warnings: []
-  };
-
-  (Array.isArray(rows) ? rows : []).forEach((row, index) => {
-    const rowNum = index + 1;
-    const guestName = String(row.guest_name || '').trim();
-    const room = roomMap[String(row.room_number || '').trim()];
-    const rowErrors = [];
-    if (!guestName) rowErrors.push('Guest name is required.');
-    if (!room) rowErrors.push('Room number was not found.');
-    if (!row.check_in || !row.check_out) rowErrors.push('Check-in and check-out dates are required.');
-    if (row.check_in && row.check_out && row.check_in >= row.check_out) rowErrors.push('Check-out must be after check-in.');
-
-    const overlap = room && bookings.some((booking) =>
-    booking.room_id === room.id &&
-    booking.status !== 'cancelled' &&
-    booking.check_in < row.check_out &&
-    booking.check_out > row.check_in
-    );
-    if (overlap) {
-      report.overlaps += 1;
-      rowErrors.push('Room overlaps with an existing booking.');
-    }
-
-    const emailNorm = String(row.email || '').trim().toLowerCase();
-    const existingCustomer = emailNorm ?
-    customers.find((c) => c.email?.toLowerCase() === emailNorm) :
-    customers.find((c) => c.name?.toLowerCase() === guestName.toLowerCase() || c.full_name?.toLowerCase() === guestName.toLowerCase());
-
-    if (rowErrors.length > 0) {
-      report.errors.push({ row: rowNum, guest: guestName, errors: rowErrors });
-    } else {
-      report.valid += 1;
-      if (existingCustomer) report.would_reuse_customers += 1;else
-      report.would_create_customers += 1;
-    }
-  });
-
-  return report;
-}
-
-function normalizeImportType(type = 'bookings') {
+export function normalizeImportType(type = 'bookings') {
   return Object.prototype.hasOwnProperty.call(IMPORT_TEMPLATES, type) ? type : 'bookings';
 }
 
-function importRowValue(row = {}, ...keys) {
+export function importRowValue(row = {}, ...keys) {
   for (const key of keys) {
     const value = row?.[key];
     if (value !== undefined && value !== null && String(value).trim() !== '') return String(value).trim();
@@ -7871,7 +7782,7 @@ function importRowValue(row = {}, ...keys) {
   return '';
 }
 
-function importNumber(row = {}, keys = [], fallback = 0) {
+export function importNumber(row = {}, keys = [], fallback = 0) {
   for (const key of keys) {
     const value = row?.[key];
     if (value !== undefined && value !== null && String(value).trim() !== '') {
@@ -7882,7 +7793,7 @@ function importNumber(row = {}, keys = [], fallback = 0) {
   return fallback;
 }
 
-function findImportDuplicate(type, row = {}) {
+export function findImportDuplicate(type, row = {}) {
   if (type === 'guests') {
     const name = importRowValue(row, 'name', 'guest_name').toLowerCase();
     const email = importRowValue(row, 'email').toLowerCase();
@@ -7928,7 +7839,7 @@ function findImportDuplicate(type, row = {}) {
   return null;
 }
 
-function validateImportRow(type, row = {}) {
+export function validateImportRow(type, row = {}) {
   const errors = [];
   if (type === 'guests') {
     if (!importRowValue(row, 'name', 'guest_name')) errors.push('Guest name is required.');
@@ -7947,37 +7858,7 @@ function validateImportRow(type, row = {}) {
   return errors;
 }
 
-export function dryRunImport(type = 'bookings', rows = []) {
-  const normalizedType = normalizeImportType(type);
-  if (normalizedType === 'bookings') return dryRunBookingImport(rows);
-
-  const report = {
-    type: normalizedType,
-    total: Array.isArray(rows) ? rows.length : 0,
-    valid: 0,
-    duplicates: 0,
-    would_create: 0,
-    errors: []
-  };
-
-  (Array.isArray(rows) ? rows : []).forEach((row, index) => {
-    const errors = validateImportRow(normalizedType, row);
-    if (errors.length > 0) {
-      report.errors.push({ row: index + 1, guest: importRowValue(row, 'name', 'guest_name', 'room_number', 'description'), errors });
-      return;
-    }
-    if (findImportDuplicate(normalizedType, row)) {
-      report.duplicates += 1;
-      return;
-    }
-    report.valid += 1;
-    report.would_create += 1;
-  });
-
-  return report;
-}
-
-function friendlyImportError(msg = '') {
+export function friendlyImportError(msg = '') {
   const m = String(msg).toLowerCase();
   if (m.includes('room is already booked') || m.includes('no_overlapping_bookings'))
   return 'This room is already booked for those dates.';
