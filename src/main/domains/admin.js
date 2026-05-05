@@ -26,18 +26,93 @@ export {
   getTestDataResetPreview,
   runTestDataReset,
   getTestDataResetAudit,
-  getSupportTickets,
-  createSupportTicket,
-  getLodgeSupportTickets,
-  getLodgeSupportTicketById,
-  updateLodgeSupportTicket,
-  updateSupportTicket,
-  deleteSupportTicket,
   getActivityLogs,
   getCompanyStats,
   updateLicenseBilling,
   getOverdueLicenses
 } from './infrastructure.js'
+
+// ─── ADMIN: SUPPORT TICKETS ────────────────────────────────────────────────────
+
+export async function getSupportTickets(filters = {}) {
+  if (!state.isOnline) return [];
+  let q = requireAdmin().from('support_tickets').select('*');
+  if (filters.status) q = q.eq('status', filters.status);
+  if (filters.priority) q = q.eq('priority', filters.priority);
+  if (filters.lodge_id) q = q.eq('lodge_id', filters.lodge_id);
+  const { data } = await q.order('created_at', { ascending: false });
+  return data || [];
+}
+
+export async function createSupportTicket({ lodge_id, lodge_name, title, description, category, priority }) {
+  if (!state.isOnline) throw new Error('Requires internet connection');
+  // Use the admin client when available (Command Central machine) to bypass RLS.
+  // On lodge machines (no service key), fall back to the anon client — the anon
+  // client can INSERT but cannot SELECT from support_tickets, so we skip .select()
+  // to avoid a false RLS failure on the read-back that would mask a successful insert.
+  const { error } = await (state.adminDb || state.supabase).
+  from('support_tickets').
+  insert({
+    lodge_id: lodge_id || state.lodgeId,
+    lodge_name: lodge_name || null,
+    title,
+    description,
+    category: category || 'General',
+    priority: priority || 'Normal',
+    status: 'open'
+  });
+  if (error) throw new Error(error.message);
+  return { success: true };
+}
+
+export async function getLodgeSupportTickets(limit = 20) {
+  if (!state.isOnline) return [];
+  const { data, error } = await state.supabase.rpc('get_lodge_support_tickets', {
+    p_lodge_id: state.lodgeId,
+    p_limit: Math.min(Math.max(Number(limit) || 20, 1), 100)
+  });
+  if (error) throw new Error(error.message);
+  return Array.isArray(data) ? data : [];
+}
+
+export async function getLodgeSupportTicketById(id) {
+  if (!id || !state.isOnline) return null;
+  const tickets = await getLodgeSupportTickets(100);
+  return tickets.find((ticket) => ticket.id === id) || null;
+}
+
+export async function updateLodgeSupportTicket(id, updates = {}) {
+  if (!state.isOnline) throw new Error('Requires internet connection');
+  const { data, error } = await state.supabase.rpc('update_lodge_support_ticket', {
+    p_ticket_id: id,
+    p_lodge_id: state.lodgeId,
+    p_status: updates.status || null,
+    p_admin_notes: Object.prototype.hasOwnProperty.call(updates, 'admin_notes') ?
+    updates.admin_notes :
+    null
+  });
+  if (error) throw new Error(error.message);
+  if (data?.success === false) throw new Error(data.error || 'Could not update request');
+  return { success: true };
+}
+
+export async function updateSupportTicket(id, updates) {
+  if (!state.isOnline) throw new Error('Requires internet connection');
+  const payload = { ...updates, updated_at: new Date().toISOString() };
+  if (updates.status === 'resolved' && !updates.resolved_at) {
+    payload.resolved_at = new Date().toISOString();
+  }
+  const { error } = await requireAdmin().from('support_tickets').update(payload).eq('id', id);
+  if (error) throw new Error(error.message);
+  return { success: true };
+}
+
+export async function deleteSupportTicket(id) {
+  if (!state.isOnline) throw new Error('Requires internet connection');
+  const { error } = await requireAdmin().from('support_tickets').delete().eq('id', id);
+  if (error) throw new Error(error.message);
+  return { success: true };
+}
 
 // ─── ADMIN: BROADCASTS ────────────────────────────────────────────────────────
 
