@@ -2,16 +2,17 @@ import { app } from 'electron'
 import path from 'path'
 import fs from 'fs'
 import { state } from '../state.js'
+import {
+  isNonCriticalOperationalError,
+  logActivity,
+  readAuxiliaryLog,
+  writeAuxiliaryLog
+} from './infrastructure.js'
 
 export {
   getSystemHealth,
-  recordActivity,
-  getActivityLog,
-  clearActivityLog,
   writeExpandedBackupToPath,
   createManualBackup,
-  getCriticalErrorLog,
-  clearCriticalErrorLog,
   getSupportedImportTypes,
   generateImportTemplate,
   checkImportDuplicates,
@@ -22,6 +23,8 @@ export {
   getImportBatches,
   undoImportBatch
 } from './infrastructure.js'
+
+const CRITICAL_ERROR_LOG_FILE = 'critical-errors.json';
 
 const BACKUP_POLICY_DEFAULT = {
   enabled: false,
@@ -51,6 +54,39 @@ function readJsonFile(filePath, fallback) {
 function writeJsonFile(filePath, value) {
   ensureDir(path.dirname(filePath));
   fs.writeFileSync(filePath, JSON.stringify(value, null, 2), 'utf-8');
+}
+
+export function recordActivity(action, description) {
+  logActivity(action, description);
+}
+
+export function getActivityLog(limit = 200) {
+  try {
+    const logPath = path.join(state.cacheDir, 'activity-log.json');
+    const log = JSON.parse(fs.readFileSync(logPath, 'utf-8'));
+    return log.slice(0, limit);
+  } catch {
+    return [];
+  }
+}
+
+export function clearActivityLog() {
+  try {
+    fs.writeFileSync(path.join(state.cacheDir, 'activity-log.json'), '[]', 'utf-8');
+  } catch (e) {
+    console.error('Clear activity log failed:', e);
+  }
+}
+
+export function getCriticalErrorLog(limit = 100) {
+  return readAuxiliaryLog(CRITICAL_ERROR_LOG_FILE).
+  filter((entry) => !isNonCriticalOperationalError(entry?.scope, entry?.message)).
+  slice(0, limit);
+}
+
+export function clearCriticalErrorLog() {
+  writeAuxiliaryLog(CRITICAL_ERROR_LOG_FILE, []);
+  return { success: true };
 }
 
 function getManagedBackupPolicyPath() {

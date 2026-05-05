@@ -3294,10 +3294,6 @@ export function logActivity(action, description) {
   }
 }
 
-export function recordActivity(action, description) {
-  logActivity(action, description);
-}
-
 export function getLocalDateKey(value = new Date(), timeZone = LOCAL_TIME_ZONE) {
   try {
     return new Intl.DateTimeFormat('en-CA', {
@@ -3311,7 +3307,7 @@ export function getLocalDateKey(value = new Date(), timeZone = LOCAL_TIME_ZONE) 
   }
 }
 
-function readAuxiliaryLog(filename) {
+export function readAuxiliaryLog(filename) {
   try {
     if (!state.cacheDir) return [];
     const fullPath = path.join(state.cacheDir, filename);
@@ -3323,7 +3319,7 @@ function readAuxiliaryLog(filename) {
   }
 }
 
-function writeAuxiliaryLog(filename, rows) {
+export function writeAuxiliaryLog(filename, rows) {
   try {
     if (!state.cacheDir) return;
     fs.writeFileSync(path.join(state.cacheDir, filename), JSON.stringify(rows, null, 2), 'utf-8');
@@ -3338,7 +3334,7 @@ function appendAuxiliaryLog(filename, row, limit = 200) {
   writeAuxiliaryLog(filename, current.slice(0, limit));
 }
 
-function isNonCriticalOperationalError(scope, errorOrMessage = '') {
+export function isNonCriticalOperationalError(scope, errorOrMessage = '') {
   const message = errorOrMessage?.message || String(errorOrMessage || '');
   return scope === 'booking.refund' &&
   /Refund approvals require an internet connection/i.test(message);
@@ -3364,17 +3360,7 @@ export function recordCriticalError(scope, error, details = {}, { limit = 300, l
   return row;
 }
 
-export function getActivityLog(limit = 200) {
-  try {
-    const logPath = path.join(state.cacheDir, 'activity-log.json');
-    const log = JSON.parse(fs.readFileSync(logPath, 'utf-8'));
-    return log.slice(0, limit);
-  } catch {
-    return [];
-  }
-}
-
-export function clearActivityLog() {
+function clearActivityLogForInfrastructure() {
   try {
     fs.writeFileSync(path.join(state.cacheDir, 'activity-log.json'), '[]', 'utf-8');
   } catch (e) {
@@ -3764,7 +3750,7 @@ export async function createDraftProfile() {
   clearCache('quotations');
   clearCache('settings');
   clearCache('trial_status', null);
-  clearActivityLog();
+  clearActivityLogForInfrastructure();
   writeAuthCache([]);
   writeSyncQueue([]);
   writeFailedSyncQueue([]);
@@ -7513,15 +7499,10 @@ export async function getFinancialValidationAlerts(limit = 30) {
   }
 }
 
-export function getCriticalErrorLog(limit = 100) {
+function getCriticalErrorLogForSupport(limit = 100) {
   return readAuxiliaryLog(CRITICAL_ERROR_LOG_FILE).
   filter((entry) => !isNonCriticalOperationalError(entry?.scope, entry?.message)).
   slice(0, limit);
-}
-
-export function clearCriticalErrorLog() {
-  writeAuxiliaryLog(CRITICAL_ERROR_LOG_FILE, []);
-  return { success: true };
 }
 
 export async function getSupportBundle(limit = 20) {
@@ -7532,7 +7513,7 @@ export async function getSupportBundle(limit = 20) {
   const validation = await getFinancialValidationSummary().catch((error) => ({ error: error?.message || String(error) }));
   const validationRuns = await getFinancialValidationRuns(limit).catch(() => []);
   const validationAlerts = await getFinancialValidationAlerts(limit).catch(() => []);
-  const criticalErrors = getCriticalErrorLog(limit);
+  const criticalErrors = getCriticalErrorLogForSupport(limit);
   const syncMeta = readSyncMeta();
   const healthFaults = readHealthFaults().slice(0, Math.max(1, Number(limit) || 20));
 

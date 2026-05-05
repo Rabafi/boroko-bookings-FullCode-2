@@ -2,9 +2,11 @@ import { randomUUID } from 'crypto';
 import fs from 'fs';
 import { state } from '../state.js';
 import {
+  clearActivityLog
+} from './misc.js';
+import {
   PROFILE_STATUS,
   checkOnline,
-  clearActivityLog,
   clearBackendSession,
   clearCache,
   clearSessionNonce,
