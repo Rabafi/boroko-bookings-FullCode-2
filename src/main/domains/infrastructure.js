@@ -75,7 +75,7 @@ trim();
 
 const AUTH_CONTRACT_VERSION = 2;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const PROFILE_STATUS = {
+export const PROFILE_STATUS = {
   DRAFT: 'draft',
   READY: 'ready'
 };
@@ -352,7 +352,7 @@ function mergeFeatureOverrides(baseMap = {}, overrides = []) {
   return next;
 }
 
-function ensureDir(dirPath) {
+export function ensureDir(dirPath) {
   if (!dirPath) return;
   if (!fs.existsSync(dirPath)) {
     fs.mkdirSync(dirPath, { recursive: true });
@@ -438,11 +438,11 @@ function readLegacyLodgeId() {
   return normalizeLodgeId(data?.lodge_id);
 }
 
-function persistLegacyLodgeId(id) {
+export function persistLegacyLodgeId(id) {
   writeJsonFile(getLodgeIdPath(), { lodge_id: id });
 }
 
-function getProfileCacheDir(profileLodgeId) {
+export function getProfileCacheDir(profileLodgeId) {
   return path.join(state.profilesCacheDir, normalizeLodgeId(profileLodgeId));
 }
 
@@ -450,7 +450,7 @@ function getInactiveCacheDir() {
   return path.join(state.cacheRootDir, '__inactive');
 }
 
-function sanitizeProfile(rawProfile) {
+export function sanitizeProfile(rawProfile) {
   const normalizedId = normalizeLodgeId(rawProfile?.lodge_id);
   if (!isUuid(normalizedId)) return null;
 
@@ -481,7 +481,7 @@ function sortProfiles(profiles = [], activeLodgeId = null) {
   });
 }
 
-function readProfilesRegistry() {
+export function readProfilesRegistry() {
   const raw = readJsonFile(getProfilesPath(), null);
   const profiles = Array.isArray(raw?.profiles) ?
   raw.profiles.map(sanitizeProfile).filter(Boolean) :
@@ -495,7 +495,7 @@ function readProfilesRegistry() {
   };
 }
 
-function writeProfilesRegistry(registry) {
+export function writeProfilesRegistry(registry) {
   const activeId = normalizeLodgeId(registry?.active_lodge_id);
   const profiles = (Array.isArray(registry?.profiles) ? registry.profiles : []).
   map(sanitizeProfile).
@@ -510,11 +510,11 @@ function writeProfilesRegistry(registry) {
   return next;
 }
 
-function profileLabelFromSettings(settings = {}, fallback = 'Untitled Lodge') {
+export function profileLabelFromSettings(settings = {}, fallback = 'Untitled Lodge') {
   return settings?.lodge_name?.trim() || settings?.company_name?.trim() || fallback;
 }
 
-function ensureProfileCacheFiles(profileLodgeId) {
+export function ensureProfileCacheFiles(profileLodgeId) {
   const profileDir = getProfileCacheDir(profileLodgeId);
   ensureDir(profileDir);
 
@@ -644,7 +644,7 @@ function migrateLegacySingleLodgeProfile() {
   });
 }
 
-function setRuntimeActiveProfile(nextLodgeId, { persistActive = true, touch = true } = {}) {
+export function setRuntimeActiveProfile(nextLodgeId, { persistActive = true, touch = true } = {}) {
   const normalizedId = normalizeLodgeId(nextLodgeId);
   state.lodgeId = normalizedId || null;
   state.cacheDir = state.lodgeId ? getProfileCacheDir(state.lodgeId) : getInactiveCacheDir();
@@ -678,7 +678,7 @@ function initializeProfileRuntime() {
   return registry;
 }
 
-function updateProfileMetadata(targetLodgeId, updates = {}) {
+export function updateProfileMetadata(targetLodgeId, updates = {}) {
   const normalizedId = normalizeLodgeId(targetLodgeId);
   const registry = readProfilesRegistry();
   const nextProfiles = registry.profiles.map((profile) => {
@@ -1160,7 +1160,7 @@ export function writeCache(name, data, { source = 'local' } = {}) {
   } catch {/* freshness tracking is non-critical */}
 }
 
-function clearCache(name, fallback = []) {
+export function clearCache(name, fallback = []) {
   writeCache(name, fallback);
 }
 
@@ -1210,7 +1210,7 @@ function normalizeQueueRows(parsed, scope = 'sync-queue') {
   return validRows;
 }
 
-function readSyncQueue() {
+export function readSyncQueue() {
   if (!state.cacheDir) return [];
   const filePath = path.join(state.cacheDir, 'sync-queue.json');
   const tmpPath = filePath + '.tmp';
@@ -1253,7 +1253,7 @@ function readSyncQueue() {
   }
 }
 
-function writeSyncQueue(queue) {
+export function writeSyncQueue(queue) {
   if (!state.cacheDir) return;
   const filePath = path.join(state.cacheDir, 'sync-queue.json');
   const tmpPath = filePath + '.tmp';
@@ -1266,15 +1266,15 @@ function writeSyncQueue(queue) {
   }
 }
 
-function normalizeEmail(email) {
+export function normalizeEmail(email) {
   return String(email || '').trim().toLowerCase();
 }
 
-function normalizeLodgeId(id) {
+export function normalizeLodgeId(id) {
   return typeof id === 'string' ? id.trim().toLowerCase() : null;
 }
 
-function isUuid(value) {
+export function isUuid(value) {
   return UUID_PATTERN.test(normalizeLodgeId(value) || '');
 }
 
@@ -1300,7 +1300,7 @@ function sanitizeUserForRenderer(user) {
   return safeUser;
 }
 
-function isBackendAuthSchemaError(message = '') {
+export function isBackendAuthSchemaError(message = '') {
   return /authenticate_user|authenticate_manager|get_manager_pwa_profile|validate_app_session|set_user_pwa_access|get_lodge_auth_context|schema cache|returned record type|structure of query does not match|contract_version|column .*deleted|column .*lodge_id|column .*password_hash|column .*pwa_|permission denied/i.test(message);
 }
 
@@ -1382,7 +1382,7 @@ function makeBackendAuthSchemaError(message, details = {}) {
   };
 }
 
-function createAppError(code, message, details = {}) {
+export function createAppError(code, message, details = {}) {
   const error = new Error(message);
   error.code = code;
   Object.assign(error, details);
@@ -1401,7 +1401,7 @@ export function buildReadOnlySessionTouchMessage(featureLabel = 'This screen') {
 // ─── CONNECTIVITY & SYNC ──────────────────────────────────────────────────────
 
 /** True when the Supabase project is reachable over the network (not whether RLS allows reading rooms). */
-async function checkOnline() {
+export async function checkOnline() {
   if (process.env.BOROKO_TEST_FORCE_OFFLINE === 'true') {
     const wasOnline = state.isOnline;
     state.isOnline = false;
@@ -1467,7 +1467,7 @@ export async function refreshCache(...names) {
 }
 
 // Full refresh — used only at startup, reconnect, and after bulk operations.
-async function refreshAllCaches() {
+export async function refreshAllCaches() {
   if (!state.lodgeId) return;
   await refreshCache(
     'users',
@@ -2843,7 +2843,7 @@ function readFailedSyncQueue() {
   }
 }
 
-function writeFailedSyncQueue(items) {
+export function writeFailedSyncQueue(items) {
   if (!state.cacheDir) return;
   const filePath = path.join(state.cacheDir, 'sync-failed.json');
   const tmpPath = filePath + '.tmp';
@@ -3940,10 +3940,10 @@ export async function removeDraftProfile(targetLodgeId) {
 // restored through the signed-in session nonce below; legacy password hashes are
 // kept only so older installs can be diagnosed and phased out safely.
 
-function readAuthCache() {
+export function readAuthCache() {
   try {return JSON.parse(fs.readFileSync(path.join(state.cacheDir, 'auth-cache.json'), 'utf-8'));} catch {return [];}
 }
-function writeAuthCache(entries) {
+export function writeAuthCache(entries) {
   try {fs.writeFileSync(path.join(state.cacheDir, 'auth-cache.json'), JSON.stringify(entries, null, 2), 'utf-8');} catch {}
 }
 function removeAuthEntry(email) {
@@ -4085,7 +4085,7 @@ function writeSessionNonce(user, nonce, password = '') {
   writeTrustedSessions(next);
 }
 
-function clearSessionNonce() {
+export function clearSessionNonce() {
   try {fs.unlinkSync(getSessionNoncePath());} catch {/* file may not exist */}
 }
 
@@ -4095,7 +4095,7 @@ export function createSessionNonce(user, password = '') {
   return nonce;
 }
 
-function upsertCachedUser(user) {
+export function upsertCachedUser(user) {
   if (!user?.email) return;
   const normalizedUser = normalizeSessionUser(normalizeUserRecord(user));
   if (!normalizedUser?.id || !normalizedUser.email) return;
@@ -8895,370 +8895,12 @@ export async function getNightAudit(date) {
 
 // ─── SETTINGS ─────────────────────────────────────────────────────────────────
 
-const DEFAULT_SETTINGS = {
-  lodge_name: '',
-  company_name: '',
-  address: '',
-  city: '',
-  country: 'Botswana',
-  phone: '',
-  email: '',
-  website: '',
-  vat_number: '',
-  vat_enabled: false,
-  vat_rate: 0,
-  currency: 'P',
-  logo: '',
-  business_type: 'lodge',
-  setup_complete: false
-};
-
-function getDefaultSettings() {
-  return {
-    ...DEFAULT_SETTINGS,
-    lodge_id: state.lodgeId || null
-  };
+async function getSettings() {
+  return (await import('./' + 'settings.js')).getSettings();
 }
 
-async function getRemoteSettingsRecord(targetLodgeId = state.lodgeId) {
-  let result = await state.supabase.from('settings').select('*').eq('lodge_id', targetLodgeId).maybeSingle();
-  if (!result.error) {
-    return { data: result.data, mode: 'lodge' };
-  }
-  if (!/column .*lodge_id/i.test(result.error.message || '')) {
-    throw new Error(result.error.message);
-  }
-  const err = new Error('The Supabase settings table is missing the required lodge_id UUID contract. Apply the current settings migration, then try again.');
-  err.code = 'backend_auth_schema_outdated';
-  throw err;
-}
-
-async function saveRemoteSettingsRecord(settings) {
-  let result = await state.supabase.from('settings').upsert(settings, { onConflict: 'lodge_id' }).select().maybeSingle();
-  if (!result.error) {
-    return { data: result.data || settings, mode: 'lodge' };
-  }
-  if (!/column .*lodge_id|constraint|on conflict/i.test(result.error.message || '')) {
-    throw new Error(result.error.message);
-  }
-  const err = new Error('The Supabase settings table is missing the required lodge_id UUID contract. Apply the current settings migration, then try again.');
-  err.code = 'backend_auth_schema_outdated';
-  throw err;
-}
-
-export async function getSettings() {
-  if (!state.lodgeId) {
-    return getDefaultSettings();
-  }
-  if (state.isOnline) {
-    try {
-      const { data } = await getRemoteSettingsRecord();
-      if (data) {
-        writeCache('settings', [data]);
-        return data;
-      }
-    } catch (e) {
-      console.error('[SETTINGS] load failed:', e.message);
-    }
-  }
-  const cached = readCache('settings');
-  return cached[0] || getDefaultSettings();
-}
-
-export async function getLodgeDiagnostics(expectedLodgeId = '') {
-  await checkOnline();
-  const expected = normalizeLodgeId(expectedLodgeId);
-  const queue = readSyncQueue();
-  const authEntries = readAuthCache().filter((entry) => entry.lodge_id === state.lodgeId);
-  const users = readCache('users').filter((entry) => !entry.lodge_id || entry.lodge_id === state.lodgeId);
-  let remoteSettings = null;
-  let expectedSettings = null;
-  const activeProfile = getActiveProfile();
-
-  if (state.isOnline && state.lodgeId) {
-    const { data } = await state.supabase.from('settings').select('lodge_id, lodge_name, company_name, setup_complete, updated_at').eq('lodge_id', state.lodgeId).maybeSingle();
-    remoteSettings = data || null;
-    if (expected) {
-      const { data: match } = await state.supabase.from('settings').select('lodge_id, lodge_name, company_name, setup_complete, updated_at').eq('lodge_id', expected).maybeSingle();
-      expectedSettings = match || null;
-    }
-  }
-
-  return {
-    online: state.isOnline,
-    active_profile: activeProfile,
-    profile_count: getProfiles().length,
-    current_lodge_id: state.lodgeId,
-    expected_lodge_id: expected || null,
-    expected_matches_current: expected ? expected === state.lodgeId : null,
-    unsynced_operations: queue.length,
-    cached_user_count: users.length,
-    cached_offline_login_count: authEntries.length,
-    current_lodge_exists_remotely: !!remoteSettings,
-    expected_lodge_exists_remotely: expected ? !!expectedSettings : null,
-    remote_settings: remoteSettings,
-    expected_settings: expectedSettings
-  };
-}
-
-export async function relinkLodge(expectedLodgeId) {
-  const nextLodgeId = normalizeLodgeId(expectedLodgeId);
-  if (!nextLodgeId) throw new Error('Enter the correct lodge ID first.');
-  if (!isUuid(nextLodgeId)) throw new Error('Lodge ID format looks invalid.');
-
-  const activeProfile = getActiveProfile();
-  if (!activeProfile) throw new Error('Choose a lodge profile on this computer before repairing it.');
-
-  await checkOnline();
-  const queue = readSyncQueue();
-  if (queue.length > 0) {
-    const err = new Error(`This lodge profile has ${queue.length} unsynced offline change(s). Sync them before relinking it.`);
-    err.code = 'draft_profile_blocked_by_unsynced_changes';
-    throw err;
-  }
-
-  if (state.isOnline) {
-    const { data } = await state.supabase.
-    from('settings').
-    select('lodge_id, lodge_name, company_name, setup_complete').
-    eq('lodge_id', nextLodgeId).
-    maybeSingle();
-    if (!data) throw new Error('That lodge ID was not found in Supabase.');
-  }
-
-  const existingTarget = getProfiles().find((profile) => profile.lodge_id === nextLodgeId && profile.lodge_id !== activeProfile.lodge_id);
-  if (existingTarget) {
-    throw new Error('That lodge is already saved on this computer. Switch to it from the Lodge Chooser instead of relinking this profile.');
-  }
-
-  const previousLodgeId = activeProfile.lodge_id;
-  const previousDir = getProfileCacheDir(previousLodgeId);
-  const nextDir = getProfileCacheDir(nextLodgeId);
-
-  try {
-    if (fs.existsSync(previousDir) && previousDir !== nextDir) {
-      fs.rmSync(nextDir, { recursive: true, force: true });
-      fs.renameSync(previousDir, nextDir);
-    }
-  } catch {
-    ensureDir(nextDir);
-  }
-
-  ensureProfileCacheFiles(nextLodgeId);
-  persistLegacyLodgeId(nextLodgeId);
-
-  updateProfileMetadata(previousLodgeId, {
-    lodge_id: nextLodgeId,
-    label: activeProfile.label,
-    status: activeProfile.status
-  });
-
-  setRuntimeActiveProfile(nextLodgeId, { persistActive: true, touch: true });
-  state.currentUser = null;
-
-  clearCache('users');
-  clearCache('rooms');
-  clearCache('customers');
-  clearCache('bookings');
-  clearCache('quotations');
-  clearCache('settings');
-  clearCache('trial_status', null);
-  clearActivityLog();
-  writeAuthCache([]);
-  writeSyncQueue([]);
-  writeFailedSyncQueue([]);
-  clearBackendSession();
-  clearSessionNonce();
-
-  if (state.isOnline) {
-    await refreshAllCaches();
-  }
-
-  return {
-    success: true,
-    lodge_id: state.lodgeId,
-    settings: await getSettings(),
-    diagnostics: await getLodgeDiagnostics(state.lodgeId)
-  };
-}
-
-export function resetToNewLodge() {
-  const draftProfile = sanitizeProfile({
-    lodge_id: randomUUID(),
-    label: 'New Lodge',
-    status: PROFILE_STATUS.DRAFT,
-    created_at: new Date().toISOString(),
-    last_used_at: new Date().toISOString()
-  });
-
-  const registry = readProfilesRegistry();
-  const nextProfiles = registry.profiles.filter((profile) => profile.lodge_id !== draftProfile.lodge_id);
-  nextProfiles.unshift(draftProfile);
-  writeProfilesRegistry({
-    active_lodge_id: draftProfile.lodge_id,
-    profiles: nextProfiles
-  });
-
-  setRuntimeActiveProfile(draftProfile.lodge_id, { persistActive: false, touch: false });
-  ensureProfileCacheFiles(draftProfile.lodge_id);
-  clearCache('users');
-  clearCache('rooms');
-  clearCache('customers');
-  clearCache('bookings');
-  clearCache('quotations');
-  clearCache('settings');
-  clearCache('trial_status', null);
-  clearActivityLog();
-  writeAuthCache([]);
-  writeSyncQueue([]);
-  writeFailedSyncQueue([]);
-  clearBackendSession();
-  clearSessionNonce();
-  return draftProfile.lodge_id;
-}
-
-export async function saveSettings(data) {
-  if (!state.lodgeId) throw new Error('Choose a lodge profile on this computer before saving settings.');
-
-  const settings = {
-    lodge_name: data.lodge_name || '',
-    company_name: data.company_name || '',
-    address: data.address || '',
-    city: data.city || '',
-    country: data.country || 'Botswana',
-    phone: data.phone || '',
-    email: data.email || '',
-    website: data.website || '',
-    vat_number: data.vat_number || '',
-    vat_enabled: data.vat_enabled ?? false,
-    vat_rate: Number(data.vat_rate || 0),
-    currency: data.currency || 'P',
-    logo: data.logo || '',
-    business_type: data.business_type || 'lodge',
-    slug: data.slug ? data.slug.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') : null,
-    booking_tagline: data.booking_tagline || '',
-    booking_description: data.booking_description || '',
-    hero_image: data.hero_image || '',
-    whatsapp_number: data.whatsapp_number || '',
-    booking_check_in_from: data.booking_check_in_from || '',
-    booking_check_out_until: data.booking_check_out_until || '',
-    booking_cancellation_policy: data.booking_cancellation_policy || '',
-    booking_payment_terms: data.booking_payment_terms || '',
-    booking_house_rules: data.booking_house_rules || '',
-    booking_faq: Array.isArray(data.booking_faq) ? data.booking_faq : [],
-    setup_complete: true,
-    updated_at: new Date().toISOString(),
-    lodge_id: state.lodgeId
-  };
-
-  if (state.isOnline) {
-    const { data: savedRemote } = await saveRemoteSettingsRecord(settings);
-    const { error } = await state.supabase.from('settings').
-    update({ trial_started_at: new Date().toISOString() }).
-    eq('lodge_id', state.lodgeId).
-    is('trial_started_at', null);
-    if (error && !/column .*trial_started_at/i.test(error.message || '')) throw new Error(error.message);
-    const normalized = savedRemote ? { ...settings, ...savedRemote, lodge_id: state.lodgeId } : settings;
-    writeCache('settings', [normalized]);
-    const activeProfile = getActiveProfile();
-    if (activeProfile?.status === PROFILE_STATUS.READY) {
-      updateProfileMetadata(state.lodgeId, { label: profileLabelFromSettings(normalized, activeProfile.label) });
-    }
-    return normalized;
-  }
-  writeCache('settings', [settings]);
-  const activeProfile = getActiveProfile();
-  if (activeProfile?.status === PROFILE_STATUS.READY) {
-    updateProfileMetadata(state.lodgeId, { label: profileLabelFromSettings(settings, activeProfile.label) });
-  }
-  return settings;
-}
-
-export async function initializeCompanySetup({ settings, admin }) {
-  const activeProfile = getActiveProfile();
-  if (!activeProfile) {
-    throw createAppError('no_draft_profile_selected', 'Create a new lodge profile on this computer before running setup.');
-  }
-  if (activeProfile.status !== PROFILE_STATUS.DRAFT) {
-    throw createAppError('profile_already_ready', 'This lodge profile is already set up. Switch profiles or use Settings to change its details.', {
-      lodge_id: activeProfile.lodge_id
-    });
-  }
-
-  await checkOnline();
-  if (!state.isOnline) {
-    throw new Error('An internet connection is required to complete setup.');
-  }
-
-  const queue = readSyncQueue();
-  if (queue.length > 0) {
-    throw createAppError(
-      'draft_profile_blocked_by_unsynced_changes',
-      `This draft lodge profile has ${queue.length} unsynced offline change(s). Clear or sync them before completing setup.`,
-      { lodge_id: state.lodgeId, pending_operations: queue.length }
-    );
-  }
-
-  const { data: remoteSettings } = await state.supabase.
-  from('settings').
-  select('setup_complete, lodge_name, company_name').
-  eq('lodge_id', state.lodgeId).
-  maybeSingle();
-  if (remoteSettings?.setup_complete === true) {
-    throw createAppError(
-      'remote_lodge_already_exists',
-      'This draft lodge profile is already linked to a completed company in Supabase. Switch to that lodge instead of running setup again.',
-      { lodge_id: state.lodgeId, remote_settings: remoteSettings }
-    );
-  }
-
-  const emailLower = normalizeEmail(admin?.email);
-  if (!settings || !admin || !admin.name?.trim() || !emailLower || !admin.password) {
-    throw new Error('Incomplete setup payload.');
-  }
-
-  console.log('[SETUP] initializeCompany started:', { lodge_id: state.lodgeId, email: emailLower, profile_status: activeProfile.status });
-
-  let savedSettings;
-  try {
-    savedSettings = await saveSettings(settings);
-  } catch (error) {
-    if (error?.code) throw error;
-    const message = error?.message || 'Could not save lodge settings.';
-    const code = isBackendAuthSchemaError(message) ? 'backend_auth_schema_outdated' : 'settings_save_failed';
-    throw createAppError(code, message, { lodge_id: state.lodgeId, email: emailLower });
-  }
-
-  const userId = await createUser({
-    name: admin.name.trim(),
-    email: emailLower,
-    password: admin.password,
-    role: admin.role || 'admin'
-  });
-
-  const authHealth = await runAuthHealthCheck(emailLower, { expectedUserId: userId });
-  if (!authHealth.ok) {
-    throw createAppError(authHealth.code || 'setup_failed', authHealth.error || 'Initial auth health check failed.', {
-      lodge_id: state.lodgeId,
-      user_id: userId,
-      auth_health: authHealth
-    });
-  }
-
-  if (authHealth.user) {
-    upsertCachedUser(authHealth.user);
-  }
-  updateProfileMetadata(state.lodgeId, {
-    label: profileLabelFromSettings(savedSettings, activeProfile.label),
-    status: PROFILE_STATUS.READY
-  });
-  return {
-    lodge_id: state.lodgeId,
-    settings: savedSettings,
-    user_id: userId,
-    auth_health: authHealth,
-    profile: getActiveProfile()
-  };
+async function getLodgeDiagnostics(expectedLodgeId = '') {
+  return (await import('./' + 'settings.js')).getLodgeDiagnostics(expectedLodgeId);
 }
 
 function getCachedEntitlement(targetLodgeId = null) {
