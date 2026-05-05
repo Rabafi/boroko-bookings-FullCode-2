@@ -23,13 +23,30 @@ function stripGroupTag(notes) {
 export function Receipt({ booking, onClose, onCollectPayment = null }) {
   const { settings } = useSettings()
   const [charges, setCharges] = useState([])
+  const [chargesUnavailable, setChargesUnavailable] = useState(false)
   const [payments, setPayments] = useState([])
   const [saving, setSaving] = useState(false)
   const bookingId = booking.id || booking.booking_id
 
   useEffect(() => {
     if (!bookingId) return
-    window.api.charges.getByBooking(bookingId).then(setCharges).catch(() => {})
+    window.api.charges.getByBooking(bookingId).then((result) => {
+      if (Array.isArray(result)) {
+        setCharges(result)
+        setChargesUnavailable(false)
+        return
+      }
+      if (result?.unavailable) {
+        setCharges([])
+        setChargesUnavailable(true)
+        return
+      }
+      setCharges([])
+      setChargesUnavailable(false)
+    }).catch(() => {
+      setCharges([])
+      setChargesUnavailable(true)
+    })
     window.api.bookings.getPayments(bookingId).then((data) => setPayments(Array.isArray(data) ? data : [])).catch(() => {})
   }, [bookingId])
 
@@ -380,6 +397,13 @@ export function Receipt({ booking, onClose, onCollectPayment = null }) {
                       </td>
                     </tr>
                   ))}
+                  {chargesUnavailable && (
+                    <tr className="border-b border-gray-100">
+                      <td colSpan={4} className="py-3 text-sm text-amber-700">
+                        Charges unavailable offline
+                      </td>
+                    </tr>
+                  )}
                 </tbody>
               </table>
             </div>

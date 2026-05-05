@@ -604,12 +604,34 @@ export default function BookingInvoices() {
   const loadInvoices = async () => {
     setLoading(true)
     setIsOffline(false)
-    const data = await window.api.invoices.getBookingInvoices().catch(() => [])
+    const [data, confData] = await Promise.all([
+      window.api.invoices.getBookingInvoices().catch(() => []),
+      window.api.conference.getAll().catch(() => [])
+    ])
     const fresh = Array.isArray(data) ? data : []
+    const confInvoices = (Array.isArray(confData) ? confData : [])
+      .filter((cb) => Number(cb.total_amount || 0) > 0 && Number(cb.deposit_paid || 0) < Number(cb.total_amount || 0))
+      .map((cb) => ({
+        booking_id: cb.id,
+        customer_name: cb.client_name || 'Guest',
+        customer_email: null,
+        customer_phone: null,
+        check_in: cb.booking_date,
+        check_out: cb.booking_date,
+        room_number: cb.room_name || 'Conference Room',
+        total_amount: Number(cb.total_amount || 0),
+        amount_paid: Number(cb.deposit_paid || 0),
+        charges_total: 0,
+        balance_due: Math.max(0, Number(cb.total_amount || 0) - Number(cb.deposit_paid || 0)),
+        status: cb.payment_status || 'pending',
+        invoice_number: null,
+        booking_type: 'conference'
+      }))
+    const allInvoices = [...fresh, ...confInvoices]
     // Detect offline: if we got 0 rows but there are bookings, or check sync status
     const syncStatus = await window.api.sync.getStatus().catch(() => null)
     setIsOffline(syncStatus?.isOnline === false)
-    setInvoices(fresh)
+    setInvoices(allInvoices)
     // Keep selectedInvoice in sync so the modal reflects the latest financial state
     setSelectedInvoice((prev) => {
       if (!prev) return prev
@@ -688,6 +710,14 @@ export default function BookingInvoices() {
     }
     setSelectedInvoice(null)
     setLedgerInvoice(null)
+    if (invoice.booking_type === 'conference') {
+      navigate('/conference', {
+        state: {
+          collectPaymentBookingId: invoice.booking_id
+        }
+      })
+      return
+    }
     navigate('/bookings', {
       state: {
         collectPaymentBookingId: invoice.booking_id

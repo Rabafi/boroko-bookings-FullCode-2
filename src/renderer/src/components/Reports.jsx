@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { TrendingUp, BedDouble, DollarSign, Calendar, Download, Printer, FileDown, Table, PiggyBank, ShoppingCart, Package, Building2, CreditCard } from 'lucide-react'
+import { TrendingUp, BedDouble, DollarSign, Calendar, Download, Printer, FileDown, Table, PiggyBank, ShoppingCart, Package, Building2, CreditCard, Presentation } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { formatPaymentMethod } from '../constants/paymentMethods'
 import { useSettings, useAccess } from '../app-context'
@@ -133,7 +133,9 @@ export default function Reports() {
   const [occupancy, setOccupancy] = useState([])
   const [revenue, setRevenue]     = useState(null)
   const [reportBookings, setReportBookings] = useState([])
+  const [conferenceBookings, setConferenceBookings] = useState([])
   const [snapshot, setSnapshot]   = useState(null)
+  const [syncStatus, setSyncStatus] = useState(null)
   const [loading, setLoading]     = useState(false)
   const [error, setError]         = useState('')
   const [tabError, setTabError]   = useState('')
@@ -174,6 +176,10 @@ export default function Reports() {
 
   useEffect(() => {
     window.api.outlets.getAll().then(d => setOutlets(d || [])).catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    window.api.sync.getStatus().then((status) => setSyncStatus(status || null)).catch(() => {})
   }, [])
 
   useEffect(() => { runReport(start, end) }, [start, end])
@@ -258,24 +264,24 @@ export default function Reports() {
     setLoading(true)
     setError('')
     try {
-      const [occ, rev, bookings, reportsSnapshot] = await Promise.all([
+      const [occ, rev, bookings, reportsSnapshot, confBookings] = await Promise.all([
         window.api.reports.occupancy(s, e),
         window.api.reports.revenue(s, e),
         window.api.bookings.getAll().catch(() => []),
-        window.api.reports.snapshot(e).catch(() => null)
+        window.api.reports.snapshot(e).catch(() => null),
+        window.api.conference.getAll(s, e).catch(() => [])
       ])
       setOccupancy(Array.isArray(occ) ? occ : [])
       setRevenue(rev && typeof rev === 'object' ? rev : null)
       setReportBookings(Array.isArray(bookings) ? bookings : [])
+      setConferenceBookings(Array.isArray(confBookings) ? confBookings : [])
       setSnapshot(reportsSnapshot && typeof reportsSnapshot === 'object' ? reportsSnapshot : null)
       const roomRows = await window.api.reports.roomProfitability(s, e).catch(() => [])
       setRoomProfitability(Array.isArray(roomRows) ? roomRows : [])
-      if (rev?.source === 'local') {
-        throw new Error(`The revenue report for ${s} to ${e} fell back to local data. Restore server-authoritative reporting before using this screen.`)
-      }
     } catch (err) {
       setError(`Could not load report: ${err?.message || 'Unknown error'}`)
       setReportBookings([])
+      setConferenceBookings([])
       setSnapshot(null)
       setRevenue(null)
       setRoomProfitability([])
@@ -438,6 +444,25 @@ export default function Reports() {
   const inventorySpendSource = invSpend?.source === 'server' ? 'server-authoritative' : invSpend?.source === 'local' ? 'local fallback' : ''
   const supplySpendSource = supSpend?.source === 'server' ? 'server-authoritative' : supSpend?.source === 'local' ? 'local fallback' : ''
   const exportPeriod = `${start} to ${end}`
+  const formatSyncTs = (value) => {
+    if (!value) return 'unknown'
+    try { return new Date(value).toLocaleString('en-GB') } catch { return String(value) }
+  }
+  const activeTabUsesOfflineData = (
+    syncStatus?.isOnline === false
+    || (activeTab === 'bookings' && (revenue?.source && revenue.source !== 'server' || summarySnapshot?.source && summarySnapshot.source !== 'server'))
+    || (activeTab === 'expenses' && syncStatus?.isOnline === false)
+    || (activeTab === 'pos' && posSales?.source && posSales.source !== 'server')
+    || (activeTab === 'costs' && (
+      (invSpend?.source && invSpend.source !== 'server')
+      || (supSpend?.source && supSpend.source !== 'server')
+    ))
+    || (activeTab === 'pl' && (
+      (pl?.source && pl.source !== 'server')
+      || (canViewCombinedReports && outletPL?.source && outletPL.source !== 'server')
+    ))
+  )
+  const offlineDataLabel = `Offline data (last synced: ${formatSyncTs(syncStatus?.lastSuccessfulSyncAt || summarySnapshot?.last_synced_at || summarySnapshot?.as_of || null)})`
   const reportSourceBadges = useMemo(() => {
     const badges = []
     const addBadge = ({ key, label, value, tone, title }) => {
@@ -699,6 +724,12 @@ export default function Reports() {
               </span>
             ))}
           </div>
+        </div>
+      )}
+      {activeTabUsesOfflineData && (
+        <div className="no-print rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          <p className="font-semibold">{offlineDataLabel}</p>
+          <p className="mt-1 text-xs text-amber-800">Financial metrics on this tab are using offline, cached, or fallback data and should not be treated as final until live sync is restored.</p>
         </div>
       )}
       {activeTab === 'bookings' && revenueSource && revenue?.source !== 'server' && (
@@ -1309,6 +1340,62 @@ export default function Reports() {
               <span>{currency} {Number(revenue.event_revenue).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
             </div>
           </div>
+        </div>
+      )}
+
+      {conferenceBookings.length > 0 && (
+        <div className="bb-table-shell mb-6">
+          <div className="flex items-center justify-between border-b border-slate-200/80 px-5 py-4">
+            <div>
+              <h2 className="text-lg font-semibold tracking-[-0.02em] text-slate-800 flex items-center gap-2">
+                <Presentation size={17} className="text-amber-600" /> Conference Bookings ({conferenceBookings.length})
+              </h2>
+              <p className="mt-1 text-sm text-slate-500">Conference reservations for the selected period.</p>
+            </div>
+          </div>
+          <HorizontalScrollArea>
+          <table className="min-w-[900px] w-full text-sm">
+            <thead className="sticky top-0 z-10 bg-slate-50 text-xs uppercase tracking-[0.16em] text-slate-500">
+              <tr>
+                <th className="px-5 py-3 text-left">Client</th>
+                <th className="px-5 py-3 text-left">Date</th>
+                <th className="px-5 py-3 text-left">Room</th>
+                <th className="px-5 py-3 text-left">Attendees</th>
+                <th className="px-5 py-3 text-right">Total</th>
+                <th className="px-5 py-3 text-right">Deposit</th>
+                <th className="px-5 py-3 text-left">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {conferenceBookings.map((cb) => (
+                <tr key={cb.id} className="hover:bg-slate-50">
+                  <td className="px-5 py-3">
+                    <p className="font-medium text-slate-800">{cb.client_name}</p>
+                    {cb.company && <p className="text-xs text-slate-500">{cb.company}</p>}
+                  </td>
+                  <td className="px-5 py-3 text-slate-600 whitespace-nowrap">
+                    {cb.booking_date}{cb.start_time ? ` ${cb.start_time}–${cb.end_time}` : ''}
+                  </td>
+                  <td className="px-5 py-3 text-slate-600">{cb.room_name}</td>
+                  <td className="px-5 py-3 text-slate-600">{cb.attendees || '-'}</td>
+                  <td className="px-5 py-3 text-right font-medium text-slate-800">{currency} {Number(cb.total_amount || 0).toFixed(2)}</td>
+                  <td className="px-5 py-3 text-right font-medium text-slate-800">{currency} {Number(cb.deposit_paid || 0).toFixed(2)}</td>
+                  <td className="px-5 py-3">
+                    <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+                      cb.payment_status === 'paid'
+                        ? 'bg-green-100 text-green-700'
+                        : cb.payment_status === 'deposit_paid'
+                        ? 'bg-blue-100 text-blue-700'
+                        : 'bg-yellow-100 text-yellow-700'
+                    }`}>
+                      {String(cb.payment_status || 'pending').replace(/_/g, ' ')}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          </HorizontalScrollArea>
         </div>
       )}
 

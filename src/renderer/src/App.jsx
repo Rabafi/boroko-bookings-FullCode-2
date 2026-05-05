@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef, useCallback, useContext, lazy, Suspense } from 'react'
 import { HashRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom'
 import { BellRing, ChevronDown, ChevronUp, Download, FileText, RefreshCw, RotateCcw, X } from 'lucide-react'
-import { buildCapabilitySnapshot, isPosFullAccessRole } from '../../shared/accessControl'
-import { getFeatureRequiredPlan, getSubscriptionPlan } from '../../shared/subscriptionPlans'
+import { APP_FEATURES, FEATURE_LABELS, buildCapabilitySnapshot, isPosFullAccessRole } from '../../shared/accessControl'
+import { SUBSCRIPTION_PLAN_ORDER, getAllSubscriptionPlans, getFeatureRequiredPlan, getSubscriptionPlan, normalizeSubscriptionPlan } from '../../shared/subscriptionPlans'
 import AppErrorBoundary from './components/AppErrorBoundary'
 import { Modal } from './components/shared/Modal'
 import { extractReleaseHighlights, formatReleaseDate, toReleaseSections } from './utils/updatePresentation'
@@ -13,6 +13,7 @@ import {
   FeaturesContext,
   AccessContext,
   OnlineRequestsContext,
+  UnsavedChangesContext,
   useAuth,
   useProfiles
 } from './app-context'
@@ -46,6 +47,7 @@ const DayUse      = lazy(() => import('./components/DayUse'))
 const DataManagement = lazy(() => import('./components/DataManagement'))
 const Quotations     = lazy(() => import('./components/Quotations'))
 const BookingInvoices = lazy(() => import('./components/BookingInvoices'))
+const OpsAi       = lazy(() => import('./components/OpsAi'))
 
 // ── Loading fallback for lazy routes ─────────────────────────────────────────
 function PageLoader() {
@@ -84,26 +86,31 @@ function isEditableFieldTarget(target) {
 // ── Upgrade Wall ───────────────────────────────────────────────────────────────
 function UpgradeWall({ feature, children }) {
   const features = useContext(FeaturesContext)
+  const access = useContext(AccessContext)
   // Only block when flags have been loaded AND this feature is explicitly false
   if (Object.keys(features).length > 0 && features[feature] === false) {
     const requiredTier = getFeatureRequiredPlan(feature)
     const requiredPlan = getSubscriptionPlan(requiredTier)
+    const trialExpired = access?.entitlement?.expired === true
+    const moduleLabel = FEATURE_LABELS[feature] || 'This module'
     const tierColor = requiredTier === 'Pro' ? 'purple' : 'blue'
     return (
       <div className="flex flex-col items-center justify-center h-full min-h-[500px] p-10 text-center select-none">
         <div className="text-6xl mb-5">🔒</div>
         <h2 className="text-2xl font-bold text-gray-800 mb-2">
-          {requiredTier} Plan Required
+          {trialExpired ? 'Trial expired' : `${requiredTier} Plan Required`}
         </h2>
         <p className="text-gray-500 text-sm max-w-sm mb-6">
-          This module is not included in your current subscription. {requiredPlan.headline}. {requiredPlan.upgradeNudge}
+          {trialExpired
+            ? `${moduleLabel} is unavailable because this trial has ended. Buy a subscription to restore lodge access.`
+            : `${moduleLabel} is not included in your current subscription. ${requiredPlan.headline}. ${requiredPlan.upgradeNudge}`}
         </p>
         <div className={`inline-flex items-center gap-2 px-5 py-2.5 rounded-full text-sm font-semibold ${
           tierColor === 'purple'
             ? 'bg-purple-100 text-purple-700 border border-purple-200'
             : 'bg-blue-100 text-blue-700 border border-blue-200'
         }`}>
-          ✦ Upgrade to {requiredTier} to access this feature
+          {trialExpired ? 'Buy a subscription to continue' : `Upgrade to ${requiredTier} to access this feature`}
         </div>
       </div>
     )
@@ -600,15 +607,11 @@ function BookingSyncConflictNotification() {
 }
 
 // ── Trial Expired Lock Screen ─────────────────────────────────────────────────
-function TrialExpiredScreen({ lodgeName }) {
+function TrialExpiredScreen({ lodgeName, onSwitchAccount }) {
   const [submitted, setSubmitted] = useState(false)
   const [submitting, setSubmitting] = useState(false)
-
-  const TIERS = [
-    { name: 'Starter', price: 'Contact us', color: 'blue', features: ['Bookings, guests, rooms, and front-desk basics', 'Quotations, invoices, housekeeping, and maintenance', 'Daily operations for a small lodge', 'Simple starting point for going live'] },
-    { name: 'Standard', price: 'Contact us', color: 'green', features: ['Everything in Starter', 'Reports, expenses, and night audit', 'Staff management and stronger control', 'The complete package for most serious lodges'] },
-    { name: 'Pro', price: 'Contact us', color: 'purple', features: ['Everything in Standard', 'Branded booking page per lodge', 'Direct guest enquiries & WhatsApp contact', 'POS, inventory, and room supplies'] }
-  ]
+  const tiers = getAllSubscriptionPlans()
+  const lockedFeatures = APP_FEATURES.map((featureName) => FEATURE_LABELS[featureName] || featureName)
 
   const requestUpgrade = async (tier) => {
     setSubmitting(true)
@@ -616,7 +619,7 @@ function TrialExpiredScreen({ lodgeName }) {
       await window.api.admin.createSupportTicket({
         lodge_name: lodgeName || 'Unknown Lodge',
         title: `Subscription Request — ${tier} Plan`,
-        description: `The lodge has requested to subscribe to the ${tier} plan after their free trial ended.`,
+        description: `The lodge has requested to buy a ${tier} subscription after their free trial ended.`,
         category: 'Upgrade Request',
         priority: 'High'
       })
@@ -628,11 +631,18 @@ function TrialExpiredScreen({ lodgeName }) {
   return (
     <div className="min-h-screen bg-gradient-to-br from-green-900 via-green-800 to-green-700 flex flex-col items-center justify-center p-6">
       <div className="text-center mb-8">
-        <div className="text-6xl mb-4">🔒</div>
-        <h1 className="text-3xl font-bold text-white mb-2">Your free trial has ended</h1>
+        <div className="text-xs font-bold uppercase tracking-[0.3em] text-red-200 mb-3">Trial expired</div>
+        <h1 className="text-3xl font-bold text-white mb-2">Boroko Bookings is paused</h1>
         <p className="text-green-200 text-sm max-w-md">
-          Thank you for trying Boroko Bookings. Choose a plan below to continue using all features.
+          This lodge is using an expired trial. App features are locked until a subscription is purchased and activated.
         </p>
+        <button
+          type="button"
+          onClick={onSwitchAccount}
+          className="mt-4 inline-flex items-center justify-center rounded-full border border-white/20 bg-white/10 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-white/15"
+        >
+          Log in to another account
+        </button>
       </div>
 
       {submitted ? (
@@ -642,15 +652,25 @@ function TrialExpiredScreen({ lodgeName }) {
           <p className="text-gray-500 text-sm">Our team will contact you shortly to activate your subscription. Thank you for choosing Boroko Bookings.</p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 w-full max-w-3xl">
-          {TIERS.map((tier) => (
+        <div className="w-full max-w-5xl space-y-5">
+          <div className="grid grid-cols-2 gap-2 rounded-2xl border border-white/10 bg-white/10 p-4 sm:grid-cols-3 lg:grid-cols-6">
+            {lockedFeatures.map((featureName) => (
+              <div key={featureName} className="rounded-xl border border-white/10 bg-white/8 px-3 py-2 text-xs font-semibold text-white/55 line-through">
+                {featureName}
+              </div>
+            ))}
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {tiers.map((tier) => (
             <div key={tier.name} className="bg-white rounded-2xl p-6 shadow-2xl flex flex-col">
-              <div className={`text-xs font-bold uppercase tracking-widest mb-1 ${tier.color === 'purple' ? 'text-purple-600' : tier.color === 'green' ? 'text-green-600' : 'text-blue-600'}`}>
+              <div className={`text-xs font-bold uppercase tracking-widest mb-1 ${tier.name === 'Pro' ? 'text-purple-600' : tier.name === 'Standard' ? 'text-green-600' : 'text-blue-600'}`}>
                 {tier.name}
               </div>
-              <div className="text-lg font-bold text-gray-800 mb-4">{tier.price}</div>
+              <div className="text-lg font-bold text-gray-800 mb-2">Contact us</div>
+              <p className="mb-4 text-xs font-medium leading-5 text-gray-500">{tier.headline}</p>
               <ul className="space-y-1.5 flex-1 mb-5">
-                {tier.features.map(f => (
+                {tier.modules.slice(0, 5).map(f => (
                   <li key={f} className="flex items-start gap-2 text-xs text-gray-600">
                     <span className="text-green-500 mt-0.5 flex-shrink-0">✓</span>{f}
                   </li>
@@ -660,15 +680,16 @@ function TrialExpiredScreen({ lodgeName }) {
                 onClick={() => requestUpgrade(tier.name)}
                 disabled={submitting}
                 className={`w-full py-2 rounded-lg text-sm font-semibold text-white transition-colors disabled:opacity-50 ${
-                  tier.color === 'purple' ? 'bg-purple-600 hover:bg-purple-700' :
-                  tier.color === 'green' ? 'bg-green-600 hover:bg-green-700' :
+                  tier.name === 'Pro' ? 'bg-purple-600 hover:bg-purple-700' :
+                  tier.name === 'Standard' ? 'bg-green-600 hover:bg-green-700' :
                   'bg-blue-600 hover:bg-blue-700'
                 }`}
               >
-                {submitting ? 'Sending...' : `Get ${tier.name}`}
+                {submitting ? 'Sending...' : `Buy ${tier.name}`}
               </button>
             </div>
           ))}
+          </div>
         </div>
       )}
 
@@ -729,6 +750,7 @@ export default function App() {
   const lastEditablePointerRef = useRef(null)
   const focusObservedRef = useRef(false)
   const restoreAttemptedRef = useRef(false)
+  const navigationGuardRef = useRef({ isDirty: false, confirmLeave: null })
 
   // Dark mode — apply saved preference on startup
   useEffect(() => {
@@ -784,11 +806,19 @@ export default function App() {
   const applyEntitlement = useCallback((entitlement) => {
     const nextTrial = entitlement || DEFAULT_TRIAL_STATUS
     const nextFeatures = {}
-    Object.keys(FEATURE_TIER).forEach((featureName) => {
+    const normalizedPlan = normalizeSubscriptionPlan(nextTrial?.plan || 'Starter')
+    const planIndex = SUBSCRIPTION_PLAN_ORDER.indexOf(normalizedPlan)
+    APP_FEATURES.forEach((featureName) => {
       if (Object.prototype.hasOwnProperty.call(nextTrial?.effective_features || {}, featureName)) {
         nextFeatures[featureName] = nextTrial.effective_features[featureName] !== false
+      } else if (nextTrial?.expired === true) {
+        nextFeatures[featureName] = false
+      } else if (nextTrial?.status === 'trial') {
+        nextFeatures[featureName] = true
       } else {
-        nextFeatures[featureName] = nextTrial?.status === 'trial' && nextTrial?.expired !== true
+        const requiredPlan = getFeatureRequiredPlan(featureName)
+        const requiredIndex = SUBSCRIPTION_PLAN_ORDER.indexOf(requiredPlan)
+        nextFeatures[featureName] = planIndex >= requiredIndex
       }
     })
     setTrialStatus(nextTrial)
@@ -807,6 +837,11 @@ export default function App() {
     clearStoredRendererSession()
     window.api.auth.logout().catch(() => {})
   }, [clearStoredRendererSession])
+
+  const switchAccount = useCallback(() => {
+    logout()
+    window.location.hash = '#/login'
+  }, [logout])
 
   const reloadProfiles = useCallback(async () => {
     if (isBrowserPreview || !window.api?.profiles) {
@@ -1165,7 +1200,7 @@ export default function App() {
 
   // Trial expired and no license — full lock screen after lodge login
   if (user && trialStatus?.expired) {
-    return <TrialExpiredScreen lodgeName={settings?.lodge_name} />
+    return <TrialExpiredScreen lodgeName={settings?.lodge_name} onSwitchAccount={switchAccount} />
   }
 
   return (
@@ -1177,14 +1212,18 @@ export default function App() {
       <SettingsContext.Provider value={settingsContextValue}>
         <AppErrorBoundary>
           <HashRouter>
-            <UpdateBanner />
-            <BroadcastBanner />
-            <SyncFailBanner />
-            <FinancialHealthBanner />
-            <BookingSyncConflictNotification />
-            {user && trialStatus?.status === 'trial' && trialStatus?.lodge_id && !user?.isMasterAdmin && (
-              <TrialBanner daysLeft={trialStatus.daysLeft} />
-            )}
+            <UnsavedChangesContext.Provider value={navigationGuardRef}>
+            {/* Phase 1: Unified Notification Center */}
+            <div className="fixed top-4 right-4 z-[9999] flex flex-col items-end gap-3 pointer-events-none [&>*]:pointer-events-auto">
+              <UpdateBanner />
+              <BroadcastBanner />
+              <SyncFailBanner />
+              <FinancialHealthBanner />
+              <BookingSyncConflictNotification />
+              {user && trialStatus?.status === 'trial' && trialStatus?.lodge_id && !user?.isMasterAdmin && (
+                <TrialBanner daysLeft={trialStatus.daysLeft} />
+              )}
+            </div>
             <Routes>
               <Route
                 path="/welcome"
@@ -1243,9 +1282,11 @@ export default function App() {
                 <Route path="pos"        element={<UpgradeWall feature="pos">       <Lazy><POS /></Lazy>        </UpgradeWall>} />
                 <Route path="inventory"  element={<UpgradeWall feature="inventory"> <Lazy><Inventory /></Lazy>  </UpgradeWall>} />
                 <Route path="supplies"   element={<UpgradeWall feature="supplies">  <Lazy><RoomSupplies /></Lazy></UpgradeWall>} />
+                <Route path="ai"         element={<Lazy><OpsAi /></Lazy>} />
               </Route>
               <Route path="*" element={<Navigate to={user ? '/' : preAuthFallbackPath} replace />} />
             </Routes>
+            </UnsavedChangesContext.Provider>
           </HashRouter>
         </AppErrorBoundary>
       </SettingsContext.Provider>

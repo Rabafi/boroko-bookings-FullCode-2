@@ -6,6 +6,7 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import autoUpdaterPkg from 'electron-updater'
 const { autoUpdater } = autoUpdaterPkg
 import * as db from './database.js'
+import { createAiOrchestrator } from './ai/aiOrchestrator.js'
 import { buildCapabilitySnapshot, normalizeAppRole } from '../shared/accessControl.js'
 import {
   getEmailConfig,
@@ -603,6 +604,85 @@ function createWindow() {
     }
   })
 
+  // ── Proactive Ops AI watcher (lightweight) ─────────────────────────────────
+  // Emits ai:alert events to the renderer so Ops AI feels "alive" across screens.
+  let aiWatcherTimer = null
+  let lastAttentionSignature = ''
+
+  const emitAiAlert = (payload) => {
+    try {
+      mainWindow?.webContents?.send('ai:alert', payload)
+    } catch {
+      // non-fatal
+    }
+  }
+
+  const computeAttention = async () => {
+    // Keep this extremely lightweight (runs every 30s).
+    // We start with existing dashboard stats + upcoming checkouts heuristics.
+    const stats = await db.getDashboardStats().catch(() => null)
+    const upcoming = await db.getUpcomingCheckins().catch(() => ({ today: [], tomorrow: [], dayAfter: [] }))
+
+    const unpaidCount = Number(stats?.unpaid_count || stats?.unpaidCount || 0)
+    const outstandingTotal = Number(stats?.outstanding_total || stats?.outstandingTotal || 0)
+    const checkoutsToday = Array.isArray(upcoming?.today)
+      ? upcoming.today.filter((b) => String(b.check_out || '').slice(0, 10) === new Date().toISOString().slice(0, 10)).length
+      : 0
+
+    return {
+      unpaidCount,
+      outstandingTotal,
+      checkoutsToday
+    }
+  }
+
+  const startAiWatcher = () => {
+    if (aiWatcherTimer) return
+    aiWatcherTimer = setInterval(async () => {
+      try {
+        const user = db.getCurrentUser?.() || null
+        if (!user) return // no session
+
+        const attention = await computeAttention()
+        const signature = JSON.stringify(attention)
+        if (signature === lastAttentionSignature) return
+        lastAttentionSignature = signature
+
+        // Emit targeted alerts (proactive suggestions)
+        if (attention.unpaidCount > 0) {
+          emitAiAlert({
+            key: `unpaid:${attention.unpaidCount}:${Math.round(attention.outstandingTotal)}`,
+            type: 'unpaid',
+            title: 'Unpaid bookings',
+            message: `${attention.unpaidCount} booking(s) still owe money. Outstanding ~${(attention.outstandingTotal || 0).toFixed(2)}.`,
+            action: { label: 'Review', prompt: 'Show unpaid bookings.' },
+            badge: Math.min(99, attention.unpaidCount)
+          })
+        }
+      } catch {
+        // silent: watcher is best-effort
+      }
+    }, 30_000)
+
+    // Initial pulse a few seconds after boot
+    setTimeout(() => {
+      computeAttention().then((attention) => {
+        const unpaidCount = Number(attention?.unpaidCount || 0)
+        const outstandingTotal = Number(attention?.outstandingTotal || 0)
+        if (unpaidCount > 0) {
+          emitAiAlert({
+            key: `briefing:unpaid:${unpaidCount}:${Math.round(outstandingTotal)}`,
+            type: 'briefing',
+            title: 'Daily briefing',
+            message: `${unpaidCount} unpaid booking(s) detected. Tap to open Ops AI.`,
+            action: { label: 'Open', prompt: "What needs my attention right now?" },
+            badge: Math.min(99, unpaidCount)
+          })
+        }
+      }).catch(() => {})
+    }, 6000)
+  }
+
   let didShowWindow = false
   const showWindowSafely = (reason) => {
     if (didShowWindow || mainWindow.isDestroyed()) return
@@ -703,6 +783,10 @@ function createWindow() {
   } else {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
+
+  // Start proactive Ops AI watcher once window exists.
+  // It emits ai:alert events consumed by the floating UI layer.
+  startAiWatcher()
 
   return mainWindow
 }
@@ -1414,6 +1498,302 @@ app.whenReady().then(async () => {
     throw new Error(errorMessage || 'Your role does not have access to this action.')
   }
 
+  // ── AI Ops Agent ──────────────────────────────────────────────────────────
+  const ai = createAiOrchestrator({
+    appUserDataPath: app.getPath('userData'),
+    db,
+    requireCapability
+  })
+
+  ipcMain.handle('ai:turn', async (_, payload = {}) => {
+    try {
+      await requireCapability('dashboard.view')
+      const message = String(payload?.message || '').trim()
+      if (!message) return { success: false, error: 'Message is required.' }
+      const model = payload?.model || null
+      const result = await ai.turn({ message, model })
+      return { success: true, ...result }
+    } catch (e) {
+      return { success: false, error: e.message || 'AI request failed.' }
+    }
+  })
+
+  ipcMain.handle('ai:execute', async (_, payload = {}) => {
+    try {
+      await requireCapability('dashboard.view')
+      const proposalId = String(payload?.proposalId || '').trim()
+      if (!proposalId) return { success: false, error: 'proposalId is required.' }
+      const result = await ai.execute({ proposalId })
+      return { success: true, ...result }
+    } catch (e) {
+      return { success: false, error: e.message || 'AI action failed.' }
+    }
+  })
+
+  // ── Collections: Preview (read-only, no AI call) ───────────────────────────
+  // Returns a structured preview of what bulk_record_payment would collect.
+  // The UI must show this to the user and require explicit confirmation before
+  // calling ai:collections:execute.
+  ipcMain.handle('ai:collections:preview', async (_, payload = {}) => {
+    try {
+      await requireCapability('payments.record')
+      const bookingIds = Array.isArray(payload?.booking_ids) ? payload.booking_ids : []
+      const method = String(payload?.method || 'cash')
+      const HIGH_VALUE_THRESHOLD = 5000
+
+      const allBookings = await db.getAllBookings().catch(() => [])
+      const today = new Date().toISOString().slice(0, 10)
+      const bookingMap = new Map((Array.isArray(allBookings) ? allBookings : []).map((b) => [b.id, b]))
+
+      const items = []
+      let totalAmount = 0
+      let skippedCount = 0
+
+      // If no specific IDs passed, use all eligible unpaid bookings
+      const idsToProcess = bookingIds.length > 0
+        ? bookingIds
+        : (Array.isArray(allBookings) ? allBookings : [])
+            .filter((b) => b && (b.status || '') !== 'cancelled')
+            .map((b) => b.id)
+
+      for (const bookingId of idsToProcess) {
+        const b = bookingMap.get(bookingId)
+        if (!b) { skippedCount++; continue }
+        if ((b.status || '') === 'cancelled') { skippedCount++; continue }
+
+        const total = Number(b.total_amount || 0) + Number(b.charges_total || 0)
+        const paid = Number(b.amount_paid || 0)
+        const balance = Math.max(0, total - paid)
+        if (balance < 0.01) { skippedCount++; continue }
+
+        const checkOut = (b.check_out || '').slice(0, 10)
+        const checkIn = (b.check_in || '').slice(0, 10)
+        let bucket = 'future'
+        if (checkOut < today) bucket = 'overdue'
+        else if (checkIn <= today && checkOut >= today) bucket = 'due_today'
+
+        items.push({
+          booking_id: bookingId,
+          guest: b.customer_name || b.guest_name || 'Guest',
+          room_number: b.room_number || null,
+          amount: balance,
+          bucket,
+          check_in: b.check_in,
+          check_out: b.check_out,
+          status: b.status
+        })
+        totalAmount += balance
+      }
+
+      return {
+        success: true,
+        type: 'payment_preview',
+        total: totalAmount,
+        count: items.length,
+        skipped: skippedCount,
+        method,
+        high_value: totalAmount >= HIGH_VALUE_THRESHOLD,
+        high_value_threshold: HIGH_VALUE_THRESHOLD,
+        items
+      }
+    } catch (e) {
+      return { success: false, error: e.message || 'Preview failed.' }
+    }
+  })
+
+  // ── Collections: Execute (RPC-safe, streaming via IPC events) ─────────────
+  // Iterates items from a confirmed preview, calls updateBookingPayment for each,
+  // and emits progress events to the renderer after every booking.
+  ipcMain.handle('ai:collections:execute', async (event, payload = {}) => {
+    try {
+      await requireCapability('payments.record')
+
+      const items = Array.isArray(payload?.items) ? payload.items : []
+      const method = String(payload?.method || 'cash')
+      const batchKey = `ai:batch:${new Date().toISOString()}`
+      const seenIds = new Set()
+
+      if (items.length === 0) return { success: false, error: 'No items to process.' }
+
+      const emit = (data) => {
+        try { event.sender.send('ai:collections:progress', { ...data, timestamp: data.timestamp || Date.now() }) } catch { /* window closed */ }
+      }
+
+      emit({ type: 'started', total: items.length, timestamp: Date.now() })
+
+      const results = []
+      let successCount = 0
+      let skipCount = 0
+      let errorCount = 0
+
+      const allBookings = await db.getAllBookings().catch(() => [])
+      const bookingMap = new Map((Array.isArray(allBookings) ? allBookings : []).map((b) => [b.id, b]))
+
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i]
+        const { booking_id, guest, amount } = item
+
+        emit({ type: 'processing', index: i, booking_id, guest, amount, total: items.length, timestamp: Date.now() })
+
+        if (seenIds.has(booking_id)) {
+          results.push({ booking_id, guest, status: 'skipped', reason: 'duplicate' })
+          skipCount++
+          emit({ type: 'skipped', index: i, booking_id, guest, reason: 'duplicate', timestamp: Date.now() })
+          continue
+        }
+        seenIds.add(booking_id)
+
+        if (!booking_id || !amount || amount < 0.01) {
+          results.push({ booking_id, guest, status: 'skipped', reason: 'invalid_data' })
+          skipCount++
+          emit({ type: 'skipped', index: i, booking_id, guest, reason: 'invalid_data', timestamp: Date.now() })
+          continue
+        }
+
+        const existing = bookingMap.get(booking_id)
+        if (existing && (existing.status || '') === 'cancelled') {
+          results.push({ booking_id, guest, status: 'skipped', reason: 'cancelled' })
+          skipCount++
+          emit({ type: 'skipped', index: i, booking_id, guest, reason: 'cancelled', timestamp: Date.now() })
+          continue
+        }
+        if (existing && (existing.status || '') === 'checked_out') {
+          results.push({ booking_id, guest, status: 'skipped', reason: 'already_checked_out' })
+          skipCount++
+          emit({ type: 'skipped', index: i, booking_id, guest, reason: 'already_checked_out', timestamp: Date.now() })
+          continue
+        }
+
+        try {
+          const intentKey = `${batchKey}:${booking_id}`
+          const res = await db.updateBookingPayment(booking_id, amount, method, 'payment', null, intentKey)
+          results.push({ booking_id, guest, amount, status: 'paid', ...res })
+          successCount++
+          emit({ type: 'success', index: i, booking_id, guest, amount, timestamp: Date.now() })
+        } catch (e) {
+          const errMsg = e.message || 'Payment failed'
+          results.push({ booking_id, guest, amount, status: 'error', error: errMsg })
+          errorCount++
+          emit({ type: 'error', index: i, booking_id, guest, amount, error: errMsg, timestamp: Date.now() })
+        }
+      }
+
+      const summary = {
+        success: true,
+        total_processed: items.length,
+        success_count: successCount,
+        skip_count: skipCount,
+        error_count: errorCount,
+        results
+      }
+
+      emit({ type: 'complete', ...summary, timestamp: Date.now() })
+      return summary
+    } catch (e) {
+      return { success: false, error: e.message || 'Execution failed.' }
+    }
+  })
+
+  // ── Overdue Checkouts: Preview ────────────────────────────────────────────────
+  ipcMain.handle('ai:overdue:preview', async (_, payload = {}) => {
+    try {
+      await requireCapability('bookings.view')
+      const bookingIds = Array.isArray(payload?.booking_ids) ? payload.booking_ids : []
+      const allBookings = await db.getAllBookings().catch(() => [])
+      const todayStr = new Date().toISOString().slice(0, 10)
+
+      const overdue = (Array.isArray(allBookings) ? allBookings : [])
+        .filter(b => b.check_out && b.check_out.slice(0, 10) < todayStr && (b.status === 'checked_in' || b.status === 'confirmed'))
+        .filter(b => bookingIds.length === 0 || bookingIds.includes(b.id))
+
+      const bookings = overdue.map(b => ({
+        id: b.id,
+        guest: b.customer_name || b.guest_name || 'Guest',
+        room: b.room_number || null,
+        check_in: b.check_in,
+        check_out: b.check_out,
+        status: b.status,
+        balance: Math.max(0, Number(b.total_amount || 0) + Number(b.charges_total || 0) - Number(b.amount_paid || 0))
+      }))
+
+      return {
+        success: true,
+        count: bookings.length,
+        bookings
+      }
+    } catch (e) {
+      return { success: false, error: e.message || 'Overdue preview failed.' }
+    }
+  })
+
+  // ── Overdue Checkouts: Execute (streaming progress) ──────────────────────────
+  ipcMain.handle('ai:overdue:execute', async (event, payload = {}) => {
+    try {
+      await requireCapability('bookings.manage')
+      const bookingIds = [...new Set(Array.isArray(payload?.booking_ids) ? payload.booking_ids : [])]
+      if (!bookingIds.length) return { success: false, error: 'No booking IDs provided.' }
+
+      const allBookings = await db.getAllBookings().catch(() => [])
+      const bookingMap = new Map((Array.isArray(allBookings) ? allBookings : []).map((b) => [b.id, b]))
+
+      const emit = (data) => {
+        try { event.sender.send('ai:overdue:progress', { ...data, timestamp: data.timestamp || Date.now() }) } catch { /* window closed */ }
+      }
+
+      emit({ type: 'started', total: bookingIds.length, timestamp: Date.now() })
+
+      const results = []
+      let successCount = 0
+      let skipCount = 0
+      let errorCount = 0
+
+      for (let i = 0; i < bookingIds.length; i++) {
+        const id = bookingIds[i]
+        emit({ type: 'processing', index: i, booking_id: id, total: bookingIds.length, timestamp: Date.now() })
+
+        const existing = bookingMap.get(id)
+        if (existing && (existing.status || '') === 'cancelled') {
+          results.push({ booking_id: id, status: 'skipped', reason: 'cancelled' })
+          skipCount++
+          emit({ type: 'skipped', index: i, booking_id: id, reason: 'cancelled', timestamp: Date.now() })
+          continue
+        }
+        if (existing && (existing.status || '') === 'checked_out') {
+          results.push({ booking_id: id, status: 'skipped', reason: 'already_checked_out' })
+          skipCount++
+          emit({ type: 'skipped', index: i, booking_id: id, reason: 'already_checked_out', timestamp: Date.now() })
+          continue
+        }
+
+        try {
+          await db.updateBookingStatus(id, 'checked_out')
+          results.push({ booking_id: id, status: 'checked_out' })
+          successCount++
+          emit({ type: 'success', index: i, booking_id: id, timestamp: Date.now() })
+        } catch (e) {
+          const errMsg = e.message || 'Checkout failed'
+          results.push({ booking_id: id, status: 'error', error: errMsg })
+          errorCount++
+          emit({ type: 'error', index: i, booking_id: id, error: errMsg, timestamp: Date.now() })
+        }
+      }
+
+      const summary = {
+        success: true,
+        total_processed: bookingIds.length,
+        success_count: successCount,
+        skip_count: skipCount,
+        error_count: errorCount,
+        results
+      }
+      emit({ type: 'complete', ...summary, timestamp: Date.now() })
+      return summary
+    } catch (e) {
+      return { success: false, error: e.message || 'Execution failed.' }
+    }
+  })
+
+
   // ── Master Admin Setup ─────────────────────────────────────────────────────
   ipcMain.handle('admin:exists', async () => db.masterAdminExists().catch(() => false))
   ipcMain.handle('admin:setup', async (_, name, email, password) => {
@@ -1723,6 +2103,12 @@ app.whenReady().then(async () => {
       return db.getCriticalErrorLog(limit)
     } catch (e) { throw new Error(e?.message || 'Failed to load critical error history') }
   })
+  ipcMain.handle('reports:clearCriticalErrors', async () => {
+    try {
+      await requireCapability('system.health')
+      return db.clearCriticalErrorLog()
+    } catch (e) { throw new Error(e?.message || 'Failed to clear critical error history') }
+  })
   ipcMain.handle('reports:saveSupportBundle', async (event, limit = 20) => {
     try {
       await requireCapability('system.health')
@@ -1743,6 +2129,18 @@ app.whenReady().then(async () => {
       return { success: true, filePath: result.filePath }
     } catch (e) {
       return { success: false, error: e?.message || 'Failed to export support bundle' }
+    }
+  })
+  ipcMain.handle('reports:getSupportBundle', async (_, limit = 20) => {
+    try {
+      await requireCapability('system.health')
+      const payload = {
+        ...(await db.getSupportBundle(limit)),
+        renderer_errors: getRendererErrorLog(limit)
+      }
+      return { success: true, bundle: payload }
+    } catch (e) {
+      return { success: false, error: e?.message || 'Failed to get support bundle' }
     }
   })
   ipcMain.handle('reports:exportOfflineSafetyManifest', async (event) => {
@@ -1960,8 +2358,7 @@ app.whenReady().then(async () => {
     try {
       await requireCapability('payments.record')
       await assertResourceBelongsToCurrentLodge('Booking', id, db.getBookingById)
-      await db.updateBookingPayment(id, amount, method, 'payment', null, intentKey)
-      return { success: true }
+      return await db.updateBookingPayment(id, amount, method, 'payment', null, intentKey)
     } catch (e) {
       return { success: false, error: e.message }
     }
@@ -3214,6 +3611,11 @@ app.whenReady().then(async () => {
     await assertResourceBelongsToCurrentLodge('Conference booking', id, db.getConferenceBookingById)
     return await db.deleteConferenceBooking(id)
   })
+  ipcMain.handle('conference:updatePayment', async (_, id, amount, method, intentKey) => {
+    await requireCapability('payments.record')
+    await assertResourceBelongsToCurrentLodge('Conference booking', id, db.getConferenceBookingById)
+    return await db.updateConferenceBookingPayment(id, amount, method, 'payment', null, intentKey)
+  })
 
   // ── Pool / Day Use ─────────────────────────────────────────────────────────
   ipcMain.handle('dayuse:getAll', async (_, start, end) => {
@@ -3466,6 +3868,13 @@ app.whenReady().then(async () => {
   ipcMain.handle('trial:getStatus', async (_, lodgeId) => {
     try { return await db.getTrialStatus(lodgeId) }
     catch { return null }
+  })
+  ipcMain.handle('usage:getSnapshot', async (_, options) => {
+    try {
+      return await db.getUsageLimitSnapshot(options || {})
+    } catch (error) {
+      return { error: error.message || 'Could not load usage snapshot.' }
+    }
   })
   ipcMain.handle('trial:activateKey', async (_, lodgeId, key) => {
     try {

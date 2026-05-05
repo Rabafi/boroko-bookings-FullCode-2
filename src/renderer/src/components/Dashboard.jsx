@@ -28,7 +28,21 @@ import {
 } from 'lucide-react'
 import { StatusBadge } from './shared/StatusBadge'
 import HorizontalScrollArea from './shared/HorizontalScrollArea'
+import DashboardUsageCard from './shared/DashboardUsageCard'
+import UpgradeNudgeBanner from './shared/UpgradeNudgeBanner'
+import InlineAiExecutionPanel from './shared/InlineAiExecutionPanel'
 import { useSettings, useFeatures, useOnlineRequests } from '../app-context'
+import {
+  MONTHLY_USAGE_RESET_COPY,
+  countMonthlyUsageBookings,
+  getEarlyUpgradePromptState,
+  getPlanRecommendation,
+  getPlanUsageLimits,
+  getUsageLimitStatus,
+  getUsagePriorityScore,
+  getUsageStateKey,
+  normalizeSubscriptionPlan
+} from '../../../shared/subscriptionPlans'
 
 const SHORTCUTS = [
   { label: 'Bookings',      to: '/bookings',   icon: BookOpen },
@@ -91,8 +105,10 @@ export default function Dashboard() {
   const currency = settings?.currency || 'P'
   const { requests: onlineRequests, refresh: refreshOnlineRequests } = useOnlineRequests()
   const [actioningId, setActioningId] = useState(null)
+  const [inlineAction, setInlineAction] = useState(null)
 
   const [stats, setStats] = useState(null)
+  const [usageSnapshot, setUsageSnapshot] = useState(null)
   const [recentBookings, setRecentBookings] = useState([])
   const [loading, setLoading] = useState(false)
   const [bookingHealth, setBookingHealth] = useState({ outstandingTotal: 0, unpaidCount: 0 })
@@ -114,10 +130,36 @@ export default function Dashboard() {
     [frontDeskRequests]
   )
 
+  // AI Assistant Visibility Control
+  const [isAiEnabled, setIsAiEnabled] = useState(
+    () => localStorage.getItem('bb_ai_enabled') === 'true'
+  )
+
+  useEffect(() => {
+    const handleToggle = () => {
+      setIsAiEnabled(localStorage.getItem('bb_ai_enabled') === 'true')
+    }
+    const handleNavigate = (e) => {
+      const page = e.detail?.page
+      if (page) navigate(`/${page}`)
+    }
+    const handleAiAction = (e) => {
+      if (e.detail) setInlineAction(e.detail)
+    }
+    window.addEventListener('bb_ai_toggle', handleToggle)
+    window.addEventListener('bb_navigate', handleNavigate)
+    window.addEventListener('bb_ai_action', handleAiAction)
+    return () => {
+      window.removeEventListener('bb_ai_toggle', handleToggle)
+      window.removeEventListener('bb_navigate', handleNavigate)
+      window.removeEventListener('bb_ai_action', handleAiAction)
+    }
+  }, [navigate])
+
   const loadData = useCallback(async () => {
     setLoading(true)
     try {
-      const [s, bookings, up, fc, ls, paymentMix, lodgeRequests, rooms, rateOverrides] = await Promise.all([
+      const [s, bookings, up, fc, ls, paymentMix, lodgeRequests, rooms, users, rateOverrides, usage, confBookings] = await Promise.all([
         window.api.dashboard.stats(),
         window.api.bookings.getAll(),
         window.api.notifications.upcoming(),
@@ -126,9 +168,58 @@ export default function Dashboard() {
         window.api.dashboard.bookingPaymentsToday().catch(() => ({ total_collected: 0, gross_collected: 0, refunds_issued: 0, by_method: {}, payment_count: 0, date: null })),
         window.api.requests?.getAll?.(8).catch(() => []),
         window.api.rooms.getAll().catch(() => []),
-        window.api.rateOverrides.getAll().catch(() => [])
+        window.api.users.getAll().catch(() => []),
+        window.api.rateOverrides.getAll().catch(() => []),
+        window.api.usage?.getSnapshot
+          ? window.api.usage.getSnapshot({ forceRemoteRefresh: navigator.onLine === true }).catch(() => null)
+          : Promise.resolve(null),
+        window.api.conference.getAll().catch(() => [])
       ])
       const allBookings = Array.isArray(bookings) ? bookings : []
+      const allConfBookings = Array.isArray(confBookings) ? confBookings : []
+      const allRooms = Array.isArray(rooms) ? rooms : []
+      const allUsers = Array.isArray(users) ? users : []
+      const usagePlan = normalizeSubscriptionPlan(usage?.plan || s?.plan || settings?.subscription_plan || 'Starter')
+      const usageLimits = getPlanUsageLimits(usagePlan)
+      const usageCounts = usage && !usage.error && usage.usage
+        ? {
+            monthlyBookings: Number(usage.usage.monthlyBookings || 0),
+            rooms: Number(usage.usage.rooms || 0),
+            users: Number(usage.usage.users || 0)
+          }
+        : {
+            monthlyBookings: countMonthlyUsageBookings(allBookings, new Date()),
+            rooms: allRooms.length,
+            users: allUsers.length
+          }
+      const usageStatuses = usage && !usage.error && usage.statuses
+        ? usage.statuses
+        : {
+            bookings: getUsageLimitStatus({ used: usageCounts.monthlyBookings, limit: usageLimits.monthlyBookings, grace: usageLimits.monthlyBookingsGrace }),
+            rooms: getUsageLimitStatus({ used: usageCounts.rooms, limit: usageLimits.rooms }),
+            users: getUsageLimitStatus({ used: usageCounts.users, limit: usageLimits.users })
+          }
+      const usageRecommendation = usage && !usage.error && usage.recommendation
+        ? usage.recommendation
+        : getPlanRecommendation({
+            plan: usagePlan,
+            bookingsUsage: usageCounts.monthlyBookings,
+            roomsUsage: usageCounts.rooms,
+            usersUsage: usageCounts.users,
+            limits: usageLimits
+          })
+      const usageStateKey = [usageStatuses.bookings, usageStatuses.rooms, usageStatuses.users]
+        .sort((left, right) => getUsagePriorityScore(right) - getUsagePriorityScore(left))[0]
+      setUsageSnapshot({
+        ...(usage && !usage.error ? usage : {}),
+        plan: usagePlan,
+        usage: usageCounts,
+        statuses: usageStatuses,
+        recommendation: usageRecommendation,
+        usageStateKey: getUsageStateKey(usageStateKey),
+        monthlyResetCopy: usage?.monthlyResetCopy || MONTHLY_USAGE_RESET_COPY,
+        source: usage?.source || 'cache'
+      })
       setStats(s || null)
 
     // Collapse exclusive event room-rows into one entry per event group
@@ -155,7 +246,21 @@ export default function Dashboard() {
         return db_ - da
       })
     setRecentBookings(combined.slice(0, 6))
-    const revenueEligible = combined.filter((b) => b && (b.status || '') !== 'cancelled')
+    const confMapped = allConfBookings.map((cb) => ({
+      id: cb.id,
+      customer_name: cb.client_name,
+      status: cb.payment_status,
+      total_amount: Number(cb.total_amount || 0),
+      amount_paid: Number(cb.deposit_paid || 0),
+      charges_total: 0,
+      check_in: cb.booking_date,
+      check_out: cb.booking_date,
+      booking_type: 'conference'
+    })).filter((cb) => cb.status !== 'cancelled')
+    const revenueEligible = [
+      ...combined.filter((b) => b && (b.status || '') !== 'cancelled'),
+      ...confMapped
+    ]
     const computedOutstandingTotal = revenueEligible.reduce((sum, booking) => (
       sum + Math.max(0, Number(booking?.total_amount || 0) + Number(booking?.charges_total || 0) - Number(booking?.amount_paid || 0))
     ), 0)
@@ -169,8 +274,8 @@ export default function Dashboard() {
       }))
       .filter((booking) => booking.outstanding_balance > 0)
       .sort((left, right) => {
-        const leftPriority = left.status === 'checked_out' ? 0 : left.status === 'checked_in' ? 1 : 2
-        const rightPriority = right.status === 'checked_out' ? 0 : right.status === 'checked_in' ? 1 : 2
+        const leftPriority = left.status === 'checked_out' ? 0 : left.status === 'checked_in' ? 1 : (left.booking_type === 'conference' ? 2 : 2)
+        const rightPriority = right.status === 'checked_out' ? 0 : right.status === 'checked_in' ? 1 : (right.booking_type === 'conference' ? 2 : 2)
         if (leftPriority !== rightPriority) return leftPriority - rightPriority
         return String(left.check_out || left.check_in || left.created_at || '').localeCompare(
           String(right.check_out || right.check_in || right.created_at || '')
@@ -280,6 +385,22 @@ export default function Dashboard() {
     ...(upcoming.tomorrow || []).map((b) => ({ ...b, _label: 'Tomorrow' })),
     ...(upcoming.dayAfter || []).map((b) => ({ ...b, _label: 'Day After' }))
   ], [upcoming])
+  const currentPlan = normalizeSubscriptionPlan(usageSnapshot?.plan || settings?.subscription_plan || 'Starter')
+  const isProPlan = currentPlan === 'Pro'
+  const usageLimits = getPlanUsageLimits(currentPlan)
+  const usageCounts = usageSnapshot?.usage || { monthlyBookings: 0, rooms: 0, users: 0 }
+  const bookingStatus = usageSnapshot?.statuses?.bookings || getUsageLimitStatus({ used: usageCounts.monthlyBookings, limit: usageLimits.monthlyBookings, grace: usageLimits.monthlyBookingsGrace })
+  const roomStatus = usageSnapshot?.statuses?.rooms || getUsageLimitStatus({ used: usageCounts.rooms, limit: usageLimits.rooms })
+  const userStatus = usageSnapshot?.statuses?.users || getUsageLimitStatus({ used: usageCounts.users, limit: usageLimits.users })
+  const dashboardStatus = [bookingStatus, roomStatus, userStatus].sort((left, right) => getUsagePriorityScore(right) - getUsagePriorityScore(left))[0] || bookingStatus
+  const dashboardPrompt = getEarlyUpgradePromptState({
+    plan: currentPlan,
+    bookingsUsage: usageCounts.monthlyBookings,
+    roomsUsage: usageCounts.rooms,
+    usersUsage: usageCounts.users,
+    limits: usageLimits
+  })
+  const showDashboardPrompt = !isProPlan && dashboardPrompt.shouldPrompt
 
   return (
     <div className="mx-auto flex max-w-7xl flex-col gap-6">
@@ -288,23 +409,119 @@ export default function Dashboard() {
           <p className="text-xs font-semibold uppercase tracking-[0.22em] text-emerald-700/70">Operations Overview</p>
           <h1 className="bb-page-header-title mt-2">Dashboard</h1>
           <p className="bb-page-header-subtitle">{today}</p>
-        </div>
+                </div>
+                )}
+              </div>
 
-<div className="bb-card-muted min-w-[240px] px-4 py-4">
-          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">At a glance</p>
-          <p className="mt-2 text-sm text-slate-600">
-            Review occupancy, arrivals, revenue, and operational alerts without losing sight of the front desk.
-          </p>
+      {/* Quick Access */}
+      <section className="bb-card p-5">
+        <div className="mb-4 flex items-center justify-between gap-4">
+          <div>
+            <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-500">Quick Access</h2>
+            <p className="mt-1 text-sm text-slate-500">Jump into the most-used desk and back-office modules.</p>
+          </div>
         </div>
-      </div>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-10">
+          {SHORTCUTS.map(({ label, to, icon: Icon, feature, tier }) => {
+            const isLocked = feature && Object.keys(features).length > 0 && features[feature] === false
+            const tierColor = tier === 'Pro' ? 'text-purple-500' : 'text-blue-500'
+            return (
+              <button
+                key={to}
+                onClick={() => navigate(to)}
+                className={`relative flex flex-col items-start gap-2 rounded-2xl border px-4 py-4 text-left transition-all ${
+                  isLocked
+                    ? 'border-slate-200 bg-slate-50/90 opacity-60 hover:opacity-80'
+                    : 'border-slate-200 bg-white/90 hover:-translate-y-0.5 hover:border-emerald-300 hover:bg-emerald-50/60 hover:shadow-md'
+                }`}
+              >
+                <div className={`inline-flex h-11 w-11 items-center justify-center rounded-2xl ${isLocked ? 'bg-slate-100 text-slate-400' : 'bg-slate-100 text-slate-700'}`}>
+                  <Icon size={20} />
+                </div>
+                <span className="text-sm font-semibold leading-tight text-slate-700">{label}</span>
+                {isLocked && (
+                  <Lock size={10} className={`absolute top-1.5 right-1.5 ${tierColor}`} />
+                )}
+                {isLocked && tier && (
+                  <span className={`text-[9px] font-bold ${tierColor}`}>{tier}</span>
+                )}
+              </button>
+            )
+          })}
+        </div>
+      </section>
+
+      {/* Stats Grid */}
+      {stats && (
+        <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          <StatCard
+            icon={BedDouble}
+            label="Total Rooms"
+            value={stats.total_rooms}
+            color="bg-blue-50 text-blue-600"
+          />
+          <StatCard
+            icon={Users}
+            label="Occupied Today"
+            value={stats.occupied_today}
+            color="bg-green-50 text-green-600"
+          />
+          <StatCard
+            icon={CalendarCheck}
+            label="Check-ins Today"
+            value={stats.checkins_today}
+            color="bg-teal-50 text-teal-600"
+          />
+          <StatCard
+            icon={CalendarX}
+            label="Check-outs Today"
+            value={stats.checkouts_today}
+            color="bg-orange-50 text-orange-600"
+          />
+          <StatCard
+            icon={DollarSign}
+            label="Net Cash This Month"
+            value={`${currency} ${Number(stats.revenue_month || 0).toFixed(2)}`}
+            color="bg-purple-50 text-purple-600"
+          />
+          <StatCard
+            icon={TrendingUp}
+            label="Upcoming Bookings"
+            value={stats.upcoming_bookings}
+            color="bg-rose-50 text-rose-600"
+          />
+        </section>
+      )}
+
+      <DashboardUsageCard
+        plan={currentPlan}
+        usage={usageCounts}
+        status={dashboardStatus}
+        lodgeId={settings?.lodge_id || ''}
+        lodgeName={settings?.lodge_name || settings?.company_name || ''}
+        recommendation={dashboardPrompt}
+        onUpgrade={() => navigate('/settings', { state: { activeTab: 'license' } })}
+      />
+      <UpgradeNudgeBanner
+        visible={showDashboardPrompt}
+        message="You’re approaching your plan limits. Consider upgrading to avoid interruptions."
+        sessionKey="boroko:upgrade-nudge:dashboard"
+        lodgeId={settings?.lodge_id || ''}
+        lodgeName={settings?.lodge_name || settings?.company_name || ''}
+        plan={currentPlan}
+        usage={usageCounts}
+        recommendation={dashboardPrompt}
+        trigger="banner"
+        onUpgrade={() => navigate('/settings', { state: { activeTab: 'license' } })}
+      />
 
       {/* ── Online Booking Requests ─────────────────────────────────────── */}
       {onlineRequests.length > 0 && (
-        <section className="rounded-2xl border-2 border-amber-400 bg-amber-50 shadow-[0_8px_32px_rgba(217,119,6,0.18)] overflow-hidden">
-          <div className="flex items-center justify-between gap-4 px-5 py-4 border-b border-amber-200">
+        <section className="bb-card overflow-hidden border-l-4 border-l-amber-500">
+          <div className="flex items-center justify-between gap-4 px-5 py-4 border-b border-slate-100">
             <div className="flex items-center gap-3">
               <Globe size={18} className="text-amber-600" />
-              <p className="text-sm font-bold text-amber-900">Online Booking Requests</p>
+              <p className="text-sm font-bold text-slate-800">Online Booking Requests</p>
             </div>
             <span className="flex h-7 w-7 items-center justify-center rounded-full bg-red-500 text-white text-xs font-bold shadow animate-pulse">
               {onlineRequests.length}
@@ -388,7 +605,7 @@ export default function Dashboard() {
       )}
 
       {(pendingOnlineRequests.length > 0 || pendingFrontDeskRequests.length > 0) && (
-        <section className="rounded-[26px] border-2 border-emerald-300 bg-[linear-gradient(135deg,rgba(236,253,245,0.98),rgba(209,250,229,0.92))] px-5 py-4 shadow-[0_16px_42px_rgba(16,185,129,0.16)]">
+        <section className="bb-card p-6 border-l-4 border-l-emerald-500">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div className="min-w-0">
               <p className="text-xs font-semibold uppercase tracking-[0.22em] text-emerald-700">Action Inbox</p>
@@ -530,88 +747,8 @@ export default function Dashboard() {
         )}
       </section>
 
-      {/* Quick Access */}
-      <section className="bb-card p-5">
-        <div className="mb-4 flex items-center justify-between gap-4">
-          <div>
-            <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-500">Quick Access</h2>
-            <p className="mt-1 text-sm text-slate-500">Jump into the most-used desk and back-office modules.</p>
-          </div>
-        </div>
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-10">
-          {SHORTCUTS.map(({ label, to, icon: Icon, feature, tier }) => {
-            const isLocked = feature && Object.keys(features).length > 0 && features[feature] === false
-            const tierColor = tier === 'Pro' ? 'text-purple-500' : 'text-blue-500'
-            return (
-              <button
-                key={to}
-                onClick={() => navigate(to)}
-                className={`relative flex flex-col items-start gap-2 rounded-2xl border px-4 py-4 text-left transition-all ${
-                  isLocked
-                    ? 'border-slate-200 bg-slate-50/90 opacity-60 hover:opacity-80'
-                    : 'border-slate-200 bg-white/90 hover:-translate-y-0.5 hover:border-emerald-300 hover:bg-emerald-50/60 hover:shadow-md'
-                }`}
-              >
-                <div className={`inline-flex h-11 w-11 items-center justify-center rounded-2xl ${isLocked ? 'bg-slate-100 text-slate-400' : 'bg-slate-100 text-slate-700'}`}>
-                  <Icon size={20} />
-                </div>
-                <span className="text-sm font-semibold leading-tight text-slate-700">{label}</span>
-                {isLocked && (
-                  <Lock size={10} className={`absolute top-1.5 right-1.5 ${tierColor}`} />
-                )}
-                {isLocked && tier && (
-                  <span className={`text-[9px] font-bold ${tierColor}`}>{tier}</span>
-                )}
-              </button>
-            )
-          })}
-        </div>
-      </section>
-
-      {/* Stats Grid */}
-      {stats && (
-        <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
-          <StatCard
-            icon={BedDouble}
-            label="Total Rooms"
-            value={stats.total_rooms}
-            color="bg-blue-50 text-blue-600"
-          />
-          <StatCard
-            icon={Users}
-            label="Occupied Today"
-            value={stats.occupied_today}
-            color="bg-green-50 text-green-600"
-          />
-          <StatCard
-            icon={CalendarCheck}
-            label="Check-ins Today"
-            value={stats.checkins_today}
-            color="bg-teal-50 text-teal-600"
-          />
-          <StatCard
-            icon={CalendarX}
-            label="Check-outs Today"
-            value={stats.checkouts_today}
-            color="bg-orange-50 text-orange-600"
-          />
-          <StatCard
-            icon={DollarSign}
-            label="Net Cash This Month"
-            value={`${currency} ${Number(stats.revenue_month || 0).toFixed(2)}`}
-            color="bg-purple-50 text-purple-600"
-          />
-          <StatCard
-            icon={TrendingUp}
-            label="Upcoming Bookings"
-            value={stats.upcoming_bookings}
-            color="bg-rose-50 text-rose-600"
-          />
-        </section>
-      )}
-
       {bookingHealth.outstandingTotal > 0 && (
-        <section className="rounded-[22px] border border-rose-200 bg-[linear-gradient(135deg,rgba(255,241,242,0.96),rgba(254,226,226,0.82))] p-4 shadow-sm">
+        <section className="bb-card p-5 border-l-4 border-l-rose-500">
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div className="flex items-start gap-3">
               <div className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-rose-100 text-rose-700">
@@ -631,6 +768,16 @@ export default function Dashboard() {
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-2">
+              {isAiEnabled && (
+                <button
+                  type="button"
+                  onClick={() => setInlineAction({ type: 'fix_unpaid', label: 'Collect Outstanding Balances' })}
+                  className="inline-flex items-center gap-2 rounded-xl bg-rose-600 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-rose-700"
+                >
+                  <DollarSign size={13} />
+                  Collect with AI
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => navigate('/roomgrid')}
@@ -814,7 +961,7 @@ export default function Dashboard() {
 
       {/* Low Stock Alert */}
       {lowStock.length > 0 && (
-        <section className="rounded-[22px] border border-amber-200 bg-[linear-gradient(135deg,rgba(255,251,235,0.96),rgba(254,243,199,0.76))] p-4 shadow-sm">
+        <section className="bb-card p-5 border-l-4 border-l-amber-500">
           <div className="flex items-start gap-3">
           <div className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-amber-100 text-amber-700">
             <AlertTriangle size={20} className="shrink-0" />
@@ -937,6 +1084,12 @@ export default function Dashboard() {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <p className="font-semibold text-sm text-slate-800 truncate">{b.customer_name}</p>
+                      {b.booking_type === 'conference' && (
+                        <span className="shrink-0 rounded-full bg-amber-100 px-2 py-1 text-[11px] font-medium text-amber-700">Conference</span>
+                      )}
+                      {b.booking_type === 'pool' && (
+                        <span className="shrink-0 rounded-full bg-cyan-100 px-2 py-1 text-[11px] font-medium text-cyan-700">Pool</span>
+                      )}
                       <span className={`shrink-0 rounded-full px-2 py-1 text-[11px] font-medium ${
                         b._label === 'Today'
                           ? 'bg-green-100 text-green-700'
@@ -947,12 +1100,23 @@ export default function Dashboard() {
                         {b._label}
                       </span>
                     </div>
-                    <p className="mt-1 text-xs text-slate-500">
-                      Room {b.room_number} · {b.adults}A{b.children > 0 ? ` ${b.children}C` : ''} · {b.check_in} → {b.check_out}
-                    </p>
+                    {b.booking_type === 'conference' ? (
+                      <p className="mt-1 text-xs text-slate-500">
+                        {b.room_number} · {b.adults} attendees · {b.check_in}{b.start_time ? ` ${b.start_time}–${b.end_time}` : ''}
+                      </p>
+                    ) : b.booking_type === 'pool' ? (
+                      <p className="mt-1 text-xs text-slate-500">
+                        Pool Day Use · {b.adults}A{b.children > 0 ? ` ${b.children}C` : ''} · {b.check_in}
+                      </p>
+                    ) : (
+                      <p className="mt-1 text-xs text-slate-500">
+                        Room {b.room_number} · {b.adults}A{b.children > 0 ? ` ${b.children}C` : ''} · {b.check_in} → {b.check_out}
+                      </p>
+                    )}
                   </div>
                 </div>
-                {/* Action buttons */}
+                {/* Action buttons — room bookings only */}
+                {b.booking_type !== 'conference' && b.booking_type !== 'pool' && (
                 <div className="mt-3 flex flex-wrap gap-2">
                   {b.customer_phone && (
                     <button
@@ -970,7 +1134,7 @@ export default function Dashboard() {
                           '',
                           `We look forward to welcoming you!`,
                           settings?.phone ? `📞 ${settings.phone}` : ''
-                        ].filter(Boolean).join('\n')
+                        ].filter(Boolean).join('\r\n')
                         window.open(`https://wa.me/${phone}?text=${encodeURIComponent(msg)}`, '_blank')
                       }}
                       className="rounded-xl bg-green-50 px-3 py-1.5 text-xs font-medium text-green-700 transition-colors hover:bg-green-100"
@@ -994,7 +1158,7 @@ export default function Dashboard() {
                           '',
                           `We look forward to welcoming you!`,
                           settings?.phone ? `Phone: ${settings.phone}` : ''
-                        ].filter(Boolean).join('\n')
+                        ].filter(Boolean).join('\r\n')
                         window.api.shell.openExternal(
                           `mailto:${b.customer_email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(msg)}`
                         )
@@ -1005,6 +1169,7 @@ export default function Dashboard() {
                     </button>
                   )}
                 </div>
+                )}
               </div>
             ))}
           </div>
@@ -1071,6 +1236,14 @@ export default function Dashboard() {
             </div>
           </div>
         </div>
+      )}
+
+{inlineAction && (
+        <InlineAiExecutionPanel
+          action={inlineAction}
+          onClose={() => setInlineAction(null)}
+          onRefreshData={loadData}
+        />
       )}
     </div>
   )

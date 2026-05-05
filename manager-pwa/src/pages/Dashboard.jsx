@@ -3,7 +3,8 @@ import { Link } from 'react-router-dom'
 import { AlertTriangle, BellRing, Briefcase, CalendarClock, CreditCard, RefreshCw, TrendingUp, Wrench, X } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { useFeatures } from '../contexts/FeaturesContext'
-import { getDashboardSnapshot, getFinancialActivityFeed, getSupportRequests } from '../lib/api'
+import { getDashboardSnapshot, getFinancialActivityFeed, getSupportRequests, listBookings, listRooms, listStaff } from '../lib/api'
+import { MONTHLY_USAGE_RESET_COPY, countMonthlyUsageBookings, getPlanRecommendation, getPlanUsageLimits, getUsageLimitStatus } from '@shared/subscriptionPlans'
 import { money, shortDate, shortDateTime } from '../lib/format'
 import { getSession, listPwaNotifications, readCacheEntry, subscribeRuntimeEvent } from '../lib/runtime'
 
@@ -53,19 +54,30 @@ export default function Dashboard() {
   const [sheet, setSheet] = useState(null)
   const [requestFeed, setRequestFeed] = useState([])
   const [notificationFeed, setNotificationFeed] = useState([])
+  const [usage, setUsage] = useState({ monthlyBookings: 0, rooms: 0, users: 0, plan: 'Starter' })
 
   const load = async () => {
     setLoading(true)
     setLoadError('')
     try {
-      const [snapshot, feed, requests] = await Promise.all([
+      const [snapshot, feed, requests, bookings, rooms, staff] = await Promise.all([
         getDashboardSnapshot(user.lodge_id),
         getFinancialActivityFeed(user.lodge_id, 8).catch(() => []),
-        getSupportRequests(user.lodge_id, 6).catch(() => [])
+        getSupportRequests(user.lodge_id, 6).catch(() => []),
+        listBookings(user.lodge_id).catch(() => []),
+        listRooms(user.lodge_id).catch(() => []),
+        listStaff(user.lodge_id).catch(() => [])
       ])
       setData(snapshot)
       setActivity(feed)
       setRequestFeed(Array.isArray(requests) ? requests : [])
+      const plan = snapshot?.entitlement?.plan || 'Starter'
+      setUsage({
+        monthlyBookings: countMonthlyUsageBookings(bookings || [], new Date()),
+        rooms: Array.isArray(rooms) ? rooms.length : 0,
+        users: Array.isArray(staff) ? staff.length : 0,
+        plan
+      })
       setNotificationFeed(listPwaNotifications(user.lodge_id, 4))
       setLastUpdated(readCacheEntry(user.lodge_id, 'dashboard', null)?.updatedAt || null)
     } catch (error) {
@@ -106,6 +118,13 @@ export default function Dashboard() {
     ...(activity.filter((item) => item.type === 'refund_approved').slice(0, 2).map((item) => ({ id: item.id, kind: 'refund', label: item.title, sub: shortDateTime(item.created_at) }))),
     ...(data?.topBalances || []).slice(0, 2).map((booking) => ({ id: `bal-${booking.id}`, kind: 'balance', label: guestLabel(booking), sub: `Balance ${money(booking.balance)}` }))
   ].slice(0, 6)
+  const usageLimits = getPlanUsageLimits(usage.plan)
+  const bookingUsageStatus = getUsageLimitStatus({
+    used: usage.monthlyBookings,
+    limit: usageLimits.monthlyBookings,
+    grace: usageLimits.monthlyBookingsGrace
+  })
+  const usageRecommendation = getPlanRecommendation({ plan: usage.plan, usage, limits: usageLimits })
 
   return (
     <div className="flex flex-col min-h-screen bg-gray-950 pb-24">
@@ -197,6 +216,17 @@ export default function Dashboard() {
         )}
 
         <div className="bg-gray-800 rounded-3xl p-5">
+          <div className="mb-3 rounded-2xl border border-gray-700 bg-gray-900/60 p-3">
+            <p className="text-xs uppercase tracking-[0.18em] text-gray-500">Plan Usage · {usage.plan}</p>
+            <p className="mt-1 text-xs text-gray-300">
+              Bookings {usage.monthlyBookings}/{(usageLimits.monthlyBookings || 'unlimited')}{usageLimits.monthlyBookingsGrace ? ` (+${usageLimits.monthlyBookingsGrace} grace)` : ''} · Rooms {usage.rooms}/{usageLimits.rooms || 'unlimited'} · Users {usage.users}/{usageLimits.users || 'unlimited'}
+            </p>
+            <p className="mt-1 text-[11px] text-gray-500">{MONTHLY_USAGE_RESET_COPY}</p>
+            {['warning', 'critical', 'grace', 'blocked'].includes(bookingUsageStatus.state) && (
+              <p className="mt-1 text-[11px] text-amber-300">Booking usage is {bookingUsageStatus.state}. Upgrade plan to avoid creation interruptions.</p>
+            )}
+            <p className="mt-1 text-[11px] text-blue-300">{usageRecommendation.label}</p>
+          </div>
           <div className="flex items-center justify-between gap-3">
             <div>
               <p className="text-xs uppercase tracking-[0.2em] text-gray-500">Manager Briefing</p>

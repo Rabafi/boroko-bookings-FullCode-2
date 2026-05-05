@@ -32,6 +32,7 @@ declare
   v_low_stock jsonb := '[]'::jsonb;
   v_upcoming_arrivals jsonb := '[]'::jsonb;
   v_conference_upcoming jsonb := '[]'::jsonb;
+  v_pool_upcoming jsonb := '[]'::jsonb;
   v_revenue_trend jsonb := '[]'::jsonb;
   v_occupancy_trend jsonb := '[]'::jsonb;
   v_top_balances jsonb := '[]'::jsonb;
@@ -150,22 +151,46 @@ begin
       and b.status in ('pending', 'confirmed', 'checked_in', 'checked_out')
   ) t;
 
-  select coalesce(jsonb_agg(to_jsonb(t) order by t.start_date asc, t.created_at asc), '[]'::jsonb)
+  select coalesce(jsonb_agg(to_jsonb(t) order by t.booking_date asc, t.created_at asc), '[]'::jsonb)
     into v_conference_upcoming
   from (
     select
       cb.id,
-      cb.event_name,
-      cb.customer_name,
-      cb.start_date,
-      cb.end_date,
-      cb.status,
-      cb.created_at
+      cb.client_name as customer_name,
+      cb.booking_date,
+      cb.start_time,
+      cb.end_time,
+      cb.room_name,
+      cb.attendees,
+      cb.total_amount,
+      cb.deposit_paid,
+      cb.payment_status,
+      cb.payment_method,
+      cb.created_at,
+      'conference' as booking_type
     from public.conference_bookings cb
     where cb.lodge_id = p_lodge_id
-      and cb.start_date >= v_today
-      and cb.start_date <= v_next_week
-      and cb.status <> 'cancelled'
+      and cb.booking_date >= v_today
+      and cb.booking_date <= v_next_week
+  ) t;
+
+  select coalesce(jsonb_agg(to_jsonb(t) order by t.date asc, t.created_at asc), '[]'::jsonb)
+    into v_pool_upcoming
+  from (
+    select
+      pdu.id,
+      pdu.guest_name as customer_name,
+      pdu.date,
+      pdu.adults,
+      pdu.children,
+      pdu.total as total_amount,
+      pdu.payment_method,
+      pdu.created_at,
+      'pool' as booking_type
+    from public.pool_day_use pdu
+    where pdu.lodge_id = p_lodge_id
+      and pdu.date >= v_today
+      and pdu.date <= v_next_week
   ) t;
 
   select coalesce(jsonb_agg(jsonb_build_object('date', d.day_key, 'total', d.total) order by d.day_key asc), '[]'::jsonb)
@@ -232,6 +257,7 @@ begin
     'lowStock', coalesce(v_low_stock, '[]'::jsonb),
     'upcomingArrivals', coalesce(v_upcoming_arrivals, '[]'::jsonb),
     'conferenceUpcoming', coalesce(v_conference_upcoming, '[]'::jsonb),
+    'poolUpcoming', coalesce(v_pool_upcoming, '[]'::jsonb),
     'revenueTrend', coalesce(v_revenue_trend, '[]'::jsonb),
     'occupancyTrend', coalesce(v_occupancy_trend, '[]'::jsonb),
     'topBalances', coalesce(v_top_balances, '[]'::jsonb)

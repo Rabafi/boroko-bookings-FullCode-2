@@ -32,6 +32,11 @@ export const OnlineRequestsContext = createContext({
   refresh: () => {}
 })
 
+export const UnsavedChangesContext = createContext({
+  isDirty: false,
+  confirmLeave: null
+})
+
 export function useAuth() {
   return useContext(AuthContext)
 }
@@ -54,4 +59,8 @@ export function useAccess() {
 
 export function useOnlineRequests() {
   return useContext(OnlineRequestsContext)
+}
+
+export function useUnsavedChanges() {
+  return useContext(UnsavedChangesContext)
 }

@@ -757,7 +757,8 @@ export async function getReportsSnapshot(lodgeId, options = {}) {
         const maintenanceRows = await listMaintenanceTickets(lodgeId, { forceFresh: options.forceFresh === true }).catch(() => [])
         return {
           ...snapshot,
-          maintenanceCosts: maintenanceCostsForRange(maintenanceRows, monthStart, monthEnd)
+          maintenanceCosts: maintenanceCostsForRange(maintenanceRows, monthStart, monthEnd),
+          source: 'server'
         }
       } catch (rpcError) {
         try {
@@ -766,10 +767,11 @@ export async function getReportsSnapshot(lodgeId, options = {}) {
             const maintenanceRows = await listMaintenanceTickets(lodgeId, { forceFresh: options.forceFresh === true }).catch(() => [])
             return {
               ...snapshot,
-              maintenanceCosts: maintenanceCostsForRange(maintenanceRows, monthStart, monthEnd)
+              maintenanceCosts: maintenanceCostsForRange(maintenanceRows, monthStart, monthEnd),
+              source: 'fallback'
             }
           }
-          return snapshot
+          return { ...snapshot, source: 'fallback' }
         } catch (fallbackError) {
           recordPwaIssue(lodgeId, 'reports.load', rpcError, { fallbackError, source: 'reports' })
           throw new Error(describeReadError('Reports', fallbackError, getErrorMessage(rpcError)))

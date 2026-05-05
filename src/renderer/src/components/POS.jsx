@@ -112,6 +112,39 @@ function buildOrderStockUsage(items = []) {
   return usage
 }
 
+function normalizePosSubmitSignatureItem(item = {}) {
+  return {
+    menu_item_id: item.menu_item_id || null,
+    inventory_item_id: item.inventory_item_id || null,
+    depletion_qty: Math.max(1, Number(item.depletion_qty || 1)),
+    item_name: String(item.item_name || '').trim(),
+    quantity: Number(item.quantity || 0),
+    unit_price: Number(item.unit_price || 0)
+  }
+}
+
+function buildPosSubmitSignature({
+  customerType,
+  selectedRoom,
+  walkInName,
+  orderNotes,
+  paymentMethod,
+  selectedOutletId,
+  orderItems
+}) {
+  return JSON.stringify({
+    customerType: customerType || 'walkin',
+    room_id: customerType === 'room' ? (selectedRoom || null) : null,
+    walk_in_name: customerType === 'walkin' ? String(walkInName || '').trim() : null,
+    notes: String(orderNotes || '').trim(),
+    payment_method: customerType === 'room' ? 'folio' : (paymentMethod || 'cash'),
+    outlet_id: selectedOutletId || null,
+    items: (orderItems || [])
+      .map(normalizePosSubmitSignatureItem)
+      .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))
+  })
+}
+
 export default function POS() {
   const { settings } = useSettings()
   const currency = settings?.currency || 'P'
@@ -164,6 +197,7 @@ export default function POS() {
   const menuItemsRef = useRef([])
   const inventoryItemsRef = useRef([])
   const liveRefreshBusyRef = useRef(false)
+  const submitIntentRef = useRef({ signature: null, intentId: null })
   const [barcodeFlash, setBarcodeFlash] = useState(null) // null | { name, found, wrongOutlet? }
 
   // Order history
@@ -560,6 +594,23 @@ export default function POS() {
 
     setSubmitting(true)
     try {
+      const submitSignature = buildPosSubmitSignature({
+        customerType,
+        selectedRoom,
+        walkInName,
+        orderNotes,
+        paymentMethod,
+        selectedOutletId: selectedOutlet?.id || null,
+        orderItems
+      })
+      if (submitIntentRef.current.signature !== submitSignature || !submitIntentRef.current.intentId) {
+        submitIntentRef.current = {
+          signature: submitSignature,
+          intentId: crypto.randomUUID()
+        }
+      }
+      const submitIntentId = submitIntentRef.current.intentId
+
       if (customerType === 'room') {
         const booking = await window.api.pos.getActiveBookingForRoom(selectedRoom)
         if (!booking?.id) {
@@ -570,6 +621,8 @@ export default function POS() {
       }
 
       const result = await window.api.pos.createOrder({
+        id: submitIntentId,
+        submit_intent_id: submitIntentId,
         room_id: customerType === 'room' ? selectedRoom : null,
         walk_in_name: customerType === 'walkin' ? (walkInName.trim() || 'Walk-in') : null,
         items: orderItems,
@@ -578,6 +631,7 @@ export default function POS() {
         outlet_id: selectedOutlet.id
       })
       if (result?.success) {
+        submitIntentRef.current = { signature: null, intentId: null }
         setOrderItems([])
         setWalkInName('')
         setOrderNotes('')

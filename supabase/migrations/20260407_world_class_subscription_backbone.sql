@@ -172,7 +172,7 @@ volatile
 as $function$
 declare
   v_chars text := 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  v_bytes bytea := gen_random_bytes(12);
+  v_bytes bytea := extensions.gen_random_bytes(12);
   v_result text := 'BB-';
   v_index integer;
 begin

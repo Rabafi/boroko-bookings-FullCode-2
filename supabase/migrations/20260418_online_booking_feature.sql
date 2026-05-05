@@ -374,6 +374,10 @@ begin
     return jsonb_build_object('success', false, 'error', 'Room not found or unavailable');
   end if;
 
+  if (v_adults + v_children) > v_room.max_occupancy then
+    return jsonb_build_object('success', false, 'error', format('This room supports up to %s guests. You have %s guests selected.', v_room.max_occupancy, v_adults + v_children));
+  end if;
+
   -- Check availability with same logic as create_booking_record
   select b.id
   into v_conflict
@@ -396,7 +400,7 @@ begin
   v_idem_key := coalesce(
     nullif(btrim(payload->>'idempotency_key'), ''),
     encode(
-      digest(v_email || '::' || v_room_id::text || '::' || v_check_in::text || '::' || v_check_out::text, 'sha256'),
+      extensions.digest(v_email || '::' || v_room_id::text || '::' || v_check_in::text || '::' || v_check_out::text, 'sha256'),
       'hex'
     )
   );

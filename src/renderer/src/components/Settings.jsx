@@ -1,7 +1,7 @@
-import { useEffect, useState, useRef, lazy, Suspense } from 'react'
+import { useEffect, useState, useRef, useContext, useMemo, lazy, Suspense } from 'react'
 import { useLocation } from 'react-router-dom'
 import { Building2, Phone, Mail, MapPin, Globe, Hash, Save, Upload, X, Image, Moon, RefreshCw, CheckCircle2, AlertTriangle, Key, ShieldCheck, Clock, CreditCard, Copy, TrendingUp, ArrowUpCircle, Settings as SettingsIcon, MessageCircle, FileText, Info, Send, Sparkles, Download, RotateCcw } from 'lucide-react'
-import { useSettings } from '../app-context'
+import { useSettings, UnsavedChangesContext } from '../app-context'
 import { Modal } from './shared/Modal'
 import { extractReleaseHighlights, formatReleaseDate, normalizeReleaseNotes, toReleaseSections } from '../utils/updatePresentation'
 const SystemHealthPanel = lazy(() => import('./SystemHealthPanel'))
@@ -81,6 +81,12 @@ export default function Settings() {
   const [dragOver, setDragOver] = useState(false)
   const fileInputRef = useRef(null)
   const heroInputRef = useRef(null)
+  const savedFormSnapshotRef = useRef(null)
+  const savedEmailSnapshotRef = useRef(null)
+  const [showUnsavedModal, setShowUnsavedModal] = useState(false)
+  const [modalSaving, setModalSaving] = useState(false)
+  const pendingNavRef = useRef(null)
+  const navGuard = useContext(UnsavedChangesContext)
 
   // Dark mode
   const [darkMode, setDarkMode] = useState(
@@ -115,12 +121,55 @@ export default function Settings() {
   const [emailSaving, setEmailSaving] = useState(false)
   const [emailTesting, setEmailTesting] = useState(false)
   const [emailStatus, setEmailStatus] = useState(null)
+
+  // AI Assistant Toggle
+  const [aiEnabled, setAiEnabled] = useState(
+    () => localStorage.getItem('bb_ai_enabled') === 'true'
+  )
   const formatBytes = (bytes = 0) => {
     if (bytes < 1024) return `${bytes} B`
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
     if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
     return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`
   }
+
+  const isFormDirty = useMemo(() => {
+    if (!form || !savedFormSnapshotRef.current) return false
+    return JSON.stringify(form) !== JSON.stringify(savedFormSnapshotRef.current)
+  }, [form])
+
+  const isEmailDirty = useMemo(() => {
+    if (!savedEmailSnapshotRef.current) return false
+    return JSON.stringify(emailConfig) !== JSON.stringify(savedEmailSnapshotRef.current)
+  }, [emailConfig])
+
+  const isDirty = isFormDirty || isEmailDirty
+
+  useEffect(() => {
+    if (!isDirty) return
+    const handler = (e) => {
+      e.preventDefault()
+      e.returnValue = ''
+    }
+    window.addEventListener('beforeunload', handler)
+    return () => window.removeEventListener('beforeunload', handler)
+  }, [isDirty])
+
+  useEffect(() => {
+    if (!navGuard) return
+    navGuard.current = isDirty
+      ? {
+          isDirty: true,
+          confirmLeave: (onProceed) => {
+            pendingNavRef.current = onProceed
+            setShowUnsavedModal(true)
+          }
+        }
+      : { isDirty: false, confirmLeave: null }
+    return () => {
+      navGuard.current = { isDirty: false, confirmLeave: null }
+    }
+  }, [isDirty, navGuard])
 
   useEffect(() => {
     if (activeTab !== 'general') return
@@ -170,7 +219,7 @@ export default function Settings() {
         if (!active || !config) return
         const provider = inferEmailProvider(config.host)
         const preset = EMAIL_PROVIDER_PRESETS[provider] || EMAIL_PROVIDER_PRESETS.custom
-        setEmailConfig({
+        const initialConfig = {
           provider,
           host: config.host || preset.host,
           port: Number(config.port) || preset.port,
@@ -184,7 +233,11 @@ export default function Settings() {
           auto_send_booking_invoice: config.auto_send_booking_invoice === true,
           auto_send_booking_confirmation: config.auto_send_booking_confirmation === true,
           auto_send_booking_cancellation: config.auto_send_booking_cancellation === true
-        })
+        }
+        setEmailConfig(initialConfig)
+        if (!savedEmailSnapshotRef.current) {
+          savedEmailSnapshotRef.current = JSON.parse(JSON.stringify(initialConfig))
+        }
       })
       .catch(() => {})
     return () => { active = false }
@@ -291,6 +344,14 @@ export default function Settings() {
     setDarkMode(next)
     localStorage.setItem('bb_dark_mode', String(next))
     document.documentElement.classList.toggle('dark-mode', next)
+  }
+
+  const toggleAiAssistant = () => {
+    const next = !aiEnabled
+    setAiEnabled(next)
+    localStorage.setItem('bb_ai_enabled', String(next))
+    // Force a custom event so the dashboard can react immediately if needed
+    window.dispatchEvent(new Event('bb_ai_toggle'))
   }
 
   // License & Billing
@@ -418,17 +479,24 @@ export default function Settings() {
         s = { ...s, slug: s.lodge_name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') }
       }
       setForm(s)
+      if (!savedFormSnapshotRef.current) {
+        savedFormSnapshotRef.current = JSON.parse(JSON.stringify(s))
+      }
       setLogoPreview(s?.logo || null)
       setHeroPreview(s?.hero_image || null)
       setBookingFaqText(faqToText(s?.booking_faq))
       return
     }
 
-    window.api.settings.get().then((s) => {
+    window.api.settings.get().then((sn) => {
+      let s = sn
       if (s && !s.slug && s.lodge_name) {
         s = { ...s, slug: s.lodge_name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') }
       }
       setForm(s)
+      if (!savedFormSnapshotRef.current) {
+        savedFormSnapshotRef.current = JSON.parse(JSON.stringify(s))
+      }
       setLogoPreview(s?.logo || null)
       setHeroPreview(s?.hero_image || null)
       setBookingFaqText(faqToText(s?.booking_faq))
@@ -503,6 +571,7 @@ export default function Settings() {
       const res = await window.api.settings.save(form)
       if (res.success) {
         setGlobalSettings(res.data)
+        savedFormSnapshotRef.current = JSON.parse(JSON.stringify(res.data))
         setSaved(true)
         setTimeout(() => setSaved(false), 3000)
       }
@@ -542,7 +611,9 @@ export default function Settings() {
       })
       if (result?.success) {
         setEmailStatus({ ok: true, msg: 'Email setup saved. Automatic guest emails can now use these details.' })
-        setEmailConfig((current) => ({ ...current, from: fromValue || current.from }))
+        const nextConfig = { ...emailConfig, from: fromValue || emailConfig.from }
+        setEmailConfig(nextConfig)
+        savedEmailSnapshotRef.current = JSON.parse(JSON.stringify(nextConfig))
       } else {
         setEmailStatus({ ok: false, msg: result?.error || 'Could not save email setup right now.' })
       }
@@ -666,6 +737,32 @@ export default function Settings() {
               <span
                 className={`inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform ${
                   darkMode ? 'translate-x-6' : 'translate-x-1'
+                }`}
+              />
+            </button>
+          </div>
+
+          {/* ── Boroko AI Assistant ─────────────────────────────────────── */}
+          <div className="bg-white rounded-xl shadow-sm p-5 mb-6 flex items-center justify-between border-l-4 border-emerald-500">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 bg-emerald-50 rounded-lg flex items-center justify-center">
+                <Sparkles size={17} className="text-emerald-600" />
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-gray-800">Boroko AI Assistant</p>
+                <p className="text-xs text-gray-400">Enable autonomous management, voice commands, and smart reporting (Default: Off)</p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={toggleAiAssistant}
+              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                aiEnabled ? 'bg-emerald-600' : 'bg-gray-200'
+              }`}
+            >
+              <span
+                className={`inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform ${
+                  aiEnabled ? 'translate-x-6' : 'translate-x-1'
                 }`}
               />
             </button>
@@ -1409,12 +1506,81 @@ export default function Settings() {
                 <Save size={15} />
                 {saving ? 'Saving...' : 'Save Settings'}
               </button>
+              {isDirty && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setForm(JSON.parse(JSON.stringify(savedFormSnapshotRef.current)))
+                    setEmailConfig(JSON.parse(JSON.stringify(savedEmailSnapshotRef.current)))
+                    setLogoPreview(savedFormSnapshotRef.current?.logo || null)
+                    setHeroPreview(savedFormSnapshotRef.current?.hero_image || null)
+                    setBookingFaqText(faqToText(savedFormSnapshotRef.current?.booking_faq))
+                  }}
+                  className="btn-secondary flex items-center gap-2"
+                >
+                  <RotateCcw size={15} />
+                  Discard Changes
+                </button>
+              )}
               {saved && (
                 <span className="text-sm text-green-600 font-medium flex items-center gap-1">✓ Settings saved successfully!</span>
               )}
             </div>
           </form>
         </>
+      )}
+
+      {/* ── Unsaved Changes Modal ────────────────────────────────────────── */}
+      {showUnsavedModal && (
+        <Modal title="Unsaved Changes" onClose={() => setShowUnsavedModal(false)} size="sm">
+          <p className="text-sm text-slate-600 mb-5">
+            You have unsaved changes. Would you like to save them before leaving?
+          </p>
+          <div className="flex gap-3 justify-end">
+            <button
+              onClick={() => setShowUnsavedModal(false)}
+              disabled={modalSaving}
+              className="btn-secondary"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={() => {
+                setShowUnsavedModal(false)
+                pendingNavRef.current?.()
+              }}
+              disabled={modalSaving}
+              className="btn-secondary"
+            >
+              Discard
+            </button>
+            <button
+              onClick={async () => {
+                setModalSaving(true)
+                try {
+                  const res = await window.api.settings.save(form)
+                  if (res.success) {
+                    setGlobalSettings(res.data)
+                    savedFormSnapshotRef.current = JSON.parse(JSON.stringify(res.data))
+                  }
+                } catch (err) {
+                  console.error(err)
+                }
+                setModalSaving(false)
+                setShowUnsavedModal(false)
+                pendingNavRef.current?.()
+              }}
+              disabled={modalSaving}
+              className="btn-primary flex items-center gap-2"
+            >
+              {modalSaving ? (
+                <><RefreshCw size={14} className="animate-spin" /> Saving&hellip;</>
+              ) : (
+                <><Save size={14} /> Save &amp; Leave</>
+              )}
+            </button>
+          </div>
+        </Modal>
       )}
 
       {/* ════════════════════════════════════════════════════════════════════

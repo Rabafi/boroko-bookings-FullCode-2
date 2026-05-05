@@ -41,6 +41,8 @@ async function run() {
   assert.match(database, /dependencyState:\s*item\?\._depends_on/)
   assert.match(database, /manualRetryOnly:\s*manualReviewOnly/)
   assert.match(database, /function normalizeQueuedSyncItemForReplay\(item = \{\}\)/)
+  assert.match(database, /function resolveQueuedItemCreatedAtRaw\(item = \{\}\)/)
+  assert.match(database, /item\?\.timestamp[\s\S]{0,180}item\?\.createdAt[\s\S]{0,180}item\?\.created_at[\s\S]{0,180}item\?\.queued_at/)
   assert.match(database, /next\.table === 'update_quotation'[\s\S]{0,160}next\.data\.p_expected_updated_at = null/)
   assert.match(database, /next\.table === 'update_booking_status'[\s\S]{0,240}startsWith\('booking-'\)[\s\S]{0,120}next\.data\.p_expected_updated_at = null/)
   assert.match(database, /function isBenignBookingDriftFault\(fault = \{\}\)/)
@@ -48,9 +50,9 @@ async function run() {
   assert.match(mainIndex, /ipcMain\.handle\('sync:getStatus'/)
   assert.doesNotMatch(mainIndex, /sync:getStatus'[\s\S]{0,140}requireCapability\('system\.health'\)/)
   assert.match(mainIndex, /ipcMain\.handle\('sync:getDetails'/)
-  assert.match(health, /Pending Sync Queue/)
-  assert.match(health, /Failed Sync Queue/)
-  assert.match(health, /Financial Sync Risk/)
+  assert.match(health, /Items still sending/)
+  assert.match(health, /data-testid="system-health-failed-queue"/)
+  assert.match(health, /Money check/)
   assert.match(layout, /Clock,/)
   assert.match(layout, /AlertCircle/)
   assert.match(layout, /syncStatus\.pending/)
@@ -91,13 +93,29 @@ async function run() {
   assert.match(bookingsUi, /Pending Sync/)
   assert.match(bookingsUi, /Sync Failed/)
   assert.match(bookingsUi, /Changes are queued and will sync when the app is online\./)
-  assert.match(bookingsUi, /Queued \(will sync\)/)
+  assert.match(bookingsUi, /Payment saved locally — will sync when online/)
   assert.match(bookingsUi, /const fmtBkNum = \(b\) => b\.invoice_number \|\| b\._local_invoice_number \|\| \(b\._pending_sync \? 'PENDING' : '—'\)/)
   assert.match(bookingsUi, /const isOfflineCreatedPendingBooking = booking\?\._pending_sync && booking\?\._sync_created_offline/)
   assert.match(bookingsUi, /status === 'cancelled' && isFinanciallySyncBlocked\(id\) && !isOfflineCreatedPendingBooking/)
 
+  const createdAtHelperMatch = database.match(/function resolveQueuedItemCreatedAtRaw\(item = \{\}\) \{[\s\S]*?\n\}/)
+  assert.ok(createdAtHelperMatch, 'resolveQueuedItemCreatedAtRaw helper missing')
+  const resolveQueuedItemCreatedAtRaw = new Function(`${createdAtHelperMatch[0]}; return resolveQueuedItemCreatedAtRaw;`)()
+  assert.equal(
+    resolveQueuedItemCreatedAtRaw({ timestamp: '2026-03-31T23:59:59.000Z', createdAt: '2026-04-01T00:00:00.000Z' }),
+    '2026-03-31T23:59:59.000Z'
+  )
+  assert.equal(
+    resolveQueuedItemCreatedAtRaw({ createdAt: '2026-03-31T23:59:59.000Z', created_at: '2026-04-01T00:00:00.000Z' }),
+    '2026-03-31T23:59:59.000Z'
+  )
+  assert.equal(
+    resolveQueuedItemCreatedAtRaw({ data: { created_at_client: '2026-03-31T23:59:59.000Z' } }),
+    '2026-03-31T23:59:59.000Z'
+  )
+
   // Quotations: critical offline quote lifecycle remains queued and refreshed.
-  assert.match(database, /queueOperation\('rpc', 'create_quotation', \{ payload: record \}\)/)
+  assert.match(database, /queueOperation\('rpc', 'create_quotation', \{ payload: record \}/)
   assert.match(database, /queueOperation\('rpc', 'update_quotation', \{/)
   assert.match(database, /p_expected_updated_at:\s*expectedUpdatedAt/)
   assert.match(database, /queueOperation\('rpc', 'mark_quotation_sent', \{/)
@@ -157,7 +175,7 @@ async function run() {
   assert.match(posVoidHardeningSql, /'restored_stock', v_restored/)
 
   // Conference bookings: offline create/update/delete stay in the shared queue and reload in UI.
-  assert.match(database, /queueOperation\('rpc', 'create_conference_booking', \{ payload \}\)/)
+  assert.match(database, /queueOperation\('rpc', 'create_conference_booking', \{ payload \}/)
   assert.match(database, /queueOperation\('rpc', 'update_conference_booking', \{/)
   assert.match(database, /queueOperation\('rpc', 'delete_conference_booking', \{/)
   assert.match(database, /shouldRefreshConference = true/)
@@ -168,7 +186,7 @@ async function run() {
   assert.match(conferenceUi, /window\.api\.conference\.delete\(id\)/)
 
   // Pool / day use: offline create/delete stay queued and UI refreshes on sync.
-  assert.match(database, /queueOperation\('rpc', 'add_pool_day_use', \{ payload \}\)/)
+  assert.match(database, /queueOperation\('rpc', 'add_pool_day_use', \{ payload \}/)
   assert.match(database, /queueOperation\('rpc', 'delete_pool_day_use', \{/)
   assert.match(database, /shouldRefreshPoolDayUse = true/)
   assert.match(database, /refreshTargets\.push\('pool-day-use'\)/)

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, useCallback } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   Plus,
   Pencil,
@@ -25,7 +26,10 @@ import {
   Mail
 } from 'lucide-react'
 import { Modal } from './shared/Modal'
-import { useAccess, useAuth } from '../app-context'
+import UsageLimitIndicator from './shared/UsageLimitIndicator'
+import UsageUpgradePrompt from './shared/UpgradePromptModal'
+import UpgradeNudgeBanner from './shared/UpgradeNudgeBanner'
+import { useAccess, useAuth, useSettings } from '../app-context'
 import {
   CAPABILITY_LABELS,
   ROLE_DEFINITIONS,
@@ -36,6 +40,7 @@ import {
   isPosOutletScopedRole,
   normalizeAppRole
 } from '../../../shared/accessControl'
+import { MONTHLY_USAGE_RESET_COPY, canCreateUser, getEarlyUpgradePromptState, getPlanUsageLimits, normalizeSubscriptionPlan } from '../../../shared/subscriptionPlans'
 
 const emptyForm = {
   name: '',
@@ -105,12 +110,17 @@ function buildUserPayload(form, existingUser = null) {
 }
 
 function StaffMembers() {
+  const navigate = useNavigate()
   const { user: currentUser } = useAuth()
   const access = useAccess()
+  const { settings } = useSettings()
   const canManageStaff = canAccessCapability(access, 'staff.manage')
+  const usageLimits = getPlanUsageLimits(access?.entitlement?.plan || 'Starter')
   const canSetRoles = canAccessCapability(access, 'staff.permissions')
 
   const [users, setUsers] = useState([])
+  const [usageSnapshot, setUsageSnapshot] = useState(null)
+  const [showUpgradePrompt, setShowUpgradePrompt] = useState(false)
   const [showModal, setShowModal] = useState(false)
   const [editingId, setEditingId] = useState(null)
   const [editingUser, setEditingUser] = useState(null)
@@ -133,6 +143,8 @@ function StaffMembers() {
   const [showResetPassword, setShowResetPassword] = useState(false)
   const [showResetConfirm, setShowResetConfirm] = useState(false)
   const [sortBy, setSortBy] = useState('role_asc')
+  const currentPlan = normalizeSubscriptionPlan(usageSnapshot?.plan || access?.entitlement?.plan || 'Starter')
+  const isProPlan = currentPlan === 'Pro'
 
   useEffect(() => {
     window.api.outlets.getAll().then(d => setOutlets(d || [])).catch(() => {})
@@ -149,12 +161,23 @@ function StaffMembers() {
   const load = useCallback(async () => {
     const data = await window.api.users.getAll()
     setUsers(Array.isArray(data) ? data : [])
+    window.api.usage.getSnapshot?.().then((snapshot) => {
+      if (!snapshot?.error) setUsageSnapshot(snapshot)
+    }).catch(() => {})
   }, [])
 
   const adminCount = useMemo(
     () => users.filter((user) => normalizeAppRole(user.role) === 'admin').length,
     [users]
   )
+  const staffEarlyPrompt = getEarlyUpgradePromptState({
+    plan: currentPlan,
+    bookingsUsage: usageSnapshot?.usage?.monthlyBookings ?? 0,
+    roomsUsage: usageSnapshot?.usage?.rooms ?? 0,
+    usersUsage: usageSnapshot?.usage?.users ?? users.length,
+    limits: usageLimits
+  })
+  const showStaffEarlyPrompt = !isProPlan && !userLimitStatus.isBlocked && staffEarlyPrompt.shouldPrompt
 
   const sortedUsers = useMemo(() => {
     const roleLabel = (user) => {
@@ -186,12 +209,22 @@ function StaffMembers() {
       }
     })
   }, [access?.features, sortBy, users])
+  const userLimitStatus = usageSnapshot?.statuses?.users || canCreateUser({ plan: access?.entitlement?.plan || 'Starter', used: users.length })
+  const userLimitMessage = userLimitStatus.isAbovePlan
+    ? `This lodge is above the ${usageSnapshot?.plan || access?.entitlement?.plan || 'Starter'} plan limits. Existing records remain available, but new records are restricted until usage is reduced or the plan is upgraded.`
+    : userLimitStatus.isBlocked
+      ? `Staff creation is restricted because this lodge has reached the ${usageSnapshot?.plan || access?.entitlement?.plan || 'Starter'} user limit.`
+      : ''
 
   useEffect(() => {
     load()
   }, [load])
 
   const openAdd = () => {
+    if (userLimitStatus.isBlocked) {
+      setShowUpgradePrompt(true)
+      return
+    }
     setEditingId(null)
     setEditingUser(null)
     setForm(emptyForm)
@@ -280,6 +313,14 @@ function StaffMembers() {
     if (editingId) {
       result = await window.api.users.update(editingId, buildUserPayload(form, editingUser))
     } else {
+      const userLimitStatus = canCreateUser({ plan: access?.entitlement?.plan || 'Starter', used: users.length })
+      if (userLimitStatus.isBlocked) {
+        const plan = access?.entitlement?.plan || 'Starter'
+        const nextPlan = plan === 'Starter' ? 'Standard' : 'Pro'
+        setLoading(false)
+        setError(`User limit reached: ${plan} allows up to ${usageLimits.users} staff accounts. Upgrade to ${nextPlan} for ${nextPlan === 'Standard' ? '5' : 'unlimited'} users.`)
+        return
+      }
       if (!resetForm.password) {
         setLoading(false)
         setError('Password is required for new staff')
@@ -379,6 +420,37 @@ function StaffMembers() {
         <div>
           <p className="text-sm text-slate-500">{users.length} staff member{users.length !== 1 ? 's' : ''}</p>
           <p className="mt-1 text-xs text-slate-400">Role templates control what each team member can see, do, and access across Boroko.</p>
+          <div className="mt-2">
+            {isProPlan ? (
+              <span className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700">
+                Unlimited access
+              </span>
+            ) : (
+              <UsageLimitIndicator label="Users" used={usageSnapshot?.usage?.users ?? users.length} limit={usageLimits.users} />
+            )}
+          </div>
+          {!isProPlan && (
+            <>
+              <p className="mt-2 text-xs text-slate-400">{usageSnapshot?.monthlyResetCopy || MONTHLY_USAGE_RESET_COPY}</p>
+              {userLimitMessage && (
+                <p className="mt-2 text-xs text-rose-600">{userLimitMessage}</p>
+              )}
+            </>
+          )}
+          <div className="mt-3">
+            <UpgradeNudgeBanner
+              visible={showStaffEarlyPrompt}
+              message="You’re approaching your plan limits. Consider upgrading to avoid interruptions."
+              sessionKey="boroko:upgrade-nudge:staff"
+              lodgeId={access?.entitlement?.lodge_id || settings?.lodge_id || ''}
+              lodgeName={access?.entitlement?.lodge_name || settings?.lodge_name || settings?.company_name || ''}
+              plan={currentPlan}
+              usage={usageSnapshot?.usage || { monthlyBookings: 0, rooms: 0, users: users.length }}
+              recommendation={staffEarlyPrompt}
+              trigger="banner"
+              onUpgrade={() => setShowUpgradePrompt(true)}
+            />
+          </div>
           {inviteNotice && (
             <p className={`mt-2 text-xs ${/could not|requires|failed|error/i.test(inviteNotice) ? 'text-red-600' : 'text-emerald-600'}`}>
               {inviteNotice}
@@ -400,7 +472,8 @@ function StaffMembers() {
           {canManageStaff && (
             <button
               onClick={openAdd}
-              className="btn-primary"
+              disabled={userLimitStatus.isBlocked}
+              className="btn-primary disabled:cursor-not-allowed disabled:opacity-60"
             >
               <Plus size={15} /> Add Staff
             </button>
@@ -741,6 +814,26 @@ function StaffMembers() {
           </form>
         </Modal>
       )}
+
+      <UsageUpgradePrompt
+        open={showUpgradePrompt}
+        onClose={() => setShowUpgradePrompt(false)}
+        onUpgrade={() => {
+          setShowUpgradePrompt(false)
+          navigate('/settings', { state: { activeTab: 'license' } })
+        }}
+        resourceLabel="Staff users"
+        currentPlan={usageSnapshot?.plan || access?.entitlement?.plan || 'Starter'}
+        used={usageSnapshot?.usage?.users ?? users.length}
+        limit={usageLimits.users}
+        grace={0}
+        status={userLimitStatus}
+        message={userLimitMessage || 'Upgrade to add more staff users for this lodge.'}
+        usage={usageSnapshot?.usage}
+        recommendation={usageSnapshot?.recommendation}
+        lodgeName={access?.entitlement?.lodge_name || settings?.lodge_name || settings?.company_name || ''}
+        lodgeId={access?.entitlement?.lodge_id || settings?.lodge_id || ''}
+      />
 
       {resetTarget && (
         <Modal

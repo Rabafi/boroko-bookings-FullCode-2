@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { Plus, Pencil, Trash2, BedDouble, Image, X, ChevronLeft, ChevronRight, Calendar, RefreshCw } from 'lucide-react'
 import { StatusBadge } from './shared/StatusBadge'
 import { Modal } from './shared/Modal'
+import UsageLimitIndicator from './shared/UsageLimitIndicator'
+import UsageUpgradePrompt from './shared/UpgradePromptModal'
+import UpgradeNudgeBanner from './shared/UpgradeNudgeBanner'
+import { useAccess, useSettings } from '../app-context'
+import { MONTHLY_USAGE_RESET_COPY, canCreateRoom, getEarlyUpgradePromptState, getPlanUsageLimits, normalizeSubscriptionPlan } from '../../../shared/subscriptionPlans'
 
 const ROOM_TYPES = ['Single', 'Double', 'Twin', 'Suite', 'Family', 'Deluxe']
 const STATUSES = ['available', 'occupied', 'maintenance', 'reserved']
@@ -20,7 +26,12 @@ const emptyForm = {
 }
 
 export default function Rooms() {
+  const navigate = useNavigate()
+  const access = useAccess()
+  const { settings } = useSettings()
   const [rooms, setRooms] = useState([])
+  const [usageSnapshot, setUsageSnapshot] = useState(null)
+  const [showUpgradePrompt, setShowUpgradePrompt] = useState(false)
   const [activeRateByRoom, setActiveRateByRoom] = useState({})
   const [rateOverrides, setRateOverrides] = useState([])
   const [rateForm, setRateForm] = useState(null)
@@ -100,9 +111,16 @@ export default function Rooms() {
     }))
     setActiveRateByRoom(Object.fromEntries(entries))
     setListLoading(false)
+    window.api.usage.getSnapshot?.().then((snapshot) => {
+      if (!snapshot?.error) setUsageSnapshot(snapshot)
+    }).catch(() => {})
   }
 
   const openAdd = () => {
+    if (roomLimitStatus.isBlocked) {
+      setShowUpgradePrompt(true)
+      return
+    }
     setEditing(null)
     setForm(emptyForm)
     setError('')
@@ -235,6 +253,14 @@ export default function Rooms() {
     if (editing) {
       res = await window.api.rooms.update(editing, data)
     } else {
+      const roomLimitStatus = canCreateRoom({ plan: access?.entitlement?.plan || 'Starter', used: rooms.length })
+      if (roomLimitStatus.isBlocked) {
+        const plan = access?.entitlement?.plan || 'Starter'
+        const nextPlan = plan === 'Starter' ? 'Standard' : 'Pro'
+        setLoading(false)
+        setError(`Room limit reached: ${plan} allows up to ${usageLimits.rooms} rooms. Upgrade to ${nextPlan} for ${nextPlan === 'Standard' ? '20' : 'unlimited'} rooms.`)
+        return
+      }
       res = await window.api.rooms.create(data)
     }
     setLoading(false)
@@ -262,6 +288,23 @@ export default function Rooms() {
   const available = roomStatusCounts.available || 0
   const occupied = roomStatusCounts.occupied || 0
   const maintenance = roomStatusCounts.maintenance || 0
+  const usageLimits = getPlanUsageLimits(access?.entitlement?.plan || 'Starter')
+  const currentPlan = normalizeSubscriptionPlan(usageSnapshot?.plan || access?.entitlement?.plan || 'Starter')
+  const isProPlan = currentPlan === 'Pro'
+  const roomLimitStatus = usageSnapshot?.statuses?.rooms || canCreateRoom({ plan: access?.entitlement?.plan || 'Starter', used: rooms.length })
+  const roomEarlyPrompt = getEarlyUpgradePromptState({
+    plan: currentPlan,
+    bookingsUsage: usageSnapshot?.usage?.monthlyBookings ?? 0,
+    roomsUsage: usageSnapshot?.usage?.rooms ?? rooms.length,
+    usersUsage: usageSnapshot?.usage?.users ?? 0,
+    limits: usageLimits
+  })
+  const showRoomEarlyPrompt = !isProPlan && !roomLimitStatus.isBlocked && roomEarlyPrompt.shouldPrompt
+  const roomLimitMessage = roomLimitStatus.isAbovePlan
+    ? `This lodge is above the ${usageSnapshot?.plan || access?.entitlement?.plan || 'Starter'} plan limits. Existing records remain available, but new records are restricted until usage is reduced or the plan is upgraded.`
+    : roomLimitStatus.isBlocked
+      ? `Room creation is restricted because this lodge has reached the ${usageSnapshot?.plan || access?.entitlement?.plan || 'Starter'} room limit.`
+      : ''
 
   return (
     <div className="mx-auto flex max-w-7xl flex-col gap-6">
@@ -272,6 +315,33 @@ export default function Rooms() {
           <p className="bb-page-header-subtitle">
             {rooms.length} total · {available} available · {occupied} occupied · {maintenance} maintenance
           </p>
+          <div className="mt-2">
+            {isProPlan ? (
+              <span className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700">
+                Unlimited access
+              </span>
+            ) : (
+              <>
+                <UsageLimitIndicator label="Rooms" used={usageSnapshot?.usage?.rooms ?? rooms.length} limit={usageLimits.rooms} />
+                <p className="mt-2 text-xs text-slate-500">{usageSnapshot?.monthlyResetCopy || MONTHLY_USAGE_RESET_COPY}</p>
+                {roomLimitMessage && <p className="mt-2 text-xs text-rose-700">{roomLimitMessage}</p>}
+              </>
+            )}
+            <div className="mt-3">
+              <UpgradeNudgeBanner
+                visible={showRoomEarlyPrompt}
+                message="You’re approaching your plan limits. Consider upgrading to avoid interruptions."
+                sessionKey="boroko:upgrade-nudge:rooms"
+                lodgeId={usageSnapshot?.lodge_id || settings?.lodge_id || ''}
+                lodgeName={usageSnapshot?.lodge_name || settings?.lodge_name || settings?.company_name || ''}
+                plan={currentPlan}
+                usage={usageSnapshot?.usage || { monthlyBookings: 0, rooms: rooms.length, users: 0 }}
+                recommendation={roomEarlyPrompt}
+                trigger="banner"
+                onUpgrade={() => setShowUpgradePrompt(true)}
+              />
+            </div>
+          </div>
         </div>
         <div className="bb-card-muted flex flex-wrap items-center gap-3 px-4 py-4">
           <div>
@@ -281,7 +351,8 @@ export default function Rooms() {
         </div>
         <button
           onClick={openAdd}
-          className="btn-primary"
+          disabled={roomLimitStatus.isBlocked}
+          className="btn-primary disabled:cursor-not-allowed disabled:opacity-60"
         >
           <Plus size={16} /> Add Room
         </button>
@@ -299,6 +370,11 @@ export default function Rooms() {
       {success && (
         <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800 shadow-sm">
           ✓ {success}
+        </div>
+      )}
+      {roomLimitMessage && (
+        <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800 shadow-sm">
+          {roomLimitMessage}
         </div>
       )}
 
@@ -633,6 +709,26 @@ export default function Rooms() {
           </form>
         </Modal>
       )}
+
+      <UsageUpgradePrompt
+        open={showUpgradePrompt}
+        onClose={() => setShowUpgradePrompt(false)}
+        onUpgrade={() => {
+          setShowUpgradePrompt(false)
+          navigate('/settings', { state: { activeTab: 'license' } })
+        }}
+        resourceLabel="Rooms"
+        currentPlan={usageSnapshot?.plan || access?.entitlement?.plan || 'Starter'}
+        used={usageSnapshot?.usage?.rooms ?? rooms.length}
+        limit={usageLimits.rooms}
+        grace={0}
+        status={roomLimitStatus}
+        message={roomLimitMessage || `Upgrade to add more rooms for this lodge.`}
+        usage={usageSnapshot?.usage}
+        recommendation={usageSnapshot?.recommendation}
+        lodgeName={usageSnapshot?.lodge_name || settings?.lodge_name || settings?.company_name || ''}
+        lodgeId={usageSnapshot?.lodge_id || settings?.lodge_id || ''}
+      />
     </div>
   )
 }

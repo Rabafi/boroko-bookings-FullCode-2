@@ -113,6 +113,7 @@ const api = {
     criticalErrors: (limit) => ipcRenderer.invoke('reports:criticalErrors', limit),
     clearCriticalErrors: () => ipcRenderer.invoke('reports:clearCriticalErrors'),
     saveSupportBundle: (limit) => ipcRenderer.invoke('reports:saveSupportBundle', limit),
+    getSupportBundle: (limit) => ipcRenderer.invoke('reports:getSupportBundle', limit),
     runFinancialValidation: () => ipcRenderer.invoke('reports:runFinancialValidation'),
     savePDF: (payload) => ipcRenderer.invoke('reports:savePDF', payload),
     saveExcel: (data) => ipcRenderer.invoke('reports:saveExcel', data),
@@ -205,6 +206,9 @@ const api = {
     getStatus: (lodgeId) => ipcRenderer.invoke('trial:getStatus', lodgeId),
     activateKey: (lodgeId, key) => ipcRenderer.invoke('trial:activateKey', lodgeId, key),
     getInvoices: (lodgeId) => ipcRenderer.invoke('trial:getInvoices', lodgeId)
+  },
+  usage: {
+    getSnapshot: (options) => ipcRenderer.invoke('usage:getSnapshot', options)
   },
   updates: {
     onAvailable: (cb) => ipcRenderer.on('update:available', (_, info) => cb(info)),
@@ -343,7 +347,35 @@ const api = {
     getAll: (start, end) => ipcRenderer.invoke('conference:getAll', start, end),
     create: (data) => ipcRenderer.invoke('conference:create', data),
     update: (id, data) => ipcRenderer.invoke('conference:update', id, data),
-    delete: (id) => ipcRenderer.invoke('conference:delete', id)
+    delete: (id) => ipcRenderer.invoke('conference:delete', id),
+    updatePayment: (id, amount, method, intentKey) => ipcRenderer.invoke('conference:updatePayment', id, amount, method, intentKey)
+  },
+  ai: {
+    turn: (payload) => ipcRenderer.invoke('ai:turn', payload),
+    execute: (payload) => ipcRenderer.invoke('ai:execute', payload),
+    collections: {
+      preview: (payload) => ipcRenderer.invoke('ai:collections:preview', payload),
+      execute: (payload) => ipcRenderer.invoke('ai:collections:execute', payload),
+      onProgress: (cb) => {
+        const listener = (_, data) => cb(data)
+        ipcRenderer.on('ai:collections:progress', listener)
+        return () => ipcRenderer.off('ai:collections:progress', listener)
+      }
+    },
+    overdue: {
+      preview: (payload) => ipcRenderer.invoke('ai:overdue:preview', payload),
+      execute: (payload) => ipcRenderer.invoke('ai:overdue:execute', payload),
+      onProgress: (cb) => {
+        const listener = (_, data) => cb(data)
+        ipcRenderer.on('ai:overdue:progress', listener)
+        return () => ipcRenderer.off('ai:overdue:progress', listener)
+      }
+    },
+    onAlert: (cb) => {
+      const listener = (_, payload) => cb(payload)
+      ipcRenderer.on('ai:alert', listener)
+      return () => ipcRenderer.off('ai:alert', listener)
+    }
   },
   import: {
     parseExcel: () => ipcRenderer.invoke('import:parseExcel'),

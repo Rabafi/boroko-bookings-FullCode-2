@@ -246,21 +246,21 @@ begin
     return jsonb_build_object('success', false, 'error', 'Booking not found');
   end if;
 
-  if p_expected_updated_at is not null and v_booking.updated_at is distinct from p_expected_updated_at then
-    return jsonb_build_object(
-      'success', false,
-      'error', 'This booking was updated on another device. Refresh the booking and try again.',
-      'stale', true,
-      'current_updated_at', v_booking.updated_at
-    );
-  end if;
-
   if exists (select 1 from public.payments where idempotency_key = p_idempotency_key) then
     return jsonb_build_object(
       'success', true,
       'amount_paid', coalesce(v_booking.amount_paid, 0),
       'payment_status', coalesce(v_booking.payment_status, 'unpaid'),
       'idempotent', true
+    );
+  end if;
+
+  if p_expected_updated_at is not null and v_booking.updated_at is distinct from p_expected_updated_at then
+    return jsonb_build_object(
+      'success', false,
+      'error', 'This booking was updated on another device. Refresh the booking and try again.',
+      'stale', true,
+      'current_updated_at', v_booking.updated_at
     );
   end if;
 
@@ -593,6 +593,10 @@ begin
 
   if v_total_amount < 0 then
     return jsonb_build_object('success', false, 'error', 'Booking total cannot be negative');
+  end if;
+
+  if (p_adults + p_children) > (select r.max_occupancy from public.rooms r where r.id = p_room_id and r.lodge_id = p_lodge_id) then
+    return jsonb_build_object('success', false, 'error', 'Number of guests exceeds room maximum occupancy');
   end if;
 
   v_expected_total := public.room_booking_expected_total(p_lodge_id, p_room_id, p_check_in, p_check_out);

@@ -212,7 +212,8 @@ function BookingPopup({ booking, currency, actionLoading, onClose, onOpenBooking
           {booking.status === 'confirmed' ? (
             <button
               onClick={() => onStatusChange(booking, 'checked_in')}
-              disabled={actionLoading}
+              disabled={actionLoading || booking.check_in > today}
+              title={booking.check_in > today ? `Check-in date is ${booking.check_in}` : undefined}
               className="inline-flex items-center justify-center gap-2 rounded-xl bg-emerald-600 px-3 py-2 text-sm font-semibold text-white transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-300"
             >
               <DoorOpen size={15} /> {actionLoading ? 'Working…' : 'Check In'}
@@ -323,6 +324,12 @@ export default function RoomGrid() {
 
   const handleStatusChange = async (booking, status) => {
     if (!booking?.id) return
+    if (status === 'checked_in' && booking) {
+      if (booking.check_in > today) {
+        setWarning(`Cannot check in before the check-in date (${booking.check_in}).`)
+        return
+      }
+    }
     if (status === 'checked_out') {
       const outstanding = bookingOutstandingAmount(booking)
       if (outstanding > 0) {

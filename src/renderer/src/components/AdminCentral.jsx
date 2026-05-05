@@ -2,9 +2,19 @@ import { useEffect, useState, useCallback } from 'react'
 import { useAuth } from '../app-context'
 import LicensingWorkbench from './LicensingWorkbench'
 import {
+  MONTHLY_USAGE_RESET_COPY,
   SUBSCRIPTION_PLAN_ORDER,
+  buildUpgradeRequestMessage,
+  getPlanRecommendation,
+  getPlanUsageLimits,
   getSubscriptionPlan,
-  normalizeSubscriptionPlan
+  formatPlanLimits,
+  getUsageLimitStatusWithGrace,
+  getUsagePriorityScore,
+  getUsageStateKey,
+  getUsageStatePresentation,
+  normalizeSubscriptionPlan,
+  trackUpgradeIntent
 } from '../../../shared/subscriptionPlans'
 import {
   LayoutDashboard, Building2, CreditCard, ToggleRight, Megaphone,
@@ -16,10 +26,10 @@ import {
 } from 'lucide-react'
 
 // ── Constants ────────────────────────────────────────────────────────────────
-const BIZ_EMOJI  = { lodge: '🏕️', restaurant: '🍽️', retail: '🛒', service_provider: '🔧' }
-const BIZ_LABEL  = { lodge: 'Lodge', restaurant: 'Restaurant', retail: 'Retail', service_provider: 'Service Provider' }
+const BIZ_EMOJI = { lodge: '🏕️', restaurant: '🍽️', retail: '🛒', service_provider: '🔧' }
+const BIZ_LABEL = { lodge: 'Lodge', restaurant: 'Restaurant', retail: 'Retail', service_provider: 'Service Provider' }
 const ALL_FEATURES = ['reports', 'expenses', 'staff', 'pwa', 'audit', 'conference', 'pool', 'import', 'pos', 'inventory', 'supplies']
-const FEAT_LABEL   = {
+const FEAT_LABEL = {
   reports: 'Reports', expenses: 'Expenses', staff: 'Staff Management', pwa: 'Manager mobile app',
   audit: 'Night Audit', import: 'Data Import',
   pos: 'POS / Bar', inventory: 'Inventory', supplies: 'Room Supplies',
@@ -47,7 +57,7 @@ const TIER_FLAGS = {
   }
 }
 const PRIORITY_COLOR = { Low: 'text-gray-400', Normal: 'text-blue-400', High: 'text-orange-400', Urgent: 'text-red-400' }
-const STATUS_COLOR   = { open: 'bg-yellow-500/20 text-yellow-300', in_progress: 'bg-blue-500/20 text-blue-300', resolved: 'bg-green-500/20 text-green-300', closed: 'bg-gray-500/20 text-gray-400' }
+const STATUS_COLOR = { open: 'bg-yellow-500/20 text-yellow-300', in_progress: 'bg-blue-500/20 text-blue-300', resolved: 'bg-green-500/20 text-green-300', closed: 'bg-gray-500/20 text-gray-400' }
 const DEFAULT_PLAN = 'Starter'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -80,6 +90,67 @@ function subscriptionStatusTone(license) {
 function fmt(dt) {
   if (!dt) return '—'
   return new Date(dt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+}
+
+function usageBadgeMeta(status = {}) {
+  const presentation = getUsageStatePresentation(status)
+  return presentation
+}
+
+function getCompanyUsageRollup(stats = null, licenses = [], company = null) {
+  if (!stats?.usage_status) {
+    return {
+      label: 'Unknown',
+      cls: 'bg-gray-700 text-gray-300',
+      key: 'unknown',
+      plan: normalizePlanName(stats?.plan || getLicensePlanForLodge(licenses, company?.lodge_id)),
+      recommendation: {
+        label: 'Unknown',
+        recommendedPlan: normalizePlanName(stats?.plan || getLicensePlanForLodge(licenses, company?.lodge_id)),
+        reason: 'No usage data'
+      }
+    }
+  }
+  const plan = normalizePlanName(stats?.plan || getLicensePlanForLodge(licenses, company?.lodge_id))
+  const allStatuses = [
+    stats.usage_status.bookings,
+    stats.usage_status.rooms,
+    stats.usage_status.users
+  ]
+  const priority = [...allStatuses].sort((a, b) => getUsagePriorityScore(b) - getUsagePriorityScore(a))[0] || allStatuses[0]
+  const badge = usageBadgeMeta(priority)
+  const usage = stats.usage || {}
+  const recommendation = getPlanRecommendation({
+    plan,
+    bookingsUsage: usage.monthlyBookings ?? stats.monthly_confirmed_bookings ?? 0,
+    roomsUsage: usage.rooms ?? stats.rooms ?? 0,
+    usersUsage: usage.users ?? stats.users ?? 0,
+    limits: stats.usage_limits || getPlanUsageLimits(plan)
+  })
+  return {
+    ...badge,
+    key: badge.key || badge.label.toLowerCase().replace(/\s+/g, '_'),
+    plan,
+    recommendation,
+    usage: {
+      bookings: Number(usage.monthlyBookings ?? stats.monthly_confirmed_bookings ?? 0),
+      rooms: Number(usage.rooms ?? stats.rooms ?? 0),
+      users: Number(usage.users ?? stats.users ?? 0)
+    },
+    usageLimits: stats.usage_limits || getPlanUsageLimits(plan),
+    bookingStatus: stats.usage_status.bookings,
+    bookingStateKey: getUsageStateKey(stats.usage_status.bookings),
+    roomStatus: stats.usage_status.rooms,
+    roomStateKey: getUsageStateKey(stats.usage_status.rooms),
+    userStatus: stats.usage_status.users,
+    userStateKey: getUsageStateKey(stats.usage_status.users),
+    statusKey: getUsageStateKey(priority),
+    lastBookingDate: stats.last_booking_date || null
+  }
+}
+
+function usagePriorityScore(key = '') {
+  return getUsagePriorityScore(key)
 }
 function timeAgo(dt) {
   if (!dt) return ''
@@ -248,7 +319,7 @@ function Dashboard({ companies, licenses, tickets, activityLogs }) {
                   <span className="text-base leading-none mt-0.5">{ACTION_ICON[log.action] || ACTION_ICON.default}</span>
                   <div className="min-w-0">
                     <p className="text-xs text-gray-200 truncate">{log.action.replace(/_/g, ' ')}</p>
-                    <p className="text-xs text-gray-500">{log.lodge_name || log.lodge_id?.slice(0,8)} · {timeAgo(log.created_at)}</p>
+                    <p className="text-xs text-gray-500">{log.lodge_name || log.lodge_id?.slice(0, 8)} · {timeAgo(log.created_at)}</p>
                   </div>
                 </div>
               ))}
@@ -267,22 +338,25 @@ function Companies({ companies, licenses, loading, onReload }) {
   const [selected, setSelected] = useState(null)
   const [stats, setStats] = useState(null)
   const [statsLoading, setStatsLoading] = useState(false)
+  const [usageStatsByLodge, setUsageStatsByLodge] = useState({})
+  const [peakBookingUsageByLodge, setPeakBookingUsageByLodge] = useState({})
+  const [usageFilter, setUsageFilter] = useState('all')
 
   const [showDisabled, setShowDisabled] = useState(false)
-  const visibleCompanies = showDisabled 
-    ? companies.filter(c => c.deleted) 
+  const visibleCompaniesBase = showDisabled
+    ? companies.filter(c => c.deleted)
     : companies.filter(c => !c.deleted)
 
   // ─── Lifecycle (Archive/Restore/Delete) ─────────────────────────────────────
   const [lifecycleMode, setLifecycleMode] = useState('archive') // 'archive' | 'restore' | 'delete'
-  const [companyTarget,   setCompanyTarget]   = useState(null)
-  const [confirmName,     setConfirmName]     = useState('')
+  const [companyTarget, setCompanyTarget] = useState(null)
+  const [confirmName, setConfirmName] = useState('')
   const [lifecycleLoading, setLifecycleLoading] = useState(false)
   const [repairLoading, setRepairLoading] = useState(false)
 
   // ─── reset state ────────────────────────────────────────────────────────────
-  const [resetTarget,  setResetTarget]  = useState(null)
-  const [newPassword,  setNewPassword]  = useState('')
+  const [resetTarget, setResetTarget] = useState(null)
+  const [newPassword, setNewPassword] = useState('')
   const [resetLoading, setResetLoading] = useState(false)
   const [showResetPassword, setShowResetPassword] = useState(false)
   const [pwaTarget, setPwaTarget] = useState(null)
@@ -334,6 +408,77 @@ function Companies({ companies, licenses, loading, onReload }) {
     setStatsLoading(false)
   }
 
+  useEffect(() => {
+    let active = true
+    const targets = visibleCompaniesBase.filter((company) => !usageStatsByLodge[company.lodge_id])
+    if (!targets.length) return () => { active = false }
+    Promise.all(targets.map(async (company) => [
+      company.lodge_id,
+      await window.api.admin.getCompanyStats(company.lodge_id).catch(() => null)
+    ])).then((entries) => {
+      if (!active) return
+      setUsageStatsByLodge((current) => ({ ...current, ...Object.fromEntries(entries) }))
+    }).catch(() => {})
+    return () => { active = false }
+  }, [usageStatsByLodge, visibleCompaniesBase])
+
+  useEffect(() => {
+    setPeakBookingUsageByLodge((current) => {
+      const next = { ...current }
+      visibleCompaniesBase.forEach((company) => {
+        const currentUsage = Number(usageStatsByLodge[company.lodge_id]?.usage_status?.bookings?.percentUsed ?? 0)
+        const previous = Number(current[company.lodge_id] ?? 0)
+        next[company.lodge_id] = Math.max(previous, currentUsage)
+      })
+      return next
+    })
+  }, [usageStatsByLodge, visibleCompaniesBase])
+
+  const companyUsageRows = visibleCompaniesBase.map((company) => {
+    const statsForCompany = usageStatsByLodge[company.lodge_id] || null
+    const rollup = getCompanyUsageRollup(statsForCompany, licenses, company)
+    const currentBookingsUsagePercent = Number(rollup.recommendation?.currentUsagePct?.bookings ?? 0)
+    const peakBookingsUsagePercent = Number(peakBookingUsageByLodge[company.lodge_id] ?? currentBookingsUsagePercent)
+    return {
+      company,
+      stats: statsForCompany,
+      rollup,
+      currentBookingsUsagePercent,
+      peakBookingsUsagePercent
+    }
+  })
+
+  const visibleCompanies = companyUsageRows.filter((row) => {
+    if (usageFilter === 'all') return true
+    if (usageFilter === 'pro') return row.rollup.plan === 'Pro'
+    if (usageFilter === 'near_limit') return row.rollup.key === 'near_limit' || row.rollup.key === 'critical'
+    return row.rollup.key === usageFilter
+  }).map((row) => row.company)
+
+  const usageFilterCounts = companyUsageRows.reduce((acc, row) => {
+    acc.total += 1
+    acc[row.rollup.key] = (acc[row.rollup.key] || 0) + 1
+    if (row.rollup.key === 'critical') {
+      acc.critical += 1
+      acc.near_limit += 1
+    }
+    if (row.rollup.plan === 'Pro') acc.pro += 1
+    if (row.rollup.recommendation?.recommendedPlan && row.rollup.recommendation.recommendedPlan !== row.rollup.plan) acc.upgradeOpportunities += 1
+    return acc
+  }, { total: 0, near_limit: 0, critical: 0, in_grace: 0, blocked: 0, above_plan: 0, pro: 0, upgradeOpportunities: 0 })
+
+  const attentionRows = [...companyUsageRows]
+    .sort((a, b) => usagePriorityScore(b.rollup.key) - usagePriorityScore(a.rollup.key) || (b.rollup.recommendation?.currentUsagePct?.bookings || 0) - (a.rollup.recommendation?.currentUsagePct?.bookings || 0))
+    .filter((row) => row.rollup.key !== 'normal' && row.rollup.key !== 'pro' && row.rollup.key !== 'unknown')
+    .slice(0, 5)
+  const selectedPeakBookingPercent = selected
+    ? Number(peakBookingUsageByLodge[selected.lodge_id] ?? stats?.usage_status?.bookings?.percentUsed ?? 0)
+    : 0
+  const currentBookingsUsagePercent = Number(stats?.usage_status?.bookings?.percentUsed ?? 0)
+  const selectedPeakBookingDisplay = selected && stats?.usage_status?.bookings?.state === 'unlimited'
+    ? 'Unlimited'
+    : `${selectedPeakBookingPercent}%`
+
   const openPwaManager = async (company) => {
     setPwaTarget(company)
     setCompanyUsers([])
@@ -358,7 +503,7 @@ function Companies({ companies, licenses, loading, onReload }) {
         if (res?.success === false) throw new Error(res.error)
         alert(`Company permanently deleted. Removed ${res?.deleted_count || 0} Supabase row(s) and local cache/profile data for this lodge.`)
       }
-      
+
       setCompanyTarget(null)
       setConfirmName('')
       setSelected(null)
@@ -395,6 +540,77 @@ function Companies({ companies, licenses, loading, onReload }) {
       alert(`Repair failed: ${err.message || 'Unknown error'}`)
     } finally {
       setRepairLoading(false)
+    }
+  }
+
+  const handleRequestUpgrade = async (company = selected) => {
+    if (!company) return
+    const rollup = getCompanyUsageRollup(usageStatsByLodge[company.lodge_id], licenses, company)
+    const lodgeName = company.lodge_name || company.company_name || 'Unknown lodge'
+    const message = buildUpgradeRequestMessage(
+      {
+        lodgeName,
+        currentPlan: rollup.plan
+      },
+      {
+        bookings: rollup.recommendation?.currentUsage?.bookings ?? rollup.recommendation?.currentUsagePct?.bookings ?? 0,
+        rooms: rollup.recommendation?.currentUsage?.rooms ?? rollup.recommendation?.currentUsagePct?.rooms ?? 0,
+        users: rollup.recommendation?.currentUsage?.users ?? rollup.recommendation?.currentUsagePct?.users ?? 0,
+        recommendedPlan: rollup.recommendation?.recommendedPlan
+      },
+      rollup.recommendation,
+      { channel: 'whatsapp' }
+    )
+    trackUpgradeIntent({
+      lodgeId: company.lodge_id,
+      lodgeName,
+      plan: rollup.plan,
+      usage: {
+        bookings: rollup.recommendation?.currentUsage?.bookings ?? rollup.recommendation?.currentUsagePct?.bookings ?? 0,
+        rooms: rollup.recommendation?.currentUsage?.rooms ?? rollup.recommendation?.currentUsagePct?.rooms ?? 0,
+        users: rollup.recommendation?.currentUsage?.users ?? rollup.recommendation?.currentUsagePct?.users ?? 0
+      },
+      recommendation: rollup.recommendation,
+      trigger: 'blocked'
+    })
+    const externalOpen = window.api?.shell?.openExternal
+    if (typeof externalOpen === 'function') {
+      await externalOpen(`mailto:support@boroko.io?subject=${encodeURIComponent(message.emailSubject)}&body=${encodeURIComponent(message.emailBody)}`).catch(() => {})
+    }
+  }
+
+  const handleRequestWhatsApp = async (company = selected) => {
+    if (!company) return
+    const rollup = getCompanyUsageRollup(usageStatsByLodge[company.lodge_id], licenses, company)
+    const lodgeName = company.lodge_name || company.company_name || 'Unknown lodge'
+    const message = buildUpgradeRequestMessage(
+      {
+        lodgeName,
+        currentPlan: rollup.plan
+      },
+      {
+        bookings: rollup.recommendation?.currentUsage?.bookings ?? rollup.recommendation?.currentUsagePct?.bookings ?? 0,
+        rooms: rollup.recommendation?.currentUsage?.rooms ?? rollup.recommendation?.currentUsagePct?.rooms ?? 0,
+        users: rollup.recommendation?.currentUsage?.users ?? rollup.recommendation?.currentUsagePct?.users ?? 0,
+        recommendedPlan: rollup.recommendation?.recommendedPlan
+      },
+      rollup.recommendation
+    )
+    trackUpgradeIntent({
+      lodgeId: company.lodge_id,
+      lodgeName,
+      plan: rollup.plan,
+      usage: {
+        bookings: rollup.recommendation?.currentUsage?.bookings ?? rollup.recommendation?.currentUsagePct?.bookings ?? 0,
+        rooms: rollup.recommendation?.currentUsage?.rooms ?? rollup.recommendation?.currentUsagePct?.rooms ?? 0,
+        users: rollup.recommendation?.currentUsage?.users ?? rollup.recommendation?.currentUsagePct?.users ?? 0
+      },
+      recommendation: rollup.recommendation,
+      trigger: 'blocked'
+    })
+    const externalOpen = window.api?.shell?.openExternal
+    if (typeof externalOpen === 'function') {
+      await externalOpen(`https://wa.me/?text=${encodeURIComponent(message.whatsappText)}`).catch(() => {})
     }
   }
 
@@ -484,6 +700,73 @@ function Companies({ companies, licenses, loading, onReload }) {
           </div>
           <p className="text-[10px] text-gray-500 uppercase tracking-wider">{showDisabled ? 'Archived Companies' : 'Operational Lodges'}</p>
         </div>
+        <div className="border-b border-gray-700 bg-gray-900/40 px-4 py-3">
+          <div className="flex flex-wrap gap-2">
+            {[
+              { id: 'all', label: 'All' },
+              { id: 'near_limit', label: 'Near limit' },
+              { id: 'in_grace', label: 'In grace' },
+              { id: 'blocked', label: 'Blocked' },
+              { id: 'above_plan', label: 'Above plan' },
+              { id: 'pro', label: 'Pro' }
+            ].map((filter) => (
+              <button
+                key={filter.id}
+                type="button"
+                onClick={() => setUsageFilter(filter.id)}
+                className={`rounded-full px-3 py-1 text-xs font-semibold transition-colors ${
+                  usageFilter === filter.id
+                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                    : 'bg-gray-800 text-gray-300 border border-gray-700 hover:bg-gray-700'
+                }`}
+              >
+                {filter.label}
+              </button>
+            ))}
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
+            <span className="rounded-full bg-gray-800 px-2.5 py-1 text-gray-300">Near limit {usageFilterCounts.near_limit}</span>
+            <span className="rounded-full bg-gray-800 px-2.5 py-1 text-gray-300">Critical {usageFilterCounts.critical}</span>
+            <span className="rounded-full bg-gray-800 px-2.5 py-1 text-gray-300">In grace {usageFilterCounts.in_grace}</span>
+            <span className="rounded-full bg-gray-800 px-2.5 py-1 text-gray-300">Blocked {usageFilterCounts.blocked}</span>
+            <span className="rounded-full bg-gray-800 px-2.5 py-1 text-gray-300">Above plan {usageFilterCounts.above_plan}</span>
+            <span className="rounded-full bg-gray-800 px-2.5 py-1 text-gray-300">Pro {usageFilterCounts.pro}</span>
+            <span className="rounded-full bg-gray-800 px-2.5 py-1 text-gray-300">Upgrade opportunities {usageFilterCounts.upgradeOpportunities}</span>
+          </div>
+        </div>
+        {attentionRows.length > 0 && (
+          <div className="border-b border-gray-700 bg-gray-950/60 px-4 py-4">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wider text-gray-400">Needs Attention</p>
+                <p className="text-sm text-gray-500">Lodges closest to their current limits or above plan.</p>
+              </div>
+              <p className="text-xs text-gray-500">Current plan · usage · recommendation</p>
+            </div>
+            <div className="space-y-2">
+              {attentionRows.map(({ company, rollup, currentBookingsUsagePercent, peakBookingsUsagePercent }) => (
+                <button
+                  key={company.lodge_id}
+                  type="button"
+                  onClick={() => openDetail(company)}
+                  className="flex w-full items-start justify-between gap-4 rounded-xl border border-gray-700 bg-gray-800/70 px-3 py-3 text-left transition-colors hover:border-gray-600 hover:bg-gray-800"
+                >
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-semibold text-white">{company.lodge_name || '—'}</p>
+                    <p className="mt-1 text-xs text-gray-400">
+                      {rollup.plan} · Bookings {currentBookingsUsagePercent}% · Peak {peakBookingsUsagePercent}% · Rooms {rollup.recommendation?.currentUsagePct?.rooms ?? 0}% · Users {rollup.recommendation?.currentUsagePct?.users ?? 0}%
+                    </p>
+                  </div>
+                  <div className="shrink-0 text-right">
+                    <span className={`inline-flex rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide ${rollup.cls}`}>{rollup.label}</span>
+                    <p className="mt-1 text-xs font-semibold text-emerald-300">{rollup.recommendation?.recommendedPlan || rollup.plan}</p>
+                    <p className="text-[11px] text-gray-500">{rollup.recommendation?.reason || '—'}</p>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
         {visibleCompanies.length === 0 && !loading ? (
           <div className="px-6 py-16 text-center text-gray-500">
             <Building2 size={32} className="mx-auto mb-3 opacity-40" />
@@ -495,18 +778,31 @@ function Companies({ companies, licenses, loading, onReload }) {
               <tr>
                 <th className="px-4 py-3 text-left">Business</th>
                 <th className="px-4 py-3 text-left">Status</th>
+                <th className="px-4 py-3 text-left">Recommendation</th>
                 <th className="px-4 py-3 text-left">Location</th>
                 <th className="px-4 py-3 text-left">Contact</th>
                 <th className="px-4 py-3 text-left">Lodge ID</th>
+                <th className="px-4 py-3 text-left">Last Activity</th>
                 <th className="px-4 py-3 text-left">Updated</th>
                 <th className="px-4 py-3"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-700">
               {visibleCompanies.map((c) => (
+                (() => {
+                  const rollup = getCompanyUsageRollup(usageStatsByLodge[c.lodge_id], licenses, c)
+                  const planText = rollup.plan || normalizePlanName(getLicensePlanForLodge(licenses, c.lodge_id))
+                  const bookingPct = rollup.recommendation?.currentUsagePct?.bookings ?? 0
+                  const roomPct = rollup.recommendation?.currentUsagePct?.rooms ?? 0
+                  const userPct = rollup.recommendation?.currentUsagePct?.users ?? 0
+                  const bookingUsageText = rollup.plan === 'Pro' ? 'Unlimited' : `${bookingPct}%`
+                  const roomUsageText = rollup.plan === 'Pro' ? 'Unlimited' : `${roomPct}%`
+                  const userUsageText = rollup.plan === 'Pro' ? 'Unlimited' : `${userPct}%`
+                  const lastBookingDisplay = rollup.lastBookingDate ? fmt(rollup.lastBookingDate) : 'No bookings yet'
+                  return (
                 <tr
                   key={c.lodge_id}
-                  className={`hover:bg-gray-700 transition-colors cursor-pointer ${selected?.lodge_id === c.lodge_id ? 'bg-gray-700' : ''}`}
+                  className={`hover:bg-gray-700 transition-colors cursor-pointer ${selected?.lodge_id === c.lodge_id ? 'bg-gray-700' : ''} ${!rollup.lastBookingDate ? 'opacity-85' : ''}`}
                   onClick={() => openDetail(c)}
                 >
                   <td className="px-4 py-3">
@@ -514,10 +810,19 @@ function Companies({ companies, licenses, loading, onReload }) {
                     {c.company_name && <p className="text-xs text-gray-400">{c.company_name}</p>}
                   </td>
                   <td className="px-4 py-3">
-                    <div className="flex items-center gap-1 flex-wrap">
+                    <div className="flex flex-wrap gap-1.5">
                       {(() => { const t = getTrialInfo(c, licenses); return <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${t.color}`}>{t.label}</span> })()}
+                      <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${rollup.cls}`}>{rollup.label}</span>
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-gray-700 text-gray-200 font-semibold">{planText}</span>
                       {c.deleted && <span className="text-[10px] px-2 py-0.5 rounded bg-red-900/40 text-red-400 font-bold uppercase tracking-tight">Archived</span>}
                     </div>
+                    <p className="mt-1 text-[11px] text-gray-400">
+                      Bookings {bookingUsageText} · Rooms {roomUsageText} · Users {userUsageText}
+                    </p>
+                  </td>
+                  <td className="px-4 py-3">
+                    <p className="text-sm font-semibold text-white">{rollup.recommendation?.recommendedPlan || planText}</p>
+                    <p className="mt-1 text-xs text-gray-400">{rollup.recommendation?.reason || rollup.recommendation?.details || '—'}</p>
                   </td>
                   <td className="px-4 py-3 text-gray-400 text-xs">{[c.city, c.country].filter(Boolean).join(', ') || '—'}</td>
                   <td className="px-4 py-3 text-gray-400 text-xs">
@@ -531,9 +836,12 @@ function Companies({ companies, licenses, loading, onReload }) {
                       <CopyBtn text={c.lodge_id} />
                     </div>
                   </td>
+                  <td className="px-4 py-3 text-gray-400 text-xs">{lastBookingDisplay}</td>
                   <td className="px-4 py-3 text-gray-400 text-xs">{fmt(c.updated_at)}</td>
                   <td className="px-4 py-3 text-gray-500"><ChevronRight size={14} /></td>
                 </tr>
+                  )
+                })()
               ))}
             </tbody>
           </table>
@@ -564,33 +872,84 @@ function Companies({ companies, licenses, loading, onReload }) {
               <CopyBtn text={selected.lodge_id} />
             </div>
           </div>
+          <div className="border-t border-gray-700 pt-3">
+            <p className="text-xs text-gray-400 mb-1">Last activity</p>
+            <p className="text-sm font-semibold text-white">{stats?.last_booking_date ? fmt(stats.last_booking_date) : 'No bookings yet'}</p>
+          </div>
           {/* Live stats */}
           <div className="border-t border-gray-700 pt-3">
             <p className="text-xs text-gray-400 uppercase tracking-wider mb-3">Live Stats</p>
             {statsLoading ? (
               <p className="text-xs text-gray-500 animate-pulse">Loading stats…</p>
             ) : stats ? (
-              <div className="grid grid-cols-2 gap-2">
-                {[
-                  { icon: Home, label: 'Rooms', value: stats.rooms },
-                  { icon: Users, label: 'Staff', value: stats.users },
-                  { icon: TrendingUp, label: 'Bookings (30d)', value: stats.bookings_30d },
-                  { icon: DollarSign, label: 'Expenses (30d)', value: stats.expenses_30d?.toFixed(0) },
-                  { icon: Wrench, label: 'Open Tickets', value: stats.open_maintenance }
-                ].map(({ icon: Icon, label, value }) => (
-                  <div key={label} className="bg-gray-700 rounded-lg p-2">
-                    <div className="flex items-center gap-1.5 mb-1">
-                      <Icon size={11} className="text-gray-400" />
-                      <p className="text-xs text-gray-400">{label}</p>
+              <>
+                <div className="grid grid-cols-2 gap-2">
+                  {[
+                    { icon: Home, label: 'Rooms', value: stats.rooms },
+                    { icon: Users, label: 'Staff', value: stats.users },
+                    { icon: TrendingUp, label: 'Monthly bookings used', value: stats.monthly_confirmed_bookings },
+                    { icon: TrendingUp, label: 'Bookings (30d)', value: stats.bookings_30d },
+                    { icon: DollarSign, label: 'Expenses (30d)', value: stats.expenses_30d?.toFixed(0) },
+                    { icon: Wrench, label: 'Open Tickets', value: stats.open_maintenance }
+                  ].map(({ icon: Icon, label, value }) => (
+                    <div key={label} className="bg-gray-700 rounded-lg p-2">
+                      <div className="flex items-center gap-1.5 mb-1">
+                        <Icon size={11} className="text-gray-400" />
+                        <p className="text-xs text-gray-400">{label}</p>
+                      </div>
+                      <p className="text-sm font-bold text-white">{value ?? '—'}</p>
                     </div>
-                    <p className="text-sm font-bold text-white">{value ?? '—'}</p>
+                  ))}
+                </div>
+                <div className="mt-2 rounded-lg border border-gray-700 bg-gray-800/60 p-2 text-[11px] text-gray-300">
+                  Plan: <span className="font-semibold text-white">{stats.plan || 'Starter'}</span>
+                  {stats.usage_limits && (
+                    <span>
+                      {' · Limits: '}
+                      {formatPlanLimits(stats.plan || 'Starter').bookings}, {formatPlanLimits(stats.plan || 'Starter').grace}, {formatPlanLimits(stats.plan || 'Starter').rooms}, {formatPlanLimits(stats.plan || 'Starter').users}
+                    </span>
+                  )}
+                </div>
+                <div className="mt-2 rounded-lg border border-gray-700 bg-gray-900/50 p-3 text-[11px] text-gray-300">
+                  <p className="font-semibold text-white">
+                    Current bookings usage: {stats.usage_status?.bookings?.state === 'unlimited' ? 'Unlimited' : `${currentBookingsUsagePercent}%`} · Rooms {stats.usage_status?.rooms?.state === 'unlimited' ? 'Unlimited' : `${stats.usage_status?.rooms?.percentUsed ?? 0}%`} · Users {stats.usage_status?.users?.state === 'unlimited' ? 'Unlimited' : `${stats.usage_status?.users?.percentUsed ?? 0}%`}
+                  </p>
+                  <p className="mt-1 text-gray-400">
+                    Peak usage this session: {selectedPeakBookingDisplay} · {stats.monthly_reset_copy || MONTHLY_USAGE_RESET_COPY}
+                  </p>
+                  {stats.recommendation?.label && (
+                    <p className="mt-1 text-emerald-300">
+                      {stats.recommendation.label} · {stats.recommendation.reason || 'Capacity review'}
+                    </p>
+                  )}
+                </div>
+                {stats.usage_status && (
+                  <div className="mt-2 flex flex-wrap gap-1 text-[10px]">
+                    <span className="rounded-full bg-gray-700 px-2 py-1 text-gray-300">Bookings: {getUsageStateKey(stats.usage_status.bookings)}</span>
+                    <span className="rounded-full bg-gray-700 px-2 py-1 text-gray-300">Rooms: {getUsageStateKey(stats.usage_status.rooms)}</span>
+                    <span className="rounded-full bg-gray-700 px-2 py-1 text-gray-300">Users: {getUsageStateKey(stats.usage_status.users)}</span>
                   </div>
-                ))}
-              </div>
+                )}
+              </>
             ) : <p className="text-xs text-gray-500">Stats unavailable</p>}
           </div>
           {/* Admin actions */}
-          <div className="border-t border-gray-700 pt-3 flex gap-2">
+          <div className="border-t border-gray-700 pt-3 space-y-2">
+            <div className="grid gap-2 sm:grid-cols-2">
+              <button
+                onClick={() => handleRequestUpgrade(selected)}
+                className="w-full rounded-lg bg-purple-600/20 px-3 py-2 text-xs text-purple-200 transition-all hover:bg-purple-600 hover:text-white"
+              >
+                Request Upgrade
+              </button>
+              <button
+                onClick={() => handleRequestWhatsApp(selected)}
+                className="w-full rounded-lg bg-green-600/20 px-3 py-2 text-xs text-green-200 transition-all hover:bg-green-600 hover:text-white"
+              >
+                Request via WhatsApp
+              </button>
+            </div>
+            <div className="flex gap-2">
             {!selected.deleted ? (
               <button
                 onClick={() => { setLifecycleMode('archive'); setCompanyTarget(selected); setConfirmName('') }}
@@ -613,6 +972,7 @@ function Companies({ companies, licenses, loading, onReload }) {
               Delete
             </button>
           </div>
+          </div>
           <button
             onClick={() => handleRepairDuplicateEvents(selected)}
             disabled={repairLoading}
@@ -625,11 +985,11 @@ function Companies({ companies, licenses, loading, onReload }) {
 
       {/* Lifecycle (Archive/Restore/Delete) Modal */}
       {companyTarget && (
-        <Modal 
+        <Modal
           title={
             lifecycleMode === 'archive' ? 'Archive Company' :
-            lifecycleMode === 'restore' ? 'Restore Company' :
-            'Permanently Delete Company'
+              lifecycleMode === 'restore' ? 'Restore Company' :
+                'Permanently Delete Company'
           }
           onClose={() => { setCompanyTarget(null); setConfirmName('') }}
         >
@@ -670,16 +1030,15 @@ function Companies({ companies, licenses, loading, onReload }) {
               <button
                 onClick={handleLifecycleAction}
                 disabled={confirmName.trim() !== companyTarget.lodge_name || lifecycleLoading}
-                className={`flex-1 py-2 px-4 rounded-lg text-sm font-medium text-white transition-colors disabled:opacity-50 ${
-                  lifecycleMode === 'archive' ? 'bg-amber-600 hover:bg-amber-700' :
-                  lifecycleMode === 'restore' ? 'bg-green-600 hover:bg-green-700' :
-                  'bg-red-700 hover:bg-red-800'
-                }`}
+                className={`flex-1 py-2 px-4 rounded-lg text-sm font-medium text-white transition-colors disabled:opacity-50 ${lifecycleMode === 'archive' ? 'bg-amber-600 hover:bg-amber-700' :
+                    lifecycleMode === 'restore' ? 'bg-green-600 hover:bg-green-700' :
+                      'bg-red-700 hover:bg-red-800'
+                  }`}
               >
-                {lifecycleLoading ? 'Processing...' : 
-                 lifecycleMode === 'archive' ? 'Archive Company' : 
-                 lifecycleMode === 'restore' ? 'Restore Company' :
-                 'Delete Permanently'}
+                {lifecycleLoading ? 'Processing...' :
+                  lifecycleMode === 'archive' ? 'Archive Company' :
+                    lifecycleMode === 'restore' ? 'Restore Company' :
+                      'Delete Permanently'}
               </button>
             </div>
           </div>
@@ -947,16 +1306,16 @@ function LicenseBilling({ licenses, companies, onRefresh }) {
       },
       invoice: requiresInvoice
         ? {
-            lodge_id: companyLodgeId,
-            lodge_name: form.lodge_name,
-            package_name: selectedPlan,
-            amount: Number(invoiceForm.amount),
-            currency: invoiceForm.currency,
-            status: 'paid',
-            issued_date: invoiceForm.paid_date,
-            paid_date: invoiceForm.paid_date,
-            description: invoiceForm.description || null
-          }
+          lodge_id: companyLodgeId,
+          lodge_name: form.lodge_name,
+          package_name: selectedPlan,
+          amount: Number(invoiceForm.amount),
+          currency: invoiceForm.currency,
+          status: 'paid',
+          issued_date: invoiceForm.paid_date,
+          paid_date: invoiceForm.paid_date,
+          description: invoiceForm.description || null
+        }
         : null
     }).catch(e => ({ error: e.message }))
     const issuedLicense = r?.license_key ? r : r?.license || null
@@ -1007,7 +1366,7 @@ function LicenseBilling({ licenses, companies, onRefresh }) {
     await window.api.admin.updateLicenseBilling(billingModal.id, {
       ...billingForm,
       subscription_plan: normalizePlanName(billingForm.subscription_plan)
-    }).catch(() => {})
+    }).catch(() => { })
     setBillingModal(null); onRefresh()
   }
 
@@ -1063,11 +1422,10 @@ function LicenseBilling({ licenses, companies, onRefresh }) {
                         setForm((f) => ({ ...f, subscription_plan: tier }))
                         setInvoiceForm((f) => ({ ...f, package_name: tier }))
                       }}
-                      className={`p-3 rounded-lg border-2 text-left transition-all ${
-                        normalizePlanName(form.subscription_plan) === tier
+                      className={`p-3 rounded-lg border-2 text-left transition-all ${normalizePlanName(form.subscription_plan) === tier
                           ? 'border-purple-500 bg-purple-500/10'
                           : 'border-gray-600 hover:border-gray-500'
-                      }`}
+                        }`}
                     >
                       <p className="text-sm font-bold text-white">{tier}</p>
                       <p className="text-xs text-gray-400 mt-0.5 leading-tight">{TIER_DESC[tier]}</p>
@@ -1098,7 +1456,7 @@ function LicenseBilling({ licenses, companies, onRefresh }) {
                           else if (dur === 'quarterly') d.setMonth(d.getMonth() + 3)
                           else if (dur === 'half_year') d.setMonth(d.getMonth() + 6)
                           else if (dur === 'yearly') d.setFullYear(d.getFullYear() + 1)
-                          
+
                           const val = d.toISOString().split('T')[0]
                           setForm({ ...form, expires_at: val })
                           setSelectedPeriod(dur === '3d' || dur === '7d' ? dur : 'paid')
@@ -1192,7 +1550,7 @@ function LicenseBilling({ licenses, companies, onRefresh }) {
               )}
             </div>
             <Field label="Notes">
-              <input className={inp} placeholder="Annual license..." value={form.notes} onChange={e => setForm({...form, notes: e.target.value})} />
+              <input className={inp} placeholder="Annual license..." value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} />
             </Field>
             <div className="flex gap-3 pt-1">
               <button
@@ -1250,12 +1608,11 @@ function LicenseBilling({ licenses, companies, onRefresh }) {
                       <p className="text-xs text-gray-500">{BIZ_EMOJI[lic.business_type]} {BIZ_LABEL[lic.business_type] || lic.business_type}</p>
                     </td>
                     <td className="px-4 py-3">
-                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-                        lic.subscription_plan === 'Pro'      ? 'bg-purple-500/20 text-purple-300' :
-                        lic.subscription_plan === 'Standard' ? 'bg-blue-500/20 text-blue-300' :
-                        lic.subscription_plan === 'Starter'  ? 'bg-gray-500/20 text-gray-300' :
-                        'bg-gray-600/20 text-gray-400'
-                      }`}>{lic.subscription_plan || 'Starter'}</span>
+                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${lic.subscription_plan === 'Pro' ? 'bg-purple-500/20 text-purple-300' :
+                          lic.subscription_plan === 'Standard' ? 'bg-blue-500/20 text-blue-300' :
+                            lic.subscription_plan === 'Starter' ? 'bg-gray-500/20 text-gray-300' :
+                              'bg-gray-600/20 text-gray-400'
+                        }`}>{lic.subscription_plan || 'Starter'}</span>
                     </td>
                     <td className="px-4 py-3">
                       <span className={`text-xs px-2 py-0.5 rounded-full ${subscriptionStatusTone(lic)}`}>
@@ -1287,11 +1644,10 @@ function LicenseBilling({ licenses, companies, onRefresh }) {
                               onClick={() => sendEmail(lic)}
                               disabled={st === 'sending'}
                               title={st === 'sent' ? 'Email sent!' : st === 'error' ? 'Email failed' : `Send key to ${company.email}`}
-                              className={`p-1 transition-colors ${
-                                st === 'sent' ? 'text-green-400' :
-                                st === 'error' ? 'text-red-400' :
-                                'text-gray-400 hover:text-blue-400'
-                              }`}
+                              className={`p-1 transition-colors ${st === 'sent' ? 'text-green-400' :
+                                  st === 'error' ? 'text-red-400' :
+                                    'text-gray-400 hover:text-blue-400'
+                                }`}
                             >
                               {st === 'sent' ? <CheckCircle2 size={13} /> : <Send size={13} className={st === 'sending' ? 'animate-pulse' : ''} />}
                             </button>
@@ -1318,12 +1674,11 @@ function LicenseBilling({ licenses, companies, onRefresh }) {
                   <button
                     key={tier}
                     type="button"
-                    onClick={() => setBillingForm({...billingForm, subscription_plan: tier})}
-                    className={`p-3 rounded-lg border-2 text-left transition-all ${
-                      billingForm.subscription_plan === tier
+                    onClick={() => setBillingForm({ ...billingForm, subscription_plan: tier })}
+                    className={`p-3 rounded-lg border-2 text-left transition-all ${billingForm.subscription_plan === tier
                         ? 'border-purple-500 bg-purple-500/10'
                         : 'border-gray-600 hover:border-gray-500'
-                    }`}
+                      }`}
                   >
                     <p className="text-sm font-bold text-white">{tier}</p>
                     <p className="text-xs text-gray-400 mt-0.5 leading-tight">{TIER_DESC[tier]}</p>
@@ -1351,21 +1706,21 @@ function LicenseBilling({ licenses, companies, onRefresh }) {
 
             <div className="grid grid-cols-2 gap-4">
               <Field label="Monthly Fee">
-                <input type="number" className={inp} value={billingForm.monthly_fee} onChange={e => setBillingForm({...billingForm, monthly_fee: e.target.value})} />
+                <input type="number" className={inp} value={billingForm.monthly_fee} onChange={e => setBillingForm({ ...billingForm, monthly_fee: e.target.value })} />
               </Field>
               <Field label="Currency">
-                <input className={inp} value={billingForm.currency} onChange={e => setBillingForm({...billingForm, currency: e.target.value})} placeholder="USD" />
+                <input className={inp} value={billingForm.currency} onChange={e => setBillingForm({ ...billingForm, currency: e.target.value })} placeholder="USD" />
               </Field>
               <Field label="Payment Status">
-                <select className={inp} value={billingForm.payment_status} onChange={e => setBillingForm({...billingForm, payment_status: e.target.value})}>
+                <select className={inp} value={billingForm.payment_status} onChange={e => setBillingForm({ ...billingForm, payment_status: e.target.value })}>
                   {['active', 'overdue', 'suspended', 'free', 'cancelled'].map(s => <option key={s} value={s}>{s}</option>)}
                 </select>
               </Field>
               <Field label="Last Payment Date">
-                <input type="date" className={inp} value={billingForm.last_payment_date} onChange={e => setBillingForm({...billingForm, last_payment_date: e.target.value})} />
+                <input type="date" className={inp} value={billingForm.last_payment_date} onChange={e => setBillingForm({ ...billingForm, last_payment_date: e.target.value })} />
               </Field>
               <Field label="Next Due Date" >
-                <input type="date" className={inp} value={billingForm.next_due_date} onChange={e => setBillingForm({...billingForm, next_due_date: e.target.value})} />
+                <input type="date" className={inp} value={billingForm.next_due_date} onChange={e => setBillingForm({ ...billingForm, next_due_date: e.target.value })} />
               </Field>
             </div>
             <div className="flex gap-3 pt-2">
@@ -1414,9 +1769,9 @@ function FeatureFlags({ companies, licenses }) {
     await Promise.all(ALL_FEATURES.map((featureName) => {
       const isBaseValue = flags[featureName] === baseFlags[featureName]
       if (isBaseValue) {
-        return window.api.admin.clearLodgeFeature(selectedLodge.lodge_id, featureName).catch(() => {})
+        return window.api.admin.clearLodgeFeature(selectedLodge.lodge_id, featureName).catch(() => { })
       }
-      return window.api.admin.setLodgeFeature(selectedLodge.lodge_id, featureName, flags[featureName] !== false).catch(() => {})
+      return window.api.admin.setLodgeFeature(selectedLodge.lodge_id, featureName, flags[featureName] !== false).catch(() => { })
     }))
     setSaving(false); setSaved(true)
     setTimeout(() => setSaved(false), 2000)
@@ -1473,36 +1828,35 @@ function FeatureFlags({ companies, licenses }) {
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-xs text-gray-500">Preview preset:</span>
-              {TIERS.map(tier => (
+                {TIERS.map(tier => (
+                  <button
+                    key={tier}
+                    type="button"
+                    onClick={() => {
+                      setSelectedPlan(tier)
+                      setBaseFlags(getPlanFlags(tier))
+                      setFlags(getPlanFlags(tier))
+                    }}
+                    className={`text-xs px-3 py-1 rounded-full border transition-colors ${tier === 'Pro' ? 'border-purple-600 text-purple-300 hover:bg-purple-600/20' :
+                        tier === 'Standard' ? 'border-blue-600 text-blue-300 hover:bg-blue-600/20' :
+                          'border-gray-600 text-gray-400 hover:bg-gray-600/20'
+                      }`}
+                  >
+                    {tier}
+                  </button>
+                ))}
                 <button
-                  key={tier}
                   type="button"
                   onClick={() => {
-                    setSelectedPlan(tier)
-                    setBaseFlags(getPlanFlags(tier))
-                    setFlags(getPlanFlags(tier))
+                    const planName = getLicensePlanForLodge(licenses, selectedLodge.lodge_id)
+                    setSelectedPlan(planName)
+                    setBaseFlags(getPlanFlags(planName))
+                    loadFlags(selectedLodge.lodge_id, planName)
                   }}
-                  className={`text-xs px-3 py-1 rounded-full border transition-colors ${
-                    tier === 'Pro'      ? 'border-purple-600 text-purple-300 hover:bg-purple-600/20' :
-                    tier === 'Standard' ? 'border-blue-600 text-blue-300 hover:bg-blue-600/20' :
-                    'border-gray-600 text-gray-400 hover:bg-gray-600/20'
-                  }`}
+                  className="text-xs px-3 py-1 rounded-full border border-gray-600 text-gray-400 hover:bg-gray-600/20"
                 >
-                  {tier}
+                  Reset to assigned plan
                 </button>
-              ))}
-              <button
-                type="button"
-                onClick={() => {
-                  const planName = getLicensePlanForLodge(licenses, selectedLodge.lodge_id)
-                  setSelectedPlan(planName)
-                  setBaseFlags(getPlanFlags(planName))
-                  loadFlags(selectedLodge.lodge_id, planName)
-                }}
-                className="text-xs px-3 py-1 rounded-full border border-gray-600 text-gray-400 hover:bg-gray-600/20"
-              >
-                Reset to assigned plan
-              </button>
               </div>
             </div>
             <div className="space-y-3 pt-2">
@@ -1550,7 +1904,7 @@ function Broadcasts() {
 
   const handleCreate = async (e) => {
     e.preventDefault(); setSaving(true)
-    await window.api.admin.createBroadcast({ ...form, expires_at: form.expires_at || null }).catch(() => {})
+    await window.api.admin.createBroadcast({ ...form, expires_at: form.expires_at || null }).catch(() => { })
     setForm({ title: '', message: '', expires_at: '' }); setShowForm(false); setSaving(false); load()
   }
 
@@ -1572,13 +1926,13 @@ function Broadcasts() {
         <div className="bg-gray-800 border border-gray-700 rounded-xl p-5">
           <form onSubmit={handleCreate} className="space-y-4">
             <Field label="Title *">
-              <input className={inp} placeholder="System maintenance tonight…" value={form.title} onChange={e => setForm({...form, title: e.target.value})} required />
+              <input className={inp} placeholder="System maintenance tonight…" value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} required />
             </Field>
             <Field label="Message *">
-              <textarea className={`${inp} h-20 resize-none`} placeholder="Details of the announcement…" value={form.message} onChange={e => setForm({...form, message: e.target.value})} required />
+              <textarea className={`${inp} h-20 resize-none`} placeholder="Details of the announcement…" value={form.message} onChange={e => setForm({ ...form, message: e.target.value })} required />
             </Field>
             <Field label="Expires At (optional — leave blank for permanent)">
-              <input type="datetime-local" className={inp} value={form.expires_at} onChange={e => setForm({...form, expires_at: e.target.value})} />
+              <input type="datetime-local" className={inp} value={form.expires_at} onChange={e => setForm({ ...form, expires_at: e.target.value })} />
             </Field>
             <div className="flex gap-3">
               <button type="button" onClick={() => setShowForm(false)} className={`flex-1 ${btn('ghost')} py-2 rounded-lg text-sm`}>Cancel</button>
@@ -1647,7 +2001,7 @@ function SupportTickets({ companies }) {
 
   const updateTicket = async () => {
     setSaving(true)
-    await window.api.admin.updateSupportTicket(detail.id, { status: newStatus, admin_notes: notes }).catch(() => {})
+    await window.api.admin.updateSupportTicket(detail.id, { status: newStatus, admin_notes: notes }).catch(() => { })
     setSaving(false); setDetail(null); load()
   }
 
@@ -1670,12 +2024,12 @@ function SupportTickets({ companies }) {
           {openCount > 0 && <span className="bg-orange-500 text-white text-xs font-bold px-2 py-0.5 rounded-full">{openCount} open</span>}
         </div>
         <div className="flex items-center gap-2">
-          <input className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 w-48" placeholder="Search…" value={filter.q} onChange={e => setFilter({...filter, q: e.target.value})} />
-          <select className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-300 focus:outline-none" value={filter.status} onChange={e => setFilter({...filter, status: e.target.value})}>
+          <input className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 w-48" placeholder="Search…" value={filter.q} onChange={e => setFilter({ ...filter, q: e.target.value })} />
+          <select className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-300 focus:outline-none" value={filter.status} onChange={e => setFilter({ ...filter, status: e.target.value })}>
             <option value="">All Status</option>
             {['open', 'in_progress', 'resolved', 'closed'].map(s => <option key={s} value={s}>{s}</option>)}
           </select>
-          <select className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-300 focus:outline-none" value={filter.priority} onChange={e => setFilter({...filter, priority: e.target.value})}>
+          <select className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-300 focus:outline-none" value={filter.priority} onChange={e => setFilter({ ...filter, priority: e.target.value })}>
             <option value="">All Priority</option>
             {['Low', 'Normal', 'High', 'Urgent'].map(p => <option key={p} value={p}>{p}</option>)}
           </select>
@@ -1701,7 +2055,7 @@ function SupportTickets({ companies }) {
             <tbody className="divide-y divide-gray-700">
               {filtered.map(t => (
                 <tr key={t.id} className="hover:bg-gray-700 transition-colors cursor-pointer" onClick={() => openDetail(t)}>
-                  <td className="px-4 py-3 text-xs text-gray-400">{t.lodge_name || t.lodge_id?.slice(0,8)}</td>
+                  <td className="px-4 py-3 text-xs text-gray-400">{t.lodge_name || t.lodge_id?.slice(0, 8)}</td>
                   <td className="px-4 py-3">
                     <p className="font-medium text-white">{t.title}</p>
                     {t.category === 'Upgrade Request' && (() => {
@@ -1741,68 +2095,68 @@ function SupportTickets({ companies }) {
           {(() => {
             const upgrade = detail.category === 'Upgrade Request' ? parseUpgradeRequest(detail.description) : null
             return (
-          <div className="space-y-4">
-            <div className="flex flex-wrap gap-2 text-xs">
-              <span className="bg-gray-700 text-gray-300 px-2 py-1 rounded">{detail.category}</span>
-              <span className={`px-2 py-1 rounded font-semibold ${PRIORITY_COLOR[detail.priority]}`}>{detail.priority} priority</span>
-              <span className={`px-2 py-1 rounded ${STATUS_COLOR[detail.status]}`}>{detail.status}</span>
-            </div>
-            {upgrade && (upgrade.requestedPlan || upgrade.businessNeed || upgrade.blockedFeature) && (
-              <div className="grid gap-3 sm:grid-cols-3">
-                {upgrade.requestedPlan && (
-                  <div className="rounded-xl border border-purple-500/30 bg-purple-500/10 p-3">
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-purple-300">Requested Plan</p>
-                    <p className="mt-2 text-sm font-semibold text-white">{upgrade.requestedPlan}</p>
-                    {upgrade.currentPlan && <p className="mt-1 text-xs text-purple-200/75">Current: {upgrade.currentPlan}</p>}
+              <div className="space-y-4">
+                <div className="flex flex-wrap gap-2 text-xs">
+                  <span className="bg-gray-700 text-gray-300 px-2 py-1 rounded">{detail.category}</span>
+                  <span className={`px-2 py-1 rounded font-semibold ${PRIORITY_COLOR[detail.priority]}`}>{detail.priority} priority</span>
+                  <span className={`px-2 py-1 rounded ${STATUS_COLOR[detail.status]}`}>{detail.status}</span>
+                </div>
+                {upgrade && (upgrade.requestedPlan || upgrade.businessNeed || upgrade.blockedFeature) && (
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    {upgrade.requestedPlan && (
+                      <div className="rounded-xl border border-purple-500/30 bg-purple-500/10 p-3">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-purple-300">Requested Plan</p>
+                        <p className="mt-2 text-sm font-semibold text-white">{upgrade.requestedPlan}</p>
+                        {upgrade.currentPlan && <p className="mt-1 text-xs text-purple-200/75">Current: {upgrade.currentPlan}</p>}
+                      </div>
+                    )}
+                    {upgrade.blockedFeature && (
+                      <div className="rounded-xl border border-gray-700 bg-gray-800 p-3">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-400">Blocked Feature</p>
+                        <p className="mt-2 text-sm font-semibold text-white">{upgrade.blockedFeature}</p>
+                      </div>
+                    )}
+                    {upgrade.businessNeed && (
+                      <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 sm:col-span-1">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-300">Business Need</p>
+                        <p className="mt-2 text-sm text-emerald-100">{upgrade.businessNeed}</p>
+                      </div>
+                    )}
                   </div>
                 )}
-                {upgrade.blockedFeature && (
-                  <div className="rounded-xl border border-gray-700 bg-gray-800 p-3">
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-400">Blocked Feature</p>
-                    <p className="mt-2 text-sm font-semibold text-white">{upgrade.blockedFeature}</p>
+                <div className="bg-gray-800 rounded-lg p-4">
+                  <p className="text-xs text-gray-400 mb-1">Lodge: {detail.lodge_name || detail.lodge_id}</p>
+                  <p className="text-sm text-gray-200 whitespace-pre-wrap">{detail.description}</p>
+                </div>
+                {upgrade && (upgrade.requestedOutcome || upgrade.commercialValue) && (
+                  <div className="rounded-xl border border-gray-700 bg-gray-900 p-4 space-y-3">
+                    {upgrade.requestedOutcome && (
+                      <div>
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500">Requested Outcome</p>
+                        <p className="mt-1 text-sm text-gray-200">{upgrade.requestedOutcome}</p>
+                      </div>
+                    )}
+                    {upgrade.commercialValue && (
+                      <div>
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500">Commercial Value</p>
+                        <p className="mt-1 text-sm text-gray-200">{upgrade.commercialValue}</p>
+                      </div>
+                    )}
                   </div>
                 )}
-                {upgrade.businessNeed && (
-                  <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 sm:col-span-1">
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-300">Business Need</p>
-                    <p className="mt-2 text-sm text-emerald-100">{upgrade.businessNeed}</p>
-                  </div>
-                )}
+                <Field label="Update Status">
+                  <select className={inp} value={newStatus} onChange={e => setNewStatus(e.target.value)}>
+                    {['open', 'in_progress', 'resolved', 'closed'].map(s => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                </Field>
+                <Field label="Admin Notes">
+                  <textarea className={`${inp} h-24 resize-none`} value={notes} onChange={e => setNotes(e.target.value)} placeholder="Internal notes…" />
+                </Field>
+                <div className="flex gap-3">
+                  <button onClick={() => setDetail(null)} className={`flex-1 ${btn('ghost')} py-2 rounded-lg text-sm`}>Cancel</button>
+                  <button onClick={updateTicket} disabled={saving} className={`flex-1 ${btn()} py-2 rounded-lg text-sm font-medium disabled:opacity-60`}>{saving ? 'Saving…' : 'Save Update'}</button>
+                </div>
               </div>
-            )}
-            <div className="bg-gray-800 rounded-lg p-4">
-              <p className="text-xs text-gray-400 mb-1">Lodge: {detail.lodge_name || detail.lodge_id}</p>
-              <p className="text-sm text-gray-200 whitespace-pre-wrap">{detail.description}</p>
-            </div>
-            {upgrade && (upgrade.requestedOutcome || upgrade.commercialValue) && (
-              <div className="rounded-xl border border-gray-700 bg-gray-900 p-4 space-y-3">
-                {upgrade.requestedOutcome && (
-                  <div>
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500">Requested Outcome</p>
-                    <p className="mt-1 text-sm text-gray-200">{upgrade.requestedOutcome}</p>
-                  </div>
-                )}
-                {upgrade.commercialValue && (
-                  <div>
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500">Commercial Value</p>
-                    <p className="mt-1 text-sm text-gray-200">{upgrade.commercialValue}</p>
-                  </div>
-                )}
-              </div>
-            )}
-            <Field label="Update Status">
-              <select className={inp} value={newStatus} onChange={e => setNewStatus(e.target.value)}>
-                {['open', 'in_progress', 'resolved', 'closed'].map(s => <option key={s} value={s}>{s}</option>)}
-              </select>
-            </Field>
-            <Field label="Admin Notes">
-              <textarea className={`${inp} h-24 resize-none`} value={notes} onChange={e => setNotes(e.target.value)} placeholder="Internal notes…" />
-            </Field>
-            <div className="flex gap-3">
-              <button onClick={() => setDetail(null)} className={`flex-1 ${btn('ghost')} py-2 rounded-lg text-sm`}>Cancel</button>
-              <button onClick={updateTicket} disabled={saving} className={`flex-1 ${btn()} py-2 rounded-lg text-sm font-medium disabled:opacity-60`}>{saving ? 'Saving…' : 'Save Update'}</button>
-            </div>
-          </div>
             )
           })()}
         </Modal>
@@ -1834,14 +2188,14 @@ function ActivityLog({ companies }) {
         <select
           className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-300 focus:outline-none"
           value={filter.lodge_id}
-          onChange={e => setFilter({...filter, lodge_id: e.target.value})}
+          onChange={e => setFilter({ ...filter, lodge_id: e.target.value })}
         >
           <option value="">All Lodges</option>
-          {companies.map(c => <option key={c.lodge_id} value={c.lodge_id}>{c.lodge_name || c.lodge_id?.slice(0,8)}</option>)}
+          {companies.map(c => <option key={c.lodge_id} value={c.lodge_id}>{c.lodge_name || c.lodge_id?.slice(0, 8)}</option>)}
         </select>
-        <input type="date" className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-300 focus:outline-none" value={filter.start} onChange={e => setFilter({...filter, start: e.target.value})} />
+        <input type="date" className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-300 focus:outline-none" value={filter.start} onChange={e => setFilter({ ...filter, start: e.target.value })} />
         <span className="text-gray-600 text-sm">to</span>
-        <input type="date" className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-300 focus:outline-none" value={filter.end} onChange={e => setFilter({...filter, end: e.target.value})} />
+        <input type="date" className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-300 focus:outline-none" value={filter.end} onChange={e => setFilter({ ...filter, end: e.target.value })} />
         <button onClick={() => setFilter({ lodge_id: '', start: '', end: '' })} className="text-xs text-gray-500 hover:text-gray-300">Reset</button>
       </div>
 
@@ -2008,9 +2362,8 @@ function EmailSettings() {
 
         {/* Status */}
         {status && (
-          <div className={`flex items-center gap-2 text-sm px-3 py-2 rounded-lg ${
-            status.ok ? 'bg-green-900/40 text-green-300' : 'bg-red-900/40 text-red-300'
-          }`}>
+          <div className={`flex items-center gap-2 text-sm px-3 py-2 rounded-lg ${status.ok ? 'bg-green-900/40 text-green-300' : 'bg-red-900/40 text-red-300'
+            }`}>
             {status.ok ? <CheckCircle2 size={15} /> : <XCircle size={15} />}
             {status.msg}
           </div>
@@ -2053,7 +2406,7 @@ function EmailSettings() {
 // ════════════════════════════════════════════════════════════════════
 function InvoicePreview({ invoice, onClose }) {
   if (!invoice) return null
-  
+
   return (
     <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 overflow-y-auto">
       <div className="bg-white text-gray-900 rounded-2xl w-full max-w-2xl shadow-2xl overflow-hidden print:shadow-none print:rounded-none print:w-full print:max-w-none">
@@ -2149,7 +2502,7 @@ function InvoicePreview({ invoice, onClose }) {
               {invoice.notes || "Thank you for your business. Please include the invoice number in your bank transfer reference. Access to software features is maintained subject to active subscription status."}
             </p>
           </div>
-          
+
           <div className="pt-8 text-center text-[10px] text-gray-300 print:text-gray-400">
             &copy; {new Date().getFullYear()} Boroko Bookings. All rights reserved.
           </div>
@@ -2160,10 +2513,10 @@ function InvoicePreview({ invoice, onClose }) {
 }
 
 const STATUS_COLORS = {
-  paid:      'bg-green-800 text-green-200',
-  draft:     'bg-gray-700 text-gray-300',
-  sent:      'bg-blue-800 text-blue-200',
-  overdue:   'bg-red-800 text-red-200',
+  paid: 'bg-green-800 text-green-200',
+  draft: 'bg-gray-700 text-gray-300',
+  sent: 'bg-blue-800 text-blue-200',
+  overdue: 'bg-red-800 text-red-200',
   cancelled: 'bg-gray-700 text-gray-400'
 }
 
@@ -2185,7 +2538,7 @@ function Bookkeeping({ companies }) {
   })
   const [createSaving, setCreateSaving] = useState(false)
   const [createError, setCreateError] = useState('')
-  
+
   // Expenses state
   const [expenses, setExpenses] = useState([])
   const [showCreateExpense, setShowCreateExpense] = useState(false)
@@ -2241,13 +2594,13 @@ function Bookkeeping({ companies }) {
       currency: editInvoice.currency, status: editInvoice.status,
       paid_date: editInvoice.paid_date || null, due_date: editInvoice.due_date || null,
       description: editInvoice.description || null, notes: editInvoice.notes || null
-    }).catch(() => {})
+    }).catch(() => { })
     setEditInvoice(null); loadData()
   }
 
   const handleDelete = async (id) => {
     if (!confirm('Delete this invoice?')) return
-    await window.api.admin.deleteInvoice(id).catch(() => {})
+    await window.api.admin.deleteInvoice(id).catch(() => { })
     loadData()
   }
 
@@ -2262,7 +2615,7 @@ function Bookkeeping({ companies }) {
       setEmailSent(s => ({ ...s, [inv.id]: true }))
       setTimeout(() => setEmailSent(s => { const n = { ...s }; delete n[inv.id]; return n }), 4000)
       if (inv.status === 'draft') {
-        await window.api.admin.updateInvoice(inv.id, { status: 'sent' }).catch(() => {})
+        await window.api.admin.updateInvoice(inv.id, { status: 'sent' }).catch(() => { })
         loadData()
       }
     } else alert(`Email failed: ${r.error}`)
@@ -2449,79 +2802,79 @@ function Bookkeeping({ companies }) {
       {subTab === 'expenses' && (
         <div className="space-y-3">
           <div className="flex items-center justify-between gap-2 flex-wrap">
-             <div className="flex items-center gap-2">
-                <Wallet className="text-purple-400" size={18} />
-                <h2 className="text-white font-semibold">Operational Expenses</h2>
-             </div>
-             <button onClick={() => setShowCreateExpense(v => !v)} className={`flex items-center gap-1.5 ${btn()} px-3 py-2 rounded-lg text-xs font-medium transition-colors whitespace-nowrap`}>
+            <div className="flex items-center gap-2">
+              <Wallet className="text-purple-400" size={18} />
+              <h2 className="text-white font-semibold">Operational Expenses</h2>
+            </div>
+            <button onClick={() => setShowCreateExpense(v => !v)} className={`flex items-center gap-1.5 ${btn()} px-3 py-2 rounded-lg text-xs font-medium transition-colors whitespace-nowrap`}>
               <Plus size={13} /> Add Expense
             </button>
           </div>
 
           {showCreateExpense && (
             <div className="bg-gray-800 border border-gray-700 rounded-xl p-4">
-               <h3 className="text-sm font-semibold text-white mb-3 flex items-center gap-2">New Operational Expense</h3>
-               <form onSubmit={handleCreateExpense} className="space-y-3">
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                     <Field label="Date">
-                        <input type="date" className={inp} value={expenseForm.date} onChange={e => setExpenseForm({...expenseForm, date: e.target.value})} required />
-                     </Field>
-                     <Field label="Category">
-                        <select className={inp} value={expenseForm.category} onChange={e => setExpenseForm({...expenseForm, category: e.target.value})}>
-                           {['Infrastructure', 'Development', 'Marketing', 'Legal', 'Payroll', 'Other'].map(c => <option key={c} value={c}>{c}</option>)}
-                        </select>
-                     </Field>
-                     <Field label="Amount">
-                        <input type="number" step="0.01" className={inp} value={expenseForm.amount} onChange={e => setExpenseForm({...expenseForm, amount: e.target.value})} required placeholder="0.00" />
-                     </Field>
-                     <Field label="Vendor">
-                        <input className={inp} value={expenseForm.vendor} onChange={e => setExpenseForm({...expenseForm, vendor: e.target.value})} placeholder="e.g. AWS, GitHub" />
-                     </Field>
-                  </div>
-                  <Field label="Description">
-                     <input className={inp} value={expenseForm.description} onChange={e => setExpenseForm({...expenseForm, description: e.target.value})} placeholder="Purpose of expense" required />
+              <h3 className="text-sm font-semibold text-white mb-3 flex items-center gap-2">New Operational Expense</h3>
+              <form onSubmit={handleCreateExpense} className="space-y-3">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  <Field label="Date">
+                    <input type="date" className={inp} value={expenseForm.date} onChange={e => setExpenseForm({ ...expenseForm, date: e.target.value })} required />
                   </Field>
-                  <div className="flex gap-2">
-                     <button type="button" onClick={() => setShowCreateExpense(false)} className={`flex-1 ${btn('ghost')} py-2 rounded-lg text-sm`}>Cancel</button>
-                     <button type="submit" className={`flex-1 ${btn()} py-2 rounded-lg text-sm`}>Save Expense</button>
-                  </div>
-               </form>
+                  <Field label="Category">
+                    <select className={inp} value={expenseForm.category} onChange={e => setExpenseForm({ ...expenseForm, category: e.target.value })}>
+                      {['Infrastructure', 'Development', 'Marketing', 'Legal', 'Payroll', 'Other'].map(c => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  </Field>
+                  <Field label="Amount">
+                    <input type="number" step="0.01" className={inp} value={expenseForm.amount} onChange={e => setExpenseForm({ ...expenseForm, amount: e.target.value })} required placeholder="0.00" />
+                  </Field>
+                  <Field label="Vendor">
+                    <input className={inp} value={expenseForm.vendor} onChange={e => setExpenseForm({ ...expenseForm, vendor: e.target.value })} placeholder="e.g. AWS, GitHub" />
+                  </Field>
+                </div>
+                <Field label="Description">
+                  <input className={inp} value={expenseForm.description} onChange={e => setExpenseForm({ ...expenseForm, description: e.target.value })} placeholder="Purpose of expense" required />
+                </Field>
+                <div className="flex gap-2">
+                  <button type="button" onClick={() => setShowCreateExpense(false)} className={`flex-1 ${btn('ghost')} py-2 rounded-lg text-sm`}>Cancel</button>
+                  <button type="submit" className={`flex-1 ${btn()} py-2 rounded-lg text-sm`}>Save Expense</button>
+                </div>
+              </form>
             </div>
           )}
 
           <div className="bg-gray-800 rounded-xl overflow-hidden">
-             {expenses.length === 0 ? (
-               <div className="p-8 text-center text-gray-500 text-sm">No expenses recorded yet.</div>
-             ) : (
-               <table className="w-full text-sm">
-                  <thead>
-                    <tr className="text-xs text-gray-500 border-b border-gray-700">
-                      <th className="px-4 py-3 text-left font-medium">Date</th>
-                      <th className="px-4 py-3 text-left font-medium">Category</th>
-                      <th className="px-4 py-3 text-left font-medium">Vendor</th>
-                      <th className="px-4 py-3 text-left font-medium">Description</th>
-                      <th className="px-4 py-3 text-right font-medium">Amount</th>
-                      <th className="px-4 py-3 text-center font-medium">Actions</th>
+            {expenses.length === 0 ? (
+              <div className="p-8 text-center text-gray-500 text-sm">No expenses recorded yet.</div>
+            ) : (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-xs text-gray-500 border-b border-gray-700">
+                    <th className="px-4 py-3 text-left font-medium">Date</th>
+                    <th className="px-4 py-3 text-left font-medium">Category</th>
+                    <th className="px-4 py-3 text-left font-medium">Vendor</th>
+                    <th className="px-4 py-3 text-left font-medium">Description</th>
+                    <th className="px-4 py-3 text-right font-medium">Amount</th>
+                    <th className="px-4 py-3 text-center font-medium">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {expenses.map(exp => (
+                    <tr key={exp.id} className="border-t border-gray-700 hover:bg-gray-750">
+                      <td className="px-4 py-3 text-gray-400 text-xs">{fmt(exp.date)}</td>
+                      <td className="px-4 py-3 text-purple-300 text-xs">{exp.category}</td>
+                      <td className="px-4 py-3 text-gray-200 text-xs">{exp.vendor}</td>
+                      <td className="px-4 py-3 text-gray-300 text-xs">{exp.description}</td>
+                      <td className="px-4 py-3 text-right font-semibold text-white text-xs">{exp.currency} {Number(exp.amount).toFixed(2)}</td>
+                      <td className="px-4 py-3 text-center">
+                        <button onClick={() => handleDeleteExpense(exp.id)} className="p-1.5 rounded hover:bg-gray-700 text-gray-400 hover:text-red-400 transition-colors">
+                          <Trash2 size={14} />
+                        </button>
+                      </td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {expenses.map(exp => (
-                      <tr key={exp.id} className="border-t border-gray-700 hover:bg-gray-750">
-                        <td className="px-4 py-3 text-gray-400 text-xs">{fmt(exp.date)}</td>
-                        <td className="px-4 py-3 text-purple-300 text-xs">{exp.category}</td>
-                        <td className="px-4 py-3 text-gray-200 text-xs">{exp.vendor}</td>
-                        <td className="px-4 py-3 text-gray-300 text-xs">{exp.description}</td>
-                        <td className="px-4 py-3 text-right font-semibold text-white text-xs">{exp.currency} {Number(exp.amount).toFixed(2)}</td>
-                        <td className="px-4 py-3 text-center">
-                           <button onClick={() => handleDeleteExpense(exp.id)} className="p-1.5 rounded hover:bg-gray-700 text-gray-400 hover:text-red-400 transition-colors">
-                              <Trash2 size={14} />
-                           </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-               </table>
-             )}
+                  ))}
+                </tbody>
+              </table>
+            )}
           </div>
         </div>
       )}
@@ -2674,15 +3027,15 @@ function Bookkeeping({ companies }) {
 // MAIN: AdminCentral
 // ════════════════════════════════════════════════════════════════════
 const NAV_ITEMS = [
-  { id: 'dashboard',     label: 'Dashboard',         icon: LayoutDashboard },
-  { id: 'companies',     label: 'Companies',          icon: Building2 },
-  { id: 'licensing',     label: 'Licensing',          icon: CreditCard },
-  { id: 'test-reset',    label: 'Test Reset',         icon: Trash2 },
-  { id: 'bookkeeping',   label: 'Bookkeeping',        icon: Receipt },
-  { id: 'broadcasts',    label: 'Broadcasts',         icon: Megaphone },
-  { id: 'tickets',       label: 'Support Tickets',    icon: LifeBuoy },
-  { id: 'activity',      label: 'Activity Log',       icon: Activity },
-  { id: 'notifications', label: 'Email Alerts',       icon: Mail },
+  { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+  { id: 'companies', label: 'Companies', icon: Building2 },
+  { id: 'licensing', label: 'Licensing', icon: CreditCard },
+  { id: 'test-reset', label: 'Test Reset', icon: Trash2 },
+  { id: 'bookkeeping', label: 'Bookkeeping', icon: Receipt },
+  { id: 'broadcasts', label: 'Broadcasts', icon: Megaphone },
+  { id: 'tickets', label: 'Support Tickets', icon: LifeBuoy },
+  { id: 'activity', label: 'Activity Log', icon: Activity },
+  { id: 'notifications', label: 'Email Alerts', icon: Mail },
 ]
 
 function TestResetMaintenance({ companies }) {
@@ -2808,9 +3161,8 @@ function TestResetMaintenance({ companies }) {
             <button
               key={company.lodge_id}
               onClick={() => selectLodge(company)}
-              className={`w-full px-4 py-3 text-left text-sm transition-colors ${
-                selectedLodge?.lodge_id === company.lodge_id ? 'bg-red-600/20 text-red-200' : 'text-gray-300 hover:bg-gray-700'
-              }`}
+              className={`w-full px-4 py-3 text-left text-sm transition-colors ${selectedLodge?.lodge_id === company.lodge_id ? 'bg-red-600/20 text-red-200' : 'text-gray-300 hover:bg-gray-700'
+                }`}
             >
               <p className="font-medium truncate">{company.lodge_name || '—'}</p>
               <p className="text-xs text-gray-500">{company.lodge_id}</p>
@@ -3029,7 +3381,7 @@ export default function AdminCentral() {
 
   useEffect(() => { loadAll() }, [loadAll])
 
-  const openTickets  = tickets.filter(t => t.status === 'open' || t.status === 'in_progress').length
+  const openTickets = tickets.filter(t => t.status === 'open' || t.status === 'in_progress').length
   const upgradeCount = tickets.filter(t => t.category === 'Upgrade Request' && (t.status === 'open' || t.status === 'in_progress')).length
 
   return (
@@ -3060,15 +3412,14 @@ export default function AdminCentral() {
         <div className="w-52 shrink-0 bg-gray-900 border-r border-gray-800 flex flex-col py-4 gap-1 px-2 print:hidden">
           {NAV_ITEMS.map(({ id, label, icon: Icon }) => {
             // Badge logic: support ticket count (orange) + upgrade request count (purple)
-            const ticketBadge  = id === 'tickets' && openTickets > 0 ? openTickets : null
+            const ticketBadge = id === 'tickets' && openTickets > 0 ? openTickets : null
             const upgradeBadge = id === 'tickets' && upgradeCount > 0 ? upgradeCount : null
             return (
               <button
                 key={id}
                 onClick={() => setSection(id)}
-                className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors w-full text-left ${
-                  section === id ? 'bg-purple-600 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-800'
-                }`}
+                className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors w-full text-left ${section === id ? 'bg-purple-600 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-800'
+                  }`}
               >
                 <Icon size={16} className="shrink-0" />
                 <span className="flex-1 truncate">{label}</span>
@@ -3087,14 +3438,14 @@ export default function AdminCentral() {
 
         {/* Main content */}
         <div className="flex-1 min-w-0 p-6 overflow-y-auto print:p-0 print:overflow-visible print:block">
-          {section === 'dashboard'     && <Dashboard companies={companies} licenses={licenses} tickets={tickets} activityLogs={activityLogs} />}
-          {section === 'companies'     && <Companies companies={companies} licenses={licenses} loading={loading} onReload={loadAll} />}
-          {section === 'licensing'     && <LicensingWorkbench companies={companies} licenses={licenses} tickets={tickets} onRefresh={loadAll} />}
-          {section === 'test-reset'    && <TestResetMaintenance companies={companies} />}
-          {section === 'bookkeeping'   && <Bookkeeping companies={companies} />}
-          {section === 'broadcasts'    && <Broadcasts />}
-          {section === 'tickets'       && <SupportTickets companies={companies} />}
-          {section === 'activity'      && <ActivityLog companies={companies} />}
+          {section === 'dashboard' && <Dashboard companies={companies} licenses={licenses} tickets={tickets} activityLogs={activityLogs} />}
+          {section === 'companies' && <Companies companies={companies} licenses={licenses} loading={loading} onReload={loadAll} />}
+          {section === 'licensing' && <LicensingWorkbench companies={companies} licenses={licenses} tickets={tickets} onRefresh={loadAll} />}
+          {section === 'test-reset' && <TestResetMaintenance companies={companies} />}
+          {section === 'bookkeeping' && <Bookkeeping companies={companies} />}
+          {section === 'broadcasts' && <Broadcasts />}
+          {section === 'tickets' && <SupportTickets companies={companies} />}
+          {section === 'activity' && <ActivityLog companies={companies} />}
           {section === 'notifications' && <EmailSettings />}
         </div>
       </div>

@@ -4,6 +4,7 @@ out
 .env
 .env.local
 .env.release
+.env.db
 .release/
 *.log
 .DS_Store

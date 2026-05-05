@@ -50,7 +50,7 @@ async function run() {
   assert.match(database, /export async function getInventoryItemById\(/)
   assert.match(database, /export async function getSupplyItemById\(/)
   assert.match(database, /export async function getPosMenuItemById\(/)
-  assert.match(database, /import \{ isFinancialSyncItem, pickNextReadySyncItemIndex \} from '\.\.\/shared\/syncQueue\.js'/)
+  assert.match(database, /import \{ FINANCIAL_SYNC_TABLES, isFinancialSyncItem, pickNextReadySyncItemIndex \} from '\.\.\/shared\/syncQueue\.js'/)
   assert.match(database, /Blocked: unresolved sync dependency cycle/)
   assert.match(database, /failedQueueIds\.has\(item\._depends_on\)/)
   assert.match(mainIndex, /assertResourceBelongsToCurrentLodge\('User', id, db\.getUserById\)/)
@@ -66,12 +66,31 @@ async function run() {
   assert.match(panel, /This device only — does not reflect PWA\/browser queue state/)
   assert.match(panel, /Validation Alerts/)
   assert.match(panel, /Critical Error Log/)
-  assert.match(panel, /Dependency: \{item\.dependencyState \|\| 'unknown'\}/)
+  assert.match(panel, /item\.dependencyLabel \|\| `Dependency: \$\{item\.dependencyState \|\| 'unknown'\}`/)
   assert.match(panel, /Cannot verify financial agreement — offline/)
   assert.match(panel, /Manual Clear Left Integrity Unproven/)
   assert.match(panel, /Server Mismatch Detected During Replay/)
   assert.match(panel, /Run Sync Now/)
   assert.match(panel, /integrity alert\(s\) were recorded because remote persistence is still unconfirmed/)
+  const sanitizeMatch = panel.match(/function sanitizeForOperator\(raw\) \{[\s\S]*?\n\}/)
+  assert.ok(sanitizeMatch, 'sanitizeForOperator helper missing')
+  const sanitizeForOperator = new Function(`${sanitizeMatch[0]}; return sanitizeForOperator;`)()
+  assert.equal(
+    sanitizeForOperator('Monthly booking creation limit reached for Starter plan'),
+    'Booking could not sync because the monthly booking creation limit has been reached.'
+  )
+  assert.equal(
+    sanitizeForOperator('Booking limit reached for the selected check-in month on Starter plan'),
+    'Booking could not sync because the selected check-in month has reached the plan limit.'
+  )
+  assert.equal(
+    sanitizeForOperator('Room creation could not sync because this lodge is above the current plan room limit after a downgrade.'),
+    'Room creation could not sync because this lodge is above the current plan room limit after a downgrade. Upgrade or reduce rooms, then retry.'
+  )
+  assert.equal(
+    sanitizeForOperator('Staff user creation could not sync because this lodge is above the current plan user limit after a downgrade.'),
+    'Staff user creation could not sync because this lodge is above the current plan user limit after a downgrade. Upgrade or reduce staff users, then retry.'
+  )
 
   assert.match(database, /'pos-orders':\s*\(\)\s*=>\s*supabase[\s\S]*?from\('pos_orders'\)/)
   assert.match(database, /function markClearedSyncItemForManualReview\(/)
@@ -140,7 +159,7 @@ async function run() {
   assert.match(reports, /Excel Workbook/)
   assert.match(reports, /reportSourceBadges/)
   assert.match(reports, /Data source/)
-  assert.match(reports, /fell back to local data/)
+  assert.match(reports, /Offline data \(last synced:/)
   assert.match(reports, /Revenue/)
   assert.match(reports, /Room profit/)
   assert.match(reports, /P&L/)
@@ -218,6 +237,77 @@ async function run() {
   assert.match(posVoidHardeningSql, /create or replace function public\.approve_pos_void_with_pin\(payload jsonb\)/)
   assert.match(posVoidHardeningSql, /'restored_stock', v_restored/)
 
+  const bookingUsageHardeningSql = await read('supabase/migrations/20260429_booking_timestamp_hardening.sql')
+  assert.match(bookingUsageHardeningSql, /new\.created_at := coalesce\(new\.created_at, now\(\)\)/)
+  assert.match(bookingUsageHardeningSql, /alter table public\.bookings/)
+  assert.match(bookingUsageHardeningSql, /alter column created_at set default now\(\)/)
+  assert.match(bookingUsageHardeningSql, /Booking limit reached for the selected check-in month on % plan/)
+  assert.match(bookingUsageHardeningSql, /Monthly booking creation limit reached for % plan/)
+  const createdAtServerSourceSql = await read('supabase/migrations/20260430_booking_created_at_server_source.sql')
+  assert.match(createdAtServerSourceSql, /new\.created_at := now\(\);/)
+  assert.match(createdAtServerSourceSql, /alter table public\.bookings/)
+  assert.match(createdAtServerSourceSql, /alter column created_at set default now\(\)/)
+  assert.match(createdAtServerSourceSql, /Booking limit reached for the selected check-in month on % plan/)
+  assert.match(createdAtServerSourceSql, /Monthly booking creation limit reached for % plan/)
+  assert.doesNotMatch(createdAtServerSourceSql, /coalesce\(new\.created_at, now\(\)\)/)
+
+  const sqlUsageHarness = await read('tests/sql-usage-limit-check.mjs')
+  assert.match(sqlUsageHarness, /SQL_USAGE_TEST_LODGE_ID/)
+  assert.match(sqlUsageHarness, /selected check-in month/)
+  assert.match(sqlUsageHarness, /monthly booking creation limit/)
+
+  const adminCentral = await read('src/renderer/src/components/AdminCentral.jsx')
+  const bookingsUi = await read('src/renderer/src/components/Bookings.jsx')
+  const roomsUi = await read('src/renderer/src/components/Rooms.jsx')
+  const staffUi = await read('src/renderer/src/components/Staff.jsx')
+  assert.match(adminCentral, /Needs Attention/)
+  assert.match(adminCentral, /Near limit/)
+  assert.match(adminCentral, /In grace/)
+  assert.match(adminCentral, /Above plan/)
+  assert.match(adminCentral, /Upgrade opportunities/)
+  assert.match(adminCentral, /recommendedPlan/)
+  assert.match(adminCentral, /Request Upgrade/)
+  assert.match(adminCentral, /Peak usage this session/)
+  assert.match(adminCentral, /currentBookingsUsagePercent/)
+  assert.match(adminCentral, /peakBookingsUsagePercent/)
+  assert.match(adminCentral, /lastBookingDate/)
+  assert.match(adminCentral, /Last activity/)
+  assert.match(adminCentral, /trackUpgradeIntent/)
+
+  const dashboard = await read('src/renderer/src/components/Dashboard.jsx')
+  assert.match(dashboard, /Operations Overview/)
+
+  const upgradePrompt = await read('src/renderer/src/components/shared/UpgradePromptModal.jsx')
+  assert.match(upgradePrompt, /UsageUpgradePrompt/)
+  const upgradePromptImpl = await read('src/renderer/src/components/shared/UsageUpgradePrompt.jsx')
+  assert.match(upgradePromptImpl, /Request Upgrade/)
+  assert.match(upgradePromptImpl, /support@boroko\.io/)
+  assert.match(upgradePromptImpl, /Request via WhatsApp/)
+  assert.match(upgradePromptImpl, /formatPlanLimits\(currentPlan\)/)
+  assert.match(upgradePromptImpl, /New \$\{blockedLabel\} are currently blocked until you upgrade\./)
+  assert.match(upgradePromptImpl, /You’re using your grace allowance\. New \$\{blockedLabel\} will soon be blocked\./)
+  const subscriptionPanel = await read('src/renderer/src/components/SubscriptionAccessPanel.jsx')
+  assert.match(subscriptionPanel, /Unlimited access/)
+  const dashboardUsageCard = await read('src/renderer/src/components/shared/DashboardUsageCard.jsx')
+  assert.match(dashboardUsageCard, /Unlimited access/)
+  assert.match(dashboardUsageCard, /Upgrade Plan/)
+  assert.match(dashboardUsageCard, /New bookings are currently blocked until you upgrade\./)
+  assert.match(dashboardUsageCard, /You’re using your grace allowance\./)
+  const upgradeNudgeBanner = await read('src/renderer/src/components/shared/UpgradeNudgeBanner.jsx')
+  const subscriptionHelpers = await read('src/shared/subscriptionPlans.js')
+  assert.match(upgradeNudgeBanner, /getUpgradeNudgeCooldownState/)
+  assert.match(upgradeNudgeBanner, /markUpgradeNudgeShown/)
+  assert.match(subscriptionHelpers, /localStorage/)
+  assert.match(upgradeNudgeBanner, /trackUpgradeIntent/)
+  assert.match(upgradeNudgeBanner, /Upgrade Plan/)
+  assert.match(bookingsUi, /disabled=\{bookingCreateBlocked\}/)
+  assert.match(bookingsUi, /setShowUpgradePrompt\(true\)/)
+  assert.match(roomsUi, /disabled=\{roomLimitStatus\.isBlocked\}/)
+  assert.match(roomsUi, /setShowUpgradePrompt\(true\)/)
+  assert.match(staffUi, /disabled=\{userLimitStatus\.isBlocked\}/)
+  assert.match(staffUi, /setShowUpgradePrompt\(true\)/)
+  assert.match(staffUi, /Unlimited access/)
+
   assert.equal(
     pickNextReadySyncItemIndex([
       { _queue_id: 'payment-1', _depends_on: 'booking-1' },
@@ -259,7 +349,6 @@ async function run() {
   // Hardening phase: support bundle includes syncMeta
   assert.match(database, /syncMeta,\s*\n\s*healthFaults/)
   assert.match(panel, /localStateAcknowledged/)
-  assert.match(panel, /Local state acknowledgement not yet proven/)
 
   // Gap 1: clearSyncFailed / markClearedSyncItemForManualReview routes all entity types
   assert.match(database, /patchCachedCustomerSyncState\(customerId,\s*\{[\s\S]*?manual_review_required/)
@@ -296,6 +385,10 @@ async function run() {
   // Sync-integrity phase: device health reports table (20260430)
   const deviceHealthSql = await read('supabase/migrations/20260430_device_health_reports.sql')
   assert.match(deviceHealthSql, /device_health_reports/)
+  const hybridUsageSql = await read('supabase/migrations/20260428_subscription_usage_limits_hybrid.sql')
+  assert.match(hybridUsageSql, /coalesce\(new\.created_at, now\(\)\)/)
+  assert.match(hybridUsageSql, /Booking limit reached for the selected check-in month on % plan/)
+  assert.match(hybridUsageSql, /Monthly booking creation limit reached for % plan/)
 
   // Sync-integrity phase: database.js concurrency changes
   assert.match(database, /p_expected_updated_at.*expectedUpdatedAt|expectedUpdatedAt.*p_expected_updated_at/)

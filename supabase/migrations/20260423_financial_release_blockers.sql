@@ -24,13 +24,13 @@ begin
     exit when not exists (
       select 1
         from public.invoices i
-       where i.lodge_id = p_lodge_id
-         and i.invoice_number = v_invoice_number
-      union all
-      select 1
-        from public.bookings b
-       where b.lodge_id = p_lodge_id
-         and b.invoice_number = v_invoice_number
+       where i.lodge_id::text = p_lodge_id::text 
+         and i.invoice_number = v_invoice_number 
+      union all 
+      select 1 
+        from public.bookings b 
+       where b.lodge_id::text = p_lodge_id::text 
+         and b.invoice_number = v_invoice_number 
     );
   end loop;
 
@@ -457,7 +457,8 @@ begin
     )
     select distinct
       b.id,
-      b.lodge_id
+      b.lodge_id,
+      coalesce(b.created_at, now()) as sort_key
       from public.bookings b
       left join duplicate_booking_numbers dbn
         on dbn.lodge_id = b.lodge_id
@@ -469,7 +470,7 @@ begin
      where coalesce(b.invoice_number, '') = ''
         or dbn.invoice_number is not null
         or existing_invoice.id is not null
-     order by coalesce(b.created_at, now()), b.id
+     order by sort_key, b.id
   loop
     v_invoice_number := public.get_next_invoice_number(v_booking.lodge_id);
 

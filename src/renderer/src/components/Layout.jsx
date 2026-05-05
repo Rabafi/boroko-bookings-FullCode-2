@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, useContext } from 'react'
 import { Outlet, NavLink, useLocation, useNavigate } from 'react-router-dom'
-import { useAuth, useSettings, useAccess, useOnlineRequests } from '../app-context'
+import { useAuth, useSettings, useAccess, useOnlineRequests, UnsavedChangesContext } from '../app-context'
 import {
   LogOut,
   ChevronLeft,
@@ -21,15 +21,21 @@ import {
   Loader2,
   RefreshCw,
   Clock,
-  AlertCircle
+  AlertCircle,
+  Sparkles
 } from 'lucide-react'
 import CommandPalette from './CommandPalette'
 import OfflineNotice from './shared/OfflineNotice'
+import AiCommandBar from './shared/AiCommandBar'
+import OpsAiLayer from './shared/OpsAiLayer'
 import { ALL_NAV, NAV_GROUPS, getDesktopNavItems } from '../navigation/desktopNav'
 import {
   SUBSCRIPTION_PLAN_ORDER,
   getSubscriptionPlan,
-  buildUpgradeRequestDescription
+  buildUpgradeRequestDescription,
+  formatPlanLimits,
+  normalizeSubscriptionPlan,
+  trackUpgradeIntent
 } from '../../../shared/subscriptionPlans'
 
 // ── Tier definitions (mirrors AdminCentral) ───────────────────────────────────
@@ -104,15 +110,27 @@ function SupportModal({ onClose, settings }) {
 }
 
 // ── Upgrade Request Modal ─────────────────────────────────────────────────────
-function UpgradeModal({ lockedItem, onClose, settings }) {
+function UpgradeModal({ lockedItem, onClose, settings, currentPlan: currentPlanProp }) {
   const [selectedTier, setSelectedTier] = useState(lockedItem?.tier || 'Standard')
   const [saving, setSaving] = useState(false)
   const [done, setDone] = useState(false)
+  const currentPlan = normalizeSubscriptionPlan(currentPlanProp || lockedItem?.currentPlan || settings?.subscription_plan || 'Starter')
+  const currentLimits = formatPlanLimits(currentPlan)
+  const selectedPlan = normalizeSubscriptionPlan(selectedTier)
+  const selectedLimits = formatPlanLimits(selectedPlan)
 
   const submit = async () => {
     setSaving(true)
     const lodge_name = settings?.lodge_name || settings?.company_name || 'Unknown Lodge'
     const plan = getSubscriptionPlan(selectedTier)
+    trackUpgradeIntent({
+      lodgeId: settings?.lodge_id,
+      lodgeName: lodge_name,
+      plan: currentPlan,
+      usage: lockedItem?.usage || {},
+      recommendation: { recommendedPlan: selectedPlan },
+      trigger: 'modal'
+    })
     await window.api.admin.createSupportTicket({
       lodge_id: settings?.lodge_id,
       lodge_name,
@@ -125,8 +143,8 @@ function UpgradeModal({ lockedItem, onClose, settings }) {
         notes: `Commercial fit: ${plan.audience}`
       }),
       category: 'Upgrade Request',
-      priority: 'High'
-    }).catch(() => {})
+        priority: 'High'
+      }).catch(() => {})
     setSaving(false)
     setDone(true)
     setTimeout(onClose, 2000)
@@ -141,15 +159,21 @@ function UpgradeModal({ lockedItem, onClose, settings }) {
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4 backdrop-blur-sm" onClick={onClose}>
       <div className="w-full max-w-lg rounded-[28px] border border-white/70 bg-white/95 p-6 shadow-[0_28px_90px_rgba(15,23,42,0.28)]" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-1">
-          <div className="flex items-center gap-2">
-            <Lock size={18} className="text-amber-500" />
-            <h3 className="font-bold text-slate-900 text-base">Unlock {lockedItem?.label}</h3>
-          </div>
-          <button onClick={onClose} className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-transparent text-slate-400 transition-all hover:border-slate-200 hover:bg-slate-100 hover:text-slate-700"><X size={18} /></button>
+        <div className="flex items-center gap-2">
+          <Lock size={18} className="text-amber-500" />
+          <h3 className="font-bold text-slate-900 text-base">Unlock {lockedItem?.label}</h3>
         </div>
-        <p className="text-slate-500 text-xs mb-5">
-          This feature is available on a higher Boroko plan. Choose a plan below to send an upgrade request and our team will help you unlock the right package for this lodge.
-        </p>
+        <button onClick={onClose} className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-transparent text-slate-400 transition-all hover:border-slate-200 hover:bg-slate-100 hover:text-slate-700"><X size={18} /></button>
+      </div>
+      <p className="text-slate-500 text-xs mb-5">
+        {lockedItem?.label} is locked on {currentPlan}. Upgrade to {selectedPlan} to unlock it for this lodge.
+      </p>
+      <div className="mb-5 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs text-slate-600">
+        <p className="font-semibold text-slate-700">Current plan: {currentPlan}</p>
+        <p className="mt-1">{currentLimits.bookings} · {currentLimits.grace} · {currentLimits.rooms} · {currentLimits.users}</p>
+        <p className="mt-2 font-semibold text-slate-700">Required plan: {selectedPlan}</p>
+        <p className="mt-1">{selectedLimits.bookings} · {selectedLimits.grace} · {selectedLimits.rooms} · {selectedLimits.users}</p>
+      </div>
 
         {done ? (
           <div className="bb-empty-state py-8">
@@ -164,7 +188,7 @@ function UpgradeModal({ lockedItem, onClose, settings }) {
                 const plan = getSubscriptionPlan(tier)
                 const spotlight = plan.spotlight
                 const isRecommended = spotlight === 'Most Popular'
-                const isPremium = spotlight === 'Best for Direct Bookings'
+                const isPremium = tier === 'Pro'
                 return (
                 <button
                   key={tier}
@@ -213,7 +237,7 @@ function UpgradeModal({ lockedItem, onClose, settings }) {
               className={`w-full ${tierBtn[selectedTier]} text-white py-2.5 rounded-xl text-sm font-semibold flex items-center justify-center gap-2 disabled:opacity-60 transition-colors`}
             >
               {saving ? 'Sending request…' : (
-                <><ArrowRight size={15} /> Request Upgrade to {selectedTier}</>
+                <><ArrowRight size={15} /> Upgrade Plan</>
               )}
             </button>
           </>
@@ -260,6 +284,7 @@ export default function Layout() {
   const { count: onlineRequestCount, requests: onlineRequests } = useOnlineRequests()
   const navigate = useNavigate()
   const location = useLocation()
+  const navGuard = useContext(UnsavedChangesContext)
   const [collapsed, setCollapsed] = useState(false)
   const [showHelp, setShowHelp] = useState(false)
   const [upgradeItem, setUpgradeItem] = useState(null) // { label, tier, capability } of locked item clicked
@@ -303,9 +328,11 @@ export default function Layout() {
         }
 
         const bookings = await window.api.bookings.getAll()
+        const confBookings = await window.api.conference.getAll().catch(() => [])
         if (!mounted) return
 
         const all = Array.isArray(bookings) ? bookings : []
+        const allConf = Array.isArray(confBookings) ? confBookings : []
 
         // Collapse exclusive-event room-rows into one group so a 6-room lodge event
         // shows as ONE collection reminder, not six.
@@ -340,10 +367,18 @@ export default function Layout() {
           if ((booking.status || '') === 'cancelled') return false
           return Math.max(0, Number(booking.total_amount || 0) + Number(booking.charges_total || 0) - Number(booking.amount_paid || 0)) > 0
         })
+
+        const confOpen = allConf
+          .filter((cb) => cb.payment_status !== 'cancelled')
+          .filter((cb) => Number(cb.total_amount || 0) - Number(cb.deposit_paid || 0) > 0)
+
+        const totalOpen = openBalances.length + confOpen.length
         const amount = openBalances.reduce((sum, booking) => (
           sum + Math.max(0, Number(booking.total_amount || 0) + Number(booking.charges_total || 0) - Number(booking.amount_paid || 0))
+        ), 0) + confOpen.reduce((sum, cb) => (
+          sum + Math.max(0, Number(cb.total_amount || 0) - Number(cb.deposit_paid || 0))
         ), 0)
-        setCollectionSummary({ count: openBalances.length, amount })
+        setCollectionSummary({ count: totalOpen, amount })
       } catch {
         if (mounted) setCollectionSummary({ count: 0, amount: 0 })
       }
@@ -513,6 +548,13 @@ export default function Layout() {
     navigate('/login')
   }
 
+  const handleNavClick = (e, to) => {
+    if (to !== location.pathname && navGuard.current?.isDirty) {
+      e.preventDefault()
+      navGuard.current.confirmLeave(() => navigate(to))
+    }
+  }
+
   const BIZ_EMOJI = { lodge: '🏕️', restaurant: '🍽️' }
   const BIZ_LABEL = { lodge: 'Lodge Manager', restaurant: 'Restaurant Manager' }
   const workspaceName = settings?.lodge_name || settings?.company_name || 'Boroko Workspace'
@@ -522,6 +564,7 @@ export default function Layout() {
   const currentSyncState = failedCount > 0 ? 'failed' : syncInProgress ? 'syncing' : 'idle'
   const cacheStale = syncStatus?.cacheStale || { active: false, names: [] }
   const isPosRoute = location.pathname === '/pos'
+  const currency = settings?.currency || 'P'
 
   const offlineTasksByRoute = {
     '/': [
@@ -594,6 +637,13 @@ export default function Layout() {
 
   const handlePaletteSelect = (item) => {
     if (!item?.to) return
+    if (item.to !== location.pathname && navGuard.current?.isDirty) {
+      navGuard.current.confirmLeave(() => {
+        navigate(item.to)
+        setPaletteOpen(false)
+      })
+      return
+    }
     navigate(item.to)
     setPaletteOpen(false)
   }
@@ -648,6 +698,7 @@ export default function Layout() {
 
   return (
     <div className="flex h-screen overflow-hidden bg-[radial-gradient(circle_at_top_left,rgba(187,247,208,0.18),transparent_24%),radial-gradient(circle_at_top_right,rgba(209,250,229,0.2),transparent_22%),#edf2ee]">
+      <OpsAiLayer />
       {/* Sidebar */}
       <div
         className={`${
@@ -699,7 +750,7 @@ export default function Layout() {
         <nav className="relative z-10 flex flex-1 flex-col overflow-y-auto px-3 py-4">
           {/* Dashboard — standalone top */}
           {standaloneTop.map(({ to, label, icon: Icon, end }) => (
-            <NavLink key={to} to={to} end={end} className={navLinkClass} title={collapsed ? label : undefined}>
+            <NavLink key={to} to={to} end={end} className={navLinkClass} title={collapsed ? label : undefined} onClick={(e) => handleNavClick(e, to)}>
               <Icon size={17} className="flex-shrink-0 transition-transform group-hover:scale-105" />
               {!collapsed && <span className="text-sm font-medium">{label}</span>}
             </NavLink>
@@ -736,7 +787,7 @@ export default function Layout() {
                       <Lock size={12} className="flex-shrink-0 text-emerald-100/40" />
                     </button>
                   ) : (
-                    <NavLink key={to} to={to} end={end} className={navLinkClass} title={collapsed ? label : undefined}>
+                    <NavLink key={to} to={to} end={end} className={navLinkClass} title={collapsed ? label : undefined} onClick={(e) => handleNavClick(e, to)}>
                       <div className="relative flex-shrink-0">
                         <Icon size={17} className="transition-transform group-hover:scale-105" />
                         {to === '/bookings' && onlineRequestCount > 0 && (
@@ -761,7 +812,7 @@ export default function Layout() {
           {/* Spacer + Settings pinned to bottom */}
           <div className="flex-1 min-h-3" />
           {standaloneBottom.map(({ to, label, icon: Icon }) => (
-            <NavLink key={to} to={to} className={navLinkClass} title={collapsed ? label : undefined}>
+            <NavLink key={to} to={to} className={navLinkClass} title={collapsed ? label : undefined} onClick={(e) => handleNavClick(e, to)}>
               <Icon size={17} className="flex-shrink-0 transition-transform group-hover:scale-105" />
               {!collapsed && <span className="text-sm font-medium">{label}</span>}
             </NavLink>
@@ -827,7 +878,7 @@ export default function Layout() {
                 {collectionSummary.count > 0 && (
                   <button
                     type="button"
-                    onClick={() => navigate('/invoices')}
+                    onClick={() => { if (navGuard.current?.isDirty) { navGuard.current.confirmLeave(() => navigate('/invoices')) } else { navigate('/invoices') } }}
                     className="inline-flex items-center gap-3 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-left shadow-sm transition-all hover:border-rose-300 hover:bg-rose-100"
                     title="Open invoice collections"
                   >
@@ -864,9 +915,10 @@ export default function Layout() {
                   </div>
                 </button>
 
+
                 <button
                   type="button"
-                  onClick={() => navigate('/settings', { state: { activeTab: 'system' } })}
+                  onClick={() => { const dest = '/settings'; const state = { state: { activeTab: 'system' } }; if (navGuard.current?.isDirty) { navGuard.current.confirmLeave(() => navigate(dest, state)) } else { navigate(dest, state) } }}
                   className={`inline-flex items-center gap-3 rounded-2xl border px-3.5 py-3 text-left shadow-sm transition-all hover:shadow-md ${syncTone}`}
                   title="Open System Health & Sync"
                 >
@@ -947,6 +999,7 @@ export default function Layout() {
           lockedItem={upgradeItem}
           onClose={() => setUpgradeItem(null)}
           settings={settings}
+          currentPlan={normalizeSubscriptionPlan(access?.entitlement?.plan || 'Starter')}
         />
       )}
 
@@ -960,7 +1013,7 @@ export default function Layout() {
 
       {/* Mandatory Backup Block */}
       {backupStatus.overdue && location.pathname !== '/settings' && (
-        <MandatoryBackupModal onGoToBackup={() => navigate('/settings', { state: { activeTab: 'system' } })} />
+        <MandatoryBackupModal onGoToBackup={() => { const dest = '/settings'; const state = { state: { activeTab: 'system' } }; if (navGuard.current?.isDirty) { navGuard.current.confirmLeave(() => navigate(dest, state)) } else { navigate(dest, state) } }} />
       )}
     </div>
   )

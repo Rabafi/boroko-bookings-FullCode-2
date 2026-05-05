@@ -18,8 +18,8 @@ begin
   if p_room_id is not null and exists (
     select 1 
     from public.maintenance_tickets 
-    where room_id = p_room_id 
-      and lodge_id = p_lodge_id 
+    where room_id::text = p_room_id::text 
+      and lodge_id::text = p_lodge_id::text 
       and status != 'resolved'
   ) then
     raise exception 'Room is currently under maintenance and cannot be booked.'
@@ -47,14 +47,14 @@ begin
     ) then
       update public.rooms 
          set status = 'maintenance' 
-       where id = coalesce(new.room_id, old.room_id)
-         and lodge_id = coalesce(new.lodge_id, old.lodge_id);
+       where id::text = coalesce(new.room_id, old.room_id)::text 
+         and lodge_id::text = coalesce(new.lodge_id, old.lodge_id)::text;
     else
       -- If no open tickets remain, set it to available (or it will be updated by bookings)
       update public.rooms 
          set status = 'available' 
-       where id = coalesce(new.room_id, old.room_id)
-         and lodge_id = coalesce(new.lodge_id, old.lodge_id)
+       where id::text = coalesce(new.room_id, old.room_id)::text 
+         and lodge_id::text = coalesce(new.lodge_id, old.lodge_id)::text 
          and status = 'maintenance';
     end if;
   end if;
@@ -76,8 +76,8 @@ update public.rooms r
  where exists (
    select 1 
      from public.maintenance_tickets t 
-    where t.room_id = r.id 
-      and t.lodge_id = r.lodge_id 
+    where t.room_id::text = r.id::text 
+      and t.lodge_id::text = r.lodge_id::text 
       and t.status != 'resolved'
  );
 
@@ -123,6 +123,10 @@ begin
     return jsonb_build_object('success', false, 'error', 'Booking total cannot be negative');
   end if;
 
+  if not v_is_exclusive_event and (coalesce((payload->>'adults')::int, 1) + coalesce((payload->>'children')::int, 0)) > (select r.max_occupancy from public.rooms r where r.id = v_room_id and r.lodge_id = v_lodge_id) then
+    return jsonb_build_object('success', false, 'error', 'Number of guests exceeds room maximum occupancy');
+  end if;
+
   if not v_is_exclusive_event then
     v_expected_total := public.room_booking_expected_total(v_lodge_id, v_room_id, v_check_in, v_check_out);
     if v_expected_total is null then
@@ -149,8 +153,8 @@ begin
     select b.id
       into v_existing_id
       from public.bookings b
-     where b.lodge_id = v_lodge_id
-       and b.create_idempotency_key = v_create_key
+     where b.lodge_id::text = v_lodge_id::text
+       and b.create_idempotency_key = payload->>'create_idempotency_key'
      limit 1;
     if found then
       v_id := v_existing_id;
@@ -162,8 +166,8 @@ begin
     select b.id
       into v_existing_id
       from public.bookings b
-     where b.lodge_id = v_lodge_id
-       and b.id = v_id
+     where b.lodge_id::text = v_lodge_id::text
+       and b.id::text = v_id::text
      limit 1;
     if found then
       v_id := v_existing_id;
@@ -209,12 +213,12 @@ begin
     update public.bookings
        set invoice_number = v_invoice_number,
            updated_at = now()
-     where id = v_id
-       and lodge_id = v_lodge_id;
+     where id::text = v_id::text
+       and lodge_id::text = v_lodge_id::text;
 
     if v_invoice_number is not null then
       insert into public.invoices (booking_id, lodge_id, invoice_number, issued_at)
-      values (v_id, v_lodge_id, v_invoice_number, now())
+       values (v_id, v_lodge_id, v_invoice_number, now())
       on conflict do nothing;
     end if;
 
@@ -227,8 +231,8 @@ begin
     if v_room_status is not null then
       update public.rooms
          set status = v_room_status
-       where id = v_room_id
-         and lodge_id = v_lodge_id;
+        where id::text = v_room_id::text
+          and lodge_id::text = v_lodge_id::text;
     end if;
   end if;
 
@@ -238,8 +242,8 @@ begin
     if not exists (
       select 1
         from public.payments
-       where booking_id = v_id
-         and lodge_id = v_lodge_id
+       where booking_id::text = v_id::text
+         and lodge_id::text = v_lodge_id::text
          and idempotency_key = v_deposit_key
     ) then
       select public.update_booking_payment(
@@ -251,8 +255,8 @@ begin
       if not coalesce((v_dep_result->>'success')::boolean, false) then
         if not v_is_existing then
           delete from public.bookings
-           where id = v_id
-             and lodge_id = v_lodge_id;
+           where id::text = v_id::text
+             and lodge_id::text = v_lodge_id::text;
         end if;
 
         return jsonb_build_object(
@@ -300,8 +304,8 @@ begin
   select *
     into v_current
     from public.bookings
-   where id = p_id
-     and lodge_id = p_lodge_id
+   where id::text = p_id::text
+     and lodge_id::text = p_lodge_id::text
   for update;
 
   if not found then
@@ -335,6 +339,22 @@ begin
 
   if v_new_total < 0 then
     return jsonb_build_object('success', false, 'error', 'Booking total cannot be negative');
+  end if;
+
+  if (payload ? 'adults') or (payload ? 'children') or (payload ? 'room_id') then
+    declare
+      v_new_adults int := case when payload ? 'adults' then coalesce((payload->>'adults')::int, 1) else v_current.adults end;
+      v_new_children int := case when payload ? 'children' then coalesce((payload->>'children')::int, 0) else v_current.children end;
+      v_max_occ int;
+    begin
+      select r.max_occupancy into v_max_occ
+        from public.rooms r
+       where r.id = v_room_id
+         and r.lodge_id = p_lodge_id;
+      if v_max_occ is not null and (v_new_adults + v_new_children) > v_max_occ then
+        return jsonb_build_object('success', false, 'error', 'Number of guests exceeds room maximum occupancy');
+      end if;
+    end;
   end if;
 
   if v_total_relevant_changed and not coalesce(v_current.is_exclusive_event, false) then
@@ -374,8 +394,8 @@ begin
   select b.id
     into v_conflict
     from public.bookings b
-   where b.lodge_id = p_lodge_id
-     and b.room_id = v_room_id
+    where b.lodge_id::text = p_lodge_id::text
+      and b.room_id::text = v_room_id::text
      and b.id <> p_id
      and b.status <> 'cancelled'
      and not (b.check_out <= v_check_in or b.check_in >= v_check_out)
@@ -402,8 +422,8 @@ begin
          payment_status = v_new_status,
          notes = case when payload ? 'notes' then coalesce(payload->>'notes', '') else notes end,
          updated_at = v_next_updated_at
-   where id = p_id
-     and lodge_id = p_lodge_id;
+   where id::text = p_id::text
+     and lodge_id::text = p_lodge_id::text;
 
   return jsonb_build_object('success', true, 'id', p_id, 'payment_status', v_new_status);
 end;
@@ -433,8 +453,8 @@ begin
   select *
     into v_q
     from quotations
-   where id = p_quotation_id
-     and lodge_id = p_lodge_id
+   where id::text = p_quotation_id::text 
+     and lodge_id::text = p_lodge_id::text 
    for update;
 
   if not found then
@@ -448,6 +468,10 @@ begin
     raise exception 'Payment method is required when deposit amount is provided';
   end if;
 
+  if v_q.room_id is not null and (v_q.adults + v_q.children) > (select r.max_occupancy from public.rooms r where r.id = v_q.room_id and r.lodge_id = p_lodge_id) then
+    raise exception 'Number of guests (%) exceeds room maximum occupancy (%)', v_q.adults + v_q.children, (select r.max_occupancy from public.rooms r where r.id = v_q.room_id and r.lodge_id = p_lodge_id);
+  end if;
+
   if v_q.status in ('converted', 'cancelled') then
     raise exception 'Quotation is already % and cannot be converted', v_q.status;
   end if;
@@ -459,8 +483,8 @@ begin
   if v_q.room_id is not null and exists (
     select 1
       from bookings
-     where room_id = v_q.room_id
-       and lodge_id = p_lodge_id
+     where room_id::text = v_q.room_id::text 
+       and lodge_id::text = p_lodge_id::text 
        and status not in ('cancelled', 'checked_out')
        and check_in < v_q.check_out
        and check_out > v_q.check_in
@@ -494,7 +518,8 @@ begin
      set status = 'converted',
          converted_booking_id = v_booking_id,
          updated_at = now()
-   where id = p_quotation_id;
+   where id::text = p_quotation_id::text
+     and lodge_id::text = p_lodge_id::text;
 
   if p_deposit_amount > 0 then
     select public.update_booking_payment(
@@ -537,8 +562,8 @@ begin
   select *
     into v_booking
     from public.bookings
-   where id = p_id
-     and lodge_id = p_lodge_id
+    where id::text = p_id::text
+      and lodge_id::text = p_lodge_id::text
    for update;
 
   if v_booking.id is null then
@@ -569,6 +594,12 @@ begin
 
   -- NEW: Maintenance Check for check-in
   if p_status = 'checked_in' then
+    if v_booking.check_in > current_date then
+      return jsonb_build_object(
+        'success', false,
+        'error', format('Cannot check in before the check-in date (%s).', v_booking.check_in)
+      );
+    end if;
     perform public.app_check_room_maintenance(p_lodge_id, v_booking.room_id);
   end if;
 
@@ -588,8 +619,8 @@ begin
   update public.bookings
      set status = p_status,
          updated_at = now()
-   where id = p_id
-     and lodge_id = p_lodge_id;
+   where id::text = p_id::text
+     and lodge_id::text = p_lodge_id::text;
 
   v_room_status := case
     when p_status = 'checked_in' then 'occupied'
@@ -600,8 +631,8 @@ begin
   if v_room_status is not null and v_booking.room_id is not null then
     update public.rooms
        set status = v_room_status
-     where id = v_booking.room_id
-       and lodge_id = p_lodge_id;
+     where id::text = v_booking.room_id::text
+       and lodge_id::text = p_lodge_id::text;
   end if;
 
   return jsonb_build_object('success', true, 'id', p_id, 'status', p_status);
@@ -697,8 +728,8 @@ begin
   select *
     into v_room
   from public.rooms r
-  where r.id = v_room_id
-    and r.lodge_id = v_lodge_id
+  where r.id::text = v_room_id::text
+    and r.lodge_id::text = v_lodge_id::text
     and r.status not in ('maintenance')
   for update;
 
@@ -709,8 +740,8 @@ begin
   select b.id
     into v_conflict
   from public.bookings b
-  where b.lodge_id = v_lodge_id
-    and b.room_id = v_room_id
+  where b.lodge_id::text = v_lodge_id::text
+    and b.room_id::text = v_room_id::text
     and b.status not in ('cancelled', 'checked_out')
     and not (b.check_out <= v_check_in or b.check_in >= v_check_out)
   limit 1;
@@ -729,7 +760,7 @@ begin
   select b.id
     into v_booking_id
   from public.bookings b
-  where b.lodge_id = v_lodge_id
+  where b.lodge_id::text = v_lodge_id::text
     and b.create_idempotency_key = v_idem_key
   limit 1;
 
@@ -756,7 +787,7 @@ begin
   select id
     into v_customer_id
   from public.customers
-  where lodge_id = v_lodge_id
+  where lodge_id::text = v_lodge_id::text
     and lower(btrim(coalesce(email, ''))) = v_email
   limit 1;
 

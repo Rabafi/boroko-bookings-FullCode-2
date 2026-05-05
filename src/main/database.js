@@ -6,7 +6,20 @@ import fs from 'fs'
 import crypto from 'crypto'
 import bcrypt from 'bcryptjs'
 import { getRoleCapabilities, normalizeAppRole, isPosFullAccessRole } from '../shared/accessControl.js'
-import { isFinancialSyncItem, pickNextReadySyncItemIndex } from '../shared/syncQueue.js'
+import { FINANCIAL_SYNC_TABLES, isFinancialSyncItem, pickNextReadySyncItemIndex } from '../shared/syncQueue.js'
+import {
+  MONTHLY_USAGE_RESET_COPY,
+  canCreateBooking,
+  canCreateRoom,
+  canCreateUser,
+  countMonthlyCreatedBookings,
+  countMonthlyUsageBookings,
+  evaluateBookingCreationAllowance,
+  getNextSubscriptionPlan,
+  getPlanUsageLimits,
+  getPlanRecommendation,
+  normalizeSubscriptionPlan
+} from '../shared/subscriptionPlans.js'
 
 // ─── SUPABASE CREDENTIALS ─────────────────────────────────────────────────────
 // URL + ANON KEY — baked in at build time from the root .env file by electron-vite.
@@ -59,28 +72,29 @@ let syncRefreshState = {
 }
 let lastSuccessfulSyncAt = null
 let syncRefreshRetryTimer = null
+let lastUsageSyncAt = null
 const AUTH_CONTRACT_VERSION = 2
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const PROFILE_STATUS = {
   DRAFT: 'draft',
   READY: 'ready'
 }
-const ENTITLEMENT_FEATURES = ['reports', 'expenses', 'staff', 'pwa', 'audit', 'conference', 'pool', 'import', 'pos', 'inventory', 'supplies']
+const ENTITLEMENT_FEATURES = ['reports', 'expenses', 'staff', 'pwa', 'audit', 'conference', 'pool', 'import', 'pos', 'inventory', 'supplies', 'online_booking']
 const PLAN_FEATURE_MAP = {
   Starter: {
     reports: false, expenses: false, staff: false, pwa: false, audit: false,
     conference: false, pool: false, import: false, pos: false,
-    inventory: false, supplies: false
+    inventory: false, supplies: false, online_booking: false
   },
   Standard: {
     reports: true, expenses: true, staff: true, pwa: false, audit: true,
     conference: true, pool: true, import: true, pos: false,
-    inventory: false, supplies: false
+    inventory: false, supplies: false, online_booking: false
   },
   Pro: {
     reports: true, expenses: true, staff: true, pwa: true, audit: true,
     conference: true, pool: true, import: true, pos: true,
-    inventory: true, supplies: true
+    inventory: true, supplies: true, online_booking: true
   }
 }
 const PWA_DISABLED_MESSAGE = 'Manager mobile app access disabled.'
@@ -97,8 +111,8 @@ const HEALTH_FAULTS_FILE = 'health-faults.json'
 const CACHE_FRESHNESS_FILE = 'cache-freshness.json'
 const SYNC_DRIFT_FAULT_TYPES = ['customer_drift', 'room_drift', 'quotation_drift', 'pos_drift']
 const CONNECTIVITY_CHECK_INTERVAL_MS = 3000
-const CONNECTIVITY_PROBE_TIMEOUT_MS = 1500
-const CONNECTIVITY_OFFLINE_FAILURE_THRESHOLD = 2
+const CONNECTIVITY_PROBE_TIMEOUT_MS = 4000
+const CONNECTIVITY_OFFLINE_FAILURE_THRESHOLD = 3
 const PERIODIC_SYNC_INTERVAL_MS = 15000
 const DEBUG_CACHE_FALLBACKS = process.env.BOROKO_DEBUG_CACHE_FALLBACKS === 'true'
 const BACKUP_POLICY_DEFAULT = {
@@ -120,6 +134,16 @@ const PROFILE_CACHE_FILES = {
   customers: [],
   bookings: [],
   quotations: [],
+  expenses: [],
+  outlets: [],
+  'conference-bookings': [],
+  'pool-day-use': [],
+  'inventory-items': [],
+  'inventory-purchases': [],
+  'pos-menu-items': [],
+  'pos-orders': [],
+  'pos-order-items': [],
+  'pos-void-history': [],
   activity: [],
   auth: [],
   syncQueue: [],
@@ -169,10 +193,10 @@ function applyBackendSession(session) {
   })
   backendSession = session?.token
     ? {
-        token: session.token,
-        expires_at: session.expires_at || null,
-        session_type: session.session_type || 'desktop'
-      }
+      token: session.token,
+      expires_at: session.expires_at || null,
+      session_type: session.session_type || 'desktop'
+    }
     : null
   supabase = buildSupabaseClient(SUPABASE_ANON_KEY, backendSession?.token || null)
 }
@@ -501,6 +525,16 @@ function ensureProfileCacheFiles(profileLodgeId) {
     ['customers.json', PROFILE_CACHE_FILES.customers],
     ['bookings.json', PROFILE_CACHE_FILES.bookings],
     ['quotations.json', PROFILE_CACHE_FILES.quotations],
+    ['expenses.json', PROFILE_CACHE_FILES.expenses],
+    ['outlets.json', PROFILE_CACHE_FILES.outlets],
+    ['conference-bookings.json', PROFILE_CACHE_FILES['conference-bookings']],
+    ['pool-day-use.json', PROFILE_CACHE_FILES['pool-day-use']],
+    ['inventory-items.json', PROFILE_CACHE_FILES['inventory-items']],
+    ['inventory-purchases.json', PROFILE_CACHE_FILES['inventory-purchases']],
+    ['pos-menu-items.json', PROFILE_CACHE_FILES['pos-menu-items']],
+    ['pos-orders.json', PROFILE_CACHE_FILES['pos-orders']],
+    ['pos-order-items.json', PROFILE_CACHE_FILES['pos-order-items']],
+    ['pos-void-history.json', PROFILE_CACHE_FILES['pos-void-history']],
     ['activity-log.json', PROFILE_CACHE_FILES.activity],
     ['auth-cache.json', PROFILE_CACHE_FILES.auth],
     ['sync-queue.json', PROFILE_CACHE_FILES.syncQueue],
@@ -527,6 +561,16 @@ function hasLegacyCacheData() {
     'customers.json',
     'bookings.json',
     'quotations.json',
+    'expenses.json',
+    'outlets.json',
+    'conference-bookings.json',
+    'pool-day-use.json',
+    'inventory-items.json',
+    'inventory-purchases.json',
+    'pos-menu-items.json',
+    'pos-orders.json',
+    'pos-order-items.json',
+    'pos-void-history.json',
     'auth-cache.json',
     'sync-queue.json',
     'sync-failed.json',
@@ -565,6 +609,16 @@ function migrateLegacySingleLodgeProfile() {
     'customers.json',
     'bookings.json',
     'quotations.json',
+    'expenses.json',
+    'outlets.json',
+    'conference-bookings.json',
+    'pool-day-use.json',
+    'inventory-items.json',
+    'inventory-purchases.json',
+    'pos-menu-items.json',
+    'pos-orders.json',
+    'pos-order-items.json',
+    'pos-void-history.json',
     'auth-cache.json',
     'sync-queue.json',
     'sync-failed.json',
@@ -649,7 +703,7 @@ function removeLocalCompanyProfile(targetLodgeId) {
 
   const registry = readProfilesRegistry()
   const profileCacheDir = getProfileCacheDir(normalizedId)
-  try { fs.rmSync(profileCacheDir, { recursive: true, force: true }) } catch {}
+  try { fs.rmSync(profileCacheDir, { recursive: true, force: true }) } catch { }
 
   const remainingProfiles = registry.profiles.filter((entry) => entry.lodge_id !== normalizedId)
   const nextActiveId = registry.active_lodge_id === normalizedId
@@ -867,13 +921,13 @@ export function restoreUserSession(nonce) {
     const mergedUser = hasStoredScope
       ? nonceUser
       : mergeSessionUserScope(
-          nonceUser,
-          cachedById || cachedByEmail || {
-            allowed_outlet_ids: isPosFullAccessRole(stored.role)
-              ? null
-              : []
-          }
-        )
+        nonceUser,
+        cachedById || cachedByEmail || {
+          allowed_outlet_ids: isPosFullAccessRole(stored.role)
+            ? null
+            : []
+        }
+      )
     const safeUser = normalizeSessionUser(mergedUser)
     setCurrentUser(safeUser)
     console.log('[AUTH] restoreSession restored from nonce metadata:', {
@@ -975,21 +1029,20 @@ export async function validateCurrentSession() {
     return null
   }
 
-  await checkOnline()
-  if (!isOnline) {
-    return currentUser
-  }
-
-  // Check session expiration before making any RPC calls
   if (session.expires_at) {
     const expiryTs = new Date(session.expires_at).getTime()
     if (Number.isFinite(expiryTs) && expiryTs <= Date.now()) {
-      console.warn('[AUTH] Session expired, clearing credentials')
+      console.warn('[AUTH] Offline session expired')
       currentUser = null
       clearBackendSession()
       clearSessionNonce()
       return null
     }
+  }
+
+  await checkOnline()
+  if (!isOnline) {
+    return currentUser
   }
 
   try {
@@ -1052,7 +1105,7 @@ function getCachePath(name) {
 
 function readCache(name) {
   const filePath = getCachePath(name)
-  const tmpPath  = filePath + '.tmp'
+  const tmpPath = filePath + '.tmp'
   // Crash recovery: if a .tmp file exists, it was written atomically just before
   // a crash-interrupted renameSync. Prefer it over the potentially stale main file.
   if (fs.existsSync(tmpPath)) {
@@ -1085,7 +1138,7 @@ function readCache(name) {
 
 function writeCache(name, data, { source = 'local' } = {}) {
   const filePath = getCachePath(name)
-  const tmpPath  = filePath + '.tmp'
+  const tmpPath = filePath + '.tmp'
   try {
     fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), 'utf-8')
     fs.renameSync(tmpPath, filePath)
@@ -1160,7 +1213,7 @@ function normalizeQueueRows(parsed, scope = 'sync-queue') {
 function readSyncQueue() {
   if (!cacheDir) return []
   const filePath = path.join(cacheDir, 'sync-queue.json')
-  const tmpPath  = filePath + '.tmp'
+  const tmpPath = filePath + '.tmp'
   // Crash recovery: if a .tmp file exists, it was written atomically just before
   // a crash-interrupted renameSync. Prefer it — it may contain queued financial
   // operations (payments, bookings) that would otherwise be lost permanently.
@@ -1203,7 +1256,7 @@ function readSyncQueue() {
 function writeSyncQueue(queue) {
   if (!cacheDir) return
   const filePath = path.join(cacheDir, 'sync-queue.json')
-  const tmpPath  = filePath + '.tmp'
+  const tmpPath = filePath + '.tmp'
   try {
     fs.writeFileSync(tmpPath, JSON.stringify(Array.isArray(queue) ? queue : [], null, 2), 'utf-8')
     fs.renameSync(tmpPath, filePath)
@@ -1398,7 +1451,7 @@ async function checkOnline() {
     isOnline = true
   } else {
     consecutiveConnectivityFailures += 1
-    if (!wasOnline || consecutiveConnectivityFailures >= CONNECTIVITY_OFFLINE_FAILURE_THRESHOLD) {
+    if (consecutiveConnectivityFailures >= CONNECTIVITY_OFFLINE_FAILURE_THRESHOLD) {
       isOnline = false
     }
   }
@@ -1420,7 +1473,22 @@ async function refreshCache(...names) {
 // Full refresh — used only at startup, reconnect, and after bulk operations.
 async function refreshAllCaches() {
   if (!lodgeId) return
-  await refreshCache('users', 'rooms', 'customers', 'bookings', 'maintenance')
+  await refreshCache(
+    'users',
+    'rooms',
+    'customers',
+    'bookings',
+    'maintenance',
+    'inventory-items',
+    'inventory-purchases',
+    'quotations',
+    'conference-bookings',
+    'pool-day-use',
+    'pos-orders',
+    'pos-menu-items',
+    'outlets',
+    'expenses'
+  )
 }
 
 const MAX_SYNC_RETRIES = 5
@@ -1490,10 +1558,10 @@ function clearSyncRefreshStale(names = []) {
 async function refreshCacheStrict(...names) {
   if (!lodgeId) return
   const fetchers = {
-    users:      () => supabase.from('users').select('id, auth_user_id, name, email, role, lodge_id, created_at, pwa_enabled, pwa_password_set_at, pwa_disabled_reason, pwa_password_reset_by, allowed_outlet_ids, pin_hash').eq('lodge_id', lodgeId).order('name'),
-    rooms:      () => supabase.from('rooms').select('*').eq('lodge_id', lodgeId).order('room_number'),
-    customers:  () => supabase.from('customers').select('*').eq('lodge_id', lodgeId).order('name'),
-    bookings:   () => supabase.from('bookings').select('*').eq('lodge_id', lodgeId).order('check_in', { ascending: false }),
+    users: () => supabase.from('users').select('id, auth_user_id, name, email, role, lodge_id, created_at, pwa_enabled, pwa_password_set_at, pwa_disabled_reason, pwa_password_reset_by, allowed_outlet_ids, pin_hash').eq('lodge_id', lodgeId).order('name'),
+    rooms: () => supabase.from('rooms').select('*').eq('lodge_id', lodgeId).order('room_number'),
+    customers: () => supabase.from('customers').select('*').eq('lodge_id', lodgeId).order('name'),
+    bookings: () => supabase.from('bookings').select('*').eq('lodge_id', lodgeId).order('check_in', { ascending: false }),
     maintenance: () => supabase
       .from('maintenance_tickets')
       .select('*, rooms(room_number, room_type)')
@@ -1504,11 +1572,14 @@ async function refreshCacheStrict(...names) {
     quotations: () => supabase.from('quotations').select('*').eq('lodge_id', lodgeId).order('created_at', { ascending: false }),
     'conference-bookings': () => supabase.from('conference_bookings').select('*').eq('lodge_id', lodgeId).order('booking_date', { ascending: false }).order('start_time', { ascending: true }),
     'pool-day-use': () => supabase.from('pool_day_use').select('*').eq('lodge_id', lodgeId).order('date', { ascending: false }),
+    expenses: () => supabase.from('expenses').select('*, outlets(name)').eq('lodge_id', lodgeId).order('date', { ascending: false }),
     'pos-orders': () => supabase
       .from('pos_orders')
       .select('*, pos_order_items(*), outlets(name)')
       .eq('lodge_id', lodgeId)
-      .order('created_at', { ascending: false })
+      .order('created_at', { ascending: false }),
+    'pos-menu-items': () => supabase.from('pos_menu_items').select('*').eq('lodge_id', lodgeId).order('category').order('name'),
+    outlets: () => supabase.from('outlets').select('id, name, type, sort_order, is_active').eq('lodge_id', lodgeId).order('sort_order')
   }
 
   await Promise.all(names.map(async (name) => {
@@ -1723,6 +1794,35 @@ function getSyncItemScope(item) {
   return item?.table || 'unknown'
 }
 
+const QUEUED_DEPENDENCY_CACHE_MAP = [
+  { prefix: 'booking-', cache: 'bookings' },
+  { prefix: 'customer-', cache: 'customers' },
+  { prefix: 'room-', cache: 'rooms' },
+  { prefix: 'user-', cache: 'users' },
+  { prefix: 'quotation-', cache: 'quotations' },
+  { prefix: 'pos-order-', cache: 'pos-orders' },
+  { prefix: 'conference-booking-', cache: 'conference-bookings' },
+  { prefix: 'pool-day-use-', cache: 'pool-day-use' }
+]
+
+function isQueuedDependencyResolved(dependencyId) {
+  const normalizedDependencyId = String(dependencyId || '').trim()
+  if (!normalizedDependencyId) return false
+
+  const target = QUEUED_DEPENDENCY_CACHE_MAP.find(({ prefix }) => normalizedDependencyId.startsWith(prefix))
+  if (!target) return false
+
+  const entityId = normalizedDependencyId.slice(target.prefix.length).trim()
+  if (!entityId) return false
+
+  const cachedRow = readCache(target.cache).find((entry) => entry?.id === entityId)
+  if (!cachedRow) return false
+
+  return cachedRow._pending_sync !== true
+    && cachedRow._sync_state !== 'manual_review_required'
+    && cachedRow._sync_state !== 'failed'
+}
+
 function patchCachedPosOrderSyncState(orderId, patch = {}) {
   if (!orderId) return false
   const cachedOrders = readCache('pos-orders')
@@ -1734,9 +1834,9 @@ function patchCachedPosOrderSyncState(orderId, patch = {}) {
 
   const existing = cachedOrders[index] || {}
   if (existing._sync_state === 'synced'
-      && patch._sync_state !== 'failed'
-      && patch._pending_sync !== true
-      && !Object.prototype.hasOwnProperty.call(patch, 'status')) {
+    && patch._sync_state !== 'failed'
+    && patch._pending_sync !== true
+    && !Object.prototype.hasOwnProperty.call(patch, 'status')) {
     return false
   }
 
@@ -1771,6 +1871,19 @@ function getQueuedBookingId(item) {
     queueId: item?._queue_id || null,
     table: item?.table || null
   })
+  return null
+}
+
+function getQueuedQuotationId(item) {
+  const quotationId = String(item?.data?.p_quotation_id || item?.data?.payload?.id || '').trim()
+  if (quotationId) return quotationId
+
+  const queueId = String(item?._queue_id || '').trim()
+  if (queueId.startsWith('quotation-')) {
+    const parsedId = queueId.slice('quotation-'.length).trim()
+    if (parsedId) return parsedId
+  }
+
   return null
 }
 
@@ -1813,6 +1926,17 @@ function rewriteQueuedBookingReferenceItem(item, localBookingId, serverBookingId
     next.data.p_id = serverBookingId
     changed = true
   }
+  if (next.data.booking_id === localBookingId) {
+    next.data.booking_id = serverBookingId
+    changed = true
+  }
+  if (next.data.payload?.booking_id === localBookingId) {
+    next.data.payload = {
+      ...next.data.payload,
+      booking_id: serverBookingId
+    }
+    changed = true
+  }
   if (next._depends_on === `booking-${localBookingId}`) {
     next._depends_on = `booking-${serverBookingId}`
     changed = true
@@ -1829,8 +1953,8 @@ function normalizeQueuedSyncItemForReplay(item = {}) {
   }
 
   if (next.type === 'rpc'
-      && next.table === 'update_booking_status'
-      && String(next._depends_on || '').startsWith('booking-')) {
+    && next.table === 'update_booking_status'
+    && String(next._depends_on || '').startsWith('booking-')) {
     next.data.p_expected_updated_at = null
   }
 
@@ -2097,7 +2221,12 @@ async function _runSyncQueue() {
   let shouldRefreshPoolDayUse = false
 
   while (pending.length > 0) {
-    const nextIndex = pickNextReadySyncItemIndex(pending, completedQueueIds, failedQueueIds)
+    const nextIndex = pickNextReadySyncItemIndex(
+      pending,
+      completedQueueIds,
+      failedQueueIds,
+      isQueuedDependencyResolved
+    )
     if (nextIndex === -1) {
       const blockedAt = new Date().toISOString()
       while (pending.length > 0) {
@@ -2214,7 +2343,7 @@ async function _runSyncQueue() {
         }
       } else if (item.type === 'delete') {
         const itemLodgeId = item.data?.lodge_id || item.lodge_id || lodgeId
-        ;({ error: supabaseError } = await supabase.from(item.table).delete().eq('id', item.id).eq('lodge_id', itemLodgeId))
+          ; ({ error: supabaseError } = await supabase.from(item.table).delete().eq('id', item.id).eq('lodge_id', itemLodgeId))
       } else if (item.type === 'rpc') {
         const { data, error } = await supabase.rpc(item.table, item.data)
         rpcResultData = data || null
@@ -2476,30 +2605,30 @@ async function _runSyncQueue() {
   // P2-16: snapshot optimistic booking state before refresh so we can detect drift afterwards
   const preSyncBookingSnapshot = shouldRefreshBookings
     ? readCache('bookings')
-        .filter((b) => !b._pending_sync)
-        .reduce((map, b) => {
-          map[b.id] = {
-            total_amount: b.total_amount,
-            amount_paid: b.amount_paid,
-            customer_id: b.customer_id,
-            room_id: b.room_id,
-            status: b.status,
-            payment_status: b.payment_status
-          }
-          return map
-        }, {})
+      .filter((b) => !b._pending_sync)
+      .reduce((map, b) => {
+        map[b.id] = {
+          total_amount: b.total_amount,
+          amount_paid: b.amount_paid,
+          customer_id: b.customer_id,
+          room_id: b.room_id,
+          status: b.status,
+          payment_status: b.payment_status
+        }
+        return map
+      }, {})
     : null
 
   // P1-8: widen canonical post-sync refresh
   const refreshTargets = []
-  if (successCount > 0 && shouldRefreshBookings)   refreshTargets.push('bookings')
-  if (successCount > 0 && shouldRefreshCustomers)  refreshTargets.push('customers')
-  if (successCount > 0 && shouldRefreshRooms)      refreshTargets.push('rooms')
-  if (successCount > 0 && shouldRefreshUsers)      refreshTargets.push('users')
+  if (successCount > 0 && shouldRefreshBookings) refreshTargets.push('bookings')
+  if (successCount > 0 && shouldRefreshCustomers) refreshTargets.push('customers')
+  if (successCount > 0 && shouldRefreshRooms) refreshTargets.push('rooms')
+  if (successCount > 0 && shouldRefreshUsers) refreshTargets.push('users')
   if (successCount > 0 && shouldRefreshQuotations) refreshTargets.push('quotations')
-  if (successCount > 0 && shouldRefreshPosOrders)  refreshTargets.push('pos-orders')
+  if (successCount > 0 && shouldRefreshPosOrders) refreshTargets.push('pos-orders')
   if (successCount > 0 && shouldRefreshConference) refreshTargets.push('conference-bookings')
-  if (successCount > 0 && shouldRefreshPoolDayUse)  refreshTargets.push('pool-day-use')
+  if (successCount > 0 && shouldRefreshPoolDayUse) refreshTargets.push('pool-day-use')
   if (refreshTargets.length > 0) {
     await refreshCachesAfterSync(...refreshTargets)
   }
@@ -2536,7 +2665,7 @@ async function _runSyncQueue() {
 
   if (deadLetter.length > 0) {
     const deadPath = path.join(cacheDir, 'sync-failed.json')
-    const deadTmp  = deadPath + '.tmp'
+    const deadTmp = deadPath + '.tmp'
     let existing = []
     try { existing = JSON.parse(fs.readFileSync(deadPath, 'utf-8')) } catch { /* empty */ }
     try {
@@ -2561,7 +2690,6 @@ export function getSyncStatus() {
   const failed = readFailedSyncQueue()
   const faults = readHealthFaults()
   const syncMeta = readSyncMeta()
-  const financialTables = new Set(['create_booking', 'create_booking_record', 'update_booking', 'update_booking_status', 'update_booking_payment', 'convert_quotation_to_booking', 'create_pos_order', 'approve_pos_void_with_pin'])
   const extractBookingId = (item) => (
     item?.data?.p_booking_id
     || item?.data?.payload?.booking_id
@@ -2576,16 +2704,19 @@ export function getSyncStatus() {
     .filter(Boolean)
   const financialPendingBookingIds = [...new Set(
     queue
-      .filter((item) => financialTables.has(item?.table))
+      .filter((item) => FINANCIAL_SYNC_TABLES.has(item?.table))
       .map(extractBookingId)
       .filter(Boolean)
   )]
   const financialFailedBookingIds = [...new Set(
     failed
-      .filter((item) => financialTables.has(item?.table))
+      .filter((item) => FINANCIAL_SYNC_TABLES.has(item?.table))
       .map(extractBookingId)
       .filter(Boolean)
   )]
+  const financialPendingCount = queue.filter((item) => FINANCIAL_SYNC_TABLES.has(item?.table)).length
+  const financialFailedCount = failed.filter((item) => FINANCIAL_SYNC_TABLES.has(item?.table)).length
+  const groupedCounts = buildSyncGroupedCounts(queue, failed)
   // P0-1: lastSuccessfulSyncAt from memory first, fall back to persisted meta
   const resolvedLastSync = lastSuccessfulSyncAt || syncMeta.lastSuccessfulSyncAt || null
   return {
@@ -2601,8 +2732,9 @@ export function getSyncStatus() {
     failedBookingIds,
     financialPendingBookingIds,
     financialFailedBookingIds,
-    financialPendingCount: financialPendingBookingIds.length,
-    financialFailedCount: financialFailedBookingIds.length,
+    financialPendingCount,
+    financialFailedCount,
+    groupedCounts,
     lastSuccessfulSyncAt: resolvedLastSync,
     // P0-1: full sync meta
     syncMeta: {
@@ -2624,10 +2756,63 @@ export function getSyncStatus() {
   }
 }
 
+function classifySyncDependencyCategory(item = {}, pending = [], failed = []) {
+  const dependencyId = String(item?._depends_on || '').trim()
+  if (!dependencyId) return 'none'
+
+  if (failed.some((entry) => entry?._queue_id === dependencyId)) {
+    return 'blocked_dependencies'
+  }
+  if (pending.some((entry) => entry?._queue_id === dependencyId)) {
+    return 'blocked_dependencies'
+  }
+  if (isQueuedDependencyResolved(dependencyId)) {
+    return 'resolved'
+  }
+  return 'missing_parent'
+}
+
+function getSyncDependencyLabel(category = 'none') {
+  switch (category) {
+    case 'missing_parent':
+      return 'Blocked: missing parent sync item'
+    case 'blocked_dependencies':
+      return 'Blocked: waiting for parent sync item'
+    case 'resolved':
+      return 'Ready: parent already synced'
+    default:
+      return 'No dependency'
+  }
+}
+
+function getSyncDisplayError(item = {}, dependencyCategory = 'none') {
+  if (dependencyCategory === 'missing_parent') return 'Blocked: missing parent sync item'
+  if (dependencyCategory === 'blocked_dependencies' && /Skipped: parent operation failed/i.test(String(item?.lastError || ''))) {
+    return 'Blocked: parent sync item failed'
+  }
+  return item?.lastError || ''
+}
+
+function buildSyncGroupedCounts(pending = [], failed = []) {
+  const pendingMissingParent = pending.filter((item) => classifySyncDependencyCategory(item, pending, failed) === 'missing_parent').length
+  const failedMissingParent = failed.filter((item) => classifySyncDependencyCategory(item, pending, failed) === 'missing_parent').length
+  const pendingBlockedDependencies = pending.filter((item) => classifySyncDependencyCategory(item, pending, failed) === 'blocked_dependencies').length
+  const failedBlockedDependencies = failed.filter((item) => classifySyncDependencyCategory(item, pending, failed) === 'blocked_dependencies').length
+  const financialRiskItems = pending.filter(isFinancialSyncItem).length + failed.filter(isFinancialSyncItem).length
+
+  return {
+    missing_parent: pendingMissingParent + failedMissingParent,
+    blocked_dependencies: pendingBlockedDependencies + failedBlockedDependencies,
+    financial_risk_items: financialRiskItems,
+    failed_items: failed.length,
+    pending_items: pending.length
+  }
+}
+
 function readFailedSyncQueue() {
   if (!cacheDir) return []
   const filePath = path.join(cacheDir, 'sync-failed.json')
-  const tmpPath  = filePath + '.tmp'
+  const tmpPath = filePath + '.tmp'
   if (fs.existsSync(tmpPath)) {
     try {
       const tmpData = JSON.parse(fs.readFileSync(tmpPath, 'utf-8'))
@@ -2665,7 +2850,7 @@ function readFailedSyncQueue() {
 function writeFailedSyncQueue(items) {
   if (!cacheDir) return
   const filePath = path.join(cacheDir, 'sync-failed.json')
-  const tmpPath  = filePath + '.tmp'
+  const tmpPath = filePath + '.tmp'
   try {
     fs.writeFileSync(tmpPath, JSON.stringify(Array.isArray(items) ? items : [], null, 2), 'utf-8')
     fs.renameSync(tmpPath, filePath)
@@ -2691,7 +2876,7 @@ function readSyncMeta() {
 function writeSyncMeta(updates = {}) {
   if (!cacheDir) return
   const filePath = path.join(cacheDir, SYNC_META_FILE)
-  const tmpPath  = filePath + '.tmp'
+  const tmpPath = filePath + '.tmp'
   try {
     const current = readSyncMeta()
     const next = { ...current, ...updates }
@@ -2709,7 +2894,7 @@ function writeSyncMeta(updates = {}) {
 function appendHealthFault(fault = {}) {
   if (!cacheDir) return
   const filePath = path.join(cacheDir, HEALTH_FAULTS_FILE)
-  const tmpPath  = filePath + '.tmp'
+  const tmpPath = filePath + '.tmp'
   try {
     let existing = []
     try { existing = JSON.parse(fs.readFileSync(filePath, 'utf-8')) } catch { /* start fresh */ }
@@ -2762,7 +2947,7 @@ function readHealthFaults() {
 export function clearHealthFault(id) {
   if (!cacheDir) return { success: true, remaining: 0 }
   const filePath = path.join(cacheDir, HEALTH_FAULTS_FILE)
-  const tmpPath  = filePath + '.tmp'
+  const tmpPath = filePath + '.tmp'
   try {
     const faults = readHealthFaults()
     const next = id ? faults.filter((f) => f.id !== id) : []
@@ -2796,17 +2981,22 @@ export function getSyncDetails() {
   const resolvedLastSync = lastSuccessfulSyncAt || syncMeta.lastSuccessfulSyncAt || null
   const now = Date.now()
 
-  const enrichPending = (item) => ({
-    ...item,
-    isFinancial: isFinancialSyncItem(item),
-    dependencyState: item?._depends_on
-      ? failed.some((f) => f?._queue_id === item._depends_on)
-        ? 'failed_parent'
-        : pending.some((p) => p?._queue_id === item._depends_on)
-          ? 'waiting_for_parent'
-          : 'ready_or_external'
-      : 'none'
-  })
+  const enrichPending = (item) => {
+    const dependencyCategory = classifySyncDependencyCategory(item, pending, failed)
+    return {
+      ...item,
+      isFinancial: isFinancialSyncItem(item),
+      dependencyState: item?._depends_on
+        ? failed.some((f) => f?._queue_id === item._depends_on)
+          ? 'failed_parent'
+          : pending.some((p) => p?._queue_id === item._depends_on)
+            ? 'waiting_for_parent'
+            : 'ready_or_external'
+        : 'none',
+      dependencyCategory,
+      dependencyLabel: getSyncDependencyLabel(dependencyCategory)
+    }
+  }
 
   // P1-11: enrich failed items with retry classification and timing
   const enrichFailed = (item) => {
@@ -2820,6 +3010,9 @@ export function getSyncDetails() {
     return {
       ...item,
       isFinancial: isFinancialSyncItem(item),
+      dependencyCategory: classifySyncDependencyCategory(item, pending, failed),
+      dependencyLabel: getSyncDependencyLabel(classifySyncDependencyCategory(item, pending, failed)),
+      displayError: getSyncDisplayError(item, classifySyncDependencyCategory(item, pending, failed)),
       isAutoRetryable,
       nextAutoRetryAt,
       autoRetryEligible,
@@ -2827,27 +3020,30 @@ export function getSyncDetails() {
     }
   }
 
-  // P1-10: financial entity IDs
-  const financialTables = new Set(['create_booking', 'create_booking_record', 'update_booking', 'update_booking_status', 'update_booking_payment', 'convert_quotation_to_booking', 'create_pos_order', 'approve_pos_void_with_pin'])
   const extractBookingId = (item) => (
     item?.data?.p_booking_id || item?.data?.payload?.booking_id || item?.data?.payload?.id || item?.data?.p_id || item?._local_booking_id || null
   )
-  const financialPendingBookingIds = [...new Set(pending.filter((i) => financialTables.has(i?.table)).map(extractBookingId).filter(Boolean))]
-  const financialFailedBookingIds  = [...new Set(failed.filter((i) => financialTables.has(i?.table)).map(extractBookingId).filter(Boolean))]
+  const financialPendingBookingIds = [...new Set(pending.filter((i) => FINANCIAL_SYNC_TABLES.has(i?.table)).map(extractBookingId).filter(Boolean))]
+  const financialFailedBookingIds = [...new Set(failed.filter((i) => FINANCIAL_SYNC_TABLES.has(i?.table)).map(extractBookingId).filter(Boolean))]
+  const financialPendingCount = pending.filter((i) => FINANCIAL_SYNC_TABLES.has(i?.table)).length
+  const financialFailedCount = failed.filter((i) => FINANCIAL_SYNC_TABLES.has(i?.table)).length
+  const groupedCounts = buildSyncGroupedCounts(pending, failed)
   const unresolvedLocal = [
     ...readCache('bookings').filter((row) => row?._pending_sync || row?._sync_state === 'manual_review_required').map((row) => ({ type: 'booking', id: row.id, sync_state: row._sync_state || 'pending' })),
     ...readCache('customers').filter((row) => row?._pending_sync || row?._sync_state === 'manual_review_required').map((row) => ({ type: 'customer', id: row.id, sync_state: row._sync_state || 'pending' })),
     ...readCache('rooms').filter((row) => row?._pending_sync || row?._sync_state === 'manual_review_required').map((row) => ({ type: 'room', id: row.id, sync_state: row._sync_state || 'pending' })),
     ...readCache('users').filter((row) => row?._pending_sync || row?._sync_state === 'manual_review_required').map((row) => ({ type: 'user', id: row.id, sync_state: row._sync_state || 'pending' })),
     ...readCache('quotations').filter((row) => row?._pending_sync || row?._sync_state === 'manual_review_required').map((row) => ({ type: 'quotation', id: row.id, sync_state: row._sync_state || 'pending' })),
-    ...readCache('pos-orders').filter((row) => row?._pending_sync || row?._sync_state === 'manual_review_required').map((row) => ({ type: 'pos-order', id: row.id, sync_state: row._sync_state || 'pending' }))
+    ...readCache('pos-orders').filter((row) => row?._pending_sync || row?._sync_state === 'manual_review_required').map((row) => ({ type: 'pos-order', id: row.id, sync_state: row._sync_state || 'pending' })),
+    ...readCache('conference-bookings').filter((row) => row?._pending_sync || row?._sync_state === 'manual_review_required').map((row) => ({ type: 'conference-booking', id: row.id, sync_state: row._sync_state || 'pending' })),
+    ...readCache('pool-day-use').filter((row) => row?._pending_sync || row?._sync_state === 'manual_review_required').map((row) => ({ type: 'pool-day-use', id: row.id, sync_state: row._sync_state || 'pending' }))
   ]
 
   // P1-9: annotate cache freshness with human-readable age
   const enrichedCacheFreshness = Object.fromEntries(
     Object.entries(cacheFreshness).map(([name, meta]) => {
       const updatedAtMs = meta?.updatedAt ? Date.parse(meta.updatedAt) : NaN
-      const cacheAgeMs  = Number.isNaN(updatedAtMs) ? null : now - updatedAtMs
+      const cacheAgeMs = Number.isNaN(updatedAtMs) ? null : now - updatedAtMs
       return [name, { ...meta, cacheAgeMs, stale: cacheAgeMs != null && cacheAgeMs > 24 * 60 * 60 * 1000 }]
     })
   )
@@ -2868,8 +3064,9 @@ export function getSyncDetails() {
     financialPendingBookingIds,
     financialFailedBookingIds,
     unresolvedLocal,
-    financialPendingCount: financialPendingBookingIds.length,
-    financialFailedCount: financialFailedBookingIds.length,
+    financialPendingCount,
+    financialFailedCount,
+    groupedCounts,
     pending: pending.map(enrichPending),
     failed: failed.map(enrichFailed),
     faults,
@@ -3054,8 +3251,8 @@ function queueOperation(type, table, data, id = null, meta = {}) {
   if (type === 'rpc' && data?.p_idempotency_key) {
     const existingItem = queue.find(
       item => item.type === 'rpc' &&
-              item.table === table &&
-              item.data?.p_idempotency_key === data.p_idempotency_key
+        item.table === table &&
+        item.data?.p_idempotency_key === data.p_idempotency_key
     )
     if (existingItem?._queue_id) {
       console.warn('[SYNC QUEUE] Duplicate idempotent RPC detected — reusing existing queue item', {
@@ -3514,7 +3711,12 @@ export async function initDatabase() {
   // P0-5: replayAuthReady stays false until a real user logs in.
   // Startup sync is intentionally skipped — we must not replay queued financial
   // operations before the correct Supabase client is authenticated.
-  const online = await checkOnline()
+  let online = false
+  for (let attempt = 0; attempt < 3; attempt++) {
+    online = await checkOnline()
+    if (online) break
+    if (attempt < 2) await new Promise((r) => setTimeout(r, 2000))
+  }
   if (online && lodgeId) {
     // Only refresh caches at startup (safe read-only — does not replay writes)
     await refreshAllCaches()
@@ -3705,7 +3907,7 @@ export async function removeDraftProfile(targetLodgeId) {
     }
   }
 
-  try { fs.rmSync(draftCacheDir, { recursive: true, force: true }) } catch {}
+  try { fs.rmSync(draftCacheDir, { recursive: true, force: true }) } catch { }
 
   const remainingProfiles = registry.profiles.filter((entry) => entry.lodge_id !== normalizedId)
   const nextActiveId = registry.active_lodge_id === normalizedId
@@ -3742,7 +3944,7 @@ function readAuthCache() {
   try { return JSON.parse(fs.readFileSync(path.join(cacheDir, 'auth-cache.json'), 'utf-8')) } catch { return [] }
 }
 function writeAuthCache(entries) {
-  try { fs.writeFileSync(path.join(cacheDir, 'auth-cache.json'), JSON.stringify(entries, null, 2), 'utf-8') } catch {}
+  try { fs.writeFileSync(path.join(cacheDir, 'auth-cache.json'), JSON.stringify(entries, null, 2), 'utf-8') } catch { }
 }
 function removeAuthEntry(email) {
   const emailLower = normalizeEmail(email)
@@ -3789,7 +3991,7 @@ function readTrustedSessions() {
 }
 
 function writeTrustedSessions(sessions) {
-  try { fs.writeFileSync(getTrustedSessionsPath(), JSON.stringify(sessions, null, 2), 'utf-8') } catch {}
+  try { fs.writeFileSync(getTrustedSessionsPath(), JSON.stringify(sessions, null, 2), 'utf-8') } catch { }
 }
 
 function pruneExpiredTrustedSessions(sessions = readTrustedSessions()) {
@@ -3819,30 +4021,30 @@ function buildTrustedSessionRecord(user, nonce, password = '') {
   const normalizedUser = normalizeSessionUser(user)
   const record = normalizedUser && typeof normalizedUser === 'object'
     ? {
-        id: normalizedUser.id || null,
-        email: normalizedUser.email || null,
-        name: normalizedUser.name || null,
-        role: normalizedUser.role || null,
-        lodge_id: normalizedUser.lodge_id || null,
-        ...(Object.prototype.hasOwnProperty.call(normalizedUser, 'allowed_outlet_ids')
-          ? { allowed_outlet_ids: normalizedUser.allowed_outlet_ids }
-          : {}),
-        isMasterAdmin: Boolean(normalizedUser.isMasterAdmin),
-        session_token: session?.token || null,
-        session_expires_at: session?.expires_at || null,
-        session_type: session?.session_type || null
-      }
+      id: normalizedUser.id || null,
+      email: normalizedUser.email || null,
+      name: normalizedUser.name || null,
+      role: normalizedUser.role || null,
+      lodge_id: normalizedUser.lodge_id || null,
+      ...(Object.prototype.hasOwnProperty.call(normalizedUser, 'allowed_outlet_ids')
+        ? { allowed_outlet_ids: normalizedUser.allowed_outlet_ids }
+        : {}),
+      isMasterAdmin: Boolean(normalizedUser.isMasterAdmin),
+      session_token: session?.token || null,
+      session_expires_at: session?.expires_at || null,
+      session_type: session?.session_type || null
+    }
     : {
-        id: user || null,
-        email: null,
-        name: null,
-        role: null,
-        lodge_id: null,
-        isMasterAdmin: false,
-        session_token: session?.token || null,
-        session_expires_at: session?.expires_at || null,
-        session_type: session?.session_type || null
-      }
+      id: user || null,
+      email: null,
+      name: null,
+      role: null,
+      lodge_id: null,
+      isMasterAdmin: false,
+      session_token: session?.token || null,
+      session_expires_at: session?.expires_at || null,
+      session_type: session?.session_type || null
+    }
 
   return {
     userId: record.id,
@@ -4653,6 +4855,254 @@ export async function loginUser(email, password) {
   return result
 }
 
+function getMonthWindowIso(now = new Date()) {
+  const start = new Date(now.getFullYear(), now.getMonth(), 1)
+  const end = new Date(now.getFullYear(), now.getMonth() + 1, 1)
+  const dateStart = start.toISOString().slice(0, 10)
+  const dateEnd = end.toISOString().slice(0, 10)
+  return { start: start.toISOString(), end: end.toISOString(), dateStart, dateEnd, startDate: start, endDate: end }
+}
+
+function resolveQueuedItemCreatedAtRaw(item = {}) {
+  return (
+    item?.timestamp ||
+    item?.createdAt ||
+    item?.created_at ||
+    item?.queued_at ||
+    item?.data?.created_at_client ||
+    item?.data?.payload?.created_at_client ||
+    item?.data?.createdAt ||
+    item?.data?.created_at ||
+    item?.data?.queued_at ||
+    new Date().toISOString()
+  )
+}
+
+function getPendingUsageQueueCounts({ targetMonthDate = new Date(), creationMonthDate = new Date() } = {}) {
+  const queue = readSyncQueue()
+  const { startDate, endDate } = getMonthWindowIso(targetMonthDate)
+  const creationWindow = getMonthWindowIso(creationMonthDate)
+  let pendingTargetMonthBookings = 0
+  let pendingCreationMonthBookings = 0
+  let pendingRooms = 0
+  let pendingUsers = 0
+  for (const item of queue) {
+    if (item?.type !== 'rpc') continue
+    if (item?.table === 'create_booking') {
+      const status = String(item?.data?.p_status || item?.data?.payload?.status || 'confirmed').toLowerCase()
+      if (!['confirmed', 'checked_in', 'checked_out'].includes(status)) continue
+      if (item?.data?.payload?.is_exclusive_event === true || item?.data?.p_is_exclusive_event === true) continue
+      const checkInRaw = item?.data?.p_check_in || item?.data?.payload?.check_in
+      const checkIn = new Date(checkInRaw || 0)
+      if (!Number.isFinite(checkIn.getTime())) continue
+      const createdAtRaw = resolveQueuedItemCreatedAtRaw(item)
+      const createdAt = new Date(createdAtRaw)
+      if (checkIn >= startDate && checkIn < endDate) pendingTargetMonthBookings += 1
+      if (Number.isFinite(createdAt.getTime()) && createdAt >= creationWindow.startDate && createdAt < creationWindow.endDate) {
+        pendingCreationMonthBookings += 1
+      }
+    } else if (item?.table === 'create_room') {
+      pendingRooms += 1
+    } else if (item?.table === 'create_user') {
+      pendingUsers += 1
+    }
+  }
+  return { pendingTargetMonthBookings, pendingCreationMonthBookings, pendingRooms, pendingUsers }
+}
+
+function getCachedMonthlyBookingUsage(now = new Date()) {
+  return countMonthlyUsageBookings(readCache('bookings'), now)
+}
+
+function getCachedCreatedBookingUsage(now = new Date()) {
+  return countMonthlyCreatedBookings(readCache('bookings'), now)
+}
+
+function getCachedEntityUsageCounts({ targetMonthDate = new Date(), creationMonthDate = new Date() } = {}) {
+  const pending = getPendingUsageQueueCounts({ targetMonthDate, creationMonthDate })
+  const targetMonthBookings = getCachedMonthlyBookingUsage(targetMonthDate) + pending.pendingTargetMonthBookings
+  const creationMonthBookings = getCachedCreatedBookingUsage(creationMonthDate) + pending.pendingCreationMonthBookings
+  return {
+    monthlyBookings: targetMonthBookings,
+    targetMonthBookings,
+    creationMonthBookings,
+    rooms: readCache('rooms').length + pending.pendingRooms,
+    users: readCache('users').length + pending.pendingUsers
+  }
+}
+
+function buildUsageSummary(plan, limits, usage, source) {
+  const bookingAllowance = evaluateBookingCreationAllowance({
+    plan,
+    targetMonthUsed: usage.targetMonthBookings,
+    createdMonthUsed: usage.creationMonthBookings
+  })
+  const roomStatus = canCreateRoom({ plan, used: usage.rooms })
+  const userStatus = canCreateUser({ plan, used: usage.users })
+  const recommendation = getPlanRecommendation({
+    plan,
+    bookingsUsage: usage.targetMonthBookings ?? usage.monthlyBookings,
+    roomsUsage: usage.rooms,
+    usersUsage: usage.users,
+    limits
+  })
+
+  return {
+    plan,
+    limits,
+    usage,
+    source,
+    statuses: {
+      bookings: bookingAllowance.combinedStatus,
+      bookingTargetMonth: bookingAllowance.targetMonthStatus,
+      bookingCreationMonth: bookingAllowance.creationMonthStatus,
+      rooms: roomStatus,
+      users: userStatus
+    },
+    bookingAllowance,
+    recommendation,
+    monthlyResetCopy: MONTHLY_USAGE_RESET_COPY
+  }
+}
+
+async function getCreationUsageSummary(targetLodgeId = lodgeId, { monthDate = new Date(), creationMonthDate = new Date(), forceRemoteRefresh = false } = {}) {
+  const entitlement = await getTrialStatus(targetLodgeId).catch(() => null)
+  const plan = normalizeSubscriptionPlan(entitlement?.plan || 'Starter')
+  const limits = getPlanUsageLimits(plan)
+  if ((!isOnline && !forceRemoteRefresh) || !targetLodgeId) {
+    const usage = getCachedEntityUsageCounts({ targetMonthDate: monthDate, creationMonthDate })
+    return { ...buildUsageSummary(plan, limits, usage, 'cache'), lastUsageSyncAt }
+  }
+
+  const { dateStart, dateEnd } = getMonthWindowIso(monthDate)
+  const creationWindow = getMonthWindowIso(creationMonthDate)
+  const [bookingsResult, createdBookingsResult, roomsResult, usersResult] = await Promise.all([
+    supabase
+      .from('bookings')
+      .select('id', { count: 'exact', head: true })
+      .eq('lodge_id', targetLodgeId)
+      .in('status', ['confirmed', 'checked_in', 'checked_out'])
+      .neq('is_exclusive_event', true)
+      .gte('check_in', dateStart)
+      .lt('check_in', dateEnd),
+    supabase
+      .from('bookings')
+      .select('id', { count: 'exact', head: true })
+      .eq('lodge_id', targetLodgeId)
+      .in('status', ['confirmed', 'checked_in', 'checked_out'])
+      .neq('is_exclusive_event', true)
+      .gte('created_at', creationWindow.start)
+      .lt('created_at', creationWindow.end),
+    supabase
+      .from('rooms')
+      .select('id', { count: 'exact', head: true })
+      .eq('lodge_id', targetLodgeId),
+    supabase
+      .from('users')
+      .select('id', { count: 'exact', head: true })
+      .eq('lodge_id', targetLodgeId)
+  ])
+
+  if (bookingsResult.error || createdBookingsResult.error || roomsResult.error || usersResult.error) {
+    const usage = getCachedEntityUsageCounts({ targetMonthDate: monthDate, creationMonthDate })
+    return { ...buildUsageSummary(plan, limits, usage, 'cache'), lastUsageSyncAt }
+  }
+
+  lastUsageSyncAt = new Date().toISOString()
+  return {
+    ...buildUsageSummary(plan, limits, {
+      monthlyBookings: Number(bookingsResult.count || 0),
+      targetMonthBookings: Number(bookingsResult.count || 0),
+      creationMonthBookings: Number(createdBookingsResult.count || 0),
+      rooms: Number(roomsResult.count || 0),
+      users: Number(usersResult.count || 0)
+    }, 'remote'),
+    lastUsageSyncAt
+  }
+}
+
+function usageLimitErrorMessage(resource, summary) {
+  const plan = summary.plan
+  const limits = summary.limits
+  if (resource === 'booking') {
+    if (summary.bookingAllowance?.blockReason === 'creation_month') {
+      return `Monthly booking creation limit reached for this plan. Upgrade to continue creating future bookings.`
+    }
+    return `Booking limit reached for the selected check-in month.`
+  }
+
+  const nextPlan = getNextSubscriptionPlan(plan)
+  if (resource === 'room') {
+    if (summary.statuses?.rooms?.isAbovePlan) {
+      return `This lodge is above the ${plan} plan room limit. Existing rooms remain available, but new rooms are restricted until usage is reduced or the plan is upgraded.`
+    }
+    return `Room limit reached: ${plan} allows up to ${limits?.rooms} rooms. Upgrade to ${nextPlan} for more rooms.`
+  }
+  if (summary.statuses?.users?.isAbovePlan) {
+    return `This lodge is above the ${plan} plan user limit. Existing staff remain available, but new users are restricted until usage is reduced or the plan is upgraded.`
+  }
+  return `User limit reached: ${plan} allows up to ${limits?.users} staff accounts. Upgrade to ${nextPlan} for more users.`
+}
+
+function buildUsageWarning(summary) {
+  if (!summary) return ''
+  const plan = summary.plan
+  if (summary.statuses?.rooms?.isAbovePlan || summary.statuses?.users?.isAbovePlan || summary.statuses?.bookings?.isBlocked) {
+    return `This lodge is above the ${plan} plan limits. Existing records remain available, but new records are restricted until usage is reduced or the plan is upgraded.`
+  }
+  if (summary.bookingAllowance?.creationMonthStatus?.isBlocked) {
+    return 'Monthly booking creation limit reached for this plan. Upgrade to continue creating future bookings.'
+  }
+  if (summary.bookingAllowance?.targetMonthStatus?.isBlocked) {
+    return 'Booking limit reached for the selected check-in month.'
+  }
+  if (summary.bookingAllowance?.combinedStatus?.isInGrace) {
+    return 'You have reached the monthly booking limit and are using grace bookings. Upgrade now to avoid interruptions.'
+  }
+  return ''
+}
+
+async function assertCreationWithinUsageLimit(resource, options = {}) {
+  const targetMonthDate = options.targetMonthDate || options.monthDate || new Date()
+  const creationMonthDate = options.creationMonthDate || new Date()
+  const summary = await getCreationUsageSummary(lodgeId, {
+    monthDate: targetMonthDate,
+    creationMonthDate,
+    forceRemoteRefresh: options.forceRemoteRefresh === true
+  })
+  const status = resource === 'booking'
+    ? summary.bookingAllowance?.combinedStatus
+    : resource === 'room'
+      ? summary.statuses?.rooms
+      : summary.statuses?.users
+
+  const blocked = resource === 'booking'
+    ? summary.bookingAllowance?.isBlocked
+    : status?.isBlocked
+
+  if (blocked) {
+    throw new Error(usageLimitErrorMessage(resource, summary))
+  }
+
+  summary.status = status
+  summary.warning = buildUsageWarning(summary)
+  return summary
+}
+
+export async function getUsageLimitSnapshot(options = {}) {
+  const monthDate = options?.monthDate ? new Date(options.monthDate) : new Date()
+  const summary = await getCreationUsageSummary(lodgeId, {
+    monthDate,
+    creationMonthDate: new Date(),
+    forceRemoteRefresh: options?.forceRemoteRefresh === true
+  })
+  return {
+    ...summary,
+    stale: summary.source !== 'remote',
+    warning: buildUsageWarning(summary)
+  }
+}
+
 // ─── USERS ────────────────────────────────────────────────────────────────────
 
 export async function getAllUsers() {
@@ -4904,9 +5354,9 @@ function resolvePwaAccessUpdate(existingUser = {}, data = {}) {
     disabled_reason: enabled
       ? null
       : normalizePwaDisabledReason(
-          autoDisableForRole ? PWA_ROLE_DISABLED_MESSAGE : data.pwa_disabled_reason,
-          autoDisableForRole ? PWA_ROLE_DISABLED_MESSAGE : PWA_DISABLED_MESSAGE
-        )
+        autoDisableForRole ? PWA_ROLE_DISABLED_MESSAGE : data.pwa_disabled_reason,
+        autoDisableForRole ? PWA_ROLE_DISABLED_MESSAGE : PWA_DISABLED_MESSAGE
+      )
   }
 }
 
@@ -4932,6 +5382,7 @@ function buildPwaAccessInput(data = {}, fallbackRole = null) {
 }
 
 export async function createUser(data) {
+  await assertCreationWithinUsageLimit('user', { forceRemoteRefresh: isOnline })
   const emailLower = data.email.trim().toLowerCase()
 
   // ── Duplicate email check ─────────────────────────────────────────────────
@@ -5073,35 +5524,35 @@ export async function createUser(data) {
   } else {
     const cached = readCache('users')
 
-const newUser = {
-  ...user,
-  created_at: new Date().toISOString()
-}
+    const newUser = {
+      ...user,
+      created_at: new Date().toISOString()
+    }
 
-cached.push(newUser)
-writeCache('users', cached)
+    cached.push(newUser)
+    writeCache('users', cached)
 
-// IMPORTANT: send ID to Supabase too
-// P2-15: assign _queue_id so pwa_access setup can declare an explicit dependency
-queueOperation('rpc', 'create_user', { payload: newUser }, null, { _queue_id: `user-${id}` })
-if (pwaAccess.requested) {
-  // P2-15: must not run before the user row exists on the server
-  queueOperation('rpc', 'set_user_pwa_access', {
-    p_id: id,
-    p_lodge_id: lodgeId,
-    p_enabled: pwaAccess.enabled,
-    p_password_hash: pwaAccess.password_hash,
-    p_disabled_reason: pwaAccess.disabled_reason,
-    p_reset_by: currentUser?.id || null
-  }, null, { _depends_on: `user-${id}` })
-}
+    // IMPORTANT: send ID to Supabase too
+    // P2-15: assign _queue_id so pwa_access setup can declare an explicit dependency
+    queueOperation('rpc', 'create_user', { payload: newUser }, null, { _queue_id: `user-${id}` })
+    if (pwaAccess.requested) {
+      // P2-15: must not run before the user row exists on the server
+      queueOperation('rpc', 'set_user_pwa_access', {
+        p_id: id,
+        p_lodge_id: lodgeId,
+        p_enabled: pwaAccess.enabled,
+        p_password_hash: pwaAccess.password_hash,
+        p_disabled_reason: pwaAccess.disabled_reason,
+        p_reset_by: currentUser?.id || null
+      }, null, { _depends_on: `user-${id}` })
+    }
 
-if (pwaAccess.requested) {
-  const action = user.pwa_enabled ? 'enabled' : 'prepared'
-  logActivity('pwa_access_updated', `${user.name || user.email} · manager mobile app ${action}`)
-}
+    if (pwaAccess.requested) {
+      const action = user.pwa_enabled ? 'enabled' : 'prepared'
+      logActivity('pwa_access_updated', `${user.name || user.email} · manager mobile app ${action}`)
+    }
 
-return id
+    return id
   }
 }
 
@@ -5390,6 +5841,7 @@ export async function getRoomById(id) {
 }
 
 export async function createRoom(data) {
+  await assertCreationWithinUsageLimit('room', { forceRemoteRefresh: isOnline })
   const id = randomUUID()
   const room = {
     id,
@@ -5903,20 +6355,20 @@ async function checkRoomConflict(roomId, checkIn, checkOut, excludeId = null) {
   await checkExclusiveEventConflict(checkIn, checkOut)
   const existingBookings = isOnline
     ? (() => {
-        let q = supabase
-          .from('bookings')
-          .select('id, check_in, check_out')
-          .eq('lodge_id', lodgeId)
-          .eq('room_id', roomId)
-          .neq('status', 'cancelled')
-        if (excludeId) q = q.neq('id', excludeId)
-        return q
-      })().then((r) => r.data || [])
+      let q = supabase
+        .from('bookings')
+        .select('id, check_in, check_out')
+        .eq('lodge_id', lodgeId)
+        .eq('room_id', roomId)
+        .neq('status', 'cancelled')
+      if (excludeId) q = q.neq('id', excludeId)
+      return q
+    })().then((r) => r.data || [])
     : Promise.resolve(
-        readCache('bookings').filter(
-          (b) => b.room_id === roomId && b.status !== 'cancelled' && b.id !== excludeId
-        )
+      readCache('bookings').filter(
+        (b) => b.room_id === roomId && b.status !== 'cancelled' && b.id !== excludeId
       )
+    )
 
   const bookings = await existingBookings
   const conflict = bookings.find((b) => b.check_in < checkOut && b.check_out > checkIn)
@@ -5925,165 +6377,173 @@ async function checkRoomConflict(roomId, checkIn, checkOut, excludeId = null) {
 
 export async function createBooking(data) {
   try {
-  const { nights } = validateBookingDates(data.check_in, data.check_out)
-  await checkRoomConflict(data.room_id, data.check_in, data.check_out)
-
-  const room = await getRoomById(data.room_id)
-  if (!room) throw new Error('Room not found')
-  const baseTotal = room.rate_per_night * nights
-  const requestedTotal = Number(data.total_amount)
-  const allowTotalOverride = data.allow_total_override === true
-    && Number.isFinite(requestedTotal)
-    && requestedTotal > 0
-    && Math.abs(requestedTotal - baseTotal) > 0.01
-  const total = allowTotalOverride ? requestedTotal : baseTotal
-  if (isNaN(total) || total <= 0) throw new Error('Invalid total — check room rate and dates')
-
-  const deposit = Number(data.deposit_amount) || 0
-  const paymentMethod = data.payment_method || 'cash'
-  const invoice_number = await getNextBookingInvoiceNumber()
-  const id = randomUUID()
-  const booking = {
-    id,
-    customer_id: data.customer_id,
-    room_id: data.room_id,
-    check_in: data.check_in,
-    check_out: data.check_out,
-    adults: data.adults || 1,
-    children: data.children || 0,
-    total_amount: total,
-    status: 'confirmed',
-    payment_status: 'unpaid',
-    amount_paid: 0,
-    deposit_amount: deposit,
-    payment_method: null,
-    notes: data.notes || '',
-    created_by: data.created_by || null,
-    invoice_number,
-    lodge_id: lodgeId
-  }
-  const bookingCreateIdempotencyKey = createBookingIdempotencyKey(id)
-
-  if (isOnline) {
-    if (!booking.customer_id) {
-      throw new Error('Customer ID is required for booking')
-    }
-
-    const { data: result, error } = await supabase.rpc('create_booking', {
-      p_lodge_id: booking.lodge_id,
-      p_customer_id: booking.customer_id,
-      p_room_id: booking.room_id,
-      p_check_in: booking.check_in,
-      p_check_out: booking.check_out,
-      p_adults: booking.adults,
-      p_children: booking.children,
-      p_total_amount: booking.total_amount,
-      p_invoice_number: booking.invoice_number,
-      p_notes: booking.notes,
-      p_created_by: booking.created_by,
-      p_deposit_amount: deposit,
-      p_booking_id: booking.id,
-      p_idempotency_key: bookingCreateIdempotencyKey,
-      p_deposit_method: deposit > 0 ? paymentMethod : null,
-      p_allow_total_override: allowTotalOverride
+    await assertCreationWithinUsageLimit('booking', {
+      forceRemoteRefresh: isOnline,
+      monthDate: data?.check_in ? new Date(data.check_in) : new Date()
     })
+    const { nights } = validateBookingDates(data.check_in, data.check_out)
+    await checkRoomConflict(data.room_id, data.check_in, data.check_out)
 
-    if (error) {
-      if (/function create_booking|p_booking_id|p_idempotency_key|create_idempotency_key|p_allow_total_override/i.test(error.message || '')) {
-        throw new Error('The Supabase booking sync contract is outdated. Run the latest checked-in booking sync migration, then try again.')
+    const room = await getRoomById(data.room_id)
+    if (!room) throw new Error('Room not found')
+    const totalGuests = (data.adults || 1) + (data.children || 0)
+    if (totalGuests > (room.max_occupancy || 2)) {
+      throw new Error(`Number of guests (${totalGuests}) exceeds room maximum occupancy (${room.max_occupancy || 2})`)
+    }
+    const baseTotal = room.rate_per_night * nights
+    const requestedTotal = Number(data.total_amount)
+    const allowTotalOverride = data.allow_total_override === true
+      && Number.isFinite(requestedTotal)
+      && requestedTotal > 0
+      && Math.abs(requestedTotal - baseTotal) > 0.01
+    const total = allowTotalOverride ? requestedTotal : baseTotal
+    if (isNaN(total) || total <= 0) throw new Error('Invalid total — check room rate and dates')
+
+    const deposit = Number(data.deposit_amount) || 0
+    const paymentMethod = data.payment_method || 'cash'
+    const invoice_number = await getNextBookingInvoiceNumber()
+    const id = randomUUID()
+    const booking = {
+      id,
+      customer_id: data.customer_id,
+      room_id: data.room_id,
+      check_in: data.check_in,
+      check_out: data.check_out,
+      adults: data.adults || 1,
+      children: data.children || 0,
+      total_amount: total,
+      status: 'confirmed',
+      payment_status: 'unpaid',
+      amount_paid: 0,
+      deposit_amount: deposit,
+      payment_method: null,
+      notes: data.notes || '',
+      created_by: data.created_by || null,
+      invoice_number,
+      lodge_id: lodgeId
+    }
+    const bookingCreateIdempotencyKey = createBookingIdempotencyKey(id)
+
+    if (isOnline) {
+      if (!booking.customer_id) {
+        throw new Error('Customer ID is required for booking')
       }
-      if (error.message?.includes('no_overlapping_bookings')) {
-        throw new Error('This room is already booked for the selected dates.')
+
+      const { data: result, error } = await supabase.rpc('create_booking', {
+        p_lodge_id: booking.lodge_id,
+        p_customer_id: booking.customer_id,
+        p_room_id: booking.room_id,
+        p_check_in: booking.check_in,
+        p_check_out: booking.check_out,
+        p_adults: booking.adults,
+        p_children: booking.children,
+        p_total_amount: booking.total_amount,
+        p_invoice_number: booking.invoice_number,
+        p_notes: booking.notes,
+        p_created_by: booking.created_by,
+        p_deposit_amount: deposit,
+        p_booking_id: booking.id,
+        p_idempotency_key: bookingCreateIdempotencyKey,
+        p_deposit_method: deposit > 0 ? paymentMethod : null,
+        p_allow_total_override: allowTotalOverride
+      })
+
+      if (error) {
+        if (/function create_booking|p_booking_id|p_idempotency_key|create_idempotency_key|p_allow_total_override/i.test(error.message || '')) {
+          throw new Error('The Supabase booking sync contract is outdated. Run the latest checked-in booking sync migration, then try again.')
+        }
+        if (error.message?.includes('no_overlapping_bookings')) {
+          throw new Error('This room is already booked for the selected dates.')
+        }
+        throw new Error('Network Error: ' + error.message)
       }
-      throw new Error('Network Error: ' + error.message)
-    }
-    if (!result || !result.success) {
-      throw new Error(result?.error || 'Booking failed')
-    }
-    await refreshCache('bookings')
-    const _r = readCache('rooms').find((r) => r.id === booking.room_id)
-    const _c = readCache('customers').find((c) => c.id === booking.customer_id)
-    logActivity('booking_created', `Booking created · ${_c?.name || 'Guest'} · Room ${_r?.room_number || ''} · ${booking.check_in} → ${booking.check_out}`)
-    createBackup()
-
-    const bookingId = result.booking_id || id
-
-    // P2: Explicitly record deposit if provided. 
-    // This ensures payment records are created even if the create_booking RPC is an older version.
-    if (deposit > 0) {
-      try {
-        await updateBookingPayment(bookingId, deposit, paymentMethod, 'deposit')
-      } catch (depError) {
-        // If deposit fails but booking succeeded, surface as a warning so the UI stays in the modal.
-        const err = new Error(depError.message || 'Deposit could not be recorded')
-        err.code = 'DEPOSIT_FAILED'
-        err.booking_id = bookingId
-        throw err
+      if (!result || !result.success) {
+        throw new Error(result?.error || 'Booking failed')
       }
+      await refreshCache('bookings')
+      const _r = readCache('rooms').find((r) => r.id === booking.room_id)
+      const _c = readCache('customers').find((c) => c.id === booking.customer_id)
+      logActivity('booking_created', `Booking created · ${_c?.name || 'Guest'} · Room ${_r?.room_number || ''} · ${booking.check_in} → ${booking.check_out}`)
+      createBackup()
+
+      const bookingId = result.booking_id || id
+
+      // P2: Explicitly record deposit if provided. 
+      // This ensures payment records are created even if the create_booking RPC is an older version.
+      if (deposit > 0) {
+        try {
+          await updateBookingPayment(bookingId, deposit, paymentMethod, 'deposit')
+        } catch (depError) {
+          // If deposit fails but booking succeeded, surface as a warning so the UI stays in the modal.
+          const err = new Error(depError.message || 'Deposit could not be recorded')
+          err.code = 'DEPOSIT_FAILED'
+          err.booking_id = bookingId
+          throw err
+        }
+      }
+      return bookingId
+    } else {
+      const cached = readCache('bookings')
+      const cachedCustomer = booking.customer_id
+        ? readCache('customers').find((customer) => customer.id === booking.customer_id)
+        : null
+      const optimisticPayment = buildOfflineBookingFinancialState(total, deposit)
+      const newBooking = {
+        ...booking,
+        amount_paid: optimisticPayment.amount_paid,
+        payment_status: optimisticPayment.payment_status,
+        _local_invoice_number: buildLocalPendingInvoiceNumber(id),
+        _pending_sync: true,
+        _pending_payment: deposit > 0,
+        _sync_created_offline: true,
+        _sync_state: 'pending',
+        _sync_error: null,
+        created_at: new Date().toISOString()
+      }
+
+      queueOperation('rpc', 'create_booking', {
+        p_lodge_id: booking.lodge_id,
+        p_customer_id: booking.customer_id,
+        p_room_id: booking.room_id,
+        p_check_in: booking.check_in,
+        p_check_out: booking.check_out,
+        p_adults: booking.adults,
+        p_children: booking.children || 0,
+        p_total_amount: booking.total_amount,
+        p_invoice_number: booking.invoice_number,
+        p_notes: booking.notes || '',
+        p_created_by: booking.created_by,
+        p_deposit_amount: deposit,
+        p_booking_id: booking.id,
+        p_idempotency_key: bookingCreateIdempotencyKey,
+        p_deposit_method: deposit > 0 ? paymentMethod : null,
+        p_allow_total_override: allowTotalOverride
+      }, null, {
+        _queue_id: `booking-${id}`,
+        ...(cachedCustomer?._pending_sync ? { _depends_on: `customer-${booking.customer_id}` } : {})
+      })
+
+      cached.push(newBooking)
+      writeCache('bookings', cached)
+
+      // P2: Explicitly queue deposit if provided.
+      // updateBookingPayment handles its own queuing and dependency on the booking creation record.
+      if (deposit > 0) {
+        await updateBookingPayment(id, deposit, paymentMethod, 'deposit')
+      }
+
+      const _r = readCache('rooms').find((r) => r.id === newBooking.room_id)
+      const _c = readCache('customers').find((c) => c.id === newBooking.customer_id)
+
+      logActivity(
+        'booking_created',
+        `Booking created · ${_c?.name || 'Guest'} · Room ${_r?.room_number || ''} · ${newBooking.check_in} → ${newBooking.check_out}`
+      )
+
+      createBackup()
+
+      return id
     }
-    return bookingId
-  } else {
-    const cached = readCache('bookings')
-    const cachedCustomer = booking.customer_id
-      ? readCache('customers').find((customer) => customer.id === booking.customer_id)
-      : null
-    const optimisticPayment = buildOfflineBookingFinancialState(total, deposit)
-    const newBooking = {
-      ...booking,
-      amount_paid: optimisticPayment.amount_paid,
-      payment_status: optimisticPayment.payment_status,
-      _local_invoice_number: buildLocalPendingInvoiceNumber(id),
-      _pending_sync: true,
-      _pending_payment: deposit > 0,
-      _sync_created_offline: true,
-      _sync_state: 'pending',
-      _sync_error: null,
-      created_at: new Date().toISOString()
-    }
-
-    queueOperation('rpc', 'create_booking', {
-      p_lodge_id:        booking.lodge_id,
-      p_customer_id:     booking.customer_id,
-      p_room_id:         booking.room_id,
-      p_check_in:        booking.check_in,
-      p_check_out:       booking.check_out,
-      p_adults:          booking.adults,
-      p_children:        booking.children || 0,
-      p_total_amount:    booking.total_amount,
-      p_invoice_number:  booking.invoice_number,
-      p_notes:           booking.notes || '',
-      p_created_by:      booking.created_by,
-      p_deposit_amount:  deposit,
-      p_booking_id:      booking.id,
-      p_idempotency_key: bookingCreateIdempotencyKey,
-      p_deposit_method:  deposit > 0 ? paymentMethod : null,
-      p_allow_total_override: allowTotalOverride
-    }, null, {
-      _queue_id: `booking-${id}`,
-      ...(cachedCustomer?._pending_sync ? { _depends_on: `customer-${booking.customer_id}` } : {})
-    })
-
-    cached.push(newBooking)
-    writeCache('bookings', cached)
-
-    // P2: Explicitly queue deposit if provided.
-    // updateBookingPayment handles its own queuing and dependency on the booking creation record.
-    if (deposit > 0) {
-      await updateBookingPayment(id, deposit, paymentMethod, 'deposit')
-    }
-
-    const _r = readCache('rooms').find((r) => r.id === newBooking.room_id)
-    const _c = readCache('customers').find((c) => c.id === newBooking.customer_id)
-
-    logActivity(
-      'booking_created',
-      `Booking created · ${_c?.name || 'Guest'} · Room ${_r?.room_number || ''} · ${newBooking.check_in} → ${newBooking.check_out}`
-    )
-
-    createBackup()
-
-    return id
-  }
   } catch (error) {
     recordCriticalError('booking.create', error, {
       customer_id: data?.customer_id || null,
@@ -6103,6 +6563,10 @@ export async function updateBooking(id, data) {
 
     const room = await getRoomById(data.room_id)
     if (!room) throw new Error('Room not found')
+    const totalGuests = (data.adults || 1) + (data.children || 0)
+    if (totalGuests > (room.max_occupancy || 2)) {
+      throw new Error(`Number of guests (${totalGuests}) exceeds room maximum occupancy (${room.max_occupancy || 2})`)
+    }
     const total = room.rate_per_night * nights
     if (isNaN(total) || total <= 0) throw new Error('Invalid total — check room rate and dates')
 
@@ -6178,8 +6642,8 @@ export async function updateBooking(id, data) {
 }
 
 const VALID_STATUS_TRANSITIONS = {
-  pending:    ['confirmed', 'cancelled'],
-  confirmed:  ['checked_in', 'cancelled'],
+  pending: ['confirmed', 'cancelled'],
+  confirmed: ['checked_in', 'cancelled'],
   checked_in: ['checked_out'],
 }
 
@@ -6190,6 +6654,15 @@ export async function updateBookingStatus(id, status) {
     const allowed = VALID_STATUS_TRANSITIONS[currentBooking.status]
     if (allowed && !allowed.includes(status)) {
       throw new Error(`Cannot transition booking from '${currentBooking.status}' to '${status}'`)
+    }
+  }
+
+  if (status === 'checked_in' && currentBooking) {
+    const checkInDate = new Date(currentBooking.check_in + 'T00:00:00')
+    const todayDate = new Date()
+    todayDate.setHours(0, 0, 0, 0)
+    if (checkInDate.getTime() > todayDate.getTime()) {
+      throw new Error(`Cannot check in before the check-in date (${currentBooking.check_in}).`)
     }
   }
 
@@ -6208,7 +6681,7 @@ export async function updateBookingStatus(id, status) {
 
   const roomStatus =
     status === 'checked_in' ? 'occupied' :
-    status === 'checked_out' || status === 'cancelled' ? 'available' : null
+      status === 'checked_out' || status === 'cancelled' ? 'available' : null
 
   const actionLabel = {
     checked_in: 'Check-in',
@@ -6296,13 +6769,13 @@ export async function updateBookingPayment(id, paymentAmount, paymentMethod, typ
     : createPaymentIdempotencyKey(id, type, null, fallbackSignature)
   if (isOnline) {
     const { data: result, error } = await supabase.rpc('update_booking_payment', {
-      p_booking_id:      id,
-      p_lodge_id:        lodgeId,
-      p_amount:          numericAmount,
-      p_method:          paymentMethod || 'cash',
-      p_type:            type,
+      p_booking_id: id,
+      p_lodge_id: lodgeId,
+      p_amount: numericAmount,
+      p_method: paymentMethod || 'cash',
+      p_type: type,
       p_idempotency_key: idempotencyKey,
-      p_recorded_by:     currentUser?.id || null,
+      p_recorded_by: currentUser?.id || null,
       p_expected_updated_at: expectedUpdatedAt
     })
     if (error) throw new Error(error.message)
@@ -6314,6 +6787,7 @@ export async function updateBookingPayment(id, paymentAmount, paymentMethod, typ
     const activityLabel = type === 'refund' ? 'refund_processed' : 'payment_updated'
     const verb = type === 'refund' ? 'Refund recorded' : 'Payment updated'
     logActivity(activityLabel, `${verb} · ${_c?.name || 'Guest'} · ${result.payment_status} · ${Math.abs(numericAmount).toFixed(2)} (${paymentMethod})`)
+    return { success: true, offline: false, ...result }
   } else {
     const cached = readCache('bookings')
     const idx = cached.findIndex((b) => b.id === id)
@@ -6325,24 +6799,24 @@ export async function updateBookingPayment(id, paymentAmount, paymentMethod, typ
       }
       // Canonical amount owed = room total + charges; || 0 guards against null/undefined charges_total
       const totalOwed = (Number(b.total_amount) || 0) + (Number(b.charges_total) || 0)
-      
+
       if (type === 'payment' && newPaid > totalOwed + 0.01) {
         throw new Error(`Amount paid (${newPaid.toFixed(2)}) cannot exceed total booking value (${totalOwed.toFixed(2)}).`)
       }
 
       // Use b._pending_sync (pre-write value) — only depend on booking creation entry;
       // avoids false dependency when booking is already synced to server
-      const autoDepend  = dependsOn || (b._pending_sync ? `booking-${id}` : null)
+      const autoDepend = dependsOn || (b._pending_sync ? `booking-${id}` : null)
       const paymentMeta = autoDepend ? { _depends_on: autoDepend } : {}
       // Queue FIRST — intent is durable before local state changes
       queueOperation('rpc', 'update_booking_payment', {
-        p_booking_id:      id,
-        p_lodge_id:        lodgeId,
-        p_amount:          numericAmount,
-        p_method:          paymentMethod || 'cash',
-        p_type:            type,
+        p_booking_id: id,
+        p_lodge_id: lodgeId,
+        p_amount: numericAmount,
+        p_method: paymentMethod || 'cash',
+        p_type: type,
         p_idempotency_key: idempotencyKey,
-        p_recorded_by:     currentUser?.id || null,
+        p_recorded_by: currentUser?.id || null,
         p_expected_updated_at: b.updated_at || null
       }, null, paymentMeta)
       // Cache SECOND
@@ -6357,18 +6831,20 @@ export async function updateBookingPayment(id, paymentAmount, paymentMethod, typ
       const activityLabel = type === 'refund' ? 'refund_processed' : 'payment_updated'
       const verb = type === 'refund' ? 'Refund recorded (offline)' : 'Payment updated (offline)'
       logActivity(activityLabel, `${verb} · ${_c?.name || 'Guest'} · Pending sync · ${Math.abs(numericAmount).toFixed(2)} (${paymentMethod})`)
+      return { success: true, offline: true, queued: true }
     } else {
       // Booking not found in cache — queue with no dependency (prevents false links)
       queueOperation('rpc', 'update_booking_payment', {
-        p_booking_id:      id,
-        p_lodge_id:        lodgeId,
-        p_amount:          numericAmount,
-        p_method:          paymentMethod || 'cash',
-        p_type:            type,
+        p_booking_id: id,
+        p_lodge_id: lodgeId,
+        p_amount: numericAmount,
+        p_method: paymentMethod || 'cash',
+        p_type: type,
         p_idempotency_key: idempotencyKey,
-        p_recorded_by:     currentUser?.id || null,
+        p_recorded_by: currentUser?.id || null,
         p_expected_updated_at: expectedUpdatedAt
       }, null, dependsOn ? { _depends_on: dependsOn } : {})
+      return { success: true, offline: true, queued: true }
     }
   }
 }
@@ -6758,20 +7234,20 @@ export async function createEventBooking(data) {
 
   const conflicting = isOnline
     ? (
-        await supabase
-          .from('bookings')
-          .select('room_id')
-          .eq('lodge_id', lodgeId)
-          .neq('status', 'cancelled')
-          .lt('check_in', data.check_out)
-          .gt('check_out', data.check_in)
-      ).data || []
+      await supabase
+        .from('bookings')
+        .select('room_id')
+        .eq('lodge_id', lodgeId)
+        .neq('status', 'cancelled')
+        .lt('check_in', data.check_out)
+        .gt('check_out', data.check_in)
+    ).data || []
     : readCache('bookings').filter(
-        (b) =>
-          b.status !== 'cancelled' &&
-          b.check_in < data.check_out &&
-          b.check_out > data.check_in
-      )
+      (b) =>
+        b.status !== 'cancelled' &&
+        b.check_in < data.check_out &&
+        b.check_out > data.check_in
+    )
 
   if (conflicting.length > 0) {
     const roomCount = new Set(conflicting.map(b => b.room_id)).size
@@ -6922,10 +7398,10 @@ export async function getOccupancyReport(startDate, endDate) {
     const hasEvent = roomBookings.some(b => b.is_exclusive_event)
     return {
       ...room,
-      occupied_nights:  nights,
-      occupancy_rate:   totalDays > 0 ? Math.round((nights / totalDays) * 100) : 0,
-      actual_revenue:   actualRevenue,
-      has_event:        hasEvent
+      occupied_nights: nights,
+      occupancy_rate: totalDays > 0 ? Math.round((nights / totalDays) * 100) : 0,
+      actual_revenue: actualRevenue,
+      has_event: hasEvent
     }
   })
 }
@@ -6974,7 +7450,7 @@ async function getRevenueReportLocal(startDate, endDate) {
   // Exclude cancelled bookings from all revenue aggregations.
   // Cancelled count is preserved from the raw fetch for informational reporting.
   // Guard: normalize status to '' so null/undefined values do not pass through as non-cancelled.
-  const cancelledCount  = bookings.filter(b => (b.status || '') === 'cancelled').length
+  const cancelledCount = bookings.filter(b => (b.status || '') === 'cancelled').length
   // Exclude both cancelled and pending: pending online requests are not financial commitments
   const revenueBookings = bookings.filter(b => !['cancelled', 'pending'].includes(b.status || ''))
   const cancelledBookingIds = new Set(
@@ -6994,46 +7470,46 @@ async function getRevenueReportLocal(startDate, endDate) {
   // allUnits is derived from revenueBookings ONLY — cancelled bookings must not affect
   // total_bookings, avg_booking_value, or any count/average derived from allUnits.
   const regularBookings = revenueBookings.filter(b => !b.is_exclusive_event)
-  const eventRows       = revenueBookings.filter(b => b.is_exclusive_event)
+  const eventRows = revenueBookings.filter(b => b.is_exclusive_event)
 
   // Collapse event room-rows into unique event groups (1 group = 1 event).
   // E5 FIX: accumulate charges_total from every room-row so folio charges on
   // event bookings are not silently dropped from event revenue.
   const eventGroupMap = {}
   eventRows.forEach(b => {
-    const match   = b.notes?.match(/\[GROUP:([^\]]+)\]/)
+    const match = b.notes?.match(/\[GROUP:([^\]]+)\]/)
     const groupId = match?.[1] || b.check_in
     if (!eventGroupMap[groupId]) {
       const nights = Math.ceil((new Date(b.check_out) - new Date(b.check_in)) / 86400000)
       eventGroupMap[groupId] = {
-        group_id:        groupId,
-        check_in:        b.check_in,
-        check_out:       b.check_out,
+        group_id: groupId,
+        check_in: b.check_in,
+        check_out: b.check_out,
         nights,
-        daily_rate:      b.event_daily_rate || 0,
-        total:           (b.event_daily_rate || 0) * nights,
-        charges_total:   0,   // accumulated below from all room-rows
-        room_count:      0,
-        status:          b.status,
-        payment_status:  b.payment_status,
-        amount_paid:     0,
-        vat_enabled:     !!b.vat_enabled,
-        vat_rate:        Number(b.vat_rate || 0)
+        daily_rate: b.event_daily_rate || 0,
+        total: (b.event_daily_rate || 0) * nights,
+        charges_total: 0,   // accumulated below from all room-rows
+        room_count: 0,
+        status: b.status,
+        payment_status: b.payment_status,
+        amount_paid: 0,
+        vat_enabled: !!b.vat_enabled,
+        vat_rate: Number(b.vat_rate || 0)
       }
     }
     eventGroupMap[groupId].room_count++
-    eventGroupMap[groupId].amount_paid     += (b.amount_paid    || 0)
+    eventGroupMap[groupId].amount_paid += (b.amount_paid || 0)
     // E5 FIX: sum charges_total across all rooms in this event group
-    eventGroupMap[groupId].charges_total   += (b.charges_total  || 0)
+    eventGroupMap[groupId].charges_total += (b.charges_total || 0)
   })
-  const uniqueEvents   = Object.values(eventGroupMap)
+  const uniqueEvents = Object.values(eventGroupMap)
   // E5 FIX: event group revenue = base (daily_rate*nights) + accumulated folio charges
-  const eventRevenue   = uniqueEvents.reduce((sum, e) => sum + e.total + e.charges_total, 0)
+  const eventRevenue = uniqueEvents.reduce((sum, e) => sum + e.total + e.charges_total, 0)
   // Include charges_total in revenue; || 0 guards against null/undefined on older rows
   const regularRevenue = regularBookings.reduce((sum, b) => sum + (b.total_amount || 0) + (b.charges_total || 0), 0)
-  const totalRevenue   = regularRevenue + eventRevenue
-  const totalPaid      = regularBookings.reduce((sum, b) => sum + (b.amount_paid || 0), 0)
-                       + uniqueEvents.reduce((sum, e) => sum + e.amount_paid, 0)
+  const totalRevenue = regularRevenue + eventRevenue
+  const totalPaid = regularBookings.reduce((sum, b) => sum + (b.amount_paid || 0), 0)
+    + uniqueEvents.reduce((sum, e) => sum + e.amount_paid, 0)
 
   // Treat each unique event as 1 booking unit for counts / averages
   const allUnits = [...regularBookings, ...uniqueEvents]
@@ -7083,32 +7559,32 @@ async function getRevenueReportLocal(startDate, endDate) {
   }
 
   return {
-    total_revenue:     totalRevenue,
-    regular_revenue:   regularRevenue,
-    event_revenue:     eventRevenue,
-    event_count:       uniqueEvents.length,
-    event_bookings:    uniqueEvents,
-    total_bookings:    allUnits.length,
+    total_revenue: totalRevenue,
+    regular_revenue: regularRevenue,
+    event_revenue: eventRevenue,
+    event_count: uniqueEvents.length,
+    event_bookings: uniqueEvents,
+    total_bookings: allUnits.length,
     avg_booking_value: allUnits.length > 0 ? totalRevenue / allUnits.length : 0,
-    confirmed_count:   allUnits.filter(b => b.status === 'confirmed').length,
-    checked_in_count:  allUnits.filter(b => b.status === 'checked_in').length,
+    confirmed_count: allUnits.filter(b => b.status === 'confirmed').length,
+    checked_in_count: allUnits.filter(b => b.status === 'checked_in').length,
     checked_out_count: allUnits.filter(b => b.status === 'checked_out').length,
-    cancelled_count:   cancelledCount,
-    paid_count:        allUnits.filter(b => b.payment_status === 'paid').length,
-    partial_count:     allUnits.filter(b => b.payment_status === 'partial').length,
-    unpaid_count:      allUnits.filter(b => !b.payment_status || b.payment_status === 'unpaid').length,
-    paid_revenue:      netCashCollected,
-    cash_collected:    netCashCollected,
-    gross_collected:   grossCollected,
-    refunds_issued:    refundsIssued,
+    cancelled_count: cancelledCount,
+    paid_count: allUnits.filter(b => b.payment_status === 'paid').length,
+    partial_count: allUnits.filter(b => b.payment_status === 'partial').length,
+    unpaid_count: allUnits.filter(b => !b.payment_status || b.payment_status === 'unpaid').length,
+    paid_revenue: netCashCollected,
+    cash_collected: netCashCollected,
+    gross_collected: grossCollected,
+    refunds_issued: refundsIssued,
     amount_paid_snapshot: totalPaid,
-    retained_revenue:  retainedRevenue,
-    retained_count:    cancelledRetained.length,
+    retained_revenue: retainedRevenue,
+    retained_count: cancelledRetained.length,
     outstanding_amount: totalRevenue - totalPaid,
     vat_enabled: vatRatesInUse.size > 0,
-    vat_rate:    vatRate,
-    vat_mixed:   vatRatesInUse.size > 1,
-    vat_amount:  vatAmount,
+    vat_rate: vatRate,
+    vat_mixed: vatRatesInUse.size > 1,
+    vat_amount: vatAmount,
     net_revenue: +(totalRevenue - vatAmount).toFixed(2),
     booking_payment_by_method: bookingPaymentByMethod
   }
@@ -7218,19 +7694,19 @@ async function getProfitLossLocal(start, end) {
     getPoolRevenueSummary(start, end),
     getMaintenanceRowsForPeriod(start, end)
   ])
-  const bookingRevenue    = rev.total_revenue || 0
-  const posRevenue        = pos?.direct_revenue || 0
+  const bookingRevenue = rev.total_revenue || 0
+  const posRevenue = pos?.direct_revenue || 0
   const conferenceRevenue = conf.total || 0
-  const poolRevenue       = pool.total || 0
-  const retainedRevenue   = Number(rev.retained_revenue || 0)
-  const totalRevenue      = bookingRevenue + posRevenue + conferenceRevenue + poolRevenue + retainedRevenue
-  const totalExpenses     = exps.reduce((s, e) => s + Number(e.amount || 0), 0)
-  const invCosts          = inv.total || 0
-  const supCosts          = sup.total || 0
-  const maintenanceCosts  = (maintenanceRows || []).reduce((s, row) => s + Number(row.total_cost || 0), 0)
-  const totalCosts        = invCosts + supCosts + maintenanceCosts
-  const grossProfit       = totalRevenue - totalExpenses - totalCosts
-  const expByCategory     = exps.reduce((acc, e) => {
+  const poolRevenue = pool.total || 0
+  const retainedRevenue = Number(rev.retained_revenue || 0)
+  const totalRevenue = bookingRevenue + posRevenue + conferenceRevenue + poolRevenue + retainedRevenue
+  const totalExpenses = exps.reduce((s, e) => s + Number(e.amount || 0), 0)
+  const invCosts = inv.total || 0
+  const supCosts = sup.total || 0
+  const maintenanceCosts = (maintenanceRows || []).reduce((s, row) => s + Number(row.total_cost || 0), 0)
+  const totalCosts = invCosts + supCosts + maintenanceCosts
+  const grossProfit = totalRevenue - totalExpenses - totalCosts
+  const expByCategory = exps.reduce((acc, e) => {
     acc[e.category] = (acc[e.category] || 0) + Number(e.amount || 0)
     return acc
   }, {})
@@ -7242,8 +7718,8 @@ async function getProfitLossLocal(start, end) {
     grossProfit,
     vatAmount,
     vatEnabled: rev.vat_enabled || false,
-    vatRate:    rev.vat_rate    || 0,
-    vatMixed:   rev.vat_mixed   || false,
+    vatRate: rev.vat_rate || 0,
+    vatMixed: rev.vat_mixed || false,
     netRevenue: +(totalRevenue - vatAmount).toFixed(2)
   }
 }
@@ -7332,6 +7808,8 @@ export async function getProfitLoss(start, end) {
 
 export async function getReportsSnapshot(today = getLocalDateKey(new Date(), LOCAL_TIME_ZONE)) {
   if (!lodgeId) throw new Error('No active lodge selected for reports snapshot.')
+  const syncMeta = readSyncMeta()
+  const lastSyncedAt = lastSuccessfulSyncAt || syncMeta.lastSuccessfulSyncAt || null
 
   if (isOnline) {
     try {
@@ -7340,7 +7818,7 @@ export async function getReportsSnapshot(today = getLocalDateKey(new Date(), LOC
         p_today: today
       })
       if (error) throw error
-      if (data && typeof data === 'object') return { ...data, source: 'server', as_of: today }
+      if (data && typeof data === 'object') return { ...data, source: 'server', as_of: today, last_synced_at: lastSyncedAt }
       throw new Error('Reports snapshot was empty.')
     } catch (error) {
       console.warn('[Reports] Shared snapshot unavailable, using local fallback:', error?.message || error)
@@ -7442,7 +7920,8 @@ export async function getReportsSnapshot(today = getLocalDateKey(new Date(), LOC
     conferenceRevenue: conferenceBookings.filter((booking) => String(booking?.payment_status || '').toLowerCase() !== 'cancelled' && inRange(booking.booking_date, monthStart, monthEnd)).reduce((sum, booking) => sum + Number(booking.total_amount || 0), 0),
     poolRevenue: poolDayUse.filter((entry) => inRange(entry.date, monthStart, monthEnd)).reduce((sum, entry) => sum + Number(entry.total || 0), 0),
     source: isOnline ? 'fallback' : 'offline',
-    as_of: today
+    as_of: today,
+    last_synced_at: lastSyncedAt
   }
 }
 
@@ -7510,7 +7989,7 @@ export async function getOutletProfitLoss(startDate, endDate) {
   let expenseRows = []
   let bookingResult = null
   let confResult = { total: 0 }
-  let poolResult  = { total: 0 }
+  let poolResult = { total: 0 }
   let supResult = { total: cachedSupplyTotal }
 
   try {
@@ -7563,9 +8042,9 @@ export async function getOutletProfitLoss(startDate, endDate) {
     purchaseRows = (livePurchases || []).length === 0 && cachedPurchaseRows.length > 0 ? cachedPurchaseRows : (livePurchases || [])
     expenseRows = (liveExpenses || []).length === 0 && cachedExpenseRows.length > 0 ? cachedExpenseRows : (liveExpenses || [])
     bookingResult = liveBookingResult
-    confResult    = liveConfResult  || { total: 0 }
-    poolResult    = livePoolResult  || { total: 0 }
-    supResult     = liveSupplyResult || { total: cachedSupplyTotal }
+    confResult = liveConfResult || { total: 0 }
+    poolResult = livePoolResult || { total: 0 }
+    supResult = liveSupplyResult || { total: cachedSupplyTotal }
   } catch (error) {
     outletRows = cachedOutlets.length > 0 ? cachedOutlets : await getOutlets().catch(() => [])
     posRows = cachedPosRows
@@ -7579,26 +8058,26 @@ export async function getOutletProfitLoss(startDate, endDate) {
   }
 
   const outletMap = {}
-  ;(outletRows || []).forEach(o => {
-    const key = getOutletProfitLossBucket(o)
-    outletMap[o.id] = { key, name: o.name, type: o.type || null }
-  })
+    ; (outletRows || []).forEach(o => {
+      const key = getOutletProfitLossBucket(o)
+      outletMap[o.id] = { key, name: o.name, type: o.type || null }
+    })
 
   // B. Initialize buckets — always present, even if zero
   const buckets = {
-    kitchen:    { key: 'kitchen',    name: 'Kitchen',    posRevenue: 0, bookingRevenue: 0, revenue: 0, inventoryCost: 0, supplyCost: 0, maintenanceCost: 0, expenses: 0, profit: 0 },
-    bar:        { key: 'bar',        name: 'Bar',        posRevenue: 0, bookingRevenue: 0, revenue: 0, inventoryCost: 0, supplyCost: 0, maintenanceCost: 0, expenses: 0, profit: 0 },
+    kitchen: { key: 'kitchen', name: 'Kitchen', posRevenue: 0, bookingRevenue: 0, revenue: 0, inventoryCost: 0, supplyCost: 0, maintenanceCost: 0, expenses: 0, profit: 0 },
+    bar: { key: 'bar', name: 'Bar', posRevenue: 0, bookingRevenue: 0, revenue: 0, inventoryCost: 0, supplyCost: 0, maintenanceCost: 0, expenses: 0, profit: 0 },
     front_desk: { key: 'front_desk', name: 'Front Desk', posRevenue: 0, bookingRevenue: 0, revenue: 0, inventoryCost: 0, supplyCost: 0, maintenanceCost: 0, expenses: 0, profit: 0 },
     unassigned: { key: 'unassigned', name: 'Unassigned', posRevenue: 0, bookingRevenue: 0, revenue: 0, inventoryCost: 0, supplyCost: 0, maintenanceCost: 0, expenses: 0, profit: 0 }
   }
 
-  // C–F: Fetch all raw data in parallel
-  // C. POS revenue grouped by outlet
-  ;(posRows || []).forEach(o => {
-    const info = outletMap[o.outlet_id]
-    const key = info?.key || 'unassigned'
-    buckets[key].posRevenue += Number(o.total || 0)
-  })
+    // C–F: Fetch all raw data in parallel
+    // C. POS revenue grouped by outlet
+    ; (posRows || []).forEach(o => {
+      const info = outletMap[o.outlet_id]
+      const key = info?.key || 'unassigned'
+      buckets[key].posRevenue += Number(o.total || 0)
+    })
 
   const folioPosRevenue = (posRows || []).reduce(
     (sum, row) => sum + ((row.payment_method || '') === 'folio' ? Number(row.total || 0) : 0),
@@ -7610,25 +8089,25 @@ export async function getOutletProfitLoss(startDate, endDate) {
     + (confResult.total || 0)
     + (poolResult.total || 0)
 
-  // E. Inventory cost grouped by outlet (JS-side — same pattern as getInventorySpend)
-  ;(purchaseRows || []).forEach(p => {
-    const info = outletMap[p.inventory_items?.outlet_id]
-    const key = info?.key || 'unassigned'
-    buckets[key].inventoryCost += Number(p.total_cost || 0)
-  })
+    // E. Inventory cost grouped by outlet (JS-side — same pattern as getInventorySpend)
+    ; (purchaseRows || []).forEach(p => {
+      const info = outletMap[p.inventory_items?.outlet_id]
+      const key = info?.key || 'unassigned'
+      buckets[key].inventoryCost += Number(p.total_cost || 0)
+    })
 
-  // F. Expenses grouped by outlet
-  ;(expenseRows || []).forEach(e => {
-    const info = outletMap[e.outlet_id]
-    const key = info?.key || 'unassigned'
-    buckets[key].expenses += Number(e.amount || 0)
-  })
+    // F. Expenses grouped by outlet
+    ; (expenseRows || []).forEach(e => {
+      const info = outletMap[e.outlet_id]
+      const key = info?.key || 'unassigned'
+      buckets[key].expenses += Number(e.amount || 0)
+    })
 
-  // G. Room-based maintenance is a Front Desk cost; property-wide work stays Unassigned.
-  ;(maintenanceRows || []).forEach((row) => {
-    const key = row.room_id || row.room_number ? 'front_desk' : 'unassigned'
-    buckets[key].maintenanceCost += Number(row.total_cost || 0)
-  })
+    // G. Room-based maintenance is a Front Desk cost; property-wide work stays Unassigned.
+    ; (maintenanceRows || []).forEach((row) => {
+      const key = row.room_id || row.room_number ? 'front_desk' : 'unassigned'
+      buckets[key].maintenanceCost += Number(row.total_cost || 0)
+    })
 
   // H. Room supplies are accommodation costs, so keep them under Front Desk.
   buckets.front_desk.supplyCost += Number(supResult?.total || 0)
@@ -7636,20 +8115,20 @@ export async function getOutletProfitLoss(startDate, endDate) {
   // I. Per-outlet totals
   Object.values(buckets).forEach(b => {
     b.revenue = b.posRevenue + b.bookingRevenue
-    b.profit  = b.revenue - b.inventoryCost - b.supplyCost - b.maintenanceCost - b.expenses
+    b.profit = b.revenue - b.inventoryCost - b.supplyCost - b.maintenanceCost - b.expenses
   })
 
   // J. Combined — built by summing outlet rows so reconciliation is guaranteed
   const combined = { posRevenue: 0, bookingRevenue: 0, revenue: 0, inventoryCost: 0, supplyCost: 0, maintenanceCost: 0, expenses: 0, profit: 0 }
   Object.values(buckets).forEach(b => {
-    combined.posRevenue     += b.posRevenue
+    combined.posRevenue += b.posRevenue
     combined.bookingRevenue += b.bookingRevenue
-    combined.revenue        += b.revenue
-    combined.inventoryCost  += b.inventoryCost
-    combined.supplyCost     += b.supplyCost
+    combined.revenue += b.revenue
+    combined.inventoryCost += b.inventoryCost
+    combined.supplyCost += b.supplyCost
     combined.maintenanceCost += b.maintenanceCost
-    combined.expenses       += b.expenses
-    combined.profit         += b.profit
+    combined.expenses += b.expenses
+    combined.profit += b.profit
   })
 
   return {
@@ -7688,51 +8167,58 @@ export async function getDashboardStats() {
     }
 
     // Run 5 targeted queries in parallel — each fetches only what it needs.
-    // Previously: one select('*') with no date filter pulled the full booking history.
-    const d = new Date(today)
-    const monthStart = thisMonth + '-01'
-    const nextMonthStart = new Date(d.getFullYear(), d.getMonth() + 1, 1).toISOString().split('T')[0]
+    // NOTE: charges_total is not selected here because it may not yet exist as a
+    // column on the bookings table in older DB schemas (it lives in booking_charges).
+    // The RPC above is the canonical source; this is a last-resort fallback.
+    try {
+      const d = new Date(today)
+      const monthStart = thisMonth + '-01'
+      const nextMonthStart = new Date(d.getFullYear(), d.getMonth() + 1, 1).toISOString().split('T')[0]
 
-    const [roomsRes, occupiedRes, todayRes, revenueRes, upcomingRes] = await Promise.all([
-      // count only — HEAD request, no rows transferred
-      supabase.from('rooms').select('id', { count: 'exact', head: true }).eq('lodge_id', lodgeId),
-      supabase.from('bookings').select('id', { count: 'exact', head: true })
-        .eq('lodge_id', lodgeId)
-        .in('status', ['confirmed', 'checked_in'])
-        .lte('check_in', today)
-        .gt('check_out', today),
-      // today's arrivals + departures only — 2 columns
-      supabase.from('bookings').select('check_in, check_out')
-        .eq('lodge_id', lodgeId)
-        .neq('status', 'cancelled')
-        .or(`check_in.eq.${today},check_out.eq.${today}`),
-      // this month's revenue — 1 column, date-bounded
-      supabase.from('bookings').select('total_amount, charges_total')
-        .eq('lodge_id', lodgeId)
-        .neq('status', 'cancelled')
-        .gte('check_in', monthStart)
-        .lt('check_in', nextMonthStart),
-      supabase.from('bookings').select('id', { count: 'exact', head: true })
-        .eq('lodge_id', lodgeId)
-        .eq('status', 'confirmed')
-        .gt('check_in', today)
-    ])
+      const [roomsRes, occupiedRes, todayRes, revenueRes, upcomingRes] = await Promise.all([
+        // count only — HEAD request, no rows transferred
+        supabase.from('rooms').select('id', { count: 'exact', head: true }).eq('lodge_id', lodgeId),
+        supabase.from('bookings').select('id', { count: 'exact', head: true })
+          .eq('lodge_id', lodgeId)
+          .in('status', ['confirmed', 'checked_in'])
+          .lte('check_in', today)
+          .gt('check_out', today),
+        // today's arrivals + departures only — 2 columns
+        supabase.from('bookings').select('check_in, check_out')
+          .eq('lodge_id', lodgeId)
+          .neq('status', 'cancelled')
+          .or(`check_in.eq.${today},check_out.eq.${today}`),
+        // this month's revenue — total_amount only (charges_total may not exist as column yet)
+        supabase.from('bookings').select('total_amount')
+          .eq('lodge_id', lodgeId)
+          .neq('status', 'cancelled')
+          .gte('check_in', monthStart)
+          .lt('check_in', nextMonthStart),
+        supabase.from('bookings').select('id', { count: 'exact', head: true })
+          .eq('lodge_id', lodgeId)
+          .eq('status', 'confirmed')
+          .gt('check_in', today)
+      ])
 
-    const monthEndStr = new Date(new Date(nextMonthStart).getTime() - 86400000).toISOString().split('T')[0]
-    const [confMonthResult, poolMonthResult] = await Promise.all([
-      getConferenceRevenueSummary(monthStart, monthEndStr),
-      getPoolRevenueSummary(monthStart, monthEndStr)
-    ])
+      const monthEndStr = new Date(new Date(nextMonthStart).getTime() - 86400000).toISOString().split('T')[0]
+      const [confMonthResult, poolMonthResult] = await Promise.all([
+        getConferenceRevenueSummary(monthStart, monthEndStr),
+        getPoolRevenueSummary(monthStart, monthEndStr)
+      ])
 
-    const todayBookings = todayRes.data || []
-    const bookingRevMonth = (revenueRes.data || []).reduce((s, b) => s + (b.total_amount || 0) + (b.charges_total || 0), 0)
-    return {
-      total_rooms: roomsRes.count ?? 0,
-      occupied_today: occupiedRes.count ?? 0,
-      checkins_today: todayBookings.filter((b) => b.check_in === today).length,
-      checkouts_today: todayBookings.filter((b) => b.check_out === today).length,
-      revenue_month: bookingRevMonth + (confMonthResult.total || 0) + (poolMonthResult.total || 0),
-      upcoming_bookings: upcomingRes.count ?? 0
+      const todayBookings = todayRes.data || []
+      const bookingRevMonth = (revenueRes.data || []).reduce((s, b) => s + (b.total_amount || 0), 0)
+      return {
+        total_rooms: roomsRes.count ?? 0,
+        occupied_today: occupiedRes.count ?? 0,
+        checkins_today: todayBookings.filter((b) => b.check_in === today).length,
+        checkouts_today: todayBookings.filter((b) => b.check_out === today).length,
+        revenue_month: bookingRevMonth + (confMonthResult.total || 0) + (poolMonthResult.total || 0),
+        upcoming_bookings: upcomingRes.count ?? 0
+      }
+    } catch (fallbackError) {
+      console.warn('[Dashboard] Legacy stats fallback also failed, returning minimal stats:', fallbackError?.message || fallbackError)
+      return { total_rooms: 0, occupied_today: 0, checkins_today: 0, checkouts_today: 0, revenue_month: 0, upcoming_bookings: 0 }
     }
   }
 
@@ -7787,6 +8273,7 @@ export async function getUpcomingCheckins() {
   const todayStr = new Date().toISOString().split('T')[0]
   const tomorrowStr = new Date(Date.now() + 86400000).toISOString().split('T')[0]
   const dayAfterStr = new Date(Date.now() + 172800000).toISOString().split('T')[0]
+  const upcomingDates = [todayStr, tomorrowStr, dayAfterStr]
 
   const mapBooking = (b, customers, rooms) => {
     const customer = customers.find((c) => c.id === b.customer_id)
@@ -7797,36 +8284,118 @@ export async function getUpcomingCheckins() {
       customer_phone: b.customer_phone || customer?.phone,
       customer_email: b.customer_email || customer?.email,
       room_number: b.room_number || room?.room_number,
-      room_type: b.room_type || room?.room_type
+      room_type: b.room_type || room?.room_type,
+      booking_type: 'room'
     }
   }
 
-  let all = []
+  let roomBookings = []
+  let confBookings = []
+  let poolBookings = []
+
   if (isOnline) {
-    const { data } = await supabase
-      .from('bookings')
-      .select('*, customers(name, phone, email), rooms(room_number, room_type)')
-      .eq('lodge_id', lodgeId)
-      .in('check_in', [todayStr, tomorrowStr, dayAfterStr])
-      .neq('status', 'cancelled')
-    all = (data || []).map((b) => ({
+    const [{ data: roomData }, { data: confData }, { data: poolData }] = await Promise.all([
+      supabase
+        .from('bookings')
+        .select('*, customers(name, phone, email), rooms(room_number, room_type)')
+        .eq('lodge_id', lodgeId)
+        .in('check_in', upcomingDates)
+        .neq('status', 'cancelled'),
+      supabase
+        .from('conference_bookings')
+        .select('*')
+        .eq('lodge_id', lodgeId)
+        .in('booking_date', upcomingDates),
+      supabase
+        .from('pool_day_use')
+        .select('*')
+        .eq('lodge_id', lodgeId)
+        .in('date', upcomingDates)
+    ])
+
+    roomBookings = (roomData || []).map((b) => ({
       ...b,
       customer_name: b.customers?.name,
       customer_phone: b.customers?.phone,
       customer_email: b.customers?.email,
       room_number: b.rooms?.room_number,
-      room_type: b.rooms?.room_type
+      room_type: b.rooms?.room_type,
+      booking_type: 'room'
+    }))
+
+    confBookings = (confData || []).map((cb) => ({
+      id: cb.id,
+      customer_name: cb.client_name,
+      check_in: cb.booking_date,
+      check_out: cb.booking_date,
+      room_number: cb.room_name,
+      adults: cb.attendees || 0,
+      children: 0,
+      total_amount: cb.total_amount || 0,
+      deposit_paid: cb.deposit_paid || 0,
+      payment_status: cb.payment_status,
+      start_time: cb.start_time,
+      end_time: cb.end_time,
+      booking_type: 'conference'
+    }))
+
+    poolBookings = (poolData || []).map((pd) => ({
+      id: pd.id,
+      customer_name: pd.guest_name,
+      check_in: pd.date,
+      check_out: pd.date,
+      room_number: 'Pool',
+      adults: pd.adults || 0,
+      children: pd.children || 0,
+      total_amount: pd.total || 0,
+      payment_method: pd.payment_method,
+      booking_type: 'pool'
     }))
   } else {
     const customers = readCache('customers')
     const rooms = readCache('rooms')
-    all = readCache('bookings')
-      .filter((b) => [todayStr, tomorrowStr, dayAfterStr].includes(b.check_in) && b.status !== 'cancelled')
+    roomBookings = readCache('bookings')
+      .filter((b) => upcomingDates.includes(b.check_in) && b.status !== 'cancelled')
       .map((b) => mapBooking(b, customers, rooms))
+
+    confBookings = (readCache('conference-bookings') || [])
+      .filter((cb) => upcomingDates.includes(cb.booking_date))
+      .map((cb) => ({
+        id: cb.id,
+        customer_name: cb.client_name,
+        check_in: cb.booking_date,
+        check_out: cb.booking_date,
+        room_number: cb.room_name,
+        adults: Number(cb.attendees) || 0,
+        children: 0,
+        total_amount: Number(cb.total_amount) || 0,
+        deposit_paid: Number(cb.deposit_paid) || 0,
+        payment_status: cb.payment_status,
+        start_time: cb.start_time,
+        end_time: cb.end_time,
+        booking_type: 'conference'
+      }))
+
+    poolBookings = (readCache('pool-day-use') || [])
+      .filter((pd) => upcomingDates.includes(pd.date))
+      .map((pd) => ({
+        id: pd.id,
+        customer_name: pd.guest_name,
+        check_in: pd.date,
+        check_out: pd.date,
+        room_number: 'Pool',
+        adults: Number(pd.adults) || 0,
+        children: Number(pd.children) || 0,
+        total_amount: Number(pd.total) || 0,
+        payment_method: pd.payment_method,
+        booking_type: 'pool'
+      }))
   }
 
+  const all = [...roomBookings, ...confBookings, ...poolBookings]
+
   return {
-    today:    all.filter((b) => b.check_in === todayStr),
+    today: all.filter((b) => b.check_in === todayStr),
     tomorrow: all.filter((b) => b.check_in === tomorrowStr),
     dayAfter: all.filter((b) => b.check_in === dayAfterStr)
   }
@@ -7845,7 +8414,7 @@ export async function getBookingCharges(bookingId) {
       .order('created_at')
     return data || []
   }
-  return []
+  return { unavailable: true }
 }
 
 export async function getBookingChargeById(chargeId) {
@@ -7869,13 +8438,13 @@ export async function addBookingCharge(bookingId, data) {
     const currentBooking = readCache('bookings').find((booking) => booking.id === bookingId) || null
     if (isOnline) {
       const { data: result, error } = await supabase.rpc('add_booking_charge', {
-        p_booking_id:  bookingId,
-        p_lodge_id:    lodgeId,
+        p_booking_id: bookingId,
+        p_lodge_id: lodgeId,
         p_description: data.description,
-        p_category:    data.category || 'other',
-        p_quantity:    Number(data.quantity) || 1,
-        p_unit_price:  Number(data.unit_price) || 0,
-        p_outlet_id:   data.outlet_id || null,   // explicit outlet attribution; null = Unassigned
+        p_category: data.category || 'other',
+        p_quantity: Number(data.quantity) || 1,
+        p_unit_price: Number(data.unit_price) || 0,
+        p_outlet_id: data.outlet_id || null,   // explicit outlet attribution; null = Unassigned
         p_expected_updated_at: currentBooking?.updated_at || null
       })
       if (error) throw new Error(error.message)
@@ -8042,10 +8611,10 @@ export async function getExpenses(startDate, endDate, outletId = 'all') {
       .select('*, outlets(name)')
       .eq('lodge_id', lodgeId)
     if (startDate) query = query.gte('date', startDate)
-    if (endDate)   query = query.lte('date', endDate)
+    if (endDate) query = query.lte('date', endDate)
     if (outletId && outletId !== 'all') {
       if (outletId === 'unassigned') query = query.is('outlet_id', null)
-      else                           query = query.eq('outlet_id', outletId)
+      else query = query.eq('outlet_id', outletId)
     }
     const { data, error } = await query.order('date', { ascending: false })
     if (!error) {
@@ -8353,11 +8922,11 @@ export async function getForecast(days = 30) {
     getAllRooms(),
     isOnline
       ? supabase.from('bookings').select('check_in, check_out, status')
-          .eq('lodge_id', lodgeId)
-          .neq('status', 'cancelled')
-          .lte('check_in', futureStr)
-          .gte('check_out', today)
-          .then(r => r.data || [])
+        .eq('lodge_id', lodgeId)
+        .neq('status', 'cancelled')
+        .lte('check_in', futureStr)
+        .gte('check_out', today)
+        .then(r => r.data || [])
       : readCache('bookings').filter(b => b.status !== 'cancelled' && b.check_in <= futureStr && b.check_out >= today)
   ])
 
@@ -8685,7 +9254,7 @@ export async function getPosOrders(startDate, endDate, outletFilter = null) {
     if (endDate) query = query.lte('created_at', endDate + 'T23:59:59')
     let data = null
     let error = null
-    ;({ data, error } = await query.order('created_at', { ascending: false }))
+      ; ({ data, error } = await query.order('created_at', { ascending: false }))
 
     if (error) {
       if (isReadOnlySessionTouchError(error)) {
@@ -8865,9 +9434,9 @@ export async function getActiveBookingForRoom(roomId) {
     .maybeSingle()
   return data
     ? {
-        ...data,
-        customer_name: data.customer_name || data.customers?.name || null
-      }
+      ...data,
+      customer_name: data.customer_name || data.customers?.name || null
+    }
     : null
 }
 
@@ -8890,17 +9459,22 @@ export async function createPosOrder(data) {
   try {
     const items = data.items || []
     const total = items.reduce((s, i) => s + Number(i.quantity || 0) * Number(i.unit_price || 0), 0)
+    const callerOrderId = String(data?.id || '').trim()
+    const callerSubmitIntentId = String(data?.submit_intent_id || '').trim()
+    const submitIntentId = callerSubmitIntentId || randomUUID()
+    const orderId = callerOrderId || submitIntentId
+    const submitIdempotencyKey = `pos-order:${submitIntentId}`
     const today = new Date().toISOString().split('T')[0]
     const cachedBookings = readCache('bookings')
     const cachedBooking = data.booking_id
       ? cachedBookings.find((entry) => entry?.id === data.booking_id && entry?.lodge_id === lodgeId)
       : cachedBookings.find((entry) =>
-          entry?.lodge_id === lodgeId &&
-          entry?.room_id === data.room_id &&
-          ['confirmed', 'checked_in'].includes(String(entry?.status || '').toLowerCase()) &&
-          entry?.check_in <= today &&
-          entry?.check_out > today
-        )
+        entry?.lodge_id === lodgeId &&
+        entry?.room_id === data.room_id &&
+        ['confirmed', 'checked_in'].includes(String(entry?.status || '').toLowerCase()) &&
+        entry?.check_in <= today &&
+        entry?.check_out > today
+      )
     const bookingId = cachedBooking?.id || data.booking_id || null
 
     if ((data.payment_method || 'cash') === 'folio' && !bookingId) {
@@ -8917,9 +9491,9 @@ export async function createPosOrder(data) {
       if ((data.payment_method || 'cash') === 'folio' && !bookingId) {
         throw new Error('Room folio charge requires an active booking for the selected room.')
       }
-      const id = randomUUID()
+      const id = orderId
       const createdAt = new Date().toISOString()
-      const idempotencyKey = `pos-order:${id}`
+      const idempotencyKey = submitIdempotencyKey
       const inventoryReservations = getOfflinePosInventoryReservation(items)
       const lineItems = items.map((item) => ({
         id: randomUUID(),
@@ -9003,23 +9577,25 @@ export async function createPosOrder(data) {
     // If any step fails, Postgres rolls back the entire operation automatically.
     const { data: result, error } = await supabase.rpc('create_pos_order', {
       payload: {
+        id: orderId,
         lodge_id: lodgeId,
         room_id: data.room_id || null,
         booking_id: bookingIdForRpc,
         walk_in_name: data.walk_in_name || null,
         total,
-      notes: data.notes || null,
-      payment_method: data.payment_method || 'cash',
-      outlet_id: data.outlet_id || null,
-      items: items.map((i) => ({
-        menu_item_id: i.menu_item_id || null,
-        inventory_item_id: i.inventory_item_id || null,
-        depletion_qty: Math.max(1, Number(i.depletion_qty || 1)),
-        item_name: i.item_name,
-        quantity: i.quantity,
-        unit_price: i.unit_price
-      }))
-    }
+        notes: data.notes || null,
+        payment_method: data.payment_method || 'cash',
+        outlet_id: data.outlet_id || null,
+        create_idempotency_key: submitIdempotencyKey,
+        items: items.map((i) => ({
+          menu_item_id: i.menu_item_id || null,
+          inventory_item_id: i.inventory_item_id || null,
+          depletion_qty: Math.max(1, Number(i.depletion_qty || 1)),
+          item_name: i.item_name,
+          quantity: i.quantity,
+          unit_price: i.unit_price
+        }))
+      }
     })
 
     if (error) throw new Error(error.message)
@@ -9351,10 +9927,10 @@ export async function addInventoryPurchase(data) {
   const items = readCache('inventory-items')
   writeCache('inventory-items', items.map((row) => row.id === data.item_id
     ? {
-        ...row,
-        current_stock: Number(row.current_stock || 0) + qty,
-        latest_unit_cost: unitCost
-      }
+      ...row,
+      current_stock: Number(row.current_stock || 0) + qty,
+      latest_unit_cost: unitCost
+    }
     : row
   ))
   const cachedPurchases = readCache('inventory-purchases')
@@ -9557,7 +10133,7 @@ export async function postInventoryStocktakeSession(stocktakeId, notes) {
   })
   if (error) throw new Error(error.message)
   if (!result?.success) throw new Error(result?.error || 'Could not post inventory stock take')
-  await getInventoryItems().catch(() => {})
+  await getInventoryItems().catch(() => { })
   return result
 }
 
@@ -9685,10 +10261,10 @@ export async function addSupplyPurchase(data) {
   const supplyItems = readCache('supply-items')
   writeCache('supply-items', supplyItems.map((row) => row.id === data.item_id
     ? {
-        ...row,
-        latest_unit_cost: unitCost,
-        current_stock: result?.new_stock ?? (Number(row.current_stock || 0) + qty)
-      }
+      ...row,
+      latest_unit_cost: unitCost,
+      current_stock: result?.new_stock ?? (Number(row.current_stock || 0) + qty)
+    }
     : row
   ))
   const cachedPurchases = readCache('supply-purchases')
@@ -10178,7 +10754,7 @@ export async function postSupplyStocktakeSession(stocktakeId, notes) {
   })
   if (error) throw new Error(error.message)
   if (!result?.success) throw new Error(result?.error || 'Could not post supply stock take')
-  await getSupplyItems().catch(() => {})
+  await getSupplyItems().catch(() => { })
   return result
 }
 
@@ -10191,8 +10767,8 @@ export async function postRoomSupplyStocktakeSession(stocktakeId, notes) {
   })
   if (error) throw new Error(error.message)
   if (!result?.success) throw new Error(result?.error || 'Could not post room stock take')
-  await getRoomSupplyStock().catch(() => {})
-  await getSupplyMovements().catch(() => {})
+  await getRoomSupplyStock().catch(() => { })
+  await getSupplyMovements().catch(() => { })
   return result
 }
 
@@ -10368,7 +10944,7 @@ export async function getPosRevenueSummary(startDate, endDate, outletId = 'all')
       .lte('created_at', `${endDate}T23:59:59`)
     if (outletId && outletId !== 'all') {
       if (outletId === 'unassigned') posQuery = posQuery.is('outlet_id', null)
-      else                           posQuery = posQuery.eq('outlet_id', outletId)
+      else posQuery = posQuery.eq('outlet_id', outletId)
     }
     const { data: liveOrders, error: ordersError } = await posQuery
     if (ordersError) throw ordersError
@@ -10538,10 +11114,10 @@ export async function getInventorySpend(startDate, endDate, outletId = 'all') {
       ...row,
       inventory_items: inventoryMap.get(row.item_id)
         ? {
-            name: inventoryMap.get(row.item_id).name,
-            category: inventoryMap.get(row.item_id).category,
-            outlet_id: inventoryMap.get(row.item_id).outlet_id || null
-          }
+          name: inventoryMap.get(row.item_id).name,
+          category: inventoryMap.get(row.item_id).category,
+          outlet_id: inventoryMap.get(row.item_id).outlet_id || null
+        }
         : null
     }))
     .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
@@ -10707,9 +11283,9 @@ async function getConferenceRevenueSummary(startDate, endDate) {
     if (error) throw error
     const rows = (data || []).filter(r => r.payment_status !== 'cancelled')
     return {
-      total:     rows.reduce((s, r) => s + Number(r.total_amount || 0), 0),
-      collected: rows.reduce((s, r) => s + Number(r.deposit_paid  || 0), 0),
-      count:     rows.length
+      total: rows.reduce((s, r) => s + Number(r.total_amount || 0), 0),
+      collected: rows.reduce((s, r) => s + Number(r.deposit_paid || 0), 0),
+      count: rows.length
     }
   } catch {
     return { total: 0, collected: 0, count: 0 }
@@ -10739,7 +11315,7 @@ async function getPoolRevenueSummary(startDate, endDate) {
 export async function getNightAudit(date) {
   if (!isOnline) return null
   const dayStart = `${date}T00:00:00`
-  const dayEnd   = `${date}T23:59:59`
+  const dayEnd = `${date}T23:59:59`
   const bookingAuditSelect = 'id, booking_number, total_amount, charges_total, payment_status, amount_paid, adults, children, notes, status, check_in, check_out, created_at, customers(name), rooms(room_number, room_type)'
   const mapAuditBooking = (booking) => ({
     ...booking,
@@ -10796,12 +11372,12 @@ export async function getNightAudit(date) {
 
     return {
       date,
-      check_ins:     (checkIns || []).map(mapAuditBooking),
-      check_outs:    (checkOuts || []).map(mapAuditBooking),
-      new_bookings:  (newBookings || []).map(mapAuditBooking),
-      pos_orders:    posOrders    || [],
-      pos_revenue:   posRevenue,
-      outstanding:   (outstanding || []).map(mapAuditBooking),
+      check_ins: (checkIns || []).map(mapAuditBooking),
+      check_outs: (checkOuts || []).map(mapAuditBooking),
+      new_bookings: (newBookings || []).map(mapAuditBooking),
+      pos_orders: posOrders || [],
+      pos_revenue: posRevenue,
+      outstanding: (outstanding || []).map(mapAuditBooking),
       outstanding_total: outstandingTotal
     }
   } catch (error) {
@@ -11877,9 +12453,9 @@ export async function issueSubscriptionContract({ license = {}, invoice = null }
     create_invoice: !!invoice,
     invoice: invoice
       ? {
-          ...invoice,
-          package_name: normalizedPlan
-        }
+        ...invoice,
+        package_name: normalizedPlan
+      }
       : null
   }
 
@@ -12228,7 +12804,7 @@ async function logAdminActivity(targetLodgeId, targetLodgeName, action, details 
     lodge_name: targetLodgeName || null,
     action,
     details
-  }).then(() => {}).catch(() => {})
+  }).then(() => { }).catch(() => { })
 }
 
 export async function getActivityLogs(filters = {}) {
@@ -12248,20 +12824,76 @@ export async function getCompanyStats(targetLodgeId) {
   if (!isOnline) return null
   const db = requireAdmin()
   const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
-  const [rooms, users, bookings, expenses, maintenance] = await Promise.all([
+  const currentMonthWindow = getMonthWindowIso()
+  const entitlement = await getTrialStatus(targetLodgeId).catch(() => null)
+  const plan = normalizeSubscriptionPlan(entitlement?.plan || 'Starter')
+  const limits = getPlanUsageLimits(plan)
+  const [rooms, users, bookings, monthlyConfirmedBookings, monthlyCreatedBookings, latestCreatedBooking, latestCheckInBooking, expenses, maintenance] = await Promise.all([
     db.from('rooms').select('id', { count: 'exact', head: true }).eq('lodge_id', targetLodgeId),
     db.from('users').select('id', { count: 'exact', head: true }).eq('lodge_id', targetLodgeId),
     db.from('bookings').select('id', { count: 'exact', head: true }).eq('lodge_id', targetLodgeId).gte('created_at', thirtyDaysAgo),
+    db.from('bookings')
+      .select('id', { count: 'exact', head: true })
+      .eq('lodge_id', targetLodgeId)
+      .in('status', ['confirmed', 'checked_in', 'checked_out'])
+      .neq('is_exclusive_event', true)
+      .gte('check_in', currentMonthWindow.dateStart)
+      .lt('check_in', currentMonthWindow.dateEnd),
+    db.from('bookings')
+      .select('id', { count: 'exact', head: true })
+      .eq('lodge_id', targetLodgeId)
+      .in('status', ['confirmed', 'checked_in', 'checked_out'])
+      .neq('is_exclusive_event', true)
+      .gte('created_at', currentMonthWindow.start.toISOString())
+      .lt('created_at', currentMonthWindow.end.toISOString()),
+    db.from('bookings')
+      .select('created_at, check_in')
+      .eq('lodge_id', targetLodgeId)
+      .order('created_at', { ascending: false })
+      .limit(1),
+    db.from('bookings')
+      .select('created_at, check_in')
+      .eq('lodge_id', targetLodgeId)
+      .order('check_in', { ascending: false })
+      .limit(1),
     db.from('expenses').select('amount').eq('lodge_id', targetLodgeId).gte('date', thirtyDaysAgo),
     db.from('maintenance_tickets').select('id', { count: 'exact', head: true }).eq('lodge_id', targetLodgeId).eq('status', 'open')
   ])
   const expenseTotal = (expenses.data || []).reduce((sum, e) => sum + Number(e.amount || 0), 0)
+  const latestBookingCreatedAt = latestCreatedBooking?.data?.[0]?.created_at || null
+  const latestBookingCheckIn = latestCheckInBooking?.data?.[0]?.check_in || null
+  const lastBookingDate = [latestBookingCreatedAt, latestBookingCheckIn].filter(Boolean).sort().reverse()[0] || null
+  const usage = {
+    monthlyBookings: Number(monthlyConfirmedBookings.count || 0),
+    targetMonthBookings: Number(monthlyConfirmedBookings.count || 0),
+    creationMonthBookings: Number(monthlyCreatedBookings.count || 0),
+    rooms: Number(rooms.count || 0),
+    users: Number(users.count || 0)
+  }
+  const usageSummary = buildUsageSummary(plan, limits, usage, 'remote')
   return {
     rooms: rooms.count || 0,
     users: users.count || 0,
     bookings_30d: bookings.count || 0,
+    monthly_confirmed_bookings: monthlyConfirmedBookings.count || 0,
+    monthly_created_bookings: monthlyCreatedBookings.count || 0,
+    plan,
+    usage,
+    usage_limits: limits,
+    usage_status: {
+      bookings: usageSummary.statuses.bookings,
+      booking_target_month: usageSummary.statuses.bookingTargetMonth,
+      booking_creation_month: usageSummary.statuses.bookingCreationMonth,
+      rooms: usageSummary.statuses.rooms,
+      users: usageSummary.statuses.users
+    },
+    warning: buildUsageWarning(usageSummary),
+    recommendation: usageSummary.recommendation,
+    next_recommended_plan: usageSummary.recommendation?.recommendedPlan || getNextSubscriptionPlan(plan),
+    monthly_reset_copy: MONTHLY_USAGE_RESET_COPY,
     expenses_30d: expenseTotal,
-    open_maintenance: maintenance.count || 0
+    open_maintenance: maintenance.count || 0,
+    last_booking_date: lastBookingDate
   }
 }
 
@@ -12408,7 +13040,7 @@ export async function getInvoices(filters = {}) {
   if (!isOnline) return []
   let q = requireAdmin().from('invoices').select('*').order('created_at', { ascending: false })
   if (filters.lodge_id) q = q.eq('lodge_id', filters.lodge_id)
-  if (filters.status)   q = q.eq('status', filters.status)
+  if (filters.status) q = q.eq('status', filters.status)
   const { data } = await q
   return data || []
 }
@@ -12466,8 +13098,8 @@ export async function getBookingInvoices() {
       const invoice_number = invoice?.invoice_number || booking.invoice_number || booking._local_invoice_number || null
       if (!invoice_number) return null
 
-      const total_amount  = Number(booking.total_amount  || 0)
-      const amount_paid   = Number(booking.amount_paid   || 0)
+      const total_amount = Number(booking.total_amount || 0)
+      const amount_paid = Number(booking.amount_paid || 0)
       const charges_total = Number(booking.charges_total || 0)  // || 0 guards against null on older rows
       const nights = Math.max(
         0,
@@ -13063,7 +13695,7 @@ export async function publishDeviceHealth() {
 
 export async function getDeviceHealthRollup() {
   if (!isOnline || !lodgeId) return { available: false, devices: [] }
-  await publishDeviceHealth().catch(() => {})
+  await publishDeviceHealth().catch(() => { })
   const { data, error } = await supabase.rpc('get_device_health_rollup', { p_lodge_id: lodgeId })
   if (error) throw new Error(error.message)
   return { available: true, devices: Array.isArray(data) ? data : [] }
@@ -13158,9 +13790,21 @@ export async function getConferenceBookingById(id) {
   return data || null
 }
 
+function computeConferencePaymentStatus(depositPaid, totalAmount) {
+  const total = Number(totalAmount) || 0
+  const deposit = Number(depositPaid) || 0
+  if (total <= 0) return 'pending'
+  if (deposit >= total) return 'paid'
+  if (deposit > 0) return 'deposit_paid'
+  return 'pending'
+}
+
 export async function createConferenceBooking(data) {
   await checkExclusiveEventConflict(data.booking_date, data.booking_date + 'T23:59:59')
   const id = randomUUID()
+  const depositPaid = Number(data.deposit_paid) || 0
+  const totalAmount = Number(data.total_amount) || 0
+  const paymentStatus = computeConferencePaymentStatus(depositPaid, totalAmount)
   const payload = {
     id,
     lodge_id: lodgeId,
@@ -13174,9 +13818,9 @@ export async function createConferenceBooking(data) {
     room_name: data.room_name || 'Conference Room',
     includes_catering: data.includes_catering || false,
     catering_notes: data.catering_notes || null,
-    total_amount: data.total_amount || 0,
-    deposit_paid: data.deposit_paid || 0,
-    payment_status: data.payment_status || 'pending',
+    total_amount: totalAmount,
+    deposit_paid: depositPaid,
+    payment_status: paymentStatus,
     payment_method: data.payment_method || null,
     notes: data.notes || null
   }
@@ -13184,18 +13828,23 @@ export async function createConferenceBooking(data) {
     const { data: result, error } = await supabase.rpc('create_conference_booking', { payload })
     if (error) throw new Error(error.message)
     if (!result?.success) throw new Error(result?.error || 'Could not create conference booking')
-    writeCache('conference-bookings', [payload, ...readCache('conference-bookings').filter((row) => row.id !== id)], { source: 'local' })
+    const serverPaymentStatus = result?.payment_status || paymentStatus
+    const cachedRow = { ...payload, payment_status: serverPaymentStatus }
+    writeCache('conference-bookings', [cachedRow, ...readCache('conference-bookings').filter((row) => row.id !== id)], { source: 'local' })
     logActivity('conference_booking_created', `Conference booking · ${data.client_name}${data.company ? ' · ' + data.company : ''} · ${data.booking_date} · ${data.room_name || 'Conference Room'}`)
     return { id: result.id || id }
   }
   const offlineRow = {
     ...payload,
+    payment_status: paymentStatus,
     _pending_sync: true,
     _sync_state: 'pending',
     _sync_error: null
   }
   writeCache('conference-bookings', [offlineRow, ...readCache('conference-bookings').filter((row) => row.id !== id)], { source: 'local' })
-  queueOperation('rpc', 'create_conference_booking', { payload })
+  queueOperation('rpc', 'create_conference_booking', { payload }, null, {
+    _queue_id: `conference-${id}`
+  })
   logActivity('conference_booking_created', `(Offline) Conference booking · ${data.client_name} · ${data.booking_date}`)
   return { id }
 }
@@ -13206,8 +13855,15 @@ export async function updateConferenceBooking(id, data) {
     const cached = readCache('conference-bookings')
     const existing = cached.find((row) => row.id === id)
     const dependsOn = existing?._pending_sync ? `conference-${id}` : null
+    const merged = { ...existing, ...data }
+    const offlinePaymentStatus = ('deposit_paid' in data || 'total_amount' in data)
+      ? computeConferencePaymentStatus(
+          Number(merged.deposit_paid) || 0,
+          Number(merged.total_amount) || 0
+        )
+      : merged.payment_status
     writeCache('conference-bookings', cached.map((row) => row.id === id
-      ? { ...row, ...data, _pending_sync: true, _sync_state: 'pending', _sync_error: null, updated_at: new Date().toISOString() }
+      ? { ...row, ...data, payment_status: offlinePaymentStatus, _pending_sync: true, _sync_state: 'pending', _sync_error: null, updated_at: new Date().toISOString() }
       : row
     ), { source: 'local' })
     queueOperation('rpc', 'update_conference_booking', {
@@ -13224,8 +13880,85 @@ export async function updateConferenceBooking(id, data) {
   })
   if (error) throw new Error(error.message)
   if (!result?.success) throw new Error(result?.error || 'Could not update conference booking')
-  writeCache('conference-bookings', readCache('conference-bookings').map((row) => row.id === id ? { ...row, ...data } : row), { source: 'local' })
+  const serverPaymentStatus = result?.payment_status
+  const cached = readCache('conference-bookings')
+  const existing = cached.find((row) => row.id === id)
+  const updated = { ...(existing || {}), ...data }
+  if (serverPaymentStatus) {
+    updated.payment_status = serverPaymentStatus
+  } else if ('deposit_paid' in data || 'total_amount' in data) {
+    updated.payment_status = computeConferencePaymentStatus(
+      Number(updated.deposit_paid) || 0,
+      Number(updated.total_amount) || 0
+    )
+  } else {
+    updated.payment_status = existing?.payment_status || updated.payment_status
+  }
+  writeCache('conference-bookings', cached.map((row) => row.id === id ? updated : row), { source: 'local' })
   return { success: true }
+}
+
+export async function updateConferenceBookingPayment(id, paymentAmount, paymentMethod, type = 'payment', dependsOn = null, idempotencyKey = null) {
+  if (!id) throw new Error('Conference booking ID is required')
+  if (!paymentAmount || Number(paymentAmount) <= 0) throw new Error('Payment amount must be greater than zero')
+  if (!paymentMethod) throw new Error('Payment method is required')
+  const numericAmount = Number(Number(paymentAmount).toFixed(2))
+  const intentKey = idempotencyKey || String(Date.now()) + '-' + crypto.randomUUID()
+
+  if (isOnline) {
+    const { data: existing } = await supabase
+      .from('conference_bookings')
+      .select('deposit_paid, total_amount')
+      .eq('id', id).eq('lodge_id', lodgeId).single()
+    if (!existing) throw new Error('Conference booking not found')
+    const { data: result, error } = await supabase.rpc('update_conference_booking_payment', {
+      p_id: id,
+      p_lodge_id: lodgeId,
+      p_amount: numericAmount,
+      p_method: paymentMethod,
+      p_type: type,
+      p_idempotency_key: intentKey,
+      p_recorded_by: currentUser?.id || null
+    })
+    if (error) throw new Error(error.message)
+    if (!result?.success) throw new Error(result?.error || 'Could not record conference booking payment')
+    await refreshCache('conference-bookings')
+    const name = (readCache('conference-bookings') || []).find((row) => row.id === id)?.client_name || 'Guest'
+    logActivity('conference_payment', `Conference payment ${numericAmount.toFixed(2)} · ${name} · ${paymentMethod}`)
+    return result
+  }
+
+  const cached = readCache('conference-bookings')
+  const idx = cached.findIndex((row) => row.id === id)
+  if (idx < 0) throw new Error('Conference booking not found in offline cache')
+  const row = cached[idx]
+  const newDeposit = Number(row.deposit_paid || 0) + numericAmount
+  const newStatus = computeConferencePaymentStatus(newDeposit, Number(row.total_amount || 0))
+  cached[idx] = {
+    ...row,
+    deposit_paid: newDeposit,
+    payment_status: newStatus,
+    _pending_payment: true,
+    _pending_sync: true,
+    _sync_state: 'pending',
+    _sync_error: null,
+    updated_at: new Date().toISOString()
+  }
+  writeCache('conference-bookings', cached, { source: 'local' })
+  queueOperation('rpc', 'update_conference_booking_payment', {
+    p_id: id,
+    p_lodge_id: lodgeId,
+    p_amount: numericAmount,
+    p_method: paymentMethod,
+    p_type: type,
+    p_idempotency_key: intentKey,
+    p_recorded_by: currentUser?.id || null
+  }, null, dependsOn ? { _depends_on: dependsOn } : {
+    _queue_id: `conf-pay-${id}-${Date.now()}`
+  })
+  const name = row?.client_name || 'Guest'
+  logActivity('conference_payment', `(Offline) Conference payment ${numericAmount.toFixed(2)} · ${name} · ${paymentMethod}`)
+  return { success: true, offline: true, queued: true }
 }
 
 export async function deleteConferenceBooking(id) {
@@ -13321,7 +14054,9 @@ export async function addPoolDayUse(data) {
     created_at: new Date().toISOString()
   }
   writeCache('pool-day-use', [offlineRow, ...readCache('pool-day-use').filter((row) => row.id !== id)], { source: 'local' })
-  queueOperation('rpc', 'add_pool_day_use', { payload })
+  queueOperation('rpc', 'add_pool_day_use', { payload }, null, {
+    _queue_id: `dayuse-${id}`
+  })
   logActivity('pool_day_use_added', `(Offline) Pool day use · ${data.guest_name || 'Walk-in'} · ${data.date} · P${total}`)
   return { id }
 }
@@ -13517,21 +14252,21 @@ export async function getAllQuotations() {
     return mapped
   }
   const quotations = cachedQuotations
-  const customers  = readCache('customers')
-  const rooms      = readCache('rooms')
-  const bookings   = readCache('bookings')
+  const customers = readCache('customers')
+  const rooms = readCache('rooms')
+  const bookings = readCache('bookings')
   const convertedIds = new Map(
     (bookings || []).filter((booking) => booking?.quotation_id).map((booking) => [booking.quotation_id, booking.id])
   )
-  const todayStr   = new Date().toISOString().split('T')[0]
+  const todayStr = new Date().toISOString().split('T')[0]
   return quotations
     .map(q => {
       const customer = customers.find(c => c.id === q.customer_id)
-      const room     = rooms.find(r => r.id === q.room_id)
+      const room = rooms.find(r => r.id === q.room_id)
       // Auto-expire offline (UI-only; DB will be corrected when back online)
       const convertedBookingId = q.converted_booking_id || convertedIds.get(q.id) || null
       const baseStatus = convertedBookingId ? 'converted' : q.status
-      const status = (q.valid_until && q.valid_until < todayStr && ['draft','sent','accepted'].includes(baseStatus))
+      const status = (q.valid_until && q.valid_until < todayStr && ['draft', 'sent', 'accepted'].includes(baseStatus))
         ? 'expired'
         : baseStatus
       return normalizeQuotationForDisplay(q, { customer, room, convertedBookingId, todayStr, status })
@@ -13576,10 +14311,18 @@ export async function createQuotation(data) {
   } else {
     const quotation_number = await getNextQuotationNumber()
     const record = buildQuotationRecord(data, { quotation_number })
+    const offlineRecord = {
+      ...record,
+      _pending_sync: true,
+      _sync_state: 'pending',
+      _sync_error: null
+    }
     const cached = readCache('quotations')
-    cached.unshift(record)
+    cached.unshift(offlineRecord)
     writeCache('quotations', cached)
-    queueOperation('rpc', 'create_quotation', { payload: record })
+    queueOperation('rpc', 'create_quotation', { payload: record }, null, {
+      _queue_id: `quotation-${record.id}`
+    })
     logActivity('quotation_created', `Quotation ${quotation_number} created for ${record.customer_name}`)
     return { id: record.id, quotation_number }
   }
@@ -13587,9 +14330,9 @@ export async function createQuotation(data) {
 
 export async function updateQuotation(id, data) {
   // Determine if financial fields are locked (sent/accepted/converted)
-  const LOCKED_STATUSES  = ['sent', 'accepted', 'converted']
+  const LOCKED_STATUSES = ['sent', 'accepted', 'converted']
   const cachedQuotations = readCache('quotations')
-  const current          = cachedQuotations.find(q => q.id === id)
+  const current = cachedQuotations.find(q => q.id === id)
 
   // When online, verify lock status from server — cache may be stale
   let isLocked = current && LOCKED_STATUSES.includes(current.status)
@@ -13599,31 +14342,31 @@ export async function updateQuotation(id, data) {
     if (live) isLocked = LOCKED_STATUSES.includes(live.status)
   }
 
-  const subtotal     = Number(data.subtotal ?? 0)
-  const tax_amount   = Number(calcTax(subtotal, data.tax_rate ?? 0))
+  const subtotal = Number(data.subtotal ?? 0)
+  const tax_amount = Number(calcTax(subtotal, data.tax_rate ?? 0))
   const total_amount = subtotal + tax_amount
 
   // Full update object
   const update = {
-    customer_name:  data.customer_name,
-    customer_phone: data.customer_phone  || '',
-    currency:       data.currency        || 'BWP',
-    notes:          data.notes           || '',
-    status:         data.status,
-    valid_until:    data.valid_until     || null,
-    updated_at:     new Date().toISOString()
+    customer_name: data.customer_name,
+    customer_phone: data.customer_phone || '',
+    currency: data.currency || 'BWP',
+    notes: data.notes || '',
+    status: data.status,
+    valid_until: data.valid_until || null,
+    updated_at: new Date().toISOString()
   }
 
   // Financial + date fields — only allowed when not locked
   if (!isLocked) {
     Object.assign(update, {
-      customer_id:  data.customer_id,
-      room_id:      data.room_id    || null,
-      room_name:    data.room_name  || '',
-      check_in:     data.check_in   || null,
-      check_out:    data.check_out  || null,
-      adults:       Number(data.adults)   || 1,
-      children:     Number(data.children) || 0,
+      customer_id: data.customer_id,
+      room_id: data.room_id || null,
+      room_name: data.room_name || '',
+      check_in: data.check_in || null,
+      check_out: data.check_out || null,
+      adults: Number(data.adults) || 1,
+      children: Number(data.children) || 0,
       subtotal,
       tax_amount,
       total_amount
@@ -13650,15 +14393,16 @@ export async function updateQuotation(id, data) {
     await refreshCache('quotations')
   } else {
     const cached = readCache('quotations')
-    const idx    = cached.findIndex(q => q.id === id)
+    const idx = cached.findIndex(q => q.id === id)
     if (idx >= 0) cached[idx] = { ...cached[idx], ...update }
     writeCache('quotations', cached)
+    const dependsOn = current?._pending_sync ? `quotation-${id}` : null
     queueOperation('rpc', 'update_quotation', {
       p_id: id,
       p_lodge_id: lodgeId,
       payload: update,
       p_expected_updated_at: expectedUpdatedAt
-    })
+    }, null, dependsOn ? { _depends_on: dependsOn } : {})
   }
 
   logActivity('quotation_updated', `Quotation ${id} updated — status: ${data.status}`)
@@ -13676,13 +14420,17 @@ export async function markQuotationSent(id) {
     if (!result?.success) throw new Error(result?.error || 'Could not mark quotation as sent')
   } else {
     const cached = readCache('quotations')
-    const idx    = cached.findIndex(q => q.id === id)
+    const idx = cached.findIndex(q => q.id === id)
     if (idx >= 0 && cached[idx].status === 'draft') {
       cached[idx] = { ...cached[idx], ...update }
       writeCache('quotations', cached)
+      const dependsOn = cached[idx]?._pending_sync ? `quotation-${id}` : null
       queueOperation('rpc', 'mark_quotation_sent', {
         p_id: id,
         p_lodge_id: lodgeId
+      }, null, {
+        _queue_id: `quotation-sent-${id}`,
+        ...(dependsOn ? { _depends_on: dependsOn } : {})
       })
     }
   }
@@ -13695,20 +14443,20 @@ export async function duplicateQuotation(id) {
   if (!source) throw new Error('Quotation not found')
 
   return createQuotation({
-    customer_id:         source.customer_id,
-    customer_name:       source.customer_name,
-    customer_phone:      source.customer_phone,
-    room_id:             source.room_id,
-    room_name:           source.room_name,
-    check_in:            source.check_in,
-    check_out:           source.check_out,
-    adults:              source.adults,
-    children:            source.children,
-    subtotal:            source.subtotal || source.total_amount,
-    tax_amount:          source.tax_amount || 0,
-    currency:            source.currency,
-    notes:               source.notes,
-    valid_until:         source.valid_until,
+    customer_id: source.customer_id,
+    customer_name: source.customer_name,
+    customer_phone: source.customer_phone,
+    room_id: source.room_id,
+    room_name: source.room_name,
+    check_in: source.check_in,
+    check_out: source.check_out,
+    adults: source.adults,
+    children: source.children,
+    subtotal: source.subtotal || source.total_amount,
+    tax_amount: source.tax_amount || 0,
+    currency: source.currency,
+    notes: source.notes,
+    valid_until: source.valid_until,
     parent_quotation_id: source.parent_quotation_id || source.id  // chain to root
   })
 }
@@ -13810,7 +14558,8 @@ export async function convertQuotationToBooking(quotationId, depositAmount = 0, 
     }, null, {
       _queue_id: `quotation-convert-${quotationId}`,
       _local_booking_id: localBookingId,
-      _previous_status: quotation.status || 'accepted'
+      _previous_status: quotation.status || 'accepted',
+      ...(quotation?._pending_sync ? { _depends_on: `quotation-${quotationId}` } : {})
     })
 
     logActivity('quotation_converted', `(Offline) Quotation ${quotationId} queued for conversion to booking ${localBookingId}`)
@@ -13833,11 +14582,11 @@ export async function convertQuotationToBooking(quotationId, depositAmount = 0, 
   }
 
   const { data: result, error } = await supabase.rpc('convert_quotation_to_booking', {
-    p_quotation_id:   quotationId,
-    p_lodge_id:       lodgeId,
+    p_quotation_id: quotationId,
+    p_lodge_id: lodgeId,
     p_deposit_amount: deposit,
     p_payment_method: method,
-    p_created_by:     currentUser?.id || null
+    p_created_by: currentUser?.id || null
   })
 
   if (error) throw new Error(error.message)
@@ -13854,10 +14603,10 @@ export async function convertQuotationToBooking(quotationId, depositAmount = 0, 
       await updateBookingPayment(bookingId, deposit, method, 'deposit')
     } catch (depError) {
       logActivity('quotation_converted', `Quotation ${quotationId} converted to booking ${bookingId} (Deposit failed: ${depError.message})`)
-      return { 
-        booking_id: bookingId, 
-        invoice_number: result.invoice_number, 
-        depositWarning: depError.message 
+      return {
+        booking_id: bookingId,
+        invoice_number: result.invoice_number,
+        depositWarning: depError.message
       }
     }
   }
@@ -13869,56 +14618,56 @@ export async function convertQuotationToBooking(quotationId, depositAmount = 0, 
 
 const IMPORT_TEMPLATES = {
   bookings: [
-    { key: 'guest_name',     label: 'Guest Name',       required: true  },
-    { key: 'email',          label: 'Email',             required: false },
-    { key: 'phone',          label: 'Phone',             required: false },
-    { key: 'id_number',      label: 'ID / Passport No',  required: false },
-    { key: 'nationality',    label: 'Nationality',        required: false },
-    { key: 'room_number',    label: 'Room Number',        required: true  },
-    { key: 'check_in',       label: 'Check-In Date',      required: true  },
-    { key: 'check_out',      label: 'Check-Out Date',     required: true  },
-    { key: 'adults',         label: 'Adults',             required: false },
-    { key: 'children',       label: 'Children',           required: false },
-    { key: 'total_amount',   label: 'Total Amount',       required: false },
-    { key: 'amount_paid',    label: 'Amount Paid',        required: false },
-    { key: 'payment_method', label: 'Payment Method',     required: false },
-    { key: 'status',         label: 'Booking Status',     required: false },
-    { key: 'notes',          label: 'Notes',              required: false },
+    { key: 'guest_name', label: 'Guest Name', required: true },
+    { key: 'email', label: 'Email', required: false },
+    { key: 'phone', label: 'Phone', required: false },
+    { key: 'id_number', label: 'ID / Passport No', required: false },
+    { key: 'nationality', label: 'Nationality', required: false },
+    { key: 'room_number', label: 'Room Number', required: true },
+    { key: 'check_in', label: 'Check-In Date', required: true },
+    { key: 'check_out', label: 'Check-Out Date', required: true },
+    { key: 'adults', label: 'Adults', required: false },
+    { key: 'children', label: 'Children', required: false },
+    { key: 'total_amount', label: 'Total Amount', required: false },
+    { key: 'amount_paid', label: 'Amount Paid', required: false },
+    { key: 'payment_method', label: 'Payment Method', required: false },
+    { key: 'status', label: 'Booking Status', required: false },
+    { key: 'notes', label: 'Notes', required: false },
   ],
   guests: [
-    { key: 'name',        label: 'Guest Name',      required: true },
-    { key: 'email',       label: 'Email',           required: false },
-    { key: 'phone',       label: 'Phone',           required: false },
-    { key: 'id_number',   label: 'ID / Passport No', required: false },
-    { key: 'nationality', label: 'Nationality',     required: false }
+    { key: 'name', label: 'Guest Name', required: true },
+    { key: 'email', label: 'Email', required: false },
+    { key: 'phone', label: 'Phone', required: false },
+    { key: 'id_number', label: 'ID / Passport No', required: false },
+    { key: 'nationality', label: 'Nationality', required: false }
   ],
   rooms: [
     { key: 'room_number', label: 'Room Number', required: true },
-    { key: 'room_type',   label: 'Room Type',   required: false },
-    { key: 'rate',        label: 'Rate',        required: false },
-    { key: 'max_adults',  label: 'Max Adults',  required: false },
+    { key: 'room_type', label: 'Room Type', required: false },
+    { key: 'rate', label: 'Rate', required: false },
+    { key: 'max_adults', label: 'Max Adults', required: false },
     { key: 'max_children', label: 'Max Children', required: false }
   ],
   inventory: [
-    { key: 'name',          label: 'Item Name',     required: true },
-    { key: 'category',      label: 'Category',      required: false },
-    { key: 'unit',          label: 'Unit',          required: false },
+    { key: 'name', label: 'Item Name', required: true },
+    { key: 'category', label: 'Category', required: false },
+    { key: 'unit', label: 'Unit', required: false },
     { key: 'current_stock', label: 'Current Stock', required: false },
     { key: 'reorder_level', label: 'Reorder Level', required: false }
   ],
   supplies: [
-    { key: 'name',          label: 'Supply Item',   required: true },
-    { key: 'category',      label: 'Category',      required: false },
-    { key: 'unit',          label: 'Unit',          required: false },
+    { key: 'name', label: 'Supply Item', required: true },
+    { key: 'category', label: 'Category', required: false },
+    { key: 'unit', label: 'Unit', required: false },
     { key: 'current_stock', label: 'Current Stock', required: false },
     { key: 'reorder_level', label: 'Reorder Level', required: false }
   ],
   expenses: [
-    { key: 'date',        label: 'Date',        required: true },
-    { key: 'category',    label: 'Category',    required: true },
+    { key: 'date', label: 'Date', required: true },
+    { key: 'category', label: 'Category', required: true },
     { key: 'description', label: 'Description', required: false },
-    { key: 'amount',      label: 'Amount',      required: true },
-    { key: 'paid_by',     label: 'Paid By',     required: false }
+    { key: 'amount', label: 'Amount', required: true },
+    { key: 'paid_by', label: 'Paid By', required: false }
   ]
 }
 
@@ -13973,40 +14722,40 @@ export function dryRunBookingImport(rows = []) {
     warnings: []
   }
 
-  ;(Array.isArray(rows) ? rows : []).forEach((row, index) => {
-    const rowNum = index + 1
-    const guestName = String(row.guest_name || '').trim()
-    const room = roomMap[String(row.room_number || '').trim()]
-    const rowErrors = []
-    if (!guestName) rowErrors.push('Guest name is required.')
-    if (!room) rowErrors.push('Room number was not found.')
-    if (!row.check_in || !row.check_out) rowErrors.push('Check-in and check-out dates are required.')
-    if (row.check_in && row.check_out && row.check_in >= row.check_out) rowErrors.push('Check-out must be after check-in.')
+    ; (Array.isArray(rows) ? rows : []).forEach((row, index) => {
+      const rowNum = index + 1
+      const guestName = String(row.guest_name || '').trim()
+      const room = roomMap[String(row.room_number || '').trim()]
+      const rowErrors = []
+      if (!guestName) rowErrors.push('Guest name is required.')
+      if (!room) rowErrors.push('Room number was not found.')
+      if (!row.check_in || !row.check_out) rowErrors.push('Check-in and check-out dates are required.')
+      if (row.check_in && row.check_out && row.check_in >= row.check_out) rowErrors.push('Check-out must be after check-in.')
 
-    const overlap = room && bookings.some((booking) =>
-      booking.room_id === room.id &&
-      booking.status !== 'cancelled' &&
-      booking.check_in < row.check_out &&
-      booking.check_out > row.check_in
-    )
-    if (overlap) {
-      report.overlaps += 1
-      rowErrors.push('Room overlaps with an existing booking.')
-    }
+      const overlap = room && bookings.some((booking) =>
+        booking.room_id === room.id &&
+        booking.status !== 'cancelled' &&
+        booking.check_in < row.check_out &&
+        booking.check_out > row.check_in
+      )
+      if (overlap) {
+        report.overlaps += 1
+        rowErrors.push('Room overlaps with an existing booking.')
+      }
 
-    const emailNorm = String(row.email || '').trim().toLowerCase()
-    const existingCustomer = emailNorm
-      ? customers.find((c) => c.email?.toLowerCase() === emailNorm)
-      : customers.find((c) => c.name?.toLowerCase() === guestName.toLowerCase() || c.full_name?.toLowerCase() === guestName.toLowerCase())
+      const emailNorm = String(row.email || '').trim().toLowerCase()
+      const existingCustomer = emailNorm
+        ? customers.find((c) => c.email?.toLowerCase() === emailNorm)
+        : customers.find((c) => c.name?.toLowerCase() === guestName.toLowerCase() || c.full_name?.toLowerCase() === guestName.toLowerCase())
 
-    if (rowErrors.length > 0) {
-      report.errors.push({ row: rowNum, guest: guestName, errors: rowErrors })
-    } else {
-      report.valid += 1
-      if (existingCustomer) report.would_reuse_customers += 1
-      else report.would_create_customers += 1
-    }
-  })
+      if (rowErrors.length > 0) {
+        report.errors.push({ row: rowNum, guest: guestName, errors: rowErrors })
+      } else {
+        report.valid += 1
+        if (existingCustomer) report.would_reuse_customers += 1
+        else report.would_create_customers += 1
+      }
+    })
 
   return report
 }
@@ -14112,19 +14861,19 @@ export function dryRunImport(type = 'bookings', rows = []) {
     errors: []
   }
 
-  ;(Array.isArray(rows) ? rows : []).forEach((row, index) => {
-    const errors = validateImportRow(normalizedType, row)
-    if (errors.length > 0) {
-      report.errors.push({ row: index + 1, guest: importRowValue(row, 'name', 'guest_name', 'room_number', 'description'), errors })
-      return
-    }
-    if (findImportDuplicate(normalizedType, row)) {
-      report.duplicates += 1
-      return
-    }
-    report.valid += 1
-    report.would_create += 1
-  })
+    ; (Array.isArray(rows) ? rows : []).forEach((row, index) => {
+      const errors = validateImportRow(normalizedType, row)
+      if (errors.length > 0) {
+        report.errors.push({ row: index + 1, guest: importRowValue(row, 'name', 'guest_name', 'room_number', 'description'), errors })
+        return
+      }
+      if (findImportDuplicate(normalizedType, row)) {
+        report.duplicates += 1
+        return
+      }
+      report.valid += 1
+      report.would_create += 1
+    })
 
   return report
 }

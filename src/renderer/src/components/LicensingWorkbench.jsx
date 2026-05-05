@@ -168,10 +168,10 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
 
   const currentAssignments = useMemo(() => {
     const activeLicenses = new Map()
-    ;(licenses || []).forEach((license) => {
-      if (license.is_active === false) return
-      if (!activeLicenses.has(license.lodge_id)) activeLicenses.set(license.lodge_id, license)
-    })
+      ; (licenses || []).forEach((license) => {
+        if (license.is_active === false) return
+        if (!activeLicenses.has(license.lodge_id)) activeLicenses.set(license.lodge_id, license)
+      })
 
     return (companies || []).map((company) => ({
       company,
@@ -395,9 +395,9 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
                 else if (dur === 'quarterly') d.setMonth(d.getMonth() + 3)
                 else if (dur === 'half_year') d.setMonth(d.getMonth() + 6)
                 else if (dur === 'yearly') d.setFullYear(d.getFullYear() + 1)
-                
+
                 if (dur) nextVal = d.toISOString().split('T')[0]
-                
+
                 setForm(f => ({
                   ...f,
                   duration: dur,
@@ -455,10 +455,10 @@ function OverrideDesk({ companies, licenses }) {
 
   const activeLicenseByLodge = useMemo(() => {
     const map = new Map()
-    ;(licenses || []).forEach((license) => {
-      if (license.is_active === false) return
-      map.set(license.lodge_id, license)
-    })
+      ; (licenses || []).forEach((license) => {
+        if (license.is_active === false) return
+        map.set(license.lodge_id, license)
+      })
     return map
   }, [licenses])
 
@@ -470,10 +470,10 @@ function OverrideDesk({ companies, licenses }) {
     window.api.admin.getLodgeFeatures(selectedLodge).then((rows) => {
       const nextFlags = {}
       const nextDetails = {}
-      ;(rows || []).forEach((row) => {
-        nextFlags[row.feature_name] = row.enabled
-        nextDetails[row.feature_name] = row
-      })
+        ; (rows || []).forEach((row) => {
+          nextFlags[row.feature_name] = row.enabled
+          nextDetails[row.feature_name] = row
+        })
       setFlags(nextFlags)
       setOverrideDetails(nextDetails)
     }).finally(() => setLoading(false))
@@ -605,9 +605,8 @@ function OverrideDesk({ companies, licenses }) {
                     <button
                       onClick={() => saveOverride(feature, !effectiveEnabled)}
                       disabled={savingFeature === feature}
-                      className={`text-xs px-3 py-1.5 rounded-full font-semibold ${
-                        effectiveEnabled ? 'bg-green-500/15 text-green-300' : 'bg-gray-700 text-gray-300'
-                      }`}
+                      className={`text-xs px-3 py-1.5 rounded-full font-semibold ${effectiveEnabled ? 'bg-green-500/15 text-green-300' : 'bg-gray-700 text-gray-300'
+                        }`}
                     >
                       {savingFeature === feature ? 'Saving…' : effectiveEnabled ? 'Enabled' : 'Disabled'}
                     </button>
@@ -782,11 +781,10 @@ export default function LicensingWorkbench({ companies, licenses, tickets, onRef
           <button
             key={key}
             onClick={() => setTab(key)}
-            className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-colors ${
-              tab === key
+            className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-colors ${tab === key
                 ? 'bg-purple-600 text-white'
                 : 'bg-gray-800 text-gray-300 border border-gray-700 hover:bg-gray-700'
-            }`}
+              }`}
           >
             <Icon size={14} />
             {label}

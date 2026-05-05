@@ -5,8 +5,12 @@ import { StatusBadge } from './shared/StatusBadge'
 import { Modal } from './shared/Modal'
 import { Receipt } from './shared/Receipt'
 import HorizontalScrollArea from './shared/HorizontalScrollArea'
+import UsageLimitIndicator from './shared/UsageLimitIndicator'
+import UsageUpgradePrompt from './shared/UpgradePromptModal'
+import UpgradeNudgeBanner from './shared/UpgradeNudgeBanner'
 import { DESKTOP_PAYMENT_METHODS, PAYMENT_METHOD_LABELS } from '../constants/paymentMethods'
-import { useAuth, useSettings } from '../app-context'
+import { useAccess, useAuth, useSettings } from '../app-context'
+import { MONTHLY_USAGE_RESET_COPY, canCreateBooking, countMonthlyUsageBookings, getEarlyUpgradePromptState, getPlanUsageLimits, normalizeSubscriptionPlan } from '../../../shared/subscriptionPlans'
 
 const STATUS_OPTIONS = ['confirmed', 'checked_in', 'checked_out', 'cancelled']
 
@@ -100,6 +104,12 @@ function bookingHasAttentionState(booking) {
   return booking?._needs_attention === true || syncState === 'manual_review_required'
 }
 
+function normalizeChargesResponse(result) {
+  if (Array.isArray(result)) return { items: result, unavailable: false }
+  if (result?.unavailable) return { items: [], unavailable: true }
+  return { items: [], unavailable: false }
+}
+
 // Sanitize raw sync error text for display to front-desk operators.
 // Strips UUIDs and translates known technical patterns to plain language.
 // Returns null for errors already covered by a specific badge (e.g. room conflict).
@@ -135,6 +145,7 @@ const emptyBooking = {
 
 export default function Bookings() {
   const { user } = useAuth()
+  const access = useAccess()
   const { settings } = useSettings()
   const currency = settings?.currency || 'P'
   const location = useLocation()
@@ -159,9 +170,12 @@ export default function Bookings() {
   const [error, setError] = useState('')
   const [warning, setWarning] = useState('')
   const [success, setSuccess] = useState('')
+  const [usageSnapshot, setUsageSnapshot] = useState(null)
+  const [showUpgradePrompt, setShowUpgradePrompt] = useState(false)
   const successTimerRef = useRef(null)
   const [modalWarning, setModalWarning] = useState('')  // amber — booking saved but deposit failed
   const [loading, setLoading] = useState(false)
+  const [statusLoadingId, setStatusLoadingId] = useState(null)
   const [applicableRate, setApplicableRate] = useState(null)
   const [receiptBooking, setReceiptBooking] = useState(null)
   const [failedSyncIds, setFailedSyncIds] = useState(new Set())
@@ -207,6 +221,7 @@ export default function Bookings() {
   // Charges modal
   const [chargesBooking, setChargesBooking] = useState(null)
   const [charges, setCharges] = useState([])
+  const [chargesUnavailable, setChargesUnavailable] = useState(false)
   const [chargeForm, setChargeForm] = useState({ description: '', amount: '', category: 'Food & Beverage', quantity: 1, outlet_id: '' })
   const [chargeLoading, setChargeLoading] = useState(false)
   const [chargeError, setChargeError] = useState('')
@@ -223,8 +238,10 @@ export default function Bookings() {
     setChargesBooking(b)
     setChargeForm({ description: '', amount: '', category: 'Food & Beverage', quantity: 1, outlet_id: frontDeskId })
     setChargeError('')
-    const data = await window.api.charges.getByBooking(b.id).catch(() => [])
-    setCharges(data || [])
+    const result = await window.api.charges.getByBooking(b.id).catch(() => ({ unavailable: true }))
+    const normalized = normalizeChargesResponse(result)
+    setCharges(normalized.items)
+    setChargesUnavailable(normalized.unavailable)
   }
 
   const handleAddCharge = async (e) => {
@@ -243,8 +260,10 @@ export default function Bookings() {
         quantity: parseInt(chargeForm.quantity)
       })
       if (res?.success === false) throw new Error(res.error || 'Failed to add charge')
-      const data = await window.api.charges.getByBooking(chargesBooking.id).catch(() => [])
-      setCharges(data || [])
+      const result = await window.api.charges.getByBooking(chargesBooking.id).catch(() => ({ unavailable: true }))
+      const normalized = normalizeChargesResponse(result)
+      setCharges(normalized.items)
+      setChargesUnavailable(normalized.unavailable)
       setChargeForm({ description: '', amount: '', category: 'Food & Beverage', quantity: 1, outlet_id: frontDeskId })
       // Reload bookings so charges_total is current if user opens payment modal next
       loadAll()
@@ -274,8 +293,10 @@ export default function Bookings() {
       setChargeError(result.error || 'Failed to void charge')
       return
     }
-    const data = await window.api.charges.getByBooking(chargesBooking.id).catch(() => [])
-    setCharges(data || [])
+    const chargesResult = await window.api.charges.getByBooking(chargesBooking.id).catch(() => ({ unavailable: true }))
+    const normalized = normalizeChargesResponse(chargesResult)
+    setCharges(normalized.items)
+    setChargesUnavailable(normalized.unavailable)
     // Reload bookings so charges_total is current if user opens payment modal next
     loadAll()
     showSuccess('Extra charge voided. Booking totals have been refreshed.')
@@ -300,6 +321,15 @@ export default function Bookings() {
     financialCacheStale || financialPendingIds.has(bookingId) || financialFailedIds.has(bookingId)
   )
 
+  const getCheckoutBlockMessage = (booking) => {
+    if (!booking) return ''
+    if (booking._pending_payment) return 'Cannot checkout: payment is pending sync'
+    if (isFinanciallySyncBlocked(booking.id)) return FINANCIAL_SYNC_BLOCK_MESSAGE
+    const outstanding = bookingOutstandingAmount(booking)
+    if (outstanding > 0) return `Settle ${currency} ${outstanding.toFixed(2)} before checkout`
+    return 'Check out guest'
+  }
+
   // Reload bookings whenever this page becomes active — catches stale data after navigating away
   // (e.g. returning from the invoices refund flow without a full page remount)
   useEffect(() => {
@@ -323,6 +353,22 @@ export default function Bookings() {
       })
       .catch(() => {}) // non-critical; charge will save with outlet_id = null
   }, [loadAll])
+
+  useEffect(() => {
+    if (!window.api?.usage?.getSnapshot) return
+    window.api.usage.getSnapshot().then((snapshot) => {
+      if (!snapshot?.error) setUsageSnapshot(snapshot)
+    }).catch(() => {})
+  }, [bookings.length])
+
+  useEffect(() => {
+    if (!location.state?.prefillName) return
+    const name = location.state.prefillName
+    openAdd()
+    setUseNewCustomer(true)
+    setNewCustomer(prev => ({ ...prev, name }))
+    navigate(location.pathname, { replace: true, state: {} })
+  }, [location.state, location.pathname, navigate])
 
   useEffect(() => {
     if (!location.state?.showPendingOnline) return
@@ -408,6 +454,10 @@ export default function Bookings() {
   }
 
   const openAdd = () => {
+    if (bookingCreateBlocked) {
+      setShowUpgradePrompt(true)
+      return
+    }
     setEditingId(null)
     setEditingGroupId(null)
     setEditingBaseUpdatedAt(null)
@@ -508,6 +558,16 @@ export default function Bookings() {
         customerId = res.id
       }
 
+      if (!editingId && selectedRoom) {
+        const totalGuests = parseInt(form.adults) + parseInt(form.children)
+        const maxOccupancy = selectedRoom.max_occupancy || 2
+        if (totalGuests > maxOccupancy) {
+          setError(`Number of guests (${totalGuests}) exceeds room maximum occupancy (${maxOccupancy})`)
+          setLoading(false)
+          return
+        }
+      }
+
       const data = {
         ...form,
         customer_id: customerId,
@@ -523,6 +583,15 @@ export default function Bookings() {
       if (editingId) {
         res = await window.api.bookings.update(editingId, data)
       } else {
+        const bookingLimitStatus = canCreateBooking({
+          plan: access?.entitlement?.plan || 'Starter',
+          used: thisMonthBookings
+        })
+        if (bookingLimitStatus.isBlocked) {
+          const plan = access?.entitlement?.plan || 'Starter'
+          const nextPlan = plan === 'Starter' ? 'Standard' : 'Pro'
+          throw new Error(`You’ve reached ${thisMonthBookings} / ${bookingLimitStatus.effectiveLimit} monthly bookings on ${plan}. Upgrade to ${nextPlan} for higher monthly booking capacity.`)
+        }
         res = await window.api.bookings.create(data)
       }
 
@@ -599,7 +668,13 @@ export default function Bookings() {
     closePaymentModal()
     loadAll()
     const remaining = Math.max(0, (Number(paymentBooking.total_amount || 0) + Number(paymentBooking.charges_total || 0)) - Number(paymentBooking.amount_paid || 0) - Number(amountToPay || 0))
-      showSuccess(remaining > 0 ? `Payment recorded. ${currency} ${remaining.toFixed(2)} remains outstanding.` : 'Payment recorded and the booking is now settled in full.')
+    showSuccess(
+      result?.offline
+        ? 'Payment saved locally — will sync when online'
+        : remaining > 0
+          ? `Payment recorded. ${currency} ${remaining.toFixed(2)} remains outstanding.`
+          : 'Payment recorded and the booking is now settled in full.'
+    )
     setPayLoading(false)
   }
 
@@ -623,24 +698,39 @@ export default function Bookings() {
       const confirmed = window.confirm(msg)
       if (!confirmed) return
     }
+    if (status === 'checked_in' && booking) {
+      if (booking.check_in > today()) {
+        setWarning(`Cannot check in before the check-in date (${booking.check_in}).`)
+        return
+      }
+    }
     if (status === 'checked_out' && booking) {
+      if (booking._pending_payment) {
+        setWarning('Cannot checkout: payment is pending sync')
+        return
+      }
       const outstanding = bookingOutstandingAmount(booking)
       if (outstanding > 0) {
         setWarning(`Cannot check out ${booking.customer_name || 'this guest'} until the full balance is paid. Outstanding: ${currency} ${outstanding.toFixed(2)}.`)
         return
       }
     }
-    const result = await window.api.bookings.updateStatus(id, status)
-    if (result?.success === false) {
-      setWarning(`Status update failed: ${result.error || 'Please try again.'}`)
-    } else {
-      loadAll()
-      const labels = {
-        checked_in: 'Guest checked in successfully.',
-        checked_out: 'Guest checked out successfully.',
-        cancelled: 'Booking cancelled.'
+    setStatusLoadingId(id)
+    try {
+      const result = await window.api.bookings.updateStatus(id, status)
+      if (result?.success === false) {
+        setWarning(`Status update failed: ${result.error || 'Please try again.'}`)
+      } else {
+        loadAll()
+        const labels = {
+          checked_in: 'Guest checked in successfully.',
+          checked_out: 'Guest checked out successfully.',
+          cancelled: 'Booking cancelled.'
+        }
+        showSuccess(labels[status] || 'Booking status updated.')
       }
-      showSuccess(labels[status] || 'Booking status updated.')
+    } finally {
+      setStatusLoadingId(null)
     }
   }
 
@@ -792,6 +882,27 @@ export default function Bookings() {
   const partialRemaining = paymentBooking
     ? Math.max(0, outstandingBeforePayment - Number(payForm.amount_paid || 0))
     : 0
+  const usageLimits = getPlanUsageLimits(access?.entitlement?.plan || 'Starter')
+  const currentPlan = normalizeSubscriptionPlan(usageSnapshot?.plan || access?.entitlement?.plan || 'Starter')
+  const isProPlan = currentPlan === 'Pro'
+  const thisMonthBookings = countMonthlyUsageBookings(bookings, new Date())
+  const bookingLimitStatus = usageSnapshot?.statuses?.bookings || canCreateBooking({ plan: access?.entitlement?.plan || 'Starter', used: thisMonthBookings })
+  const bookingCreateBlocked = usageSnapshot?.bookingAllowance?.isBlocked === true || bookingLimitStatus.isBlocked === true
+  const bookingEarlyPrompt = getEarlyUpgradePromptState({
+    plan: currentPlan,
+    bookingsUsage: usageSnapshot?.usage?.monthlyBookings ?? thisMonthBookings,
+    roomsUsage: usageSnapshot?.usage?.rooms ?? 0,
+    usersUsage: usageSnapshot?.usage?.users ?? 0,
+    limits: usageLimits
+  })
+  const showBookingEarlyPrompt = !isProPlan && !bookingCreateBlocked && bookingEarlyPrompt.shouldPrompt
+  const bookingLimitMessage = usageSnapshot?.warning || (
+    bookingCreateBlocked
+      ? 'Booking creation is restricted until usage drops or the plan is upgraded.'
+      : bookingLimitStatus.isInGrace
+        ? 'A small booking grace allowance is active right now.'
+        : ''
+  )
 
   return (
     <div className="mx-auto flex max-w-[1400px] flex-col gap-6">
@@ -800,6 +911,44 @@ export default function Bookings() {
           <p className="text-xs font-semibold uppercase tracking-[0.22em] text-emerald-700/70">Front Desk</p>
           <h1 className="bb-page-header-title mt-2">Bookings</h1>
           <p className="bb-page-header-subtitle">{bookings.length} total bookings across current and upcoming stays.</p>
+          <div className="mt-2">
+            {isProPlan ? (
+              <span className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700">
+                Unlimited access
+              </span>
+            ) : (
+              <UsageLimitIndicator label="Monthly bookings" used={usageSnapshot?.usage?.monthlyBookings ?? thisMonthBookings} limit={usageLimits.monthlyBookings} grace={usageLimits.monthlyBookingsGrace} />
+            )}
+            {usageSnapshot?.source === 'cache' && !isProPlan && (
+              <p className="mt-2 text-xs text-amber-700">
+                Usage count may be outdated because the app is offline. New records may be rejected during sync if the subscription limit has already been reached.
+              </p>
+            )}
+            {!isProPlan && (
+              <>
+                <p className="mt-2 text-xs text-slate-500">{usageSnapshot?.monthlyResetCopy || MONTHLY_USAGE_RESET_COPY}</p>
+                {bookingLimitMessage && (
+                  <p className={`mt-2 text-xs ${bookingCreateBlocked ? 'text-rose-700' : 'text-amber-700'}`}>
+                    {bookingLimitMessage}
+                  </p>
+                )}
+              </>
+            )}
+            <div className="mt-3">
+              <UpgradeNudgeBanner
+                visible={showBookingEarlyPrompt}
+                message="You’re approaching your plan limits. Consider upgrading to avoid interruptions."
+                sessionKey="boroko:upgrade-nudge:bookings"
+                lodgeId={settings?.lodge_id || ''}
+                lodgeName={settings?.lodge_name || settings?.company_name || ''}
+                plan={currentPlan}
+                usage={usageSnapshot?.usage || { monthlyBookings: thisMonthBookings, rooms: 0, users: 0 }}
+                recommendation={bookingEarlyPrompt}
+                trigger="banner"
+                onUpgrade={() => setShowUpgradePrompt(true)}
+              />
+            </div>
+          </div>
         </div>
         <div className="flex flex-wrap gap-2">
           <button
@@ -810,7 +959,8 @@ export default function Bookings() {
           </button>
           <button
             onClick={openAdd}
-            className="btn-primary"
+            disabled={bookingCreateBlocked}
+            className="btn-primary disabled:cursor-not-allowed disabled:opacity-60"
           >
             <Plus size={16} /> New Booking
           </button>
@@ -825,6 +975,11 @@ export default function Bookings() {
       {success && (
         <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800 shadow-sm">
           ✓ {success}
+        </div>
+      )}
+      {bookingCreateBlocked && (
+        <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800 shadow-sm">
+          {bookingLimitMessage || 'Booking creation is currently restricted for this lodge.'}
         </div>
       )}
       {pendingOnlineCount > 0 && (
@@ -1068,9 +1223,14 @@ export default function Bookings() {
                   <td className="px-5 py-4">
                     <PaymentBadge status={b.payment_status || 'unpaid'} />
                     {b._pending_payment && (
-                      <span className="ml-1 rounded-full border border-amber-300 bg-amber-100 px-2 py-1 text-xs font-semibold text-amber-700 align-middle whitespace-nowrap animate-pulse">
-                        ⏳ Queued (will sync)
-                      </span>
+                      <>
+                        <span className="ml-1 rounded-full border border-amber-300 bg-amber-100 px-2 py-1 text-xs font-semibold text-amber-700 align-middle whitespace-nowrap animate-pulse">
+                          ⏳ Payment pending sync
+                        </span>
+                        <p className="mt-1 text-xs text-amber-700">
+                          Payment saved locally — will sync when online
+                        </p>
+                      </>
                     )}
                     {b.payment_status === 'partial' && b.amount_paid > 0 && (
                       <p className="mt-1 text-xs text-slate-500">
@@ -1130,29 +1290,29 @@ export default function Bookings() {
                           {b.status === 'confirmed' && (
                             <button
                               onClick={() => handleStatusChange(b.id, 'checked_in')}
-                              className="cursor-pointer rounded-xl bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-emerald-700"
+                              disabled={b.check_in > today() || statusLoadingId === b.id}
+                              title={b.check_in > today() ? `Check-in date is ${b.check_in}` : statusLoadingId === b.id ? 'Checking in…' : undefined}
+                              className={`cursor-pointer rounded-xl px-3 py-1.5 text-xs font-semibold text-white transition-colors ${
+                                b.check_in > today() || statusLoadingId === b.id
+                                  ? 'bg-slate-300 text-slate-600 cursor-not-allowed'
+                                  : 'bg-emerald-600 hover:bg-emerald-700'
+                              }`}
                             >
-                              Check In
+                              {statusLoadingId === b.id ? 'Checking in…' : 'Check In'}
                             </button>
                           )}
                           {b.status === 'checked_in' && (
                             <button
                               onClick={() => handleStatusChange(b.id, 'checked_out')}
-                              disabled={bookingOutstandingAmount(b) > 0 || isFinanciallySyncBlocked(b.id)}
-                              title={
-                                isFinanciallySyncBlocked(b.id)
-                                  ? FINANCIAL_SYNC_BLOCK_MESSAGE
-                                  : bookingOutstandingAmount(b) > 0
-                                    ? `Settle ${currency} ${bookingOutstandingAmount(b).toFixed(2)} before checkout`
-                                    : 'Check out guest'
-                              }
+                              disabled={bookingOutstandingAmount(b) > 0 || isFinanciallySyncBlocked(b.id) || b._pending_payment || statusLoadingId === b.id}
+                              title={statusLoadingId === b.id ? 'Checking out…' : getCheckoutBlockMessage(b)}
                               className={`cursor-pointer rounded-xl px-3 py-1.5 text-xs font-semibold text-white transition-colors ${
-                                bookingOutstandingAmount(b) > 0 || isFinanciallySyncBlocked(b.id)
+                                bookingOutstandingAmount(b) > 0 || isFinanciallySyncBlocked(b.id) || b._pending_payment || statusLoadingId === b.id
                                   ? 'bg-slate-300 text-slate-600 cursor-not-allowed'
                                   : 'bg-indigo-600 hover:bg-indigo-700'
                               }`}
                             >
-                              Check Out
+                              {statusLoadingId === b.id ? 'Checking out…' : 'Check Out'}
                             </button>
                           )}
                           {b.payment_status !== 'paid' && b.status !== 'cancelled' && (
@@ -1251,12 +1411,20 @@ export default function Bookings() {
       {chargesBooking && (
         <Modal
           title={`Extra Charges — ${chargesBooking.customer_name}`}
-          onClose={() => setChargesBooking(null)}
+          onClose={() => {
+            setChargesBooking(null)
+            setChargesUnavailable(false)
+          }}
           size="sm"
         >
           <div className="space-y-4">
             {/* Existing charges */}
-            {charges.length > 0 ? (
+            {chargesUnavailable ? (
+              <div className="bb-empty-state py-8">
+                <p className="text-sm font-semibold text-slate-800">Charges unavailable offline</p>
+                <p className="text-sm text-slate-500">Reconnect to the internet to load the booking folio charges for this guest.</p>
+              </div>
+            ) : charges.length > 0 ? (
               <div className="divide-y divide-slate-100 rounded-2xl border border-slate-200 bg-white/70 px-1">
                 {charges.map((c) => (
                   <div key={c.id} className="flex items-center justify-between px-3 py-3 text-sm">
@@ -1292,13 +1460,18 @@ export default function Bookings() {
             {/* Add charge form */}
             <form onSubmit={handleAddCharge} className="space-y-3 border-t border-slate-200 pt-4">
               <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Add Charge</p>
-              <p className="text-xs text-slate-500">Use extras for minibar, food, laundry, or other folio items that should increase the guest balance.</p>
+              <p className="text-xs text-slate-500">
+                {chargesUnavailable
+                  ? 'Charges are unavailable offline. Reconnect to add or review folio extras.'
+                  : 'Use extras for minibar, food, laundry, or other folio items that should increase the guest balance.'}
+              </p>
               <input
                 type="text"
                 className="input"
                 placeholder="Description (e.g. Breakfast, Laundry)"
                 value={chargeForm.description}
                 onChange={(e) => setChargeForm({ ...chargeForm, description: e.target.value })}
+                disabled={chargesUnavailable}
                 required
               />
               <div className="grid grid-cols-2 gap-3">
@@ -1310,6 +1483,7 @@ export default function Bookings() {
                   placeholder={`Amount (${currency})`}
                   value={chargeForm.amount}
                   onChange={(e) => setChargeForm({ ...chargeForm, amount: e.target.value })}
+                  disabled={chargesUnavailable}
                   required
                 />
                 <input
@@ -1319,12 +1493,14 @@ export default function Bookings() {
                   placeholder="Qty"
                   value={chargeForm.quantity}
                   onChange={(e) => setChargeForm({ ...chargeForm, quantity: e.target.value })}
+                  disabled={chargesUnavailable}
                 />
               </div>
               <select
                 className="input"
                 value={chargeForm.category}
                 onChange={(e) => setChargeForm({ ...chargeForm, category: e.target.value })}
+                disabled={chargesUnavailable}
               >
                 {['Food & Beverage', 'Minibar', 'Laundry', 'Transport', 'Activities', 'Telephone', 'Other'].map(
                   (c) => <option key={c} value={c}>{c}</option>
@@ -1337,6 +1513,7 @@ export default function Bookings() {
                     className="input"
                     value={chargeForm.outlet_id}
                     onChange={(e) => setChargeForm({ ...chargeForm, outlet_id: e.target.value })}
+                    disabled={chargesUnavailable}
                   >
                     {chargeOutlets.map(o => (
                       <option key={o.id || o.name} value={o.id || ''}>{o.name}</option>
@@ -1346,7 +1523,7 @@ export default function Bookings() {
                 </div>
               )}
               {chargeError && <p className="text-sm text-red-500">{chargeError}</p>}
-              <button type="submit" disabled={chargeLoading} className="btn-primary w-full">
+              <button type="submit" disabled={chargeLoading || chargesUnavailable} className="btn-primary w-full">
                 {chargeLoading ? 'Adding...' : '+ Add Charge'}
               </button>
             </form>
@@ -1770,7 +1947,7 @@ export default function Bookings() {
                 <input
                   type="number"
                   min="1"
-                  max="20"
+                  max={selectedRoom?.max_occupancy || 20}
                   className="input"
                   value={form.adults}
                   onChange={(e) => setForm({ ...form, adults: e.target.value })}
@@ -1801,7 +1978,7 @@ export default function Bookings() {
                 <input
                   type="number"
                   min="0"
-                  max="20"
+                  max={selectedRoom?.max_occupancy || 20}
                   className="input"
                   value={form.children}
                   onChange={(e) => setForm({ ...form, children: e.target.value })}
@@ -1897,6 +2074,26 @@ export default function Bookings() {
           </form>
         </Modal>
       )}
+
+      <UsageUpgradePrompt
+        open={showUpgradePrompt}
+        onClose={() => setShowUpgradePrompt(false)}
+        onUpgrade={() => {
+          setShowUpgradePrompt(false)
+          navigate('/settings', { state: { activeTab: 'license' } })
+        }}
+        resourceLabel="Bookings"
+        currentPlan={usageSnapshot?.plan || access?.entitlement?.plan || 'Starter'}
+        used={usageSnapshot?.usage?.monthlyBookings ?? thisMonthBookings}
+        limit={usageLimits.monthlyBookings}
+        grace={usageLimits.monthlyBookingsGrace}
+        status={bookingLimitStatus}
+        message={usageSnapshot?.warning || 'Monthly booking creation is restricted for this lodge right now.'}
+        usage={usageSnapshot?.usage}
+        recommendation={usageSnapshot?.recommendation}
+        lodgeName={settings?.lodge_name || settings?.company_name || ''}
+        lodgeId={settings?.lodge_id || ''}
+      />
     </div>
   )
 }
@@ -1913,12 +2110,20 @@ function F({ label, children }) {
 function BookingHistoryModal({ booking, onClose }) {
   const { settings } = useSettings()
   const [charges, setCharges] = useState([])
+  const [chargesUnavailable, setChargesUnavailable] = useState(false)
   const [payments, setPayments] = useState([])
   const bookingId = booking.id || booking.booking_id
 
   useEffect(() => {
     if (!bookingId) return
-    window.api.charges.getByBooking(bookingId).then(setCharges).catch(() => {})
+    window.api.charges.getByBooking(bookingId).then((result) => {
+      const normalized = normalizeChargesResponse(result)
+      setCharges(normalized.items)
+      setChargesUnavailable(normalized.unavailable)
+    }).catch(() => {
+      setCharges([])
+      setChargesUnavailable(true)
+    })
     window.api.bookings.getPayments(bookingId).then((data) => setPayments(Array.isArray(data) ? data : [])).catch(() => {})
   }, [bookingId])
 
@@ -1977,6 +2182,11 @@ function BookingHistoryModal({ booking, onClose }) {
           <p className="text-xs text-slate-500 mt-1">{booking.room_number ? `Room ${booking.room_number}` : 'Multiple Rooms'} · {booking.check_in} to {booking.check_out}</p>
         </div>
         <div className="space-y-3">
+          {chargesUnavailable && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              Charges unavailable offline
+            </div>
+          )}
           {events.map((e, i) => (
             <div key={i} className="flex gap-3">
               <div className={`mt-0.5 h-2 w-2 rounded-full ${e.tone.split(' ')[0]}`} />

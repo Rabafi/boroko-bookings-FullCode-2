@@ -85,7 +85,7 @@ begin
   end if;
 
   new.entry_hash := encode(
-    digest(
+    extensions.digest(
       coalesce(new.previous_hash, '') || '|' ||
       coalesce(new.lodge_id::text, '') || '|' ||
       coalesce(new.booking_id::text, '') || '|' ||

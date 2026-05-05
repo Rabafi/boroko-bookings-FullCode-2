@@ -71,7 +71,7 @@ begin
     nullif(payload->>'notes', '')
   );
 
-  return jsonb_build_object('success', true, 'id', v_id);
+  return jsonb_build_object('success', true, 'id', v_id, 'payment_status', v_pay_status);
 end;
 $create_conf$;
 

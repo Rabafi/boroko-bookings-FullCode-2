@@ -19,12 +19,20 @@ import {
   canAccessCapability
 } from '../../../shared/accessControl'
 import {
+  MONTHLY_USAGE_RESET_COPY,
   SUBSCRIPTION_PLAN_ORDER,
+  countMonthlyUsageBookings,
   getAllSubscriptionPlans,
+  getFeatureRequiredPlan,
+  getPlanRecommendation,
+  getPlanUsageLimits,
   getSubscriptionPlan,
+  getUsageLimitStatus,
+  formatPlanLimits,
   normalizeSubscriptionPlan,
   buildUpgradeRequestDescription
 } from '../../../shared/subscriptionPlans'
+import UsageLimitIndicator from './shared/UsageLimitIndicator'
 
 function fmtDate(value) {
   if (!value) return '—'
@@ -102,7 +110,7 @@ function StatusHero({ licenseStatus }) {
               : expired
                 ? subscriptionState === 'offline_lease_expired'
                   ? 'The device stayed offline beyond its safe entitlement window. Reconnect and refresh the subscription to restore premium access.'
-                  : 'Activate a valid license key to restore module access and remove trial expiry restrictions.'
+                  : 'This trial has ended. Buy and activate a subscription to restore app features for this lodge.'
                 : 'Trial mode currently unlocks the full feature set so you can test workflows before activation.'}
           </p>
         </div>
@@ -153,9 +161,27 @@ export default function SubscriptionAccessPanel() {
   const [upgradeSent, setUpgradeSent] = useState(false)
   const [requestedPlan, setRequestedPlan] = useState('Standard')
   const [lodgeIdCopied, setLodgeIdCopied] = useState(false)
+  const [usageCounts, setUsageCounts] = useState({ monthlyBookings: 0, rooms: 0, users: 0 })
+  const [usageSource, setUsageSource] = useState('cache')
+  const [lastUsageSyncAt, setLastUsageSyncAt] = useState(null)
 
   const lodgeId = settings?.lodge_id || access?.entitlement?.lodge_id
   const canManageSubscription = canAccessCapability(access, 'settings.manage_subscription')
+  const entitlementExpired = licenseStatus?.expired === true
+  const licensedPlan = normalizeSubscriptionPlan(licenseStatus?.plan || 'Starter')
+  const isProPlan = licensedPlan === 'Pro'
+  const licensedPlanIndex = SUBSCRIPTION_PLAN_ORDER.indexOf(licensedPlan)
+
+  const isFeatureEnabled = (featureName) => {
+    if (entitlementExpired) return false
+    const effectiveFeatures = licenseStatus?.effective_features || {}
+    if (Object.prototype.hasOwnProperty.call(effectiveFeatures, featureName)) {
+      return effectiveFeatures[featureName] !== false
+    }
+    if (licenseStatus?.status === 'trial') return true
+    const requiredPlan = getFeatureRequiredPlan(featureName)
+    return licensedPlanIndex >= SUBSCRIPTION_PLAN_ORDER.indexOf(requiredPlan)
+  }
 
   const refreshStatus = async () => {
     if (!lodgeId || !window.api?.trial?.getStatus) return
@@ -183,9 +209,55 @@ export default function SubscriptionAccessPanel() {
     setRequestedPlan(getRecommendedUpgradePlan(licenseStatus?.plan))
   }, [licenseStatus?.plan])
 
+  useEffect(() => {
+    let active = true
+    const loadUsage = async () => {
+      if (window.api?.usage?.getSnapshot) {
+        const snapshot = await window.api.usage.getSnapshot({ forceRemoteRefresh: navigator.onLine === true }).catch(() => null)
+        if (snapshot && !snapshot.error) {
+          if (!active) return
+          setUsageCounts(snapshot.usage || { monthlyBookings: 0, rooms: 0, users: 0 })
+          setUsageSource(snapshot.source || 'cache')
+          setLastUsageSyncAt(snapshot.lastUsageSyncAt || null)
+          return
+        }
+      }
+      if (!window.api?.bookings?.getAll || !window.api?.rooms?.getAll || !window.api?.users?.getAll) return
+      const [bookings, rooms, users] = await Promise.all([
+        window.api.bookings.getAll().catch(() => []),
+        window.api.rooms.getAll().catch(() => []),
+        window.api.users.getAll().catch(() => [])
+      ])
+      const monthlyBookings = countMonthlyUsageBookings(bookings || [], new Date())
+      if (!active) return
+      setUsageCounts({
+        monthlyBookings,
+        rooms: Array.isArray(rooms) ? rooms.length : 0,
+        users: Array.isArray(users) ? users.length : 0
+      })
+      setUsageSource('cache')
+      setLastUsageSyncAt(null)
+    }
+    loadUsage().catch(() => {})
+    return () => { active = false }
+  }, [])
+
   const enabledFeatures = useMemo(() => (
-    APP_FEATURES.filter((featureName) => licenseStatus?.effective_features?.[featureName] !== false)
-  ), [licenseStatus])
+    APP_FEATURES.filter((featureName) => isFeatureEnabled(featureName))
+  ), [entitlementExpired, licenseStatus, licensedPlanIndex])
+  const usageLimits = getPlanUsageLimits(licenseStatus?.plan || 'Starter')
+  const bookingsUsageStatus = getUsageLimitStatus({
+    used: usageCounts.monthlyBookings,
+    limit: usageLimits.monthlyBookings,
+    grace: usageLimits.monthlyBookingsGrace
+  })
+  const usageRecommendation = getPlanRecommendation({
+    plan: licenseStatus?.plan || 'Starter',
+    bookingsUsage: usageCounts.monthlyBookings,
+    roomsUsage: usageCounts.rooms,
+    usersUsage: usageCounts.users,
+    limits: usageLimits
+  })
 
   const handleActivate = async () => {
     if (!licenseKey.trim()) return
@@ -262,9 +334,61 @@ export default function SubscriptionAccessPanel() {
               </div>
             </div>
 
+            {isProPlan ? (
+              <div className="mb-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
+                <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Usage</p>
+                <p className="mt-2 text-sm font-semibold text-emerald-800">Unlimited access</p>
+                <p className="mt-1 text-xs text-emerald-700">No usage counters or warning bars are shown for Pro.</p>
+              </div>
+            ) : (
+              <div className="mb-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Usage</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <UsageLimitIndicator label="Bookings this month" used={usageCounts.monthlyBookings} limit={usageLimits.monthlyBookings} grace={usageLimits.monthlyBookingsGrace} />
+                  <UsageLimitIndicator label="Rooms" used={usageCounts.rooms} limit={usageLimits.rooms} />
+                  <UsageLimitIndicator label="Users" used={usageCounts.users} limit={usageLimits.users} />
+                </div>
+                {usageSource === 'cache' && (
+                  <p className="mt-2 text-xs text-amber-700">
+                    Usage count may be outdated because the app is offline. New records may be rejected during sync if the subscription limit has already been reached.
+                  </p>
+                )}
+                <p className="mt-2 text-xs text-slate-500">{MONTHLY_USAGE_RESET_COPY}</p>
+                {lastUsageSyncAt && <p className="mt-1 text-[11px] text-slate-500">Last usage refresh: {fmtDate(lastUsageSyncAt)}</p>}
+                {bookingsUsageStatus.state === 'warning' && (
+                  <p className="mt-2 text-xs text-amber-700">Booking usage is above 80% of the monthly limit.</p>
+                )}
+                {bookingsUsageStatus.state === 'critical' && (
+                  <p className="mt-2 text-xs text-orange-700">Booking usage is above 95% of the monthly limit.</p>
+                )}
+                {bookingsUsageStatus.state === 'grace' && (
+                  <p className="mt-2 text-xs text-fuchsia-700">You have reached the monthly booking limit and are using grace bookings. Upgrade now to avoid interruptions.</p>
+                )}
+                {bookingsUsageStatus.state === 'blocked' && (
+                  <p className="mt-2 text-xs text-rose-700">Booking creation is blocked until the plan is upgraded.</p>
+                )}
+                {(bookingsUsageStatus.isAbovePlan || usageCounts.rooms > (usageLimits.rooms ?? Infinity) || usageCounts.users > (usageLimits.users ?? Infinity)) && (
+                  <p className="mt-2 text-xs text-rose-700">
+                    This lodge is above the {normalizeSubscriptionPlan(licenseStatus?.plan || 'Starter')} plan limits. Existing records remain available, but new records are restricted until usage is reduced or the plan is upgraded.
+                  </p>
+                )}
+                <div className="mt-3 rounded-2xl border border-blue-200 bg-blue-50 px-3 py-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-blue-700">Recommendation</p>
+                  <p className="mt-1 text-sm font-semibold text-slate-900">{usageRecommendation.label}</p>
+                  <p className="mt-1 text-xs text-slate-600">{usageRecommendation.reason || usageRecommendation.details}</p>
+                  <p className="mt-1 text-[11px] text-slate-500">{usageRecommendation.details}</p>
+                  {usageRecommendation.label !== 'Best fit / unlimited' && (
+                    <button type="button" onClick={() => setUpgradeOpen(true)} className="mt-3 rounded-xl border border-blue-300 bg-white px-3 py-2 text-xs font-semibold text-blue-700">
+                      Review upgrade to {usageRecommendation.recommendedPlan}
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
               {APP_FEATURES.map((featureName) => {
-                const enabled = licenseStatus?.effective_features?.[featureName] !== false
+                const enabled = isFeatureEnabled(featureName)
                 return (
                   <div
                     key={featureName}
@@ -276,7 +400,7 @@ export default function SubscriptionAccessPanel() {
                       <div className="min-w-0 flex-1">
                         <p className="break-words font-semibold leading-5 text-gray-800">{FEATURE_LABELS[featureName]}</p>
                         <p className="mt-1 text-xs leading-5 text-gray-500">
-                          {enabled ? 'Included in the current entitlement' : 'Upgrade or override required'}
+                          {enabled ? 'Included in the current entitlement' : entitlementExpired ? 'Locked: buy a subscription to restore access' : 'Upgrade or override required'}
                         </p>
                       </div>
                       {enabled ? (
@@ -310,10 +434,11 @@ export default function SubscriptionAccessPanel() {
 
             <div className="grid gap-3">
               {getAllSubscriptionPlans().map((plan) => {
+                const limits = formatPlanLimits(plan.name)
                 const isCurrent = normalizeSubscriptionPlan(licenseStatus?.plan || 'Starter') === plan.name
                 const isSelected = requestedPlan === plan.name
                 const isRecommended = plan.spotlight === 'Most Popular'
-                const isPremium = plan.spotlight === 'Best for Direct Bookings'
+                const isPremium = plan.name === 'Pro'
                 return (
                   <button
                     key={plan.name}
@@ -356,6 +481,12 @@ export default function SubscriptionAccessPanel() {
                     </div>
                     <p className="mt-3 text-sm font-medium text-gray-800">{plan.headline}</p>
                     <p className="mt-2 text-sm text-gray-500">{plan.summary}</p>
+                    <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3 text-xs text-slate-600">
+                      <p className="font-semibold text-slate-700">{limits.bookings}</p>
+                      <p>{limits.grace}</p>
+                      <p>{limits.rooms}</p>
+                      <p>{limits.users}</p>
+                    </div>
                     <div className="mt-3 space-y-1.5">
                       {plan.modules.slice(0, 4).map((moduleName) => (
                         <div key={moduleName} className="text-xs text-gray-600">
@@ -363,6 +494,9 @@ export default function SubscriptionAccessPanel() {
                         </div>
                       ))}
                     </div>
+                    <p className="mt-3 text-[11px] font-medium text-slate-500">{limits.bookingExplanation}</p>
+                    <p className="mt-1 text-[11px] font-medium text-slate-500">{limits.graceExplanation}</p>
+                    <p className="mt-1 text-[11px] font-medium text-slate-500">{limits.resetCopy}</p>
                     <p className="mt-4 text-xs text-gray-500">{plan.upgradeNudge}</p>
                   </button>
                 )

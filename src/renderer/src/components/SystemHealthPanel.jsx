@@ -106,6 +106,14 @@ function sanitizeForOperator(raw) {
   if (/lodge.*role|permission denied|insufficient.*privilege/i.test(msg)) return 'Permission needed. Check the account role.'
   if (/unique.*violation|duplicate key/i.test(msg)) return 'This item may already exist.'
   if (/not found/i.test(msg)) return 'This item was not found online.'
+  if (/monthly booking creation limit/i.test(msg)) return 'Booking could not sync because the monthly booking creation limit has been reached.'
+  if (/selected check-in month/i.test(msg)) return 'Booking could not sync because the selected check-in month has reached the plan limit.'
+  if (/above the current plan booking limit|booking limit.*after a downgrade|above.*plan booking limit/i.test(msg)) return 'Booking could not sync because this lodge is above the current plan limit after downgrade.'
+  if (/monthly booking limit reached/i.test(msg)) return 'Booking could not sync because the monthly booking creation limit has been reached.'
+  if (/room limit reached/i.test(msg)) return 'Room creation could not sync because this lodge has reached the plan room limit. Upgrade, then retry or clear the failed item.'
+  if (/user limit reached/i.test(msg)) return 'Staff user creation could not sync because this lodge has reached the plan user limit. Upgrade, then retry or clear the failed item.'
+  if (/above the current plan room limit|room limit.*after a downgrade|above.*plan room limit/i.test(msg)) return 'Room creation could not sync because this lodge is above the current plan room limit after a downgrade. Upgrade or reduce rooms, then retry.'
+  if (/above the current plan user limit|user limit.*after a downgrade|above.*plan user limit/i.test(msg)) return 'Staff user creation could not sync because this lodge is above the current plan user limit after a downgrade. Upgrade or reduce staff users, then retry.'
   if (/overpay/i.test(msg)) return 'Payment would exceed the booking total — adjust and retry.'
   if (/below zero/i.test(msg)) return 'Adjustment would reduce paid balance below zero.'
   const cleaned = msg
@@ -275,6 +283,7 @@ export default function SystemHealthPanel() {
         pending:        nextPending,
         failed:         Array.isArray(details?.failed) ? details.failed : [],
         faults:         Array.isArray(details?.faults) ? details.faults : [],
+        groupedCounts:  details?.groupedCounts || {},
         cacheFreshness: details?.cacheFreshness && typeof details.cacheFreshness === 'object' ? details.cacheFreshness : {},
         cacheStale:     details?.cacheStale || { active: false, names: [] },
         syncMeta:       details?.syncMeta || {},
@@ -436,20 +445,6 @@ export default function SystemHealthPanel() {
     }
   }
 
-  const exportSupportBundle = async () => {
-    setActionBusy('support-bundle')
-    try {
-      const result = await window.api.reports.saveSupportBundle?.(25).catch((e) => ({ success: false, error: e.message }))
-      if (!result?.success) {
-        pushFlash('error', result?.error || 'Could not save the report right now.')
-        return
-      }
-      pushFlash('success', `Report saved to ${result.filePath}`)
-    } finally {
-      setActionBusy('')
-    }
-  }
-
   const clearErrorHistory = async () => {
     setActionBusy('clear-errors')
     try {
@@ -493,6 +488,9 @@ export default function SystemHealthPanel() {
         ? issues.map((issue) => `- ${issue}`).join('\n')
         : '- Staff requested a review of this status page even though no current issues were detected.'
 
+      const bundleResult = await window.api.reports.getSupportBundle?.(25).catch(() => null)
+      const bundleJson = bundleResult?.bundle ? JSON.stringify(bundleResult.bundle, null, 2) : null
+
       const description = [
         'A staff member asked for a review of this lodge health report.',
         '',
@@ -513,7 +511,8 @@ export default function SystemHealthPanel() {
         `Reporter: ${sessionUser?.name || sessionUser?.email || 'Unknown user'}`,
         `Lodge: ${globalSettings?.lodge_name || health?.lodge_name || 'Unknown'}`,
         `Lodge reference: ${globalSettings?.lodge_id || health?.lodge_id || 'Unknown'}`,
-      ].join('\n')
+        bundleJson ? ['', '```json', bundleJson, '```'].join('\n') : ''
+      ].filter(Boolean).join('\n')
 
       await window.api.admin.createSupportTicket({
         lodge_id: globalSettings?.lodge_id || health?.lodge_id || 'unknown',
@@ -570,6 +569,10 @@ export default function SystemHealthPanel() {
   const financialPendingBookingIds = syncDetails?.financialPendingBookingIds || []
   const financialFailedCount    = financialFailedBookingIds.length
   const financialPendingCount   = financialPendingBookingIds.length
+  const groupedCounts          = syncDetails?.groupedCounts || {}
+  const missingParentCount     = Number(groupedCounts.missing_parent || 0)
+  const blockedDependencyCount = Number(groupedCounts.blocked_dependencies || 0)
+  const financialRiskCount     = Number(groupedCounts.financial_risk_items || 0)
   const localStateAcknowledged = unresolvedLocal?.total === 0 && health?.online === true && replayAuthReady && pendingCount === 0
 
   const getFailedItemBookingId = (item) => (
@@ -646,11 +649,6 @@ export default function SystemHealthPanel() {
             className="inline-flex items-center gap-2 rounded-xl bg-blue-700 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-800 disabled:opacity-60">
             <Play size={14} />
             {actionBusy === 'run-sync' ? 'Checking…' : 'Run Sync Now'}
-          </button>
-          <button type="button" onClick={exportSupportBundle} disabled={actionBusy === 'support-bundle'}
-            className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-60">
-            <Download size={14} />
-            {actionBusy === 'support-bundle' ? 'Saving…' : 'Export Bundle'}
           </button>
           <button type="button" onClick={sendReportToCommandCentral} disabled={actionBusy === 'send-report'}
             className="inline-flex items-center gap-2 rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-800 disabled:opacity-60">
@@ -808,8 +806,8 @@ export default function SystemHealthPanel() {
         </div>
       ))}
 
-      {/* Saved changes card */}
-      {unresolvedLocal && (
+      {/* Saved changes card — only shown when there are actual open items or when all are confirmed */}
+      {unresolvedLocal && (unresolvedLocal.total > 0 || localStateAcknowledged) && (
         <div className={`rounded-2xl border px-5 py-4 ${localStateAcknowledged ? 'border-slate-200 bg-slate-50' : 'border-amber-200 bg-amber-50'}`}>
           <div className="flex items-start gap-3">
             <Database size={16} className={`mt-0.5 shrink-0 ${localStateAcknowledged ? 'text-slate-400' : 'text-amber-600'}`} />
@@ -817,9 +815,7 @@ export default function SystemHealthPanel() {
               <p className={`text-sm font-semibold ${localStateAcknowledged ? 'text-slate-600' : 'text-amber-900'}`}>
                 {unresolvedLocal.total > 0
                   ? `Saved changes still open (${unresolvedLocal.total} item${unresolvedLocal.total === 1 ? '' : 's'})`
-                  : localStateAcknowledged
-                    ? 'All saved changes confirmed'
-                    : 'Saved changes not yet confirmed'}
+                  : 'All saved changes confirmed'}
               </p>
               {unresolvedLocal.total > 0 && (
                 <div className="mt-2 space-y-1">
@@ -839,15 +835,6 @@ export default function SystemHealthPanel() {
                     </div>
                   ))}
                 </div>
-              )}
-              {unresolvedLocal.total === 0 && !localStateAcknowledged && (
-                <p className="mt-1 text-xs text-amber-800/80">
-                  This device cannot yet confirm that all saved changes reached the online copy.
-                  {!health?.online && ' The app is offline.'}
-                  {health?.online && !replayAuthReady && ' Sending is paused until sign-in is restored.'}
-                  {pendingCount > 0 && ' Some items are still waiting to send.'}
-                  {' Local state acknowledgement not yet proven.'}
-                </p>
               )}
               {localStateAcknowledged && (
                 <p className="mt-0.5 text-xs text-slate-500">(this device only)</p>
@@ -1052,6 +1039,29 @@ export default function SystemHealthPanel() {
         </div>
       </div>
 
+      <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-gray-200">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-semibold text-gray-900">Sync categories</h3>
+            <p className="mt-1 text-xs text-gray-500">Grouped counts for blocked, risky, failed, and waiting items.</p>
+          </div>
+        </div>
+        <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+          {[
+            { label: 'Missing parent', value: missingParentCount, tone: missingParentCount > 0 ? 'text-red-700' : 'text-gray-900' },
+            { label: 'Blocked dependencies', value: blockedDependencyCount, tone: blockedDependencyCount > 0 ? 'text-amber-700' : 'text-gray-900' },
+            { label: 'Financial risk items', value: financialRiskCount, tone: financialRiskCount > 0 ? 'text-red-700' : 'text-gray-900' },
+            { label: 'Failed items', value: failedCount, tone: failedCount > 0 ? 'text-red-700' : 'text-gray-900' },
+            { label: 'Pending items', value: pendingCount, tone: pendingCount > 0 ? 'text-amber-700' : 'text-gray-900' }
+          ].map((group) => (
+            <div key={group.label} className="rounded-xl bg-gray-50 px-3 py-3">
+              <p className="text-[11px] uppercase tracking-[0.12em] text-gray-400">{group.label}</p>
+              <p className={`mt-1 text-lg font-bold ${group.tone}`}>{group.value}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+
       {/* Main grid */}
       <div className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
 
@@ -1110,7 +1120,12 @@ export default function SystemHealthPanel() {
                           {item.lastAttemptedAt ? formatTs(item.lastAttemptedAt) : 'Not tried recently'}
                         </span>
                       </div>
-                      <p className="mt-2 text-sm text-red-700">{sanitizeForOperator(item.lastError)}</p>
+                      <p className="mt-2 text-sm text-red-700">{sanitizeForOperator(item.displayError || item.lastError)}</p>
+                      {item.dependencyLabel && item.dependencyCategory !== 'none' && (
+                        <p className={`mt-1 text-xs font-medium ${item.dependencyCategory === 'missing_parent' ? 'text-red-700' : 'text-amber-700'}`}>
+                          {item.dependencyLabel}
+                        </p>
+                      )}
                       {/* P1-11: retry classification */}
                       <p className={`mt-1 text-xs font-medium ${isAutoRetryable ? 'text-blue-600' : 'text-amber-700'}`}>
                         {retryLabel}
@@ -1173,8 +1188,8 @@ export default function SystemHealthPanel() {
                       <span className={`rounded-full px-2 py-1 font-semibold ${item.isFinancial ? 'bg-rose-100 text-rose-800' : 'bg-slate-100 text-slate-700'}`}>
                         {item.isFinancial ? 'Money' : 'General'}
                       </span>
-                      <span className="rounded-full bg-slate-100 px-2 py-1 font-semibold text-slate-700">
-                        Dependency: {item.dependencyState || 'unknown'}
+                      <span className={`rounded-full px-2 py-1 font-semibold ${item.dependencyCategory === 'missing_parent' ? 'bg-red-100 text-red-800' : item.dependencyCategory === 'blocked_dependencies' ? 'bg-amber-100 text-amber-800' : 'bg-slate-100 text-slate-700'}`}>
+                        {item.dependencyLabel || `Dependency: ${item.dependencyState || 'unknown'}`}
                       </span>
                       {item._depends_on && (
                         <span className="rounded-full bg-slate-100 px-2 py-1 font-semibold text-slate-700">
