@@ -1948,7 +1948,7 @@ function normalizeQueuedSyncItemForReplay(item = {}) {
   if (!item) return item;
   const next = { ...item, data: { ...(item.data || {}) } };
 
-  if (next.type === 'rpc' && next.table === 'update_quotation' && !('p_expected_updated_at' in next.data)) {
+  if (next.type === 'rpc' && ['update_booking', 'update_customer', 'update_room', 'update_quotation'].includes(next.table) && !('p_expected_updated_at' in next.data)) {
     next.data.p_expected_updated_at = null;
   }
 
@@ -5827,132 +5827,35 @@ async function deleteRoom(id) {
   return (await import('./' + 'rooms.js')).deleteRoom(id)
 }
 
+async function getAllCustomers() {
+  return (await import('./' + 'customers.js')).getAllCustomers()
+}
+
+async function createCustomer(data) {
+  return (await import('./' + 'customers.js')).createCustomer(data)
+}
+
+async function updateCustomerBlacklist(id, is_blacklisted, reason) {
+  return (await import('./' + 'customers.js')).updateCustomerBlacklist(id, is_blacklisted, reason)
+}
+
+async function getCustomerBookings(customerId) {
+  return (await import('./' + 'customers.js')).getCustomerBookings(customerId)
+}
+
+async function updateCustomer(id, data) {
+  return (await import('./' + 'customers.js')).updateCustomer(id, data)
+}
+
+async function updateCustomerIdPhoto(id, photo) {
+  return (await import('./' + 'customers.js')).updateCustomerIdPhoto(id, photo)
+}
+
+async function getCustomerById(id) {
+  return (await import('./' + 'customers.js')).getCustomerById(id)
+}
+
 // ─── CUSTOMERS ────────────────────────────────────────────────────────────────
-
-export async function getAllCustomers() {
-  if (state.isOnline) {
-    const { data } = await state.supabase.from('customers').select('*').eq('lodge_id', state.lodgeId).order('name');
-    if (data) writeCache('customers', data);
-    return data || [];
-  }
-  return readCache('customers');
-}
-
-export async function createCustomer(data) {
-  const id = randomUUID();
-  const customer = {
-    id,
-    name: data.name,
-    email: data.email || '',
-    phone: data.phone || '',
-    id_number: data.id_number || '',
-    nationality: data.nationality || '',
-    lodge_id: state.lodgeId
-  };
-
-  if (state.isOnline) {
-    const { data: result, error } = await state.supabase.rpc('create_customer', { payload: customer });
-    if (error) throw new Error(error.message);
-    if (!result?.success) throw new Error(result?.error || 'Could not create customer');
-    await refreshCache('customers');
-    return result?.id;
-  } else {
-    const cached = readCache('customers');
-    const newCustomer = { ...customer, _pending_sync: true, created_at: new Date().toISOString() };
-    cached.push(newCustomer);
-    writeCache('customers', cached);
-    queueOperation('rpc', 'create_customer', {
-      payload: {
-        ...customer,
-        created_at: newCustomer.created_at
-      }
-    }, null, { _queue_id: `customer-${id}` });
-    return id;
-  }
-}
-
-export async function updateCustomerBlacklist(id, is_blacklisted, reason) {
-  const update = { is_blacklisted: !!is_blacklisted, blacklist_reason: reason || '' };
-  if (state.isOnline) {
-    const { data: result, error } = await state.supabase.rpc('update_customer_blacklist', {
-      p_id: id,
-      p_lodge_id: state.lodgeId,
-      p_is_blacklisted: !!is_blacklisted,
-      p_reason: reason || ''
-    });
-    if (error) throw new Error(error.message);
-    if (!result?.success) throw new Error(result?.error || 'Could not update customer blacklist');
-    await refreshCache('customers');
-  } else {
-    const cached = readCache('customers');
-    const idx = cached.findIndex((c) => c.id === id);
-    if (idx >= 0) cached[idx] = { ...cached[idx], ...update };
-    writeCache('customers', cached);
-    queueOperation('rpc', 'update_customer_blacklist', {
-      p_id: id,
-      p_lodge_id: state.lodgeId,
-      p_is_blacklisted: !!is_blacklisted,
-      p_reason: reason || ''
-    });
-  }
-}
-
-export async function getCustomerBookings(customerId) {
-  if (state.isOnline) {
-    const { data } = await state.supabase.
-    from('bookings').
-    select('*, rooms(room_number, room_type)').
-    eq('lodge_id', state.lodgeId).
-    eq('customer_id', customerId).
-    order('check_in', { ascending: false }).
-    limit(10);
-    return (data || []).map((b) => ({
-      ...b,
-      room_number: b.rooms?.room_number,
-      room_type: b.rooms?.room_type
-    }));
-  }
-  const rooms = readCache('rooms');
-  return readCache('bookings').
-  filter((b) => b.customer_id === customerId).
-  map((b) => {
-    const room = rooms.find((r) => r.id === b.room_id);
-    return { ...b, room_number: room?.room_number, room_type: room?.room_type };
-  }).
-  sort((a, b) => new Date(b.check_in) - new Date(a.check_in)).
-  slice(0, 10);
-}
-
-export async function updateCustomer(id, data) {
-  const update = {
-    name: data.name,
-    email: data.email,
-    phone: data.phone,
-    id_number: data.id_number,
-    nationality: data.nationality
-  };
-
-  if (state.isOnline) {
-    const { data: result, error } = await state.supabase.rpc('update_customer', {
-      p_id: id,
-      p_lodge_id: state.lodgeId,
-      payload: update
-    });
-    if (error) throw new Error(error.message);
-    if (!result?.success) throw new Error(result?.error || 'Could not update customer');
-    await refreshCache('customers');
-  } else {
-    const cached = readCache('customers');
-    const idx = cached.findIndex((c) => c.id === id);
-    if (idx >= 0) cached[idx] = { ...cached[idx], ...update };
-    writeCache('customers', cached);
-    queueOperation('rpc', 'update_customer', {
-      p_id: id,
-      p_lodge_id: state.lodgeId,
-      payload: update
-    });
-  }
-}
 
 // ─── BOOKINGS ─────────────────────────────────────────────────────────────────
 
@@ -6467,7 +6370,8 @@ export async function updateBooking(id, data) {
       const { data: result, error } = await state.supabase.rpc('update_booking', {
         p_id: id,
         p_lodge_id: state.lodgeId,
-        payload: rpcPayload
+        payload: rpcPayload,
+        p_expected_updated_at: rpcPayload.expected_updated_at || null
       });
       if (error) throw new Error(error.message);
       if (!result?.success) throw new Error(result?.error || 'Could not update booking');
@@ -6480,7 +6384,8 @@ export async function updateBooking(id, data) {
       queueOperation('rpc', 'update_booking', {
         p_id: id,
         p_lodge_id: state.lodgeId,
-        payload: rpcPayload
+        payload: rpcPayload,
+        p_expected_updated_at: rpcPayload.expected_updated_at || null
       }, null, _updDepend ? { _depends_on: _updDepend } : {});
       // Cache SECOND — offline estimate includes charges_total for correct local display
       if (idx >= 0) {
@@ -6927,7 +6832,8 @@ export async function getSystemHealth() {
       payload: {
         notes: 'contract probe',
         expected_updated_at: probeNow
-      }
+      },
+      p_expected_updated_at: probeNow
     }).then((r) => ['update_booking', r]),
     probeRpc('update_booking_status', {
       p_id: probeBookingId,
@@ -8733,46 +8639,6 @@ export async function resolveMaintenanceTicket(id, roomId) {
 }
 
 // ─── ID PHOTO ─────────────────────────────────────────────────────────────────
-
-export async function updateCustomerIdPhoto(id, photo) {
-  if (state.isOnline) {
-    const { data: result, error } = await state.supabase.rpc('update_customer_id_photo', {
-      p_id: id,
-      p_lodge_id: state.lodgeId,
-      p_photo: photo
-    });
-    if (error) throw new Error(error.message);
-    if (!result?.success) throw new Error(result?.error || 'Could not update customer ID photo');
-    await refreshCache('customers');
-    return { success: true };
-  }
-  // Offline: update cache
-  const cached = readCache('customers');
-  const idx = cached.findIndex((c) => c.id === id);
-  if (idx >= 0) cached[idx] = { ...cached[idx], id_photo: photo };
-  writeCache('customers', cached);
-  queueOperation('rpc', 'update_customer_id_photo', {
-    p_id: id,
-    p_lodge_id: state.lodgeId,
-    p_photo: photo
-  });
-  return { success: true };
-}
-
-export async function getCustomerById(id) {
-  if (!id) return null;
-  if (state.isOnline) {
-    const { data, error } = await state.supabase.
-    from('customers').
-    select('*').
-    eq('lodge_id', state.lodgeId).
-    eq('id', id).
-    single();
-    if (error) throw new Error(error.message);
-    return data || null;
-  }
-  return readCache('customers').find((customer) => customer.id === id) || null;
-}
 
 // ─── FORECAST ─────────────────────────────────────────────────────────────────
 
