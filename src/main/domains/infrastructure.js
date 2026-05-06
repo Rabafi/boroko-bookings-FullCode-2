@@ -8,6 +8,7 @@ import bcrypt from 'bcryptjs';
 import { getRoleCapabilities, normalizeAppRole, isPosFullAccessRole } from "../../shared/accessControl.js";
 import { FINANCIAL_SYNC_TABLES, isFinancialSyncItem, pickNextReadySyncItemIndex } from "../../shared/syncQueue.js";
 export { FINANCIAL_SYNC_TABLES, isFinancialSyncItem };
+import { ensureDir, readJsonFile, writeJsonFile } from './fileStore.js';
 import {
   createAppError,
   isBackendAuthSchemaError,
@@ -28,6 +29,7 @@ import {
   recordCriticalError,
   writeAuxiliaryLog
 } from './operationalLog.js';
+export { ensureDir, readJsonFile, writeJsonFile } from './fileStore.js';
 export {
   createAppError,
   isBackendAuthSchemaError,
@@ -381,26 +383,6 @@ export function mergeFeatureOverrides(baseMap = {}, overrides = []) {
     next[featureName] = row?.enabled !== false;
   }
   return next;
-}
-
-export function ensureDir(dirPath) {
-  if (!dirPath) return;
-  if (!fs.existsSync(dirPath)) {
-    fs.mkdirSync(dirPath, { recursive: true });
-  }
-}
-
-export function readJsonFile(filePath, fallback) {
-  try {
-    return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-  } catch {
-    return fallback;
-  }
-}
-
-export function writeJsonFile(filePath, value) {
-  ensureDir(path.dirname(filePath));
-  fs.writeFileSync(filePath, JSON.stringify(value, null, 2), 'utf-8');
 }
 
 function getManagedBackupPolicyPath() {
