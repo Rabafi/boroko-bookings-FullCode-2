@@ -5077,15 +5077,6 @@ export function applyQueuedPosInventoryReservations(remoteInventoryRows = []) {
 
 // ─── SETTINGS ─────────────────────────────────────────────────────────────────
 
-export function isMissingEntitlementRpcError(error) {
-  const message = String(error?.message || '');
-  return error?.code === 'PGRST202' ||
-  /get_lodge_entitlement|activate_license_key|issue_subscription_contract|update_subscription_contract|set_subscription_feature_override|clear_subscription_feature_override|schema cache/i.test(message);
-}
-
-
-
-
 // ─── INVOICES ────────────────────────────────────────────────────────────────────
 
 export function roundMoneyValue(value) {

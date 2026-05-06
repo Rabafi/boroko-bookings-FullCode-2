@@ -6,7 +6,6 @@ import { removeLocalCompanyProfile } from './profiles.js'
 import {
   DEFAULT_OFFLINE_LEASE_DAYS,
   DEFAULT_SUBSCRIPTION_GRACE_DAYS,
-  isMissingEntitlementRpcError,
   normalizePlanName,
   requireAdmin,
   clearCache,
@@ -18,6 +17,7 @@ import {
   buildUsageWarning,
   resolvePwaAccessUpdate
 } from './infrastructure.js'
+import { isMissingEntitlementRpcError } from './subscriptions.js'
 import {
   normalizeSubscriptionPlan,
   getPlanUsageLimits,
