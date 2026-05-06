@@ -15,10 +15,6 @@ import {
 } from './infrastructure.js'
 
 export {
-  getSupportBundle,
-  getOfflineSafetyData,
-  publishDeviceHealth,
-  getDeviceHealthRollup
 } from './infrastructure.js'
 
 // ─── INVOICES ────────────────────────────────────────────────────────────────────

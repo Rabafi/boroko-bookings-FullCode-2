@@ -409,10 +409,8 @@ export default function Dashboard() {
           <p className="text-xs font-semibold uppercase tracking-[0.22em] text-emerald-700/70">Operations Overview</p>
           <h1 className="bb-page-header-title mt-2">Dashboard</h1>
           <p className="bb-page-header-subtitle">{today}</p>
-                </div>
-                )}
-              </div>
-
+        </div>
+      </div>
       {/* Quick Access */}
       <section className="bb-card p-5">
         <div className="mb-4 flex items-center justify-between gap-4">

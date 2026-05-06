@@ -1,3 +1,11 @@
+export {
+  getSystemHealth,
+  getSupportBundle,
+  getOfflineSafetyData,
+  publishDeviceHealth,
+  getDeviceHealthRollup
+} from './domains/health.js'
+
 // FACADE ONLY.
 // Business logic lives in src/main/domains/.
 // Do not add new logic here.
@@ -271,10 +279,6 @@ export {
   getInvoiceDeliveryHistory,
   runFinancialValidation,
   getFinancialValidationAlerts,
-  getSupportBundle,
-  getOfflineSafetyData,
-  publishDeviceHealth,
-  getDeviceHealthRollup,
   getFinancialValidationRuns,
   runScheduledFinancialValidation,
   getNextInvoiceNumber,
@@ -286,7 +290,6 @@ export {
   getInvoiceSummary
 } from './domains/finance.js'
 export {
-  getSystemHealth,
   recordActivity,
   getActivityLog,
   clearActivityLog,

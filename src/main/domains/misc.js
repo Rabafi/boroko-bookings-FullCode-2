@@ -28,7 +28,6 @@ import {
 } from './infrastructure.js'
 
 export {
-  getSystemHealth,
   writeExpandedBackupToPath,
   createManualBackup
 } from './infrastructure.js'
