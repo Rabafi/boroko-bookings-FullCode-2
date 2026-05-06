@@ -44,6 +44,12 @@ function buildOfflineBookingFinancialState(totalAmount, depositAmount = 0) {
   };
 }
 
+const VALID_STATUS_TRANSITIONS = {
+  pending: ['confirmed', 'cancelled'],
+  confirmed: ['checked_in', 'cancelled'],
+  checked_in: ['checked_out']
+};
+
 export async function getAllBookings() {
   try {
     const { data, error } = await state.supabase.

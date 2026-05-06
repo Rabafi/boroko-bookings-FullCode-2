@@ -4843,50 +4843,6 @@ export async function checkExclusiveEventConflict(checkIn, checkOut, excludeGrou
   }
 }
 
-const VALID_STATUS_TRANSITIONS = {
-  pending: ['confirmed', 'cancelled'],
-  confirmed: ['checked_in', 'cancelled'],
-  checked_in: ['checked_out']
-};
-
-function normalizeRpcProbeEnvelope(data) {
-  if (Array.isArray(data)) return data[0] || null;
-  return data && typeof data === 'object' ? data : null;
-}
-
-function isReplayContractProbeFailure(message = '') {
-  return /PGRST202|42883|could not find the function|function.*does not exist|function.*not.*found|schema cache|structure of query does not match|returned record type does not match expected record type|unexpected parameter|missing required|has no parameter named|column .* does not exist/i.test(String(message || ''));
-}
-
-// P0-7: probe replay-critical RPCs with the current argument names used by the app.
-// Missing/shape-mismatched contracts must fail health, while ordinary business-rule
-// rejections still count as "function exists and is callable with this signature".
-export async function probeRpc(name, args = {}, options = {}) {
-  const { expectSuccessEnvelope = true } = options;
-  try {
-    const { data, error } = await state.supabase.rpc(name, args);
-    if (error) {
-      const message = error.message || 'Unknown error';
-      if (isReplayContractProbeFailure(message) || error.code === 'PGRST202') {
-        return { ok: false, message: `${name} contract mismatch — ${message}` };
-      }
-      return { ok: true, message: `${name} is callable (probe reached runtime validation).`, responseShapeVerified: false };
-    }
-
-    if (!expectSuccessEnvelope) {
-      return { ok: true, message: `${name} is available.`, responseShapeVerified: false };
-    }
-
-    const envelope = normalizeRpcProbeEnvelope(data);
-    if (!envelope || typeof envelope !== 'object' || !Object.prototype.hasOwnProperty.call(envelope, 'success')) {
-      return { ok: false, message: `${name} returned an unexpected response shape.` };
-    }
-    return { ok: true, message: `${name} returned the expected response shape.`, responseShapeVerified: true };
-  } catch (e) {
-    return { ok: false, message: `${name} probe threw: ${e.message}` };
-  }
-}
-
 // ─── EVENT / LODGE BOOKING ────────────────────────────────────────────────────
 
 // ─── NOTIFICATIONS ────────────────────────────────────────────────────────────

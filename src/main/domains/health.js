@@ -17,7 +17,6 @@ import {
   getBackupHealthSummary,
   readHealthFaults,
   createBookingIdempotencyKey,
-  probeRpc,
   getLocalDateKey,
   LOCAL_TIME_ZONE,
   addDays,
@@ -32,6 +31,41 @@ import {
   getSyncStatus,
   getSyncDetails
 } from './sync.js';
+
+function normalizeRpcProbeEnvelope(data) {
+  if (Array.isArray(data)) return data[0] || null;
+  return data && typeof data === 'object' ? data : null;
+}
+
+function isReplayContractProbeFailure(message = '') {
+  return /PGRST202|42883|could not find the function|function.*does not exist|function.*not.*found|schema cache|structure of query does not match|returned record type does not match expected record type|unexpected parameter|missing required|has no parameter named|column .* does not exist/i.test(String(message || ''));
+}
+
+async function probeRpc(name, args = {}, options = {}) {
+  const { expectSuccessEnvelope = true } = options;
+  try {
+    const { data, error } = await state.supabase.rpc(name, args);
+    if (error) {
+      const message = error.message || 'Unknown error';
+      if (isReplayContractProbeFailure(message) || error.code === 'PGRST202') {
+        return { ok: false, message: `${name} contract mismatch — ${message}` };
+      }
+      return { ok: true, message: `${name} is callable (probe reached runtime validation).`, responseShapeVerified: false };
+    }
+
+    if (!expectSuccessEnvelope) {
+      return { ok: true, message: `${name} is available.`, responseShapeVerified: false };
+    }
+
+    const envelope = normalizeRpcProbeEnvelope(data);
+    if (!envelope || typeof envelope !== 'object' || !Object.prototype.hasOwnProperty.call(envelope, 'success')) {
+      return { ok: false, message: `${name} returned an unexpected response shape.` };
+    }
+    return { ok: true, message: `${name} returned the expected response shape.`, responseShapeVerified: true };
+  } catch (e) {
+    return { ok: false, message: `${name} probe threw: ${e.message}` };
+  }
+}
 
 // --- Dynamic Stubs for getOfflineSafetyData ---
 async function getAllBookings(...args) {
