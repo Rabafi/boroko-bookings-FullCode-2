@@ -33,3 +33,5 @@ export function createAppError(code, message, details = {}) {
   Object.assign(error, details);
   return error;
 }
+
+export const MAX_FINANCIAL_AMOUNT = 1_000_000;

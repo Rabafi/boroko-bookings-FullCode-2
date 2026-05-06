@@ -12,6 +12,7 @@ import {
   createAppError,
   isBackendAuthSchemaError,
   isUuid,
+  MAX_FINANCIAL_AMOUNT,
   normalizeEmail,
   normalizeLodgeId,
   normalizeUserRecord
@@ -31,6 +32,7 @@ export {
   createAppError,
   isBackendAuthSchemaError,
   isUuid,
+  MAX_FINANCIAL_AMOUNT,
   normalizeEmail,
   normalizeLodgeId,
   normalizeUserRecord
@@ -1175,7 +1177,6 @@ const SYNC_RETRY_MAX_DELAY_MS = 30_000;
 export const DEAD_LETTER_AUTO_RETRY_AFTER_MS = 30 * 60 * 1000;
 const SYNC_REFRESH_RETRY_BASE_DELAY_MS = 5_000;
 const SYNC_REFRESH_RETRY_MAX_DELAY_MS = 60_000;
-export const MAX_FINANCIAL_AMOUNT = 1_000_000;
 const SYNC_ALREADY_APPLIED_CODES = new Set(['23505']);
 
 function delay(ms) {
