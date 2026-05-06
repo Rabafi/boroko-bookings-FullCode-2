@@ -5,17 +5,19 @@ import {
   clearActivityLog
 } from './misc.js';
 import {
+  createAppError,
+  isBackendAuthSchemaError,
+  isUuid,
+  normalizeEmail,
+  normalizeLodgeId
+} from './shared.js';
+import {
   checkOnline,
   clearBackendSession,
   clearCache,
   clearSessionNonce,
-  createAppError,
   createUser,
   ensureDir,
-  isBackendAuthSchemaError,
-  isUuid,
-  normalizeEmail,
-  normalizeLodgeId,
   readAuthCache,
   readCache,
   readSyncQueue,

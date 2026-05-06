@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs'
 import { state } from '../state.js'
 import { createInvoice } from './finance.js'
 import { removeLocalCompanyProfile } from './profiles.js'
+import { normalizeLodgeId } from './shared.js'
 import {
   DEFAULT_OFFLINE_LEASE_DAYS,
   DEFAULT_SUBSCRIPTION_GRACE_DAYS,
@@ -11,7 +12,6 @@ import {
   clearCache,
   refreshCache,
   checkOnline,
-  normalizeLodgeId,
   getMonthWindowIso,
   buildUsageSummary,
   buildUsageWarning,

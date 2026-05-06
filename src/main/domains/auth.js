@@ -1,4 +1,5 @@
 import { state } from '../state.js'
+import { normalizeEmail } from './shared.js'
 
 import {
   buildSupabaseAuthClient,
@@ -6,7 +7,6 @@ import {
   getAuthRedirectUrl,
   getUserById,
   logActivity,
-  normalizeEmail,
   requireAdmin,
   upsertCachedUser
 } from './infrastructure.js'

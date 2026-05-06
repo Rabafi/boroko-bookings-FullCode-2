@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import { state } from '../state.js';
 import { getAllRooms, getRoomById } from './rooms.js';
 import { getAllCustomers } from './customers.js';
+import { normalizeLodgeId } from './shared.js';
 import {
   DEBUG_CACHE_FALLBACKS,
   readCache,
@@ -13,7 +14,6 @@ import {
   createBackup,
   recordCriticalError,
   assertCreationWithinUsageLimit,
-  normalizeLodgeId,
   mergeRemoteBookingsWithLocalState,
   patchCachedQuotationSyncState
 } from './infrastructure.js';

@@ -4,14 +4,13 @@ import fs from 'fs'
 import path from 'path'
 import { state } from '../state.js'
 import { clearActivityLog } from './misc.js'
+import { isUuid, normalizeLodgeId } from './shared.js'
 import {
   checkOnline,
   clearBackendSession,
   clearCache,
   clearSessionNonce,
   ensureDir,
-  isUuid,
-  normalizeLodgeId,
   readJsonFile,
   readSyncMeta,
   refreshAllCaches,

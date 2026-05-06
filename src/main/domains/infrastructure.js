@@ -9,6 +9,22 @@ import { getRoleCapabilities, normalizeAppRole, isPosFullAccessRole } from "../.
 import { FINANCIAL_SYNC_TABLES, isFinancialSyncItem, pickNextReadySyncItemIndex } from "../../shared/syncQueue.js";
 export { FINANCIAL_SYNC_TABLES, isFinancialSyncItem };
 import {
+  createAppError,
+  isBackendAuthSchemaError,
+  isUuid,
+  normalizeEmail,
+  normalizeLodgeId,
+  normalizeUserRecord
+} from './shared.js';
+export {
+  createAppError,
+  isBackendAuthSchemaError,
+  isUuid,
+  normalizeEmail,
+  normalizeLodgeId,
+  normalizeUserRecord
+} from './shared.js';
+import {
   MONTHLY_USAGE_RESET_COPY,
   canCreateBooking,
   canCreateRoom,
@@ -75,7 +91,6 @@ trim();
 
 
 const AUTH_CONTRACT_VERSION = 2;
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ENTITLEMENT_FEATURES = ['reports', 'expenses', 'staff', 'pwa', 'audit', 'conference', 'pool', 'import', 'pos', 'inventory', 'supplies', 'online_booking'];
 const PLAN_FEATURE_MAP = {
   Starter: {
@@ -956,29 +971,6 @@ export function writeSyncQueue(queue) {
   }
 }
 
-export function normalizeEmail(email) {
-  return String(email || '').trim().toLowerCase();
-}
-
-export function normalizeLodgeId(id) {
-  return typeof id === 'string' ? id.trim().toLowerCase() : null;
-}
-
-export function isUuid(value) {
-  return UUID_PATTERN.test(normalizeLodgeId(value) || '');
-}
-
-export function normalizeUserRecord(user) {
-  if (!user || typeof user !== 'object') return null;
-  const email = normalizeEmail(user.email);
-  return {
-    ...user,
-    id: user.id || user.user_id || null,
-    email,
-    lodge_id: normalizeLodgeId(user.lodge_id || user.lodgeId || null)
-  };
-}
-
 function sanitizeUserForRenderer(user) {
   if (!user || typeof user !== 'object') return user;
   const {
@@ -988,10 +980,6 @@ function sanitizeUserForRenderer(user) {
     ...safeUser
   } = user;
   return safeUser;
-}
-
-export function isBackendAuthSchemaError(message = '') {
-  return /authenticate_user|authenticate_manager|get_manager_pwa_profile|validate_app_session|set_user_pwa_access|get_lodge_auth_context|schema cache|returned record type|structure of query does not match|contract_version|column .*deleted|column .*lodge_id|column .*password_hash|column .*pwa_|permission denied/i.test(message);
 }
 
 function authTrace(label, payload = {}) {
@@ -1070,13 +1058,6 @@ function makeBackendAuthSchemaError(message, details = {}) {
     error: message,
     details
   };
-}
-
-export function createAppError(code, message, details = {}) {
-  const error = new Error(message);
-  error.code = code;
-  Object.assign(error, details);
-  return error;
 }
 
 // ─── CONNECTIVITY & SYNC ──────────────────────────────────────────────────────

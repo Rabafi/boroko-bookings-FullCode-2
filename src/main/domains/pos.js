@@ -3,10 +3,10 @@ import bcrypt from 'bcryptjs'
 import { state } from '../state.js'
 import { getRoleCapabilities, isPosFullAccessRole, normalizeAppRole } from '../../shared/accessControl.js'
 import { getActiveBookingForRoom } from './bookings.js'
+import { normalizeUserRecord } from './shared.js'
 import {
   applyOfflinePosInventoryReservation,
   getOfflinePosInventoryReservation,
-  normalizeUserRecord,
   patchCachedPosOrderSyncState,
   queueOperation,
   readCache,
