@@ -4,6 +4,7 @@ import { state } from '../state.js'
 import { getRoleCapabilities, isPosFullAccessRole, normalizeAppRole } from '../../shared/accessControl.js'
 import { getActiveBookingForRoom } from './bookings.js'
 import { recordCriticalError } from './operationalLog.js'
+import { mergeRemotePosOrdersWithLocalState } from './posMerge.js'
 import { normalizeUserRecord } from './shared.js'
 import { patchCachedPosOrderSyncState } from './syncCache.js'
 import {
@@ -49,16 +50,6 @@ function applyPosOrderFilters(rows = [], startDate, endDate, outletFilter = null
     filtered = filtered.filter((order) => !order.outlet_id || outletFilter.includes(order.outlet_id));
   }
   return filtered.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
-}
-
-function mergeRemotePosOrdersWithLocalState(remoteRows = [], localRows = readCache('pos-orders')) {
-  const remoteIds = new Set((remoteRows || []).map((row) => row?.id).filter(Boolean));
-  const protectedLocalRows = (localRows || []).filter((row) =>
-  row?._pending_sync ||
-  ['pending', 'failed', 'sync_failed', 'manual_review_required'].includes(String(row?._sync_state || ''))
-  );
-  const localOnlyRows = protectedLocalRows.filter((row) => row?.id && !remoteIds.has(row.id));
-  return [...localOnlyRows, ...(remoteRows || [])];
 }
 
 // outletFilter: null = all outlets, [] = no access, [uuid1,...] = restrict to these outlet IDs
