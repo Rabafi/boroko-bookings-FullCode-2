@@ -1,5 +1,4 @@
 import { randomUUID } from 'crypto';
-import { createClient } from '@supabase/supabase-js';
 import { app } from 'electron';
 import path from 'path';
 import fs from 'fs';
@@ -44,6 +43,14 @@ import {
   upsertCachedUser,
   writeAuthCache
 } from './authCache.js';
+import {
+  applyBackendSession,
+  buildSupabaseAuthClient,
+  buildSupabaseClient,
+  clearBackendSession,
+  getAuthRedirectUrl,
+  getBackendSession
+} from './authClients.js';
 import {
   refreshCache,
   refreshCachesAfterSync,
@@ -223,11 +230,6 @@ export {
 // ─────────────────────────────────────────────────────────────────────────────
 import { state } from "../state.js";const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_KEY;
-const AUTH_REDIRECT_URL = (
-process.env.BOROKO_AUTH_REDIRECT_URL ||
-import.meta.env.VITE_AUTH_REDIRECT_URL ||
-'').
-trim();
 
 
 
@@ -283,65 +285,11 @@ const PROFILE_CACHE_FILES = {
   trialStatus: null
 };
 
-function buildSupabaseClient(key, sessionToken = null) {
-  const token = typeof sessionToken === 'string' && sessionToken.trim() ? sessionToken.trim() : null;
-  authTrace('buildSupabaseClient', {
-    clientKind: key === SUPABASE_ANON_KEY ? 'anon' : 'non-anon',
-    hasExplicitSessionToken: !!token,
-    explicitSessionTokenLength: token ? token.length : null,
-    currentLodgeId: state.lodgeId
-  });
-  return createClient(SUPABASE_URL, key, {
-    global: {
-      headers: token ? { 'x-boroko-session': token } : {}
-    }
-  });
-}
-
-export function buildSupabaseAuthClient() {
-  return createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-      detectSessionInUrl: false
-    }
-  });
-}
-
-export function getAuthRedirectUrl() {
-  return AUTH_REDIRECT_URL || undefined;
-}
-
-function applyBackendSession(session) {
-  authTrace('applyBackendSession', {
-    hasIncomingToken: !!session?.token,
-    incomingTokenLength: session?.token ? session.token.length : null,
-    session_type: session?.session_type || null,
-    expires_at: session?.expires_at || null,
-    lodgeId: state.lodgeId
-  });
-  state.backendSession = session?.token ?
-  {
-    token: session.token,
-    expires_at: session.expires_at || null,
-    session_type: session.session_type || 'desktop'
-  } :
-  null;
-  state.supabase = buildSupabaseClient(SUPABASE_ANON_KEY, state.backendSession?.token || null);
-}
-
-export function clearBackendSession() {
-  authTrace('clearBackendSession', {
-    hadBackendSession: !!state.backendSession?.token,
-    backendSessionType: state.backendSession?.session_type || null,
-    lodgeId: state.lodgeId
-  });
-  applyBackendSession(null);
-}
-
-function getBackendSession() {
-  return state.backendSession ? { ...state.backendSession } : null;
-}
+export {
+  buildSupabaseAuthClient,
+  clearBackendSession,
+  getAuthRedirectUrl
+} from './authClients.js';
 
 // ─── PROFILES / LEGACY LODGE ID ──────────────────────────────────────────────
 // Older builds stored a single lodge ID and one shared cache directory.

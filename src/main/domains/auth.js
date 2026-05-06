@@ -1,12 +1,15 @@
 import { state } from '../state.js'
 import { upsertCachedUser } from './authCache.js'
+import {
+  buildSupabaseAuthClient,
+  clearBackendSession,
+  getAuthRedirectUrl
+} from './authClients.js'
 import { normalizeEmail } from './shared.js'
 import { checkOnline } from './connectivity.js'
 import { getAllUsers, getUserById, getUserPosOutletFilter, getUsers } from './users.js'
 
 import {
-  buildSupabaseAuthClient,
-  getAuthRedirectUrl,
   logActivity,
   requireAdmin
 } from './infrastructure.js'
@@ -76,7 +79,6 @@ export async function sendUserInviteOrReset(id) {
 }
 
 export {
-  clearBackendSession,
   setCurrentUser,
   getCurrentUser,
   logoutCurrentUser,
@@ -92,5 +94,6 @@ export {
   getAuthStatus,
   deleteUser
 } from './infrastructure.js'
+export { clearBackendSession } from './authClients.js'
 
 export { getAllUsers, getUsers, getUserById, getUserPosOutletFilter } from './users.js'
