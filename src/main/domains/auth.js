@@ -1,11 +1,11 @@
 import { state } from '../state.js'
 import { normalizeEmail } from './shared.js'
+import { getAllUsers, getUserById, getUsers } from './users.js'
 
 import {
   buildSupabaseAuthClient,
   checkOnline,
   getAuthRedirectUrl,
-  getUserById,
   logActivity,
   requireAdmin,
   upsertCachedUser
@@ -86,9 +86,6 @@ export {
   validateCurrentSession,
   createSessionNonce,
   loginUser,
-  getAllUsers,
-  getUsers,
-  getUserById,
   runAuthHealthCheck,
   createUser,
   updateUser,
@@ -96,3 +93,5 @@ export {
   getAuthStatus,
   deleteUser
 } from './infrastructure.js'
+
+export { getAllUsers, getUsers, getUserById } from './users.js'
