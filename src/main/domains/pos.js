@@ -5,10 +5,10 @@ import { getRoleCapabilities, isPosFullAccessRole, normalizeAppRole } from '../.
 import { getActiveBookingForRoom } from './bookings.js'
 import { recordCriticalError } from './operationalLog.js'
 import { normalizeUserRecord } from './shared.js'
+import { patchCachedPosOrderSyncState } from './syncCache.js'
 import {
   applyOfflinePosInventoryReservation,
   getOfflinePosInventoryReservation,
-  patchCachedPosOrderSyncState,
   queueOperation,
   readCache,
   readLocalPosVoidHistory,

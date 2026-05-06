@@ -14,14 +14,13 @@ import {
 import {
   FINANCIAL_SYNC_TABLES,
   isFinancialSyncItem,
-  markClearedSyncItemForManualReview,
-  patchCachedPosOrderSyncState,
   processSyncQueue,
   readCache,
   requeueEligibleFailedSyncItems,
 } from './infrastructure.js';
 import { broadcastSyncStatus, checkOnline } from './connectivity.js';
 import { buildSyncStatusSnapshot } from './syncStatus.js';
+import { markClearedSyncItemForManualReview, patchCachedPosOrderSyncState } from './syncCache.js';
 import {
   DEAD_LETTER_AUTO_RETRY_AFTER_MS,
   ensureQueuedItem,

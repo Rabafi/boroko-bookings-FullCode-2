@@ -12,8 +12,7 @@ import {
   refreshCache,
   queueOperation,
   logActivity,
-  createBackup,
-  patchCachedQuotationSyncState
+  createBackup
 } from './infrastructure.js';
 import { assertCreationWithinUsageLimit } from './usage.js';
 import {
@@ -22,6 +21,7 @@ import {
   roundMoneyValue
 } from './finance.js';
 import { mergeRemoteBookingsWithLocalState } from './bookingMerge.js';
+import { patchCachedQuotationSyncState } from './syncCache.js';
 
 // ─── BOOKINGS ─────────────────────────────────────────────────────────────────
 
