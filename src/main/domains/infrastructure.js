@@ -21,6 +21,7 @@ import {
   CRITICAL_ERROR_LOG_FILE,
   getLocalDateKey,
   isNonCriticalOperationalError,
+  logActivity,
   LOCAL_TIME_ZONE,
   readAuxiliaryLog,
   recordCriticalError,
@@ -39,6 +40,7 @@ export {
   CRITICAL_ERROR_LOG_FILE,
   getLocalDateKey,
   isNonCriticalOperationalError,
+  logActivity,
   LOCAL_TIME_ZONE,
   readAuxiliaryLog,
   recordCriticalError,
@@ -2661,30 +2663,6 @@ export function queueOperation(type, table, data, id = null, meta = {}) {
   queue.push(queuedItem);
   writeSyncQueue(queue);
   return queuedItem._queue_id;
-}
-
-// ─── ACTIVITY LOG ─────────────────────────────────────────────────────────────
-
-export function logActivity(action, description) {
-  try {
-    const logPath = path.join(state.cacheDir, 'activity-log.json');
-    let log = [];
-    try {log = JSON.parse(fs.readFileSync(logPath, 'utf-8'));} catch {/* empty */}
-
-    log.unshift({
-      id: Date.now(),
-      timestamp: new Date().toISOString(),
-      action,
-      description,
-      user_id: state.currentUser?.id || null,
-      user_name: state.currentUser?.name || 'System'
-    });
-
-    if (log.length > 500) log = log.slice(0, 500);
-    fs.writeFileSync(logPath, JSON.stringify(log, null, 2), 'utf-8');
-  } catch (e) {
-    console.error('Activity log write failed:', e);
-  }
 }
 
 function clearActivityLogForInfrastructure() {

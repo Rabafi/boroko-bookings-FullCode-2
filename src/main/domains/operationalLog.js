@@ -71,3 +71,25 @@ export function recordCriticalError(scope, error, details = {}, { limit = 300, l
   logger(`[APP ${scope}]`, message, details);
   return row;
 }
+
+export function logActivity(action, description) {
+  try {
+    const logPath = path.join(state.cacheDir, 'activity-log.json');
+    let log = [];
+    try {log = JSON.parse(fs.readFileSync(logPath, 'utf-8'));} catch {/* empty */}
+
+    log.unshift({
+      id: Date.now(),
+      timestamp: new Date().toISOString(),
+      action,
+      description,
+      user_id: state.currentUser?.id || null,
+      user_name: state.currentUser?.name || 'System'
+    });
+
+    if (log.length > 500) log = log.slice(0, 500);
+    fs.writeFileSync(logPath, JSON.stringify(log, null, 2), 'utf-8');
+  } catch (e) {
+    console.error('Activity log write failed:', e);
+  }
+}
