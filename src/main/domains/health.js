@@ -8,6 +8,7 @@ import {
   getFinancialValidationRuns,
   getFinancialValidationAlerts
 } from './finance.js';
+import { createBookingIdempotencyKey } from './bookings.js';
 
 import {
   checkOnline,
@@ -16,7 +17,6 @@ import {
   getBackupInfoForHealth,
   getBackupHealthSummary,
   readHealthFaults,
-  createBookingIdempotencyKey,
   getLocalDateKey,
   LOCAL_TIME_ZONE,
   addDays,

@@ -3,7 +3,6 @@ import { state } from '../state.js'
 import {
   normalizePlanName,
   requireAdmin,
-  roundMoneyValue,
   appendAuxiliaryLog,
   readAuxiliaryLog,
   getLocalDateKey,
@@ -16,6 +15,10 @@ export {
 } from './infrastructure.js'
 
 // ─── INVOICES ────────────────────────────────────────────────────────────────────
+
+export function roundMoneyValue(value) {
+  return Math.round((Number(value) || 0) * 100) / 100;
+}
 
 export function isMissingInvoiceNumberRpcError(error) {
   const message = String(error?.message || '');

@@ -1355,34 +1355,6 @@ function createQueueOperationId(prefix = 'op') {
   return `${prefix}-${randomUUID()}`;
 }
 
-export function createBookingIdempotencyKey(bookingId) {
-  return `create-booking:${bookingId}`;
-}
-
-export function createPaymentIdempotencyKey(bookingId, type = 'payment', intentId = null, fallbackSignature = null) {
-  if (type === 'deposit') {
-    // Deterministic — bound to the booking, safe to replay without generating a duplicate
-    return `payment:deposit:${bookingId}`;
-  }
-  // If intentId is provided, use it for deterministic idempotency across sessions
-  if (intentId) {
-    return `payment:${type}:${bookingId}:${intentId}`;
-  }
-  // Fallback: if signature is provided (booking+status+amount), use it for deterministic key
-  // This prevents double-payments even if intentKey is lost after app restart
-  if (fallbackSignature) {
-    return `payment:${type}:${fallbackSignature}`;
-  }
-  // Last resort: generate random key (logs warning in caller)
-  return `payment:${type}:${bookingId}:${randomUUID()}`;
-}
-
-export function buildPaymentFallbackSignature(bookingId, type, amount, bookingVersion = null) {
-  const normalizedAmount = roundMoneyValue(Math.abs(amount)).toFixed(2);
-  const normalizedVersion = bookingVersion || 'no-version';
-  return `${bookingId}:${type}:${normalizedAmount}:${normalizedVersion}`;
-}
-
 export function ensureQueuedItem(item = {}, fallbackType = 'op') {
   return {
     ...item,
@@ -5009,12 +4981,6 @@ export function applyQueuedPosInventoryReservations(remoteInventoryRows = []) {
 // ─── SETTINGS ─────────────────────────────────────────────────────────────────
 
 // ─── INVOICES ────────────────────────────────────────────────────────────────────
-
-export function roundMoneyValue(value) {
-  return Math.round((Number(value) || 0) * 100) / 100;
-}
-
-
 
 // ─────────────────────────────────────────────────────────────────────────────
 // QUOTATIONS

@@ -15,15 +15,12 @@ import {
   assertCreationWithinUsageLimit,
   normalizeLodgeId,
   mergeRemoteBookingsWithLocalState,
-  createBookingIdempotencyKey,
-  createPaymentIdempotencyKey,
-  buildPaymentFallbackSignature,
-  patchCachedQuotationSyncState,
-  roundMoneyValue
+  patchCachedQuotationSyncState
 } from './infrastructure.js';
 import {
   getNextInvoiceNumberByLookup,
-  isMissingInvoiceNumberRpcError
+  isMissingInvoiceNumberRpcError,
+  roundMoneyValue
 } from './finance.js';
 
 // ─── BOOKINGS ─────────────────────────────────────────────────────────────────
@@ -48,6 +45,34 @@ const VALID_STATUS_TRANSITIONS = {
   confirmed: ['checked_in', 'cancelled'],
   checked_in: ['checked_out']
 };
+
+export function createBookingIdempotencyKey(bookingId) {
+  return `create-booking:${bookingId}`;
+}
+
+function createPaymentIdempotencyKey(bookingId, type = 'payment', intentId = null, fallbackSignature = null) {
+  if (type === 'deposit') {
+    // Deterministic — bound to the booking, safe to replay without generating a duplicate
+    return `payment:deposit:${bookingId}`;
+  }
+  // If intentId is provided, use it for deterministic idempotency across sessions
+  if (intentId) {
+    return `payment:${type}:${bookingId}:${intentId}`;
+  }
+  // Fallback: if signature is provided (booking+status+amount), use it for deterministic key
+  // This prevents double-payments even if intentKey is lost after app restart
+  if (fallbackSignature) {
+    return `payment:${type}:${fallbackSignature}`;
+  }
+  // Last resort: generate random key (logs warning in caller)
+  return `payment:${type}:${bookingId}:${randomUUID()}`;
+}
+
+function buildPaymentFallbackSignature(bookingId, type, amount, bookingVersion = null) {
+  const normalizedAmount = roundMoneyValue(Math.abs(amount)).toFixed(2);
+  const normalizedVersion = bookingVersion || 'no-version';
+  return `${bookingId}:${type}:${normalizedAmount}:${normalizedVersion}`;
+}
 
 export async function checkExclusiveEventConflict(checkIn, checkOut, excludeGroupId = null) {
   if (state.isOnline) {
