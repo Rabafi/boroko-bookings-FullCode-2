@@ -1079,15 +1079,6 @@ export function createAppError(code, message, details = {}) {
   return error;
 }
 
-export function isReadOnlySessionTouchError(error) {
-  const message = String(error?.message || error || '').toLowerCase();
-  return message.includes('read-only transaction') && message.includes('update');
-}
-
-export function buildReadOnlySessionTouchMessage(featureLabel = 'This screen') {
-  return `${featureLabel} is hitting an older database read path that still tries to write during a SELECT. Apply the latest session and entitlement read-only SQL fixes in Supabase, then reload the app.`;
-}
-
 // ─── CONNECTIVITY & SYNC ──────────────────────────────────────────────────────
 
 /** True when the Supabase project is reachable over the network (not whether RLS allows reading rooms). */

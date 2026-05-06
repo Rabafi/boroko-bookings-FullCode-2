@@ -5,9 +5,7 @@ import { getRoleCapabilities, isPosFullAccessRole, normalizeAppRole } from '../.
 import { getActiveBookingForRoom } from './bookings.js'
 import {
   applyOfflinePosInventoryReservation,
-  buildReadOnlySessionTouchMessage,
   getOfflinePosInventoryReservation,
-  isReadOnlySessionTouchError,
   normalizeUserRecord,
   patchCachedPosOrderSyncState,
   queueOperation,
@@ -19,6 +17,15 @@ import {
   upsertLocalPosVoidHistory,
   writeCache
 } from './infrastructure.js'
+
+function isReadOnlySessionTouchError(error) {
+  const message = String(error?.message || error || '').toLowerCase();
+  return message.includes('read-only transaction') && message.includes('update');
+}
+
+function buildReadOnlySessionTouchMessage(featureLabel = 'This screen') {
+  return `${featureLabel} is hitting an older database read path that still tries to write during a SELECT. Apply the latest session and entitlement read-only SQL fixes in Supabase, then reload the app.`;
+}
 
 function applyPosMenuOutletFilter(rows = [], outletFilter = null) {
   if (outletFilter !== null && outletFilter.length === 0) return [];
