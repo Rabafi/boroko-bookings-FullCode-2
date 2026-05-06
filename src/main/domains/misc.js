@@ -13,7 +13,7 @@ import { getPoolDayUse } from './pool.js';
 import { getInventoryItems, getInventoryPurchases } from './inventory.js';
 import { getSupplyItems, getSupplyPurchases } from './supplies.js';
 import { getPosOrders } from './pos.js';
-import { getSyncStatus } from './infrastructure.js';
+import { getSyncStatus } from './sync.js';
 
 import { createBooking, updateBookingPayment } from './bookings.js'
 import { createCustomer } from './customers.js'
@@ -815,4 +815,3 @@ export async function createManualBackup() {
   const backupPath = path.join(backupDir, `manual-backup-${ts}.json`);
   return await writeExpandedBackupToPath(backupPath);
 }
-

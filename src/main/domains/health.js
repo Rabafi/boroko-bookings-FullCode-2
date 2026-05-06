@@ -11,8 +11,6 @@ import {
 
 import {
   checkOnline,
-  getSyncStatus,
-  getSyncDetails,
   readSyncMeta,
   SYNC_DRIFT_FAULT_TYPES,
   getBackupInfoForHealth,
@@ -29,6 +27,11 @@ import {
   CRITICAL_ERROR_LOG_FILE,
   isNonCriticalOperationalError
 } from './infrastructure.js';
+
+import {
+  getSyncStatus,
+  getSyncDetails
+} from './sync.js';
 
 // --- Dynamic Stubs for getOfflineSafetyData ---
 async function getAllBookings(...args) {
