@@ -6481,17 +6481,7 @@ export function roundMoneyValue(value) {
   return Math.round((Number(value) || 0) * 100) / 100;
 }
 
-// ─── CONFERENCE BOOKINGS ───────────────────────────────────────────────────────
 
-async function getConferenceBookings(start, end) {
-  return (await import('./' + 'conference.js')).getConferenceBookings(start, end)
-}
-
-// ─── POOL / DAY USE ────────────────────────────────────────────────────────────
-
-async function getPoolDayUse(start, end) {
-  return (await import('./' + 'pool.js')).getPoolDayUse(start, end)
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // QUOTATIONS
