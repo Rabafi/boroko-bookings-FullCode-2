@@ -19,11 +19,14 @@ import {
 import { addDays } from './subscriptionState.js';
 
 import {
+  getBackupHealthSummary,
+  getBackupInfoForHealth
+} from './backupHealth.js';
+
+import {
   checkOnline,
   readSyncMeta,
   SYNC_DRIFT_FAULT_TYPES,
-  getBackupInfoForHealth,
-  getBackupHealthSummary,
   readHealthFaults,
   readCache
 } from './infrastructure.js';
