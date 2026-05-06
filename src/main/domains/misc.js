@@ -3,6 +3,18 @@ import { app } from 'electron'
 import path from 'path'
 import fs from 'fs'
 import { state } from '../state.js'
+import { getAllRooms } from './rooms.js';
+import { getAllCustomers } from './customers.js';
+import { getAllBookings, getAllQuotations, getBookingInvoices } from './bookings.js';
+import { getExpenses } from './expenses.js';
+import { getMaintenanceTickets } from './maintenance.js';
+import { getConferenceBookings } from './conference.js';
+import { getPoolDayUse } from './pool.js';
+import { getInventoryItems, getInventoryPurchases } from './inventory.js';
+import { getSupplyItems, getSupplyPurchases } from './supplies.js';
+import { getPosOrders } from './pos.js';
+import { getSyncStatus } from './infrastructure.js';
+
 import { createBooking, updateBookingPayment } from './bookings.js'
 import { createCustomer } from './customers.js'
 import { createExpense, deleteExpense } from './expenses.js'
@@ -27,10 +39,6 @@ import {
   writeAuxiliaryLog
 } from './infrastructure.js'
 
-export {
-  writeExpandedBackupToPath,
-  createManualBackup
-} from './infrastructure.js'
 
 const CRITICAL_ERROR_LOG_FILE = 'critical-errors.json';
 
@@ -712,3 +720,99 @@ export function createRestoreRehearsalPackage(name) {
     return { success: false, error: error?.message || 'Could not create restore rehearsal package.' };
   }
 }
+
+// ─── EXPANDED / MANUAL BACKUPS ────────────────────────────────────────────────
+
+async function buildExpandedBackupPayload() {
+  if (!state.lodgeId) throw new Error('No lodge profile selected');
+  const [
+  settings,
+  rooms,
+  customers,
+  bookings,
+  quotations,
+  expenses,
+  maintenance,
+  bookingInvoices,
+  conferenceBookings,
+  dayUseEntries] =
+  await Promise.all([
+  import('./' + 'settings.js').then(m => m.getSettings()).catch(() => ({})),
+  getAllRooms().catch(() => []),
+  getAllCustomers().catch(() => []),
+  getAllBookings().catch(() => []),
+  getAllQuotations().catch(() => []),
+  getExpenses('2000-01-01', '2099-12-31').catch(() => []),
+  getMaintenanceTickets().catch(() => []),
+  getBookingInvoices().catch(() => []),
+  getConferenceBookings('2000-01-01', '2099-12-31').catch(() => []),
+  getPoolDayUse('2000-01-01', '2099-12-31').catch(() => [])]
+  );
+
+  const inventoryItems = await getInventoryItems().catch(() => []);
+  const supplyItems = await getSupplyItems().catch(() => []);
+  const posOrders = await getPosOrders('2000-01-01', '2099-12-31').catch(() => []);
+
+  const inventoryPurchases = [];
+  for (const item of inventoryItems) {
+    const purchases = await getInventoryPurchases(item.id).catch(() => []);
+    inventoryPurchases.push(...(purchases || []).map((purchase) => ({
+      ...purchase,
+      item_name: item.name || item.item_name || ''
+    })));
+  }
+
+  const supplyPurchases = [];
+  for (const item of supplyItems) {
+    const purchases = await getSupplyPurchases(item.id).catch(() => []);
+    supplyPurchases.push(...(purchases || []).map((purchase) => ({
+      ...purchase,
+      item_name: item.name || item.item_name || ''
+    })));
+  }
+
+  const backup = {
+    timestamp: new Date().toISOString(),
+    version: '2.0',
+    lodge_id: state.lodgeId,
+    mode: 'manual-expanded',
+    tables: {
+      settings,
+      rooms,
+      customers,
+      bookings,
+      quotations,
+      booking_invoices: bookingInvoices,
+      expenses,
+      maintenance,
+      pos_orders: posOrders,
+      inventory_items: inventoryItems,
+      inventory_purchases: inventoryPurchases,
+      supply_items: supplyItems,
+      supply_purchases: supplyPurchases,
+      conference_bookings: conferenceBookings,
+      pool_day_use: dayUseEntries,
+      sync_status: getSyncStatus()
+    }
+  };
+
+  return backup;
+}
+
+export async function writeExpandedBackupToPath(filePath) {
+  const backup = await buildExpandedBackupPayload();
+  ensureDir(path.dirname(filePath));
+  fs.writeFileSync(filePath, JSON.stringify(backup, null, 2), 'utf-8');
+  return { success: true, filePath };
+}
+
+export async function createManualBackup() {
+  if (!state.lodgeId) throw new Error('No lodge profile selected');
+  const backupDir = path.join(app.getPath('userData'), 'boroko-backups');
+  if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir, { recursive: true });
+
+  const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const backupPath = path.join(backupDir, `manual-backup-${ts}.json`);
+  return await writeExpandedBackupToPath(backupPath);
+}
+
