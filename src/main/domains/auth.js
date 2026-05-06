@@ -1,4 +1,5 @@
 import { state } from '../state.js'
+import { upsertCachedUser } from './authCache.js'
 import { normalizeEmail } from './shared.js'
 import { checkOnline } from './connectivity.js'
 import { getAllUsers, getUserById, getUserPosOutletFilter, getUsers } from './users.js'
@@ -7,8 +8,7 @@ import {
   buildSupabaseAuthClient,
   getAuthRedirectUrl,
   logActivity,
-  requireAdmin,
-  upsertCachedUser
+  requireAdmin
 } from './infrastructure.js'
 
 export async function sendPasswordResetEmail(email) {

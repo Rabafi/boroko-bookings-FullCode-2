@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import fs from 'fs';
 import { state } from '../state.js';
+import { readAuthCache, upsertCachedUser, writeAuthCache } from './authCache.js';
 import {
   clearActivityLog
 } from './misc.js';
@@ -17,13 +18,10 @@ import {
   clearSessionNonce,
   createUser,
   ensureDir,
-  readAuthCache,
   readCache,
   readSyncQueue,
   refreshAllCaches,
   runAuthHealthCheck,
-  upsertCachedUser,
-  writeAuthCache,
   writeCache,
   writeSyncQueue
 } from './infrastructure.js';

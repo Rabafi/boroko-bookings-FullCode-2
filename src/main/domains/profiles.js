@@ -3,6 +3,7 @@ import { app } from 'electron'
 import fs from 'fs'
 import path from 'path'
 import { state } from '../state.js'
+import { writeAuthCache } from './authCache.js'
 import { clearActivityLog } from './misc.js'
 import { checkOnline } from './connectivity.js'
 import { isUuid, normalizeLodgeId } from './shared.js'
@@ -14,7 +15,6 @@ import {
   readJsonFile,
   readSyncMeta,
   refreshAllCaches,
-  writeAuthCache,
   writeFailedSyncQueue,
   writeJsonFile,
   writeSyncQueue
