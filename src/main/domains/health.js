@@ -22,12 +22,14 @@ import {
   getBackupHealthSummary,
   getBackupInfoForHealth
 } from './backupHealth.js';
+import {
+  SYNC_DRIFT_FAULT_TYPES,
+  readHealthFaults,
+  readSyncMeta
+} from './syncStore.js';
 
 import {
   checkOnline,
-  readSyncMeta,
-  SYNC_DRIFT_FAULT_TYPES,
-  readHealthFaults,
   readCache
 } from './infrastructure.js';
 import { getLodgeDiagnostics } from './settings.js';

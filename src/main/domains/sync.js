@@ -4,6 +4,14 @@ import { state } from '../state.js';
 
 import {
   appendHealthFault,
+  readFailedSyncQueue,
+  readHealthFaults,
+  readSyncMeta,
+  readSyncQueue,
+  writeFailedSyncQueue,
+  writeSyncQueue
+} from './syncStore.js';
+import {
   buildSyncStatusSnapshot,
   broadcastSyncStatus,
   checkOnline,
@@ -20,13 +28,7 @@ import {
   patchCachedPosOrderSyncState,
   processSyncQueue,
   readCache,
-  readFailedSyncQueue,
-  readHealthFaults,
-  readSyncMeta,
-  readSyncQueue,
   requeueEligibleFailedSyncItems,
-  writeFailedSyncQueue,
-  writeSyncQueue
 } from './infrastructure.js';
 
 const HEALTH_FAULTS_FILE = 'health-faults.json';
