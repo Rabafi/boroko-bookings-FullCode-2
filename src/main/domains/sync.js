@@ -12,7 +12,6 @@ import {
   writeSyncQueue
 } from './syncStore.js';
 import {
-  buildSyncStatusSnapshot,
   broadcastSyncStatus,
   checkOnline,
   FINANCIAL_SYNC_TABLES,
@@ -23,6 +22,7 @@ import {
   readCache,
   requeueEligibleFailedSyncItems,
 } from './infrastructure.js';
+import { buildSyncStatusSnapshot } from './syncStatus.js';
 import {
   DEAD_LETTER_AUTO_RETRY_AFTER_MS,
   ensureQueuedItem,

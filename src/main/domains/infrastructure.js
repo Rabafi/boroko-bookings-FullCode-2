@@ -42,6 +42,10 @@ import {
   getUsers
 } from './users.js';
 import {
+  buildSyncStatusSnapshot,
+  isQueuedDependencyResolved
+} from './syncStatus.js';
+import {
   DEFAULT_OFFLINE_LEASE_DAYS,
   DEFAULT_SUBSCRIPTION_GRACE_DAYS,
   addDays,
@@ -106,6 +110,9 @@ export {
   getUserById,
   getUsers
 } from './users.js';
+export {
+  buildSyncStatusSnapshot
+} from './syncStatus.js';
 export {
   DEFAULT_OFFLINE_LEASE_DAYS,
   DEFAULT_SUBSCRIPTION_GRACE_DAYS,
@@ -1076,35 +1083,6 @@ function getSyncItemQuotationId(item) {
   return getSyncItemEntityId(item, 'quotation');
 }
 
-const QUEUED_DEPENDENCY_CACHE_MAP = [
-{ prefix: 'booking-', cache: 'bookings' },
-{ prefix: 'customer-', cache: 'customers' },
-{ prefix: 'room-', cache: 'rooms' },
-{ prefix: 'user-', cache: 'users' },
-{ prefix: 'quotation-', cache: 'quotations' },
-{ prefix: 'pos-order-', cache: 'pos-orders' },
-{ prefix: 'conference-booking-', cache: 'conference-bookings' },
-{ prefix: 'pool-day-use-', cache: 'pool-day-use' }];
-
-
-function isQueuedDependencyResolved(dependencyId) {
-  const normalizedDependencyId = String(dependencyId || '').trim();
-  if (!normalizedDependencyId) return false;
-
-  const target = QUEUED_DEPENDENCY_CACHE_MAP.find(({ prefix }) => normalizedDependencyId.startsWith(prefix));
-  if (!target) return false;
-
-  const entityId = normalizedDependencyId.slice(target.prefix.length).trim();
-  if (!entityId) return false;
-
-  const cachedRow = readCache(target.cache).find((entry) => entry?.id === entityId);
-  if (!cachedRow) return false;
-
-  return cachedRow._pending_sync !== true &&
-  cachedRow._sync_state !== 'manual_review_required' &&
-  cachedRow._sync_state !== 'failed';
-}
-
 export function patchCachedPosOrderSyncState(orderId, patch = {}) {
   if (!orderId) return false;
   const cachedOrders = readCache('pos-orders');
@@ -1937,103 +1915,6 @@ async function _runSyncQueue() {
   console.log(`[Sync] Done — ${successCount} synced, ${pending.length} retrying, ${deadLetter.length} dead-lettered`);
 
   broadcastSyncStatus();
-}
-
-function buildSyncGroupedCountsForStatus(pending = [], failed = []) {
-  const classify = (item = {}, queuePending = [], queueFailed = []) => {
-    const dependencyId = String(item?._depends_on || '').trim();
-    if (!dependencyId) return 'none';
-
-    if (queueFailed.some((entry) => entry?._queue_id === dependencyId)) return 'blocked_dependencies';
-    if (queuePending.some((entry) => entry?._queue_id === dependencyId)) return 'blocked_dependencies';
-    if (isQueuedDependencyResolved(dependencyId)) return 'resolved';
-    return 'missing_parent';
-  };
-
-  const pendingMissingParent = pending.filter((item) => classify(item, pending, failed) === 'missing_parent').length;
-  const failedMissingParent = failed.filter((item) => classify(item, pending, failed) === 'missing_parent').length;
-  const pendingBlockedDependencies = pending.filter((item) => classify(item, pending, failed) === 'blocked_dependencies').length;
-  const failedBlockedDependencies = failed.filter((item) => classify(item, pending, failed) === 'blocked_dependencies').length;
-  const financialRiskItems = pending.filter(isFinancialSyncItem).length + failed.filter(isFinancialSyncItem).length;
-
-  return {
-    missing_parent: pendingMissingParent + failedMissingParent,
-    blocked_dependencies: pendingBlockedDependencies + failedBlockedDependencies,
-    financial_risk_items: financialRiskItems,
-    failed_items: failed.length,
-    pending_items: pending.length
-  };
-}
-
-export function buildSyncStatusSnapshot() {
-  const queue = readSyncQueue();
-  const failed = readFailedSyncQueue();
-  const faults = readHealthFaults();
-  const syncMeta = readSyncMeta();
-  const extractBookingId = (item) =>
-  item?.data?.p_booking_id ||
-  item?.data?.payload?.booking_id ||
-  item?.data?.payload?.id ||
-  item?.data?.p_id ||
-  item?._local_booking_id ||
-  null;
-
-  const failedBookingIds = failed.
-  filter((item) => ['create_booking', 'create_booking_record', 'update_booking'].includes(item.table)).
-  map((item) => item.data?.p_booking_id || item.data?.payload?.id || item.data?.p_id).
-  filter(Boolean);
-  const financialPendingBookingIds = [...new Set(
-    queue.
-    filter((item) => FINANCIAL_SYNC_TABLES.has(item?.table)).
-    map(extractBookingId).
-    filter(Boolean)
-  )];
-  const financialFailedBookingIds = [...new Set(
-    failed.
-    filter((item) => FINANCIAL_SYNC_TABLES.has(item?.table)).
-    map(extractBookingId).
-    filter(Boolean)
-  )];
-  const financialPendingCount = queue.filter((item) => FINANCIAL_SYNC_TABLES.has(item?.table)).length;
-  const financialFailedCount = failed.filter((item) => FINANCIAL_SYNC_TABLES.has(item?.table)).length;
-  const groupedCounts = buildSyncGroupedCountsForStatus(queue, failed);
-  // P0-1: lastSuccessfulSyncAt from memory first, fall back to persisted meta
-  const resolvedLastSync = state.lastSuccessfulSyncAt || syncMeta.lastSuccessfulSyncAt || null;
-  return {
-    pending: queue.length,
-    failed: failed.length,
-    // P0-2: named fields as specified
-    currentQueueLength: queue.length,
-    currentDeadLetterWrites: failed.length,
-    isOnline: state.isOnline,
-    // P0-2: expose replay in-progress state
-    syncInProgress: state.syncInProgress,
-    replayAuthReady: state.replayAuthReady,
-    failedBookingIds,
-    financialPendingBookingIds,
-    financialFailedBookingIds,
-    financialPendingCount,
-    financialFailedCount,
-    groupedCounts,
-    lastSuccessfulSyncAt: resolvedLastSync,
-    // P0-1: full sync meta
-    syncMeta: {
-      lastSyncStartedAt: syncMeta.lastSyncStartedAt || null,
-      lastSyncFinishedAt: syncMeta.lastSyncFinishedAt || null,
-      lastSyncOutcome: syncMeta.lastSyncOutcome || null,
-      lastSyncError: syncMeta.lastSyncError || '',
-      replayAuthNotReadyAt: syncMeta.replayAuthNotReadyAt || null
-    },
-    // P0-4: expose corruption/integrity faults
-    faults,
-    cacheStale: {
-      active: state.syncRefreshState.stale,
-      names: state.syncRefreshState.names,
-      attempts: state.syncRefreshState.attempts,
-      lastError: state.syncRefreshState.lastError,
-      lastFailedAt: state.syncRefreshState.lastFailedAt
-    }
-  };
 }
 
 export async function requeueEligibleFailedSyncItems(minAgeMs = DEAD_LETTER_AUTO_RETRY_AFTER_MS) {
