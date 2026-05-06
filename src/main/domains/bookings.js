@@ -14,7 +14,6 @@ import {
   logActivity,
   createBackup,
   assertCreationWithinUsageLimit,
-  mergeRemoteBookingsWithLocalState,
   patchCachedQuotationSyncState
 } from './infrastructure.js';
 import {
@@ -22,6 +21,7 @@ import {
   isMissingInvoiceNumberRpcError,
   roundMoneyValue
 } from './finance.js';
+import { mergeRemoteBookingsWithLocalState } from './bookingMerge.js';
 
 // ─── BOOKINGS ─────────────────────────────────────────────────────────────────
 

@@ -51,6 +51,7 @@ import {
   restoreOfflinePosInventoryReservation,
   upsertLocalPosVoidHistory
 } from './posOffline.js';
+import { mergeRemoteBookingsWithLocalState } from './bookingMerge.js';
 import {
   buildSyncStatusSnapshot,
   isQueuedDependencyResolved
@@ -132,6 +133,7 @@ export {
   restoreOfflinePosInventoryReservation,
   upsertLocalPosVoidHistory
 } from './posOffline.js';
+export { mergeRemoteBookingsWithLocalState } from './bookingMerge.js';
 export {
   DEFAULT_OFFLINE_LEASE_DAYS,
   DEFAULT_SUBSCRIPTION_GRACE_DAYS,
@@ -3959,17 +3961,6 @@ export async function deleteUser(id) {
 // ─── ROOMS ────────────────────────────────────────────────────────────────────
 // ─── CUSTOMERS ────────────────────────────────────────────────────────────────
 // ─── BOOKINGS ─────────────────────────────────────────────────────────────────
-
-export function mergeRemoteBookingsWithLocalState(remoteRows = [], localRows = readCache('bookings')) {
-  const remoteIds = new Set((remoteRows || []).map((row) => row?.id).filter(Boolean));
-  const protectedLocalRows = (localRows || []).filter((row) =>
-  row?._pending_sync ||
-  row?._pending_payment ||
-  ['pending', 'failed', 'sync_failed', 'manual_review_required'].includes(String(row?._sync_state || ''))
-  );
-  const localOnlyRows = protectedLocalRows.filter((row) => row?.id && !remoteIds.has(row.id));
-  return [...localOnlyRows, ...(remoteRows || [])];
-}
 
 // ─── EVENT / LODGE BOOKING ────────────────────────────────────────────────────
 
