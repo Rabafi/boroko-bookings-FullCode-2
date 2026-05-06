@@ -8,6 +8,7 @@ import bcrypt from 'bcryptjs';
 import { getRoleCapabilities, normalizeAppRole, isPosFullAccessRole } from "../../shared/accessControl.js";
 import { FINANCIAL_SYNC_TABLES, isFinancialSyncItem, pickNextReadySyncItemIndex } from "../../shared/syncQueue.js";
 export { FINANCIAL_SYNC_TABLES, isFinancialSyncItem };
+import { buildManagedBackupStatus, readManagedBackupPolicy } from './backupPolicy.js';
 import { ensureDir, readJsonFile, writeJsonFile } from './fileStore.js';
 import {
   DEFAULT_OFFLINE_LEASE_DAYS,
@@ -154,18 +155,6 @@ const CONNECTIVITY_PROBE_TIMEOUT_MS = 4000;
 const CONNECTIVITY_OFFLINE_FAILURE_THRESHOLD = 3;
 const PERIODIC_SYNC_INTERVAL_MS = 15000;
 export const DEBUG_CACHE_FALLBACKS = process.env.BOROKO_DEBUG_CACHE_FALLBACKS === 'true';
-const BACKUP_POLICY_DEFAULT = {
-  enabled: false,
-  target_dir: '',
-  export_json: true,
-  export_excel: true,
-  frequency_days: 7,
-  last_run_at: null,
-  last_success_at: null,
-  last_error: '',
-  last_json_path: '',
-  last_excel_path: ''
-};
 const PROFILE_CACHE_FILES = {
   settings: [],
   users: [],
@@ -265,54 +254,6 @@ function isPwaEligibleRole(role) {
 function normalizePwaDisabledReason(reason, fallback = PWA_DISABLED_MESSAGE) {
   const value = String(reason || '').trim();
   return value || fallback;
-}
-
-function getManagedBackupPolicyPath() {
-  return path.join(app.getPath('userData'), 'managed-backup-policy.json');
-}
-
-function normalizeManagedBackupPolicy(raw = {}) {
-  return {
-    enabled: raw?.enabled === true,
-    target_dir: typeof raw?.target_dir === 'string' ? raw.target_dir.trim() : '',
-    export_json: raw?.export_json !== false,
-    export_excel: raw?.export_excel !== false,
-    frequency_days: Number(raw?.frequency_days) > 0 ? Number(raw.frequency_days) : 7,
-    last_run_at: raw?.last_run_at || null,
-    last_success_at: raw?.last_success_at || null,
-    last_error: typeof raw?.last_error === 'string' ? raw.last_error : '',
-    last_json_path: typeof raw?.last_json_path === 'string' ? raw.last_json_path : '',
-    last_excel_path: typeof raw?.last_excel_path === 'string' ? raw.last_excel_path : ''
-  };
-}
-
-function buildManagedBackupStatus(policy) {
-  const normalized = normalizeManagedBackupPolicy(policy);
-  const now = new Date();
-  const lastSuccessAt = normalized.last_success_at ? new Date(normalized.last_success_at) : null;
-  const nextDueAt = lastSuccessAt ?
-  new Date(lastSuccessAt.getTime() + normalized.frequency_days * 24 * 60 * 60 * 1000) :
-  null;
-  const overdue = normalized.enabled && normalized.target_dir ?
-  !lastSuccessAt || nextDueAt && nextDueAt.getTime() < now.getTime() :
-  false;
-  const requiresSetup = normalized.enabled && !normalized.target_dir;
-  const hasRecentSuccess = !!lastSuccessAt;
-
-  return {
-    ...normalized,
-    next_due_at: nextDueAt ? nextDueAt.toISOString() : null,
-    overdue,
-    requires_setup: requiresSetup,
-    has_recent_success: hasRecentSuccess,
-    compliance_state: requiresSetup ?
-    'setup_required' :
-    overdue ?
-    'overdue' :
-    hasRecentSuccess ?
-    'healthy' :
-    normalized.enabled ? 'pending_first_run' : 'disabled'
-  };
 }
 
 // ─── PROFILES / LEGACY LODGE ID ──────────────────────────────────────────────
@@ -2583,7 +2524,7 @@ export function createBackup() {
 }
 
 function getManagedBackupPolicyForHealth() {
-  return normalizeManagedBackupPolicy(readJsonFile(getManagedBackupPolicyPath(), BACKUP_POLICY_DEFAULT));
+  return readManagedBackupPolicy();
 }
 
 export function getBackupInfoForHealth() {
