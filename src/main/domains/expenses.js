@@ -1,6 +1,6 @@
 import { state } from '../state.js';
+import { MAX_FINANCIAL_AMOUNT } from './shared.js';
 import {
-  MAX_FINANCIAL_AMOUNT,
   readCache,
   writeCache
 } from './infrastructure.js';

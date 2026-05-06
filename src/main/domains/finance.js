@@ -4,13 +4,13 @@ import {
   appendAuxiliaryLog,
   getLocalDateKey,
   LOCAL_TIME_ZONE,
+  logActivity,
   readAuxiliaryLog,
   recordCriticalError
 } from './operationalLog.js'
+import { normalizePlanName } from './subscriptionState.js'
 import {
-  normalizePlanName,
-  requireAdmin,
-  logActivity
+  requireAdmin
 } from './infrastructure.js'
 
 export {

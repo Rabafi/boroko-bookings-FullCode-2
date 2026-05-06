@@ -16,6 +16,7 @@ import {
   LOCAL_TIME_ZONE,
   readAuxiliaryLog
 } from './operationalLog.js';
+import { addDays } from './subscriptionState.js';
 
 import {
   checkOnline,
@@ -24,7 +25,6 @@ import {
   getBackupInfoForHealth,
   getBackupHealthSummary,
   readHealthFaults,
-  addDays,
   readCache
 } from './infrastructure.js';
 import { getLodgeDiagnostics } from './settings.js';
