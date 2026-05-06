@@ -20,10 +20,12 @@ import {
   buildPaymentFallbackSignature,
   patchCachedQuotationSyncState,
   checkExclusiveEventConflict,
-  isMissingInvoiceNumberRpcError,
-  getNextInvoiceNumberByLookup,
   roundMoneyValue
 } from './infrastructure.js';
+import {
+  getNextInvoiceNumberByLookup,
+  isMissingInvoiceNumberRpcError
+} from './finance.js';
 
 // ─── BOOKINGS ─────────────────────────────────────────────────────────────────
 

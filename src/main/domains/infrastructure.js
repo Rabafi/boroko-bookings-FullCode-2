@@ -5094,67 +5094,6 @@ export function isMissingEntitlementRpcError(error) {
 
 // ─── INVOICES ────────────────────────────────────────────────────────────────────
 
-export function isMissingInvoiceNumberRpcError(error) {
-  const message = String(error?.message || '');
-  return error?.code === 'PGRST202' ||
-  /public\.get_next_invoice_number|get_next_invoice_number.*schema cache|schema cache.*get_next_invoice_number/i.test(message);
-}
-
-function formatInvoiceNumber(year, sequence) {
-  return `INV-${year}-${String(sequence).padStart(4, '0')}`;
-}
-
-function parseInvoiceSequence(invoiceNumber, prefix) {
-  if (typeof invoiceNumber !== 'string' || !invoiceNumber.startsWith(prefix)) return null;
-  const sequence = Number.parseInt(invoiceNumber.slice(prefix.length), 10);
-  return Number.isInteger(sequence) ? sequence : null;
-}
-
-export async function getNextInvoiceNumberByLookup(db) {
-  const year = new Date().getFullYear();
-  const prefix = `INV-${year}-`;
-
-  const [bookingResult, invoiceResult] = await Promise.all([
-  db.
-  from('bookings').
-  select('invoice_number').
-  eq('lodge_id', state.lodgeId).
-  like('invoice_number', `${prefix}%`),
-  db.
-  from('invoices').
-  select('invoice_number').
-  eq('lodge_id', state.lodgeId).
-  like('invoice_number', `${prefix}%`)]
-  );
-
-  const rows = [];
-  const errors = [];
-  let successfulLookups = 0;
-
-  if (bookingResult.error) errors.push(bookingResult.error);else
-  {
-    successfulLookups += 1;
-    rows.push(...(bookingResult.data || []));
-  }
-
-  if (invoiceResult.error) errors.push(invoiceResult.error);else
-  {
-    successfulLookups += 1;
-    rows.push(...(invoiceResult.data || []));
-  }
-
-  if (successfulLookups === 0 && errors.length > 0) {
-    throw new Error('Failed to generate invoice number: ' + errors[0].message);
-  }
-
-  const sequences = rows.
-  map((row) => parseInvoiceSequence(row?.invoice_number, prefix)).
-  filter((value) => Number.isInteger(value));
-
-  const next = sequences.length > 0 ? Math.max(...sequences) + 1 : 1;
-  return formatInvoiceNumber(year, next);
-}
-
 export function roundMoneyValue(value) {
   return Math.round((Number(value) || 0) * 100) / 100;
 }
