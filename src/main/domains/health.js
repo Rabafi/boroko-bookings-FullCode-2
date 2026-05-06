@@ -9,6 +9,13 @@ import {
   getFinancialValidationAlerts
 } from './finance.js';
 import { createBookingIdempotencyKey } from './bookings.js';
+import {
+  CRITICAL_ERROR_LOG_FILE,
+  getLocalDateKey,
+  isNonCriticalOperationalError,
+  LOCAL_TIME_ZONE,
+  readAuxiliaryLog
+} from './operationalLog.js';
 
 import {
   checkOnline,
@@ -17,13 +24,8 @@ import {
   getBackupInfoForHealth,
   getBackupHealthSummary,
   readHealthFaults,
-  getLocalDateKey,
-  LOCAL_TIME_ZONE,
   addDays,
-  readCache,
-  readAuxiliaryLog,
-  CRITICAL_ERROR_LOG_FILE,
-  isNonCriticalOperationalError
+  readCache
 } from './infrastructure.js';
 import { getLodgeDiagnostics } from './settings.js';
 

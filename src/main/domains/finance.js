@@ -1,14 +1,16 @@
 import { randomUUID } from 'crypto'
 import { state } from '../state.js'
 import {
-  normalizePlanName,
-  requireAdmin,
   appendAuxiliaryLog,
-  readAuxiliaryLog,
   getLocalDateKey,
   LOCAL_TIME_ZONE,
-  logActivity,
+  readAuxiliaryLog,
   recordCriticalError
+} from './operationalLog.js'
+import {
+  normalizePlanName,
+  requireAdmin,
+  logActivity
 } from './infrastructure.js'
 
 export {

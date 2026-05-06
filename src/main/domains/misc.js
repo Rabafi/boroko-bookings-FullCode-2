@@ -22,18 +22,19 @@ import { createInventoryItem, deleteInventoryItem } from './inventory.js'
 import { createRoom, deleteRoom } from './rooms.js'
 import { createSupplyItem, deleteSupplyItem } from './supplies.js'
 import {
+  CRITICAL_ERROR_LOG_FILE,
   isNonCriticalOperationalError,
+  readAuxiliaryLog,
+  writeAuxiliaryLog
+} from './operationalLog.js'
+import {
   logActivity,
   readCache,
-  readAuxiliaryLog,
   refreshAllCaches,
   refreshCache,
   writeCache,
-  writeAuxiliaryLog
 } from './infrastructure.js'
 
-
-const CRITICAL_ERROR_LOG_FILE = 'critical-errors.json';
 
 const BACKUP_POLICY_DEFAULT = {
   enabled: false,

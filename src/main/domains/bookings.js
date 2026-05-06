@@ -4,6 +4,7 @@ import { state } from '../state.js';
 import { getAllRooms, getRoomById } from './rooms.js';
 import { getAllCustomers } from './customers.js';
 import { normalizeLodgeId } from './shared.js';
+import { recordCriticalError } from './operationalLog.js';
 import {
   DEBUG_CACHE_FALLBACKS,
   readCache,
@@ -12,7 +13,6 @@ import {
   queueOperation,
   logActivity,
   createBackup,
-  recordCriticalError,
   assertCreationWithinUsageLimit,
   mergeRemoteBookingsWithLocalState,
   patchCachedQuotationSyncState

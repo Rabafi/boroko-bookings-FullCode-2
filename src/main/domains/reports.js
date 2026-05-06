@@ -2,9 +2,11 @@ import { state } from '../state.js'
 import {
   LOCAL_TIME_ZONE,
   getLocalDateKey,
-  readCache,
-  readSyncMeta,
   recordCriticalError
+} from './operationalLog.js'
+import {
+  readCache,
+  readSyncMeta
 } from './infrastructure.js'
 
 async function getAllRooms() {

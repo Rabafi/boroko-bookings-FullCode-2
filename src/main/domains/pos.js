@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs'
 import { state } from '../state.js'
 import { getRoleCapabilities, isPosFullAccessRole, normalizeAppRole } from '../../shared/accessControl.js'
 import { getActiveBookingForRoom } from './bookings.js'
+import { recordCriticalError } from './operationalLog.js'
 import { normalizeUserRecord } from './shared.js'
 import {
   applyOfflinePosInventoryReservation,
@@ -11,7 +12,6 @@ import {
   queueOperation,
   readCache,
   readLocalPosVoidHistory,
-  recordCriticalError,
   refreshCache,
   restoreOfflinePosInventoryReservation,
   upsertLocalPosVoidHistory,

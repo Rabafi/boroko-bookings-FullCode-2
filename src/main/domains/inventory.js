@@ -1,8 +1,8 @@
 import { state } from '../state.js'
+import { recordCriticalError } from './operationalLog.js'
 import {
   applyQueuedPosInventoryReservations,
   readCache,
-  recordCriticalError,
   writeCache
 } from './infrastructure.js'
 

@@ -1,7 +1,7 @@
 import { state } from '../state.js'
+import { recordCriticalError } from './operationalLog.js'
 import {
   readCache,
-  recordCriticalError,
   writeCache
 } from './infrastructure.js'
 
