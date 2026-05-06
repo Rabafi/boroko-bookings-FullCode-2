@@ -56,13 +56,7 @@ import {
   upsertLocalPosVoidHistory
 } from './posOffline.js';
 import { mergeRemoteBookingsWithLocalState } from './bookingMerge.js';
-import {
-  buildUsageSummary,
-  buildUsageWarning,
-  finalizeUsageGate,
-  getCachedEntityUsageCounts,
-  getMonthWindowIso
-} from './usageSupport.js';
+import { assertCreationWithinUsageLimit } from './usage.js';
 import {
   buildSyncStatusSnapshot,
   isQueuedDependencyResolved
@@ -185,20 +179,6 @@ export {
   recordCriticalError,
   writeAuxiliaryLog
 } from './operationalLog.js';
-import {
-  MONTHLY_USAGE_RESET_COPY,
-  canCreateBooking,
-  canCreateRoom,
-  canCreateUser,
-  countMonthlyCreatedBookings,
-  countMonthlyUsageBookings,
-  evaluateBookingCreationAllowance,
-  getNextSubscriptionPlan,
-  getPlanUsageLimits,
-  getPlanRecommendation,
-  normalizeSubscriptionPlan } from
-"../../shared/subscriptionPlans.js";
-
 // ─── SUPABASE CREDENTIALS ─────────────────────────────────────────────────────
 // URL + ANON KEY — baked in at build time from the root .env file by electron-vite.
 // Neither value is a secret (Supabase designed the anon key to be public-facing),
@@ -2989,73 +2969,6 @@ export async function loginUser(email, password) {
   };
   authTrace('db.loginUser final return', result);
   return result;
-}
-
-export async function getCreationUsageSummary(targetLodgeId = state.lodgeId, { monthDate = new Date(), creationMonthDate = new Date(), forceRemoteRefresh = false } = {}) {
-  const entitlement = await getTrialStatus(targetLodgeId).catch(() => null);
-  const plan = normalizeSubscriptionPlan(entitlement?.plan || 'Starter');
-  const limits = getPlanUsageLimits(plan);
-  if (!state.isOnline && !forceRemoteRefresh || !targetLodgeId) {
-    const usage = getCachedEntityUsageCounts({ targetMonthDate: monthDate, creationMonthDate });
-    return { ...buildUsageSummary(plan, limits, usage, 'cache'), lastUsageSyncAt: state.lastUsageSyncAt };
-  }
-
-  const { dateStart, dateEnd } = getMonthWindowIso(monthDate);
-  const creationWindow = getMonthWindowIso(creationMonthDate);
-  const [bookingsResult, createdBookingsResult, roomsResult, usersResult] = await Promise.all([
-  state.supabase.
-  from('bookings').
-  select('id', { count: 'exact', head: true }).
-  eq('lodge_id', targetLodgeId).
-  in('status', ['confirmed', 'checked_in', 'checked_out']).
-  neq('is_exclusive_event', true).
-  gte('check_in', dateStart).
-  lt('check_in', dateEnd),
-  state.supabase.
-  from('bookings').
-  select('id', { count: 'exact', head: true }).
-  eq('lodge_id', targetLodgeId).
-  in('status', ['confirmed', 'checked_in', 'checked_out']).
-  neq('is_exclusive_event', true).
-  gte('created_at', creationWindow.start).
-  lt('created_at', creationWindow.end),
-  state.supabase.
-  from('rooms').
-  select('id', { count: 'exact', head: true }).
-  eq('lodge_id', targetLodgeId),
-  state.supabase.
-  from('users').
-  select('id', { count: 'exact', head: true }).
-  eq('lodge_id', targetLodgeId)]
-  );
-
-  if (bookingsResult.error || createdBookingsResult.error || roomsResult.error || usersResult.error) {
-    const usage = getCachedEntityUsageCounts({ targetMonthDate: monthDate, creationMonthDate });
-    return { ...buildUsageSummary(plan, limits, usage, 'cache'), lastUsageSyncAt: state.lastUsageSyncAt };
-  }
-
-  state.lastUsageSyncAt = new Date().toISOString();
-  return {
-    ...buildUsageSummary(plan, limits, {
-      monthlyBookings: Number(bookingsResult.count || 0),
-      targetMonthBookings: Number(bookingsResult.count || 0),
-      creationMonthBookings: Number(createdBookingsResult.count || 0),
-      rooms: Number(roomsResult.count || 0),
-      users: Number(usersResult.count || 0)
-    }, 'remote'),
-    lastUsageSyncAt: state.lastUsageSyncAt
-  };
-}
-
-export async function assertCreationWithinUsageLimit(resource, options = {}) {
-  const targetMonthDate = options.targetMonthDate || options.monthDate || new Date();
-  const creationMonthDate = options.creationMonthDate || new Date();
-  const summary = await getCreationUsageSummary(state.lodgeId, {
-    monthDate: targetMonthDate,
-    creationMonthDate,
-    forceRemoteRefresh: options.forceRemoteRefresh === true
-  });
-  return finalizeUsageGate(resource, summary);
 }
 
 // ─── USERS ────────────────────────────────────────────────────────────────────

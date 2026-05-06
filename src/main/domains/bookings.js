@@ -13,9 +13,9 @@ import {
   queueOperation,
   logActivity,
   createBackup,
-  assertCreationWithinUsageLimit,
   patchCachedQuotationSyncState
 } from './infrastructure.js';
+import { assertCreationWithinUsageLimit } from './usage.js';
 import {
   getNextInvoiceNumberByLookup,
   isMissingInvoiceNumberRpcError,

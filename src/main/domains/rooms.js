@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { state } from '../state.js';
+import { assertCreationWithinUsageLimit } from './usage.js';
 import {
-  assertCreationWithinUsageLimit,
   logActivity,
   queueOperation,
   readCache,
