@@ -44,7 +44,7 @@ function getTrustedSessionsPath() {
   return path.join(state.cacheDir, 'trusted-sessions.json');
 }
 
-function readSessionNonce() {
+export function readSessionNonce() {
   try {return JSON.parse(fs.readFileSync(getSessionNoncePath(), 'utf-8'));}
   catch {return null;}
 }
