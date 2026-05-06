@@ -1,6 +1,6 @@
 import { state } from '../state.js'
 import { normalizeEmail } from './shared.js'
-import { getAllUsers, getUserById, getUsers } from './users.js'
+import { getAllUsers, getUserById, getUserPosOutletFilter, getUsers } from './users.js'
 
 import {
   buildSupabaseAuthClient,
@@ -77,7 +77,6 @@ export async function sendUserInviteOrReset(id) {
 
 export {
   clearBackendSession,
-  getUserPosOutletFilter,
   setCurrentUser,
   getCurrentUser,
   logoutCurrentUser,
@@ -94,4 +93,4 @@ export {
   deleteUser
 } from './infrastructure.js'
 
-export { getAllUsers, getUsers, getUserById } from './users.js'
+export { getAllUsers, getUsers, getUserById, getUserPosOutletFilter } from './users.js'

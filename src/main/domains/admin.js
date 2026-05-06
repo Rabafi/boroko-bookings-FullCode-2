@@ -16,9 +16,9 @@ import {
   checkOnline,
   getMonthWindowIso,
   buildUsageSummary,
-  buildUsageWarning,
-  resolvePwaAccessUpdate
+  buildUsageWarning
 } from './infrastructure.js'
+import { resolvePwaAccessUpdate } from './users.js'
 import { isMissingEntitlementRpcError } from './subscriptions.js'
 import {
   normalizeSubscriptionPlan,

@@ -5,7 +5,7 @@ import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
-import { getRoleCapabilities, normalizeAppRole, isPosFullAccessRole } from "../../shared/accessControl.js";
+import { getRoleCapabilities, normalizeAppRole } from "../../shared/accessControl.js";
 import { FINANCIAL_SYNC_TABLES, isFinancialSyncItem, pickNextReadySyncItemIndex } from "../../shared/syncQueue.js";
 export { FINANCIAL_SYNC_TABLES, isFinancialSyncItem };
 import { getBackupHealthSummary, getBackupInfoForHealth } from './backupHealth.js';
@@ -38,9 +38,13 @@ import {
   writeCache
 } from './cacheStore.js';
 import {
+  buildPwaAccessInput,
   getAllUsers,
+  getUserPosOutletFilter,
   getUserById,
-  getUsers
+  getUsers,
+  normalizeStaffRole,
+  resolvePwaAccessUpdate
 } from './users.js';
 import {
   applyOfflinePosInventoryReservation,
@@ -246,8 +250,6 @@ trim();
 
 
 const AUTH_CONTRACT_VERSION = 2;
-const PWA_DISABLED_MESSAGE = 'Manager mobile app access disabled.';
-const PWA_ROLE_DISABLED_MESSAGE = 'Only manager and admin roles can use the manager mobile app.';
 const CONNECTIVITY_CHECK_INTERVAL_MS = 3000;
 const CONNECTIVITY_PROBE_TIMEOUT_MS = 4000;
 const CONNECTIVITY_OFFLINE_FAILURE_THRESHOLD = 3;
@@ -339,20 +341,6 @@ function getBackendSession() {
   return state.backendSession ? { ...state.backendSession } : null;
 }
 
-function normalizeStaffRole(role) {
-  return String(role || '').trim().toLowerCase() || 'receptionist';
-}
-
-function isPwaEligibleRole(role) {
-  const normalized = normalizeStaffRole(role);
-  return normalized === 'manager' || normalized === 'admin';
-}
-
-function normalizePwaDisabledReason(reason, fallback = PWA_DISABLED_MESSAGE) {
-  const value = String(reason || '').trim();
-  return value || fallback;
-}
-
 // ─── PROFILES / LEGACY LODGE ID ──────────────────────────────────────────────
 // Older builds stored a single lodge ID and one shared cache directory.
 // Newer builds store multiple lodge profiles on one PC and activate one at a
@@ -382,13 +370,6 @@ export function requireAdmin() {
  * []    = no access (cashier/supervisor with no outlets assigned)
  * [id1] = restricted to these outlet UUIDs
  */
-export function getUserPosOutletFilter() {
-  if (!state.currentUser) return [];
-  if (state.currentUser.isMasterAdmin) return null;
-  if (isPosFullAccessRole(state.currentUser.role)) return null;
-  return Array.isArray(state.currentUser.allowed_outlet_ids) ? state.currentUser.allowed_outlet_ids : [];
-}
-
 function normalizeSessionUser(user) {
   if (!user || typeof user !== 'object') return user || null;
 
@@ -3321,70 +3302,6 @@ export async function runAuthHealthCheck(email = '', options = {}) {
   });
   authTrace('healthCheck return', health);
   return health;
-}
-
-export function resolvePwaAccessUpdate(existingUser = {}, data = {}) {
-  const hasToggle = Object.prototype.hasOwnProperty.call(data, 'pwa_enabled');
-  const hasReason = Object.prototype.hasOwnProperty.call(data, 'pwa_disabled_reason');
-  const nextRole = normalizeStaffRole(data.role || existingUser?.role);
-  const nextPassword = typeof data.pwa_password === 'string' ? data.pwa_password.trim() : '';
-  const hasPassword = Boolean(nextPassword);
-  const autoDisableForRole = Boolean(existingUser?.pwa_enabled) && Object.prototype.hasOwnProperty.call(data, 'role') && !isPwaEligibleRole(nextRole);
-  const requested = hasToggle || hasReason || hasPassword || autoDisableForRole;
-
-  if (!requested) {
-    return { requested: false };
-  }
-
-  const enabled = autoDisableForRole ?
-  false :
-  hasToggle ?
-  data.pwa_enabled === true :
-  existingUser?.pwa_enabled === true;
-
-  if (enabled && !isPwaEligibleRole(nextRole)) {
-    throw createAppError('pwa_role_ineligible', PWA_ROLE_DISABLED_MESSAGE, { role: nextRole });
-  }
-
-  const password_hash = hasPassword ? bcrypt.hashSync(nextPassword, 10) : null;
-  const hasExistingPassword = Boolean(existingUser?.pwa_password_set_at || existingUser?.pwa_password_hash);
-  if (enabled && !password_hash && !hasExistingPassword) {
-    throw createAppError('pwa_password_required', 'Set a separate manager mobile app password before enabling access.');
-  }
-
-  return {
-    requested: true,
-    enabled,
-    password_hash,
-    autoDisableForRole,
-    disabled_reason: enabled ?
-    null :
-    normalizePwaDisabledReason(
-      autoDisableForRole ? PWA_ROLE_DISABLED_MESSAGE : data.pwa_disabled_reason,
-      autoDisableForRole ? PWA_ROLE_DISABLED_MESSAGE : PWA_DISABLED_MESSAGE
-    )
-  };
-}
-
-function buildPwaAccessInput(data = {}, fallbackRole = null) {
-  const payload = {};
-
-  if (Object.prototype.hasOwnProperty.call(data, 'pwa_enabled')) {
-    payload.pwa_enabled = data.pwa_enabled;
-  }
-  if (Object.prototype.hasOwnProperty.call(data, 'pwa_disabled_reason')) {
-    payload.pwa_disabled_reason = data.pwa_disabled_reason;
-  }
-  if (typeof data.pwa_password === 'string') {
-    payload.pwa_password = data.pwa_password;
-  }
-  if (Object.prototype.hasOwnProperty.call(data, 'role')) {
-    payload.role = data.role;
-  } else if (fallbackRole) {
-    payload.role = fallbackRole;
-  }
-
-  return payload;
 }
 
 export async function createUser(data) {
