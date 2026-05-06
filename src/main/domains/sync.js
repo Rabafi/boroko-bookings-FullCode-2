@@ -15,21 +15,23 @@ import {
   buildSyncStatusSnapshot,
   broadcastSyncStatus,
   checkOnline,
-  DEAD_LETTER_AUTO_RETRY_AFTER_MS,
-  ensureQueuedItem,
   FINANCIAL_SYNC_TABLES,
-  getQueuedPosOrderId,
-  getSyncItemBookingId,
-  getSyncItemScope,
   isFinancialSyncItem,
-  isPosCreateOrderQueueItem,
   markClearedSyncItemForManualReview,
-  normalizeQueuedSyncItemForReplay,
   patchCachedPosOrderSyncState,
   processSyncQueue,
   readCache,
   requeueEligibleFailedSyncItems,
 } from './infrastructure.js';
+import {
+  DEAD_LETTER_AUTO_RETRY_AFTER_MS,
+  ensureQueuedItem,
+  getQueuedPosOrderId,
+  getSyncItemBookingId,
+  getSyncItemScope,
+  isPosCreateOrderQueueItem,
+  normalizeQueuedSyncItemForReplay
+} from './syncShared.js';
 
 const HEALTH_FAULTS_FILE = 'health-faults.json';
 const CACHE_FRESHNESS_FILE = 'cache-freshness.json';

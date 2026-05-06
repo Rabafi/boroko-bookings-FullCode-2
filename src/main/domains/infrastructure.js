@@ -22,6 +22,15 @@ import {
   writeSyncQueue
 } from './syncStore.js';
 import {
+  DEAD_LETTER_AUTO_RETRY_AFTER_MS,
+  ensureQueuedItem,
+  getQueuedPosOrderId,
+  getSyncItemBookingId,
+  getSyncItemScope,
+  isPosCreateOrderQueueItem,
+  normalizeQueuedSyncItemForReplay
+} from './syncShared.js';
+import {
   DEFAULT_OFFLINE_LEASE_DAYS,
   DEFAULT_SUBSCRIPTION_GRACE_DAYS,
   addDays,
@@ -66,6 +75,15 @@ export {
   writeFailedSyncQueue,
   writeSyncQueue
 } from './syncStore.js';
+export {
+  DEAD_LETTER_AUTO_RETRY_AFTER_MS,
+  ensureQueuedItem,
+  getQueuedPosOrderId,
+  getSyncItemBookingId,
+  getSyncItemScope,
+  isPosCreateOrderQueueItem,
+  normalizeQueuedSyncItemForReplay
+} from './syncShared.js';
 export {
   DEFAULT_OFFLINE_LEASE_DAYS,
   DEFAULT_SUBSCRIPTION_GRACE_DAYS,
@@ -896,7 +914,6 @@ export async function refreshAllCaches() {
 const MAX_SYNC_RETRIES = 5;
 const SYNC_RETRY_BASE_DELAY_MS = 1000;
 const SYNC_RETRY_MAX_DELAY_MS = 30_000;
-export const DEAD_LETTER_AUTO_RETRY_AFTER_MS = 30 * 60 * 1000;
 const SYNC_REFRESH_RETRY_BASE_DELAY_MS = 5_000;
 const SYNC_REFRESH_RETRY_MAX_DELAY_MS = 60_000;
 const SYNC_ALREADY_APPLIED_CODES = new Set(['23505']);
@@ -1066,17 +1083,6 @@ async function refreshCachesAfterSync(...names) {
   }
 }
 
-function createQueueOperationId(prefix = 'op') {
-  return `${prefix}-${randomUUID()}`;
-}
-
-export function ensureQueuedItem(item = {}, fallbackType = 'op') {
-  return {
-    ...item,
-    _queue_id: item._queue_id || createQueueOperationId(fallbackType)
-  };
-}
-
 function getErrorMessage(err) {
   if (!err) return 'Unknown error';
   if (typeof err === 'string') return err;
@@ -1096,41 +1102,8 @@ function shouldManualReviewSyncItem(item, errorMessage = '') {
   return item?.table === 'update_booking' && isBookingUpdateConflictError(errorMessage);
 }
 
-export function isPosCreateOrderQueueItem(item) {
-  return item?.type === 'rpc' && item?.table === 'create_pos_order';
-}
-
 function isPosVoidQueueItem(item) {
   return item?.type === 'rpc' && item?.table === 'approve_pos_void_with_pin';
-}
-
-export function getQueuedPosOrderId(item) {
-  const payloadId = String(item?.data?.payload?.id || item?.data?.payload?.order_id || '').trim();
-  if (payloadId) return payloadId;
-
-  const queueId = String(item?._queue_id || '').trim();
-  if (queueId.startsWith('pos-order-')) {
-    const parsedId = queueId.slice('pos-order-'.length).trim();
-    if (parsedId) return parsedId;
-  }
-  if (queueId.startsWith('pos-void-')) {
-    const parsedId = queueId.slice('pos-void-'.length).trim();
-    if (parsedId) return parsedId;
-  }
-
-  console.error('[POS SYNC] Missing staged order id for queue item', {
-    queueId: item?._queue_id || null,
-    table: item?.table || null
-  });
-  return null;
-}
-
-export function getSyncItemBookingId(item) {
-  return item?.data?.p_booking_id ||
-  item?.data?.payload?.booking_id ||
-  item?.data?.payload?.id ||
-  item?.data?.p_id ||
-  null;
 }
 
 function getSyncItemEntityId(item, prefix) {
@@ -1157,14 +1130,6 @@ function getSyncItemQuotationId(item) {
   const quotationId = String(item?.data?.p_quotation_id || '').trim();
   if (quotationId) return quotationId;
   return getSyncItemEntityId(item, 'quotation');
-}
-
-export function getSyncItemScope(item) {
-  const bookingId = getSyncItemBookingId(item);
-  if (bookingId) return `booking:${bookingId}`;
-  const posOrderId = getQueuedPosOrderId(item);
-  if (posOrderId) return `pos-order:${posOrderId}`;
-  return item?.table || 'unknown';
 }
 
 const QUEUED_DEPENDENCY_CACHE_MAP = [
@@ -1315,23 +1280,6 @@ function rewriteQueuedBookingReferenceItem(item, localBookingId, serverBookingId
     changed = true;
   }
   return changed ? next : item;
-}
-
-export function normalizeQueuedSyncItemForReplay(item = {}) {
-  if (!item) return item;
-  const next = { ...item, data: { ...(item.data || {}) } };
-
-  if (next.type === 'rpc' && ['update_booking', 'update_customer', 'update_room', 'update_quotation'].includes(next.table) && !('p_expected_updated_at' in next.data)) {
-    next.data.p_expected_updated_at = null;
-  }
-
-  if (next.type === 'rpc' &&
-  next.table === 'update_booking_status' &&
-  String(next._depends_on || '').startsWith('booking-')) {
-    next.data.p_expected_updated_at = null;
-  }
-
-  return next;
 }
 
 function replaceQueuedBookingReference(localBookingId, serverBookingId) {
