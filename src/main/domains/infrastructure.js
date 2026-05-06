@@ -31,6 +31,12 @@ import {
   normalizeQueuedSyncItemForReplay
 } from './syncShared.js';
 import {
+  DEBUG_CACHE_FALLBACKS,
+  clearCache,
+  readCache,
+  writeCache
+} from './cacheStore.js';
+import {
   DEFAULT_OFFLINE_LEASE_DAYS,
   DEFAULT_SUBSCRIPTION_GRACE_DAYS,
   addDays,
@@ -84,6 +90,12 @@ export {
   isPosCreateOrderQueueItem,
   normalizeQueuedSyncItemForReplay
 } from './syncShared.js';
+export {
+  DEBUG_CACHE_FALLBACKS,
+  clearCache,
+  readCache,
+  writeCache
+} from './cacheStore.js';
 export {
   DEFAULT_OFFLINE_LEASE_DAYS,
   DEFAULT_SUBSCRIPTION_GRACE_DAYS,
@@ -186,12 +198,10 @@ trim();
 const AUTH_CONTRACT_VERSION = 2;
 const PWA_DISABLED_MESSAGE = 'Manager mobile app access disabled.';
 const PWA_ROLE_DISABLED_MESSAGE = 'Only manager and admin roles can use the manager mobile app.';
-const CACHE_FRESHNESS_FILE = 'cache-freshness.json';
 const CONNECTIVITY_CHECK_INTERVAL_MS = 3000;
 const CONNECTIVITY_PROBE_TIMEOUT_MS = 4000;
 const CONNECTIVITY_OFFLINE_FAILURE_THRESHOLD = 3;
 const PERIODIC_SYNC_INTERVAL_MS = 15000;
-export const DEBUG_CACHE_FALLBACKS = process.env.BOROKO_DEBUG_CACHE_FALLBACKS === 'true';
 const PROFILE_CACHE_FILES = {
   settings: [],
   users: [],
@@ -667,71 +677,6 @@ export async function validateCurrentSession() {
 }
 
 // ─── CACHE HELPERS ────────────────────────────────────────────────────────────
-
-function getCachePath(name) {
-  return path.join(state.cacheDir, `${name}.json`);
-}
-
-export function readCache(name) {
-  const filePath = getCachePath(name);
-  const tmpPath = filePath + '.tmp';
-  // Crash recovery: if a .tmp file exists, it was written atomically just before
-  // a crash-interrupted renameSync. Prefer it over the potentially stale main file.
-  if (fs.existsSync(tmpPath)) {
-    try {
-      const tmpData = JSON.parse(fs.readFileSync(tmpPath, 'utf-8'));
-      fs.renameSync(tmpPath, filePath);
-      console.warn(`[Cache] Crash-recovery: promoted '${name}.tmp' to main file`);
-      return tmpData;
-    } catch {
-      // .tmp is corrupt — discard it and fall through to main file
-      try {fs.unlinkSync(tmpPath);} catch {/* ignore */}
-    }
-  }
-  try {
-    const data = fs.readFileSync(filePath, 'utf-8');
-    return JSON.parse(data);
-  } catch (e) {
-    if (fs.existsSync(filePath)) {
-      console.warn(`[Cache] Parse failed for '${name}' — returning []. Error: ${e.message}`);
-      appendHealthFault({
-        type: 'cache_corrupt',
-        scope: name,
-        message: `Cache file '${name}.json' could not be parsed and was reset to empty. Error: ${e.message}`,
-        at: new Date().toISOString()
-      });
-    }
-    return [];
-  }
-}
-
-export function writeCache(name, data, { source = 'local' } = {}) {
-  const filePath = getCachePath(name);
-  const tmpPath = filePath + '.tmp';
-  try {
-    fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), 'utf-8');
-    fs.renameSync(tmpPath, filePath);
-  } catch (e) {
-    console.error(`[Cache] Write failed for '${name}':`, e);
-    try {fs.unlinkSync(tmpPath);} catch {/* ignore */}
-  }
-  // Track freshness metadata for each named cache write
-  try {
-    const freshnessPath = path.join(state.cacheDir, CACHE_FRESHNESS_FILE);
-    let freshness = {};
-    try {freshness = JSON.parse(fs.readFileSync(freshnessPath, 'utf-8')) || {};} catch {/* start fresh */}
-    freshness[name] = {
-      updatedAt: new Date().toISOString(),
-      source,
-      count: Array.isArray(data) ? data.length : data && typeof data === 'object' ? Object.keys(data).length : 0
-    };
-    fs.writeFileSync(freshnessPath, JSON.stringify(freshness, null, 2), 'utf-8');
-  } catch {/* freshness tracking is non-critical */}
-}
-
-export function clearCache(name, fallback = []) {
-  writeCache(name, fallback);
-}
 
 function sanitizeUserForRenderer(user) {
   if (!user || typeof user !== 'object') return user;
