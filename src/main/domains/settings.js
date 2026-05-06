@@ -5,7 +5,6 @@ import {
   clearActivityLog
 } from './misc.js';
 import {
-  PROFILE_STATUS,
   checkOnline,
   clearBackendSession,
   clearCache,
@@ -13,32 +12,34 @@ import {
   createAppError,
   createUser,
   ensureDir,
-  ensureProfileCacheFiles,
-  getActiveProfile,
-  getProfileCacheDir,
-  getProfiles,
   isBackendAuthSchemaError,
   isUuid,
   normalizeEmail,
   normalizeLodgeId,
-  persistLegacyLodgeId,
-  profileLabelFromSettings,
   readAuthCache,
   readCache,
-  readProfilesRegistry,
   readSyncQueue,
   refreshAllCaches,
   runAuthHealthCheck,
-  sanitizeProfile,
-  setRuntimeActiveProfile,
-  updateProfileMetadata,
   upsertCachedUser,
   writeAuthCache,
   writeCache,
-  writeFailedSyncQueue,
-  writeProfilesRegistry,
   writeSyncQueue
 } from './infrastructure.js';
+import {
+  PROFILE_STATUS,
+  ensureProfileCacheFiles,
+  getActiveProfile,
+  getProfileCacheDir,
+  getProfiles,
+  persistLegacyLodgeId,
+  profileLabelFromSettings,
+  readProfilesRegistry,
+  sanitizeProfile,
+  setRuntimeActiveProfile,
+  updateProfileMetadata,
+  writeProfilesRegistry
+} from './profiles.js';
 
 const DEFAULT_SETTINGS = {
   lodge_name: '',

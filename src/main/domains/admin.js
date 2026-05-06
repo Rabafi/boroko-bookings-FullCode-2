@@ -2,6 +2,7 @@ import crypto from 'crypto'
 import bcrypt from 'bcryptjs'
 import { state } from '../state.js'
 import { createInvoice } from './finance.js'
+import { removeLocalCompanyProfile } from './profiles.js'
 import {
   DEFAULT_OFFLINE_LEASE_DAYS,
   DEFAULT_SUBSCRIPTION_GRACE_DAYS,
@@ -12,7 +13,6 @@ import {
   refreshCache,
   checkOnline,
   normalizeLodgeId,
-  removeLocalCompanyProfile,
   getMonthWindowIso,
   buildUsageSummary,
   buildUsageWarning,

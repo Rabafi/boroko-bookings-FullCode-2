@@ -1,4 +1,5 @@
 import { state } from '../state.js';
+import { getActiveProfile } from './profiles.js';
 import {
   DEFAULT_OFFLINE_LEASE_DAYS,
   DEFAULT_SUBSCRIPTION_GRACE_DAYS,
@@ -8,7 +9,6 @@ import {
   computeGracePeriodEnd,
   computeOfflineValidUntil,
   computeSubscriptionState,
-  getActiveProfile,
   getCreationUsageSummary,
   getPlanFeatureMap,
   isMissingEntitlementRpcError,
