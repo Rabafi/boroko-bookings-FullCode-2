@@ -22,11 +22,11 @@ import {
   LOCAL_TIME_ZONE,
   addDays,
   readCache,
-  getLodgeDiagnostics,
   readAuxiliaryLog,
   CRITICAL_ERROR_LOG_FILE,
   isNonCriticalOperationalError
 } from './infrastructure.js';
+import { getLodgeDiagnostics } from './settings.js';
 
 import {
   getSyncStatus,

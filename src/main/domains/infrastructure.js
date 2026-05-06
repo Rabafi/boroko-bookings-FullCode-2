@@ -5077,12 +5077,6 @@ export function applyQueuedPosInventoryReservations(remoteInventoryRows = []) {
 
 // ─── SETTINGS ─────────────────────────────────────────────────────────────────
 
-export async function getLodgeDiagnostics(expectedLodgeId = '') {
-  return (await import('./' + 'settings.js')).getLodgeDiagnostics(expectedLodgeId);
-}
-
-
-
 export function isMissingEntitlementRpcError(error) {
   const message = String(error?.message || '');
   return error?.code === 'PGRST202' ||
