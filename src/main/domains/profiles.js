@@ -347,8 +347,16 @@ export function getActiveProfile() {
   return active || null;
 }
 
-async function getSettings() {
-  return (await import('./' + 'settings.js')).getSettings();
+function getCachedSettingsSnapshot() {
+  if (!state.cacheDir) {
+    return {
+      lodge_id: state.lodgeId || null
+    };
+  }
+  const cached = readJsonFile(path.join(state.cacheDir, 'settings.json'), []);
+  return cached[0] || {
+    lodge_id: state.lodgeId || null
+  };
 }
 
 export async function selectProfile(targetLodgeId) {
@@ -375,7 +383,7 @@ export async function selectProfile(targetLodgeId) {
 
   return {
     ...getActiveProfile(),
-    settings: await getSettings()
+    settings: getCachedSettingsSnapshot()
   };
 }
 

@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import { Presentation, Plus, Pencil, Trash2, X, Users, Clock, Calendar, ChevronDown, ChevronUp, CreditCard } from 'lucide-react'
 import { PAYMENT_METHOD_PLAIN_OPTIONS } from '../constants/paymentMethods'
 import { useSettings } from '../app-context'
+import { localToday } from '../utils/localDate'
 
 const SETUP_TYPES = ['Theatre', 'Boardroom', 'Classroom', 'U-Shape', 'Banquet', 'Cocktail']
 const PAYMENT_STATUSES = ['pending', 'deposit_paid', 'paid', 'cancelled']
@@ -22,7 +23,7 @@ const STATUS_LABELS = {
 }
 
 const empty = () => ({
-  booking_date: new Date().toISOString().split('T')[0],
+  booking_date: localToday(),
   start_time: '08:00',
   end_time: '17:00',
   client_name: '',

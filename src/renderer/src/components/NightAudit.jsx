@@ -13,8 +13,9 @@ import {
   Table
 } from 'lucide-react'
 import { useSettings } from '../app-context'
+import { localToday } from '../utils/localDate'
 
-const todayStr = () => new Date().toISOString().split('T')[0]
+const todayStr = () => localToday()
 
 function fmt(amount, currency) {
   return `${currency} ${Number(amount || 0).toFixed(2)}`

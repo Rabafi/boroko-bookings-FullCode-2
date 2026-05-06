@@ -16,10 +16,12 @@ import {
 import { Modal } from './shared/Modal'
 import HorizontalScrollArea from './shared/HorizontalScrollArea'
 import { useSettings } from '../app-context'
+import { formatLocalDate, localToday } from '../utils/localDate'
 
 const SUPPLY_CATEGORIES = ['Bathroom', 'Linen', 'Kitchen', 'Other']
 const SUPPLY_UNITS = ['roll', 'piece', 'bar', 'sachet', 'packet', 'pack', 'box', 'sheet', 'pair', 'ml', 'L', 'kg']
-const today = () => new Date().toISOString().split('T')[0]
+
+const today = () => localToday()
 
 function fmt(v, dp = 2) { return Number(v || 0).toFixed(dp) }
 function fmtQty(v) {
@@ -29,7 +31,7 @@ function fmtQty(v) {
 function monthStart() {
   const d = new Date()
   d.setDate(1)
-  return d.toISOString().split('T')[0]
+  return formatLocalDate(d)
 }
 function shortDateTime(value) {
   if (!value) return '—'

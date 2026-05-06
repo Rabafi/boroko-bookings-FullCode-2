@@ -3,11 +3,12 @@ import { Plus, Pencil, Trash2, AlertTriangle, TrendingUp, Package, ClipboardChec
 import { Modal } from './shared/Modal'
 import HorizontalScrollArea from './shared/HorizontalScrollArea'
 import { useSettings } from '../app-context'
+import { localToday } from '../utils/localDate'
 
 const CATEGORIES = ['Bar', 'Kitchen', 'Other']
 const UNITS = ['bottle', 'can', 'piece', 'roll', 'packet', 'pack', 'box', 'crate', 'tray', 'carton', 'case', 'kg', 'g', 'L', 'ml']
 
-const today = () => new Date().toISOString().split('T')[0]
+const today = () => localToday()
 
 function fmt(v, dp = 2) {
   return Number(v || 0).toFixed(dp)

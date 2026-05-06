@@ -3,6 +3,7 @@ import { Plus, Pencil, Trash2, Search } from 'lucide-react'
 import { Modal } from './shared/Modal'
 import HorizontalScrollArea from './shared/HorizontalScrollArea'
 import { useSettings } from '../app-context'
+import { localToday } from '../utils/localDate'
 
 const CATEGORIES = [
   'Food & Beverage',
@@ -16,11 +17,11 @@ const CATEGORIES = [
   'Other'
 ]
 
-const today = () => new Date().toISOString().split('T')[0]
+const today = () => localToday()
 const monthStart = () => {
   const d = new Date()
   d.setDate(1)
-  return d.toISOString().split('T')[0]
+  return localToday().slice(0, 8) + '01'
 }
 
 function fmt(v) {

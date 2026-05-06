@@ -15,6 +15,7 @@ import {
   Clock,
   ShieldAlert
 } from 'lucide-react'
+import { formatLocalDate } from '../utils/localDate'
 
 // ── Field definitions ────────────────────────────────────────────────────────
 const IMPORT_FIELD_SETS = {
@@ -83,14 +84,14 @@ function normaliseDate(val) {
   if (!val) return ''
   if (typeof val === 'number') {
     const date = new Date(Math.round((val - 25569) * 86400 * 1000))
-    return date.toISOString().split('T')[0]
+    return formatLocalDate(date)
   }
   const s = String(val).trim()
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s
   const dmy = s.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})$/)
   if (dmy) return `${dmy[3]}-${dmy[2].padStart(2,'0')}-${dmy[1].padStart(2,'0')}`
   const d = new Date(s)
-  if (!isNaN(d)) return d.toISOString().split('T')[0]
+  if (!isNaN(d)) return formatLocalDate(d)
   return s
 }
 

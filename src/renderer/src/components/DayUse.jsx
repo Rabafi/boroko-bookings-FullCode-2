@@ -2,10 +2,11 @@ import { useState, useEffect } from 'react'
 import { Waves, Plus, Trash2, X, Users, TrendingUp } from 'lucide-react'
 import { PAYMENT_METHOD_PLAIN_OPTIONS } from '../constants/paymentMethods'
 import { useSettings } from '../app-context'
+import { localToday } from '../utils/localDate'
 
 const PAYMENT_METHODS = PAYMENT_METHOD_PLAIN_OPTIONS
 
-const today = () => new Date().toISOString().split('T')[0]
+const today = () => localToday()
 
 const emptyForm = (settings) => ({
   date: today(),

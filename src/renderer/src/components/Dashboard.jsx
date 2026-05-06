@@ -32,6 +32,7 @@ import DashboardUsageCard from './shared/DashboardUsageCard'
 import UpgradeNudgeBanner from './shared/UpgradeNudgeBanner'
 import InlineAiExecutionPanel from './shared/InlineAiExecutionPanel'
 import { useSettings, useFeatures, useOnlineRequests } from '../app-context'
+import { localToday } from '../utils/localDate'
 import {
   MONTHLY_USAGE_RESET_COPY,
   countMonthlyUsageBookings,
@@ -297,7 +298,7 @@ export default function Dashboard() {
     setLowStock(Array.isArray(ls) ? ls : [])
     setFrontDeskRequests(Array.isArray(lodgeRequests) ? lodgeRequests : [])
     const roomNumberById = new Map((Array.isArray(rooms) ? rooms : []).map((room) => [room.id, room.room_number]))
-    const todayKey = new Date().toISOString().slice(0, 10)
+    const todayKey = localToday()
     setActiveSpecials(
       (Array.isArray(rateOverrides) ? rateOverrides : [])
         .filter((row) => row?.start_date && row?.end_date && row.start_date <= todayKey && row.end_date >= todayKey)

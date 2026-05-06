@@ -6,6 +6,7 @@ import HorizontalScrollArea from './shared/HorizontalScrollArea'
 import { DESKTOP_PAYMENT_METHODS, formatPaymentMethod } from '../constants/paymentMethods'
 import { useSettings, useAccess, useAuth } from '../app-context'
 import { canAccessCapability } from '../../../shared/accessControl'
+import { formatLocalDate } from '../utils/localDate'
 
 const MENU_CATEGORIES = ['Food', 'Drinks', 'Other']
 const BAR_PACK_TEMPLATES = [
@@ -16,15 +17,11 @@ const BAR_PACK_TEMPLATES = [
 const POS_LIVE_REFRESH_MS = 5000
 const POS_TOUCH_MODE_STORAGE_KEY = 'bb_pos_touch_mode'
 
-const formatLocalDate = (value = new Date()) => {
-  const date = value instanceof Date ? value : new Date(value)
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  return `${year}-${month}-${day}`
+const toLocalDateInput = (value = new Date()) => formatLocalDate(value)
+const formatIsoTimestamp = (value = new Date()) => {
+  const date = value instanceof Date ? new Date(value) : new Date(value)
+  return date.toISOString()
 }
-
-const today = () => formatLocalDate()
 
 const currency = 'P'
 const fmt = (v) => Number(v || 0).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -204,8 +201,8 @@ export default function POS() {
   const [orders, setOrders] = useState([])
   const [voidHistory, setVoidHistory] = useState([])
   const [ordersError, setOrdersError] = useState(null)
-  const [histStart, setHistStart] = useState(today())
-  const [histEnd, setHistEnd] = useState(today())
+  const [histStart, setHistStart] = useState(() => toLocalDateInput(new Date(Date.now() - 48 * 60 * 60 * 1000)))
+  const [histEnd, setHistEnd] = useState(() => toLocalDateInput(new Date()))
   const [expandedOrder, setExpandedOrder] = useState(null)
   const [voidModal, setVoidModal] = useState(false)
   const [voidTarget, setVoidTarget] = useState(null)
@@ -358,6 +355,12 @@ export default function POS() {
       setOrdersError(err?.message || 'Failed to load orders')
     }
   }, [histEnd, histStart])
+
+  useEffect(() => {
+    if (tab !== 'history') return
+    setHistEnd(toLocalDateInput(new Date()))
+    setHistStart(toLocalDateInput(new Date(Date.now() - 48 * 60 * 60 * 1000)))
+  }, [tab])
 
   useEffect(() => {
     loadMenu()
@@ -914,7 +917,7 @@ export default function POS() {
       })
 
       if (res?.success) {
-        const voidedAt = new Date().toISOString()
+        const voidedAt = formatIsoTimestamp(new Date())
         setVoidHistory((prev) => [
           {
             id: res?.override_log_id || `local-void-${voidTarget.id}-${voidedAt}`,
@@ -1688,14 +1691,12 @@ export default function POS() {
       {/* ── History ── */}
       {tab === 'history' && (
         <div className="flex flex-col gap-5">
-          <div className="bb-filter-bar mb-5 flex-wrap">
-            <div className="flex items-center gap-2 text-sm">
+      <div className="bb-filter-bar mb-5 flex-wrap">
+            <div className="flex flex-wrap items-center gap-2 text-sm">
               <label className="text-slate-500">From</label>
-              <input type="date" className="input text-sm"
-                value={histStart} onChange={(e) => setHistStart(e.target.value)} />
+              <input type="date" className="input text-sm" value={histStart} onChange={(e) => setHistStart(e.target.value)} />
               <label className="text-slate-500">To</label>
-              <input type="date" className="input text-sm"
-                value={histEnd} onChange={(e) => setHistEnd(e.target.value)} />
+              <input type="date" className="input text-sm" value={histEnd} onChange={(e) => setHistEnd(e.target.value)} />
             </div>
           </div>
           {voidHistory.length > 0 && (
@@ -1720,7 +1721,7 @@ export default function POS() {
             ) : orders.length === 0 ? (
               <div className="bb-empty-state min-h-[220px]">
                 <p className="text-base font-semibold text-slate-800">No orders in this period</p>
-                <p className="text-sm text-slate-500">Change the date range or complete a POS order to populate history.</p>
+                <p className="text-sm text-slate-500">Complete a POS order to populate history.</p>
               </div>
             ) : (
               <HorizontalScrollArea>

@@ -24,6 +24,7 @@ import {
   Mail, Send, CheckCircle2, Eye, EyeOff, Receipt, FileText,
   BarChart3, Filter, Wallet, Printer
 } from 'lucide-react'
+import { formatLocalDate, localToday } from '../utils/localDate'
 
 // ── Constants ────────────────────────────────────────────────────────────────
 const BIZ_EMOJI = { lodge: '🏕️', restaurant: '🍽️', retail: '🛒', service_provider: '🔧' }
@@ -240,7 +241,7 @@ function getTrialInfo(company, licenses) {
 // SECTION: Dashboard
 // ════════════════════════════════════════════════════════════════════
 function Dashboard({ companies, licenses, tickets, activityLogs }) {
-  const today = new Date().toISOString().split('T')[0]
+  const today = localToday()
   const active = licenses.filter(l => l.is_active).length
   const expiring = licenses.filter(l => l.expires_at && l.is_active && new Date(l.expires_at) > new Date() && (new Date(l.expires_at) - new Date()) < 30 * 864e5).length
   const overdue = licenses.filter(l => l.next_due_date && l.next_due_date < today && l.payment_status !== 'free' && l.is_active).length
@@ -1245,7 +1246,7 @@ const INVOICE_CURRENCIES = ['USD', 'BWP', 'ZAR', 'EUR', 'GBP', 'N$', 'ZK']
 function LicenseBilling({ licenses, companies, onRefresh }) {
   const [showForm, setShowForm] = useState(false)
   const [form, setForm] = useState({ lodge_id: '', lodge_name: '', business_type: 'lodge', expires_at: '', notes: '', subscription_plan: DEFAULT_PLAN })
-  const today = new Date().toISOString().split('T')[0]
+  const today = localToday()
   const [selectedCompany, setSelectedCompany] = useState('')
   const [selectedPeriod, setSelectedPeriod] = useState(null) // '3d'|'7d'|'paid'
   const [duration, setDuration] = useState('') // 'monthly'|'quarterly'|'half_year'|'yearly'
@@ -1457,7 +1458,7 @@ function LicenseBilling({ licenses, companies, onRefresh }) {
                           else if (dur === 'half_year') d.setMonth(d.getMonth() + 6)
                           else if (dur === 'yearly') d.setFullYear(d.getFullYear() + 1)
 
-                          const val = d.toISOString().split('T')[0]
+                          const val = formatLocalDate(d)
                           setForm({ ...form, expires_at: val })
                           setSelectedPeriod(dur === '3d' || dur === '7d' ? dur : 'paid')
                         }}
@@ -1560,7 +1561,7 @@ function LicenseBilling({ licenses, companies, onRefresh }) {
                   setSelectedCompany('')
                   setSelectedPeriod(null)
                   setForm({ lodge_id: '', lodge_name: '', business_type: 'lodge', expires_at: '', notes: '', subscription_plan: DEFAULT_PLAN })
-                  setInvoiceForm({ package_name: DEFAULT_PLAN, amount: '', currency: 'BWP', paid_date: new Date().toISOString().split('T')[0], description: '' })
+                  setInvoiceForm({ package_name: DEFAULT_PLAN, amount: '', currency: 'BWP', paid_date: localToday(), description: '' })
                 }}
                 className={`flex-1 ${btn('ghost')} py-2 rounded-lg text-sm transition-colors`}
               >
@@ -2533,8 +2534,8 @@ function Bookkeeping({ companies }) {
   const [emailSent, setEmailSent] = useState({})
   const [createForm, setCreateForm] = useState({
     lodge_id: '', lodge_name: '', package_name: DEFAULT_PLAN, amount: '', currency: 'BWP',
-    status: 'paid', issued_date: new Date().toISOString().split('T')[0],
-    due_date: '', paid_date: new Date().toISOString().split('T')[0], description: '', notes: ''
+    status: 'paid', issued_date: localToday(),
+    due_date: '', paid_date: localToday(), description: '', notes: ''
   })
   const [createSaving, setCreateSaving] = useState(false)
   const [createError, setCreateError] = useState('')
@@ -2544,7 +2545,7 @@ function Bookkeeping({ companies }) {
   const [showCreateExpense, setShowCreateExpense] = useState(false)
   const [editExpense, setEditExpense] = useState(null)
   const [expenseForm, setExpenseForm] = useState({
-    date: new Date().toISOString().split('T')[0],
+    date: localToday(),
     category: 'Infrastructure',
     amount: '',
     currency: 'BWP',
@@ -2582,7 +2583,7 @@ function Bookkeeping({ companies }) {
     const r = await window.api.admin.createInvoice({ ...createForm, invoice_number: invNum, amount: Number(createForm.amount), due_date: createForm.due_date || null, paid_date: createForm.paid_date || null, description: createForm.description || null, notes: createForm.notes || null }).catch(e => ({ error: e.message }))
     if (r?.error) { setCreateError(r.error); setCreateSaving(false); return }
     setShowCreate(false)
-    setCreateForm({ lodge_id: '', lodge_name: '', package_name: DEFAULT_PLAN, amount: '', currency: 'BWP', status: 'paid', issued_date: new Date().toISOString().split('T')[0], due_date: '', paid_date: new Date().toISOString().split('T')[0], description: '', notes: '' })
+    setCreateForm({ lodge_id: '', lodge_name: '', package_name: DEFAULT_PLAN, amount: '', currency: 'BWP', status: 'paid', issued_date: localToday(), due_date: '', paid_date: localToday(), description: '', notes: '' })
     loadData()
     setCreateSaving(false)
   }
@@ -2629,7 +2630,7 @@ function Bookkeeping({ companies }) {
     e.preventDefault()
     if (!expenseForm.amount || Number(expenseForm.amount) <= 0) return
     await window.api.admin.createExpense(expenseForm)
-    setExpenseForm({ date: new Date().toISOString().split('T')[0], category: 'Infrastructure', amount: '', currency: 'BWP', description: '', vendor: '' })
+    setExpenseForm({ date: localToday(), category: 'Infrastructure', amount: '', currency: 'BWP', description: '', vendor: '' })
     setShowCreateExpense(false)
     loadData()
   }

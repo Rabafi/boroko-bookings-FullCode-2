@@ -42,8 +42,7 @@ function applyPosOrderFilters(rows = [], startDate, endDate, outletFilter = null
     filtered = filtered.filter((order) => String(order.created_at || '') >= startDate);
   }
   if (endDate) {
-    const endBoundary = `${endDate}T23:59:59`;
-    filtered = filtered.filter((order) => String(order.created_at || '') <= endBoundary);
+    filtered = filtered.filter((order) => String(order.created_at || '') <= endDate);
   }
   if (outletFilter !== null && outletFilter.length === 0) return [];
   if (outletFilter !== null) {
@@ -164,7 +163,7 @@ export async function getPosOrders(startDate, endDate, outletFilter = null) {
     select('*, pos_order_items(*), outlets(name)').
     eq('lodge_id', state.lodgeId);
     if (startDate) query = query.gte('created_at', startDate);
-    if (endDate) query = query.lte('created_at', endDate + 'T23:59:59');
+    if (endDate) query = query.lte('created_at', endDate);
     let data = null;
     let error = null;
     ({ data, error } = await query.order('created_at', { ascending: false }));
@@ -184,7 +183,7 @@ export async function getPosOrders(startDate, endDate, outletFilter = null) {
       select('*, pos_order_items(*)').
       eq('lodge_id', state.lodgeId);
       if (startDate) fallbackQuery = fallbackQuery.gte('created_at', startDate);
-      if (endDate) fallbackQuery = fallbackQuery.lte('created_at', endDate + 'T23:59:59');
+      if (endDate) fallbackQuery = fallbackQuery.lte('created_at', endDate);
       const fallback = await fallbackQuery.order('created_at', { ascending: false });
       data = fallback.data || [];
       error = fallback.error || null;
@@ -216,8 +215,8 @@ export async function getPosOrders(startDate, endDate, outletFilter = null) {
 export async function getPosVoidHistory(startDate, endDate, outletFilter = null) {
   const applyVoidFilters = (rows = []) => {
     let filtered = rows || [];
-    if (startDate) filtered = filtered.filter((row) => String(row.created_at || '') >= `${startDate}T00:00:00`);
-    if (endDate) filtered = filtered.filter((row) => String(row.created_at || '') <= `${endDate}T23:59:59`);
+    if (startDate) filtered = filtered.filter((row) => String(row.created_at || '') >= startDate);
+    if (endDate) filtered = filtered.filter((row) => String(row.created_at || '') <= endDate);
     if (outletFilter !== null && outletFilter.length === 0) return [];
     if (outletFilter !== null) filtered = filtered.filter((row) => !row.outlet_id || outletFilter.includes(row.outlet_id));
     return filtered.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
@@ -241,8 +240,8 @@ export async function getPosVoidHistory(startDate, endDate, outletFilter = null)
   eq('lodge_id', state.lodgeId).
   eq('action', 'void');
 
-  if (startDate) query = query.gte('created_at', `${startDate}T00:00:00`);
-  if (endDate) query = query.lte('created_at', `${endDate}T23:59:59`);
+  if (startDate) query = query.gte('created_at', startDate);
+  if (endDate) query = query.lte('created_at', endDate);
   if (outletFilter !== null && outletFilter.length === 0) return [];
   if (outletFilter !== null) query = query.in('outlet_id', outletFilter);
 

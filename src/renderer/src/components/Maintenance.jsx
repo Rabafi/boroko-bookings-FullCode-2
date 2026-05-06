@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Plus, CheckCircle, Wrench, AlertTriangle } from 'lucide-react'
 import { Modal } from './shared/Modal'
+import { localToday } from '../utils/localDate'
 
 const PRIORITIES = ['low', 'medium', 'high', 'urgent']
 const STATUSES = ['open', 'in_progress', 'resolved']
@@ -18,7 +19,7 @@ const statusColor = {
   resolved: 'bg-green-50 text-green-700'
 }
 
-const today = () => new Date().toISOString().split('T')[0]
+const today = () => localToday()
 
 export default function Maintenance() {
   const [tickets, setTickets] = useState([])

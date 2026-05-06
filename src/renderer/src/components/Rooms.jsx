@@ -8,6 +8,7 @@ import UsageUpgradePrompt from './shared/UpgradePromptModal'
 import UpgradeNudgeBanner from './shared/UpgradeNudgeBanner'
 import { useAccess, useSettings } from '../app-context'
 import { MONTHLY_USAGE_RESET_COPY, canCreateRoom, getEarlyUpgradePromptState, getPlanUsageLimits, normalizeSubscriptionPlan } from '../../../shared/subscriptionPlans'
+import { formatLocalDate } from '../utils/localDate'
 
 const ROOM_TYPES = ['Single', 'Double', 'Twin', 'Suite', 'Family', 'Deluxe']
 const STATUSES = ['available', 'occupied', 'maintenance', 'reserved']
@@ -94,10 +95,10 @@ export default function Rooms() {
     setRooms(data)
     setRateOverrides(Array.isArray(overrides) ? overrides : [])
     const today = new Date()
-    const start = today.toISOString().slice(0, 10)
+    const start = formatLocalDate(today)
     const endDate = new Date(today)
     endDate.setDate(endDate.getDate() + 1)
-    const end = endDate.toISOString().slice(0, 10)
+    const end = formatLocalDate(endDate)
     const entries = await Promise.all((data || []).map(async (room) => {
       try {
         const result = await window.api.rateOverrides.getApplicable(room.id, start, end)

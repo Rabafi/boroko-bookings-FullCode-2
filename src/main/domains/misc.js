@@ -847,7 +847,7 @@ async function buildExpandedBackupPayload() {
   conferenceBookings,
   dayUseEntries] =
   await Promise.all([
-  import('./' + 'settings.js').then(m => m.getSettings()).catch(() => ({})),
+  Promise.resolve(readCache('settings')[0] || {}),
   getAllRooms().catch(() => []),
   getAllCustomers().catch(() => []),
   getAllBookings().catch(() => []),

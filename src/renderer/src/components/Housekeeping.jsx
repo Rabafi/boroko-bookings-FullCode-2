@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { CheckCircle, AlertCircle, Clock, RefreshCw, Package2, BarChart3, ClipboardList } from 'lucide-react'
 import { useSettings } from '../app-context'
+import { formatLocalDate, localDateStringFromOffset, localToday } from '../utils/localDate'
 
 const STATUS_CONFIG = {
   clean: {
@@ -42,15 +43,11 @@ export default function Housekeeping() {
     const day = d.getDay()
     const diff = (day === 0 ? -6 : 1) - day
     d.setDate(d.getDate() + diff)
-    return d.toISOString().split('T')[0]
+    return formatLocalDate(d)
   }
   const weekStart = thisMonday()
-  const today = new Date().toISOString().split('T')[0]
-  const tomorrow = (() => {
-    const date = new Date(today + 'T12:00:00')
-    date.setDate(date.getDate() + 1)
-    return date.toISOString().split('T')[0]
-  })()
+  const today = localToday()
+  const tomorrow = localDateStringFromOffset(1)
 
   useEffect(() => { loadRooms() }, [])
 

@@ -2,13 +2,14 @@ import { useEffect, useMemo, useState } from 'react'
 import { ChevronLeft, ChevronRight, CreditCard, DoorClosed, DoorOpen, ExternalLink } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { useSettings } from '../app-context'
+import { formatLocalDate, localToday } from '../utils/localDate'
 
 const DAYS_SHOWN = 14
 
 function addDays(dateStr, n) {
   const d = new Date(dateStr + 'T12:00:00')
   d.setDate(d.getDate() + n)
-  return d.toISOString().split('T')[0]
+  return formatLocalDate(d)
 }
 
 function daysBetween(start, end) {
@@ -18,7 +19,7 @@ function daysBetween(start, end) {
 }
 
 function todayStr() {
-  return new Date().toISOString().split('T')[0]
+  return localToday()
 }
 
 const STATUS = {

@@ -11,6 +11,7 @@ import UpgradeNudgeBanner from './shared/UpgradeNudgeBanner'
 import { DESKTOP_PAYMENT_METHODS, PAYMENT_METHOD_LABELS } from '../constants/paymentMethods'
 import { useAccess, useAuth, useSettings } from '../app-context'
 import { MONTHLY_USAGE_RESET_COPY, canCreateBooking, countMonthlyUsageBookings, getEarlyUpgradePromptState, getPlanUsageLimits, normalizeSubscriptionPlan } from '../../../shared/subscriptionPlans'
+import { formatLocalDate, localToday } from '../utils/localDate'
 
 const STATUS_OPTIONS = ['confirmed', 'checked_in', 'checked_out', 'cancelled']
 
@@ -2399,10 +2400,10 @@ function PaymentBadge({ status }) {
 }
 
 function today() {
-  return new Date().toISOString().split('T')[0]
+  return localToday()
 }
 function tomorrow() {
   const d = new Date()
   d.setDate(d.getDate() + 1)
-  return d.toISOString().split('T')[0]
+  return formatLocalDate(d)
 }

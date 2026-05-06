@@ -4,6 +4,7 @@ import { Modal } from './shared/Modal'
 import HorizontalScrollArea from './shared/HorizontalScrollArea'
 import { DESKTOP_PAYMENT_METHODS } from '../constants/paymentMethods'
 import { useAuth, useSettings } from '../app-context'
+import { localToday } from '../utils/localDate'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -71,7 +72,7 @@ function buildQuotationWhatsAppMessage(q, settings) {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function today() {
-  return new Date().toISOString().split('T')[0]
+  return localToday()
 }
 
 function isExpired(q) {

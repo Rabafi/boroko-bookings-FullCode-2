@@ -13,6 +13,7 @@ import {
   XCircle,
   Zap
 } from 'lucide-react'
+import { localToday } from '../../utils/localDate'
 
 function fmt(currency, val) {
   return `${currency} ${Number(val || 0).toLocaleString('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
@@ -308,7 +309,7 @@ export default function CollectionsCard({ currency = 'P', onSendToChat }) {
     }
   }
 
-  const todayStr = new Date().toISOString().slice(0, 10)
+  const todayStr = localToday()
   const overdueTotal = (summary?.items || []).filter(i => i.bucket === 'overdue').reduce((s, i) => s + i.amount, 0)
   const todayTotal = (summary?.items || []).filter(i => i.bucket === 'due_today').reduce((s, i) => s + i.amount, 0)
   const futureTotal = (summary?.items || []).filter(i => i.bucket === 'future').reduce((s, i) => s + i.amount, 0)

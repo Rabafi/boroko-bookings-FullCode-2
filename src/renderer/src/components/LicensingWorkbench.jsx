@@ -18,6 +18,7 @@ import {
   getSubscriptionPlan,
   normalizeSubscriptionPlan
 } from '../../../shared/subscriptionPlans'
+import { formatLocalDate } from '../utils/localDate'
 
 const PLAN_FLAGS = {
   Starter: {
@@ -396,7 +397,7 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
                 else if (dur === 'half_year') d.setMonth(d.getMonth() + 6)
                 else if (dur === 'yearly') d.setFullYear(d.getFullYear() + 1)
 
-                if (dur) nextVal = d.toISOString().split('T')[0]
+                if (dur) nextVal = formatLocalDate(d)
 
                 setForm(f => ({
                   ...f,
