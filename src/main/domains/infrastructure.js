@@ -5126,81 +5126,7 @@ export async function deleteUser(id) {
 }
 
 // ─── ROOMS ────────────────────────────────────────────────────────────────────
-
-async function getAllRooms() {
-  return (await import('./' + 'rooms.js')).getAllRooms()
-}
-
-async function getRoomById(id) {
-  return (await import('./' + 'rooms.js')).getRoomById(id)
-}
-
-async function createRoom(data) {
-  return (await import('./' + 'rooms.js')).createRoom(data)
-}
-
-async function updateRoom(id, data) {
-  return (await import('./' + 'rooms.js')).updateRoom(id, data)
-}
-
-async function updateRoomHousekeeping(id, status, notes) {
-  return (await import('./' + 'rooms.js')).updateRoomHousekeeping(id, status, notes)
-}
-
-async function deleteRoom(id) {
-  return (await import('./' + 'rooms.js')).deleteRoom(id)
-}
-
-async function getAllCustomers() {
-  return (await import('./' + 'customers.js')).getAllCustomers()
-}
-
-async function createCustomer(data) {
-  return (await import('./' + 'customers.js')).createCustomer(data)
-}
-
-async function updateCustomerBlacklist(id, is_blacklisted, reason) {
-  return (await import('./' + 'customers.js')).updateCustomerBlacklist(id, is_blacklisted, reason)
-}
-
-async function getCustomerBookings(customerId) {
-  return (await import('./' + 'customers.js')).getCustomerBookings(customerId)
-}
-
-async function updateCustomer(id, data) {
-  return (await import('./' + 'customers.js')).updateCustomer(id, data)
-}
-
-async function updateCustomerIdPhoto(id, photo) {
-  return (await import('./' + 'customers.js')).updateCustomerIdPhoto(id, photo)
-}
-
-async function getCustomerById(id) {
-  return (await import('./' + 'customers.js')).getCustomerById(id)
-}
-
 // ─── CUSTOMERS ────────────────────────────────────────────────────────────────
-
-async function getAllBookings(...args) {
-  return (await import('./' + 'bookings.js')).getAllBookings(...args);
-}
-
-async function getAllQuotations(...args) {
-  return (await import('./' + 'bookings.js')).getAllQuotations(...args);
-}
-
-async function getBookingInvoices(...args) {
-  return (await import('./' + 'bookings.js')).getBookingInvoices(...args);
-}
-
-async function createBooking(...args) {
-  return (await import('./' + 'bookings.js')).createBooking(...args);
-}
-
-async function updateBookingPayment(...args) {
-  return (await import('./' + 'bookings.js')).updateBookingPayment(...args);
-}
-
 // ─── BOOKINGS ─────────────────────────────────────────────────────────────────
 
 export function mergeRemoteBookingsWithLocalState(remoteRows = [], localRows = readCache('bookings')) {
@@ -5291,53 +5217,11 @@ export async function probeRpc(name, args = {}, options = {}) {
 
 // ─── RATE OVERRIDES (SEASONAL / WEEKEND PRICING) ──────────────────────────────
 
-async function getExpenses(startDate, endDate, outletId = 'all') {
-  return (await import('./' + 'expenses.js')).getExpenses(startDate, endDate, outletId)
-}
-
-async function getExpenseById(id) {
-  return (await import('./' + 'expenses.js')).getExpenseById(id)
-}
-
-async function createExpense(data) {
-  return (await import('./' + 'expenses.js')).createExpense(data)
-}
-
-async function updateExpense(id, data) {
-  return (await import('./' + 'expenses.js')).updateExpense(id, data)
-}
-
-async function deleteExpense(id) {
-  return (await import('./' + 'expenses.js')).deleteExpense(id)
-}
-
-async function getAdminExpenses() {
-  return (await import('./' + 'expenses.js')).getAdminExpenses()
-}
-
-async function createAdminExpense(data) {
-  return (await import('./' + 'expenses.js')).createAdminExpense(data)
-}
-
-async function updateAdminExpense(id, data) {
-  return (await import('./' + 'expenses.js')).updateAdminExpense(id, data)
-}
-
-async function deleteAdminExpense(id) {
-  return (await import('./' + 'expenses.js')).deleteAdminExpense(id)
-}
-
 // ─── EXPENSES ─────────────────────────────────────────────────────────────────
 
 // ─── MAINTENANCE TICKETS ──────────────────────────────────────────────────────
 
-async function getMaintenanceTickets() {
-  return (await import('./' + 'maintenance.js')).getMaintenanceTickets()
-}
 
-async function getMaintenanceRowsForPeriod(startDate, endDate) {
-  return (await import('./' + 'maintenance.js')).getMaintenanceRowsForPeriod(startDate, endDate)
-}
 
 // ─── ID PHOTO ─────────────────────────────────────────────────────────────────
 
@@ -5504,78 +5388,22 @@ export function applyQueuedPosInventoryReservations(remoteInventoryRows = []) {
   });
 }
 
-async function getPosOrders(startDate, endDate, outletFilter = null) {
-  return (await import('./' + 'pos.js')).getPosOrders(startDate, endDate, outletFilter)
-}
-
-async function getOutlets() {
-  return (await import('./' + 'pos.js')).getOutlets()
-}
-
 // ─── INVENTORY ────────────────────────────────────────────────────────────────
-
-async function getInventoryItems() {
-  return (await import('./' + 'inventory.js')).getInventoryItems()
-}
-
-async function getInventoryPurchases(itemId) {
-  return (await import('./' + 'inventory.js')).getInventoryPurchases(itemId)
-}
-
-async function getInventorySpend(startDate, endDate, outletId = 'all') {
-  return (await import('./' + 'inventory.js')).getInventorySpend(startDate, endDate, outletId)
-}
-
-async function createInventoryItem(data) {
-  return (await import('./' + 'inventory.js')).createInventoryItem(data)
-}
-
-async function deleteInventoryItem(id) {
-  return (await import('./' + 'inventory.js')).deleteInventoryItem(id)
-}
 
 // ─── ROOM SUPPLIES ────────────────────────────────────────────────────────────
 
-async function getSupplyItems() {
-  return (await import('./' + 'supplies.js')).getSupplyItems()
-}
 
-async function getSupplyPurchases(itemId) {
-  return (await import('./' + 'supplies.js')).getSupplyPurchases(itemId)
-}
-
-async function getSupplySpend(startDate, endDate) {
-  return (await import('./' + 'supplies.js')).getSupplySpend(startDate, endDate)
-}
-
-async function getRoomSupplyAllocations(startDate, endDate) {
-  return (await import('./' + 'supplies.js')).getRoomSupplyAllocations(startDate, endDate)
-}
-
-async function createSupplyItem(data) {
-  return (await import('./' + 'supplies.js')).createSupplyItem(data)
-}
-
-async function deleteSupplyItem(id) {
-  return (await import('./' + 'supplies.js')).deleteSupplyItem(id)
-}
 
 
 // ─── ANALYTICS & COST REPORTS ────────────────────────────────────────────────
 
-async function getPosRevenueSummary(startDate, endDate, outletId = 'all') {
-  return (await import('./' + 'pos.js')).getPosRevenueSummary(startDate, endDate, outletId)
-}
-
 // ─── SETTINGS ─────────────────────────────────────────────────────────────────
-
-async function getSettings() {
-  return (await import('./' + 'settings.js')).getSettings();
-}
 
 export async function getLodgeDiagnostics(expectedLodgeId = '') {
   return (await import('./' + 'settings.js')).getLodgeDiagnostics(expectedLodgeId);
 }
+
+
 
 export function isMissingEntitlementRpcError(error) {
   const message = String(error?.message || '');
@@ -5583,13 +5411,7 @@ export function isMissingEntitlementRpcError(error) {
   /get_lodge_entitlement|activate_license_key|issue_subscription_contract|update_subscription_contract|set_subscription_feature_override|clear_subscription_feature_override|schema cache/i.test(message);
 }
 
-async function getTrialStatus(lodgeId) {
-  return (await import('./' + 'subscriptions.js')).getTrialStatus(lodgeId);
-}
 
-async function activateLicenseKey(lodgeId, licenseKey) {
-  return (await import('./' + 'subscriptions.js')).activateLicenseKey(lodgeId, licenseKey);
-}
 
 
 // ─── INVOICES ────────────────────────────────────────────────────────────────────
