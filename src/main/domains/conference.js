@@ -1,8 +1,8 @@
 import { randomUUID } from 'crypto'
 import crypto from 'crypto'
 import { state } from '../state.js'
+import { checkExclusiveEventConflict } from './bookings.js'
 import {
-  checkExclusiveEventConflict,
   logActivity,
   queueOperation,
   readCache,

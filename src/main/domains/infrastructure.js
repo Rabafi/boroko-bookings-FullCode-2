@@ -4818,31 +4818,6 @@ export function mergeRemoteBookingsWithLocalState(remoteRows = [], localRows = r
   return [...localOnlyRows, ...(remoteRows || [])];
 }
 
-// ── BOOKING VALIDATION HELPERS ───────────────────────────────────────────────
-
-export async function checkExclusiveEventConflict(checkIn, checkOut, excludeGroupId = null) {
-  if (state.isOnline) {
-    const { data } = await state.supabase.from('bookings').select('id, notes').
-    eq('lodge_id', state.lodgeId).
-    eq('is_exclusive_event', true).
-    neq('status', 'cancelled').
-    lt('check_in', checkOut).
-    gt('check_out', checkIn);
-    if (data?.length > 0) {
-      if (excludeGroupId && data.every((b) => b.notes?.includes(`[GROUP:${excludeGroupId}]`))) return;
-      throw new Error('The lodge is fully reserved for an exclusive event on these dates. No other bookings can be made.');
-    }
-  } else {
-    const events = readCache('bookings').filter((b) =>
-    b.is_exclusive_event && b.status !== 'cancelled' &&
-    b.check_in < checkOut && b.check_out > checkIn &&
-    !(excludeGroupId && b.notes?.includes(`[GROUP:${excludeGroupId}]`))
-    );
-    if (events.length > 0)
-    throw new Error('The lodge is fully reserved for an exclusive event on these dates. No other bookings can be made.');
-  }
-}
-
 // ─── EVENT / LODGE BOOKING ────────────────────────────────────────────────────
 
 // ─── NOTIFICATIONS ────────────────────────────────────────────────────────────

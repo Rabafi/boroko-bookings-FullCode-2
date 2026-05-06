@@ -1,8 +1,8 @@
 import { randomUUID } from 'crypto'
 import { state } from '../state.js'
+import { checkExclusiveEventConflict } from './bookings.js'
 import {
   MAX_FINANCIAL_AMOUNT,
-  checkExclusiveEventConflict,
   logActivity,
   queueOperation,
   readCache,

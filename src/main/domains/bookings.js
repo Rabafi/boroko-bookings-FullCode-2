@@ -19,7 +19,6 @@ import {
   createPaymentIdempotencyKey,
   buildPaymentFallbackSignature,
   patchCachedQuotationSyncState,
-  checkExclusiveEventConflict,
   roundMoneyValue
 } from './infrastructure.js';
 import {
@@ -49,6 +48,29 @@ const VALID_STATUS_TRANSITIONS = {
   confirmed: ['checked_in', 'cancelled'],
   checked_in: ['checked_out']
 };
+
+export async function checkExclusiveEventConflict(checkIn, checkOut, excludeGroupId = null) {
+  if (state.isOnline) {
+    const { data } = await state.supabase.from('bookings').select('id, notes').
+    eq('lodge_id', state.lodgeId).
+    eq('is_exclusive_event', true).
+    neq('status', 'cancelled').
+    lt('check_in', checkOut).
+    gt('check_out', checkIn);
+    if (data?.length > 0) {
+      if (excludeGroupId && data.every((b) => b.notes?.includes(`[GROUP:${excludeGroupId}]`))) return;
+      throw new Error('The lodge is fully reserved for an exclusive event on these dates. No other bookings can be made.');
+    }
+  } else {
+    const events = readCache('bookings').filter((b) =>
+    b.is_exclusive_event && b.status !== 'cancelled' &&
+    b.check_in < checkOut && b.check_out > checkIn &&
+    !(excludeGroupId && b.notes?.includes(`[GROUP:${excludeGroupId}]`))
+    );
+    if (events.length > 0)
+    throw new Error('The lodge is fully reserved for an exclusive event on these dates. No other bookings can be made.');
+  }
+}
 
 export async function getAllBookings() {
   try {
