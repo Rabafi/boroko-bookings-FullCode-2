@@ -29,9 +29,9 @@ import {
 } from './syncStore.js';
 
 import {
-  checkOnline,
   readCache
 } from './infrastructure.js';
+import { checkOnline } from './connectivity.js';
 import { getLodgeDiagnostics } from './settings.js';
 
 import {

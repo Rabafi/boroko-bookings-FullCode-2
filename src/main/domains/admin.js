@@ -13,11 +13,11 @@ import {
   requireAdmin,
   clearCache,
   refreshCache,
-  checkOnline,
   getMonthWindowIso,
   buildUsageSummary,
   buildUsageWarning
 } from './infrastructure.js'
+import { checkOnline } from './connectivity.js'
 import { resolvePwaAccessUpdate } from './users.js'
 import { isMissingEntitlementRpcError } from './subscriptions.js'
 import {

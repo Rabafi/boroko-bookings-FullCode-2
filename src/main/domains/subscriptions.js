@@ -1,11 +1,11 @@
 import { state } from '../state.js';
 import { getActiveProfile } from './profiles.js';
+import { checkOnline } from './connectivity.js';
 import {
   DEFAULT_OFFLINE_LEASE_DAYS,
   DEFAULT_SUBSCRIPTION_GRACE_DAYS,
   addDays,
   buildUsageWarning,
-  checkOnline,
   computeGracePeriodEnd,
   computeOfflineValidUntil,
   computeSubscriptionState,

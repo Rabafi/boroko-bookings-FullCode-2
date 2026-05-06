@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { createClient } from '@supabase/supabase-js';
-import { app, BrowserWindow } from 'electron';
+import { app } from 'electron';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
@@ -67,6 +67,7 @@ import {
   buildSyncStatusSnapshot,
   isQueuedDependencyResolved
 } from './syncStatus.js';
+import { broadcastSyncStatus, checkOnline } from './connectivity.js';
 import {
   DEFAULT_OFFLINE_LEASE_DAYS,
   DEFAULT_SUBSCRIPTION_GRACE_DAYS,
@@ -133,6 +134,7 @@ export {
   getUserById,
   getUsers
 } from './users.js';
+export { broadcastSyncStatus, checkOnline } from './connectivity.js';
 export {
   buildSyncStatusSnapshot
 } from './syncStatus.js';
@@ -251,8 +253,6 @@ trim();
 
 const AUTH_CONTRACT_VERSION = 2;
 const CONNECTIVITY_CHECK_INTERVAL_MS = 3000;
-const CONNECTIVITY_PROBE_TIMEOUT_MS = 4000;
-const CONNECTIVITY_OFFLINE_FAILURE_THRESHOLD = 3;
 const PERIODIC_SYNC_INTERVAL_MS = 15000;
 const PROFILE_CACHE_FILES = {
   settings: [],
@@ -789,62 +789,6 @@ function makeBackendAuthSchemaError(message, details = {}) {
 
 // ─── CONNECTIVITY & SYNC ──────────────────────────────────────────────────────
 
-/** True when the Supabase project is reachable over the network (not whether RLS allows reading rooms). */
-export async function checkOnline() {
-  if (process.env.BOROKO_TEST_FORCE_OFFLINE === 'true') {
-    const wasOnline = state.isOnline;
-    state.isOnline = false;
-    state.consecutiveConnectivityFailures = CONNECTIVITY_OFFLINE_FAILURE_THRESHOLD;
-    if (wasOnline) broadcastSyncStatus();
-    return state.isOnline;
-  }
-  const wasOnline = state.isOnline;
-  let rawOnline = false;
-  const base = SUPABASE_URL.replace(/\/$/, '');
-  const headers = {
-    apikey: SUPABASE_ANON_KEY,
-    Authorization: `Bearer ${SUPABASE_ANON_KEY}`
-  };
-  const fetchWithTimeout = async (url, init = {}) => {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), CONNECTIVITY_PROBE_TIMEOUT_MS);
-    try {
-      return await fetch(url, { ...init, headers, signal: ctrl.signal });
-    } finally {
-      clearTimeout(t);
-    }
-  };
-  const reachable = (res) => res.status > 0 && res.status < 500;
-
-  try {
-    let res = await fetchWithTimeout(`${base}/auth/v1/health`, { method: 'GET' });
-    if (res.status >= 500) {
-      res = await fetchWithTimeout(`${base}/rest/v1/`, { method: 'GET' });
-    }
-    rawOnline = reachable(res);
-  } catch {
-    try {
-      const res = await fetchWithTimeout(`${base}/rest/v1/`, { method: 'GET' });
-      rawOnline = reachable(res);
-    } catch {
-      rawOnline = false;
-    }
-  }
-
-  if (rawOnline) {
-    state.consecutiveConnectivityFailures = 0;
-    state.isOnline = true;
-  } else {
-    state.consecutiveConnectivityFailures += 1;
-    if (state.consecutiveConnectivityFailures >= CONNECTIVITY_OFFLINE_FAILURE_THRESHOLD) {
-      state.isOnline = false;
-    }
-  }
-
-  if (wasOnline !== state.isOnline) broadcastSyncStatus();
-  return state.isOnline;
-}
-
 // Refresh one or more named caches from Supabase. Only fetches what's requested.
 export async function refreshCache(...names) {
   try {
@@ -893,17 +837,6 @@ function uniqueSyncNames(names = []) {
 
 function isSyncRefreshStaleFor(name) {
   return state.syncRefreshState.stale && state.syncRefreshState.names.includes(name);
-}
-
-export function broadcastSyncStatus() {
-  try {
-    const status = buildSyncStatusSnapshot();
-    BrowserWindow.getAllWindows().forEach((win) => {
-      if (!win.isDestroyed()) win.webContents.send('sync:status-changed', status);
-    });
-  } catch (e) {
-    console.error('[Sync] IPC broadcast failed:', e);
-  }
 }
 
 function markSyncRefreshStale(names = [], errorMessage = 'Cache refresh failed.') {

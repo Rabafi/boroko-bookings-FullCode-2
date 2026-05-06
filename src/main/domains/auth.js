@@ -1,10 +1,10 @@
 import { state } from '../state.js'
 import { normalizeEmail } from './shared.js'
+import { checkOnline } from './connectivity.js'
 import { getAllUsers, getUserById, getUserPosOutletFilter, getUsers } from './users.js'
 
 import {
   buildSupabaseAuthClient,
-  checkOnline,
   getAuthRedirectUrl,
   logActivity,
   requireAdmin,

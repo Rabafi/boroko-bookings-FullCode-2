@@ -12,7 +12,6 @@ import {
   normalizeLodgeId
 } from './shared.js';
 import {
-  checkOnline,
   clearBackendSession,
   clearCache,
   clearSessionNonce,
@@ -28,6 +27,7 @@ import {
   writeCache,
   writeSyncQueue
 } from './infrastructure.js';
+import { checkOnline } from './connectivity.js';
 import {
   PROFILE_STATUS,
   ensureProfileCacheFiles,
