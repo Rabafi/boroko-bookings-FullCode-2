@@ -17,6 +17,10 @@ export function isPosCreateOrderQueueItem(item) {
   return item?.type === 'rpc' && item?.table === 'create_pos_order';
 }
 
+export function isPosVoidQueueItem(item) {
+  return item?.type === 'rpc' && item?.table === 'approve_pos_void_with_pin';
+}
+
 export function getQueuedPosOrderId(item) {
   const payloadId = String(item?.data?.payload?.id || item?.data?.payload?.order_id || '').trim();
   if (payloadId) return payloadId;
