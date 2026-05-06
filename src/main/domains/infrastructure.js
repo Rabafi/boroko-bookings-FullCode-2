@@ -1,9 +1,6 @@
-import { randomUUID } from 'crypto';
 import { app } from 'electron';
 import path from 'path';
 import fs from 'fs';
-import crypto from 'crypto';
-import bcrypt from 'bcryptjs';
 import { getRoleCapabilities, normalizeAppRole } from "../../shared/accessControl.js";
 import { FINANCIAL_SYNC_TABLES, isFinancialSyncItem, pickNextReadySyncItemIndex } from "../../shared/syncQueue.js";
 export { FINANCIAL_SYNC_TABLES, isFinancialSyncItem };
@@ -37,66 +34,17 @@ import {
   writeCache
 } from './cacheStore.js';
 import {
-  mergeSessionUserScope,
-  normalizeSessionUser,
-  readAuthCache,
-  upsertCachedUser,
-  writeAuthCache
-} from './authCache.js';
-import {
-  applyBackendSession,
-  buildSupabaseAuthClient,
-  buildSupabaseClient,
-  clearBackendSession,
-  getAuthRedirectUrl,
-  getBackendSession
+  buildSupabaseClient
 } from './authClients.js';
-import {
-  clearSessionNonce,
-  createSessionNonce,
-  normalizeTrustedSessionRecord,
-  pruneExpiredTrustedSessions,
-  restoreSavedTrustedSession,
-  restoreUserSession,
-  setCurrentUser,
-  getCurrentUser,
-  logoutCurrentUser,
-  validateCurrentSession,
-  writeSessionNonce
-} from './authSession.js';
-import {
-  createSupabaseAuthUserForStaff,
-  fetchAuthenticateUserContract,
-  getAuthClientState,
-  getCachedUser,
-  getLodgeAuthContext,
-  loginUser,
-  normalizeAuthContractRow,
-  removeAuthEntry,
-  toSafeUser,
-  upsertAuthEntry
-} from './authLogin.js';
-import {
-  createUser,
-  deleteUser,
-  getAuthStatus,
-  resetUserPassword,
-  runAuthHealthCheck,
-  updateUser
-} from './authUsers.js';
 import {
   refreshCache,
   refreshCachesAfterSync,
   refreshAllCaches
 } from './cacheRefresh.js';
 import {
-  buildPwaAccessInput,
-  getAllUsers,
   getUserPosOutletFilter,
   getUserById,
-  getUsers,
-  normalizeStaffRole,
-  resolvePwaAccessUpdate
+  getUsers
 } from './users.js';
 import {
   applyOfflinePosInventoryReservation,
@@ -117,7 +65,6 @@ import {
   replaceQueuedBookingReference,
   rewriteQueuedBookingReferenceItem
 } from './syncCache.js';
-import { assertCreationWithinUsageLimit } from './usage.js';
 import {
   buildSyncStatusSnapshot,
   isQueuedDependencyResolved
@@ -136,21 +83,12 @@ import {
   subscriptionAllowsAccess,
   toPositiveInt
 } from './subscriptionState.js';
-import {
-  createAppError,
-  isBackendAuthSchemaError,
-  isUuid,
-  MAX_FINANCIAL_AMOUNT,
-  normalizeEmail,
-  normalizeLodgeId,
-  normalizeUserRecord
-} from './shared.js';
+import { MAX_FINANCIAL_AMOUNT } from './shared.js';
 import {
   appendAuxiliaryLog,
   CRITICAL_ERROR_LOG_FILE,
   getLocalDateKey,
   isNonCriticalOperationalError,
-  logActivity,
   LOCAL_TIME_ZONE,
   readAuxiliaryLog,
   recordCriticalError,
