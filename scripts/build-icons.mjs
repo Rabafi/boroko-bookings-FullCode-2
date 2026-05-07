@@ -8,6 +8,7 @@ const sourceSvg = path.join(root, 'src', 'main', 'assets', 'boroko-bookings-logo
 const sourceDarkPng = path.join(root, 'src', 'main', 'assets', 'boroko-bookings-logo-dark.png')
 const outDir = path.join(root, 'src', 'main', 'assets')
 const pngSizes = [16, 32, 48, 64, 128, 256, 512]
+const icoSizes = [16, 32, 48, 64, 128, 256]
 
 async function main() {
   const iconSource = await fs.readFile(sourceDarkPng).catch(() => fs.readFile(sourceSvg))
@@ -34,7 +35,7 @@ async function main() {
     await fs.writeFile(path.join(outDir, `boroko-bookings-icon-${size}.png`), png)
   }
 
-  const ico = await pngToIco(pngBuffers)
+  const ico = await pngToIco(pngBuffers.filter((_, index) => icoSizes.includes(pngSizes[index])))
   await fs.writeFile(path.join(outDir, 'boroko-bookings-icon.ico'), ico)
 
   console.log(`Wrote ${pngBuffers.length} PNG sizes and one ICO to ${outDir}`)
