@@ -537,7 +537,7 @@ export default function Layout() {
   ), [access, navItems])
 
   const navLinkClass = ({ isActive }) =>
-    `group flex items-center gap-3 rounded-2xl border px-3.5 py-2.5 transition-all ${
+    `group flex items-center gap-2.5 rounded-xl border px-3 py-2 transition-all ${
       isActive
         ? 'border-emerald-400/40 bg-gradient-to-r from-emerald-500 to-green-600 text-white shadow-[0_12px_30px_rgba(22,101,52,0.28)]'
         : 'border-transparent text-emerald-100/85 hover:border-white/10 hover:bg-white/8 hover:text-white'
@@ -634,6 +634,10 @@ export default function Layout() {
         group: item.group || (item.to === '/settings' ? 'Admin' : 'Workspace')
       }))
   ), [navItems])
+  const activeNavItem = useMemo(() => {
+    const currentPath = location.pathname || '/'
+    return ALL_NAV.find((item) => currentPath === item.to || (item.to !== '/' && currentPath.startsWith(item.to))) || ALL_NAV[0]
+  }, [location.pathname])
 
   const handlePaletteSelect = (item) => {
     if (!item?.to) return
@@ -702,13 +706,13 @@ export default function Layout() {
       {/* Sidebar */}
       <div
         className={`${
-          collapsed ? 'w-[84px]' : 'w-[288px]'
+          collapsed ? 'w-[76px]' : 'w-[248px]'
         } relative flex flex-col flex-shrink-0 border-r border-emerald-950/10 bg-[linear-gradient(180deg,#0f3d2c_0%,#0c2d23_100%)] text-white transition-all duration-200`}
       >
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(74,222,128,0.22),transparent_28%),radial-gradient(circle_at_bottom_right,rgba(16,185,129,0.16),transparent_28%)]" />
 
         {/* Logo */}
-        <div className="relative z-10 border-b border-white/8 px-4 py-5">
+        <div className="relative z-10 border-b border-white/8 px-3.5 py-4">
           <div className="flex items-center justify-between gap-3">
             {!collapsed && (
               <div className="min-w-0">
@@ -717,7 +721,7 @@ export default function Layout() {
                     {BIZ_EMOJI[bizType] || '🏢'}
                   </div>
                   <div className="min-w-0">
-                    <span className="block truncate text-base font-semibold tracking-[-0.02em] text-white">Boroko</span>
+                    <span className="block truncate text-[15px] font-semibold tracking-[-0.02em] text-white">Boroko</span>
                     <p className="mt-0.5 truncate text-xs text-emerald-100/70">{BIZ_LABEL[bizType] || 'Business Manager'}</p>
                   </div>
                 </div>
@@ -736,7 +740,7 @@ export default function Layout() {
             </button>
           </div>
           {!collapsed && (
-            <div className="mt-4 rounded-2xl border border-white/10 bg-white/6 px-3.5 py-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]">
+            <div className="mt-3 rounded-2xl border border-white/10 bg-white/6 px-3 py-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]">
               <p className="text-[11px] font-medium uppercase tracking-[0.2em] text-emerald-100/55">Workspace</p>
               <p className="mt-1 truncate text-sm font-semibold text-white">{workspaceName}</p>
               <p className="mt-1 text-xs text-emerald-100/65">{bizType === 'restaurant' ? 'Restaurant operations' : 'Hospitality operations'}</p>
@@ -747,7 +751,7 @@ export default function Layout() {
         </div>
 
         {/* Nav — scrollable area */}
-        <nav className="relative z-10 flex flex-1 flex-col overflow-y-auto px-3 py-4">
+        <nav className="relative z-10 flex flex-1 flex-col overflow-y-auto px-2.5 py-3">
           {/* Dashboard — standalone top */}
           {standaloneTop.map(({ to, label, icon: Icon, end }) => (
             <NavLink key={to} to={to} end={end} className={navLinkClass} title={collapsed ? label : undefined} onClick={(e) => handleNavClick(e, to)}>
@@ -775,7 +779,7 @@ export default function Layout() {
                       key={label}
                       onClick={() => setUpgradeItem({ label, tier, capability })}
                       title={collapsed ? `${label} — ${tier} plan required` : undefined}
-                      className="group flex w-full items-center gap-3 rounded-2xl border border-dashed border-white/10 bg-white/[0.03] px-3.5 py-2.5 text-left transition-all hover:border-white/16 hover:bg-white/[0.06]"
+                      className="group flex w-full items-center gap-2.5 rounded-xl border border-dashed border-white/10 bg-white/[0.03] px-3 py-2 text-left transition-all hover:border-white/16 hover:bg-white/[0.06]"
                     >
                       <Icon size={17} className="flex-shrink-0 text-emerald-200/65 transition-transform group-hover:scale-105" />
                       {!collapsed && <span className="flex-1 text-sm font-medium text-emerald-50/72">{label}</span>}
@@ -822,7 +826,7 @@ export default function Layout() {
         {/* User + Logout */}
         <div className="relative z-10 border-t border-white/8 p-3">
           {!collapsed && (
-            <div className="mb-3 rounded-2xl border border-white/10 bg-white/6 px-3.5 py-3">
+            <div className="mb-2 rounded-2xl border border-white/10 bg-white/6 px-3 py-2.5">
               <p className="text-[11px] uppercase tracking-[0.18em] text-emerald-100/50">Signed in as</p>
               <p className="mt-1 truncate text-sm font-semibold text-white">{user?.name}</p>
               <span className="mt-2 inline-flex rounded-full bg-white/10 px-2.5 py-1 text-[11px] font-medium capitalize text-emerald-50">
@@ -833,7 +837,7 @@ export default function Layout() {
           {/* Help / Support Ticket */}
           <button
             onClick={() => setShowHelp(true)}
-            className="mb-1 flex w-full items-center gap-2 rounded-2xl border border-transparent px-3 py-2.5 text-emerald-100/80 transition-all hover:border-white/10 hover:bg-white/8 hover:text-white"
+            className="mb-1 flex w-full items-center gap-2 rounded-xl border border-transparent px-3 py-2 text-emerald-100/80 transition-all hover:border-white/10 hover:bg-white/8 hover:text-white"
             title={collapsed ? 'Support' : undefined}
           >
             <LifeBuoy size={16} />
@@ -841,7 +845,7 @@ export default function Layout() {
           </button>
           <button
             onClick={handleLogout}
-            className="flex w-full items-center gap-2 rounded-2xl border border-transparent px-3 py-2.5 text-emerald-100/80 transition-all hover:border-white/10 hover:bg-white/8 hover:text-white"
+            className="flex w-full items-center gap-2 rounded-xl border border-transparent px-3 py-2 text-emerald-100/80 transition-all hover:border-white/10 hover:bg-white/8 hover:text-white"
             title={collapsed ? 'Sign out' : undefined}
           >
             <LogOut size={16} />
@@ -853,7 +857,7 @@ export default function Layout() {
       {/* Main */}
       <div className="flex flex-1 flex-col overflow-auto">
         {!isPosRoute && (
-          <div className="shrink-0 border-b border-slate-200/70 bg-white/72 px-6 py-4 backdrop-blur-xl">
+          <div className="shrink-0 border-b border-slate-200/70 bg-white/78 px-4 py-3 backdrop-blur-xl md:px-5">
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div className="min-w-0">
                 <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.2em] text-slate-500">
@@ -862,15 +866,15 @@ export default function Layout() {
                   <span className="truncate text-slate-700">{workspaceName}</span>
                 </div>
                 <div className="mt-2 flex items-center gap-3">
-                  <h1 className="truncate text-2xl font-semibold tracking-[-0.03em] text-slate-900">
-                    Operations Workspace
+                  <h1 className="truncate text-xl font-semibold tracking-[-0.03em] text-slate-900">
+                    {activeNavItem?.label || 'Operations'}
                   </h1>
                   <span className="hidden rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700 md:inline-flex">
                     {access?.roleLabel || user?.role}
                   </span>
                 </div>
-                <p className="mt-1 text-sm text-slate-500">
-                  Navigate core modules, monitor sync health, and keep daily operations moving with confidence.
+                <p className="mt-0.5 text-sm text-slate-500">
+                  {activeNavItem?.group ? `${activeNavItem.group} workspace` : 'Daily operations'} for quick decisions and clean handovers.
                 </p>
               </div>
 
@@ -879,10 +883,10 @@ export default function Layout() {
                   <button
                     type="button"
                     onClick={() => { if (navGuard.current?.isDirty) { navGuard.current.confirmLeave(() => navigate('/invoices')) } else { navigate('/invoices') } }}
-                    className="inline-flex items-center gap-3 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-left shadow-sm transition-all hover:border-rose-300 hover:bg-rose-100"
+                    className="inline-flex items-center gap-2.5 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2.5 text-left shadow-sm transition-all hover:border-rose-300 hover:bg-rose-100"
                     title="Open invoice collections"
                   >
-                    <div className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-white text-rose-600">
+                    <div className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-white text-rose-600">
                       <CreditCard size={16} />
                     </div>
                     <div className="min-w-0">
@@ -899,14 +903,14 @@ export default function Layout() {
                 <button
                   type="button"
                   onClick={() => setPaletteOpen(true)}
-                  className="inline-flex flex-1 min-w-[280px] md:min-w-[420px] items-center gap-4 rounded-2xl border border-slate-200 bg-white px-5 py-3 text-left shadow-sm transition-all hover:border-slate-300 hover:bg-slate-50 group"
+                  className="inline-flex flex-1 min-w-[230px] md:min-w-[340px] items-center gap-3 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-left shadow-sm transition-all hover:border-slate-300 hover:bg-slate-50 group"
                   title="Open quick search"
                 >
-                  <div className="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-slate-100 text-slate-500 group-hover:bg-emerald-50 group-hover:text-emerald-600 transition-colors">
-                    <Search size={18} />
+                  <div className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-slate-100 text-slate-500 group-hover:bg-emerald-50 group-hover:text-emerald-600 transition-colors">
+                    <Search size={16} />
                   </div>
                   <div className="flex-1 min-w-0">
-                    <div className="text-sm font-semibold text-slate-900">Quick search...</div>
+                    <div className="text-sm font-semibold text-slate-900">Quick search</div>
                     <div className="text-[11px] text-slate-500 font-medium">Find bookings, guests or jump to modules</div>
                   </div>
                   <div className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-[10px] font-bold text-slate-400">
@@ -919,10 +923,10 @@ export default function Layout() {
                 <button
                   type="button"
                   onClick={() => { const dest = '/settings'; const state = { state: { activeTab: 'system' } }; if (navGuard.current?.isDirty) { navGuard.current.confirmLeave(() => navigate(dest, state)) } else { navigate(dest, state) } }}
-                  className={`inline-flex items-center gap-3 rounded-2xl border px-3.5 py-3 text-left shadow-sm transition-all hover:shadow-md ${syncTone}`}
+                  className={`inline-flex items-center gap-2.5 rounded-xl border px-3 py-2.5 text-left shadow-sm transition-all hover:shadow-md ${syncTone}`}
                   title="Open System Health & Sync"
                 >
-                  <div className={`flex h-10 w-10 items-center justify-center rounded-xl bg-white/60 shadow-inner ${
+                  <div className={`flex h-8 w-8 items-center justify-center rounded-lg bg-white/60 shadow-inner ${
                     financialFailedCount > 0 ? 'text-rose-600' : failedCount > 0 ? 'text-amber-600' : 'text-emerald-600'
                   }`}>
                     {syncInProgress ? <RefreshCw size={18} className="animate-spin" /> : <BellDot size={18} />}
@@ -984,7 +988,7 @@ export default function Layout() {
             </span>
           </div>
         )}
-        <div className={`flex-1 overflow-auto ${isPosRoute ? 'px-3 pb-3 pt-3 md:px-4 md:pb-4 md:pt-4' : 'px-4 pb-4 pt-4 md:px-6 md:pb-6'}`}>
+        <div className={`flex-1 overflow-auto ${isPosRoute ? 'px-3 pb-3 pt-3 md:px-4 md:pb-4 md:pt-4' : 'px-3 pb-4 pt-3 md:px-5 md:pb-5'}`}>
           {!isPosRoute && <OfflineNotice tasks={currentOfflineTasks} />}
           <Outlet />
         </div>

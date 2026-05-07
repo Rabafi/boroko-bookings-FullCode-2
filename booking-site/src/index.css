@@ -15,6 +15,7 @@
   --success: #245640;
   --danger: #9e2f2a;
   --shadow: 0 24px 60px rgba(64, 39, 15, 0.08);
+  --shadow-soft: 0 14px 36px rgba(64, 39, 15, 0.07);
 }
 
 * {
@@ -79,11 +80,13 @@ button {
   background: linear-gradient(180deg, rgba(255, 253, 249, 0.98) 0%, rgba(251, 247, 241, 0.98) 100%);
   border: 1px solid var(--line);
   box-shadow: var(--shadow);
+  backdrop-filter: blur(14px);
 }
 
 .soft-card {
   background: rgba(255, 253, 249, 0.92);
   border: 1px solid rgba(211, 193, 166, 0.65);
+  box-shadow: var(--shadow-soft);
 }
 
 .brand-button {
@@ -98,4 +101,34 @@ button {
 
 .muted-ring {
   box-shadow: 0 0 0 3px rgba(154, 91, 31, 0.12);
+}
+
+.trust-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  border-radius: 999px;
+  border: 1px solid rgba(211, 193, 166, 0.72);
+  background: rgba(255, 253, 249, 0.82);
+  padding: 0.42rem 0.78rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.guest-input {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 1rem;
+  background: rgba(255, 253, 249, 0.95);
+  padding: 0.78rem 0.95rem;
+  color: var(--text);
+  outline: none;
+  transition: border-color 120ms ease, box-shadow 120ms ease, background 120ms ease;
+}
+
+.guest-input:focus {
+  border-color: var(--brand);
+  background: white;
+  box-shadow: 0 0 0 4px rgba(154, 91, 31, 0.12);
 }

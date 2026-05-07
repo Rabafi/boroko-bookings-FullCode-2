@@ -1,5 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Plus, Search, Filter, CreditCard, Building2, CheckCircle2, MoreVertical, RefreshCw } from 'lucide-react'
+import {
+  Plus,
+  Search,
+  Filter,
+  CreditCard,
+  Building2,
+  CheckCircle2,
+  MoreVertical,
+  RefreshCw,
+  Edit3,
+  LogIn,
+  LogOut,
+  XCircle,
+  Banknote,
+  FilePlus2,
+  ReceiptText,
+  History,
+  MessageCircle,
+  Mail
+} from 'lucide-react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { StatusBadge } from './shared/StatusBadge'
 import { Modal } from './shared/Modal'
@@ -226,6 +245,8 @@ export default function Bookings() {
   const [chargeForm, setChargeForm] = useState({ description: '', amount: '', category: 'Food & Beverage', quantity: 1, outlet_id: '' })
   const [chargeLoading, setChargeLoading] = useState(false)
   const [chargeError, setChargeError] = useState('')
+  const [voidChargeRequest, setVoidChargeRequest] = useState(null)
+  const [voidReason, setVoidReason] = useState('Entered in error')
 
   // Outlets for charge attribution
   const [chargeOutlets, setChargeOutlets] = useState([])
@@ -275,16 +296,19 @@ export default function Bookings() {
     setChargeLoading(false)
   }
 
-  const handleDeleteCharge = async (id) => {
+  const requestDeleteCharge = (id) => {
     if (isFinanciallySyncBlocked(chargesBooking?.id)) {
       setChargeError(FINANCIAL_SYNC_BLOCK_MESSAGE)
       return
     }
-    const reason = window.prompt(
-      'Void this extra charge.\n\nEnter a short reason for the audit trail:',
-      'Entered in error'
-    )
-    if (reason === null) return
+    setVoidChargeRequest(id)
+    setVoidReason('Entered in error')
+  }
+
+  const confirmDeleteCharge = async () => {
+    const id = voidChargeRequest
+    const reason = voidReason
+    if (!id) return
     if (!String(reason || '').trim()) {
       setChargeError('A void reason is required.')
       return
@@ -301,6 +325,7 @@ export default function Bookings() {
     // Reload bookings so charges_total is current if user opens payment modal next
     loadAll()
     showSuccess('Extra charge voided. Booking totals have been refreshed.')
+    setVoidChargeRequest(null)
   }
 
   const [listLoading, setListLoading] = useState(true)
@@ -906,7 +931,7 @@ export default function Bookings() {
   )
 
   return (
-    <div className="mx-auto flex max-w-[1400px] flex-col gap-6">
+    <div className="bb-page">
       <div className="bb-page-header">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.22em] text-emerald-700/70">Front Desk</p>
@@ -1114,26 +1139,26 @@ export default function Bookings() {
       {/* Table */}
       <div className="bb-table-shell overflow-visible">
         <HorizontalScrollArea viewportClassName="overflow-y-visible">
-          <table className="min-w-[1180px] w-full text-sm">
-            <thead className="sticky top-0 z-10 bg-slate-50 text-xs uppercase tracking-[0.16em] text-slate-500">
+          <table className="bb-table min-w-[1120px]">
+            <thead>
               <tr>
-                <th className="px-5 py-3 text-left">#</th>
-                <th className="px-5 py-3 text-left">Guest</th>
-                <th className="px-5 py-3 text-left">Room</th>
-                <th className="px-5 py-3 text-left">Check In</th>
-                <th className="px-5 py-3 text-left">Check Out</th>
-                <th className="px-5 py-3 text-left">Guests</th>
-                <th className="px-5 py-3 text-left">Status</th>
-                <th className="px-5 py-3 text-left">Payment</th>
-                <th className="px-5 py-3 text-right">Amount</th>
-                <th className="px-5 py-3 text-center">Actions</th>
+                <th>#</th>
+                <th>Guest</th>
+                <th>Room</th>
+                <th>Check In</th>
+                <th>Check Out</th>
+                <th>Guests</th>
+                <th>Status</th>
+                <th>Payment</th>
+                <th className="text-right">Amount</th>
+                <th className="text-center">Actions</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100">
+            <tbody>
               {groupedFilteredBookings.map((b) => (
-                <tr key={b.id} className="hover:bg-emerald-50/30" data-testid={`booking-row-${b.id}`}>
-                  <td className="px-5 py-4 font-mono text-xs font-semibold text-slate-500">{fmtBkNum(b)}</td>
-                  <td className="px-5 py-4">
+                <tr key={b.id} data-testid={`booking-row-${b.id}`}>
+                  <td className="font-mono text-xs font-semibold text-slate-500">{fmtBkNum(b)}</td>
+                  <td>
                     <div className="flex items-center gap-1.5">
                       <p className="font-semibold text-slate-800">{b.customer_name}</p>
                       {isEventBooking(b) && (
@@ -1440,7 +1465,7 @@ export default function Bookings() {
                         {currency} {Number(c.amount).toFixed(2)}
                       </span>
                       <button
-                        onClick={() => handleDeleteCharge(c.id)}
+                        onClick={() => requestDeleteCharge(c.id)}
                         className="rounded-lg px-1 text-xs text-red-400 transition-colors hover:bg-red-50 hover:text-red-600"
                       >✕</button>
                     </div>
@@ -1525,9 +1550,35 @@ export default function Bookings() {
               )}
               {chargeError && <p className="text-sm text-red-500">{chargeError}</p>}
               <button type="submit" disabled={chargeLoading || chargesUnavailable} className="btn-primary w-full">
-                {chargeLoading ? 'Adding...' : '+ Add Charge'}
+                {chargeLoading ? 'Adding...' : 'Add charge'}
               </button>
             </form>
+          </div>
+        </Modal>
+      )}
+
+      {voidChargeRequest && (
+        <Modal title="Void extra charge" onClose={() => setVoidChargeRequest(null)} size="sm">
+          <div className="space-y-4">
+            <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+              This removes the charge from the guest folio and records a reason for the audit trail.
+            </div>
+            <F label="Reason for voiding">
+              <textarea
+                className="input h-24 resize-none"
+                value={voidReason}
+                onChange={(event) => setVoidReason(event.target.value)}
+                placeholder="Entered in error"
+              />
+            </F>
+            <div className="bb-modal-footer">
+              <button type="button" className="btn-secondary flex-1" onClick={() => setVoidChargeRequest(null)}>
+                Keep charge
+              </button>
+              <button type="button" className="btn-primary flex-1 !bg-gradient-to-r !from-red-600 !to-rose-600" onClick={confirmDeleteCharge}>
+                Void charge
+              </button>
+            </div>
           </div>
         </Modal>
       )}
@@ -2242,37 +2293,39 @@ function BookingMenu({ b, isOpen, onToggle, onClose, onCheckIn, onCheckOut, onCa
 
         {isOpen && (
           <div
-            className="absolute right-0 z-50 mt-1 w-56 origin-top-right rounded-2xl border border-slate-200 bg-white py-2 text-sm shadow-[0_18px_40px_rgba(15,23,42,0.16)]"
+            className="bb-action-menu absolute right-0 z-50 mt-1 origin-top-right py-1.5"
             style={{ animation: 'borokoFadeScale 120ms ease-out' }}
           >
 
           {/* Booking actions */}
           {b.status === 'confirmed' && (
             <>
-              <MenuItem onClick={() => { onEdit(); onClose() }}>
-                ✏️ Edit Booking
+              <MenuItem icon={Edit3} onClick={() => { onEdit(); onClose() }}>
+                Edit booking
               </MenuItem>
               <MenuItem
+                icon={LogIn}
                 onClick={() => { onCheckIn(); onClose() }}
                 disabled={b.check_in > today()}
                 title={b.check_in > today() ? `Check-in date is ${b.check_in}` : undefined}
                 color="green"
               >
-                ✅ Check In
+                Check in
               </MenuItem>
-              <MenuItem onClick={() => { onCancel(); onClose() }} color="red">
-                ✖ Cancel Booking
+              <MenuItem icon={XCircle} onClick={() => { onCancel(); onClose() }} color="red">
+                Cancel booking
               </MenuItem>
             </>
           )}
           {b.status === 'checked_in' && (
             <MenuItem
+              icon={LogOut}
               onClick={() => { onCheckOut(); onClose() }}
               disabled={outstanding > 0}
               title={outstanding > 0 ? `Settle the outstanding balance first: ${outstanding.toFixed(2)}` : undefined}
               color="blue"
             >
-              🏁 Check Out
+              Check out
             </MenuItem>
           )}
 
@@ -2280,22 +2333,22 @@ function BookingMenu({ b, isOpen, onToggle, onClose, onCheckIn, onCheckOut, onCa
 
           {/* Payment actions */}
           {b.payment_status !== 'paid' && b.status !== 'cancelled' && (
-            <MenuItem onClick={() => { onPayment(); onClose() }} color="primary">
-              💰 Add Payment
+            <MenuItem icon={Banknote} onClick={() => { onPayment(); onClose() }} color="primary">
+              Add payment
             </MenuItem>
           )}
-          <MenuItem onClick={() => { onExtras(); onClose() }}>
-            🧾 Add Extras
+          <MenuItem icon={FilePlus2} onClick={() => { onExtras(); onClose() }}>
+            Add extras
           </MenuItem>
 
           <Divider />
 
           {/* Documents */}
-          <MenuItem onClick={() => { onReceipt(); onClose() }}>
-            📄 View Receipt
+          <MenuItem icon={ReceiptText} onClick={() => { onReceipt(); onClose() }}>
+            View receipt
           </MenuItem>
-          <MenuItem onClick={() => { onHistory(); onClose() }}>
-            📋 View History
+          <MenuItem icon={History} onClick={() => { onHistory(); onClose() }}>
+            View history
           </MenuItem>
 
           {/* Communication */}
@@ -2304,17 +2357,19 @@ function BookingMenu({ b, isOpen, onToggle, onClose, onCheckIn, onCheckOut, onCa
           ) : null}
           {b.customer_phone && b.status !== 'cancelled' && (
             <MenuItem
+              icon={MessageCircle}
               color="whatsapp"
               onClick={() => {
                 window.open(`https://wa.me/${phone}?text=${encodeURIComponent(msg)}`, '_blank')
                 onClose()
               }}
             >
-              💬 WhatsApp
+              WhatsApp guest
             </MenuItem>
           )}
           {b.customer_email && b.status !== 'cancelled' && (
             <MenuItem
+              icon={Mail}
               color="blue"
               onClick={() => {
                 const lodge = settings?.lodge_name || 'the Lodge'
@@ -2325,7 +2380,7 @@ function BookingMenu({ b, isOpen, onToggle, onClose, onCheckIn, onCheckOut, onCa
                 onClose()
               }}
             >
-              ✉️ Email Guest
+              Email guest
             </MenuItem>
           )}
           </div>
@@ -2335,23 +2390,23 @@ function BookingMenu({ b, isOpen, onToggle, onClose, onCheckIn, onCheckOut, onCa
   )
 }
 
-function MenuItem({ children, onClick, disabled, title, color }) {
+function MenuItem({ children, onClick, disabled, title, color, icon: Icon }) {
   const colors = {
-    default:  'text-slate-700 hover:bg-slate-50',
-    green:    'text-green-600 hover:bg-green-50',
-    blue:     'text-blue-600 hover:bg-blue-50',
-    red:      'text-red-500 hover:bg-red-50',
-    primary:  'text-blue-700 font-semibold hover:bg-blue-50',
-    whatsapp: 'text-[#25D366] font-medium hover:bg-green-50',
+    default:  'text-slate-700',
+    green:    'text-green-700',
+    blue:     'text-blue-700',
+    red:      'text-red-600',
+    primary:  'text-emerald-700',
+    whatsapp: 'text-[#15803d]',
   }
   return (
     <button
       onClick={onClick}
       disabled={disabled}
       title={title}
-      className={`w-full text-left px-3.5 py-2 text-sm transition-colors
-        ${disabled ? 'opacity-40 cursor-not-allowed text-slate-400' : `cursor-pointer ${colors[color] || colors.default}`}`}
+      className={`bb-action-menu-item ${disabled ? 'text-slate-400' : `cursor-pointer ${colors[color] || colors.default}`}`}
     >
+      {Icon && <Icon size={15} className="shrink-0" />}
       {children}
     </button>
   )
@@ -2388,9 +2443,9 @@ function PaymentBadge({ status }) {
     unpaid: 'border-red-200 bg-red-50 text-red-600'
   }
   const labels = {
-    paid: '✅ Paid',
-    partial: '⚡ Partial',
-    unpaid: '❌ Unpaid'
+    paid: 'Paid',
+    partial: 'Partial',
+    unpaid: 'Unpaid'
   }
   return (
     <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-semibold ${styles[status] || styles.unpaid}`}>

@@ -13,7 +13,7 @@ export default function BottomNav({ alertCount = 0, notificationCount = 0 }) {
   const moreBadgeCount = alertCount + notificationCount
   return (
     <nav
-      className="pwa-bottom-nav fixed bottom-0 left-0 right-0 bg-gray-900 border-t border-gray-800 flex items-center justify-around px-2 z-40"
+      className="pwa-bottom-nav fixed bottom-0 left-0 right-0 z-40 mx-auto flex max-w-xl items-center justify-around border-t border-white/10 bg-gray-900/92 px-2"
       style={{ paddingBottom: 'max(env(safe-area-inset-bottom), 8px)' }}
     >
       {NAV.map(({ to, label, icon: Icon, end }) => (
@@ -22,8 +22,8 @@ export default function BottomNav({ alertCount = 0, notificationCount = 0 }) {
           to={to}
           end={end}
           className={({ isActive }) =>
-            `flex flex-col items-center gap-0.5 py-2 px-3 rounded-xl transition-colors relative ${
-              isActive ? 'text-green-400' : 'text-gray-500 hover:text-gray-300'
+            `relative flex min-w-[62px] flex-col items-center gap-1 rounded-2xl px-3 py-2 transition-all ${
+              isActive ? 'bg-green-500/12 text-green-300 ring-1 ring-green-400/20' : 'text-gray-500 hover:bg-white/5 hover:text-gray-300'
             }`
           }
         >

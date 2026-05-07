@@ -404,7 +404,7 @@ export default function Dashboard() {
   const showDashboardPrompt = !isProPlan && dashboardPrompt.shouldPrompt
 
   return (
-    <div className="mx-auto flex max-w-7xl flex-col gap-6">
+    <div className="bb-page">
       <div className="bb-page-header">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.22em] text-emerald-700/70">Operations Overview</p>
@@ -413,14 +413,14 @@ export default function Dashboard() {
         </div>
       </div>
       {/* Quick Access */}
-      <section className="bb-card p-5">
-        <div className="mb-4 flex items-center justify-between gap-4">
+      <section className="bb-card p-4">
+        <div className="mb-3 flex items-center justify-between gap-4">
           <div>
             <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-500">Quick Access</h2>
             <p className="mt-1 text-sm text-slate-500">Jump into the most-used desk and back-office modules.</p>
           </div>
         </div>
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-10">
+        <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-10">
           {SHORTCUTS.map(({ label, to, icon: Icon, feature, tier }) => {
             const isLocked = feature && Object.keys(features).length > 0 && features[feature] === false
             const tierColor = tier === 'Pro' ? 'text-purple-500' : 'text-blue-500'
@@ -428,7 +428,7 @@ export default function Dashboard() {
               <button
                 key={to}
                 onClick={() => navigate(to)}
-                className={`relative flex flex-col items-start gap-2 rounded-2xl border px-4 py-4 text-left transition-all ${
+                className={`relative flex flex-col items-start gap-2 rounded-2xl border px-3.5 py-3 text-left transition-all ${
                   isLocked
                     ? 'border-slate-200 bg-slate-50/90 opacity-60 hover:opacity-80'
                     : 'border-slate-200 bg-white/90 hover:-translate-y-0.5 hover:border-emerald-300 hover:bg-emerald-50/60 hover:shadow-md'
@@ -1250,11 +1250,11 @@ export default function Dashboard() {
 
 function StatCard({ icon: Icon, label, value, color }) {
   return (
-    <div className="bb-card p-5">
-      <div className={`mb-4 flex h-12 w-12 items-center justify-center rounded-2xl ${color}`}>
-        <Icon size={20} />
+    <div className="bb-card p-4">
+      <div className={`mb-3 flex h-10 w-10 items-center justify-center rounded-2xl ${color}`}>
+        <Icon size={18} />
       </div>
-      <p className="text-[30px] font-bold tracking-[-0.03em] text-slate-900">{value}</p>
+      <p className="text-2xl font-bold tracking-[-0.03em] text-slate-900">{value}</p>
       <p className="mt-1 text-sm font-medium text-slate-500">{label}</p>
     </div>
   )
