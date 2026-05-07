@@ -24,7 +24,10 @@ import {
   CheckCircle,
   XCircle,
   Clock,
-  CreditCard
+  CreditCard,
+  HardDrive,
+  ShieldCheck,
+  Settings
 } from 'lucide-react'
 import { StatusBadge } from './shared/StatusBadge'
 import HorizontalScrollArea from './shared/HorizontalScrollArea'
@@ -120,6 +123,7 @@ export default function Dashboard() {
   const [paymentMixToday, setPaymentMixToday] = useState({ total_collected: 0, gross_collected: 0, refunds_issued: 0, by_method: {}, payment_count: 0, date: null })
   const [frontDeskRequests, setFrontDeskRequests] = useState([])
   const [activeSpecials, setActiveSpecials] = useState([])
+  const [backupInfo, setBackupInfo] = useState(null)
   const [requestDialog, setRequestDialog] = useState(null)
   const [requestStatus, setRequestStatus] = useState('open')
   const [requestNote, setRequestNote] = useState('')
@@ -159,7 +163,7 @@ export default function Dashboard() {
   const loadData = useCallback(async () => {
     setLoading(true)
     try {
-      const [s, bookings, up, fc, ls, paymentMix, lodgeRequests, rooms, users, rateOverrides, usage, confBookings] = await Promise.all([
+      const [s, bookings, up, fc, ls, paymentMix, lodgeRequests, rooms, users, rateOverrides, usage, confBookings, backups] = await Promise.all([
         window.api.dashboard.stats(),
         window.api.bookings.getAll(),
         window.api.notifications.upcoming(),
@@ -173,12 +177,14 @@ export default function Dashboard() {
         window.api.usage?.getSnapshot
           ? window.api.usage.getSnapshot({ forceRemoteRefresh: navigator.onLine === true }).catch(() => null)
           : Promise.resolve(null),
-        window.api.conference.getAll().catch(() => [])
+        window.api.conference.getAll().catch(() => []),
+        window.api.backup?.getInfo ? window.api.backup.getInfo().catch(() => null) : Promise.resolve(null)
       ])
       const allBookings = Array.isArray(bookings) ? bookings : []
       const allConfBookings = Array.isArray(confBookings) ? confBookings : []
       const allRooms = Array.isArray(rooms) ? rooms : []
       const allUsers = Array.isArray(users) ? users : []
+      setBackupInfo(backups || null)
       const usagePlan = normalizeSubscriptionPlan(usage?.plan || s?.plan || settings?.subscription_plan || 'Starter')
       const usageLimits = getPlanUsageLimits(usagePlan)
       const usageCounts = usage && !usage.error && usage.usage
@@ -480,6 +486,64 @@ export default function Dashboard() {
       to: '/inventory'
     }
   ]
+  const backupPolicy = backupInfo?.policy || {}
+  const backupNeedsAttention = ['disabled', 'setup_required', 'pending_first_run', 'overdue'].includes(backupPolicy.compliance_state)
+  const backupEnforcement = backupPolicy.enforcement_level || 'reminder'
+  const backupReminderTone = backupEnforcement === 'strict'
+    ? 'border-l-red-500 bg-red-50 text-red-900'
+    : backupEnforcement === 'warning'
+      ? 'border-l-amber-500 bg-amber-50 text-amber-900'
+      : 'border-l-sky-500 bg-sky-50 text-sky-900'
+  const backupReminderTitle =
+    backupPolicy.compliance_state === 'disabled' ? 'Weekly backup reminders are off' :
+    backupPolicy.compliance_state === 'setup_required' ? 'Choose a synced backup folder' :
+    backupPolicy.compliance_state === 'pending_first_run' ? 'Run the first managed backup' :
+    backupPolicy.compliance_state === 'overdue' ? 'Weekly backup is overdue' :
+    'Backup reminder'
+  const backupReminderCopy =
+    backupPolicy.compliance_state === 'disabled'
+      ? 'Turn on managed weekly exports so the lodge has an off-device Excel backup.'
+      : backupPolicy.compliance_state === 'setup_required'
+        ? 'Managed exports are enabled, but they need a OneDrive, Google Drive, Dropbox, or other synced folder.'
+        : backupPolicy.compliance_state === 'pending_first_run'
+          ? 'Managed exports are enabled. Run one now so the backup policy starts from a known good file.'
+          : backupPolicy.compliance_state === 'overdue'
+            ? 'A fresh off-device export is due. Run the weekly export before closing the release or handing over the device.'
+            : 'Keep weekly exports current for recovery and support.'
+  const onboardingActions = [
+    Number(stats?.total_rooms || 0) === 0 && {
+      key: 'rooms',
+      title: 'Add your first room',
+      copy: 'Create the room list before bookings, housekeeping, and availability can work properly.',
+      icon: BedDouble,
+      to: '/rooms',
+      action: 'Add rooms'
+    },
+    recentBookings.length === 0 && Number(stats?.total_rooms || 0) > 0 && {
+      key: 'booking',
+      title: 'Create your first booking',
+      copy: 'Start tracking guest stays, balances, check-ins, and receipts.',
+      icon: BookOpen,
+      to: '/bookings',
+      action: 'New booking'
+    },
+    backupNeedsAttention && {
+      key: 'backup',
+      title: backupReminderTitle,
+      copy: backupReminderCopy,
+      icon: HardDrive,
+      to: '/data-management',
+      action: 'Open backups'
+    },
+    !settings?.email_host && !settings?.smtp_host && {
+      key: 'email',
+      title: 'Configure email sending',
+      copy: 'Set up email so invoices, quotations, and booking messages can be sent from the app.',
+      icon: Settings,
+      to: '/settings',
+      action: 'Open settings'
+    }
+  ].filter(Boolean).slice(0, 4)
 
   return (
     <div className="bb-page">
@@ -533,6 +597,69 @@ export default function Dashboard() {
           </button>
         ))}
       </section>
+
+      {backupNeedsAttention && backupEnforcement !== 'reminder' && (
+        <section className={`bb-card border-l-4 p-5 ${backupReminderTone}`}>
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div className="flex min-w-0 flex-1 items-start gap-3">
+              <div className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-white/80">
+                <ShieldCheck size={20} />
+              </div>
+              <div>
+                <p className="text-sm font-bold">
+                  {backupEnforcement === 'strict' ? 'Strict backup warning' : 'Backup needs attention'}
+                </p>
+                <p className="mt-1 text-sm opacity-80">{backupReminderCopy}</p>
+                {backupPolicy.last_success_at && (
+                  <p className="mt-1 text-xs opacity-70">
+                    Last successful export: {new Date(backupPolicy.last_success_at).toLocaleString('en-GB')}
+                  </p>
+                )}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => navigate('/data-management')}
+              className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-slate-800 shadow-sm transition hover:bg-slate-50"
+            >
+              Open Backups
+            </button>
+          </div>
+        </section>
+      )}
+
+      {onboardingActions.length > 0 && (
+        <section className="bb-card p-5">
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="bb-section-kicker">Setup Guide</p>
+              <h2 className="bb-section-title mt-1">Recommended next steps</h2>
+            </div>
+            <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-500">
+              {onboardingActions.length} open
+            </span>
+          </div>
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            {onboardingActions.map(({ key, title, copy, icon: Icon, to, action }) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => navigate(to)}
+                className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 text-left transition hover:-translate-y-0.5 hover:border-emerald-200 hover:bg-white"
+              >
+                <div className="mb-3 inline-flex h-9 w-9 items-center justify-center rounded-xl bg-white text-emerald-700 shadow-sm">
+                  <Icon size={18} />
+                </div>
+                <p className="text-sm font-bold text-slate-900">{title}</p>
+                <p className="mt-1 min-h-[42px] text-xs leading-5 text-slate-500">{copy}</p>
+                <p className="mt-3 inline-flex items-center gap-1 text-xs font-semibold text-emerald-700">
+                  {action} <ArrowRight size={13} />
+                </p>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
 
       {showDashboardPrompt && (
         <UpgradeNudgeBanner
@@ -1123,6 +1250,22 @@ export default function Dashboard() {
                       <div className="bb-empty-state py-10">
                         <p className="text-base font-semibold text-slate-800">No bookings yet</p>
                         <p className="text-sm text-slate-500">Create your first booking to start tracking guest stays and revenue.</p>
+                        <div className="mt-4 flex flex-wrap justify-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => navigate(Number(stats?.total_rooms || 0) > 0 ? '/bookings' : '/rooms')}
+                            className="btn-primary"
+                          >
+                            {Number(stats?.total_rooms || 0) > 0 ? 'Create first booking' : 'Add rooms first'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => navigate('/data-management')}
+                            className="btn-secondary"
+                          >
+                            Import bookings
+                          </button>
+                        </div>
                       </div>
                     </td>
                   </tr>

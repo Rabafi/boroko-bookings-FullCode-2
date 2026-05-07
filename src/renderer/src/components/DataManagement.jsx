@@ -189,7 +189,8 @@ function BackupsTab() {
     enabled: false,
     target_dir: '',
     export_json: true,
-    export_excel: true
+    export_excel: true,
+    enforcement_level: 'reminder'
   })
 
   const loadInfo = async () => {
@@ -199,7 +200,8 @@ function BackupsTab() {
       setPolicy({
         enabled: data.policy.enabled === true,
         target_dir: data.policy.target_dir || '',
-        export_excel: true // Always true now
+        export_excel: true, // Always true now
+        enforcement_level: data.policy.enforcement_level || 'reminder'
       })
     }
   }
@@ -227,7 +229,8 @@ function BackupsTab() {
       setPolicy({
         enabled: res.policy.enabled === true,
         target_dir: res.policy.target_dir || '',
-        export_excel: true
+        export_excel: true,
+        enforcement_level: res.policy.enforcement_level || 'reminder'
       })
       setPolicyResult({ success: true, message: 'Managed weekly export policy updated.' })
       await loadInfo()
@@ -351,6 +354,25 @@ function BackupsTab() {
               <span>Full Multi-Sheet Excel Workbook</span>
             </div>
           </div>
+        </div>
+
+        <div className="mt-4 rounded-xl border border-gray-200 bg-gray-50 px-4 py-3">
+          <label className="text-xs font-semibold uppercase tracking-[0.16em] text-gray-500">
+            Reminder enforcement
+          </label>
+          <select
+            value={policy.enforcement_level || 'reminder'}
+            onChange={(e) => savePolicy({ enforcement_level: e.target.value })}
+            disabled={policySaving}
+            className="mt-2 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-800"
+          >
+            <option value="reminder">Reminder only</option>
+            <option value="warning">Warning banner</option>
+            <option value="strict">Strict launch warning</option>
+          </select>
+          <p className="mt-2 text-xs text-gray-500">
+            Strict mode keeps the dashboard warning visible until a managed export completes.
+          </p>
         </div>
 
         <div className="mt-4 rounded-xl border border-dashed border-gray-200 px-4 py-4">
