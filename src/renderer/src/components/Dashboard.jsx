@@ -32,7 +32,6 @@ import {
 import { StatusBadge } from './shared/StatusBadge'
 import HorizontalScrollArea from './shared/HorizontalScrollArea'
 import UpgradeNudgeBanner from './shared/UpgradeNudgeBanner'
-import InlineAiExecutionPanel from './shared/InlineAiExecutionPanel'
 import { useSettings, useFeatures, useOnlineRequests } from '../app-context'
 import { localToday } from '../utils/localDate'
 import {
@@ -108,7 +107,6 @@ export default function Dashboard() {
   const currency = settings?.currency || 'P'
   const { requests: onlineRequests, refresh: refreshOnlineRequests } = useOnlineRequests()
   const [actioningId, setActioningId] = useState(null)
-  const [inlineAction, setInlineAction] = useState(null)
 
   const [stats, setStats] = useState(null)
   const [usageSnapshot, setUsageSnapshot] = useState(null)
@@ -134,29 +132,14 @@ export default function Dashboard() {
     [frontDeskRequests]
   )
 
-  // AI Assistant Visibility Control
-  const [isAiEnabled, setIsAiEnabled] = useState(
-    () => localStorage.getItem('bb_ai_enabled') === 'true'
-  )
-
   useEffect(() => {
-    const handleToggle = () => {
-      setIsAiEnabled(localStorage.getItem('bb_ai_enabled') === 'true')
-    }
     const handleNavigate = (e) => {
       const page = e.detail?.page
       if (page) navigate(`/${page}`)
     }
-    const handleAiAction = (e) => {
-      if (e.detail) setInlineAction(e.detail)
-    }
-    window.addEventListener('bb_ai_toggle', handleToggle)
     window.addEventListener('bb_navigate', handleNavigate)
-    window.addEventListener('bb_ai_action', handleAiAction)
     return () => {
-      window.removeEventListener('bb_ai_toggle', handleToggle)
       window.removeEventListener('bb_navigate', handleNavigate)
-      window.removeEventListener('bb_ai_action', handleAiAction)
     }
   }, [navigate])
 
@@ -966,17 +949,7 @@ export default function Dashboard() {
                 )}
               </div>
             </div>
-            <div className="flex flex-wrap items-center gap-2">
-              {isAiEnabled && (
-                <button
-                  type="button"
-                  onClick={() => setInlineAction({ type: 'fix_unpaid', label: 'Collect Outstanding Balances' })}
-                  className="inline-flex items-center gap-2 rounded-xl bg-rose-600 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-rose-700"
-                >
-                  <DollarSign size={13} />
-                  Collect with AI
-                </button>
-              )}
+              <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
                 onClick={() => navigate('/roomgrid')}
@@ -1453,13 +1426,6 @@ export default function Dashboard() {
         </div>
       )}
 
-{inlineAction && (
-        <InlineAiExecutionPanel
-          action={inlineAction}
-          onClose={() => setInlineAction(null)}
-          onRefreshData={loadData}
-        />
-      )}
     </div>
   )
 }

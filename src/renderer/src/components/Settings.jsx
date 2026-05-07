@@ -122,10 +122,6 @@ export default function Settings() {
   const [emailTesting, setEmailTesting] = useState(false)
   const [emailStatus, setEmailStatus] = useState(null)
 
-  // AI Assistant Toggle
-  const [aiEnabled, setAiEnabled] = useState(
-    () => localStorage.getItem('bb_ai_enabled') === 'true'
-  )
   const formatBytes = (bytes = 0) => {
     if (bytes < 1024) return `${bytes} B`
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
@@ -353,14 +349,6 @@ export default function Settings() {
     setDarkMode(next)
     localStorage.setItem('bb_dark_mode', String(next))
     document.documentElement.classList.toggle('dark-mode', next)
-  }
-
-  const toggleAiAssistant = () => {
-    const next = !aiEnabled
-    setAiEnabled(next)
-    localStorage.setItem('bb_ai_enabled', String(next))
-    // Force a custom event so the dashboard can react immediately if needed
-    window.dispatchEvent(new Event('bb_ai_toggle'))
   }
 
   // License & Billing
@@ -746,32 +734,6 @@ export default function Settings() {
               <span
                 className={`inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform ${
                   darkMode ? 'translate-x-6' : 'translate-x-1'
-                }`}
-              />
-            </button>
-          </div>
-
-          {/* ── Boroko AI Assistant ─────────────────────────────────────── */}
-          <div className="bg-white rounded-xl shadow-sm p-5 mb-6 flex items-center justify-between border-l-4 border-emerald-500">
-            <div className="flex items-center gap-3">
-              <div className="w-9 h-9 bg-emerald-50 rounded-lg flex items-center justify-center">
-                <Sparkles size={17} className="text-emerald-600" />
-              </div>
-              <div>
-                <p className="text-sm font-semibold text-gray-800">Boroko AI Assistant</p>
-                <p className="text-xs text-gray-400">Enable autonomous management, voice commands, and smart reporting (Default: Off)</p>
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={toggleAiAssistant}
-              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                aiEnabled ? 'bg-emerald-600' : 'bg-gray-200'
-              }`}
-            >
-              <span
-                className={`inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform ${
-                  aiEnabled ? 'translate-x-6' : 'translate-x-1'
                 }`}
               />
             </button>

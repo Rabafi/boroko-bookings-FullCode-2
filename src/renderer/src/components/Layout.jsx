@@ -28,8 +28,6 @@ import borokoLogo from '../assets/boroko-bookings-logo.svg'
 import borokoLogoDark from '../assets/boroko-bookings-logo-dark.png'
 import CommandPalette from './CommandPalette'
 import OfflineNotice from './shared/OfflineNotice'
-import AiCommandBar from './shared/AiCommandBar'
-import OpsAiLayer from './shared/OpsAiLayer'
 import { ALL_NAV, NAV_GROUPS, getDesktopNavItems } from '../navigation/desktopNav'
 import {
   SUBSCRIPTION_PLAN_ORDER,
@@ -785,7 +783,6 @@ export default function Layout() {
 
   return (
     <div className="flex h-screen overflow-hidden bg-[radial-gradient(circle_at_top_left,rgba(187,247,208,0.18),transparent_24%),radial-gradient(circle_at_top_right,rgba(209,250,229,0.2),transparent_22%),#edf2ee]">
-      <OpsAiLayer />
       {/* Sidebar */}
       <div
         className={`${
