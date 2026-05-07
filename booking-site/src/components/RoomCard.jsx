@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { createPortal } from 'react-dom'
-import { Users, Moon, ChevronLeft, ChevronRight, X, Maximize2, CheckCircle2 } from 'lucide-react'
+import { Users, Moon, ChevronLeft, ChevronRight, X, Maximize2 } from 'lucide-react'
 
 function buildRoomHighlights(room) {
   const amenityTags = Array.isArray(room?.amenities)
@@ -221,7 +221,7 @@ export default function RoomCard({ room, currency, nights, onBook }) {
         </div>
 
         <div className="mt-4 flex flex-wrap gap-2">
-          {highlights.map((highlight) => (
+          {highlights.slice(0, 3).map((highlight) => (
             <span
               key={highlight}
               className="inline-flex rounded-full border border-[var(--line)] bg-[var(--surface-soft)] px-3 py-1.5 text-xs font-semibold text-[var(--muted)]"
@@ -231,24 +231,8 @@ export default function RoomCard({ room, currency, nights, onBook }) {
           ))}
         </div>
 
-        {Array.isArray(room.amenities) && room.amenities.length > 0 && (
-          <div className="mt-4 rounded-2xl border border-[var(--line)] bg-white/70 p-4">
-            <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-[var(--muted)]">Room amenities</p>
-            <div className="mt-3 flex flex-wrap gap-2">
-              {room.amenities.map((amenity) => (
-                <span
-                  key={amenity}
-                  className="inline-flex rounded-full border border-emerald-100 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700"
-                >
-                  {amenity}
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
-
         {room.description ? (
-          <p className="mt-4 flex-1 text-sm leading-7 text-[var(--muted)]">
+          <p className="mt-4 line-clamp-3 flex-1 text-sm leading-7 text-[var(--muted)]">
             {room.description}
           </p>
         ) : (
@@ -256,16 +240,6 @@ export default function RoomCard({ room, currency, nights, onBook }) {
             Clean, comfortable accommodation prepared for guest reservations through the lodge.
           </p>
         )}
-
-        <div className="mt-5 rounded-2xl border border-[var(--line)] bg-white/70 p-4">
-          <div className="flex items-start gap-2 text-sm text-[var(--muted)]">
-            <CheckCircle2 size={16} className="mt-0.5 text-[var(--success)]" />
-            <div>
-              <p className="font-semibold text-[var(--text)]">Reservation request</p>
-              <p className="mt-1">Send your stay request to the lodge team and they confirm availability with you.</p>
-            </div>
-          </div>
-        </div>
 
         <div className="mt-5 flex items-end justify-between gap-3 border-t border-[var(--line)] pt-5">
           <div>

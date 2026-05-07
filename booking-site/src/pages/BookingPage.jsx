@@ -6,12 +6,10 @@ import {
   ArrowLeft,
   ChevronLeft,
   ChevronRight,
-  Clock3,
   Mail,
   MessageCircle,
   Moon,
   Phone,
-  ShieldCheck,
   Users
 } from 'lucide-react'
 import { isMissingRpcError, readSessionCache, rpc, writeSessionCache } from '../lib/publicApi.js'
@@ -330,27 +328,6 @@ export default function BookingPage() {
                 )}
               </div>
             </div>
-
-            <div className="soft-card rounded-[28px] p-5">
-              <div className="flex items-start gap-3">
-                <ShieldCheck size={18} className="mt-0.5 text-[var(--success)]" />
-                <div className="text-sm text-[var(--muted)]">
-                  <p className="font-semibold text-[var(--text)]">Stay request</p>
-                  <p className="mt-1 leading-7">Your request goes straight to the lodge team. They review it and confirm by email or phone.</p>
-                </div>
-              </div>
-            </div>
-
-            <div className="soft-card rounded-[28px] p-5">
-              <div className="flex items-start gap-3">
-                <Clock3 size={18} className="mt-0.5 text-[var(--brand)]" />
-                <div className="text-sm text-[var(--muted)]">
-                  <p className="font-semibold text-[var(--text)]">Expected response time</p>
-                  <p className="mt-1 leading-7">The lodge should confirm or contact you within 24 hours.</p>
-                </div>
-              </div>
-            </div>
-
             {(lodge?.booking_payment_terms || lodge?.booking_cancellation_policy) && (
               <div className="surface-card rounded-[28px] p-5">
                 <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-[var(--muted)]">Before You Send</p>
@@ -404,30 +381,15 @@ export default function BookingPage() {
                 <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-[var(--muted)]">Guest Details</p>
                 <h3 className="font-display mt-2 text-[2rem] text-[var(--text)] sm:text-3xl">Complete your request</h3>
               </div>
-              <span className="inline-flex items-center gap-2 rounded-full bg-[var(--surface-soft)] px-3 py-2 text-xs font-semibold text-[var(--muted)]">
-                <Mail size={14} />
-                Confirmation goes to your email
-              </span>
             </div>
 
-            <div className="mt-5 grid gap-3 sm:grid-cols-3">
-              <div className="booking-step-card p-4 pl-5">
-                <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-[var(--muted)]">Your stay</p>
-                <p className="mt-2 text-sm font-semibold text-[var(--text)]">
-                  {format(new Date(checkIn), 'd MMM')} to {format(new Date(checkOut), 'd MMM yyyy')}
-                </p>
-                <p className="mt-1 text-xs text-[var(--muted)]">{nights} night{nights !== 1 ? 's' : ''} in Room {room.room_number}</p>
-              </div>
-              <div className="booking-step-card p-4 pl-5">
-                <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-[var(--muted)]">Estimated total</p>
-                <p className="mt-2 text-sm font-semibold text-[var(--text)]">{lodge.currency}{totalAmount.toLocaleString()}</p>
-                <p className="mt-1 text-xs text-[var(--muted)]">Final confirmation still comes from the lodge team.</p>
-              </div>
-              <div className="booking-step-card p-4 pl-5">
-                <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-[var(--muted)]">What happens next</p>
-                <p className="mt-2 text-sm font-semibold text-[var(--text)]">The lodge reviews your request</p>
-                <p className="mt-1 text-xs text-[var(--muted)]">They confirm availability and reply by email or phone.</p>
-              </div>
+            <div className="mt-5 rounded-[24px] border border-[var(--line)] bg-[var(--surface-soft)] p-4">
+              <p className="text-sm font-semibold text-[var(--text)]">
+                {format(new Date(checkIn), 'd MMM')} to {format(new Date(checkOut), 'd MMM yyyy')} · Room {room.room_number}
+              </p>
+              <p className="mt-1 text-sm text-[var(--muted)]">
+                {nights} night{nights !== 1 ? 's' : ''} · estimated total {lodge.currency}{totalAmount.toLocaleString()}
+              </p>
             </div>
 
             {error && (
@@ -482,7 +444,6 @@ export default function BookingPage() {
                   placeholder="thabo@example.com"
                   className="w-full rounded-2xl border border-[var(--line)] bg-[var(--surface-soft)] px-4 py-3 text-sm text-[var(--text)] outline-none transition focus:border-[var(--line-strong)] focus:shadow-[0_0_0_4px_rgba(154,91,31,0.10)]"
                 />
-                <p className="mt-2 text-xs text-[var(--muted)]">Your confirmation and follow-up will be sent here.</p>
               </div>
 
               <div>
@@ -544,22 +505,6 @@ export default function BookingPage() {
                   placeholder="Early check-in, dietary notes, arrival time, transport arrangements, or anything else the lodge should know."
                   className="w-full resize-none rounded-2xl border border-[var(--line)] bg-[var(--surface-soft)] px-4 py-3 text-sm text-[var(--text)] outline-none transition focus:border-[var(--line-strong)] focus:shadow-[0_0_0_4px_rgba(154,91,31,0.10)]"
                 />
-              </div>
-
-              <div className="rounded-[24px] border border-[var(--line)] bg-[var(--surface-soft)] p-4 text-sm leading-7 text-[var(--muted)]">
-                By sending this request, you are asking the lodge to hold and confirm the room for your dates. Payment is handled after the property confirms the booking.
-              </div>
-
-              <div className="rounded-[24px] border border-emerald-100 bg-emerald-50/70 p-4">
-                <div className="flex items-start gap-3">
-                  <ShieldCheck size={18} className="mt-0.5 text-emerald-700" />
-                  <div className="text-sm leading-7 text-emerald-900">
-                    <p className="font-semibold">Before you submit</p>
-                    <p className="mt-1">
-                      Double-check your email, phone number, and guest count so the lodge can confirm your stay quickly without delays.
-                    </p>
-                  </div>
-                </div>
               </div>
 
               {lodge?.booking_house_rules && (

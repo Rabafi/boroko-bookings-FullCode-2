@@ -1,9 +1,8 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { format, addDays } from 'date-fns'
 import {
   Calendar,
-  Clock3,
   Globe,
   Mail,
   MapPin,
@@ -11,8 +10,7 @@ import {
   Phone,
   Search,
   ShieldCheck,
-  Sparkles,
-  Star
+  Sparkles
 } from 'lucide-react'
 import { isMissingRpcError, readSessionCache, rpc, writeSessionCache } from '../lib/publicApi.js'
 import LodgeHeader from '../components/LodgeHeader.jsx'
@@ -37,48 +35,10 @@ function sanitizeWebsiteUrl(value) {
   }
 }
 
-function highlightCards(lodge) {
-  return [
-    {
-      title: 'Personal service',
-      text: 'Your stay request goes straight to the property team, so questions and confirmations stay clear and personal.'
-    },
-    {
-      title: 'Real lodge contact',
-      text: lodge?.whatsapp_number || lodge?.phone
-        ? 'Call, email, or message the lodge team directly when you need help with dates or room choices.'
-        : 'Your booking request goes straight to the lodge team for follow-up and confirmation.'
-    },
-    {
-      title: 'Clear stay details',
-      text: 'Rates, room amenities, stay policies, and estimated totals are all visible before you submit.'
-    }
-  ]
-}
-
-function policyCards(lodge) {
-  return [
-    {
-      title: 'Check-in',
-      value: lodge?.booking_check_in_from || 'Ask the lodge',
-      icon: <Clock3 size={16} />
-    },
-    {
-      title: 'Check-out',
-      value: lodge?.booking_check_out_until || 'Ask the lodge',
-      icon: <Clock3 size={16} />
-    },
-    {
-      title: 'Cancellation',
-      value: lodge?.booking_cancellation_policy || 'Policy shared on confirmation',
-      icon: <ShieldCheck size={16} />
-    }
-  ]
-}
-
 export default function LodgePage() {
   const { slug } = useParams()
   const navigate = useNavigate()
+  const resultsRef = useRef(null)
 
   const [lodge, setLodge] = useState(null)
   const [lodgeError, setLodgeError] = useState(null)
@@ -217,6 +177,9 @@ export default function LodgePage() {
 
     setRoomError(null)
     setSearched(true)
+    window.setTimeout(() => {
+      resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }, 80)
     const roomCacheKey = `rooms:${slug}:${checkIn}:${checkOut}`
     const cachedRooms = readSessionCache(roomCacheKey, ROOM_RESULTS_TTL_MS)
     const hasCachedRooms = Array.isArray(cachedRooms)
@@ -298,9 +261,6 @@ export default function LodgePage() {
   }
 
   const location = [lodge?.city, lodge?.country].filter(Boolean).join(', ')
-  const highlights = highlightCards(lodge)
-  const policies = policyCards(lodge)
-  const faqs = Array.isArray(lodge?.booking_faq) ? lodge.booking_faq.filter((item) => item?.question && item?.answer) : []
   const websiteUrl = sanitizeWebsiteUrl(lodge?.website)
   const hasContact = lodge?.phone || lodge?.email || websiteUrl || lodge?.whatsapp_number
   const whatsappUrl = buildWhatsAppUrl(lodge?.whatsapp_number)
@@ -310,10 +270,9 @@ export default function LodgePage() {
       <LodgeHeader lodge={lodge} />
 
       <main className="mx-auto max-w-6xl px-4 py-6 pb-28 sm:px-6 sm:py-10 sm:pb-10">
-        <section className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
-          <div className="surface-card overflow-hidden rounded-[32px]">
+        <section className="surface-card overflow-hidden rounded-[32px]">
             {lodge?.hero_image ? (
-              <div className="relative h-[220px] sm:h-[320px]">
+              <div className="relative h-[210px] sm:h-[280px]">
                 <img
                   src={lodge.hero_image}
                   alt={lodge.lodge_name}
@@ -336,11 +295,11 @@ export default function LodgePage() {
                   </div>
 
                   <h2 className="font-display mt-4 max-w-2xl text-[2rem] leading-tight text-white sm:mt-5 sm:text-5xl">
-                    Stay directly with {lodge?.lodge_name}
+                    Stay at {lodge?.lodge_name}
                   </h2>
 
                   <p className="mt-3 max-w-2xl text-sm leading-6 text-white/82 sm:mt-4 sm:text-base sm:leading-8">
-                    {lodge?.booking_description || `Browse available rooms, choose your dates, and send your stay request straight to ${lodge?.lodge_name}.`}
+                    {lodge?.booking_description || 'Choose your dates and see available rooms.'}
                   </p>
                 </div>
               </div>
@@ -358,11 +317,11 @@ export default function LodgePage() {
                 </div>
 
                 <h2 className="font-display mt-5 max-w-2xl text-[2rem] leading-tight text-[var(--text)] sm:mt-6 sm:text-5xl">
-                  Plan your stay with {lodge?.lodge_name}.
+                  Stay at {lodge?.lodge_name}.
                 </h2>
 
                 <p className="mt-4 max-w-2xl text-sm leading-7 text-[var(--muted)] sm:mt-5 sm:text-base sm:leading-8">
-                  {lodge?.booking_description || 'Browse available rooms, choose your dates, and send your stay request straight to the property team.'}
+                  {lodge?.booking_description || 'Choose your dates and see available rooms.'}
                 </p>
               </div>
             )}
@@ -401,19 +360,6 @@ export default function LodgePage() {
                 )}
               </div>
             </div>
-          </div>
-
-          <div className="grid gap-4">
-            {highlights.map((item) => (
-              <div key={item.title} className="soft-card rounded-[28px] p-5">
-                <div className="mb-3 inline-flex rounded-full bg-white p-2 text-[var(--brand)] shadow-sm">
-                  <Star size={15} />
-                </div>
-                <h3 className="font-display text-2xl text-[var(--text)]">{item.title}</h3>
-                <p className="mt-2 text-sm leading-7 text-[var(--muted)]">{item.text}</p>
-              </div>
-            ))}
-          </div>
         </section>
 
         <section className="surface-card mt-8 rounded-[32px] p-5 sm:p-8">
@@ -481,148 +427,44 @@ export default function LodgePage() {
           </form>
         </section>
 
-        <section className="mt-8 grid gap-4 lg:grid-cols-3">
-          {policies.map((item) => (
-            <div key={item.title} className="soft-card rounded-[28px] p-5">
-              <div className="inline-flex rounded-full bg-white p-2 text-[var(--brand)]">{item.icon}</div>
-              <p className="mt-4 text-[11px] font-bold uppercase tracking-[0.22em] text-[var(--muted)]">{item.title}</p>
-              <p className="mt-2 text-sm leading-7 text-[var(--text)]">{item.value}</p>
+        <div ref={resultsRef}>
+          {roomError && (
+            <div className="mt-6 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">
+              {roomError}
             </div>
-          ))}
-        </section>
+          )}
 
-        {hasContact && (
-          <section className="mt-8 grid gap-4 lg:grid-cols-[0.9fr_1.1fr]">
-            <div className="soft-card rounded-[28px] p-5">
-              <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-[var(--muted)]">Need Help Choosing?</p>
-              <h3 className="font-display mt-2 text-3xl text-[var(--text)]">Contact the property directly</h3>
+          {loadingRooms && (
+            <div className="mt-8 text-center">
+              <div className="inline-flex rounded-full border border-[var(--line)] bg-white px-5 py-3 text-sm font-semibold text-[var(--muted)] shadow-sm">
+                Checking availability…
+              </div>
+            </div>
+          )}
+
+          {!loadingRooms && searched && rooms && rooms.length === 0 && (
+            <div className="surface-card mt-8 rounded-[32px] p-6 text-center sm:p-8">
+              <h3 className="font-display text-3xl text-[var(--text)]">No rooms for those dates</h3>
               <p className="mt-3 text-sm leading-7 text-[var(--muted)]">
-                If you are booking for a group, need transport help, want to confirm arrival time, or have any special requests, reach out before sending the request.
+                Try different dates, or contact the lodge directly to ask about alternatives.
               </p>
-            </div>
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-              {lodge?.phone && (
-                <a href={`tel:${lodge.phone}`} className="surface-card rounded-[24px] p-4 transition-transform hover:-translate-y-0.5 sm:p-5">
-                  <Phone size={18} className="text-[var(--brand)]" />
-                  <p className="mt-3 font-semibold text-[var(--text)]">Call</p>
-                  <p className="mt-1 text-sm text-[var(--muted)]">{lodge.phone}</p>
-                </a>
-              )}
-              {whatsappUrl && (
-                <a href={whatsappUrl} target="_blank" rel="noreferrer" className="surface-card rounded-[24px] p-4 transition-transform hover:-translate-y-0.5 sm:p-5">
-                  <MessageCircle size={18} className="text-emerald-700" />
-                  <p className="mt-3 font-semibold text-[var(--text)]">WhatsApp</p>
-                  <p className="mt-1 text-sm text-[var(--muted)]">Message instantly</p>
-                </a>
-              )}
-              {lodge?.email && (
-                <a href={`mailto:${lodge.email}`} className="surface-card rounded-[24px] p-4 transition-transform hover:-translate-y-0.5 sm:p-5">
-                  <Mail size={18} className="text-[var(--brand)]" />
-                  <p className="mt-3 font-semibold text-[var(--text)]">Email</p>
-                  <p className="mt-1 text-sm text-[var(--muted)] break-all">{lodge.email}</p>
-                </a>
-              )}
-              {websiteUrl && (
-                <a href={websiteUrl} target="_blank" rel="noreferrer" className="surface-card rounded-[24px] p-4 transition-transform hover:-translate-y-0.5 sm:p-5">
-                  <Globe size={18} className="text-[var(--brand)]" />
-                  <p className="mt-3 font-semibold text-[var(--text)]">Website</p>
-                  <p className="mt-1 text-sm text-[var(--muted)]">Open property site</p>
-                </a>
-              )}
-            </div>
-          </section>
-        )}
-
-        <section className="mt-8 grid gap-4 lg:grid-cols-3">
-          <div className="soft-card rounded-[28px] p-5">
-            <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-[var(--muted)]">How It Works</p>
-            <h3 className="font-display mt-2 text-2xl text-[var(--text)]">Choose dates</h3>
-            <p className="mt-2 text-sm leading-7 text-[var(--muted)]">Search your stay dates to see which rooms are open right now.</p>
-          </div>
-          <div className="soft-card rounded-[28px] p-5">
-            <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-[var(--muted)]">How It Works</p>
-            <h3 className="font-display mt-2 text-2xl text-[var(--text)]">Send your request</h3>
-            <p className="mt-2 text-sm leading-7 text-[var(--muted)]">Fill in your details once and send the request straight to the lodge team.</p>
-          </div>
-          <div className="soft-card rounded-[28px] p-5">
-            <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-[var(--muted)]">How It Works</p>
-            <h3 className="font-display mt-2 text-2xl text-[var(--text)]">Get confirmed</h3>
-            <p className="mt-2 text-sm leading-7 text-[var(--muted)]">The property confirms availability, then shares next steps and payment details.</p>
-          </div>
-        </section>
-
-        {(lodge?.booking_payment_terms || lodge?.booking_house_rules) && (
-          <section className="mt-8 grid gap-4 lg:grid-cols-2">
-            {lodge?.booking_payment_terms && (
-              <div className="surface-card rounded-[28px] p-6">
-                <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-[var(--muted)]">Payment</p>
-                <h3 className="font-display mt-2 text-2xl text-[var(--text)]">Payment terms</h3>
-                <p className="mt-3 text-sm leading-7 text-[var(--muted)]">{lodge.booking_payment_terms}</p>
+              <div className="mt-6 flex flex-wrap justify-center gap-3">
+                {lodge?.phone && (
+                  <a href={`tel:${lodge.phone}`} className="brand-button inline-flex rounded-2xl px-5 py-3 text-sm font-extrabold">
+                    Call the lodge
+                  </a>
+                )}
+                {whatsappUrl && (
+                  <a href={whatsappUrl} target="_blank" rel="noreferrer" className="rounded-2xl border border-emerald-200 bg-emerald-50 px-5 py-3 text-sm font-extrabold text-emerald-800">
+                    WhatsApp the lodge
+                  </a>
+                )}
               </div>
-            )}
-            {lodge?.booking_house_rules && (
-              <div className="surface-card rounded-[28px] p-6">
-                <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-[var(--muted)]">Guest Notes</p>
-                <h3 className="font-display mt-2 text-2xl text-[var(--text)]">House rules</h3>
-                <p className="mt-3 text-sm leading-7 text-[var(--muted)]">{lodge.booking_house_rules}</p>
-              </div>
-            )}
-          </section>
-        )}
-
-        {faqs.length > 0 && (
-          <section className="surface-card mt-8 rounded-[32px] p-6 sm:p-8">
-            <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-[var(--muted)]">Frequently Asked Questions</p>
-            <h3 className="font-display mt-2 text-3xl text-[var(--text)]">Helpful things to know before you book</h3>
-            <div className="mt-6 grid gap-4 lg:grid-cols-2">
-              {faqs.map((item) => (
-                <div key={`${item.question}:${item.answer}`} className="rounded-[24px] border border-[var(--line)] bg-[var(--surface-soft)] p-5">
-                  <p className="text-base font-semibold text-[var(--text)]">{item.question}</p>
-                  <p className="mt-2 text-sm leading-7 text-[var(--muted)]">{item.answer}</p>
-                </div>
-              ))}
             </div>
-          </section>
-        )}
+          )}
 
-        {roomError && (
-          <div className="mt-6 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">
-            {roomError}
-          </div>
-        )}
-
-        {loadingRooms && (
-          <div className="mt-10 text-center">
-            <div className="inline-flex rounded-full border border-[var(--line)] bg-white px-5 py-3 text-sm font-semibold text-[var(--muted)] shadow-sm">
-              Checking availability…
-            </div>
-          </div>
-        )}
-
-        {!loadingRooms && searched && rooms && rooms.length === 0 && (
-          <div className="surface-card mt-8 rounded-[32px] p-6 text-center sm:p-8">
-            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-[var(--brand-soft)] text-3xl">😔</div>
-            <h3 className="font-display text-3xl text-[var(--text)]">No rooms for those dates</h3>
-            <p className="mt-3 text-sm leading-7 text-[var(--muted)]">
-              Try different dates, or contact the lodge directly to ask about alternatives.
-            </p>
-            <div className="mt-6 flex flex-wrap justify-center gap-3">
-              {lodge?.phone && (
-                <a href={`tel:${lodge.phone}`} className="brand-button inline-flex rounded-2xl px-5 py-3 text-sm font-extrabold">
-                  Call the lodge
-                </a>
-              )}
-              {whatsappUrl && (
-                <a href={whatsappUrl} target="_blank" rel="noreferrer" className="rounded-2xl border border-emerald-200 bg-emerald-50 px-5 py-3 text-sm font-extrabold text-emerald-800">
-                  WhatsApp the lodge
-                </a>
-              )}
-            </div>
-          </div>
-        )}
-
-        {!loadingRooms && rooms && rooms.length > 0 && (
-          <section className="mt-8">
+          {!loadingRooms && rooms && rooms.length > 0 && (
+            <section className="mt-8">
             <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
               <div>
                 <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-[var(--muted)]">Available Rooms</p>
@@ -646,8 +488,9 @@ export default function LodgePage() {
                 />
               ))}
             </div>
-          </section>
-        )}
+            </section>
+          )}
+        </div>
 
         {!searched && (
           <div className="surface-card mt-8 rounded-[32px] p-8 text-center">
