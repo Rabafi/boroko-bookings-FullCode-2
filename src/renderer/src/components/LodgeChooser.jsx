@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Building2, Loader2, Plus, Trash2 } from 'lucide-react'
 import { useProfiles } from '../app-context'
+import borokoLogoDark from '../assets/boroko-bookings-logo-dark.png'
 
 function formatProfileStatus(status) {
   return status === 'draft' ? 'Draft Setup' : 'Ready'
@@ -76,7 +77,9 @@ export default function LodgeChooser() {
     <div className="min-h-screen bg-gradient-to-br from-green-900 via-green-800 to-green-700 flex items-center justify-center px-6 py-10">
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl overflow-hidden">
         <div className="bg-green-700 px-8 py-6 text-white">
-          <div className="text-3xl mb-2">🏕️</div>
+          <div className="mb-4 flex h-24 w-80 max-w-full items-center">
+            <img src={borokoLogoDark} alt="Boroko Bookings" className="max-h-full max-w-full object-contain" draggable="false" />
+          </div>
           <h1 className="text-2xl font-bold">Choose a Lodge on This Computer</h1>
           <p className="text-green-200 text-sm mt-1">
             Each lodge keeps its own local cache, offline access, and setup state on this PC.

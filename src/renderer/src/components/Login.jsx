@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { AlertTriangle, Eye, EyeOff, Loader2, Mail, RefreshCw, X } from 'lucide-react'
 import { useAuth, useProfiles } from '../app-context'
+import borokoLogoLight from '../assets/boroko-bookings-logo-light.png'
 
 const EMAILS_KEY_PREFIX = 'bb_saved_emails'
 const MAX_SAVED = 5
@@ -269,7 +270,9 @@ export default function Login() {
     <div className="flex min-h-screen items-center justify-center bg-[radial-gradient(circle_at_top_left,rgba(187,247,208,0.28),transparent_24%),radial-gradient(circle_at_top_right,rgba(167,243,208,0.22),transparent_18%),linear-gradient(135deg,#0f3d2c_0%,#166534_55%,#22c55e_100%)] p-4">
       <div className="w-full max-w-md rounded-[28px] border border-white/60 bg-white/95 p-8 shadow-[0_30px_90px_rgba(15,23,42,0.28)] backdrop-blur">
         <div className="mb-8 text-center">
-          <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-[22px] border border-emerald-200 bg-emerald-50 text-4xl shadow-sm">🏕️</div>
+          <div className="mx-auto mb-4 flex h-20 w-64 items-center justify-center">
+            <img src={borokoLogoLight} alt="Boroko Bookings" className="max-h-full max-w-full object-contain" draggable="false" />
+          </div>
           <p className="text-xs font-semibold uppercase tracking-[0.22em] text-emerald-700/70">Desktop Operations</p>
           <h1 className="mt-2 text-2xl font-bold tracking-[-0.03em] text-slate-900">Boroko Bookings</h1>
           <p className="mt-1 text-sm text-slate-500">Sign in to continue front-desk and back-office work with this lodge.</p>

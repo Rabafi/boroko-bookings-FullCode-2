@@ -173,6 +173,7 @@ if (!ghToken) {
 
 if (mode === 'publish') {
   const releaseNotesFile = writeReleaseNotesFile()
+  run('npm.cmd', ['run', 'icons:build'], { GH_TOKEN: ghToken })
   run('npm.cmd', ['run', 'build'], {
     GH_TOKEN: ghToken,
     EP_DRAFT: 'false',
@@ -187,6 +188,7 @@ if (mode === 'publish') {
   })
 } else {
   run('npm.cmd', ['version', mode, '--no-git-tag-version'], { GH_TOKEN: ghToken })
+  run('npm.cmd', ['run', 'icons:build'], { GH_TOKEN: ghToken })
   run('npm.cmd', ['run', 'release:publish'], {
     GH_TOKEN: ghToken,
     EP_DRAFT: 'false',

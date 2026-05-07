@@ -24,6 +24,8 @@ import {
   AlertCircle,
   Sparkles
 } from 'lucide-react'
+import borokoLogo from '../assets/boroko-bookings-logo.svg'
+import borokoLogoDark from '../assets/boroko-bookings-logo-dark.png'
 import CommandPalette from './CommandPalette'
 import OfflineNotice from './shared/OfflineNotice'
 import AiCommandBar from './shared/AiCommandBar'
@@ -558,6 +560,8 @@ export default function Layout() {
   const BIZ_EMOJI = { lodge: '🏕️', restaurant: '🍽️' }
   const BIZ_LABEL = { lodge: 'Lodge Manager', restaurant: 'Restaurant Manager' }
   const workspaceName = settings?.lodge_name || settings?.company_name || 'Boroko Workspace'
+  const logoSrc = borokoLogo
+  const darkLogoSrc = borokoLogoDark
   const pendingCount = Number(syncStatus.pending || 0)
   const failedCount = Number(syncStatus.failed || 0)
   const syncInProgress = syncStatus?.syncInProgress === true
@@ -794,21 +798,27 @@ export default function Layout() {
         <div className="relative z-10 border-b border-white/8 px-3.5 py-4">
           <div className="flex items-center justify-between gap-3">
             {!collapsed && (
-              <div className="min-w-0">
+              <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-3">
-                  <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-white/12 bg-white/10 text-lg shadow-[0_10px_30px_rgba(0,0,0,0.18)]">
-                    {BIZ_EMOJI[bizType] || '🏢'}
-                  </div>
-                  <div className="min-w-0">
-                    <span className="block truncate text-[15px] font-semibold tracking-[-0.02em] text-white">Boroko</span>
-                    <p className="mt-0.5 truncate text-xs text-emerald-100/70">{BIZ_LABEL[bizType] || 'Business Manager'}</p>
+                  <div className="flex h-16 w-full items-center">
+                    <img
+                      src={darkLogoSrc}
+                      alt="Boroko Bookings"
+                      className="h-full w-full object-contain object-left"
+                      draggable="false"
+                    />
                   </div>
                 </div>
               </div>
             )}
             {collapsed && (
-              <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-white/12 bg-white/10 text-lg shadow-[0_10px_30px_rgba(0,0,0,0.18)]">
-                {BIZ_EMOJI[bizType] || '🏢'}
+              <div className="flex h-11 w-11 items-center justify-center overflow-hidden rounded-2xl border border-white/12 bg-white/95 p-1.5 shadow-[0_10px_30px_rgba(0,0,0,0.18)]">
+                <img
+                  src={logoSrc}
+                  alt="Boroko Bookings"
+                  className="h-full w-full object-contain"
+                  draggable="false"
+                />
               </div>
             )}
             <button

@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, ipcMain, Notification, dialog, Menu } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, Notification, dialog, Menu, nativeImage } from 'electron'
 import { join, dirname } from 'path'
 import fs from 'fs'
 import * as XLSX from 'xlsx'
@@ -24,6 +24,9 @@ import {
 } from './emailNotifications.js'
 
 const INPUT_FOCUS_DEBUG = false
+const APP_LOGO_FILENAME = 'boroko-bookings-logo.svg'
+const APP_DARK_LOGO_FILENAME = 'boroko-bookings-logo-dark.png'
+let activeSplashWindow = null
 
 if (process.env.BOROKO_TEST_USER_DATA_DIR) {
   app.setPath('userData', process.env.BOROKO_TEST_USER_DATA_DIR)
@@ -86,6 +89,144 @@ function clearRendererErrorLog() {
     console.error('Renderer error log clear failed:', error.message)
     return { success: false, error: error.message }
   }
+}
+
+function getAppLogoPath() {
+  const packagedPath = join(process.resourcesPath, 'assets', APP_LOGO_FILENAME)
+  if (app.isPackaged && fs.existsSync(packagedPath)) return packagedPath
+
+  const devPath = join(app.getAppPath(), 'src', 'main', 'assets', APP_LOGO_FILENAME)
+  if (fs.existsSync(devPath)) return devPath
+
+  return null
+}
+
+function getAppDarkLogoPath() {
+  const packagedPath = join(process.resourcesPath, 'assets', APP_DARK_LOGO_FILENAME)
+  if (app.isPackaged && fs.existsSync(packagedPath)) return packagedPath
+
+  const devPath = join(app.getAppPath(), 'src', 'main', 'assets', APP_DARK_LOGO_FILENAME)
+  if (fs.existsSync(devPath)) return devPath
+
+  return getAppLogoPath()
+}
+
+function createAppLogoNativeImage() {
+  try {
+    const icoPath = join(process.resourcesPath, 'assets', 'boroko-bookings-icon.ico')
+    const devIcoPath = join(app.getAppPath(), 'src', 'main', 'assets', 'boroko-bookings-icon.ico')
+    const logoPath = (app.isPackaged && fs.existsSync(icoPath))
+      ? icoPath
+      : fs.existsSync(devIcoPath)
+        ? devIcoPath
+        : getAppLogoPath()
+    if (!logoPath) return null
+    return nativeImage.createFromPath(logoPath)
+  } catch (error) {
+    console.warn('App logo image load failed:', error?.message || error)
+    return null
+  }
+}
+
+function buildSplashHtml() {
+  const logoPath = getAppDarkLogoPath()
+  const logoMarkup = logoPath
+    ? `<img src="data:image/png;base64,${fs.readFileSync(logoPath).toString('base64')}" alt="Boroko Bookings" />`
+    : '<div class="fallback">Boroko</div>'
+
+  return `<!doctype html>
+  <html>
+    <head>
+      <meta charset="utf-8" />
+      <style>
+        html, body {
+          width: 100%;
+          height: 100%;
+          margin: 0;
+          background: linear-gradient(180deg, #0f3d2c 0%, #0c2d23 100%);
+          overflow: hidden;
+          font-family: Arial, Helvetica, sans-serif;
+        }
+        body {
+          display: grid;
+          place-items: center;
+          color: #ecfdf5;
+          opacity: 0;
+          animation: fadeIn 420ms ease-out forwards;
+        }
+        .card {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 18px;
+          padding: 28px 32px;
+          animation: lift 700ms cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+        }
+        .logo {
+          width: 380px;
+          height: 150px;
+          display: grid;
+          place-items: center;
+        }
+        .logo img {
+          width: 100%;
+          height: 100%;
+          object-fit: contain;
+        }
+        .fallback {
+          font-size: 32px;
+          font-weight: 700;
+          color: #0f3d2c;
+        }
+        .title {
+          font-size: 16px;
+          font-weight: 700;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          color: rgba(236, 253, 245, 0.92);
+        }
+        .subtitle {
+          margin-top: -6px;
+          font-size: 13px;
+          color: rgba(209, 250, 229, 0.75);
+        }
+        .dots {
+          display: inline-flex;
+          gap: 5px;
+          align-items: center;
+          height: 12px;
+        }
+        .dots span {
+          width: 6px;
+          height: 6px;
+          border-radius: 999px;
+          background: rgba(236, 253, 245, 0.85);
+          animation: pulse 1.1s infinite ease-in-out;
+        }
+        .dots span:nth-child(2) { animation-delay: 0.15s; }
+        .dots span:nth-child(3) { animation-delay: 0.3s; }
+        @keyframes fadeIn {
+          from { opacity: 0; }
+          to { opacity: 1; }
+        }
+        @keyframes lift {
+          from { transform: translateY(10px) scale(0.985); opacity: 0; }
+          to { transform: translateY(0) scale(1); opacity: 1; }
+        }
+        @keyframes pulse {
+          0%, 80%, 100% { transform: translateY(0); opacity: 0.45; }
+          40% { transform: translateY(-4px); opacity: 1; }
+        }
+      </style>
+    </head>
+    <body>
+      <div class="card">
+        <div class="logo">${logoMarkup}</div>
+        <div class="title">Boroko Bookings</div>
+        <div class="subtitle">Starting up <span class="dots"><span></span><span></span><span></span></span></div>
+      </div>
+    </body>
+  </html>`
 }
 
 async function assertResourceBelongsToCurrentLodge(resourceLabel, resourceId, loader) {
@@ -585,6 +726,38 @@ function setupAutoUpdater(mainWindow) {
 }
 
 function createWindow() {
+  const appIcon = createAppLogoNativeImage() || undefined
+  if (activeSplashWindow && !activeSplashWindow.isDestroyed()) {
+    activeSplashWindow.destroy()
+  }
+
+  const splashWindow = new BrowserWindow({
+    width: 420,
+    height: 420,
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    closable: true,
+    frame: false,
+    transparent: true,
+    show: true,
+    skipTaskbar: true,
+    alwaysOnTop: false,
+    title: 'Boroko Bookings Starting',
+    icon: appIcon,
+    webPreferences: {
+      sandbox: false,
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  })
+  activeSplashWindow = splashWindow
+  splashWindow.once('closed', () => {
+    if (activeSplashWindow === splashWindow) activeSplashWindow = null
+  })
+  splashWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(buildSplashHtml())}`)
+
   const mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -593,6 +766,7 @@ function createWindow() {
     show: false,
     autoHideMenuBar: true,
     title: 'Boroko Bookings',
+    icon: appIcon,
     webPreferences: {
       preload: join(__dirname, '../preload/index.mjs'),
       // sandbox: false required — electron-vite preload uses ESM imports resolved
@@ -684,22 +858,41 @@ function createWindow() {
   }
 
   let didShowWindow = false
+  let splashClosed = false
+  const closeSplashWindow = () => {
+    if (splashClosed || splashWindow.isDestroyed()) return
+    splashClosed = true
+    try {
+      splashWindow.destroy()
+    } catch {
+      // best-effort
+    }
+  }
   const showWindowSafely = (reason) => {
     if (didShowWindow || mainWindow.isDestroyed()) return
     didShowWindow = true
     if (INPUT_FOCUS_DEBUG) console.log('[WINDOW] show requested:', reason)
     mainWindow.show()
+    closeSplashWindow()
   }
 
   mainWindow.on('ready-to-show', () => {
     if (INPUT_FOCUS_DEBUG) console.log('[WINDOW] ready-to-show')
     showWindowSafely('ready-to-show')
+    closeSplashWindow()
   })
 
   // If the renderer gets slow or partially fails, do not leave the app hidden forever.
   setTimeout(() => {
     showWindowSafely('startup-timeout')
-  }, 2500)
+    closeSplashWindow()
+  }, 1800)
+
+  mainWindow.on('show', closeSplashWindow)
+  mainWindow.on('closed', closeSplashWindow)
+  mainWindow.webContents.on('dom-ready', closeSplashWindow)
+  mainWindow.webContents.on('did-finish-load', closeSplashWindow)
+  mainWindow.webContents.on('did-stop-loading', closeSplashWindow)
 
   mainWindow.webContents.on('did-finish-load', () => {
     console.log('[WINDOW] did-finish-load', mainWindow.webContents.getURL())

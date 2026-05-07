@@ -6,6 +6,7 @@ import { SUBSCRIPTION_PLAN_ORDER, getAllSubscriptionPlans, getFeatureRequiredPla
 import AppErrorBoundary from './components/AppErrorBoundary'
 import { Modal } from './components/shared/Modal'
 import { extractReleaseHighlights, formatReleaseDate, toReleaseSections } from './utils/updatePresentation'
+import borokoLogoDark from './assets/boroko-bookings-logo-dark.png'
 import {
   AuthContext,
   SettingsContext,
@@ -1151,10 +1152,12 @@ export default function App() {
 
   if (appLoading) {
     return (
-      <div className="min-h-screen bg-green-900 flex items-center justify-center">
-        <div className="text-white text-center">
-          <div className="text-4xl mb-3">🏕️</div>
-          <p className="text-green-200 text-sm">Loading Boroko Bookings...</p>
+      <div className="flex min-h-screen items-center justify-center bg-green-900">
+        <div className="text-center text-white">
+          <div className="mx-auto mb-5 flex h-36 w-[420px] max-w-[86vw] items-center justify-center">
+            <img src={borokoLogoDark} alt="Boroko Bookings" className="max-h-full max-w-full object-contain" draggable="false" />
+          </div>
+          <p className="text-sm text-green-200">Loading Boroko Bookings...</p>
         </div>
       </div>
     )

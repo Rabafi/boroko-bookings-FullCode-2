@@ -28,6 +28,7 @@
     "release:publish": "node ./scripts/release.mjs publish",
     "dist": "npm run build && electron-builder",
     "dist:publish": "npm run build && electron-builder --publish always",
+    "icons:build": "node ./scripts/build-icons.mjs",
     "postinstall": "electron-builder install-app-deps",
     "db:push": "node ./scripts/db-push.mjs"
   },
@@ -53,22 +54,26 @@
     "electron-builder": "^24.13.1",
     "electron-vite": "^2.0.0",
     "madge": "^8.0.0",
+    "png-to-ico": "^3.0.1",
     "postcss": "^8.4.35",
+    "sharp": "^0.34.5",
     "supabase": "^2.96.0",
     "tailwindcss": "^3.4.1",
     "vite": "^5.1.4"
   },
-  "build": {
+    "build": {
     "appId": "com.boroko.bookings",
     "productName": "Boroko Bookings",
     "asar": true,
     "artifactName": "Boroko-Bookings-${version}-${arch}.${ext}",
+    "icon": "src/main/assets/boroko-bookings-icon.ico",
     "publish": {
       "provider": "github",
       "owner": "Rabafi",
       "repo": "boroko-bookings-releases"
     },
     "win": {
+      "icon": "src/main/assets/boroko-bookings-icon.ico",
       "target": [
         {
           "target": "nsis",
@@ -83,15 +88,24 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "deleteAppDataOnUninstall": false,
+      "installerIcon": "src/main/assets/boroko-bookings-icon.ico",
+      "uninstallerIcon": "src/main/assets/boroko-bookings-icon.ico",
       "include": "src/main/installer.nsh"
     },
     "files": [
       "out/**/*",
+      "src/main/assets/**/*",
       "!out/**/*.map",
       "!**/*.{iml,hprof,orig,pyc,pyo,rbc,swp,csproj,sln,xproj}",
       "!**/{.DS_Store,.git,.hg,.svn,CVS,RCS,SCCS,__pycache__,thumbs.db,.gitignore,.gitattributes}",
       "!**/{__tests__,test,tests,powered-test}",
       "!**/node_modules/.cache"
+    ],
+    "extraResources": [
+      {
+        "from": "src/main/assets",
+        "to": "assets"
+      }
     ],
     "directories": {
       "output": "dist"

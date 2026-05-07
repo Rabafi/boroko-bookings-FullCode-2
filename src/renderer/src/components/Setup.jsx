@@ -2,6 +2,7 @@ import { useNavigate } from 'react-router-dom'
 import { useState, useRef } from 'react'
 import { Building2, Phone, Mail, MapPin, Globe, Hash, CheckCircle, Upload, Image, X, User, Lock, Eye, EyeOff } from 'lucide-react'
 import { useProfiles } from '../app-context'
+import borokoLogoDark from '../assets/boroko-bookings-logo-dark.png'
 
 export default function Setup({ onComplete }) {
   const navigate = useNavigate()
@@ -156,7 +157,9 @@ export default function Setup({ onComplete }) {
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden">
         {/* Header */}
         <div className="bg-green-700 px-8 py-6 text-white">
-          <div className="text-3xl mb-2">🏕️</div>
+          <div className="mb-4 flex h-24 w-80 max-w-full items-center">
+            <img src={borokoLogoDark} alt="Boroko Bookings" className="max-h-full max-w-full object-contain" draggable="false" />
+          </div>
           <h1 className="text-2xl font-bold">Welcome to Boroko Bookings</h1>
           <p className="text-green-200 text-sm mt-1">{stepSubtitle[step]}</p>
           {activeProfile && (

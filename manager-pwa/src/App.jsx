@@ -12,6 +12,7 @@ import { getRuntimeMeta, getUnreadPwaNotificationCount, listPwaNotifications, ma
 import Login from './pages/Login'
 import ResetPassword from './pages/ResetPassword'
 import Dashboard from './pages/Dashboard'
+import borokoLogoDark from './assets/boroko-bookings-logo-dark.png'
 
 const Rooms = lazy(() => import('./pages/Rooms'))
 const Bookings = lazy(() => import('./pages/Bookings'))
@@ -650,7 +651,16 @@ function AuthenticatedShell({ alertCount, dark, setDark, setAlertCount, notifica
 
   return (
     <div className="flex flex-col min-h-screen bg-gray-950 app-bg">
-      <div className="flex justify-end px-4 pt-3 pb-1">
+      <div className="flex items-center justify-between gap-3 px-4 pt-3 pb-1">
+        <div className="flex items-center gap-3">
+          <div className="flex h-14 w-44 items-center">
+            <img src={borokoLogoDark} alt="Boroko Manager" className="max-h-full max-w-full object-contain" draggable="false" />
+          </div>
+          <div className="min-w-0">
+            <p className="text-xs uppercase tracking-[0.2em] text-gray-500">Boroko</p>
+            <p className="truncate text-sm font-semibold text-white">Manager Mobile App</p>
+          </div>
+        </div>
         <button
           onClick={() => setDark((value) => !value)}
           className="p-2 rounded-full bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700 transition-colors"
