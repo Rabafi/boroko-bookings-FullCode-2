@@ -627,12 +627,20 @@ export default function Layout() {
   const currentOfflineTasks = offlineTasksByRoute[location.pathname] || ['Instant multi-device synchronisation', 'Sending external notifications', 'Live cloud-side data verification']
   const quickSearchShortcut = typeof navigator !== 'undefined' && /mac/i.test(navigator.platform) ? 'Cmd K' : 'Ctrl K'
   const searchableItems = useMemo(() => (
-    navItems
+    [
+      ...navItems
       .filter((item) => item?.to && item?.label && item?.icon)
       .map((item) => ({
         ...item,
         group: item.group || (item.to === '/settings' ? 'Admin' : 'Workspace')
-      }))
+      })),
+      { label: 'Create booking', to: '/bookings', icon: Zap, group: 'Quick Actions', keywords: ['new booking', 'reservation', 'check in'] },
+      { label: 'Collect payment', to: '/invoices', icon: CreditCard, group: 'Quick Actions', keywords: ['balance', 'invoice', 'paid', 'settle'] },
+      { label: 'Check room status', to: '/rooms', icon: CheckCircle2, group: 'Quick Actions', keywords: ['available', 'occupied', 'room board'] },
+      { label: 'Review sync health', to: '/settings', icon: ShieldAlert, group: 'Quick Actions', keywords: ['offline', 'backup', 'system', 'errors'] },
+      { label: 'Open POS sale', to: '/pos', icon: Zap, group: 'Quick Actions', keywords: ['restaurant', 'cashier', 'order'] },
+      { label: 'Export reports', to: '/reports', icon: Download, group: 'Quick Actions', keywords: ['excel', 'pdf', 'finance'] }
+    ]
   ), [navItems])
   const activeNavItem = useMemo(() => {
     const currentPath = location.pathname || '/'
@@ -699,6 +707,77 @@ export default function Layout() {
   const backupSubLabel = backupStatus.latestAt
     ? `Backup ${new Date(backupStatus.latestAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`
     : 'No local backup yet'
+  const attentionItems = [
+    financialFailedCount > 0 && {
+      key: 'critical-sync',
+      tone: 'critical',
+      icon: ShieldAlert,
+      label: `${financialFailedCount} critical sync issue${financialFailedCount === 1 ? '' : 's'}`,
+      detail: 'Review financial operations',
+      to: '/settings',
+      state: { activeTab: 'system' }
+    },
+    failedCount > 0 && financialFailedCount === 0 && {
+      key: 'sync-review',
+      tone: 'warning',
+      icon: AlertCircle,
+      label: `${failedCount} sync item${failedCount === 1 ? '' : 's'} need review`,
+      detail: 'Open System Health',
+      to: '/settings',
+      state: { activeTab: 'system' }
+    },
+    onlineRequestCount > 0 && {
+      key: 'online-requests',
+      tone: 'warning',
+      icon: BellDot,
+      label: `${onlineRequestCount} online request${onlineRequestCount === 1 ? '' : 's'}`,
+      detail: 'Confirm or decline',
+      to: '/bookings'
+    },
+    collectionSummary.count > 0 && {
+      key: 'collections',
+      tone: 'danger',
+      icon: CreditCard,
+      label: `${currency} ${Number(collectionSummary.amount || 0).toFixed(2)} owed`,
+      detail: `${collectionSummary.count} collection${collectionSummary.count === 1 ? '' : 's'}`,
+      to: '/invoices'
+    },
+    pendingCount > 0 && failedCount === 0 && {
+      key: 'sync-pending',
+      tone: 'info',
+      icon: Clock,
+      label: `${pendingCount} pending sync item${pendingCount === 1 ? '' : 's'}`,
+      detail: 'Keep device online',
+      to: '/settings',
+      state: { activeTab: 'system' }
+    },
+    backupStatus.overdue && {
+      key: 'backup',
+      tone: 'warning',
+      icon: HardDrive,
+      label: 'Backup overdue',
+      detail: backupSubLabel,
+      to: '/settings',
+      state: { activeTab: 'system' }
+    },
+    cacheStale.active && {
+      key: 'cache-stale',
+      tone: 'info',
+      icon: RefreshCw,
+      label: 'Refreshing live data',
+      detail: cacheStale.names?.join(', ') || 'Retrying in background',
+      to: '/settings',
+      state: { activeTab: 'system' }
+    }
+  ].filter(Boolean)
+
+  const navigateWithGuard = (to, options = {}) => {
+    if (navGuard.current?.isDirty) {
+      navGuard.current.confirmLeave(() => navigate(to, options))
+    } else {
+      navigate(to, options)
+    }
+  }
 
   return (
     <div className="flex h-screen overflow-hidden bg-[radial-gradient(circle_at_top_left,rgba(187,247,208,0.18),transparent_24%),radial-gradient(circle_at_top_right,rgba(209,250,229,0.2),transparent_22%),#edf2ee]">
@@ -824,32 +903,34 @@ export default function Layout() {
         </nav>
 
         {/* User + Logout */}
-        <div className="relative z-10 border-t border-white/8 p-3">
+        <div className="relative z-10 border-t border-white/8 p-2">
           {!collapsed && (
-            <div className="mb-2 rounded-2xl border border-white/10 bg-white/6 px-3 py-2.5">
-              <p className="text-[11px] uppercase tracking-[0.18em] text-emerald-100/50">Signed in as</p>
-              <p className="mt-1 truncate text-sm font-semibold text-white">{user?.name}</p>
-              <span className="mt-2 inline-flex rounded-full bg-white/10 px-2.5 py-1 text-[11px] font-medium capitalize text-emerald-50">
+            <div className="mb-1.5 rounded-xl border border-white/10 bg-white/6 px-2.5 py-1.5">
+              <p className="text-[9px] uppercase tracking-[0.16em] text-emerald-100/50">Signed in as</p>
+              <div className="mt-0.5 flex items-center gap-1.5">
+                <p className="min-w-0 flex-1 truncate text-xs font-semibold text-white">{user?.name}</p>
+                <span className="shrink-0 rounded-full bg-white/10 px-1.5 py-0.5 text-[9px] font-medium capitalize leading-tight text-emerald-50">
                 {access?.roleLabel || user?.role}
-              </span>
+                </span>
+              </div>
             </div>
           )}
           {/* Help / Support Ticket */}
           <button
             onClick={() => setShowHelp(true)}
-            className="mb-1 flex w-full items-center gap-2 rounded-xl border border-transparent px-3 py-2 text-emerald-100/80 transition-all hover:border-white/10 hover:bg-white/8 hover:text-white"
+            className="mb-0.5 flex w-full items-center gap-1.5 rounded-lg border border-transparent px-2.5 py-1.5 text-emerald-100/80 transition-all hover:border-white/10 hover:bg-white/8 hover:text-white"
             title={collapsed ? 'Support' : undefined}
           >
-            <LifeBuoy size={16} />
-            {!collapsed && <span className="text-sm">Help / Support</span>}
+            <LifeBuoy size={14} />
+            {!collapsed && <span className="text-xs">Help / Support</span>}
           </button>
           <button
             onClick={handleLogout}
-            className="flex w-full items-center gap-2 rounded-xl border border-transparent px-3 py-2 text-emerald-100/80 transition-all hover:border-white/10 hover:bg-white/8 hover:text-white"
+            className="flex w-full items-center gap-1.5 rounded-lg border border-transparent px-2.5 py-1.5 text-emerald-100/80 transition-all hover:border-white/10 hover:bg-white/8 hover:text-white"
             title={collapsed ? 'Sign out' : undefined}
           >
-            <LogOut size={16} />
-            {!collapsed && <span className="text-sm">Sign out</span>}
+            <LogOut size={14} />
+            {!collapsed && <span className="text-xs">Sign out</span>}
           </button>
         </div>
       </div>
@@ -857,8 +938,8 @@ export default function Layout() {
       {/* Main */}
       <div className="flex flex-1 flex-col overflow-auto">
         {!isPosRoute && (
-          <div className="shrink-0 border-b border-slate-200/70 bg-white/78 px-4 py-3 backdrop-blur-xl md:px-5">
-            <div className="flex flex-wrap items-center justify-between gap-4">
+          <div className="shrink-0 border-b border-slate-200/70 bg-white/78 px-4 py-2.5 backdrop-blur-xl md:px-5">
+            <div className="flex items-center justify-between gap-3">
               <div className="min-w-0">
                 <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.2em] text-slate-500">
                   <span>{BIZ_LABEL[bizType] || 'Business Manager'}</span>
@@ -878,79 +959,41 @@ export default function Layout() {
                 </p>
               </div>
 
-              <div className="flex flex-wrap items-center gap-2.5">
-                {collectionSummary.count > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => { if (navGuard.current?.isDirty) { navGuard.current.confirmLeave(() => navigate('/invoices')) } else { navigate('/invoices') } }}
-                    className="inline-flex items-center gap-2.5 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2.5 text-left shadow-sm transition-all hover:border-rose-300 hover:bg-rose-100"
-                    title="Open invoice collections"
-                  >
-                    <div className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-white text-rose-600">
-                      <CreditCard size={16} />
-                    </div>
-                    <div className="min-w-0">
-                      <div className="text-sm font-semibold text-rose-900">
-                        {settings?.currency || 'P'} {Number(collectionSummary.amount || 0).toFixed(2)} owed
-                      </div>
-                      <div className="text-xs text-rose-700">
-                        {collectionSummary.count} booking{collectionSummary.count === 1 ? '' : 's'} need collection
-                      </div>
-                    </div>
-                  </button>
-                )}
-
+              <div className="ml-auto flex shrink-0 items-center justify-end gap-2">
                 <button
                   type="button"
                   onClick={() => setPaletteOpen(true)}
-                  className="inline-flex flex-1 min-w-[230px] md:min-w-[340px] items-center gap-3 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-left shadow-sm transition-all hover:border-slate-300 hover:bg-slate-50 group"
+                  className="group inline-flex h-10 items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-left shadow-sm transition-all hover:border-emerald-200 hover:bg-emerald-50/50"
                   title="Open quick search"
                 >
-                  <div className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-slate-100 text-slate-500 group-hover:bg-emerald-50 group-hover:text-emerald-600 transition-colors">
-                    <Search size={16} />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-semibold text-slate-900">Quick search</div>
-                    <div className="text-[11px] text-slate-500 font-medium">Find bookings, guests or jump to modules</div>
-                  </div>
-                  <div className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-[10px] font-bold text-slate-400">
+                  <Search size={16} className="text-slate-500 group-hover:text-emerald-600" />
+                  <span className="hidden text-sm font-semibold text-slate-700 lg:inline">Search</span>
+                  <span className="hidden items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-[10px] font-bold text-slate-400 md:inline-flex">
                     <span className="opacity-60">{quickSearchShortcut.split(' ')[0]}</span>
                     <span>{quickSearchShortcut.split(' ')[1]}</span>
-                  </div>
+                  </span>
                 </button>
 
 
                 <button
                   type="button"
                   onClick={() => { const dest = '/settings'; const state = { state: { activeTab: 'system' } }; if (navGuard.current?.isDirty) { navGuard.current.confirmLeave(() => navigate(dest, state)) } else { navigate(dest, state) } }}
-                  className={`inline-flex items-center gap-2.5 rounded-xl border px-3 py-2.5 text-left shadow-sm transition-all hover:shadow-md ${syncTone}`}
+                  className={`relative inline-flex h-10 items-center gap-2 rounded-xl border px-3 text-left shadow-sm transition-all hover:shadow-md ${syncTone}`}
                   title="Open System Health & Sync"
                 >
-                  <div className={`flex h-8 w-8 items-center justify-center rounded-lg bg-white/60 shadow-inner ${
+                  <span className={`flex h-7 w-7 items-center justify-center rounded-lg bg-white/60 shadow-inner ${
                     financialFailedCount > 0 ? 'text-rose-600' : failedCount > 0 ? 'text-amber-600' : 'text-emerald-600'
                   }`}>
-                    {syncInProgress ? <RefreshCw size={18} className="animate-spin" /> : <BellDot size={18} />}
-                  </div>
-                  <div className="flex flex-col min-w-[124px]">
-                    <div className="text-sm font-bold leading-tight tracking-tight">{syncLabel}</div>
-                    <div className="mt-0.5 text-[11px] font-medium opacity-80 leading-tight">
-                      {syncSubLabel}
-                    </div>
-                    {(pendingCount > 0 || failedCount > 0) && (
-                      <div className="mt-1.5 flex items-center gap-2 border-t border-black/5 pt-1.5">
-                        {pendingCount > 0 && (
-                          <div className="flex items-center gap-1 text-[10px] font-bold opacity-60">
-                            <Clock size={10} /> {pendingCount}
-                          </div>
-                        )}
-                        {failedCount > 0 && (
-                          <div className={`flex items-center gap-1 text-[10px] font-bold ${financialFailedCount > 0 ? 'text-rose-700' : 'text-amber-700'}`}>
-                            <AlertCircle size={10} /> {failedCount}
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
+                    {syncInProgress ? <RefreshCw size={16} className="animate-spin" /> : <BellDot size={16} />}
+                  </span>
+                  <span className="hidden text-sm font-bold leading-tight tracking-tight lg:inline">{syncLabel}</span>
+                  {(pendingCount > 0 || failedCount > 0) && (
+                    <span className={`absolute -right-1.5 -top-1.5 flex h-5 min-w-5 items-center justify-center rounded-full px-1 text-[10px] font-black text-white ${
+                      financialFailedCount > 0 || failedCount > 0 ? 'bg-rose-600' : 'bg-blue-600'
+                    }`}>
+                      {failedCount || pendingCount}
+                    </span>
+                  )}
                 </button>
               </div>
             </div>
@@ -986,6 +1029,42 @@ export default function Layout() {
               Fresh {cacheStale.names?.join(', ') || 'booking'} data could not be refreshed yet, so this screen may be slightly outdated.
               The app is retrying automatically in the background.
             </span>
+          </div>
+        )}
+        {!isPosRoute && attentionItems.length > 0 && (
+          <div className="border-b border-slate-200/70 bg-white/82 px-4 py-2.5 backdrop-blur-xl md:px-5">
+            <div className="mx-auto flex max-w-[1500px] items-center gap-2 overflow-x-auto">
+              <div className="sticky left-0 z-10 flex shrink-0 items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-bold uppercase tracking-[0.16em] text-emerald-800 shadow-sm">
+                <Sparkles size={14} />
+                Attention
+              </div>
+              {attentionItems.slice(0, 6).map((item) => {
+                const Icon = item.icon
+                const toneClass = {
+                  critical: 'border-rose-300 bg-rose-50 text-rose-900',
+                  danger: 'border-red-200 bg-red-50 text-red-900',
+                  warning: 'border-amber-200 bg-amber-50 text-amber-900',
+                  info: 'border-sky-200 bg-sky-50 text-sky-900'
+                }[item.tone] || 'border-slate-200 bg-slate-50 text-slate-800'
+                return (
+                  <button
+                    key={item.key}
+                    type="button"
+                    onClick={() => navigateWithGuard(item.to, item.state ? { state: item.state } : {})}
+                    className={`group flex shrink-0 items-center gap-2.5 rounded-2xl border px-3 py-2 text-left text-sm shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md ${toneClass}`}
+                  >
+                    <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-white/72 shadow-inner">
+                      <Icon size={15} />
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block max-w-[210px] truncate font-bold leading-tight">{item.label}</span>
+                      <span className="block max-w-[210px] truncate text-[11px] font-medium opacity-75">{item.detail}</span>
+                    </span>
+                    <ArrowRight size={14} className="opacity-45 transition-transform group-hover:translate-x-0.5" />
+                  </button>
+                )
+              })}
+            </div>
           </div>
         )}
         <div className={`flex-1 overflow-auto ${isPosRoute ? 'px-3 pb-3 pt-3 md:px-4 md:pb-4 md:pt-4' : 'px-3 pb-4 pt-3 md:px-5 md:pb-5'}`}>

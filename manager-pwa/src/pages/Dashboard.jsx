@@ -215,7 +215,7 @@ export default function Dashboard() {
           </div>
         )}
 
-        <div className="bg-gray-800 rounded-3xl p-5">
+        <div className="pwa-pulse-card p-5">
           <div className="mb-3 rounded-2xl border border-gray-700 bg-gray-900/60 p-3">
             <p className="text-xs uppercase tracking-[0.18em] text-gray-500">Plan Usage · {usage.plan}</p>
             <p className="mt-1 text-xs text-gray-300">

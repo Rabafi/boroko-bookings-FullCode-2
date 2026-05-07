@@ -132,3 +132,57 @@ button {
   background: white;
   box-shadow: 0 0 0 4px rgba(154, 91, 31, 0.12);
 }
+
+.booking-step-card {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 1.5rem;
+  background:
+    radial-gradient(circle at top right, rgba(36, 86, 64, 0.08), transparent 32%),
+    rgba(255, 253, 249, 0.96);
+  box-shadow: var(--shadow-soft);
+}
+
+.booking-step-card::before {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 4px;
+  content: "";
+  background: linear-gradient(180deg, var(--brand), var(--success));
+}
+
+.booking-sticky-summary {
+  position: sticky;
+  top: 1rem;
+  border: 1px solid rgba(211, 193, 166, 0.78);
+  border-radius: 1.5rem;
+  background: rgba(255, 253, 249, 0.92);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(18px);
+}
+
+.booking-price-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  border-bottom: 1px dashed rgba(211, 193, 166, 0.8);
+  padding-block: 0.68rem;
+}
+
+.booking-price-line:last-child {
+  border-bottom: 0;
+}
+
+.booking-trust-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+@media (max-width: 768px) {
+  .booking-sticky-summary {
+    position: static;
+  }
+}

@@ -3,6 +3,9 @@ import { useNavigate } from 'react-router-dom'
 import { Plus, Pencil, Trash2, BedDouble, Image, X, ChevronLeft, ChevronRight, Calendar, RefreshCw } from 'lucide-react'
 import { StatusBadge } from './shared/StatusBadge'
 import { Modal } from './shared/Modal'
+import { ConfirmDialog } from './shared/ConfirmDialog'
+import { ContextDrawer } from './shared/ContextDrawer'
+import { DataViewToolbar } from './shared/DataViewToolbar'
 import UsageLimitIndicator from './shared/UsageLimitIndicator'
 import UsageUpgradePrompt from './shared/UpgradePromptModal'
 import UpgradeNudgeBanner from './shared/UpgradeNudgeBanner'
@@ -44,6 +47,10 @@ export default function Rooms() {
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [loading, setLoading] = useState(false)
+  const [confirmDialog, setConfirmDialog] = useState(null)
+  const [selectedRoom, setSelectedRoom] = useState(null)
+  const [density, setDensity] = useState('comfortable')
+  const [activeView, setActiveView] = useState('all')
   const photoInputRef = useRef(null)
 
   const processRoomPhotos = (files) => {
@@ -205,19 +212,27 @@ export default function Rooms() {
       setRateForm(null)
       setEditingRate(null)
       if (results.some((result) => result?.local_only)) {
-        alert('One or more rate overrides were saved locally because the server save is currently unavailable.')
+        setSuccess('One or more rate overrides were saved locally because the server save is currently unavailable.')
       }
     } catch (error) {
-      alert(error?.message || 'Could not save rate override.')
+      setError(error?.message || 'Could not save rate override.')
     } finally {
       setRateSaving(false)
     }
   }
 
   const handleRateDelete = async (id) => {
-    if (!window.confirm('Delete this rate override?')) return
-    await window.api.rateOverrides.delete(id).catch(console.error)
-    await load()
+    setConfirmDialog({
+      title: 'Delete rate override?',
+      message: 'This removes the special price from the affected date range. Standard room rates will apply again.',
+      confirmLabel: 'Delete override',
+      onConfirm: async () => {
+        setConfirmDialog(null)
+        await window.api.rateOverrides.delete(id).catch(console.error)
+        await load()
+        setSuccess('Rate override deleted.')
+      }
+    })
   }
 
   const openEdit = (room) => {
@@ -275,10 +290,18 @@ export default function Rooms() {
   }
 
   const handleDelete = async (room) => {
-    if (!window.confirm(`Delete Room ${room.room_number}?\n\nThis permanently removes the room from the desktop workspace and cannot be undone.`)) return
-    await window.api.rooms.delete(room.id)
-    load()
-    setSuccess(`Room ${room.room_number} deleted.`)
+    setConfirmDialog({
+      title: `Delete Room ${room.room_number}?`,
+      message: 'This permanently removes the room from the desktop workspace and cannot be undone.',
+      confirmLabel: 'Delete room',
+      onConfirm: async () => {
+        setConfirmDialog(null)
+        await window.api.rooms.delete(room.id)
+        setSelectedRoom(null)
+        load()
+        setSuccess(`Room ${room.room_number} deleted.`)
+      }
+    })
   }
 
   const roomStatusCounts = useMemo(() => rooms.reduce((counts, room) => {
@@ -306,9 +329,18 @@ export default function Rooms() {
     : roomLimitStatus.isBlocked
       ? `Room creation is restricted because this lodge has reached the ${usageSnapshot?.plan || access?.entitlement?.plan || 'Starter'} room limit.`
       : ''
+  const roomViews = [
+    { value: 'all', label: 'All' },
+    { value: 'available', label: 'Available' },
+    { value: 'occupied', label: 'Occupied' },
+    { value: 'maintenance', label: 'Maintenance' }
+  ]
+  const visibleRooms = useMemo(() => (
+    activeView === 'all' ? rooms : rooms.filter((room) => room.status === activeView)
+  ), [activeView, rooms])
 
   return (
-    <div className="mx-auto flex max-w-7xl flex-col gap-6">
+    <div className="mx-auto flex max-w-7xl flex-col gap-3">
       <div className="bb-page-header">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.22em] text-emerald-700/70">Property Operations</p>
@@ -324,11 +356,11 @@ export default function Rooms() {
             ) : (
               <>
                 <UsageLimitIndicator label="Rooms" used={usageSnapshot?.usage?.rooms ?? rooms.length} limit={usageLimits.rooms} />
-                <p className="mt-2 text-xs text-slate-500">{usageSnapshot?.monthlyResetCopy || MONTHLY_USAGE_RESET_COPY}</p>
+                <p className="mt-1 text-xs text-slate-500">{usageSnapshot?.monthlyResetCopy || MONTHLY_USAGE_RESET_COPY}</p>
                 {roomLimitMessage && <p className="mt-2 text-xs text-rose-700">{roomLimitMessage}</p>}
               </>
             )}
-            <div className="mt-3">
+            <div className="mt-2">
               <UpgradeNudgeBanner
                 visible={showRoomEarlyPrompt}
                 message="You’re approaching your plan limits. Consider upgrading to avoid interruptions."
@@ -344,10 +376,10 @@ export default function Rooms() {
             </div>
           </div>
         </div>
-        <div className="bb-card-muted flex flex-wrap items-center gap-3 px-4 py-4">
+        <div className="bb-card-muted hidden max-w-xs flex-wrap items-center gap-2 px-3 py-2.5 xl:flex">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Snapshot</p>
-            <p className="mt-1 text-sm text-slate-600">Monitor room readiness, housekeeping signals, and occupancy at a glance.</p>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">Snapshot</p>
+            <p className="mt-0.5 text-xs text-slate-600">Room readiness and occupancy at a glance.</p>
           </div>
         </div>
         <button
@@ -360,7 +392,7 @@ export default function Rooms() {
       </div>
 
       {rooms.length > 0 && (
-        <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+        <div className="bb-compact-stat-grid">
           <SummaryPill label="Available" value={available} tone="emerald" />
           <SummaryPill label="Occupied" value={occupied} tone="amber" />
           <SummaryPill label="Maintenance" value={maintenance} tone="red" />
@@ -379,15 +411,15 @@ export default function Rooms() {
         </div>
       )}
 
-      <section className="bb-card p-5">
-        <div className="mb-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-emerald-100 text-emerald-700">
+      <section className="bb-card p-3">
+        <div className="mb-3 flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-emerald-100 text-emerald-700">
               <Calendar size={18} />
             </div>
             <div>
-              <p className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-500">Seasonal & Event Pricing</p>
-              <p className="mt-1 text-sm text-slate-500">Set temporary special prices by room and date range.</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Seasonal & Event Pricing</p>
+              <p className="mt-0.5 text-xs text-slate-500">Temporary room prices by date range.</p>
             </div>
           </div>
           <button type="button" onClick={openRateCreate} className="btn-primary">
@@ -500,11 +532,30 @@ export default function Rooms() {
           <p className="text-slate-500">No rooms yet. Add your first room to get started.</p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-          {rooms.map((room) => (
-            <RoomCard key={room.id} room={room} activeRate={activeRateByRoom[room.id] || null} onEdit={openEdit} onDelete={handleDelete} />
-          ))}
-        </div>
+        <>
+          <DataViewToolbar
+            title="Room Board"
+            subtitle="Saved views, density controls, and room context live here so property ops stays compact."
+            views={roomViews}
+            activeView={activeView}
+            onViewChange={setActiveView}
+            density={density}
+            onDensityChange={setDensity}
+          />
+          <div className={`grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 ${density === 'compact' ? 'xl:grid-cols-5' : 'xl:grid-cols-4'}`}>
+            {visibleRooms.map((room) => (
+              <RoomCard
+                key={room.id}
+                room={room}
+                activeRate={activeRateByRoom[room.id] || null}
+                compact={density === 'compact'}
+                onSelect={() => setSelectedRoom(room)}
+                onEdit={openEdit}
+                onDelete={handleDelete}
+              />
+            ))}
+          </div>
+        </>
       )}
 
       {showModal && (
@@ -730,11 +781,60 @@ export default function Rooms() {
         lodgeName={usageSnapshot?.lodge_name || settings?.lodge_name || settings?.company_name || ''}
         lodgeId={usageSnapshot?.lodge_id || settings?.lodge_id || ''}
       />
+      <ContextDrawer
+        open={!!selectedRoom}
+        title={selectedRoom ? `Room ${selectedRoom.room_number}` : ''}
+        subtitle={selectedRoom ? `${selectedRoom.room_type} · ${selectedRoom.status}` : ''}
+        onClose={() => setSelectedRoom(null)}
+        actions={selectedRoom ? [
+          { label: 'Edit room', primary: true, onClick: () => { openEdit(selectedRoom); setSelectedRoom(null) } },
+          { label: 'Open planning calendar', onClick: () => navigate('/calendar') },
+          { label: 'Delete room', onClick: () => handleDelete(selectedRoom) }
+        ] : []}
+      >
+        {selectedRoom && (
+          <div className="space-y-3">
+            <div className="bb-context-card">
+              <p className="text-xs font-bold uppercase tracking-[0.18em] text-slate-400">Nightly rate</p>
+              <p className="mt-1 text-2xl font-black tracking-[-0.04em] text-slate-900">
+                P {Number((activeRateByRoom[selectedRoom.id]?.rate_per_night ?? selectedRoom.rate_per_night) || 0).toFixed(2)}
+              </p>
+              {activeRateByRoom[selectedRoom.id]?.name && (
+                <p className="mt-1 text-xs font-semibold text-emerald-700">{activeRateByRoom[selectedRoom.id].name}</p>
+              )}
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="bb-context-card">
+                <p className="text-xs text-slate-500">Occupancy</p>
+                <p className="mt-1 text-sm font-bold text-slate-900">Up to {selectedRoom.max_occupancy} guests</p>
+              </div>
+              <div className="bb-context-card">
+                <p className="text-xs text-slate-500">Photos</p>
+                <p className="mt-1 text-sm font-bold text-slate-900">{selectedRoom.photos?.length || 0} saved</p>
+              </div>
+            </div>
+            {selectedRoom.description && (
+              <div className="bb-context-card">
+                <p className="text-xs font-bold uppercase tracking-[0.18em] text-slate-400">Notes</p>
+                <p className="mt-2 text-sm leading-6 text-slate-600">{selectedRoom.description}</p>
+              </div>
+            )}
+          </div>
+        )}
+      </ContextDrawer>
+      <ConfirmDialog
+        open={!!confirmDialog}
+        title={confirmDialog?.title}
+        message={confirmDialog?.message}
+        confirmLabel={confirmDialog?.confirmLabel}
+        onCancel={() => setConfirmDialog(null)}
+        onConfirm={confirmDialog?.onConfirm}
+      />
     </div>
   )
 }
 
-function RoomCard({ room, activeRate, onEdit, onDelete }) {
+function RoomCard({ room, activeRate, compact = false, onSelect, onEdit, onDelete }) {
   const coverPhoto = (Array.isArray(room.photos) && room.photos[0]) || room.photo || null
   const showingOverride = activeRate && Number(activeRate.rate_per_night) !== Number(room.rate_per_night)
   return (
@@ -742,7 +842,7 @@ function RoomCard({ room, activeRate, onEdit, onDelete }) {
       {coverPhoto && (
         <img src={coverPhoto} alt={`Room ${room.room_number}`} className="w-full h-32 object-cover" />
       )}
-      <div className="p-5">
+      <div className={compact ? 'p-4' : 'p-5'}>
       <div className="mb-4 flex items-start justify-between gap-3">
         <div>
           <p className="text-lg font-bold tracking-[-0.02em] text-slate-800">Room {room.room_number}</p>
@@ -766,9 +866,9 @@ function RoomCard({ room, activeRate, onEdit, onDelete }) {
           <span className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">Capacity</span>
           <span className="font-semibold text-slate-800">{room.max_occupancy} guests</span>
         </div>
-          {room.description && <p className="border-t border-slate-200 pt-2 text-xs italic text-slate-500">{room.description}</p>}
+          {!compact && room.description && <p className="border-t border-slate-200 pt-2 text-xs italic text-slate-500">{room.description}</p>}
         </div>
-      {Array.isArray(room.amenities) && room.amenities.length > 0 && (
+      {!compact && Array.isArray(room.amenities) && room.amenities.length > 0 && (
         <div className="mb-4 flex flex-wrap gap-2">
           {room.amenities.slice(0, 4).map((amenity) => (
             <span key={amenity} className="rounded-full border border-emerald-100 bg-emerald-50 px-2.5 py-1 text-[11px] font-semibold text-emerald-700">
@@ -777,7 +877,14 @@ function RoomCard({ room, activeRate, onEdit, onDelete }) {
           ))}
         </div>
       )}
-      <div className="flex gap-2 border-t border-slate-100 pt-3">
+      <div className="flex items-center justify-between gap-2 border-t border-slate-100 pt-3">
+        <button
+          onClick={onSelect}
+          className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600 transition-colors hover:bg-slate-50"
+        >
+          Details
+        </button>
+        <div className="flex gap-2">
         <button
           onClick={() => onEdit(room)}
           className="flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-medium text-slate-600 transition-colors hover:bg-green-50 hover:text-green-600"
@@ -790,6 +897,7 @@ function RoomCard({ room, activeRate, onEdit, onDelete }) {
         >
           <Trash2 size={13} /> Delete
         </button>
+        </div>
       </div>
       </div>
     </div>
@@ -817,9 +925,9 @@ function SummaryPill({ label, value, tone }) {
   }
 
   return (
-    <div className={`rounded-2xl border px-4 py-4 shadow-sm ${styles[tone] || styles.slate}`}>
-      <p className="text-xs font-semibold uppercase tracking-[0.18em] opacity-80">{label}</p>
-      <p className="mt-2 text-2xl font-bold tracking-[-0.03em]">{value}</p>
+    <div className={`bb-compact-stat ${styles[tone] || styles.slate}`}>
+      <p className="bb-compact-stat__label">{label}</p>
+      <p className="bb-compact-stat__value">{value}</p>
     </div>
   )
 }

@@ -22,6 +22,7 @@ body {
   --pwa-surface: rgba(17, 24, 39, 0.86);
   --pwa-line: rgba(255, 255, 255, 0.09);
   --pwa-radius: 22px;
+  --pwa-glow: 0 18px 50px rgba(16, 185, 129, 0.12);
 }
 
 #root {
@@ -92,6 +93,46 @@ html.light-mode nav.bg-gray-900 { background-color: #ffffff !important; border-c
   box-shadow: 0 18px 50px rgba(0, 0, 0, 0.22);
 }
 
+.pwa-card,
+.pwa-bottom-nav,
+.pwa-pulse-card {
+  isolation: isolate;
+}
+
+.pwa-pulse-card {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--pwa-line);
+  border-radius: 24px;
+  background:
+    radial-gradient(circle at top right, rgba(34, 197, 94, 0.16), transparent 30%),
+    rgba(17, 24, 39, 0.88);
+  box-shadow: var(--pwa-glow), 0 18px 48px rgba(0, 0, 0, 0.22);
+}
+
+.pwa-pulse-card::after {
+  position: absolute;
+  right: -34px;
+  bottom: -44px;
+  width: 120px;
+  height: 120px;
+  content: "";
+  border-radius: 999px;
+  background: rgba(16, 185, 129, 0.18);
+  z-index: -1;
+}
+
+.pwa-action-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  border: 1px solid var(--pwa-line);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.045);
+  padding: 0.8rem;
+}
+
 .pwa-pill {
   display: inline-flex;
   align-items: center;
@@ -116,4 +157,17 @@ html.light-mode .pwa-card {
   background: rgba(255, 255, 255, 0.92);
   border-color: rgba(15, 23, 42, 0.08);
   box-shadow: 0 18px 45px rgba(15, 23, 42, 0.08);
+}
+
+html.light-mode .pwa-pulse-card {
+  background:
+    radial-gradient(circle at top right, rgba(16, 185, 129, 0.14), transparent 32%),
+    rgba(255, 255, 255, 0.94);
+  border-color: rgba(15, 23, 42, 0.08);
+  box-shadow: 0 18px 45px rgba(15, 23, 42, 0.08);
+}
+
+html.light-mode .pwa-action-row {
+  background: rgba(248, 250, 252, 0.86);
+  border-color: rgba(15, 23, 42, 0.08);
 }

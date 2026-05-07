@@ -398,7 +398,7 @@ export default function BookingPage() {
             )}
           </aside>
 
-          <section className="surface-card rounded-[32px] p-5 sm:p-8">
+          <section className="booking-sticky-summary p-5 sm:p-8">
             <div className="flex flex-col items-start justify-between gap-3 sm:flex-row sm:items-center">
               <div>
                 <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-[var(--muted)]">Guest Details</p>
@@ -411,19 +411,19 @@ export default function BookingPage() {
             </div>
 
             <div className="mt-5 grid gap-3 sm:grid-cols-3">
-              <div className="rounded-[24px] border border-[var(--line)] bg-[var(--surface-soft)] p-4">
+              <div className="booking-step-card p-4 pl-5">
                 <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-[var(--muted)]">Your stay</p>
                 <p className="mt-2 text-sm font-semibold text-[var(--text)]">
                   {format(new Date(checkIn), 'd MMM')} to {format(new Date(checkOut), 'd MMM yyyy')}
                 </p>
                 <p className="mt-1 text-xs text-[var(--muted)]">{nights} night{nights !== 1 ? 's' : ''} in Room {room.room_number}</p>
               </div>
-              <div className="rounded-[24px] border border-[var(--line)] bg-[var(--surface-soft)] p-4">
+              <div className="booking-step-card p-4 pl-5">
                 <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-[var(--muted)]">Estimated total</p>
                 <p className="mt-2 text-sm font-semibold text-[var(--text)]">{lodge.currency}{totalAmount.toLocaleString()}</p>
                 <p className="mt-1 text-xs text-[var(--muted)]">Final confirmation still comes from the lodge team.</p>
               </div>
-              <div className="rounded-[24px] border border-[var(--line)] bg-[var(--surface-soft)] p-4">
+              <div className="booking-step-card p-4 pl-5">
                 <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-[var(--muted)]">What happens next</p>
                 <p className="mt-2 text-sm font-semibold text-[var(--text)]">The lodge reviews your request</p>
                 <p className="mt-1 text-xs text-[var(--muted)]">They confirm availability and reply by email or phone.</p>

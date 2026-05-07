@@ -202,7 +202,7 @@ export default function Housekeeping() {
     .filter(Boolean)
 
   return (
-    <div className="mx-auto flex max-w-7xl flex-col gap-6">
+    <div className="mx-auto flex max-w-7xl flex-col gap-3">
       <div className="bb-page-header">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.22em] text-emerald-700/70">Housekeeping Operations</p>
@@ -228,67 +228,67 @@ export default function Housekeeping() {
       </div>
 
       {/* Summary bar */}
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+      <div className="bb-compact-stat-grid">
         {Object.entries(STATUS_CONFIG).map(([key, cfg]) => {
           const Icon = cfg.icon
           return (
-            <div key={key} className="bb-card flex items-center gap-3 p-4">
-              <div className={`flex h-10 w-10 items-center justify-center rounded-xl ${cfg.badge}`}>
-                <Icon size={20} />
+            <div key={key} className="bb-compact-stat flex items-center gap-2.5">
+              <div className={`flex h-8 w-8 items-center justify-center rounded-xl ${cfg.badge}`}>
+                <Icon size={16} />
               </div>
               <div>
-                <p className="text-2xl font-bold text-slate-800">{counts[key]}</p>
-                <p className="text-xs text-slate-500">{cfg.label}</p>
+                <p className="bb-compact-stat__value">{counts[key]}</p>
+                <p className="bb-compact-stat__label text-slate-500">{cfg.label}</p>
               </div>
             </div>
           )
         })}
       </div>
 
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <div className="bb-card flex items-center gap-3 p-4">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-100 text-emerald-700">
-            <Package2 size={20} />
+      <div className="bb-compact-stat-grid">
+        <div className="bb-compact-stat flex items-center gap-2.5">
+          <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-emerald-100 text-emerald-700">
+            <Package2 size={16} />
           </div>
           <div>
-            <p className="text-2xl font-bold text-slate-800">{currency} {Number(supplySummary.totalCost || 0).toFixed(2)}</p>
-            <p className="text-xs text-slate-500">Supply cost this week</p>
+            <p className="bb-compact-stat__value">{currency} {Number(supplySummary.totalCost || 0).toFixed(2)}</p>
+            <p className="bb-compact-stat__label text-slate-500">Supply cost</p>
           </div>
         </div>
-        <div className="bb-card flex items-center gap-3 p-4">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-100 text-blue-700">
-            <ClipboardList size={20} />
+        <div className="bb-compact-stat flex items-center gap-2.5">
+          <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-blue-100 text-blue-700">
+            <ClipboardList size={16} />
           </div>
           <div>
-            <p className="text-2xl font-bold text-slate-800">{supplySummary.roomsTracked}</p>
-            <p className="text-xs text-slate-500">Rooms with supply capture</p>
+            <p className="bb-compact-stat__value">{supplySummary.roomsTracked}</p>
+            <p className="bb-compact-stat__label text-slate-500">Captured rooms</p>
           </div>
         </div>
-        <div className="bb-card flex items-center gap-3 p-4">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-amber-100 text-amber-700">
-            <AlertCircle size={20} />
+        <div className="bb-compact-stat flex items-center gap-2.5">
+          <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-amber-100 text-amber-700">
+            <AlertCircle size={16} />
           </div>
           <div>
-            <p className="text-2xl font-bold text-slate-800">{dirtyOrInProgress}</p>
-            <p className="text-xs text-slate-500">Rooms still needing attention</p>
+            <p className="bb-compact-stat__value">{dirtyOrInProgress}</p>
+            <p className="bb-compact-stat__label text-slate-500">Need attention</p>
           </div>
         </div>
-        <div className="bb-card flex items-center gap-3 p-4">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-purple-100 text-purple-700">
-            <CheckCircle size={20} />
+        <div className="bb-compact-stat flex items-center gap-2.5">
+          <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-purple-100 text-purple-700">
+            <CheckCircle size={16} />
           </div>
           <div>
-            <p className="text-2xl font-bold text-slate-800">{notesNeedingAttention}</p>
-            <p className="text-xs text-slate-500">Rooms with housekeeping notes</p>
+            <p className="bb-compact-stat__value">{notesNeedingAttention}</p>
+            <p className="bb-compact-stat__label text-slate-500">With notes</p>
           </div>
         </div>
-        <div className="bb-card flex items-center gap-3 p-4">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-100 text-blue-700">
-            <Clock size={20} />
+        <div className="bb-compact-stat flex items-center gap-2.5">
+          <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-blue-100 text-blue-700">
+            <Clock size={16} />
           </div>
           <div>
-            <p className="text-2xl font-bold text-slate-800">{arrivalAttention.length}</p>
-            <p className="text-xs text-slate-500">Today&apos;s arrivals needing prep</p>
+            <p className="bb-compact-stat__value">{arrivalAttention.length}</p>
+            <p className="bb-compact-stat__label text-slate-500">Arrival prep</p>
           </div>
         </div>
       </div>

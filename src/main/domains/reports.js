@@ -8,75 +8,42 @@ import {
   readCache,
   readSyncMeta
 } from './infrastructure.js'
-
-async function getAllRooms() {
-  return (await import('./' + 'rooms.js')).getAllRooms()
-}
-
-async function getAllBookings() {
-  return (await import('./' + 'bookings.js')).getAllBookings()
-}
-
-async function getExpenses(startDate, endDate, outletId = 'all') {
-  return (await import('./' + 'expenses.js')).getExpenses(startDate, endDate, outletId)
-}
+import { getAllRooms } from './rooms.js'
+import { getAllBookings } from './bookings.js'
+import { getExpenses } from './expenses.js'
+import { getMaintenanceRowsForPeriod } from './maintenance.js'
+import { getInventorySpend } from './inventory.js'
+import { getPosOrders, getOutlets, getPosRevenueSummary } from './pos.js'
+import { getSupplySpend, getRoomSupplyAllocations } from './supplies.js'
+import { getConferenceBookings } from './conference.js'
+import { getPoolDayUse } from './pool.js'
 
 async function getAllExpenses() {
   return getExpenses('2000-01-01', '2099-12-31')
-}
-
-async function getMaintenanceRowsForPeriod(startDate, endDate) {
-  return (await import('./' + 'maintenance.js')).getMaintenanceRowsForPeriod(startDate, endDate)
-}
-
-async function getInventorySpend(startDate, endDate, outletId = 'all') {
-  return (await import('./' + 'inventory.js')).getInventorySpend(startDate, endDate, outletId)
-}
-
-async function getPosOrders(startDate, endDate, outletFilter = null) {
-  return (await import('./' + 'pos.js')).getPosOrders(startDate, endDate, outletFilter)
 }
 
 async function getAllPOSOrders() {
   return getPosOrders('2000-01-01', '2099-12-31')
 }
 
-async function getOutlets() {
-  return (await import('./' + 'pos.js')).getOutlets()
-}
-
-async function getPosRevenueSummary(startDate, endDate, outletId = 'all') {
-  return (await import('./' + 'pos.js')).getPosRevenueSummary(startDate, endDate, outletId)
-}
-
-async function getSupplySpend(startDate, endDate) {
-  return (await import('./' + 'supplies.js')).getSupplySpend(startDate, endDate)
-}
-
-async function getRoomSupplyAllocations(startDate, endDate) {
-  return (await import('./' + 'supplies.js')).getRoomSupplyAllocations(startDate, endDate)
-}
-
-async function getConferenceBookings(start, end) {
-  return (await import('./' + 'conference.js')).getConferenceBookings(start, end)
-}
-
 async function getAllConferenceBookings() {
   return getConferenceBookings('2000-01-01', '2099-12-31')
-}
-
-async function getPoolDayUse(start, end) {
-  return (await import('./' + 'pool.js')).getPoolDayUse(start, end)
 }
 
 async function getAllPoolDayUse() {
   return getPoolDayUse('2000-01-01', '2099-12-31')
 }
 
+let dashboardSnapshotWarningShown = false;
+
 // ─── REPORTS ──────────────────────────────────────────────────────────────────
 
 export async function getOccupancyReport(startDate, endDate) {
-  const rooms = await getAllRooms();
+  const rooms = await getAllRooms().catch((error) => {
+    const cached = readCache('rooms');
+    if (cached.length > 0) return cached;
+    throw error;
+  });
   const cachedBookingsInRange = readCache('bookings').filter(
     (b) => b.status !== 'cancelled' && b.status !== 'pending' && b.check_in <= endDate && b.check_out > startDate
   );
@@ -879,7 +846,10 @@ export async function getDashboardStats() {
         };
       }
     } catch (error) {
-      console.warn('[Dashboard] Server snapshot unavailable, using legacy stats fallback:', error?.message || error);
+      if (!dashboardSnapshotWarningShown) {
+        dashboardSnapshotWarningShown = true;
+        console.warn('[Dashboard] Server snapshot unavailable, using legacy stats fallback:', error?.message || error);
+      }
     }
 
     // Run 5 targeted queries in parallel — each fetches only what it needs.

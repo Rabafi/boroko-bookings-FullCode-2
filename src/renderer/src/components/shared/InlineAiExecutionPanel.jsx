@@ -60,7 +60,7 @@ const ACTION_HANDLERS = {
     buildPayload: (selectedIds) => ({ booking_ids: [...new Set(selectedIds)] })
   },
   investigate_fraud: {
-    preview: () => window.api.ai.turn({ message: 'Run detect_payment_anomalies tool now.', model: 'gemini-2.5-flash' }),
+    preview: () => window.api.ai.turn({ message: 'Run detect_payment_anomalies tool now.', model: null }),
     execute: null,
     subscribe: null,
     normalize: (data) => ({ items: [], total: 0, count: 0, fraudData: data }),

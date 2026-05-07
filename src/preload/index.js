@@ -1,5 +1,11 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
+const onIpc = (channel, cb) => {
+  const listener = (_, value) => cb(value)
+  ipcRenderer.on(channel, listener)
+  return () => ipcRenderer.off(channel, listener)
+}
+
 const api = {
   auth: {
     login:          (email, password) => ipcRenderer.invoke('auth:login', email, password),
@@ -211,11 +217,11 @@ const api = {
     getSnapshot: (options) => ipcRenderer.invoke('usage:getSnapshot', options)
   },
   updates: {
-    onAvailable: (cb) => ipcRenderer.on('update:available', (_, info) => cb(info)),
-    onNotAvailable: (cb) => ipcRenderer.on('update:not-available', (_, info) => cb(info)),
-    onProgress: (cb) => ipcRenderer.on('update:progress', (_, p) => cb(p)),
-    onReady: (cb) => ipcRenderer.on('update:ready', (_, info) => cb(info)),
-    onError: (cb) => ipcRenderer.on('update:error', (_, info) => cb(info)),
+    onAvailable: (cb) => onIpc('update:available', cb),
+    onNotAvailable: (cb) => onIpc('update:not-available', cb),
+    onProgress: (cb) => onIpc('update:progress', cb),
+    onReady: (cb) => onIpc('update:ready', cb),
+    onError: (cb) => onIpc('update:error', cb),
     install: () => ipcRenderer.invoke('update:install'),
     check: () => ipcRenderer.invoke('update:check'),
     download: () => ipcRenderer.invoke('update:download'),

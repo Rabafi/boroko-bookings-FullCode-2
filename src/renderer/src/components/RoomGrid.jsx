@@ -146,7 +146,7 @@ function RoomRow({ room, bookings, days, today, currency, onSelect }) {
   )
 }
 
-function BookingPopup({ booking, currency, actionLoading, onClose, onOpenBooking, onCollectPayment, onStatusChange }) {
+function BookingPopup({ booking, currency, today, actionLoading, onClose, onOpenBooking, onCollectPayment, onStatusChange }) {
   const nights = Math.max(0, daysBetween(booking.check_in, booking.check_out))
   const total = Number(booking.total_amount || 0)
   const charges = Number(booking.charges_total || 0)
@@ -357,8 +357,8 @@ export default function RoomGrid() {
   }
 
   return (
-    <div className="p-6">
-      <div className="mb-5 flex items-center justify-between">
+    <div className="p-4">
+      <div className="mb-3 flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-gray-800">Live Room Board</h1>
           <p className="mt-0.5 text-sm text-gray-500">
@@ -389,44 +389,34 @@ export default function RoomGrid() {
         </div>
       </div>
 
-      <div className="mb-5 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <div className="rounded-2xl border border-emerald-100 bg-emerald-50/80 px-5 py-4">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-700">Occupied Tonight</p>
-          <p className="mt-3 text-2xl font-bold text-emerald-950">{occupiedTonight}</p>
-          <p className="mt-1 text-sm text-emerald-800">Rooms currently committed for tonight.</p>
+      <div className="bb-compact-stat-grid mb-3">
+        <div className="bb-compact-stat border-emerald-100 bg-emerald-50/80 text-emerald-800">
+          <p className="bb-compact-stat__label">Occupied Tonight</p>
+          <p className="bb-compact-stat__value text-emerald-950">{occupiedTonight}</p>
         </div>
-        <div className="rounded-2xl border border-sky-100 bg-sky-50/80 px-5 py-4">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-700">Vacant Tonight</p>
-          <p className="mt-3 text-2xl font-bold text-sky-950">{vacantTonight}</p>
-          <p className="mt-1 text-sm text-sky-800">Rooms still available to assign or sell.</p>
+        <div className="bb-compact-stat border-sky-100 bg-sky-50/80 text-sky-800">
+          <p className="bb-compact-stat__label">Vacant Tonight</p>
+          <p className="bb-compact-stat__value text-sky-950">{vacantTonight}</p>
         </div>
-        <div className="rounded-2xl border border-blue-100 bg-blue-50/80 px-5 py-4">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-blue-700">Arrivals Today</p>
-          <p className="mt-3 text-2xl font-bold text-blue-950">{arrivalsToday}</p>
-          <p className="mt-1 text-sm text-blue-800">Expected guests checking in today.</p>
+        <div className="bb-compact-stat border-blue-100 bg-blue-50/80 text-blue-800">
+          <p className="bb-compact-stat__label">Arrivals Today</p>
+          <p className="bb-compact-stat__value text-blue-950">{arrivalsToday}</p>
         </div>
-        <div className="rounded-2xl border border-amber-100 bg-amber-50/80 px-5 py-4">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-amber-700">Departures Today</p>
-          <p className="mt-3 text-2xl font-bold text-amber-950">{departuresToday}</p>
-          <p className="mt-1 text-sm text-amber-800">Guests due to check out today.</p>
+        <div className="bb-compact-stat border-amber-100 bg-amber-50/80 text-amber-800">
+          <p className="bb-compact-stat__label">Departures Today</p>
+          <p className="bb-compact-stat__value text-amber-950">{departuresToday}</p>
         </div>
-      </div>
-
-      <div className="mb-5 grid grid-cols-1 gap-4 md:grid-cols-3">
-        <div className="rounded-2xl border border-rose-100 bg-rose-50/80 px-5 py-4">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-rose-700">Outstanding Tonight</p>
-          <p className="mt-3 text-2xl font-bold text-rose-950">{formatMoney(currency, dueTonight)}</p>
-          <p className="mt-1 text-sm text-rose-800">Balance still owed on rooms currently active tonight.</p>
+        <div className="bb-compact-stat border-rose-100 bg-rose-50/80 text-rose-800">
+          <p className="bb-compact-stat__label">Outstanding</p>
+          <p className="bb-compact-stat__value text-rose-950">{formatMoney(currency, dueTonight)}</p>
         </div>
-        <div className="rounded-2xl border border-emerald-100 bg-emerald-50/80 px-5 py-4">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-700">Clean Rooms</p>
-          <p className="mt-3 text-2xl font-bold text-emerald-950">{housekeepingCounts.clean || 0}</p>
-          <p className="mt-1 text-sm text-emerald-800">Ready for arrival from a housekeeping point of view.</p>
+        <div className="bb-compact-stat border-emerald-100 bg-emerald-50/80 text-emerald-800">
+          <p className="bb-compact-stat__label">Clean Rooms</p>
+          <p className="bb-compact-stat__value text-emerald-950">{housekeepingCounts.clean || 0}</p>
         </div>
-        <div className="rounded-2xl border border-orange-100 bg-orange-50/80 px-5 py-4">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-orange-700">Need Attention</p>
-          <p className="mt-3 text-2xl font-bold text-orange-950">{(housekeepingCounts.dirty || 0) + (housekeepingCounts.in_progress || 0)}</p>
-          <p className="mt-1 text-sm text-orange-800">Dirty or in-progress rooms that are not fully ready yet.</p>
+        <div className="bb-compact-stat border-orange-100 bg-orange-50/80 text-orange-800">
+          <p className="bb-compact-stat__label">Need Attention</p>
+          <p className="bb-compact-stat__value text-orange-950">{(housekeepingCounts.dirty || 0) + (housekeepingCounts.in_progress || 0)}</p>
         </div>
       </div>
 
@@ -512,6 +502,7 @@ export default function RoomGrid() {
         <BookingPopup
           booking={selected}
           currency={currency}
+          today={today}
           actionLoading={statusActionLoading}
           onClose={() => setSelected(null)}
           onOpenBooking={openBooking}

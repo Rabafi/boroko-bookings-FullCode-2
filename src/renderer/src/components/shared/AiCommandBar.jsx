@@ -19,7 +19,7 @@ export default function AiCommandBar({ currency = 'R', stats }) {
     } catch(e) { return [] }
   })
 
-  const [workingModel] = useState(() => localStorage.getItem('BOROKO_LAST_MODEL') || 'gemini-2.5-flash')
+  const [workingModel] = useState(() => localStorage.getItem('BOROKO_LAST_MODEL') || null)
   const [apiStatus] = useState('active')
 
   const inputRef = useRef(null); const scrollRef = useRef(null)

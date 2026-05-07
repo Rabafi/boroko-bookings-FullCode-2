@@ -270,7 +270,7 @@ export default function OpsAi() {
   const loadFraudAlerts = useCallback(async () => {
     setFraudBusy(true)
     try {
-      const res = await window.api.ai.turn({ message: 'Run detect_payment_anomalies tool now.', model: 'gemini-2.5-flash' })
+      const res = await window.api.ai.turn({ message: 'Run detect_payment_anomalies tool now.', model: null })
       if (res?.toolResult?.tool === 'detect_payment_anomalies') {
         setFraudAlerts(res.toolResult.result)
       }
@@ -316,7 +316,7 @@ export default function OpsAi() {
     setBusy(true)
 
     try {
-      const result = await window.api.ai.turn({ message: text, model: 'gemini-2.5-flash' })
+      const result = await window.api.ai.turn({ message: text, model: null })
       if (!result?.success) throw new Error(result?.error || 'AI request failed')
 
       const aiMsg = {

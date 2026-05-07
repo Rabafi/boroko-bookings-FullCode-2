@@ -6,7 +6,7 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import autoUpdaterPkg from 'electron-updater'
 const { autoUpdater } = autoUpdaterPkg
 import * as db from './database.js'
-import { createAiOrchestrator } from './ai/aiOrchestrator.js'
+import { createAiOrchestrator, writeAiAuditLog } from './ai/aiOrchestrator.js'
 import { buildCapabilitySnapshot, normalizeAppRole } from '../shared/accessControl.js'
 import {
   getEmailConfig,
@@ -1608,6 +1608,11 @@ app.whenReady().then(async () => {
     try {
       await requireCapability('payments.record')
 
+      // P0.6: Bulk actions gate — must also respect AI_ACTIONS_ENABLED
+      if (process.env.BOROKO_AI_ACTIONS_ENABLED !== 'true') {
+        return { success: false, error: 'AI actions are currently disabled for safety. You can still ask questions and request summaries.' }
+      }
+
       const items = Array.isArray(payload?.items) ? payload.items : []
       const method = String(payload?.method || 'cash')
       const batchKey = `ai:batch:${new Date().toISOString()}`
@@ -1688,8 +1693,32 @@ app.whenReady().then(async () => {
       }
 
       emit({ type: 'complete', ...summary, timestamp: Date.now() })
+
+      const user = db.getCurrentUser?.() || null
+      const lodgeId = db.getActiveProfile?.()?.lodge_id || user?.lodge_id || null
+      // P0-6: Distinct audit event for bulk collections execution
+      writeAiAuditLog({
+        user, lodgeId, event: 'ai.collections.execute',
+        payload: {
+          source: 'bulk_workflow',
+          total_processed: items.length,
+          success_count: successCount,
+          skip_count: skipCount,
+          error_count: errorCount,
+          affected_booking_ids: (results || []).filter(r => r.status === 'paid').map(r => r.booking_id).slice(0, 50),
+          error_summaries: (results || []).filter(r => r.status === 'error').map(r => ({ booking_id: r.booking_id, error: r.error })).slice(0, 20),
+          method
+        }
+      }, { userDataPath: app.getPath('userData') })
+
       return summary
     } catch (e) {
+      const user = db.getCurrentUser?.() || null
+      const lodgeId = db.getActiveProfile?.()?.lodge_id || user?.lodge_id || null
+      writeAiAuditLog({
+        user, lodgeId, event: 'ai.collections.execute.failed',
+        payload: { source: 'bulk_workflow', error: e.message || 'Execution failed.' }
+      }, { userDataPath: app.getPath('userData') })
       return { success: false, error: e.message || 'Execution failed.' }
     }
   })
@@ -1730,6 +1759,12 @@ app.whenReady().then(async () => {
   ipcMain.handle('ai:overdue:execute', async (event, payload = {}) => {
     try {
       await requireCapability('bookings.manage')
+
+      // P0.6: Bulk actions gate — must also respect AI_ACTIONS_ENABLED
+      if (process.env.BOROKO_AI_ACTIONS_ENABLED !== 'true') {
+        return { success: false, error: 'AI actions are currently disabled for safety. You can still ask questions and request summaries.' }
+      }
+
       const bookingIds = [...new Set(Array.isArray(payload?.booking_ids) ? payload.booking_ids : [])]
       if (!bookingIds.length) return { success: false, error: 'No booking IDs provided.' }
 
@@ -1787,8 +1822,31 @@ app.whenReady().then(async () => {
         results
       }
       emit({ type: 'complete', ...summary, timestamp: Date.now() })
+
+      const user = db.getCurrentUser?.() || null
+      const lodgeId = db.getActiveProfile?.()?.lodge_id || user?.lodge_id || null
+      // P0-6: Distinct audit event for bulk overdue checkout execution
+      writeAiAuditLog({
+        user, lodgeId, event: 'ai.overdue.execute',
+        payload: {
+          source: 'bulk_workflow',
+          total_processed: bookingIds.length,
+          success_count: successCount,
+          skip_count: skipCount,
+          error_count: errorCount,
+          affected_booking_ids: bookingIds.slice(0, 50),
+          error_summaries: (results || []).filter(r => r.status === 'error').map(r => ({ booking_id: r.booking_id, error: r.error })).slice(0, 20)
+        }
+      }, { userDataPath: app.getPath('userData') })
+
       return summary
     } catch (e) {
+      const user = db.getCurrentUser?.() || null
+      const lodgeId = db.getActiveProfile?.()?.lodge_id || user?.lodge_id || null
+      writeAiAuditLog({
+        user, lodgeId, event: 'ai.overdue.execute.failed',
+        payload: { source: 'bulk_workflow', error: e.message || 'Execution failed.' }
+      }, { userDataPath: app.getPath('userData') })
       return { success: false, error: e.message || 'Execution failed.' }
     }
   })
@@ -2101,7 +2159,10 @@ app.whenReady().then(async () => {
     try {
       await requireCapability('system.health')
       return db.getCriticalErrorLog(limit)
-    } catch (e) { throw new Error(e?.message || 'Failed to load critical error history') }
+    } catch (e) {
+      if (/not authenticated/i.test(e?.message || '')) return []
+      throw new Error(e?.message || 'Failed to load critical error history')
+    }
   })
   ipcMain.handle('reports:clearCriticalErrors', async () => {
     try {

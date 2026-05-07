@@ -39,6 +39,11 @@ import {
   getSyncDetails
 } from './sync.js';
 
+import { getAllBookings } from './bookings.js';
+import { getAllRooms } from './rooms.js';
+import { getAllCustomers } from './customers.js';
+import { getInventoryItems } from './inventory.js';
+
 function normalizeRpcProbeEnvelope(data) {
   if (Array.isArray(data)) return data[0] || null;
   return data && typeof data === 'object' ? data : null;
@@ -72,20 +77,6 @@ async function probeRpc(name, args = {}, options = {}) {
   } catch (e) {
     return { ok: false, message: `${name} probe threw: ${e.message}` };
   }
-}
-
-// --- Dynamic Stubs for getOfflineSafetyData ---
-async function getAllBookings(...args) {
-  return (await import('./' + 'bookings.js')).getAllBookings(...args);
-}
-async function getAllRooms(...args) {
-  return (await import('./' + 'rooms.js')).getAllRooms(...args);
-}
-async function getAllCustomers(...args) {
-  return (await import('./' + 'customers.js')).getAllCustomers(...args);
-}
-async function getInventoryItems(...args) {
-  return (await import('./' + 'inventory.js')).getInventoryItems(...args);
 }
 
 // ─── HEALTH DIAGNOSTICS & OFFLINE SAFETY ───────────────────────────────────────

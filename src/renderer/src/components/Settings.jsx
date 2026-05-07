@@ -246,37 +246,46 @@ export default function Settings() {
   useEffect(() => {
     if (activeTab !== 'general' || updateListenersAdded.current) return
     updateListenersAdded.current = true
-    window.api.updates.onAvailable((info) => {
+    const cleanupAvailable = window.api.updates.onAvailable((info) => {
       setUpdateMeta(info)
       setUpdateStatus('available')
       setUpdateMessage(`v${info.version} is available to download.`)
       setDownloadProgress(null)
       setUpdateReady(false)
     })
-    window.api.updates.onNotAvailable(() => {
+    const cleanupNotAvailable = window.api.updates.onNotAvailable(() => {
       setUpdateMeta(null)
       setUpdateStatus('uptodate')
       setUpdateMessage('You\'re running the latest version.')
       setDownloadProgress(null)
       setUpdateReady(false)
     })
-    window.api.updates.onProgress((p) => {
+    const cleanupProgress = window.api.updates.onProgress((p) => {
       setUpdateStatus('available')
       setDownloadProgress(p)
       setUpdateMeta((current) => ({ ...(current || {}), progress: p }))
       setUpdateMessage(p.bytesPerSecond > 0 ? `Downloading at ${formatBytes(p.bytesPerSecond)}/s` : 'Preparing download...')
     })
-    window.api.updates.onReady((info) => {
+    const cleanupReady = window.api.updates.onReady((info) => {
       setUpdateMeta(info)
       setUpdateReady(true)
       setUpdateStatus('available')
       setUpdateMessage('Download complete. Restart to install.')
     })
-    window.api.updates.onError((info) => {
+    const cleanupError = window.api.updates.onError((info) => {
       setUpdateStatus('error')
       setUpdateMessage(info?.message || 'Update failed.')
       setUpdateReady(false)
     })
+
+    return () => {
+      updateListenersAdded.current = false
+      cleanupAvailable?.()
+      cleanupNotAvailable?.()
+      cleanupProgress?.()
+      cleanupReady?.()
+      cleanupError?.()
+    }
   }, [activeTab])
 
   const checkForUpdates = async () => {

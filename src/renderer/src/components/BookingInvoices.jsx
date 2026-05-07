@@ -4,6 +4,7 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import { Modal } from './shared/Modal'
 import { Receipt as BookingReceipt } from './shared/Receipt'
 import HorizontalScrollArea from './shared/HorizontalScrollArea'
+import { DataViewToolbar } from './shared/DataViewToolbar'
 import { DESKTOP_PAYMENT_METHODS } from '../constants/paymentMethods'
 import { useAuth, useSettings } from '../app-context'
 
@@ -588,6 +589,7 @@ export default function BookingInvoices() {
   const [paymentFilter, setPaymentFilter] = useState('all')
   const [bookingFilter, setBookingFilter] = useState('all')
   const [sortBy, setSortBy] = useState('issued_desc')
+  const [density, setDensity] = useState('comfortable')
   const [selectedInvoice, setSelectedInvoice] = useState(null)
   const [receiptInvoice, setReceiptInvoice] = useState(null)
   const [ledgerInvoice, setLedgerInvoice] = useState(null)
@@ -802,13 +804,19 @@ export default function BookingInvoices() {
       })
       .slice(0, 4)
   ), [filteredInvoices])
+  const invoiceViews = [
+    { value: 'all', label: 'All' },
+    { value: 'unpaid', label: 'Unpaid' },
+    { value: 'partial', label: 'Partial' },
+    { value: 'paid', label: 'Paid' }
+  ]
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="space-y-3 p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="text-sm font-semibold uppercase tracking-[0.18em] text-green-700">Finance</p>
-          <h1 className="text-3xl font-bold text-gray-900">Booking Invoices</h1>
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-green-700">Finance</p>
+          <h1 className="text-2xl font-bold text-gray-900">Booking Invoices</h1>
           <p className="mt-1 text-sm text-gray-500">
             View lodge booking invoices, payment history, refunds, and guest delivery in one place.
           </p>
@@ -855,31 +863,26 @@ export default function BookingInvoices() {
         </div>
       )}
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-gray-200">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-gray-500">Invoices</p>
-          <p className="mt-2 text-3xl font-bold text-gray-900">{filteredInvoices.length}</p>
-          <p className="mt-1 text-sm text-gray-500">Booking invoices in the current view</p>
+      <div className="bb-compact-stat-grid">
+        <div className="bb-compact-stat bg-white text-gray-700">
+          <p className="bb-compact-stat__label">Invoices</p>
+          <p className="bb-compact-stat__value text-gray-900">{filteredInvoices.length}</p>
         </div>
-        <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-gray-200">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-gray-500">Total Invoiced</p>
-          <p className="mt-2 text-3xl font-bold text-gray-900">{fmtMoney(currency, totals.total)}</p>
-          <p className="mt-1 text-sm text-gray-500">Room and booking charges billed</p>
+        <div className="bb-compact-stat bg-white text-gray-700">
+          <p className="bb-compact-stat__label">Total Invoiced</p>
+          <p className="bb-compact-stat__value text-gray-900">{fmtMoney(currency, totals.total)}</p>
         </div>
-        <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-gray-200">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-gray-500">Collected</p>
-          <p className="mt-2 text-3xl font-bold text-green-700">{fmtMoney(currency, totals.paid)}</p>
-          <p className="mt-1 text-sm text-gray-500">Payments recorded against these bookings</p>
+        <div className="bb-compact-stat bg-white text-green-700">
+          <p className="bb-compact-stat__label">Collected</p>
+          <p className="bb-compact-stat__value">{fmtMoney(currency, totals.paid)}</p>
         </div>
-        <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-gray-200">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-gray-500">Outstanding</p>
-          <p className="mt-2 text-3xl font-bold text-amber-700">{fmtMoney(currency, totals.balance)}</p>
-          <p className="mt-1 text-sm text-gray-500">{totals.openCount} invoice{totals.openCount === 1 ? '' : 's'} still open</p>
+        <div className="bb-compact-stat bg-white text-amber-700">
+          <p className="bb-compact-stat__label">Outstanding</p>
+          <p className="bb-compact-stat__value">{fmtMoney(currency, totals.balance)}</p>
         </div>
-        <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-gray-200">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-gray-500">Needs Attention</p>
-          <p className="mt-2 text-3xl font-bold text-amber-700">{needsAttentionCount}</p>
-          <p className="mt-1 text-sm text-gray-500">Invoices with payment totals that need review</p>
+        <div className="bb-compact-stat bg-white text-amber-700">
+          <p className="bb-compact-stat__label">Needs Attention</p>
+          <p className="bb-compact-stat__value">{needsAttentionCount}</p>
         </div>
       </div>
 
@@ -942,6 +945,17 @@ export default function BookingInvoices() {
       )}
 
       <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-gray-200">
+        <div className="mb-4">
+          <DataViewToolbar
+            title="Invoice Workbench"
+            subtitle="Saved payment views, density controls, and collection filters for faster finance review."
+            views={invoiceViews}
+            activeView={paymentFilter}
+            onViewChange={setPaymentFilter}
+            density={density}
+            onDensityChange={setDensity}
+          />
+        </div>
         <div className="grid gap-3 lg:grid-cols-[minmax(0,1.5fr)_220px_220px_220px]">
           <label className="relative block">
             <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
@@ -1004,18 +1018,18 @@ export default function BookingInvoices() {
           </div>
         ) : (
           <HorizontalScrollArea viewportClassName="overflow-y-visible">
-            <table className="min-w-[1180px] w-full text-sm">
+            <table className={`min-w-[1180px] w-full ${density === 'compact' ? 'text-xs' : 'text-sm'}`}>
               <thead className="bg-gray-50 text-left text-xs uppercase tracking-[0.16em] text-gray-500">
                 <tr>
-                  <th className="px-5 py-3 font-semibold">Invoice</th>
-                  <th className="px-5 py-3 font-semibold">Guest</th>
-                  <th className="px-5 py-3 font-semibold">Stay</th>
-                  <th className="px-5 py-3 text-right font-semibold">Total</th>
-                  <th className="px-5 py-3 text-right font-semibold">Balance</th>
-                  <th className="px-5 py-3 font-semibold">Payment</th>
-                  <th className="px-5 py-3 font-semibold">Booking</th>
-                  <th className="px-5 py-3 font-semibold">Issued</th>
-                  <th className="px-5 py-3 text-right font-semibold">Actions</th>
+                  <th className={`${density === 'compact' ? 'px-3 py-2' : 'px-5 py-3'} font-semibold`}>Invoice</th>
+                  <th className={`${density === 'compact' ? 'px-3 py-2' : 'px-5 py-3'} font-semibold`}>Guest</th>
+                  <th className={`${density === 'compact' ? 'px-3 py-2' : 'px-5 py-3'} font-semibold`}>Stay</th>
+                  <th className={`${density === 'compact' ? 'px-3 py-2' : 'px-5 py-3'} text-right font-semibold`}>Total</th>
+                  <th className={`${density === 'compact' ? 'px-3 py-2' : 'px-5 py-3'} text-right font-semibold`}>Balance</th>
+                  <th className={`${density === 'compact' ? 'px-3 py-2' : 'px-5 py-3'} font-semibold`}>Payment</th>
+                  <th className={`${density === 'compact' ? 'px-3 py-2' : 'px-5 py-3'} font-semibold`}>Booking</th>
+                  <th className={`${density === 'compact' ? 'px-3 py-2' : 'px-5 py-3'} font-semibold`}>Issued</th>
+                  <th className={`${density === 'compact' ? 'px-3 py-2' : 'px-5 py-3'} text-right font-semibold`}>Actions</th>
                 </tr>
               </thead>
               <tbody>

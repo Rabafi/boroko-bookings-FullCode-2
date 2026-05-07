@@ -169,31 +169,39 @@ function UpdateBanner() {
       if (info.phase === 'error') setMessage(info.error || 'The update failed.')
     }).catch(() => {})
 
-    window.api.updates.onAvailable((info) => {
+    const cleanupAvailable = window.api.updates.onAvailable((info) => {
       setSnoozed(isSnoozed())
       setUpdateInfo(info)
       setMessage('New version available')
       setState('available')
       setMinimized(isSnoozed())
     })
-    window.api.updates.onProgress((p) => {
+    const cleanupProgress = window.api.updates.onProgress((p) => {
       setSnoozed(false)
       setProgress(p)
       setState('downloading')
       setMessage(p.bytesPerSecond > 0 ? `${formatBytes(p.bytesPerSecond)}/s` : 'Downloading…')
     })
-    window.api.updates.onReady((info) => {
+    const cleanupReady = window.api.updates.onReady((info) => {
       setUpdateInfo(info)
       setState('ready')
       setMessage('Ready to install')
       setMinimized(false)
     })
-    window.api.updates.onError((info) => {
+    const cleanupError = window.api.updates.onError((info) => {
       setUpdateInfo(info)
       setMessage(info?.message || 'The update failed.')
       setState('error')
       setMinimized(false)
     })
+
+    return () => {
+      listenersAdded.current = false
+      cleanupAvailable?.()
+      cleanupProgress?.()
+      cleanupReady?.()
+      cleanupError?.()
+    }
   }, [])
 
   if (!state) return null
@@ -1022,10 +1030,7 @@ export default function App() {
       }
       return window.api.auth.validateSession?.()
         .then((validated) => {
-          if (!validated) {
-            clearStoredRendererSession()
-          }
-          return validated
+          return validated || restored
         })
         .catch(() => restored)
     }).catch(() => {

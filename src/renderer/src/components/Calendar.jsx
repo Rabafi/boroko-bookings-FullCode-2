@@ -253,28 +253,25 @@ export default function Calendar() {
         </div>
       )}
 
-      <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <div className="rounded-2xl border border-emerald-100 bg-emerald-50/80 px-5 py-4">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-700">Occupancy Outlook</p>
-          <p className="mt-3 text-2xl font-bold text-emerald-950">{monthMetrics.occupancyRate}%</p>
-          <p className="mt-1 text-sm text-emerald-800">Average occupied room nights across the month.</p>
+      <div className="bb-compact-stat-grid mb-3">
+        <div className="bb-compact-stat border-emerald-100 bg-emerald-50/80 text-emerald-800">
+          <p className="bb-compact-stat__label">Occupancy Outlook</p>
+          <p className="bb-compact-stat__value text-emerald-950">{monthMetrics.occupancyRate}%</p>
         </div>
-        <div className="rounded-2xl border border-blue-100 bg-blue-50/80 px-5 py-4">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-blue-700">Arrivals</p>
-          <p className="mt-3 text-2xl font-bold text-blue-950">{monthMetrics.totalArrivals}</p>
-          <p className="mt-1 text-sm text-blue-800">Expected check-ins this month.</p>
+        <div className="bb-compact-stat border-blue-100 bg-blue-50/80 text-blue-800">
+          <p className="bb-compact-stat__label">Arrivals</p>
+          <p className="bb-compact-stat__value text-blue-950">{monthMetrics.totalArrivals}</p>
         </div>
-        <div className="rounded-2xl border border-amber-100 bg-amber-50/80 px-5 py-4">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-amber-700">Departures</p>
-          <p className="mt-3 text-2xl font-bold text-amber-950">{monthMetrics.totalDepartures}</p>
-          <p className="mt-1 text-sm text-amber-800">Expected check-outs this month.</p>
+        <div className="bb-compact-stat border-amber-100 bg-amber-50/80 text-amber-800">
+          <p className="bb-compact-stat__label">Departures</p>
+          <p className="bb-compact-stat__value text-amber-950">{monthMetrics.totalDepartures}</p>
         </div>
-        <div className="rounded-2xl border border-violet-100 bg-violet-50/80 px-5 py-4">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-violet-700">Peak Day</p>
-          <p className="mt-3 text-xl font-bold text-violet-950">
+        <div className="bb-compact-stat border-violet-100 bg-violet-50/80 text-violet-800">
+          <p className="bb-compact-stat__label">Peak Day</p>
+          <p className="bb-compact-stat__value text-violet-950">
             {monthMetrics.peakDay ? format(new Date(`${monthMetrics.peakDay.dayKey}T12:00:00`), 'dd MMM') : '—'}
           </p>
-          <p className="mt-1 text-sm text-violet-800">
+          <p className="mt-1 text-xs font-semibold text-violet-800">
             {monthMetrics.peakDay ? `${monthMetrics.peakDay.occupiedRooms} occupied room${monthMetrics.peakDay.occupiedRooms === 1 ? '' : 's'}` : 'No bookings yet'}
           </p>
         </div>
@@ -351,30 +348,28 @@ export default function Calendar() {
               Use this to review expected arrivals, departures, and rooms occupied on that date.
             </p>
           </div>
-          <div className="grid grid-cols-1 gap-4 border-b border-gray-100 px-5 py-4 md:grid-cols-3">
-            <div className="rounded-xl bg-slate-50 px-4 py-3">
-              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Occupied Rooms</p>
-              <p className="mt-2 text-xl font-bold text-slate-900">{selectedSummary.occupiedRooms}</p>
+          <div className="bb-compact-stat-grid border-b border-gray-100 px-4 py-3">
+            <div className="bb-compact-stat bg-slate-50 text-slate-700">
+              <p className="bb-compact-stat__label">Occupied Rooms</p>
+              <p className="bb-compact-stat__value text-slate-900">{selectedSummary.occupiedRooms}</p>
             </div>
-            <div className="rounded-xl bg-blue-50 px-4 py-3">
-              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-blue-600">Arrivals</p>
-              <p className="mt-2 text-xl font-bold text-blue-950">{selectedSummary.arrivals.length}</p>
+            <div className="bb-compact-stat bg-blue-50 text-blue-700">
+              <p className="bb-compact-stat__label">Arrivals</p>
+              <p className="bb-compact-stat__value text-blue-950">{selectedSummary.arrivals.length}</p>
             </div>
-            <div className="rounded-xl bg-amber-50 px-4 py-3">
-              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-amber-600">Departures</p>
-              <p className="mt-2 text-xl font-bold text-amber-950">{selectedSummary.departures.length}</p>
+            <div className="bb-compact-stat bg-amber-50 text-amber-700">
+              <p className="bb-compact-stat__label">Departures</p>
+              <p className="bb-compact-stat__value text-amber-950">{selectedSummary.departures.length}</p>
             </div>
           </div>
-          <div className="grid grid-cols-1 gap-4 border-b border-gray-100 px-5 py-4 md:grid-cols-2">
-            <div className="rounded-xl bg-rose-50 px-4 py-3">
-              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-rose-600">Outstanding Balance</p>
-              <p className="mt-2 text-xl font-bold text-rose-950">{currency(currencySymbol, selectedSummary.outstandingValue || 0)}</p>
-              <p className="mt-1 text-xs text-rose-700">Across active stays on this date.</p>
+          <div className="bb-compact-stat-grid border-b border-gray-100 px-4 py-3">
+            <div className="bb-compact-stat bg-rose-50 text-rose-700">
+              <p className="bb-compact-stat__label">Outstanding Balance</p>
+              <p className="bb-compact-stat__value text-rose-950">{currency(currencySymbol, selectedSummary.outstandingValue || 0)}</p>
             </div>
-            <div className="rounded-xl bg-indigo-50 px-4 py-3">
-              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-indigo-600">Unpaid Active Stays</p>
-              <p className="mt-2 text-xl font-bold text-indigo-950">{selectedSummary.unpaidStays || 0}</p>
-              <p className="mt-1 text-xs text-indigo-700">Rooms that may need collection attention.</p>
+            <div className="bb-compact-stat bg-indigo-50 text-indigo-700">
+              <p className="bb-compact-stat__label">Unpaid Active Stays</p>
+              <p className="bb-compact-stat__value text-indigo-950">{selectedSummary.unpaidStays || 0}</p>
             </div>
           </div>
           <div className="px-5 py-4">

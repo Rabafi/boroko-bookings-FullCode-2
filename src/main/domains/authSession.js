@@ -365,9 +365,17 @@ export async function validateCurrentSession() {
   if (state.currentUser?.isMasterAdmin) return state.currentUser;
 
   const session = getBackendSession();
-  if (!state.currentUser || !session?.token) {
-    console.warn('[AUTH] Session validation failed: missing token or user');
+  if (!state.currentUser) {
+    console.warn('[AUTH] Session validation failed: missing user');
     return null;
+  }
+  if (!session?.token) {
+    authTrace('validateCurrentSession skipped', {
+      reason: 'missing_backend_token',
+      userId: state.currentUser?.id || null,
+      lodge_id: state.lodgeId
+    });
+    return state.currentUser;
   }
 
   if (session.expires_at) {

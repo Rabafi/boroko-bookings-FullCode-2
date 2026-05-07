@@ -56,6 +56,7 @@ export default function Login() {
   const [updateStatus, setUpdateStatus] = useState({ checking: false, available: false, version: '', error: '' })
   const [creatingLodge, setCreatingLodge] = useState(false)
   const passwordRef = useRef(null)
+  const loginInFlightRef = useRef(false)
 
   const emailStorageKey = getEmailStorageKey(activeProfile?.lodge_id)
   const hasProfiles = profiles.length > 0
@@ -126,6 +127,8 @@ export default function Login() {
 
   const handleSubmit = async (event) => {
     event.preventDefault()
+    if (loading || loginInFlightRef.current) return
+    loginInFlightRef.current = true
     setError('')
     setWarning('')
     setResetMessage('')
@@ -162,6 +165,7 @@ export default function Login() {
       const nextError = 'Login failed. Please try again.'
       setError(nextError)
     } finally {
+      loginInFlightRef.current = false
       setLoading(false)
     }
   }

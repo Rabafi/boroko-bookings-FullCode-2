@@ -28,7 +28,6 @@ import {
 } from 'lucide-react'
 import { StatusBadge } from './shared/StatusBadge'
 import HorizontalScrollArea from './shared/HorizontalScrollArea'
-import DashboardUsageCard from './shared/DashboardUsageCard'
 import UpgradeNudgeBanner from './shared/UpgradeNudgeBanner'
 import InlineAiExecutionPanel from './shared/InlineAiExecutionPanel'
 import { useSettings, useFeatures, useOnlineRequests } from '../app-context'
@@ -402,6 +401,85 @@ export default function Dashboard() {
     limits: usageLimits
   })
   const showDashboardPrompt = !isProPlan && dashboardPrompt.shouldPrompt
+  const todayQueue = [
+    {
+      key: 'arrivals',
+      label: 'Arrivals',
+      value: Number(stats?.checkins_today || 0),
+      detail: 'Guests expected today',
+      icon: CalendarCheck,
+      tone: 'emerald',
+      to: '/bookings'
+    },
+    {
+      key: 'departures',
+      label: 'Departures',
+      value: Number(stats?.checkouts_today || 0),
+      detail: 'Check-outs to clear',
+      icon: CalendarX,
+      tone: 'amber',
+      to: '/bookings'
+    },
+    {
+      key: 'requests',
+      label: 'Online requests',
+      value: pendingOnlineRequests.length,
+      detail: 'Need front-desk decision',
+      icon: Globe,
+      tone: 'sky',
+      to: '/bookings'
+    },
+    {
+      key: 'balances',
+      label: 'Balances',
+      value: bookingHealth.unpaidCount,
+      detail: `${currency} ${Number(bookingHealth.outstandingTotal || 0).toFixed(2)} outstanding`,
+      icon: CreditCard,
+      tone: 'rose',
+      to: '/invoices'
+    },
+    {
+      key: 'stock',
+      label: 'Low stock',
+      value: lowStock.length,
+      detail: 'Items below par',
+      icon: Package,
+      tone: 'orange',
+      to: '/inventory'
+    }
+  ]
+  const attentionSummary = [
+    pendingOnlineRequests.length > 0 && `${pendingOnlineRequests.length} website request${pendingOnlineRequests.length === 1 ? '' : 's'}`,
+    bookingHealth.unpaidCount > 0 && `${bookingHealth.unpaidCount} balance${bookingHealth.unpaidCount === 1 ? '' : 's'}`,
+    lowStock.length > 0 && `${lowStock.length} low-stock item${lowStock.length === 1 ? '' : 's'}`,
+    pendingFrontDeskRequests.length > 0 && `${pendingFrontDeskRequests.length} desk request${pendingFrontDeskRequests.length === 1 ? '' : 's'}`
+  ].filter(Boolean)
+  const cockpitCards = [
+    {
+      label: 'Cash Today',
+      value: `${currency} ${Number(paymentMixToday.total_collected || 0).toFixed(2)}`,
+      detail: `${paymentMixToday.payment_count || 0} payment${paymentMixToday.payment_count === 1 ? '' : 's'} recorded`,
+      to: '/invoices'
+    },
+    {
+      label: 'Occupancy',
+      value: `${Number(stats?.occupied_today || 0)}/${Number(stats?.total_rooms || 0)}`,
+      detail: 'Rooms occupied today',
+      to: '/rooms'
+    },
+    {
+      label: 'Upcoming',
+      value: Number(stats?.upcoming_bookings || 0),
+      detail: 'Future bookings on the books',
+      to: '/bookings'
+    },
+    {
+      label: 'Low Stock',
+      value: lowStock.length,
+      detail: 'Items below par level',
+      to: '/inventory'
+    }
+  ]
 
   return (
     <div className="bb-page">
@@ -412,6 +490,65 @@ export default function Dashboard() {
           <p className="bb-page-header-subtitle">{today}</p>
         </div>
       </div>
+
+      <section className="bb-ops-brief">
+        <div className="bb-ops-brief__intro">
+          <p className="bb-section-kicker">Today Queue</p>
+          <h2 className="bb-section-title mt-1">The next actions that keep the lodge moving.</h2>
+          <p className="mt-1 text-sm text-slate-500">
+            {attentionSummary.length > 0
+              ? `Focus first on ${attentionSummary.join(', ')}.`
+              : 'Nothing urgent is blocking operations right now.'}
+          </p>
+        </div>
+        <div className="bb-ops-queue">
+          {todayQueue.map((item) => {
+            const Icon = item.icon
+            return (
+              <button
+                key={item.key}
+                type="button"
+                onClick={() => navigate(item.to)}
+                className={`bb-ops-queue-card bb-ops-queue-card--${item.tone}`}
+              >
+                <span className="bb-ops-queue-card__icon"><Icon size={17} /></span>
+                <span className="min-w-0">
+                  <span className="bb-ops-queue-card__value">{item.value}</span>
+                  <span className="bb-ops-queue-card__label">{item.label}</span>
+                  <span className="bb-ops-queue-card__detail">{item.detail}</span>
+                </span>
+                <ArrowRight size={14} className="bb-ops-queue-card__arrow" />
+              </button>
+            )
+          })}
+        </div>
+      </section>
+
+      <section className="grid grid-cols-1 gap-3 lg:grid-cols-4">
+        {cockpitCards.map((card) => (
+          <button key={card.label} type="button" onClick={() => navigate(card.to)} className="bb-card p-4 text-left transition-all hover:-translate-y-0.5 hover:border-emerald-200">
+            <p className="text-xs font-bold uppercase tracking-[0.18em] text-slate-400">{card.label}</p>
+            <p className="mt-2 text-xl font-black tracking-[-0.04em] text-slate-900">{card.value}</p>
+            <p className="mt-1 text-sm leading-6 text-slate-500">{card.detail}</p>
+          </button>
+        ))}
+      </section>
+
+      {showDashboardPrompt && (
+        <UpgradeNudgeBanner
+          visible={showDashboardPrompt}
+          message="You’re approaching your plan limits. Consider upgrading to avoid interruptions."
+          sessionKey="boroko:upgrade-nudge:dashboard"
+          lodgeId={settings?.lodge_id || ''}
+          lodgeName={settings?.lodge_name || settings?.company_name || ''}
+          plan={currentPlan}
+          usage={usageCounts}
+          recommendation={dashboardPrompt}
+          trigger="banner"
+          onUpgrade={() => navigate('/settings', { state: { activeTab: 'license' } })}
+        />
+      )}
+
       {/* Quick Access */}
       <section className="bb-card p-4">
         <div className="mb-3 flex items-center justify-between gap-4">
@@ -449,70 +586,6 @@ export default function Dashboard() {
           })}
         </div>
       </section>
-
-      {/* Stats Grid */}
-      {stats && (
-        <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
-          <StatCard
-            icon={BedDouble}
-            label="Total Rooms"
-            value={stats.total_rooms}
-            color="bg-blue-50 text-blue-600"
-          />
-          <StatCard
-            icon={Users}
-            label="Occupied Today"
-            value={stats.occupied_today}
-            color="bg-green-50 text-green-600"
-          />
-          <StatCard
-            icon={CalendarCheck}
-            label="Check-ins Today"
-            value={stats.checkins_today}
-            color="bg-teal-50 text-teal-600"
-          />
-          <StatCard
-            icon={CalendarX}
-            label="Check-outs Today"
-            value={stats.checkouts_today}
-            color="bg-orange-50 text-orange-600"
-          />
-          <StatCard
-            icon={DollarSign}
-            label="Net Cash This Month"
-            value={`${currency} ${Number(stats.revenue_month || 0).toFixed(2)}`}
-            color="bg-purple-50 text-purple-600"
-          />
-          <StatCard
-            icon={TrendingUp}
-            label="Upcoming Bookings"
-            value={stats.upcoming_bookings}
-            color="bg-rose-50 text-rose-600"
-          />
-        </section>
-      )}
-
-      <DashboardUsageCard
-        plan={currentPlan}
-        usage={usageCounts}
-        status={dashboardStatus}
-        lodgeId={settings?.lodge_id || ''}
-        lodgeName={settings?.lodge_name || settings?.company_name || ''}
-        recommendation={dashboardPrompt}
-        onUpgrade={() => navigate('/settings', { state: { activeTab: 'license' } })}
-      />
-      <UpgradeNudgeBanner
-        visible={showDashboardPrompt}
-        message="You’re approaching your plan limits. Consider upgrading to avoid interruptions."
-        sessionKey="boroko:upgrade-nudge:dashboard"
-        lodgeId={settings?.lodge_id || ''}
-        lodgeName={settings?.lodge_name || settings?.company_name || ''}
-        plan={currentPlan}
-        usage={usageCounts}
-        recommendation={dashboardPrompt}
-        trigger="banner"
-        onUpgrade={() => navigate('/settings', { state: { activeTab: 'license' } })}
-      />
 
       {/* ── Online Booking Requests ─────────────────────────────────────── */}
       {onlineRequests.length > 0 && (
