@@ -229,6 +229,42 @@ function buildSplashHtml() {
   </html>`
 }
 
+function createStartupSplashWindow() {
+  if (activeSplashWindow && !activeSplashWindow.isDestroyed()) {
+    return activeSplashWindow
+  }
+
+  const appIcon = createAppLogoNativeImage() || undefined
+  const splashWindow = new BrowserWindow({
+    width: 420,
+    height: 420,
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    closable: true,
+    frame: false,
+    transparent: true,
+    show: true,
+    skipTaskbar: true,
+    alwaysOnTop: false,
+    title: 'Boroko Bookings Starting',
+    icon: appIcon,
+    webPreferences: {
+      sandbox: false,
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  })
+
+  activeSplashWindow = splashWindow
+  splashWindow.once('closed', () => {
+    if (activeSplashWindow === splashWindow) activeSplashWindow = null
+  })
+  splashWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(buildSplashHtml())}`)
+  return splashWindow
+}
+
 async function assertResourceBelongsToCurrentLodge(resourceLabel, resourceId, loader) {
   if (!resourceId) throw new Error(`${resourceLabel} id is required`)
   const currentUser = db.getCurrentUser?.()
@@ -726,37 +762,11 @@ function setupAutoUpdater(mainWindow) {
 }
 
 function createWindow() {
+  const existingSplashWindow = activeSplashWindow && !activeSplashWindow.isDestroyed()
+    ? activeSplashWindow
+    : null
   const appIcon = createAppLogoNativeImage() || undefined
-  if (activeSplashWindow && !activeSplashWindow.isDestroyed()) {
-    activeSplashWindow.destroy()
-  }
-
-  const splashWindow = new BrowserWindow({
-    width: 420,
-    height: 420,
-    resizable: false,
-    movable: false,
-    minimizable: false,
-    maximizable: false,
-    closable: true,
-    frame: false,
-    transparent: true,
-    show: true,
-    skipTaskbar: true,
-    alwaysOnTop: false,
-    title: 'Boroko Bookings Starting',
-    icon: appIcon,
-    webPreferences: {
-      sandbox: false,
-      contextIsolation: true,
-      nodeIntegration: false
-    }
-  })
-  activeSplashWindow = splashWindow
-  splashWindow.once('closed', () => {
-    if (activeSplashWindow === splashWindow) activeSplashWindow = null
-  })
-  splashWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(buildSplashHtml())}`)
+  const splashWindow = existingSplashWindow || createStartupSplashWindow()
 
   const mainWindow = new BrowserWindow({
     width: 1280,
@@ -1478,6 +1488,8 @@ app.whenReady().then(async () => {
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
   })
+
+  createStartupSplashWindow()
 
   // Init DB
   await db.initDatabase()
