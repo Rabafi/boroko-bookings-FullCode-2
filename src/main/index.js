@@ -1627,8 +1627,22 @@ app.whenReady().then(async () => {
   })
 
   // ── Role enforcement helper ────────────────────────────────────────────────
+  function getCurrentUserOrRestore() {
+    const existing = db.getCurrentUser()
+    if (existing) return existing
+
+    try {
+      const storedNonce = db.readSessionNonce?.()
+      const nonce = typeof storedNonce?.nonce === 'string' ? storedNonce.nonce : ''
+      if (!nonce) return null
+      return db.restoreUserSession?.(nonce) || null
+    } catch {
+      return null
+    }
+  }
+
   function requireRole(...roles) {
-    const user = db.getCurrentUser()
+    const user = getCurrentUserOrRestore()
     if (!user) throw new Error('Not authenticated')
     if (user.isMasterAdmin) return
     if (roles.length > 0 && !roles.includes(normalizeAppRole(user.role))) {
@@ -1637,7 +1651,7 @@ app.whenReady().then(async () => {
   }
 
   function requireCurrentLodgeOrSuperAdmin(targetLodgeId) {
-    const user = db.getCurrentUser()
+    const user = getCurrentUserOrRestore()
     if (normalizeAppRole(user?.role) === 'super_admin') return
 
     const activeProfile = db.getActiveProfile?.()
@@ -1652,7 +1666,7 @@ app.whenReady().then(async () => {
   }
 
   async function getAccessSnapshot() {
-    const user = db.getCurrentUser()
+    const user = getCurrentUserOrRestore()
     if (!user) throw new Error('Not authenticated')
     if (user.isMasterAdmin) {
       return buildCapabilitySnapshot({ isMasterAdmin: true })
@@ -1674,7 +1688,7 @@ app.whenReady().then(async () => {
   }
 
   async function requireFeature(featureName) {
-    const user = db.getCurrentUser()
+    const user = getCurrentUserOrRestore()
     if (!user) throw new Error('Not authenticated')
     if (user.isMasterAdmin || normalizeAppRole(user?.role) === 'super_admin') return
 

@@ -78,6 +78,8 @@ export async function sendUserInviteOrReset(id) {
   }
 }
 
+export { readSessionNonce } from './authSession.js'
+
 export {
   setCurrentUser,
   getCurrentUser,

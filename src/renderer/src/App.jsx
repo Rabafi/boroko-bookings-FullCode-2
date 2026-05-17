@@ -746,6 +746,7 @@ export default function App() {
       return null
     }
   })
+  const [authRestoreLoading, setAuthRestoreLoading] = useState(() => !isBrowserPreview && !!user)
   const [profiles, setProfiles] = useState([])
   const [activeProfile, setActiveProfile] = useState(null)
   const [profilesLoading, setProfilesLoading] = useState(!isBrowserPreview)
@@ -1005,6 +1006,16 @@ export default function App() {
   // renderer instance previously authenticated — identity is derived from the
   // nonce file in the main process, not from renderer-supplied data.
   useEffect(() => {
+    if (isBrowserPreview) {
+      setAuthRestoreLoading(false)
+      return
+    }
+    if (!user) {
+      setAuthRestoreLoading(false)
+    }
+  }, [isBrowserPreview, user])
+
+  useEffect(() => {
     if (profilesLoading || !user || restoreAttemptedRef.current || !window.api?.auth?.restoreSession) return
 
     if (!user.isMasterAdmin) {
@@ -1023,6 +1034,7 @@ export default function App() {
       const restored = result?.user || result
       if (!restored) {
         clearStoredRendererSession()
+        setAuthRestoreLoading(false)
         return null
       }
       if (result?.nonce) {
@@ -1033,8 +1045,12 @@ export default function App() {
           return validated || restored
         })
         .catch(() => restored)
+        .finally(() => {
+          setAuthRestoreLoading(false)
+        })
     }).catch(() => {
       clearStoredRendererSession()
+      setAuthRestoreLoading(false)
     })
   }, [activeProfile?.lodge_id, clearStoredRendererSession, profilesLoading, user])
 
@@ -1142,7 +1158,7 @@ export default function App() {
     )
   }
 
-  const appLoading = (profilesLoading || settingsLoading) && !isLoggingIn
+  const appLoading = (profilesLoading || settingsLoading || authRestoreLoading) && !isLoggingIn
   const preAuthFallbackPath = profiles.length === 0
     ? '/welcome'
     : activeProfile?.status === 'draft'
