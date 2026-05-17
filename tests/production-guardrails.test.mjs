@@ -59,6 +59,11 @@ async function run() {
   assert.match(mainIndex, /assertResourceBelongsToCurrentLodge\('Supply item', itemId, db\.getSupplyItemById\)/)
   assert.match(mainIndex, /assertResourceBelongsToCurrentLodge\('POS menu item', id, db\.getPosMenuItemById\)/)
 
+  const authLogin = await read('src/main/domains/authLogin.js')
+  assert.match(authLogin, /supabase_auth_not_migrated/)
+  assert.match(authLogin, /\['supabase_auth_unavailable', 'supabase_auth_not_migrated'\]\.includes\(supabaseAuth\.code\)/)
+  assert.doesNotMatch(authLogin, /if \(supabaseAuth\.user \|\| supabaseAuth\.code !== 'supabase_auth_unavailable'\)/)
+
   const panel = await read('src/renderer/src/components/SystemHealthPanel.jsx')
   assert.match(panel, /financialValidationAlerts\?\.\(8\)/)
   assert.match(panel, /criticalErrors\?\.\(8\)/)

@@ -230,7 +230,10 @@ async function findRemoteUsersByEmailForCurrentLodge(emailLower) {
 
 async function authenticateOnline(emailLower, password) {
   const supabaseAuth = await authenticateWithSupabaseAuth(emailLower, password);
-  if (supabaseAuth.user || supabaseAuth.code !== 'supabase_auth_unavailable') {
+  if (
+    supabaseAuth.user ||
+    !['supabase_auth_unavailable', 'supabase_auth_not_migrated'].includes(supabaseAuth.code)
+  ) {
     return supabaseAuth;
   }
 
