@@ -6,6 +6,7 @@ import { sendSignedMeshRequest } from './meshClient.js';
 import { readSyncQueue, writeSyncQueue } from '../syncStore.js';
 import { detectConflicts } from './meshConflict.js';
 import { computeBodyHash } from './meshSecurity.js';
+import { readCache, writeCache } from '../cacheStore.js';
 
 const ALLOWED_RPC_TABLES = new Set([
   'create_booking',
@@ -49,6 +50,57 @@ function isValidDate(value) {
 
 function hasValidDateRange(checkIn, checkOut) {
   return isValidDate(checkIn) && isValidDate(checkOut) && Date.parse(checkOut) > Date.parse(checkIn);
+}
+
+function isFiniteNumber(value) {
+  return Number.isFinite(Number(value));
+}
+
+function getPosInventoryUsage(items = []) {
+  const usage = new Map();
+  for (const entry of items || []) {
+    const inventoryItemId = String(entry?.inventory_item_id || '').trim();
+    if (!inventoryItemId) continue;
+    const quantity = Math.max(0, Number(entry.quantity || 0));
+    const depletionQty = Math.max(1, Number(entry.depletion_qty || 1));
+    if (quantity <= 0) continue;
+    usage.set(inventoryItemId, (usage.get(inventoryItemId) || 0) + quantity * depletionQty);
+  }
+  return usage;
+}
+
+export function applyImportedPosInventoryEffects(items = []) {
+  if (!items.length) return;
+  const inventory = readCache('inventory-items');
+  if (!Array.isArray(inventory) || inventory.length === 0) return;
+
+  let changed = false;
+  let nextInventory = inventory;
+
+  for (const item of items) {
+    if (item.table !== 'create_pos_order' && item.table !== 'approve_pos_void_with_pin') continue;
+    const payload = item.data?.payload || {};
+    const usage = getPosInventoryUsage(payload.items || []);
+    if (usage.size === 0) continue;
+
+    const multiplier = item.table === 'approve_pos_void_with_pin' ? 1 : -1;
+    nextInventory = nextInventory.map((row) => {
+      const delta = usage.get(row?.id) || 0;
+      if (!delta) return row;
+      changed = true;
+      return {
+        ...row,
+        current_stock: Math.max(0, Number(row.current_stock || 0) + (delta * multiplier)),
+        _pending_sync: true,
+        _sync_state: 'pending',
+        _mesh_inventory_adjusted_at: new Date().toISOString()
+      };
+    });
+  }
+
+  if (changed) {
+    writeCache('inventory-items', nextInventory);
+  }
 }
 
 function stripMeshMetadata(item = {}) {
@@ -148,6 +200,43 @@ export function validateSyncQueueItem(item) {
     if (!isPlainObject(payload)) return { isValid: false, reason: 'create_room missing payload object' };
     if (!hasString(payload.id) || !hasString(payload.lodge_id) || !hasString(payload.room_number)) {
       return { isValid: false, reason: 'create_room missing required room fields' };
+    }
+  }
+
+  if (item.table === 'create_pos_order') {
+    const payload = item.data.payload;
+    if (!isPlainObject(payload)) return { isValid: false, reason: 'create_pos_order missing payload object' };
+    const required = ['id', 'lodge_id', 'create_idempotency_key'];
+    const missing = required.filter((field) => !hasString(payload[field]));
+    if (missing.length > 0) return { isValid: false, reason: `create_pos_order missing ${missing.join(', ')}` };
+    if (!Array.isArray(payload.items) || payload.items.length === 0) {
+      return { isValid: false, reason: 'create_pos_order missing line items' };
+    }
+    for (const line of payload.items) {
+      if (!isPlainObject(line)) return { isValid: false, reason: 'create_pos_order line item is invalid' };
+      if (!hasString(line.item_name) && !hasString(line.menu_item_id) && !hasString(line.inventory_item_id)) {
+        return { isValid: false, reason: 'create_pos_order line item missing identity' };
+      }
+      if (!isFiniteNumber(line.quantity) || Number(line.quantity) <= 0) {
+        return { isValid: false, reason: 'create_pos_order line item has invalid quantity' };
+      }
+      if (!isFiniteNumber(line.unit_price) || Number(line.unit_price) < 0) {
+        return { isValid: false, reason: 'create_pos_order line item has invalid unit price' };
+      }
+      if (line.inventory_item_id && (!isFiniteNumber(line.depletion_qty) || Number(line.depletion_qty) <= 0)) {
+        return { isValid: false, reason: 'create_pos_order line item has invalid depletion quantity' };
+      }
+    }
+  }
+
+  if (item.table === 'approve_pos_void_with_pin') {
+    const payload = item.data.payload;
+    if (!isPlainObject(payload)) return { isValid: false, reason: 'approve_pos_void_with_pin missing payload object' };
+    if (!hasString(payload.order_id) || !hasString(payload.lodge_id) || !hasString(payload.override_log_id)) {
+      return { isValid: false, reason: 'approve_pos_void_with_pin missing required void fields' };
+    }
+    if (payload.items && !Array.isArray(payload.items)) {
+      return { isValid: false, reason: 'approve_pos_void_with_pin items must be an array' };
     }
   }
 
@@ -296,6 +385,7 @@ export async function syncMeshQueues() {
         if (deduplicatedNewItems.length > 0) {
           const mergedQueue = [...latestLocalQueue, ...deduplicatedNewItems];
           writeSyncQueue(mergedQueue);
+          applyImportedPosInventoryEffects(deduplicatedNewItems);
           meshState.lastQueueMergeAt = new Date();
           hasMergedNewItems = true;
           console.log(`[MeshMerge] Successfully imported ${deduplicatedNewItems.length} operations from Peer ${peerId}.`);

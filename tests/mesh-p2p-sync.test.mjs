@@ -159,7 +159,7 @@ async function runTests() {
   const { meshState } = await import('../scratch/mocked/meshState.js');
   const { generateMeshSignature, validateIncomingRequest, computeBodyHash } = await import('../scratch/mocked/meshSecurity.js');
   const { createLocalLock, registerRemoteLock, releaseLocalLock } = await import('../scratch/mocked/meshLocks.js');
-  const { validateSyncQueueItem, syncMeshQueues } = await import('../scratch/mocked/meshQueueMerge.js');
+  const { validateSyncQueueItem, syncMeshQueues, applyImportedPosInventoryEffects } = await import('../scratch/mocked/meshQueueMerge.js');
   const { detectConflicts, datesOverlap } = await import('../scratch/mocked/meshConflict.js');
   const { state } = await import('../scratch/mocked/mockState.js');
   const mockSyncStore = await import('../scratch/mocked/mockSyncStore.js');
@@ -307,6 +307,45 @@ async function runTests() {
     const validation2 = validateSyncQueueItem(invalidTableItem);
     assert.equal(validation2.isValid, false);
     assert.match(validation2.reason, /not allowlisted/);
+
+    const validPosItem = {
+      _queue_id: 'pos-order-11',
+      type: 'rpc',
+      table: 'create_pos_order',
+      data: {
+        payload: {
+          id: 'pos-11',
+          lodge_id: meshState.lodgeId,
+          create_idempotency_key: 'pos-intent-11',
+          total: 60,
+          payment_method: 'cash',
+          items: [
+            {
+              inventory_item_id: 'stock-1',
+              item_name: 'Water',
+              quantity: 3,
+              unit_price: 20,
+              depletion_qty: 1
+            }
+          ]
+        }
+      }
+    };
+    assert.equal(validateSyncQueueItem(validPosItem).isValid, true);
+
+    const invalidPosItem = {
+      ...validPosItem,
+      _queue_id: 'pos-order-bad',
+      data: {
+        payload: {
+          ...validPosItem.data.payload,
+          items: [{ inventory_item_id: 'stock-1', item_name: 'Water', quantity: -2, unit_price: 20 }]
+        }
+      }
+    };
+    const invalidPosValidation = validateSyncQueueItem(invalidPosItem);
+    assert.equal(invalidPosValidation.isValid, false);
+    assert.match(invalidPosValidation.reason, /invalid quantity/);
   });
 
   // ----------------------------------------------------
@@ -522,7 +561,62 @@ async function runTests() {
   });
 
   // ----------------------------------------------------
-  // TEST 11: No Cache Exchange Endpoint Exists
+  // TEST 11: Imported POS orders reserve/deplete local inventory
+  // ----------------------------------------------------
+  await runTest('Imported POS queue operations update local inventory reservation', () => {
+    mockCacheStore.setMockCache('inventory-items', [
+      { id: 'stock-1', name: 'Water', current_stock: 12 },
+      { id: 'stock-2', name: 'Juice', current_stock: 8 }
+    ]);
+
+    applyImportedPosInventoryEffects([
+      {
+        _queue_id: 'pos-order-peer-1',
+        type: 'rpc',
+        table: 'create_pos_order',
+        data: {
+          payload: {
+            lodge_id: meshState.lodgeId,
+            id: 'peer-pos-1',
+            create_idempotency_key: 'peer-pos-intent-1',
+            items: [
+              { inventory_item_id: 'stock-1', item_name: 'Water', quantity: 2, unit_price: 10, depletion_qty: 2 }
+            ]
+          }
+        },
+        _mesh_imported: true
+      }
+    ]);
+
+    let inventory = mockCacheStore.readCache('inventory-items');
+    assert.equal(inventory.find((item) => item.id === 'stock-1').current_stock, 8);
+    assert.equal(inventory.find((item) => item.id === 'stock-1')._sync_state, 'pending');
+
+    applyImportedPosInventoryEffects([
+      {
+        _queue_id: 'pos-void-peer-1',
+        type: 'rpc',
+        table: 'approve_pos_void_with_pin',
+        data: {
+          payload: {
+            lodge_id: meshState.lodgeId,
+            order_id: 'peer-pos-1',
+            override_log_id: 'void-log-1',
+            items: [
+              { inventory_item_id: 'stock-1', item_name: 'Water', quantity: 1, unit_price: 10, depletion_qty: 2 }
+            ]
+          }
+        },
+        _mesh_imported: true
+      }
+    ]);
+
+    inventory = mockCacheStore.readCache('inventory-items');
+    assert.equal(inventory.find((item) => item.id === 'stock-1').current_stock, 10);
+  });
+
+  // ----------------------------------------------------
+  // TEST 12: No Cache Exchange Endpoint Exists
   // ----------------------------------------------------
   await runTest('Strictly ban cache snapshot transfers', () => {
     // Assert there is no GET /mesh/cache/:entity route allowlisted in meshServer.js
