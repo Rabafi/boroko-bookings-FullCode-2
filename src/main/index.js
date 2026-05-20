@@ -1,11 +1,13 @@
 import { app, shell, BrowserWindow, ipcMain, Notification, dialog, Menu, nativeImage } from 'electron'
-import { join, dirname } from 'path'
+import { join, dirname, basename } from 'path'
 import fs from 'fs'
+import crypto from 'crypto'
 import * as XLSX from 'xlsx'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import autoUpdaterPkg from 'electron-updater'
 const { autoUpdater } = autoUpdaterPkg
 import * as db from './database.js'
+import { readCache } from './domains/cacheStore.js'
 import { createAiOrchestrator, writeAiAuditLog } from './ai/aiOrchestrator.js'
 import { buildCapabilitySnapshot, normalizeAppRole } from '../shared/accessControl.js'
 import {
@@ -22,14 +24,122 @@ import {
   buildSupportTicketEmail,
   buildUpgradeRequestEmail
 } from './emailNotifications.js'
+import { createLocalLock, releaseLocalLock } from './domains/mesh/meshLocks.js'
 
 const INPUT_FOCUS_DEBUG = false
 const APP_LOGO_FILENAME = 'boroko-bookings-logo.svg'
 const APP_DARK_LOGO_FILENAME = 'boroko-bookings-logo-dark.png'
 let activeSplashWindow = null
 
+function readStartupJson(filePath, fallback = null) {
+  try {
+    if (!fs.existsSync(filePath)) return fallback
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'))
+  } catch {
+    return fallback
+  }
+}
+
+function hasStartupLodgeProfile(userDataDir) {
+  const registry = readStartupJson(join(userDataDir, 'profiles.json'), null)
+  return Boolean(registry?.active_lodge_id && Array.isArray(registry?.profiles) && registry.profiles.length > 0)
+}
+
+function writeStartupJson(filePath, value) {
+  fs.mkdirSync(dirname(filePath), { recursive: true })
+  fs.writeFileSync(filePath, JSON.stringify(value, null, 2), 'utf8')
+}
+
+function getOrCreateLocalDevMeshSecret(appDataDir) {
+  const secretPath = join(appDataDir, 'boroko-bookings-local-mesh-secret.json')
+  const existing = String(readStartupJson(secretPath, {})?.lodge_mesh_secret || '').trim()
+  if (existing) return existing
+
+  const secret = crypto.randomUUID() + crypto.randomUUID()
+  writeStartupJson(secretPath, {
+    lodge_mesh_secret: secret,
+    created_at: new Date().toISOString(),
+    note: 'Local development mesh secret shared by unpackaged Boroko desk test instances only.'
+  })
+  return secret
+}
+
+function ensureDevDeskMeshSecret(appDataDir, devUserDataDir) {
+  try {
+    const registry = readStartupJson(join(devUserDataDir, 'profiles.json'), null)
+    const activeLodgeId = registry?.active_lodge_id
+    if (!activeLodgeId) return
+
+    const settingsPath = join(devUserDataDir, 'boroko-cache', 'profiles', activeLodgeId, 'settings.json')
+    const settings = readStartupJson(settingsPath, null)
+    const rows = Array.isArray(settings) ? settings : settings ? [settings] : []
+    if (!rows.length) return
+
+    const firstRow = rows[0] || {}
+    if (String(firstRow.lodge_mesh_secret || '').trim()) return
+
+    rows[0] = {
+      ...firstRow,
+      lodge_mesh_secret: getOrCreateLocalDevMeshSecret(appDataDir),
+      _local_mesh_secret_for_testing: true
+    }
+    writeStartupJson(settingsPath, rows)
+    console.log('[DevDesk] Added shared local development mesh secret to cached settings.')
+  } catch (error) {
+    console.warn('[DevDesk] Could not prepare local development mesh secret:', error?.message || error)
+  }
+}
+
+function seedDevDeskFromInstalledApp(installedUserDataDir, devUserDataDir) {
+  try {
+    if (!installedUserDataDir || !devUserDataDir || installedUserDataDir === devUserDataDir) return
+    if (!fs.existsSync(installedUserDataDir) || hasStartupLodgeProfile(devUserDataDir)) return
+
+    fs.mkdirSync(devUserDataDir, { recursive: true })
+
+    for (const fileName of ['profiles.json', 'lodge-id.json']) {
+      const sourcePath = join(installedUserDataDir, fileName)
+      const targetPath = join(devUserDataDir, fileName)
+      if (fs.existsSync(sourcePath)) fs.copyFileSync(sourcePath, targetPath)
+    }
+
+    const sourceProfilesDir = join(installedUserDataDir, 'boroko-cache', 'profiles')
+    const targetProfilesDir = join(devUserDataDir, 'boroko-cache', 'profiles')
+    if (!fs.existsSync(sourceProfilesDir)) return
+
+    const skippedFiles = new Set([
+      'mesh-identity.json',
+      'sync-queue.json',
+      'sync-failed.json',
+      'sync-mesh-quarantine.json',
+      'session-nonce.json',
+      'renderer-errors.log'
+    ])
+
+    fs.cpSync(sourceProfilesDir, targetProfilesDir, {
+      recursive: true,
+      force: true,
+      filter: (sourcePath) => !skippedFiles.has(basename(sourcePath))
+    })
+
+    console.log('[DevDesk] Seeded terminal desk profile from installed Boroko Bookings data.')
+  } catch (error) {
+    console.warn('[DevDesk] Could not seed terminal desk profile:', error?.message || error)
+  }
+}
+
 if (process.env.BOROKO_TEST_USER_DATA_DIR) {
   app.setPath('userData', process.env.BOROKO_TEST_USER_DATA_DIR)
+} else if (!app.isPackaged) {
+  const devDeskName = process.env.BOROKO_DEV_DESK_NAME || 'Boroko Bookings Dev Desk'
+  const installedDeskName = process.env.BOROKO_INSTALLED_DESK_NAME || 'boroko-bookings'
+  const appDataDir = app.getPath('appData')
+  const devUserDataDir = join(appDataDir, devDeskName)
+  const installedUserDataDir = join(appDataDir, installedDeskName)
+  seedDevDeskFromInstalledApp(installedUserDataDir, devUserDataDir)
+  ensureDevDeskMeshSecret(appDataDir, devUserDataDir)
+  app.setName(devDeskName)
+  app.setPath('userData', devUserDataDir)
 }
 
 // ── URL safety guard (used by shell:openExternal and setWindowOpenHandler) ────
@@ -2528,8 +2638,25 @@ app.whenReady().then(async () => {
 
   // ── Rooms ─────────────────────────────────────────────────────────────────
   ipcMain.handle('rooms:getAll', async () => {
-    try { await requireCapability('rooms.view'); return await db.getAllRooms() }
-    catch { return [] }
+    try {
+      await requireCapability('rooms.view')
+      return await db.getAllRooms()
+    } catch (error) {
+      console.warn('[Rooms] rooms:getAll using cache fallback:', error?.message || error)
+      try {
+        return await db.getAllRooms()
+      } catch {
+        return []
+      }
+    }
+  })
+  ipcMain.handle('rooms:getCached', async () => {
+    try {
+      await requireCapability('rooms.view')
+      return readCache('rooms')
+    } catch {
+      return []
+    }
   })
   ipcMain.handle('rooms:create', async (_, data) => {
     try {
@@ -2590,6 +2717,36 @@ app.whenReady().then(async () => {
   ipcMain.handle('bookings:getAll', async () => {
     try { await requireCapability('bookings.view'); return await db.getAllBookings() }
     catch { return [] }
+  })
+  ipcMain.handle('bookings:getCachedByDateRange', async (_, start, end) => {
+    try {
+      await requireCapability('bookings.view')
+      const bookings = readCache('bookings')
+      const customers = readCache('customers')
+      const rooms = readCache('rooms')
+      return bookings
+        .filter((booking) => (
+          booking?.status !== 'cancelled' &&
+          booking?.check_in <= end &&
+          booking?.check_out > start
+        ))
+        .map((booking) => {
+          const customer = customers.find((entry) => entry.id === booking.customer_id)
+          const room = rooms.find((entry) => entry.id === booking.room_id)
+          return {
+            ...booking,
+            customer_name: booking.customer_name || customer?.name,
+            customer_phone: booking.customer_phone || customer?.phone,
+            customer_email: booking.customer_email || customer?.email,
+            room_number: booking.room_number || room?.room_number,
+            room_type: booking.room_type || room?.room_type,
+            rate_per_night: booking.rate_per_night || room?.rate_per_night
+          }
+        })
+        .sort((a, b) => String(a.room_number || '').localeCompare(String(b.room_number || '')))
+    } catch {
+      return []
+    }
   })
   ipcMain.handle('bookings:getPendingOnline', async () => {
     try {
@@ -4363,6 +4520,22 @@ app.whenReady().then(async () => {
       flash: payload?.flash !== false
     })
     return { success: true }
+  })
+  ipcMain.handle('mesh:lockRoom', async (_, roomId, startDate, endDate) => {
+    try {
+      const lockId = await createLocalLock(roomId, startDate, endDate);
+      return { success: !!lockId, lockId };
+    } catch (e) {
+      return { success: false, error: e.message };
+    }
+  })
+  ipcMain.handle('mesh:unlockRoom', async (_, lockId) => {
+    try {
+      const released = await releaseLocalLock(lockId);
+      return { success: released };
+    } catch (e) {
+      return { success: false, error: e.message };
+    }
   })
   ipcMain.handle('app:logRendererError', async (_, payload) => appendRendererErrorLog(payload || {}))
   ipcMain.handle('app:getRendererErrors', async (_, limit) => getRendererErrorLog(limit))

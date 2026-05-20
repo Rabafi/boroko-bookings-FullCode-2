@@ -38,6 +38,15 @@ function formatTs(ts) {
   try { return new Date(ts).toLocaleString('en-GB') } catch { return ts }
 }
 
+function withTimeout(promise, ms, fallback) {
+  return Promise.race([
+    promise,
+    new Promise((resolve) => {
+      setTimeout(() => resolve(fallback), ms)
+    })
+  ])
+}
+
 function HumanContext({ details, rooms, customers }) {
   if (!details || typeof details !== 'object') return null
 
@@ -248,6 +257,7 @@ export default function SystemHealthPanel() {
   const [rendererErrors, setRendererErrors] = useState([])
   const [rooms, setRooms]                 = useState([])
   const [customers, setCustomers]         = useState([])
+  const [meshStatus, setMeshStatus]       = useState({ enabled: false, running: false, peerCount: 0, activeLocks: [] })
   // Track current pending count so post-sync polling can detect when items drain
   const pendingCountRef = useRef(0)
 
@@ -258,21 +268,22 @@ export default function SystemHealthPanel() {
         systemHealth, settingsSnapshot, validatedUser, details,
         reconciliationSummary, validationSummary, validationHistory,
         nextRendererErrors, nextValidationAlerts, nextCriticalErrors,
-        nextDeviceHealthRollup, nextRooms, nextCustomers
+        nextDeviceHealthRollup, nextRooms, nextCustomers, nextSyncStatus
       ] = await Promise.all([
-        window.api.settings.getSystemHealth().catch((e) => ({ error: e.message })),
-        window.api.settings.get().catch(() => null),
-        window.api.auth.validateSession().catch(() => null),
-        window.api.sync.getDetails().catch((e) => ({ error: e.message, pending: [], failed: [], faults: [], cacheFreshness: {} })),
-        window.api.reports.financialReconciliation().catch((e) => ({ error: e.message, summary: {} })),
-        window.api.reports.financialValidation().catch((e) => ({ error: e.message, totals: {} })),
-        window.api.reports.financialValidationRuns(10).catch(() => []),
-        window.api.app?.getRendererErrors?.(6).catch(() => []) || Promise.resolve([]),
-        window.api.reports.financialValidationAlerts?.(8).catch(() => []) || Promise.resolve([]),
-        window.api.reports.criticalErrors?.(8).catch(() => []) || Promise.resolve([]),
-        window.api.sync.getDeviceHealthRollup().catch(() => ({ available: false, devices: [] })),
-        window.api.rooms.getAll().catch(() => []),
-        window.api.customers.getAll().catch(() => [])
+        withTimeout(window.api.settings.getSystemHealth().catch((e) => ({ error: e.message })), 8000, { error: 'System health is taking too long to load.' }),
+        withTimeout(window.api.settings.get().catch(() => null), 8000, null),
+        withTimeout(window.api.auth.validateSession().catch(() => null), 8000, null),
+        withTimeout(window.api.sync.getDetails().catch((e) => ({ error: e.message, pending: [], failed: [], faults: [], cacheFreshness: {} })), 8000, { error: 'Sync details are taking too long to load.', pending: [], failed: [], faults: [], cacheFreshness: {} }),
+        withTimeout(window.api.reports.financialReconciliation().catch((e) => ({ error: e.message, summary: {} })), 8000, { error: 'Money check is unavailable offline.', summary: {} }),
+        withTimeout(window.api.reports.financialValidation().catch((e) => ({ error: e.message, totals: {} })), 8000, { error: 'Money validation is unavailable offline.', totals: {} }),
+        withTimeout(window.api.reports.financialValidationRuns(10).catch(() => []), 8000, []),
+        withTimeout(window.api.app?.getRendererErrors?.(6).catch(() => []) || Promise.resolve([]), 8000, []),
+        withTimeout(window.api.reports.financialValidationAlerts?.(8).catch(() => []) || Promise.resolve([]), 8000, []),
+        withTimeout(window.api.reports.criticalErrors?.(8).catch(() => []) || Promise.resolve([]), 8000, []),
+        withTimeout(window.api.sync.getDeviceHealthRollup().catch(() => ({ available: false, devices: [] })), 8000, { available: false, devices: [] }),
+        withTimeout(window.api.rooms.getAll().catch(() => []), 8000, []),
+        withTimeout(window.api.customers.getAll().catch(() => []), 8000, []),
+        withTimeout(window.api.sync.getStatus().catch(() => null), 8000, null)
       ])
       setHealth(systemHealth || null)
       setGlobalSettings(settingsSnapshot || null)
@@ -303,6 +314,7 @@ export default function SystemHealthPanel() {
       setDeviceHealthRollup(nextDeviceHealthRollup || { available: false, devices: [] })
       setRooms(Array.isArray(nextRooms) ? nextRooms : [])
       setCustomers(Array.isArray(nextCustomers) ? nextCustomers : [])
+      setMeshStatus(nextSyncStatus?.mesh || { enabled: false, running: false, peerCount: 0, activeLocks: [] })
     } catch (error) {
       pushFlash('error', error?.message || 'Could not refresh the status page.')
     } finally {
@@ -574,6 +586,9 @@ export default function SystemHealthPanel() {
   const blockedDependencyCount = Number(groupedCounts.blocked_dependencies || 0)
   const financialRiskCount     = Number(groupedCounts.financial_risk_items || 0)
   const localStateAcknowledged = unresolvedLocal?.total === 0 && health?.online === true && replayAuthReady && pendingCount === 0
+  const meshPeerCount          = Number(meshStatus?.peerCount || 0)
+  const meshLockCount          = Number(meshStatus?.activeLockCount || meshStatus?.activeLocks?.length || 0)
+  const meshStateLabel         = meshStatus?.running ? 'Running' : meshStatus?.enabled ? 'Starting' : meshStatus?.lastError ? 'Needs setup' : 'Off'
 
   const getFailedItemBookingId = (item) => (
     item?.data?.p_booking_id || item?.data?.payload?.id || item?.data?.payload?.booking_id || item?.data?.p_id || null
@@ -1037,6 +1052,48 @@ export default function SystemHealthPanel() {
                 <p className="mt-3 text-sm text-gray-500">Booking, payment, and invoice differences.</p>
           )}
         </div>
+      </div>
+
+      <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-gray-200">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-semibold text-gray-900">Local Mesh</h3>
+            <p className="mt-1 text-xs text-gray-500">Nearby front-desk computers on this lodge network.</p>
+          </div>
+          <StatusPill
+            ok={meshStatus?.running && !meshStatus?.lastError}
+            warn={Boolean(meshStatus?.lastError)}
+            label={meshStateLabel}
+          />
+        </div>
+        <div className="mt-4 grid gap-3 sm:grid-cols-3">
+          <div className="rounded-xl bg-gray-50 px-3 py-3">
+            <p className="text-[11px] uppercase tracking-[0.12em] text-gray-400">Peers</p>
+            <p className="mt-1 text-lg font-bold text-gray-900">{meshPeerCount}</p>
+          </div>
+          <div className="rounded-xl bg-gray-50 px-3 py-3">
+            <p className="text-[11px] uppercase tracking-[0.12em] text-gray-400">Room holds</p>
+            <p className="mt-1 text-lg font-bold text-gray-900">{meshLockCount}</p>
+          </div>
+          <div className="rounded-xl bg-gray-50 px-3 py-3">
+            <p className="text-[11px] uppercase tracking-[0.12em] text-gray-400">Last merge</p>
+            <p className="mt-1 text-sm font-semibold text-gray-900">{meshStatus?.lastQueueMergeAt ? formatTs(meshStatus.lastQueueMergeAt) : 'Not yet'}</p>
+          </div>
+        </div>
+        {meshStatus?.lastError && (
+          <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+            {meshStatus.lastError}
+          </div>
+        )}
+        {Array.isArray(meshStatus?.peers) && meshStatus.peers.length > 0 && (
+          <div className="mt-3 flex flex-wrap gap-2">
+            {meshStatus.peers.slice(0, 6).map((peer) => (
+              <span key={peer.nodeId} className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-800">
+                {String(peer.nodeId).slice(0, 8)} · {formatTs(peer.lastSeenAt)}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-gray-200">

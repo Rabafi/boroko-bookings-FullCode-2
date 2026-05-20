@@ -29,6 +29,11 @@ function currency(symbol, value) {
   return `${symbol} ${Number(value || 0).toFixed(2)}`
 }
 
+function rangesOverlap(startA, endA, startB, endB) {
+  if (!startA || !endA || !startB || !endB) return false
+  return startA < endB && endA > startB
+}
+
 function getEventGroupId(booking) {
   if (!booking?.is_exclusive_event && !String(booking?.notes || '').includes('[GROUP:')) return null
   const match = String(booking?.notes || '').match(/\[GROUP:([^\]]+)\]/)
@@ -80,6 +85,7 @@ export default function Calendar() {
   const [loading, setLoading] = useState(true)
   const [selectedDay, setSelectedDay] = useState(format(new Date(), 'yyyy-MM-dd'))
   const [error, setError] = useState('')
+  const [meshStatus, setMeshStatus] = useState({ activeLocks: [], peerCount: 0 })
 
   const monthStart = startOfMonth(currentMonth)
   const monthEnd = endOfMonth(currentMonth)
@@ -92,6 +98,22 @@ export default function Calendar() {
   useEffect(() => {
     loadData()
   }, [currentMonth])
+
+  useEffect(() => {
+    let cancelled = false
+    const loadMeshStatus = async () => {
+      const status = await window.api?.sync?.getStatus?.().catch(() => null)
+      if (!cancelled) setMeshStatus(status?.mesh || { activeLocks: [], peerCount: 0 })
+    }
+    loadMeshStatus()
+    const unsubscribe = window.api?.sync?.onStatusChanged?.((status) => {
+      setMeshStatus(status?.mesh || { activeLocks: [], peerCount: 0 })
+    })
+    return () => {
+      cancelled = true
+      unsubscribe?.()
+    }
+  }, [])
 
   useEffect(() => {
     const currentMonthKey = format(currentMonth, 'yyyy-MM')
@@ -158,6 +180,10 @@ export default function Calendar() {
     outstandingValue: 0,
     unpaidStays: 0
   }
+  const selectedMeshLocks = (meshStatus.activeLocks || []).filter((lock) => (
+    lock.sourceNodeId !== meshStatus.nodeId &&
+    rangesOverlap(lock.startDate, lock.endDate, selectedDay, format(new Date(selectedDay + 'T12:00:00').getTime() + 86400000, 'yyyy-MM-dd'))
+  ))
 
   const monthMetrics = useMemo(() => {
     const totalRoomNights = Math.max(rooms.length * monthDays.length, 1)
@@ -250,6 +276,13 @@ export default function Calendar() {
       {error && (
         <div className="mb-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
           {error}
+        </div>
+      )}
+
+      {meshStatus.running && (
+        <div className="mb-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
+          Local Mesh: {Number(meshStatus.peerCount || 0)} peer{Number(meshStatus.peerCount || 0) === 1 ? '' : 's'} connected
+          {selectedMeshLocks.length > 0 ? ` · ${selectedMeshLocks.length} hold${selectedMeshLocks.length === 1 ? '' : 's'} on the selected day` : ''}
         </div>
       )}
 

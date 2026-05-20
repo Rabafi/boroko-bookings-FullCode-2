@@ -475,11 +475,35 @@ function SyncFailBanner() {
   const failedCount = Number(syncStatus?.failed || 0)
   const staleNames = Array.isArray(syncStatus?.cacheStale?.names) ? syncStatus.cacheStale.names : []
   const hasStaleCache = syncStatus?.cacheStale?.active === true && staleNames.length > 0
+  const mesh = syncStatus?.mesh || {}
+  const meshPeerCount = Number(mesh.peerCount || 0)
+  const hasMeshSignal = Boolean(mesh.lastError)
+  const isGlobalOffline = syncStatus?.isOnline === false
 
-  if (failedCount === 0 && !hasStaleCache) return null
+  if (failedCount === 0 && !hasStaleCache && !hasMeshSignal) return null
 
   const staleLabel = staleNames.join(', ')
-  const tone = failedCount > 0 ? 'bg-amber-500 shadow-amber-500/20' : 'bg-sky-600 shadow-sky-600/20'
+  const tone = failedCount > 0 ? 'bg-amber-500 shadow-amber-500/20' : isGlobalOffline && meshPeerCount > 0 ? 'bg-emerald-700 shadow-emerald-700/20' : 'bg-sky-600 shadow-sky-600/20'
+  const title =
+    failedCount > 0
+      ? `${failedCount} sync issue${failedCount === 1 ? '' : 's'} need attention`
+      : isGlobalOffline && meshPeerCount > 0
+        ? `Global Offline • Local Mesh: ${meshPeerCount} Peer${meshPeerCount === 1 ? '' : 's'} Connected`
+        : mesh.lastError
+          ? 'Local Mesh needs setup'
+          : hasStaleCache
+            ? `Fresh ${staleLabel} data is loading...`
+            : `Local Mesh: ${mesh.running ? 'Ready' : 'Idle'}`
+  const subtitle =
+    failedCount > 0
+      ? 'Tap to open System Health and resolve issues'
+      : mesh.lastError
+        ? mesh.lastError
+        : isGlobalOffline && meshPeerCount > 0
+          ? 'Nearby front-desk computers can share locks and offline work'
+          : hasMeshSignal
+            ? `${meshPeerCount} peer${meshPeerCount === 1 ? '' : 's'} · ${Number(mesh.activeLockCount || 0)} active lock${Number(mesh.activeLockCount || 0) === 1 ? '' : 's'}`
+            : 'Reviewing status in System Health'
 
   return (
     <div className="fixed top-[52px] left-1/2 -translate-x-1/2 z-[9996] pointer-events-none w-full max-w-md px-4">
@@ -492,18 +516,18 @@ function SyncFailBanner() {
           <div className="bg-white/20 p-2 rounded-xl">
             {failedCount > 0 ? (
               <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+            ) : isGlobalOffline && meshPeerCount > 0 ? (
+              <WifiIcon />
             ) : (
               <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/><path d="M22 4 12 14.01l-3-3"/></svg>
             )}
           </div>
           <div>
             <p className="font-bold text-sm leading-tight">
-              {failedCount > 0
-                ? `${failedCount} sync issue${failedCount === 1 ? '' : 's'} need attention`
-                : `Fresh ${staleLabel} data is loading...`}
+              {title}
             </p>
             <p className="text-[11px] opacity-80 mt-0.5">
-              {failedCount > 0 ? 'Tap to open System Health and resolve issues' : 'Reviewing status in System Health'}
+              {subtitle}
             </p>
           </div>
         </div>
@@ -512,6 +536,17 @@ function SyncFailBanner() {
         </div>
       </div>
     </div>
+  )
+}
+
+function WifiIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M5 13a10 10 0 0 1 14 0" />
+      <path d="M8.5 16.5a5 5 0 0 1 7 0" />
+      <path d="M12 20h.01" />
+      <path d="M2 8.82a15 15 0 0 1 20 0" />
+    </svg>
   )
 }
 
@@ -573,9 +608,10 @@ function BookingSyncConflictNotification() {
   const [conflicts, setConflicts] = useState([])
 
   useEffect(() => {
-    if (!window.api?.sync?.onBookingConflict) return
+    const unsubscribers = []
 
-    const unsubscribe = window.api.sync.onBookingConflict((payload) => {
+    if (window.api?.sync?.onBookingConflict) {
+      unsubscribers.push(window.api.sync.onBookingConflict((payload) => {
       const { bookingId, error } = payload
       setConflicts((prev) => {
         // Avoid duplicate notifications for the same booking
@@ -587,9 +623,26 @@ function BookingSyncConflictNotification() {
       setTimeout(() => {
         setConflicts((prev) => prev.filter((c) => c.bookingId !== bookingId))
       }, 8000)
-    })
+      }))
+    }
 
-    return () => unsubscribe?.()
+    if (window.api?.mesh?.onConflictDetected) {
+      unsubscribers.push(window.api.mesh.onConflictDetected((payload) => {
+        const bookingId = payload?.loserId || payload?.bookingId || `${payload?.roomId || 'mesh'}:${payload?.checkIn || ''}`
+        const error = payload?.roomId
+          ? `Local mesh conflict on room ${payload.roomId} for ${payload.checkIn || 'selected dates'}`
+          : 'Local mesh conflict detected'
+        setConflicts((prev) => {
+          if (prev.some((c) => c.bookingId === bookingId)) return prev
+          return [...prev, { bookingId, error, timestamp: Date.now(), mesh: true }]
+        })
+        setTimeout(() => {
+          setConflicts((prev) => prev.filter((c) => c.bookingId !== bookingId))
+        }, 10000)
+      }))
+    }
+
+    return () => unsubscribers.forEach((unsubscribe) => unsubscribe?.())
   }, [])
 
   if (conflicts.length === 0) return null
@@ -606,7 +659,7 @@ function BookingSyncConflictNotification() {
           }}
         >
           <span className="font-semibold">
-            ❌ Booking sync failed: {conflict.error} — Open Bookings to fix it.
+            {conflict.mesh ? 'Local mesh conflict' : 'Booking sync failed'}: {conflict.error} — Open Bookings to fix it.
           </span>
         </div>
       ))}

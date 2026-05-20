@@ -163,6 +163,20 @@ const emptyBooking = {
   notes: ''
 }
 
+function rangesOverlap(startA, endA, startB, endB) {
+  if (!startA || !endA || !startB || !endB) return false
+  return startA < endB && endA > startB
+}
+
+function getMeshLocksForRoom(activeLocks = [], roomId, checkIn, checkOut, localNodeId) {
+  if (!roomId || !checkIn || !checkOut) return []
+  return activeLocks.filter((lock) => (
+    String(lock?.roomId) === String(roomId) &&
+    lock.sourceNodeId !== localNodeId &&
+    rangesOverlap(lock.startDate, lock.endDate, checkIn, checkOut)
+  ))
+}
+
 export default function Bookings() {
   const { user } = useAuth()
   const access = useAccess()
@@ -202,6 +216,9 @@ export default function Bookings() {
   const [financialPendingIds, setFinancialPendingIds] = useState(new Set())
   const [financialFailedIds, setFinancialFailedIds] = useState(new Set())
   const [financialCacheStale, setFinancialCacheStale] = useState(false)
+  const [meshStatus, setMeshStatus] = useState({ activeLocks: [], peerCount: 0 })
+  const meshLockIdRef = useRef(null)
+  const meshLockSignatureRef = useRef('')
   const FINANCIAL_SYNC_BLOCK_MESSAGE = 'Financial actions are temporarily locked until booking and payment sync are fully confirmed. Review System Health, then try again.'
 
   // Poll sync status every 30s (independent of bookings refresh — sync can change without a data reload)
@@ -213,11 +230,18 @@ export default function Bookings() {
         setFinancialPendingIds(new Set(s?.financialPendingBookingIds || []))
         setFinancialFailedIds(new Set(s?.financialFailedBookingIds || []))
         setFinancialCacheStale(s?.cacheStale?.active === true)
+        setMeshStatus(s?.mesh || { activeLocks: [], peerCount: 0 })
       } catch { /* non-fatal — sync status is informational */ }
     }
     loadSyncStatus()
     const interval = setInterval(loadSyncStatus, 30_000)
-    return () => clearInterval(interval)
+    const unsubscribe = window.api?.sync?.onStatusChanged?.((status) => {
+      setMeshStatus(status?.mesh || { activeLocks: [], peerCount: 0 })
+    })
+    return () => {
+      clearInterval(interval)
+      unsubscribe?.()
+    }
   }, [])
 
   // History Timeline modal
@@ -445,6 +469,50 @@ export default function Bookings() {
   useEffect(() => () => window.clearTimeout(successTimerRef.current), [])
 
   useEffect(() => {
+    const releaseCurrentLock = async () => {
+      const lockId = meshLockIdRef.current
+      if (!lockId || !window.api?.mesh?.unlockRoom) return
+      meshLockIdRef.current = null
+      meshLockSignatureRef.current = ''
+      await window.api.mesh.unlockRoom(lockId).catch(() => null)
+    }
+
+    if (!showModal || editingId || !form.room_id || !form.check_in || !form.check_out || !window.api?.mesh?.lockRoom) {
+      releaseCurrentLock()
+      return
+    }
+
+    const signature = `${form.room_id}|${form.check_in}|${form.check_out}`
+    if (meshLockSignatureRef.current === signature) return
+
+    releaseCurrentLock()
+    let cancelled = false
+    const timer = window.setTimeout(async () => {
+      const result = await window.api.mesh.lockRoom(form.room_id, form.check_in, form.check_out).catch(() => null)
+      if (cancelled) {
+        if (result?.lockId) await window.api.mesh.unlockRoom(result.lockId).catch(() => null)
+        return
+      }
+      if (result?.success && result.lockId) {
+        meshLockIdRef.current = result.lockId
+        meshLockSignatureRef.current = signature
+      }
+    }, 250)
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [showModal, editingId, form.room_id, form.check_in, form.check_out])
+
+  useEffect(() => () => {
+    const lockId = meshLockIdRef.current
+    if (lockId && window.api?.mesh?.unlockRoom) {
+      window.api.mesh.unlockRoom(lockId).catch(() => null)
+    }
+  }, [])
+
+  useEffect(() => {
     let cancelled = false
 
     const loadApplicableRate = async () => {
@@ -496,6 +564,16 @@ export default function Bookings() {
     setSuccess('')
     setModalWarning('')
     setShowModal(true)
+  }
+
+  const closeBookingModal = () => {
+    const lockId = meshLockIdRef.current
+    meshLockIdRef.current = null
+    meshLockSignatureRef.current = ''
+    if (lockId && window.api?.mesh?.unlockRoom) {
+      window.api.mesh.unlockRoom(lockId).catch(() => null)
+    }
+    setShowModal(false)
   }
 
   const openEdit = (b) => {
@@ -571,6 +649,12 @@ export default function Bookings() {
     setError('')
 
     try {
+      const peerLocks = getMeshLocksForRoom(meshStatus?.activeLocks || [], form.room_id, form.check_in, form.check_out, meshStatus?.nodeId)
+      if (!editingId && peerLocks.length > 0) {
+        setError('This room is currently being held by another front desk for those dates. Choose another room or wait for the hold to expire.')
+        setLoading(false)
+        return
+      }
       let customerId = form.customer_id
 
       if (useNewCustomer && !editingId) {
@@ -633,7 +717,7 @@ export default function Bookings() {
       }
 
       setModalWarning('')
-      setShowModal(false)
+      closeBookingModal()
       setEditingBaseUpdatedAt(null)
       loadAll()
       showSuccess(editingId ? 'Booking changes saved.' : 'Booking created successfully.')
@@ -894,6 +978,16 @@ export default function Bookings() {
     () => rooms,
     [rooms]
   )
+  const activeMeshLocks = Array.isArray(meshStatus?.activeLocks) ? meshStatus.activeLocks : []
+  const selectedPeerLocks = useMemo(
+    () => getMeshLocksForRoom(activeMeshLocks, form.room_id, form.check_in, form.check_out, meshStatus?.nodeId),
+    [activeMeshLocks, form.room_id, form.check_in, form.check_out, meshStatus?.nodeId]
+  )
+  const meshLockedRoomIds = useMemo(() => new Set(
+    activeMeshLocks
+      .filter((lock) => lock.sourceNodeId !== meshStatus?.nodeId && rangesOverlap(lock.startDate, lock.endDate, form.check_in, form.check_out))
+      .map((lock) => String(lock.roomId))
+  ), [activeMeshLocks, form.check_in, form.check_out, meshStatus?.nodeId])
 
   const selectedNightlyRate = applicableRate?.rate_per_night ?? selectedRoom?.rate_per_night ?? 0
   const estimatedTotal = selectedRoom
@@ -1186,6 +1280,14 @@ export default function Bookings() {
                           : 'Changes are queued and will sync when the app is online.'}
                       </p>
                     )}
+                    {bookingHasAttentionState(b) && Array.isArray(b._sync_resolution_suggestions) && b._sync_resolution_suggestions.length > 0 && (
+                      <div className="mt-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                        <p className="font-semibold">Suggested alternatives</p>
+                        <p className="mt-1">
+                          {b._sync_resolution_suggestions.slice(0, 3).map((item) => item.label || `Room ${item.roomNumber}`).join(' · ')}
+                        </p>
+                      </div>
+                    )}
                   </td>
                   <td className="px-5 py-4 text-slate-600">
                     {b._event_group
@@ -1278,7 +1380,7 @@ export default function Bookings() {
                   <td className="px-5 py-4 text-center relative">
                     <div className="flex items-center justify-center gap-1.5">
                       {/* Room conflict — reassign or cancel */}
-                      {bookingHasSyncFailure(b, failedSyncIds) && b._sync_state === 'sync_failed' ? (
+                      {(bookingHasSyncFailure(b, failedSyncIds) && b._sync_state === 'sync_failed') || bookingHasAttentionState(b) ? (
                         <>
                           <button
                             onClick={() => openEdit(b)}
@@ -1863,7 +1965,7 @@ export default function Bookings() {
       {showModal && (
         <Modal
           title={editingId ? 'Edit Booking' : 'New Booking'}
-          onClose={() => setShowModal(false)}
+          onClose={closeBookingModal}
           size="lg"
         >
           <form onSubmit={handleSave} className="space-y-5">
@@ -1989,8 +2091,8 @@ export default function Bookings() {
                 >
                   <option value="">-- Select room --</option>
                   {selectableRooms.map((r) => (
-                      <option key={r.id} value={r.id} disabled={r.status === 'maintenance'}>
-                        Room {r.room_number} — {r.room_type} ({currency}{r.rate_per_night}/night) {r.status === 'maintenance' ? ' (UNDER MAINTENANCE)' : ''}
+                      <option key={r.id} value={r.id} disabled={r.status === 'maintenance' || (!editingId && meshLockedRoomIds.has(String(r.id)))}>
+                        Room {r.room_number} — {r.room_type} ({currency}{r.rate_per_night}/night) {r.status === 'maintenance' ? ' (UNDER MAINTENANCE)' : meshLockedRoomIds.has(String(r.id)) ? ' (HELD BY ANOTHER DESK)' : ''}
                       </option>
                     ))}
                 </select>
@@ -2038,6 +2140,15 @@ export default function Bookings() {
               </F>
               </div>
             </div>
+
+            {!editingId && selectedPeerLocks.length > 0 && (
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                <p className="font-semibold">Room held by another front desk</p>
+                <p className="mt-1 text-xs text-amber-800">
+                  This room/date range has an active local mesh hold. The app will still run the final availability check when saving.
+                </p>
+              </div>
+            )}
 
             {/* Estimated Total */}
             {estimatedTotal > 0 && (
@@ -2116,10 +2227,10 @@ export default function Bookings() {
             )}
 
             <div className="flex gap-3 pt-1">
-              <button type="button" onClick={() => setShowModal(false)} className="btn-secondary flex-1">
+              <button type="button" onClick={closeBookingModal} className="btn-secondary flex-1">
                 Cancel
               </button>
-              <button type="submit" disabled={loading} className="btn-primary flex-1">
+              <button type="submit" disabled={loading || (!editingId && selectedPeerLocks.length > 0)} className="btn-primary flex-1">
                 {loading ? 'Saving...' : editingId ? 'Save Changes' : 'Create Booking'}
               </button>
             </div>

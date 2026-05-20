@@ -10,6 +10,10 @@ import {
 } from './infrastructure.js';
 
 export async function getAllRooms() {
+  if (!state.isOnline) {
+    return readCache('rooms');
+  }
+
   try {
     const { data, error } = await state.supabase.
     from('rooms').

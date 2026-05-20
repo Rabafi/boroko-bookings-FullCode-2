@@ -7,6 +7,7 @@ import {
   readSyncMeta,
   readSyncQueue
 } from './syncStore.js';
+import { getMeshHealthSnapshot } from './mesh/meshState.js';
 
 const QUEUED_DEPENDENCY_CACHE_MAP = [
 { prefix: 'booking-', cache: 'bookings' },
@@ -129,6 +130,8 @@ export function buildSyncStatusSnapshot() {
       attempts: state.syncRefreshState.attempts,
       lastError: state.syncRefreshState.lastError,
       lastFailedAt: state.syncRefreshState.lastFailedAt
-    }
+    },
+    // Expose local P2P mesh network coordinates and active peers
+    mesh: getMeshHealthSnapshot()
   };
 }

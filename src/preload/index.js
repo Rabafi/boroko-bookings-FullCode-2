@@ -37,6 +37,7 @@ const api = {
   },
   rooms: {
     getAll: () => ipcRenderer.invoke('rooms:getAll'),
+    getCached: () => ipcRenderer.invoke('rooms:getCached'),
     create: (data) => ipcRenderer.invoke('rooms:create', data),
     update: (id, data) => ipcRenderer.invoke('rooms:update', id, data),
     delete: (id) => ipcRenderer.invoke('rooms:delete', id),
@@ -90,6 +91,7 @@ const api = {
   },
   bookings: {
     getAll: () => ipcRenderer.invoke('bookings:getAll'),
+    getCachedByDateRange: (start, end) => ipcRenderer.invoke('bookings:getCachedByDateRange', start, end),
     getByDateRange: (start, end) => ipcRenderer.invoke('bookings:getByDateRange', start, end),
     create: (data) => ipcRenderer.invoke('bookings:create', data),
     update: (id, data) => ipcRenderer.invoke('bookings:update', id, data),
@@ -206,6 +208,15 @@ const api = {
       const listener = (_, payload) => cb(payload)
       ipcRenderer.on('booking:sync-conflict', listener)
       return () => ipcRenderer.off('booking:sync-conflict', listener)
+    }
+  },
+  mesh: {
+    lockRoom: (roomId, startDate, endDate) => ipcRenderer.invoke('mesh:lockRoom', roomId, startDate, endDate),
+    unlockRoom: (lockId) => ipcRenderer.invoke('mesh:unlockRoom', lockId),
+    onConflictDetected: (cb) => {
+      const listener = (_, payload) => cb(payload)
+      ipcRenderer.on('mesh:conflict-detected', listener)
+      return () => ipcRenderer.off('mesh:conflict-detected', listener)
     }
   },
   trial: {

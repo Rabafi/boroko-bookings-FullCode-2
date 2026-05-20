@@ -9,6 +9,8 @@
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
+    "dev:desk-a": "node .\\scripts\\run-local-desk.mjs A",
+    "dev:desk-b": "node .\\scripts\\run-local-desk.mjs B",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "test": "node .\\tests\\production-guardrails.test.mjs",

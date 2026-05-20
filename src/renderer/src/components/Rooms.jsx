@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus, Pencil, Trash2, BedDouble, Image, X, ChevronLeft, ChevronRight, Calendar, RefreshCw } from 'lucide-react'
+import { Plus, Pencil, Trash2, BedDouble, Image, X, ChevronLeft, ChevronRight, Calendar, RefreshCw, Lock } from 'lucide-react'
 import { StatusBadge } from './shared/StatusBadge'
 import { Modal } from './shared/Modal'
 import { ConfirmDialog } from './shared/ConfirmDialog'
@@ -51,6 +51,7 @@ export default function Rooms() {
   const [selectedRoom, setSelectedRoom] = useState(null)
   const [density, setDensity] = useState('comfortable')
   const [activeView, setActiveView] = useState('all')
+  const [meshStatus, setMeshStatus] = useState({ activeLocks: [], peerCount: 0 })
   const photoInputRef = useRef(null)
 
   const processRoomPhotos = (files) => {
@@ -83,6 +84,22 @@ export default function Rooms() {
 
   useEffect(() => {
     load()
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    const loadMeshStatus = async () => {
+      const status = await window.api?.sync?.getStatus?.().catch(() => null)
+      if (!cancelled) setMeshStatus(status?.mesh || { activeLocks: [], peerCount: 0 })
+    }
+    loadMeshStatus()
+    const unsubscribe = window.api?.sync?.onStatusChanged?.((status) => {
+      setMeshStatus(status?.mesh || { activeLocks: [], peerCount: 0 })
+    })
+    return () => {
+      cancelled = true
+      unsubscribe?.()
+    }
   }, [])
 
   useEffect(() => {
@@ -338,6 +355,16 @@ export default function Rooms() {
   const visibleRooms = useMemo(() => (
     activeView === 'all' ? rooms : rooms.filter((room) => room.status === activeView)
   ), [activeView, rooms])
+  const meshLocksByRoom = useMemo(() => {
+    const grouped = new Map()
+    for (const lock of meshStatus?.activeLocks || []) {
+      if (!lock?.roomId || lock.sourceNodeId === meshStatus?.nodeId) continue
+      const key = String(lock.roomId)
+      grouped.set(key, [...(grouped.get(key) || []), lock])
+    }
+    return grouped
+  }, [meshStatus?.activeLocks, meshStatus?.nodeId])
+  const heldRoomCount = meshLocksByRoom.size
 
   return (
     <div className="mx-auto flex max-w-7xl flex-col gap-3">
@@ -396,6 +423,7 @@ export default function Rooms() {
           <SummaryPill label="Available" value={available} tone="emerald" />
           <SummaryPill label="Occupied" value={occupied} tone="amber" />
           <SummaryPill label="Maintenance" value={maintenance} tone="red" />
+          <SummaryPill label="Mesh Holds" value={heldRoomCount} tone="amber" />
           <SummaryPill label="Room Count" value={rooms.length} tone="slate" />
         </div>
       )}
@@ -548,6 +576,7 @@ export default function Rooms() {
                 key={room.id}
                 room={room}
                 activeRate={activeRateByRoom[room.id] || null}
+                meshLocks={meshLocksByRoom.get(String(room.id)) || []}
                 compact={density === 'compact'}
                 onSelect={() => setSelectedRoom(room)}
                 onEdit={openEdit}
@@ -784,7 +813,7 @@ export default function Rooms() {
       <ContextDrawer
         open={!!selectedRoom}
         title={selectedRoom ? `Room ${selectedRoom.room_number}` : ''}
-        subtitle={selectedRoom ? `${selectedRoom.room_type} · ${selectedRoom.status}` : ''}
+        subtitle={selectedRoom ? `${selectedRoom.room_type} · ${selectedRoom.status}${meshLocksByRoom.has(String(selectedRoom.id)) ? ' · held by another desk' : ''}` : ''}
         onClose={() => setSelectedRoom(null)}
         actions={selectedRoom ? [
           { label: 'Edit room', primary: true, onClick: () => { openEdit(selectedRoom); setSelectedRoom(null) } },
@@ -803,6 +832,17 @@ export default function Rooms() {
                 <p className="mt-1 text-xs font-semibold text-emerald-700">{activeRateByRoom[selectedRoom.id].name}</p>
               )}
             </div>
+            {meshLocksByRoom.has(String(selectedRoom.id)) && (
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                <div className="flex items-center gap-2 font-bold">
+                  <Lock size={15} />
+                  Held by another front desk
+                </div>
+                <p className="mt-1 text-xs text-amber-800">
+                  This is an advisory hold while another staff member is working on a booking for this room.
+                </p>
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-3">
               <div className="bb-context-card">
                 <p className="text-xs text-slate-500">Occupancy</p>
@@ -834,9 +874,10 @@ export default function Rooms() {
   )
 }
 
-function RoomCard({ room, activeRate, compact = false, onSelect, onEdit, onDelete }) {
+function RoomCard({ room, activeRate, meshLocks = [], compact = false, onSelect, onEdit, onDelete }) {
   const coverPhoto = (Array.isArray(room.photos) && room.photos[0]) || room.photo || null
   const showingOverride = activeRate && Number(activeRate.rate_per_night) !== Number(room.rate_per_night)
+  const isHeld = meshLocks.length > 0
   return (
     <div className="bb-card overflow-hidden transition-shadow hover:shadow-[0_18px_45px_rgba(15,23,42,0.12)]">
       {coverPhoto && (
@@ -848,8 +889,21 @@ function RoomCard({ room, activeRate, compact = false, onSelect, onEdit, onDelet
           <p className="text-lg font-bold tracking-[-0.02em] text-slate-800">Room {room.room_number}</p>
           <p className="text-sm text-slate-500">{room.room_type}</p>
         </div>
-        <StatusBadge status={room.status} />
+        <div className="flex flex-col items-end gap-1.5">
+          <StatusBadge status={room.status} />
+          {isHeld && (
+            <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-bold text-amber-800">
+              <Lock size={11} />
+              Held
+            </span>
+          )}
+        </div>
       </div>
+        {isHeld && (
+          <div className="mb-4 rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900">
+            Held by another front desk
+          </div>
+        )}
         <div className="bb-card-muted mb-4 space-y-2 px-4 py-4 text-sm text-slate-600">
         <div className="flex items-center justify-between gap-4">
           <span className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">Nightly Rate</span>

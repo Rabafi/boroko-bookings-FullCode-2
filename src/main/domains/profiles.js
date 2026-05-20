@@ -365,6 +365,14 @@ export async function selectProfile(targetLodgeId) {
   const profile = registry.profiles.find((entry) => entry.lodge_id === normalizedId);
   if (!profile) throw new Error('That lodge profile was not found on this computer.');
 
+  // Shut down any active P2P mesh before changing profiles
+  try {
+    const meshLifecycle = await import('./mesh/meshLifecycle.js');
+    meshLifecycle.shutdownMesh();
+  } catch (err) {
+    console.error('[Mesh] Failed to shutdown mesh during profile selection:', err);
+  }
+
   state.currentUser = null;
   state.replayAuthReady = false;
   clearBackendSession();

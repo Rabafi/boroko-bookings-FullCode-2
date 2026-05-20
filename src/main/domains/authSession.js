@@ -170,6 +170,10 @@ export function setCurrentUser(user) {
   }
   if (state.currentUser) {
     state.replayAuthReady = true;
+    // Trigger local P2P Mesh initialization
+    import('./mesh/meshLifecycle.js').then((module) => {
+      module.initializeMesh();
+    }).catch((err) => console.error('[Mesh] Failed to initialize mesh:', err));
   }
 }
 
@@ -182,6 +186,11 @@ export function logoutCurrentUser({ forgetTrustedSession = false } = {}) {
   state.replayAuthReady = false;
   clearBackendSession();
   if (forgetTrustedSession) clearSessionNonce();
+
+  // Shut down local P2P Mesh operations
+  import('./mesh/meshLifecycle.js').then((module) => {
+    module.shutdownMesh();
+  }).catch((err) => console.error('[Mesh] Failed to shutdown mesh:', err));
 }
 
 export function restoreUserSession(nonce) {

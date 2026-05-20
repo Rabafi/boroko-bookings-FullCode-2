@@ -18,8 +18,22 @@ function daysBetween(start, end) {
   )
 }
 
+function rangesOverlap(startA, endA, startB, endB) {
+  if (!startA || !endA || !startB || !endB) return false
+  return startA < endB && endA > startB
+}
+
 function todayStr() {
   return localToday()
+}
+
+function withTimeout(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error(`${label} is taking too long to load.`)), ms)
+    })
+  ])
 }
 
 const STATUS = {
@@ -67,7 +81,7 @@ function Row({ label, value, valueClassName = 'text-gray-800' }) {
   )
 }
 
-function RoomRow({ room, bookings, days, today, currency, onSelect }) {
+function RoomRow({ room, bookings, locks, days, today, currency, onSelect }) {
   const viewStart = days[0]
   const viewEnd = addDays(days[days.length - 1], 1)
   const housekeeping = HOUSEKEEPING[room.housekeeping_status || 'clean'] || HOUSEKEEPING.clean
@@ -138,6 +152,29 @@ function RoomRow({ room, bookings, days, today, currency, onSelect }) {
                 {booking.customer_name}
                 {hasBalanceDue ? ' · Due' : ''}
               </span>
+            </div>
+          )
+        })}
+
+        {locks.map((lock) => {
+          const visibleStart = lock.startDate > viewStart ? lock.startDate : viewStart
+          const visibleEnd = lock.endDate < viewEnd ? lock.endDate : viewEnd
+          const startOff = daysBetween(viewStart, visibleStart)
+          const duration = daysBetween(visibleStart, visibleEnd)
+
+          if (startOff >= DAYS_SHOWN || duration <= 0) return null
+
+          const left = `${(startOff / DAYS_SHOWN) * 100}%`
+          const width = `${(Math.min(duration, DAYS_SHOWN - startOff) / DAYS_SHOWN) * 100}%`
+
+          return (
+            <div
+              key={lock.lockId}
+              className="absolute top-1 bottom-1 flex items-center rounded-md border border-amber-300 bg-amber-100/90 px-2 text-amber-900 shadow-sm"
+              style={{ left, width, zIndex: 2 }}
+              title={`Held by another front desk • ${lock.startDate} → ${lock.endDate}`}
+            >
+              <span className="truncate text-[11px] font-semibold">Held</span>
             </div>
           )
         })}
@@ -252,20 +289,50 @@ export default function RoomGrid() {
   const [selected, setSelected] = useState(null)
   const [warning, setWarning] = useState('')
   const [statusActionLoading, setStatusActionLoading] = useState(false)
+  const [meshStatus, setMeshStatus] = useState({ activeLocks: [], peerCount: 0 })
 
   const viewEnd = addDays(viewStart, DAYS_SHOWN)
   const days = Array.from({ length: DAYS_SHOWN }, (_, index) => addDays(viewStart, index))
 
   const loadBoard = async (cancelSignal) => {
     setLoading(true)
+    setWarning('')
     try {
-      const [roomData, bookingData] = await Promise.all([
-        window.api.rooms.getAll(),
-        window.api.bookings.getByDateRange(viewStart, viewEnd)
+      const [cachedRoomResult, cachedBookingResult] = await Promise.allSettled([
+        window.api.rooms.getCached?.() || window.api.rooms.getAll(),
+        window.api.bookings.getCachedByDateRange?.(viewStart, viewEnd) || window.api.bookings.getByDateRange(viewStart, viewEnd)
       ])
       if (cancelSignal?.cancelled) return
-      setRooms(Array.isArray(roomData) ? roomData : [])
-      setBookings(Array.isArray(bookingData) ? bookingData : [])
+
+      const cachedRooms = cachedRoomResult.status === 'fulfilled' && Array.isArray(cachedRoomResult.value)
+        ? cachedRoomResult.value
+        : []
+      const cachedBookings = cachedBookingResult.status === 'fulfilled' && Array.isArray(cachedBookingResult.value)
+        ? cachedBookingResult.value
+        : []
+
+      if (cachedRooms.length > 0) {
+        setRooms(cachedRooms)
+        setBookings(cachedBookings)
+        setLoading(false)
+      }
+
+      const [roomResult, bookingResult] = await Promise.allSettled([
+        withTimeout(window.api.rooms.getAll(), cachedRooms.length > 0 ? 3500 : 8000, 'Rooms'),
+        withTimeout(window.api.bookings.getByDateRange(viewStart, viewEnd), cachedRooms.length > 0 ? 3500 : 8000, 'Bookings')
+      ])
+      if (cancelSignal?.cancelled) return
+
+      if (roomResult.status === 'fulfilled' && Array.isArray(roomResult.value)) {
+        setRooms(roomResult.value)
+      }
+      if (bookingResult.status === 'fulfilled' && Array.isArray(bookingResult.value)) {
+        setBookings(bookingResult.value)
+      }
+
+      if (cachedRooms.length === 0 && roomResult.status === 'rejected') {
+        setWarning(roomResult.reason?.message || 'Rooms could not be loaded.')
+      }
     } catch (error) {
       if (!cancelSignal?.cancelled) {
         setWarning(error?.message || 'Could not refresh the live room board.')
@@ -284,6 +351,22 @@ export default function RoomGrid() {
       cancelSignal.cancelled = true
     }
   }, [viewStart, viewEnd])
+
+  useEffect(() => {
+    let cancelled = false
+    const loadMeshStatus = async () => {
+      const status = await window.api?.sync?.getStatus?.().catch(() => null)
+      if (!cancelled) setMeshStatus(status?.mesh || { activeLocks: [], peerCount: 0 })
+    }
+    loadMeshStatus()
+    const unsubscribe = window.api?.sync?.onStatusChanged?.((status) => {
+      setMeshStatus(status?.mesh || { activeLocks: [], peerCount: 0 })
+    })
+    return () => {
+      cancelled = true
+      unsubscribe?.()
+    }
+  }, [])
 
   const prev = () => setViewStart(addDays(viewStart, -DAYS_SHOWN))
   const next = () => setViewStart(addDays(viewStart, DAYS_SHOWN))
@@ -433,6 +516,7 @@ export default function RoomGrid() {
           { color: 'bg-gray-400', label: 'Checked Out' },
           { color: 'bg-orange-100 border border-orange-200', label: 'Maintenance' },
           { color: 'bg-rose-100 border border-rose-200', label: 'Balance Due' },
+          { color: 'bg-amber-100 border border-amber-300', label: 'Local Mesh Hold' },
           { color: 'bg-green-50 border border-green-200', label: 'Today' }
         ].map(({ color, label }) => (
           <span key={label} className="flex items-center gap-1.5">
@@ -481,6 +565,11 @@ export default function RoomGrid() {
               key={room.id}
               room={room}
               bookings={bookings.filter((booking) => booking.room_id === room.id)}
+              locks={(meshStatus.activeLocks || []).filter((lock) => (
+                lock.sourceNodeId !== meshStatus.nodeId &&
+                String(lock.roomId) === String(room.id) &&
+                rangesOverlap(lock.startDate, lock.endDate, viewStart, viewEnd)
+              ))}
               days={days}
               today={today}
               currency={currency}
