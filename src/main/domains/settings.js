@@ -298,6 +298,7 @@ export async function saveSettings(data) {
     currency: data.currency || 'P',
     logo: data.logo || '',
     business_type: data.business_type || 'lodge',
+    assistant_enabled: data.assistant_enabled === true,
     day_use_templates: resolveDayUseTemplates(data),
     day_use_resources: resolveDayUseResources(data),
     slug: data.slug ? data.slug.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') : null,

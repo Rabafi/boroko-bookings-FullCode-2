@@ -561,7 +561,7 @@ export default function Settings() {
   }
 
   const handleSave = async (e) => {
-    e.preventDefault()
+    e?.preventDefault?.()
     setSaving(true)
     setSaved(false)
     try {
@@ -685,8 +685,19 @@ export default function Settings() {
 
   return (
     <div className="p-6 max-w-7xl mx-auto">
-      <div className="mb-5">
+      <div className="mb-5 flex items-center justify-between gap-4">
         <h1 className="text-2xl font-bold text-gray-800">Settings</h1>
+        {activeTab === 'general' && (
+          <button
+            type="button"
+            onClick={handleSave}
+            disabled={saving}
+            className="btn-primary flex items-center gap-2"
+          >
+            <Save size={15} />
+            {saving ? 'Saving...' : 'Save Settings'}
+          </button>
+        )}
       </div>
 
 {/* ── Tab bar ─────────────────────────────────────────────────────── */}
