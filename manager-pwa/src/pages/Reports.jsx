@@ -165,7 +165,7 @@ export default function Reports() {
             />
             {isEnabled('pos') && <StatRow label="POS Revenue (this month)" value={fmt(data.posRevenue)} color="text-blue-400" />}
             {isEnabled('conference') && data.conferenceRevenue > 0 && <StatRow label="Conference (this month)" value={fmt(data.conferenceRevenue)} color="text-indigo-400" />}
-            {isEnabled('pool') && data.poolRevenue > 0 && <StatRow label="Pool / Day Use (this month)" value={fmt(data.poolRevenue)} color="text-cyan-400" />}
+            {isEnabled('pool') && data.poolRevenue > 0 && <StatRow label="Day Use (this month)" value={fmt(data.poolRevenue)} color="text-cyan-400" />}
           </Section>
 
           <Section title="Occupancy Rate">

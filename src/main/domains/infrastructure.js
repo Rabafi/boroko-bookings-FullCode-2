@@ -20,9 +20,12 @@ import {
 import {
   DEAD_LETTER_AUTO_RETRY_AFTER_MS,
   ensureQueuedItem,
+  getQueuedDayUseEntryId,
+  getQueuedInventoryItemId,
   getQueuedPosOrderId,
   getSyncItemBookingId,
   getSyncItemScope,
+  isInventoryItemQueueItem,
   isPosCreateOrderQueueItem,
   isPosVoidQueueItem,
   normalizeQueuedSyncItemForReplay
@@ -60,6 +63,8 @@ import { mergeRemotePosOrdersWithLocalState } from './posMerge.js';
 import {
   markClearedSyncItemForManualReview,
   patchCachedBookingSyncState,
+  patchCachedDayUseSyncState,
+  patchCachedInventoryItemSyncState,
   patchCachedPosOrderSyncState,
   patchCachedQuotationSyncState,
   replaceQueuedBookingReference,
@@ -109,9 +114,11 @@ export {
 export {
   DEAD_LETTER_AUTO_RETRY_AFTER_MS,
   ensureQueuedItem,
+  getQueuedInventoryItemId,
   getQueuedPosOrderId,
   getSyncItemBookingId,
   getSyncItemScope,
+  isInventoryItemQueueItem,
   isPosCreateOrderQueueItem,
   isPosVoidQueueItem,
   normalizeQueuedSyncItemForReplay
@@ -133,10 +140,14 @@ export {
   buildSyncStatusSnapshot
 } from './syncStatus.js';
 export {
+  applyOfflineDayUseInventoryReservation,
   applyOfflinePosInventoryReservation,
+  applyQueuedDayUseInventoryReservations,
   applyQueuedPosInventoryReservations,
+  getOfflineDayUseInventoryReservation,
   getOfflinePosInventoryReservation,
   readLocalPosVoidHistory,
+  restoreOfflineDayUseInventoryReservation,
   restoreOfflinePosInventoryReservation,
   upsertLocalPosVoidHistory
 } from './posOffline.js';
@@ -424,9 +435,20 @@ function queueItemNeedsBookingRefresh(item) {
 }
 
 function queueItemNeedsInventoryRefresh(item) {
-  if (!isPosCreateOrderQueueItem(item) && !isPosVoidQueueItem(item)) return false;
-  const items = Array.isArray(item?.data?.payload?.items) ? item.data.payload.items : [];
-  return items.some((entry) => !!entry?.menu_item_id || !!entry?.inventory_item_id);
+  // create_inventory_item: always refresh so the local pending-sync item is
+  // replaced by the definitive server row (with the confirmed UUID).
+  if (item?.type === 'rpc' && item?.table === 'create_inventory_item') return true;
+  if (isPosCreateOrderQueueItem(item) || isPosVoidQueueItem(item)) {
+    const items = Array.isArray(item?.data?.payload?.items) ? item.data.payload.items : [];
+    return items.some((entry) => !!entry?.menu_item_id || !!entry?.inventory_item_id);
+  }
+  if (item?.type === 'rpc' && ['add_pool_day_use', 'delete_pool_day_use'].includes(item?.table)) {
+    const extras = Array.isArray(item?.data?.payload?.extras) ?
+    item.data.payload.extras :
+    Array.isArray(item?._inventory_extras) ? item._inventory_extras : [];
+    return extras.some((entry) => !!entry?.inventory_item_id && Number(entry?.quantity || 0) > 0);
+  }
+  return false;
 }
 
 function isAlreadyAppliedInsertError(item, error) {
@@ -715,6 +737,18 @@ async function _runSyncQueue() {
           });
         }
       }
+      // Mark inventory item creation failure in cache
+      if (item?.type === 'rpc' && item?.table === 'create_inventory_item') {
+        const inventoryItemId = getQueuedInventoryItemId(item);
+        if (inventoryItemId) {
+          console.warn('[INVENTORY SYNC] Failed create_inventory_item', inventoryItemId, errorMessage);
+          patchCachedInventoryItemSyncState(inventoryItemId, {
+            _pending_sync: true,
+            _sync_state: 'failed',
+            _sync_error: errorMessage
+          });
+        }
+      }
       // P1-13: mark rejected optimistic state for update/payment/status RPCs
       if (item.type === 'rpc' && ['update_booking', 'update_booking_status', 'update_booking_payment', 'add_booking_charge', 'delete_booking_charge', 'approve_booking_refund'].includes(item.table)) {
         const bookingId = item.data?.p_booking_id || item.data?.p_id || null;
@@ -723,6 +757,16 @@ async function _runSyncQueue() {
             _pending_sync: true,
             _sync_state: 'failed',
             _sync_error: `${item.table} rejected by server: ${errorMessage}`
+          });
+        }
+      }
+      if (item.type === 'update' && item.table === 'pool_day_use') {
+        const entryId = item.id || getQueuedDayUseEntryId(item);
+        if (entryId) {
+          patchCachedDayUseSyncState(entryId, {
+            _pending_sync: true,
+            _sync_state: 'failed',
+            _sync_error: `Day Use update rejected by server: ${errorMessage}`
           });
         }
       }
@@ -870,6 +914,30 @@ async function _runSyncQueue() {
           });
         }
       }
+      // Mark inventory item creation success in cache
+      if (item?.type === 'rpc' && item?.table === 'create_inventory_item') {
+        const inventoryItemId = getQueuedInventoryItemId(item);
+        if (inventoryItemId) {
+          patchCachedInventoryItemSyncState(inventoryItemId, {
+            _pending_sync: false,
+            _sync_state: 'synced',
+            _sync_error: null,
+            _synced_at: new Date().toISOString()
+          });
+          console.log('[INVENTORY SYNC] Synced inventory item', inventoryItemId);
+        }
+      }
+      if (item.type === 'update' && item.table === 'pool_day_use') {
+        const entryId = item.id || getQueuedDayUseEntryId(item);
+        if (entryId) {
+          patchCachedDayUseSyncState(entryId, {
+            _pending_sync: false,
+            _sync_state: 'synced',
+            _sync_error: null,
+            _synced_at: new Date().toISOString()
+          });
+        }
+      }
       if (queueItemNeedsInventoryRefresh(item)) shouldRefreshInventory = true;
       if (queueItemNeedsBookingRefresh(item)) shouldRefreshBookings = true;
       // P1-8: widen refresh to cover all domains touched by this operation
@@ -879,7 +947,7 @@ async function _runSyncQueue() {
       if (item.type === 'rpc' && ['create_quotation', 'update_quotation', 'convert_quotation', 'convert_quotation_to_booking'].includes(item.table)) shouldRefreshQuotations = true;
       if (isPosCreateOrderQueueItem(item) || isPosVoidQueueItem(item)) shouldRefreshPosOrders = true;
       if (item.type === 'rpc' && ['create_conference_booking', 'update_conference_booking', 'delete_conference_booking'].includes(item.table)) shouldRefreshConference = true;
-      if (item.type === 'rpc' && ['add_pool_day_use', 'delete_pool_day_use'].includes(item.table)) shouldRefreshPoolDayUse = true;
+      if ((item.type === 'rpc' && ['add_pool_day_use', 'delete_pool_day_use'].includes(item.table)) || (item.type === 'update' && item.table === 'pool_day_use')) shouldRefreshPoolDayUse = true;
       // Phase 1: persist committed state before removing from queue file.
       // Crash here → restart sees 'committed' → skips RPC without retrying.
       writeSyncQueue([{ ...item, _state: 'committed' }, ...pending]);

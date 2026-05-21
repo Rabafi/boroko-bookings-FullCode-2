@@ -16,6 +16,8 @@
     "test": "node .\\tests\\production-guardrails.test.mjs",
     "test:offline-pos-critical": "node .\\tests\\offline-pos-regression.test.mjs",
     "test:offline-queue-critical": "node .\\tests\\offline-queue-regression.test.mjs",
+    "test:inventory-offline-sync": "node .\\tests\\inventory-offline-sync-regression.test.mjs",
+    "test:import-critical": "node .\\tests\\import-system-regression.test.mjs",
     "test:e2e": "playwright test --config \"Playwright tests/playwright.config.cjs\"",
     "test:e2e:pwa": "playwright test --config \"Playwright tests/playwright.config.cjs\" \"Playwright tests/pwa\"",
     "pwa:deploy": "npx vercel --prod",

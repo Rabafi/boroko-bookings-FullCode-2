@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
-import { TrendingUp, BedDouble, DollarSign, Calendar, Download, Printer, FileDown, Table, PiggyBank, ShoppingCart, Package, Building2, CreditCard, Presentation } from 'lucide-react'
+import { TrendingUp, BedDouble, DollarSign, Calendar, Download, Printer, FileDown, Table, PiggyBank, ShoppingCart, Package, Building2, CreditCard, Presentation, Briefcase } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { formatPaymentMethod } from '../constants/paymentMethods'
 import { useSettings, useAccess } from '../app-context'
 import HorizontalScrollArea from './shared/HorizontalScrollArea'
 import { canAccessCapability } from '../../../shared/accessControl'
+import { getDayUseActivityLabel, normalizeDayUseReportRow, summarizeDayUseExtras } from '../../../shared/dayUseReporting'
 
 function formatLocalDate(value = new Date()) {
   const d = value instanceof Date ? value : new Date(value)
@@ -134,6 +135,7 @@ export default function Reports() {
   const [revenue, setRevenue]     = useState(null)
   const [reportBookings, setReportBookings] = useState([])
   const [conferenceBookings, setConferenceBookings] = useState([])
+  const [dayUseEntries, setDayUseEntries] = useState([])
   const [snapshot, setSnapshot]   = useState(null)
   const [syncStatus, setSyncStatus] = useState(null)
   const [loading, setLoading]     = useState(false)
@@ -170,9 +172,55 @@ export default function Reports() {
   const companyLegalName = settings?.company_name && settings?.company_name !== companyDisplayName ? settings.company_name : ''
   const selectedOutletLabel = useMemo(() => {
     if (selectedOutlet === 'all') return 'All Outlets'
-    if (selectedOutlet === 'unassigned') return 'Unassigned'
+    if (selectedOutlet === 'unassigned') return 'Others'
     return outlets.find((outlet) => String(outlet.id) === String(selectedOutlet))?.name || 'Selected Outlet'
   }, [outlets, selectedOutlet])
+  const dayUseInsights = useMemo(() => {
+    const templateMap = new Map()
+    const resourceMap = new Map()
+    const extrasMap = new Map()
+    const balances = []
+    for (const entry of dayUseEntries) {
+      const row = normalizeDayUseReportRow(entry)
+      const templateKey = row.templateName || row.activityLabel
+      const templateSummary = templateMap.get(templateKey) || { label: templateKey, count: 0, revenue: 0 }
+      templateSummary.count += 1
+      templateSummary.revenue += row.total
+      templateMap.set(templateKey, templateSummary)
+
+      if (row.resourceName) {
+        const resourceSummary = resourceMap.get(row.resourceName) || { label: row.resourceName, count: 0, revenue: 0 }
+        resourceSummary.count += 1
+        resourceSummary.revenue += row.total
+        resourceMap.set(row.resourceName, resourceSummary)
+      }
+
+      for (const extra of Array.isArray(entry.extras) ? entry.extras : []) {
+        const key = String(extra?.name || '').trim()
+        if (!key) continue
+        const extraSummary = extrasMap.get(key) || { label: key, quantity: 0, revenue: 0 }
+        extraSummary.quantity += Number(extra?.quantity || 0)
+        extraSummary.revenue += Number(extra?.quantity || 0) * Number(extra?.unit_price || 0)
+        extrasMap.set(key, extraSummary)
+      }
+
+      if (row.balanceDue > 0 && row.status !== 'cancelled') {
+        balances.push({
+          id: entry.id,
+          guest: row.guest,
+          template: templateKey,
+          balance: row.balanceDue,
+          date: row.date
+        })
+      }
+    }
+    return {
+      templates: Array.from(templateMap.values()).sort((a, b) => b.revenue - a.revenue),
+      resources: Array.from(resourceMap.values()).sort((a, b) => b.count - a.count || b.revenue - a.revenue),
+      extras: Array.from(extrasMap.values()).sort((a, b) => b.quantity - a.quantity || b.revenue - a.revenue),
+      balances: balances.sort((a, b) => b.balance - a.balance)
+    }
+  }, [dayUseEntries])
 
   useEffect(() => {
     window.api.outlets.getAll().then(d => setOutlets(d || [])).catch(() => {})
@@ -264,17 +312,19 @@ export default function Reports() {
     setLoading(true)
     setError('')
     try {
-      const [occ, rev, bookings, reportsSnapshot, confBookings] = await Promise.all([
+      const [occ, rev, bookings, reportsSnapshot, confBookings, dayUseRows] = await Promise.all([
         window.api.reports.occupancy(s, e),
         window.api.reports.revenue(s, e),
         window.api.bookings.getAll().catch(() => []),
         window.api.reports.snapshot(e).catch(() => null),
-        window.api.conference.getAll(s, e).catch(() => [])
+        window.api.conference.getAll(s, e).catch(() => []),
+        window.api.dayuse.getAll(s, e).catch(() => [])
       ])
       setOccupancy(Array.isArray(occ) ? occ : [])
       setRevenue(rev && typeof rev === 'object' ? rev : null)
       setReportBookings(Array.isArray(bookings) ? bookings : [])
       setConferenceBookings(Array.isArray(confBookings) ? confBookings : [])
+      setDayUseEntries(Array.isArray(dayUseRows) ? dayUseRows : [])
       setSnapshot(reportsSnapshot && typeof reportsSnapshot === 'object' ? reportsSnapshot : null)
       const roomRows = await window.api.reports.roomProfitability(s, e).catch(() => [])
       setRoomProfitability(Array.isArray(roomRows) ? roomRows : [])
@@ -282,6 +332,7 @@ export default function Reports() {
       setError(`Could not load report: ${err?.message || 'Unknown error'}`)
       setReportBookings([])
       setConferenceBookings([])
+      setDayUseEntries([])
       setSnapshot(null)
       setRevenue(null)
       setRoomProfitability([])
@@ -651,7 +702,7 @@ export default function Reports() {
                   <option key={o.id || o.name} value={o.id || ''}>{o.name}</option>
                 ))}
               {/* Unassigned only for full-access users */}
-              {!access?.allowedOutletIds && <option value="unassigned">Unassigned</option>}
+              {!access?.allowedOutletIds && <option value="unassigned">Others</option>}
             </select>
           </div>
         )}
@@ -1399,6 +1450,118 @@ export default function Reports() {
         </div>
       )}
 
+      {dayUseEntries.length > 0 && (
+        <div className="bb-table-shell mb-6">
+          <div className="flex items-center justify-between border-b border-slate-200/80 px-5 py-4">
+            <div>
+              <h2 className="text-lg font-semibold tracking-[-0.02em] text-slate-800 flex items-center gap-2">
+                <Briefcase size={17} className="text-cyan-600" /> Day Use & Facility Access ({dayUseEntries.length})
+              </h2>
+              <p className="mt-1 text-sm text-slate-500">Pool visits, facility chilling, braai usage, and optional extras for the selected period.</p>
+            </div>
+          </div>
+          <div className="grid gap-4 border-b border-slate-200/80 bg-slate-50/70 px-5 py-4 lg:grid-cols-4">
+            <div className="rounded-2xl border border-cyan-100 bg-white px-4 py-3">
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-cyan-700">Top Templates</p>
+              <div className="mt-3 space-y-2">
+                {dayUseInsights.templates.slice(0, 3).map((item) => (
+                  <div key={`template-${item.label}`} className="flex items-center justify-between gap-3 text-sm">
+                    <span className="truncate text-slate-700">{item.label}</span>
+                    <span className="font-semibold text-cyan-700">{currency} {item.revenue.toFixed(2)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="rounded-2xl border border-emerald-100 bg-white px-4 py-3">
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-emerald-700">Most-used Resources</p>
+              <div className="mt-3 space-y-2">
+                {dayUseInsights.resources.slice(0, 3).map((item) => (
+                  <div key={`resource-${item.label}`} className="flex items-center justify-between gap-3 text-sm">
+                    <span className="truncate text-slate-700">{item.label}</span>
+                    <span className="font-semibold text-emerald-700">{item.count} use{item.count === 1 ? '' : 's'}</span>
+                  </div>
+                ))}
+                {dayUseInsights.resources.length === 0 && <p className="text-sm text-slate-500">No resources assigned in this period.</p>}
+              </div>
+            </div>
+            <div className="rounded-2xl border border-amber-100 bg-white px-4 py-3">
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-amber-700">Top Extras</p>
+              <div className="mt-3 space-y-2">
+                {dayUseInsights.extras.slice(0, 3).map((item) => (
+                  <div key={`extra-${item.label}`} className="flex items-center justify-between gap-3 text-sm">
+                    <span className="truncate text-slate-700">{item.label}</span>
+                    <span className="font-semibold text-amber-700">{item.quantity} sold</span>
+                  </div>
+                ))}
+                {dayUseInsights.extras.length === 0 && <p className="text-sm text-slate-500">No extras sold in this period.</p>}
+              </div>
+            </div>
+            <div className="rounded-2xl border border-violet-100 bg-white px-4 py-3">
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-violet-700">Outstanding Day Use Balances</p>
+              <div className="mt-3 space-y-2">
+                {dayUseInsights.balances.slice(0, 3).map((item) => (
+                  <div key={`balance-${item.id}`} className="flex items-center justify-between gap-3 text-sm">
+                    <span className="truncate text-slate-700">{item.guest}</span>
+                    <span className="font-semibold text-violet-700">{currency} {item.balance.toFixed(2)}</span>
+                  </div>
+                ))}
+                {dayUseInsights.balances.length === 0 && <p className="text-sm text-slate-500">No open balances in this period.</p>}
+              </div>
+            </div>
+          </div>
+          <HorizontalScrollArea>
+          <table className="min-w-[1280px] w-full text-sm">
+            <thead className="sticky top-0 z-10 bg-slate-50 text-xs uppercase tracking-[0.16em] text-slate-500">
+              <tr>
+                <th className="px-5 py-3 text-left">Guest</th>
+                <th className="px-5 py-3 text-left">Date</th>
+                <th className="px-5 py-3 text-left">Template</th>
+                <th className="px-5 py-3 text-left">Activity</th>
+                <th className="px-5 py-3 text-left">Status</th>
+                <th className="px-5 py-3 text-left">Access</th>
+                <th className="px-5 py-3 text-left">Resource</th>
+                <th className="px-5 py-3 text-left">Extras</th>
+                <th className="px-5 py-3 text-right">Extras Total</th>
+                <th className="px-5 py-3 text-right">Guests</th>
+                <th className="px-5 py-3 text-right">Deposit</th>
+                <th className="px-5 py-3 text-right">Balance</th>
+                <th className="px-5 py-3 text-right">Total</th>
+                <th className="px-5 py-3 text-left">Payment</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {dayUseEntries.map((entry) => {
+                const row = normalizeDayUseReportRow(entry)
+                const extrasSummary = summarizeDayUseExtras(entry.extras)
+                const accessSummary = row.accessSummary || getDayUseActivityLabel(entry)
+                return (
+                  <tr key={entry.id} className="hover:bg-slate-50">
+                    <td className="px-5 py-3">
+                      <p className="font-medium text-slate-800">{row.guest}</p>
+                      {entry.phone && <p className="text-xs text-slate-500">{entry.phone}</p>}
+                    </td>
+                    <td className="px-5 py-3 text-slate-600 whitespace-nowrap">{row.date}</td>
+                    <td className="px-5 py-3 text-slate-600">{row.templateName || '-'}</td>
+                    <td className="px-5 py-3 text-slate-600">{row.activityLabel}</td>
+                    <td className="px-5 py-3 text-slate-600">{row.statusLabel}</td>
+                    <td className="px-5 py-3 text-slate-600">{accessSummary}</td>
+                    <td className="px-5 py-3 text-slate-600">{row.resourceName || '-'}</td>
+                    <td className="px-5 py-3 text-slate-600">{extrasSummary || '-'}</td>
+                    <td className="px-5 py-3 text-right text-amber-700">{currency} {row.extrasTotal.toFixed(2)}</td>
+                    <td className="px-5 py-3 text-right text-slate-600">{row.adults + row.children}</td>
+                    <td className="px-5 py-3 text-right text-slate-600">{currency} {row.depositAmount.toFixed(2)}</td>
+                    <td className="px-5 py-3 text-right text-violet-700">{currency} {row.balanceDue.toFixed(2)}</td>
+                    <td className="px-5 py-3 text-right font-medium text-slate-800">{currency} {row.total.toFixed(2)}</td>
+                    <td className="px-5 py-3 text-slate-600">{formatPaymentMethod(row.paymentMethod)}</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+          </HorizontalScrollArea>
+        </div>
+      )}
+
       <div className="bb-table-shell">
         <div className="flex items-center justify-between border-b border-slate-200/80 px-5 py-4">
           <h2 className="text-lg font-semibold tracking-[-0.02em] text-slate-800">Room Occupancy — {totalNights}-day period</h2>
@@ -1563,7 +1726,7 @@ export default function Reports() {
                     <PLRow label="Conference Revenue" value={`${currency} ${Number(pl.conferenceRevenue).toFixed(2)}`} />
                   )}
                   {(pl.poolRevenue > 0) && (
-                    <PLRow label="Pool / Day Use"     value={`${currency} ${Number(pl.poolRevenue).toFixed(2)}`} />
+                    <PLRow label="Day Use / Facility Access" value={`${currency} ${Number(pl.poolRevenue).toFixed(2)}`} />
                   )}
                   <PLRow label="Total Revenue" value={`${currency} ${Number(pl.totalRevenue).toFixed(2)}`} bold />
                   {pl.vatEnabled && <>

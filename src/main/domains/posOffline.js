@@ -54,6 +54,59 @@ export function getOfflinePosInventoryReservation(items = [], { outletId = null 
   map(([inventory_item_id, quantity]) => ({ inventory_item_id, quantity }));
 }
 
+function buildDayUseInventoryUsage(extras = []) {
+  const usage = new Map();
+  for (const entry of extras || []) {
+    const inventoryItemId = entry?.inventory_item_id || null;
+    if (!inventoryItemId) continue;
+    const quantity = Math.max(0, Number(entry.quantity || 0));
+    if (!quantity) continue;
+    usage.set(inventoryItemId, (usage.get(inventoryItemId) || 0) + quantity);
+  }
+  return usage;
+}
+
+export function getOfflineDayUseInventoryReservation(extras = []) {
+  return [...buildDayUseInventoryUsage(extras).entries()].
+  map(([inventory_item_id, quantity]) => ({ inventory_item_id, quantity }));
+}
+
+export function applyOfflineDayUseInventoryReservation(extras = []) {
+  const usage = buildDayUseInventoryUsage(extras);
+  if (usage.size === 0) return [];
+  const inventory = readCache('inventory-items');
+  const next = inventory.map((item) => {
+    const used = usage.get(item?.id) || 0;
+    if (!used) return item;
+    return {
+      ...item,
+      current_stock: Math.max(0, normalizeInventoryStockValue(item.current_stock) - used),
+      _pending_sync: true,
+      _sync_state: 'pending'
+    };
+  });
+  writeCache('inventory-items', next, { source: 'local' });
+  return getOfflineDayUseInventoryReservation(extras);
+}
+
+export function restoreOfflineDayUseInventoryReservation(extras = []) {
+  const usage = buildDayUseInventoryUsage(extras);
+  if (usage.size === 0) return [];
+  const inventory = readCache('inventory-items');
+  const next = inventory.map((item) => {
+    const restored = usage.get(item?.id) || 0;
+    if (!restored) return item;
+    return {
+      ...item,
+      current_stock: normalizeInventoryStockValue(item.current_stock) + restored,
+      _pending_sync: true,
+      _sync_state: 'pending'
+    };
+  });
+  writeCache('inventory-items', next, { source: 'local' });
+  return getOfflineDayUseInventoryReservation(extras);
+}
+
 export function applyOfflinePosInventoryReservation(items = [], { outletId = null } = {}) {
   const usage = buildQueuedPosInventoryUsage(items, { outletId });
   if (usage.size === 0) return [];
@@ -136,6 +189,35 @@ export function applyQueuedPosInventoryReservations(remoteInventoryRows = []) {
     const orderUsage = buildQueuedPosInventoryUsage(payload.items || [], { outletId: payload.outlet_id || null });
     for (const [inventoryItemId, quantity] of orderUsage.entries()) {
       const multiplier = isPosVoidQueueItem(item) ? -1 : 1;
+      usage.set(inventoryItemId, (usage.get(inventoryItemId) || 0) + quantity * multiplier);
+    }
+  }
+
+  return (remoteInventoryRows || []).map((row) => {
+    const used = usage.get(row?.id) || 0;
+    if (!used) return row;
+    return {
+      ...row,
+      current_stock: Math.max(0, normalizeInventoryStockValue(row.current_stock) - used),
+      _pending_sync: true,
+      _sync_state: 'pending'
+    };
+  });
+}
+
+export function applyQueuedDayUseInventoryReservations(remoteInventoryRows = []) {
+  const queuedItems = readSyncQueue().filter((item) =>
+  item?.type === 'rpc' && ['add_pool_day_use', 'delete_pool_day_use'].includes(item?.table)
+  );
+  if (queuedItems.length === 0) return remoteInventoryRows || [];
+
+  const usage = new Map();
+  for (const item of queuedItems) {
+    const payload = item?.data?.payload || {};
+    const extras = Array.isArray(payload?.extras) ? payload.extras : Array.isArray(item?._inventory_extras) ? item._inventory_extras : [];
+    const extraUsage = buildDayUseInventoryUsage(extras);
+    for (const [inventoryItemId, quantity] of extraUsage.entries()) {
+      const multiplier = item?.table === 'delete_pool_day_use' ? -1 : 1;
       usage.set(inventoryItemId, (usage.get(inventoryItemId) || 0) + quantity * multiplier);
     }
   }

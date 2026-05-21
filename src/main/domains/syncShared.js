@@ -21,6 +21,43 @@ export function isPosVoidQueueItem(item) {
   return item?.type === 'rpc' && item?.table === 'approve_pos_void_with_pin';
 }
 
+export function isInventoryItemQueueItem(item) {
+  return item?.type === 'rpc' && item?.table === 'create_inventory_item';
+}
+
+export function getQueuedInventoryItemId(item) {
+  const payloadId = String(item?.data?.payload?.id || '').trim();
+  if (payloadId) return payloadId;
+
+  const queueId = String(item?._queue_id || '').trim();
+  if (queueId.startsWith('inventory-item-')) {
+    const parsedId = queueId.slice('inventory-item-'.length).trim();
+    if (parsedId) return parsedId;
+  }
+
+  console.warn('[INVENTORY SYNC] Missing item id for queue item', {
+    queueId: item?._queue_id || null,
+    table: item?.table || null
+  });
+  return null;
+}
+
+export function getQueuedDayUseEntryId(item) {
+  const payloadId = String(item?.data?.payload?.id || item?.data?.p_id || '').trim();
+  if (payloadId) return payloadId;
+
+  const queueId = String(item?._queue_id || '').trim();
+  for (const prefix of ['dayuse-status-', 'dayuse-']) {
+    if (queueId.startsWith(prefix)) {
+      const remainder = queueId.slice(prefix.length).trim();
+      const parsedId = remainder.split('-status-')[0].trim();
+      if (parsedId) return parsedId;
+    }
+  }
+
+  return null;
+}
+
 export function getQueuedPosOrderId(item) {
   const payloadId = String(item?.data?.payload?.id || item?.data?.payload?.order_id || '').trim();
   if (payloadId) return payloadId;
@@ -55,6 +92,14 @@ export function getSyncItemScope(item) {
   if (bookingId) return `booking:${bookingId}`;
   const posOrderId = getQueuedPosOrderId(item);
   if (posOrderId) return `pos-order:${posOrderId}`;
+  const dayUseEntryId = getQueuedDayUseEntryId(item);
+  if (dayUseEntryId && (/pool_day_use/i.test(String(item?.table || '')) || item?._queue_id?.startsWith?.('dayuse-'))) {
+    return `day-use-entry:${dayUseEntryId}`;
+  }
+  if (isInventoryItemQueueItem(item)) {
+    const itemId = getQueuedInventoryItemId(item);
+    if (itemId) return `inventory-item:${itemId}`;
+  }
   return item?.table || 'unknown';
 }
 

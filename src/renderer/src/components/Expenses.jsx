@@ -348,7 +348,7 @@ export default function Expenses() {
           {outlets.map((o) => (
             <option key={o.id || o.name} value={o.id || ''}>{o.name}</option>
           ))}
-          <option value="unassigned">Unassigned</option>
+          <option value="unassigned">Others</option>
         </select>
         <select
           className="input w-auto"
@@ -383,7 +383,7 @@ export default function Expenses() {
           <p className="mt-2 text-xs text-slate-500">
             {showSupplyCosts
               ? `${supplySpend?.purchases?.length || 0} property-wide supply purchase entries.`
-              : 'Shown in All Outlets or Unassigned view because room supplies are property-wide.'}
+              : 'Shown in All Outlets or Others view because room supplies are property-wide.'}
           </p>
         </div>
         <div className="bb-card p-5">
@@ -392,7 +392,7 @@ export default function Expenses() {
           <p className="mt-2 text-xs text-slate-500">
             {showMaintenanceCosts
               ? `${maintenanceRows.length || 0} repair entry${maintenanceRows.length === 1 ? '' : 's'} in this period.`
-              : 'Shown in All Outlets or Unassigned view because maintenance is property-wide.'}
+              : 'Shown in All Outlets or Others view because maintenance is property-wide.'}
           </p>
         </div>
         <div className="bb-card border-slate-900 bg-slate-900 p-5 text-white">
@@ -440,7 +440,7 @@ export default function Expenses() {
                       </span>
                     </td>
                     <td className="px-5 py-3 text-sm text-slate-600">
-                      {exp.outlets?.name ?? <span className="text-slate-300">Unassigned</span>}
+                      {exp.outlets?.name ?? <span className="text-slate-300">Others</span>}
                     </td>
                     <td className="px-5 py-3 text-right font-semibold text-slate-800">
                       {currency} {fmt(exp.amount)}
@@ -768,7 +768,7 @@ export default function Expenses() {
                 value={form.outlet_id}
                 onChange={(e) => setForm({ ...form, outlet_id: e.target.value })}
               >
-                <option value="">— Unassigned —</option>
+                <option value="">— Others —</option>
                 {outlets.map((o) => (
                   <option key={o.id || o.name} value={o.id || ''}>{o.name}</option>
                 ))}

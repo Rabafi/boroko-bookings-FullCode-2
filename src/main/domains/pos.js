@@ -38,17 +38,25 @@ function applyPosMenuOutletFilter(rows = [], outletFilter = null) {
 
 function applyPosOrderFilters(rows = [], startDate, endDate, outletFilter = null) {
   let filtered = rows || [];
+  const inclusiveEndDate = normalizeInclusiveDateEnd(endDate);
   if (startDate) {
     filtered = filtered.filter((order) => String(order.created_at || '') >= startDate);
   }
-  if (endDate) {
-    filtered = filtered.filter((order) => String(order.created_at || '') <= endDate);
+  if (inclusiveEndDate) {
+    filtered = filtered.filter((order) => String(order.created_at || '') <= inclusiveEndDate);
   }
   if (outletFilter !== null && outletFilter.length === 0) return [];
   if (outletFilter !== null) {
     filtered = filtered.filter((order) => !order.outlet_id || outletFilter.includes(order.outlet_id));
   }
   return filtered.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
+}
+
+function normalizeInclusiveDateEnd(value) {
+  if (!value) return null;
+  const raw = String(value);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return `${raw}T23:59:59.999Z`;
+  return raw;
 }
 
 // outletFilter: null = all outlets, [] = no access, [uuid1,...] = restrict to these outlet IDs
@@ -163,7 +171,7 @@ export async function getPosOrders(startDate, endDate, outletFilter = null) {
     select('*, pos_order_items(*), outlets(name)').
     eq('lodge_id', state.lodgeId);
     if (startDate) query = query.gte('created_at', startDate);
-    if (endDate) query = query.lte('created_at', endDate);
+    if (endDate) query = query.lte('created_at', normalizeInclusiveDateEnd(endDate));
     let data = null;
     let error = null;
     ({ data, error } = await query.order('created_at', { ascending: false }));
@@ -183,7 +191,7 @@ export async function getPosOrders(startDate, endDate, outletFilter = null) {
       select('*, pos_order_items(*)').
       eq('lodge_id', state.lodgeId);
       if (startDate) fallbackQuery = fallbackQuery.gte('created_at', startDate);
-      if (endDate) fallbackQuery = fallbackQuery.lte('created_at', endDate);
+      if (endDate) fallbackQuery = fallbackQuery.lte('created_at', normalizeInclusiveDateEnd(endDate));
       const fallback = await fallbackQuery.order('created_at', { ascending: false });
       data = fallback.data || [];
       error = fallback.error || null;
@@ -215,8 +223,9 @@ export async function getPosOrders(startDate, endDate, outletFilter = null) {
 export async function getPosVoidHistory(startDate, endDate, outletFilter = null) {
   const applyVoidFilters = (rows = []) => {
     let filtered = rows || [];
+    const inclusiveEndDate = normalizeInclusiveDateEnd(endDate);
     if (startDate) filtered = filtered.filter((row) => String(row.created_at || '') >= startDate);
-    if (endDate) filtered = filtered.filter((row) => String(row.created_at || '') <= endDate);
+    if (inclusiveEndDate) filtered = filtered.filter((row) => String(row.created_at || '') <= inclusiveEndDate);
     if (outletFilter !== null && outletFilter.length === 0) return [];
     if (outletFilter !== null) filtered = filtered.filter((row) => !row.outlet_id || outletFilter.includes(row.outlet_id));
     return filtered.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
@@ -241,7 +250,7 @@ export async function getPosVoidHistory(startDate, endDate, outletFilter = null)
   eq('action', 'void');
 
   if (startDate) query = query.gte('created_at', startDate);
-  if (endDate) query = query.lte('created_at', endDate);
+  if (endDate) query = query.lte('created_at', normalizeInclusiveDateEnd(endDate));
   if (outletFilter !== null && outletFilter.length === 0) return [];
   if (outletFilter !== null) query = query.in('outlet_id', outletFilter);
 
@@ -284,7 +293,7 @@ export async function getOutlets() {
   const buildVirtualOutlets = () => [
   { id: null, name: 'Kitchen', type: 'food', sort_order: 1, _virtual: true },
   { id: null, name: 'Bar', type: 'beverage', sort_order: 2, _virtual: true },
-  { id: null, name: 'Front Desk', type: 'accommodation', sort_order: 3, _virtual: true }];
+  { id: null, name: 'Others', type: 'accommodation', sort_order: 3, _virtual: true }];
 
 
   try {

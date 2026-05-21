@@ -354,11 +354,14 @@ export default function Inventory() {
             outlet_id: itemForm.outlet_id || null,
             outlets: itemForm.outlet_id
               ? { name: selectedOutletRow?.name || null }
-              : null
+              : null,
+            _pending_sync: result?.offline ? true : undefined,
+            _sync_state: result?.offline ? 'pending' : undefined
           }
       setItems((prev) => sortItems([savedItem, ...prev.filter((row) => row.id !== savedItem.id)]))
 
       setItemModal(false)
+      loadItems(true)
     } catch (err) {
       setItemError(err.message || 'Failed to save item. Please try again.')
     } finally {
@@ -758,7 +761,7 @@ export default function Inventory() {
                               <p className="text-xs text-slate-400">{line.item_category} · {line.item_unit}</p>
                             </td>
                             <td className="px-4 py-3 text-slate-600">
-                              {outletMap[line.outlet_id]?.name || 'Unassigned'}
+                              {outletMap[line.outlet_id]?.name || 'Others'}
                             </td>
                             <td className="px-4 py-3 text-right font-semibold text-slate-700">{fmt(line.expected_qty, 1)} {line.item_unit}</td>
                             <td className="px-4 py-3 text-right">
@@ -887,20 +890,47 @@ export default function Inventory() {
                 <tbody className="divide-y divide-slate-100">
                   {filtered.map((item) => {
                     const isLow = item.current_stock <= item.reorder_level
+                    const isPendingSync = item._pending_sync === true
+                    const isSyncFailed = item._sync_state === 'failed' || item._sync_state === 'sync_failed' || item._sync_state === 'manual_review_required'
+                    const actionsDisabled = isPendingSync
                     return (
-                      <tr key={item.id} className={`hover:bg-slate-50 ${isLow ? 'bg-red-50/40' : ''}`}>
+                      <tr key={item.id} className={`hover:bg-slate-50 ${isLow && !isPendingSync ? 'bg-red-50/40' : ''} ${isPendingSync ? 'bg-amber-50/40' : ''} ${isSyncFailed ? 'bg-red-50/60' : ''}`}>
                         <td className="px-5 py-3">
-                          <div className="flex items-center gap-2">
-                            {isLow && <AlertTriangle size={14} className="text-red-500 shrink-0" />}
+                          <div className="flex items-center gap-2 flex-wrap">
+                            {isLow && !isPendingSync && <AlertTriangle size={14} className="text-red-500 shrink-0" />}
                             <p className="font-medium text-slate-800">{item.name}</p>
+                            {isPendingSync && !isSyncFailed && (
+                              <span
+                                className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs text-amber-600 whitespace-nowrap"
+                                title="This product was created offline and is waiting to sync to the server"
+                              >
+                                ⏳ Pending Sync
+                              </span>
+                            )}
+                            {isSyncFailed && (
+                              <span
+                                className="rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-xs text-red-600 whitespace-nowrap"
+                                title={item._sync_error || 'Sync failed — check System Health for details'}
+                              >
+                                ⛔ Sync Failed
+                              </span>
+                            )}
                           </div>
-                          {isLow && (
-                            <p className="text-xs text-red-500 mt-0.5 ml-5">Low stock — reorder needed</p>
+                          {isLow && !isPendingSync && (
+                            <p className="text-xs text-red-500 mt-0.5 ml-0">Low stock — reorder needed</p>
+                          )}
+                          {isSyncFailed && item._sync_error && (
+                            <p className="text-xs text-red-500 mt-0.5" title={item._sync_error}>
+                              {item._sync_error.length > 60 ? `${item._sync_error.slice(0, 60)}…` : item._sync_error}
+                            </p>
+                          )}
+                          {isPendingSync && !isSyncFailed && (
+                            <p className="text-xs text-amber-600 mt-0.5">Actions locked until sync completes</p>
                           )}
                         </td>
                         <td className="px-5 py-3">
                           <span className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-700">
-                            {outletMap[item.outlet_id]?.name || 'Unassigned'}
+                            {outletMap[item.outlet_id]?.name || 'Others'}
                           </span>
                         </td>
                         <td className="px-5 py-3">
@@ -909,8 +939,8 @@ export default function Inventory() {
                           </span>
                         </td>
                         <td className="px-5 py-3 text-slate-600">{item.unit}</td>
-                        <td className={`px-5 py-3 text-right font-semibold ${isLow ? 'text-red-600' : 'text-slate-800'}`}>
-                          {fmt(item.current_stock, 1)} {item.unit}
+                        <td className={`px-5 py-3 text-right font-semibold ${isLow && !isPendingSync ? 'text-red-600' : 'text-slate-800'}`}>
+                          {isPendingSync ? '—' : `${fmt(item.current_stock, 1)} ${item.unit}`}
                         </td>
                         <td className="px-5 py-3 text-right text-slate-500">
                           {fmt(item.reorder_level, 1)} {item.unit}
@@ -927,32 +957,82 @@ export default function Inventory() {
                         </td>
                         <td className="px-5 py-3">
                           <div className="flex items-center justify-center gap-1">
-                            <button
-                              onClick={() => openPurchase(item)}
-                            className="rounded-lg px-2 py-1 text-xs text-green-600 transition-colors hover:bg-green-50"
-                              title="Record Purchase"
-                            >
-                              + Stock
-                            </button>
-                            <button
-                              onClick={() => openAdjust(item)}
-                            className="rounded-lg px-2 py-1 text-xs text-blue-600 transition-colors hover:bg-blue-50"
-                              title="Adjust Stock"
-                            >
-                              Adjust
-                            </button>
-                            <button
-                              onClick={() => openEdit(item)}
-                              className="rounded transition-colors p-1.5 text-slate-400 hover:bg-slate-100"
-                            >
-                              <Pencil size={13} />
-                            </button>
-                            <button
-                              onClick={() => deleteItem(item)}
-                            className="rounded-lg p-1.5 text-red-400 transition-colors hover:bg-red-50"
-                            >
-                              <Trash2 size={13} />
-                            </button>
+                            {isPendingSync && isSyncFailed ? (
+                              <>
+                                <button
+                                  onClick={async () => {
+                                    try {
+                                      await window.api.sync.retryFailed(['inventory-item-' + item.id]);
+                                      loadItems(true);
+                                    } catch (err) {
+                                      console.error(err);
+                                    }
+                                  }}
+                                  className="rounded bg-rose-50 hover:bg-rose-100 text-rose-700 px-2 py-1 text-xs font-semibold transition-colors"
+                                  title="Retry syncing this draft to the server"
+                                >
+                                  Retry
+                                </button>
+                                <button
+                                  onClick={() => openEdit(item)}
+                                  className="rounded transition-colors p-1.5 text-slate-400 hover:bg-slate-100"
+                                  title="Edit draft details locally"
+                                >
+                                  <Pencil size={13} />
+                                </button>
+                                <button
+                                  onClick={async () => {
+                                    if (confirm(`Are you sure you want to discard this failed inventory draft "${item.name}"?`)) {
+                                      try {
+                                        await window.api.inventory.discardDraft(item.id);
+                                        loadItems(true);
+                                      } catch (err) {
+                                        console.error(err);
+                                      }
+                                    }
+                                  }}
+                                  className="rounded p-1.5 transition-colors text-red-400 hover:bg-red-50"
+                                  title="Discard this failed local draft"
+                                >
+                                  <Trash2 size={13} />
+                                </button>
+                              </>
+                            ) : (
+                              <>
+                                <button
+                                  onClick={() => openPurchase(item)}
+                                  disabled={actionsDisabled}
+                                  className={`rounded-lg px-2 py-1 text-xs transition-colors ${actionsDisabled ? 'text-slate-300 cursor-not-allowed' : 'text-green-600 hover:bg-green-50'}`}
+                                  title={actionsDisabled ? 'Waiting for sync before stock can be recorded' : 'Record Purchase'}
+                                >
+                                  + Stock
+                                </button>
+                                <button
+                                  onClick={() => openAdjust(item)}
+                                  disabled={actionsDisabled}
+                                  className={`rounded-lg px-2 py-1 text-xs transition-colors ${actionsDisabled ? 'text-slate-300 cursor-not-allowed' : 'text-blue-600 hover:bg-blue-50'}`}
+                                  title={actionsDisabled ? 'Waiting for sync before stock can be adjusted' : 'Adjust Stock'}
+                                >
+                                  Adjust
+                                </button>
+                                <button
+                                  onClick={() => openEdit(item)}
+                                  disabled={actionsDisabled}
+                                  className={`rounded transition-colors p-1.5 ${actionsDisabled ? 'text-slate-200 cursor-not-allowed' : 'text-slate-400 hover:bg-slate-100'}`}
+                                  title={actionsDisabled ? 'Waiting for sync before this item can be edited' : 'Edit item'}
+                                >
+                                  <Pencil size={13} />
+                                </button>
+                                <button
+                                  onClick={() => deleteItem(item)}
+                                  disabled={actionsDisabled}
+                                  className={`rounded-lg p-1.5 transition-colors ${actionsDisabled ? 'text-red-200 cursor-not-allowed' : 'text-red-400 hover:bg-red-50'}`}
+                                  title={actionsDisabled ? 'Waiting for sync before this item can be deleted' : 'Delete item'}
+                                >
+                                  <Trash2 size={13} />
+                                </button>
+                              </>
+                            )}
                           </div>
                         </td>
                       </tr>
@@ -1128,13 +1208,13 @@ export default function Inventory() {
                 value={itemForm.outlet_id}
                 onChange={(e) => setItemForm({ ...itemForm, outlet_id: e.target.value })}
               >
-                <option value="">— Unassigned —</option>
+                <option value="">— Others —</option>
                 {outlets.map((outlet) => (
                   <option key={outlet.id || outlet.name} value={outlet.id || ''}>{outlet.name}</option>
                 ))}
               </select>
               <p className="mt-1 text-xs text-slate-500">
-                Leave this unassigned if the item is not owned by a specific outlet. Bar and Kitchen items sync into POS automatically. Front Desk items stay inventory-only.
+                Leave this under Others if the item is not owned by Kitchen or Bar. Bar and Kitchen items sync into POS automatically. Others items stay inventory-only.
               </p>
             </div>
             <div>
@@ -1153,7 +1233,7 @@ export default function Inventory() {
               <p className="mt-1 text-xs text-slate-500">
                 {posEnabledOutlet
                   ? 'Required because Bar and Kitchen products are published to POS automatically.'
-                  : 'Front Desk products do not appear in POS.'}
+                  : 'Others products do not appear in POS.'}
               </p>
             </div>
             <div>

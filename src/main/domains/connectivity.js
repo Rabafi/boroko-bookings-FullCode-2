@@ -4,7 +4,7 @@ import { buildSyncStatusSnapshot } from './syncStatus.js';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_KEY;
-const CONNECTIVITY_PROBE_TIMEOUT_MS = 4000;
+const CONNECTIVITY_PROBE_TIMEOUT_MS = 10000;
 const CONNECTIVITY_OFFLINE_FAILURE_THRESHOLD = 3;
 
 export function broadcastSyncStatus() {
@@ -28,7 +28,6 @@ export async function checkOnline() {
     return state.isOnline;
   }
   const wasOnline = state.isOnline;
-  let rawOnline = false;
   const base = SUPABASE_URL.replace(/\/$/, '');
   const headers = {
     apikey: SUPABASE_ANON_KEY,
@@ -43,22 +42,19 @@ export async function checkOnline() {
       clearTimeout(t);
     }
   };
-  const reachable = (res) => res.status > 0 && res.status < 500;
-
-  try {
-    let res = await fetchWithTimeout(`${base}/auth/v1/health`, { method: 'GET' });
-    if (res.status >= 500) {
-      res = await fetchWithTimeout(`${base}/rest/v1/`, { method: 'GET' });
-    }
-    rawOnline = reachable(res);
-  } catch {
+  const reachable = (res) => res && res.status > 0 && res.status < 500;
+  const probe = async (url) => {
     try {
-      const res = await fetchWithTimeout(`${base}/rest/v1/`, { method: 'GET' });
-      rawOnline = reachable(res);
+      return reachable(await fetchWithTimeout(url, { method: 'GET' }));
     } catch {
-      rawOnline = false;
+      return false;
     }
-  }
+  };
+
+  const rawOnline = (await Promise.all([
+    probe(`${base}/auth/v1/health`),
+    probe(`${base}/rest/v1/`)
+  ])).some(Boolean);
 
   if (rawOnline) {
     state.consecutiveConnectivityFailures = 0;

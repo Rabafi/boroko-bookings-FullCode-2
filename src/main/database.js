@@ -71,6 +71,7 @@ export {
 } from './domains/customers.js'
 export {
   getInventoryItems,
+  getDayUseInventoryItems,
   getInventoryItemById,
   createInventoryItem,
   updateInventoryItem,
@@ -86,7 +87,8 @@ export {
   saveInventoryStocktakeCounts,
   postInventoryStocktakeSession,
   getInventorySpend,
-  getLowStockItems
+  getLowStockItems,
+  discardDraft
 } from './domains/inventory.js'
 export {
   getAllBookings,
@@ -224,11 +226,21 @@ export {
   deleteConferenceBooking
 } from './domains/conference.js'
 export {
+  getDayUseEntries,
+  getDayUseEntryById,
+  addDayUseEntry,
+  deleteDayUseEntry,
+  getDayUseEntrySummary,
+  updateDayUseEntryStatus,
+  settleDayUseEntryBalance
+} from './domains/dayUseEntries.js'
+export {
   getPoolDayUse,
   getPoolDayUseById,
   addPoolDayUse,
   deletePoolDayUse,
-  getPoolDayUseSummary
+  getPoolDayUseSummary,
+  updatePoolDayUseStatus
 } from './domains/pool.js'
 export {
   checkMasterAdmin,

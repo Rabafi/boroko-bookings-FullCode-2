@@ -950,18 +950,18 @@ export default function POS() {
   }
 
   const terminalShellClass = touchMode
-    ? 'grid h-[calc(100vh-8.5rem)] min-h-[29rem] grid-cols-1 gap-2 overflow-hidden xl:grid-cols-[minmax(0,1.55fr)_minmax(20rem,0.82fr)]'
-    : 'grid h-[calc(100vh-8.5rem)] min-h-[27rem] grid-cols-1 gap-2 overflow-hidden xl:grid-cols-[minmax(0,1.65fr)_minmax(19rem,0.78fr)]'
+    ? 'grid min-h-0 flex-1 grid-cols-1 gap-2 overflow-hidden lg:grid-cols-[minmax(0,1fr)_minmax(20rem,0.42fr)] 2xl:grid-cols-[minmax(0,1fr)_minmax(22rem,0.38fr)]'
+    : 'grid min-h-0 flex-1 grid-cols-1 gap-2 overflow-hidden lg:grid-cols-[minmax(0,1fr)_minmax(18rem,0.34fr)] 2xl:grid-cols-[minmax(0,1fr)_minmax(20rem,0.32fr)]'
   const terminalLayoutClass = touchMode
     ? 'flex min-h-0 flex-1 flex-col gap-2 overflow-hidden'
     : 'flex min-h-0 flex-1 flex-col gap-2 overflow-hidden'
   const menuPanelClass = touchMode ? 'flex min-h-0 flex-col gap-2 overflow-hidden' : 'flex min-h-0 flex-col gap-2 overflow-hidden'
   const orderPanelClass = touchMode
     ? 'bb-card flex min-h-0 flex-col overflow-hidden p-2.5'
-    : 'bb-card flex min-h-0 flex-col overflow-hidden p-2.5'
+    : 'bb-card flex min-h-0 flex-col overflow-hidden p-2'
   const touchButtonClass = touchMode ? 'min-h-[2.4rem] rounded-xl text-sm' : 'rounded-xl text-xs'
   const touchInputClass = touchMode ? 'min-h-[2.35rem] text-sm' : 'min-h-[2.25rem] text-sm'
-  const touchItemGridClass = touchMode ? 'grid grid-cols-3 gap-2 2xl:grid-cols-4' : 'grid grid-cols-3 gap-2 2xl:grid-cols-4'
+  const touchItemGridClass = touchMode ? 'grid grid-cols-3 gap-2 2xl:grid-cols-4' : 'grid grid-cols-3 gap-1.5 2xl:grid-cols-5'
   const touchItemCardClass = touchMode
     ? 'bb-card min-h-[5rem] p-2 text-left transition-all active:scale-[0.99]'
     : 'bb-card min-h-[4.25rem] p-2 text-left transition-all'
@@ -982,27 +982,30 @@ export default function POS() {
   }, [])
 
   return (
-    <div className="mx-auto flex max-w-none flex-col gap-2">
-      <div className="bb-card flex flex-col gap-2 p-2.5">
+    <div className={tab === 'terminal'
+      ? 'mx-auto flex h-[calc(100vh-2rem)] max-w-none flex-col gap-2 overflow-hidden'
+      : 'mx-auto flex max-w-none flex-col gap-2'
+    }>
+      <div className="bb-card flex shrink-0 flex-col gap-2 p-2">
         <div className="flex flex-col gap-2 xl:flex-row xl:items-center xl:justify-between">
           <div className="flex min-w-0 flex-wrap items-center gap-2.5">
             <div>
               <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-emerald-700/70">POS Terminal</p>
-              <h1 className="text-lg font-semibold text-slate-900">Point of Sale</h1>
+              <h1 className="text-base font-semibold text-slate-900">Point of Sale</h1>
             </div>
-            <div className={`rounded-xl border px-2.5 py-1.5 text-xs shadow-sm ${
+            <div className={`rounded-xl border px-2 py-1 text-xs shadow-sm ${
               offlineMode
                 ? 'border-amber-200 bg-amber-50 text-amber-900'
                 : 'border-emerald-200 bg-emerald-50 text-emerald-800'
             }`}>
               <p className="font-semibold">{offlineMode ? 'Offline POS mode' : 'POS synced and live'}</p>
-              <p className="mt-0.5 text-[11px] opacity-80">
+              <p className="hidden text-[11px] opacity-80 md:block">
                 {offlineMode ? 'Stock and remote payment confirmation may be delayed.' : 'Stock and sales are updating from the latest synced state.'}
               </p>
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <div className="bb-card flex gap-1 p-1">
+            <div className="bb-card flex gap-1 p-0.5">
               {[
                 ['desktop', 'Desktop'],
                 ['touch', 'Touch']
@@ -1013,7 +1016,7 @@ export default function POS() {
                     key={mode}
                     type="button"
                     onClick={() => setTouchMode(mode === 'touch')}
-                    className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-all ${
+                    className={`rounded-lg px-3 py-1 text-xs font-semibold transition-all ${
                       active
                         ? 'bg-slate-900 text-white shadow-sm'
                         : 'text-slate-600 hover:bg-slate-50'
@@ -1024,13 +1027,13 @@ export default function POS() {
                 )
               })}
             </div>
-            <div className="bb-card flex gap-1 p-1">
+            <div className="bb-card flex gap-1 p-0.5">
               {[['terminal', 'Terminal'], ...(canManageMenu ? [['menu', 'Menu Items']] : []), ['history', 'History']].map(([v, l]) => (
                 <button
                   key={v}
                   onClick={() => setTab(v)}
                   className={`rounded-xl transition-all ${
-                    touchMode ? 'min-h-[2.65rem] px-3 py-2 text-sm' : 'px-3 py-1.5 text-xs'
+                    touchMode ? 'min-h-[2.4rem] px-3 py-1.5 text-sm' : 'px-3 py-1 text-xs'
                   } ${
                     tab === v
                       ? 'bg-gradient-to-b from-green-500 to-green-700 text-white shadow-[0_10px_24px_rgba(22,101,52,0.2)]'
@@ -1084,7 +1087,7 @@ export default function POS() {
               </div>
             )}
 
-            <div className="bb-card relative overflow-visible p-2.5">
+            <div className="bb-card relative shrink-0 overflow-visible p-2">
               {menuRefreshing && hasTerminalMenuData && (
                 <div className="pointer-events-none absolute right-4 top-4 z-10">
                   <div className="rounded-full border border-emerald-200 bg-white/95 px-3 py-1.5 text-xs font-medium text-emerald-700 shadow-sm backdrop-blur">
@@ -1094,8 +1097,8 @@ export default function POS() {
               )}
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <div>
-                  <p className="text-xs font-semibold text-slate-800">Find products quickly</p>
-                  <p className="text-[11px] text-slate-500">Search by product name or barcode inside the active outlet.</p>
+                  <p className="text-xs font-semibold text-slate-800">Products</p>
+                  <p className="hidden text-[11px] text-slate-500 sm:block">Search by name or barcode.</p>
                 </div>
                 <div className="flex w-full gap-2 sm:max-w-md">
                   <input
@@ -1159,7 +1162,7 @@ export default function POS() {
                         : menuByCategory[cat]
                       if (items.length === 0) return null
                       return (
-                      <div key={cat} className="bb-card p-2.5">
+                      <div key={cat} className="bb-card p-2">
                           <div className="mb-1.5 flex items-center justify-between">
                             <h3 className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">{cat === 'All' ? 'All Products' : cat}</h3>
                             <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] font-medium text-slate-500">
@@ -1193,7 +1196,7 @@ export default function POS() {
                                   {currency} {fmt(item.price)}
                                 </p>
                                 {Number.isFinite(availableUnits) && (
-                                  <p className={`mt-1 ${touchMode ? 'text-xs' : 'text-xs'} ${soldOut ? 'text-red-600' : availableUnits <= 3 ? 'text-amber-600' : 'text-slate-400'}`}>
+                                  <p className={`mt-0.5 ${touchMode ? 'text-xs' : 'text-[11px]'} ${soldOut ? 'text-red-600' : availableUnits <= 3 ? 'text-amber-600' : 'text-slate-400'}`}>
                                     {soldOut ? 'Sold out' : `${availableUnits} left`}
                                   </p>
                                 )}
@@ -1237,11 +1240,16 @@ export default function POS() {
 
           {/* Order panel */}
             <div className={orderPanelClass}>
-            <h2 className={`mb-2 flex items-center gap-2 font-semibold text-slate-700 ${touchMode ? 'text-base' : ''}`}>
-              <ShoppingCart size={touchMode ? 18 : 16} /> Current Order
-            </h2>
+            <div className="mb-1.5 flex shrink-0 items-center justify-between gap-2">
+              <h2 className={`flex items-center gap-2 font-semibold text-slate-700 ${touchMode ? 'text-base' : 'text-sm'}`}>
+                <ShoppingCart size={touchMode ? 18 : 16} /> Current Order
+              </h2>
+              <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-xs font-bold text-emerald-800">
+                {orderItemCount} item{orderItemCount === 1 ? '' : 's'}
+              </span>
+            </div>
             {touchMode && (
-              <div className="mb-2 rounded-xl border border-emerald-200 bg-emerald-50 px-2.5 py-2 shadow-sm">
+              <div className="mb-1.5 shrink-0 rounded-xl border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 shadow-sm">
                 <div className="flex items-center justify-between gap-4">
                   <div>
                     <p className="text-xs font-semibold uppercase tracking-[0.16em] text-emerald-700/75">Live Summary</p>
@@ -1261,7 +1269,7 @@ export default function POS() {
             )}
 
             {/* Customer type */}
-            <div className={`mb-2 flex overflow-hidden rounded-xl border border-slate-200 ${touchMode ? 'text-sm' : 'text-xs'}`}>
+            <div className={`mb-1.5 flex shrink-0 overflow-hidden rounded-xl border border-slate-200 ${touchMode ? 'text-sm' : 'text-xs'}`}>
               <button
                 onClick={() => setCustomerType('walkin')}
                 className={`flex-1 transition-colors ${touchMode ? 'py-2' : 'py-1.5'} ${customerType === 'walkin' ? 'bg-green-600 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
@@ -1278,7 +1286,7 @@ export default function POS() {
 
             {customerType === 'room' ? (
                 <select
-                className={`input mb-2 ${touchInputClass}`}
+                className={`input mb-1.5 shrink-0 ${touchInputClass}`}
                 value={selectedRoom}
                 onChange={(e) => setSelectedRoom(e.target.value)}
               >
@@ -1291,7 +1299,7 @@ export default function POS() {
               </select>
             ) : (
               <>
-                <div className="mb-2">
+                <div className="mb-1.5 shrink-0">
                   <div className={`grid grid-cols-1 gap-2 ${touchMode ? 'sm:grid-cols-[minmax(0,1fr)_11rem_auto]' : 'sm:grid-cols-[minmax(0,1fr)_11rem]'}`}>
                   <input
                     type="text"
@@ -1331,7 +1339,7 @@ export default function POS() {
             )}
 
             {/* Order items */}
-            <div className="mb-2 min-h-[72px] flex-1 overflow-y-auto rounded-xl border border-slate-100 bg-slate-50/45 p-2">
+            <div className="mb-1.5 min-h-[4rem] flex-1 overflow-y-auto rounded-xl border border-slate-100 bg-slate-50/45 p-1.5">
               {orderItems.length === 0 ? (
                 <div className="bb-card-muted py-3 text-center">
                 <p className="text-xs text-slate-500">
@@ -1341,35 +1349,35 @@ export default function POS() {
               ) : (
                 <div className="space-y-2">
                 {orderItems.map((item, idx) => (
-                  <div key={item.order_key} className={`rounded-xl border border-slate-100 bg-white ${touchMode ? 'p-2.5' : 'p-2'}`}>
-                  <div className="flex items-center justify-between gap-2">
+                  <div key={item.order_key} className={`rounded-xl border border-slate-100 bg-white ${touchMode ? 'p-2.5' : 'p-1.5'}`}>
+                  <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
                     <div className="flex-1 min-w-0">
                       <p className={`truncate text-slate-800 ${touchMode ? 'text-[15px] font-medium' : 'text-sm'}`}>{item.item_name}</p>
                       <p className={`${touchMode ? 'text-xs' : 'text-xs'} text-slate-400`}>{currency} {fmt(item.unit_price)} ea</p>
                     </div>
-                    <div className={`flex items-center shrink-0 ${touchMode ? 'gap-1.5' : 'gap-1'}`}>
-                      <button
-                        onClick={() => updateQty(idx, -1)}
-                        className={touchMode ? qtyButtonClass : 'flex h-6 w-6 items-center justify-center rounded bg-slate-100 text-sm font-bold text-slate-600 hover:bg-red-50 hover:text-red-600'}
-                      >−</button>
-                      <input
-                        type="number"
-                        min="1"
-                        step="1"
-                        inputMode="numeric"
-                        value={item.quantity}
-                        onChange={(e) => setQty(idx, e.target.value)}
-                        className={`input px-2 text-center font-medium ${touchMode ? 'w-14 py-1.5 text-sm' : 'w-12 py-1 text-xs'}`}
-                        aria-label={`Quantity for ${item.item_name}`}
-                      />
-                      <button
-                        onClick={() => updateQty(idx, 1)}
-                        className={touchMode ? qtyButtonPlusClass : 'flex h-6 w-6 items-center justify-center rounded bg-slate-100 text-sm font-bold text-slate-600 hover:bg-green-50 hover:text-green-600'}
-                      >+</button>
-                    </div>
-                    <span className={`${touchMode ? 'w-16 text-sm' : 'w-16 text-xs'} shrink-0 text-right font-semibold text-slate-800`}>
+                    <span className={`${touchMode ? 'text-sm' : 'text-xs'} shrink-0 text-right font-semibold text-slate-800`}>
                       {currency} {fmt(item.quantity * item.unit_price)}
                     </span>
+                  </div>
+                  <div className={`mt-1.5 flex items-center justify-end ${touchMode ? 'gap-1.5' : 'gap-1'}`}>
+                    <button
+                      onClick={() => updateQty(idx, -1)}
+                      className={touchMode ? qtyButtonClass : 'flex h-6 w-6 items-center justify-center rounded bg-slate-100 text-sm font-bold text-slate-600 hover:bg-red-50 hover:text-red-600'}
+                    >−</button>
+                    <input
+                      type="number"
+                      min="1"
+                      step="1"
+                      inputMode="numeric"
+                      value={item.quantity}
+                      onChange={(e) => setQty(idx, e.target.value)}
+                      className={`input px-2 text-center font-medium ${touchMode ? 'w-14 py-1.5 text-sm' : 'w-12 py-1 text-xs'}`}
+                      aria-label={`Quantity for ${item.item_name}`}
+                    />
+                    <button
+                      onClick={() => updateQty(idx, 1)}
+                      className={touchMode ? qtyButtonPlusClass : 'flex h-6 w-6 items-center justify-center rounded bg-slate-100 text-sm font-bold text-slate-600 hover:bg-green-50 hover:text-green-600'}
+                    >+</button>
                   </div>
                   </div>
                 ))}
@@ -1378,7 +1386,7 @@ export default function POS() {
             </div>
 
             {orderStockIssues.length > 0 && (
-              <div className="mb-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+              <div className="mb-1.5 shrink-0 rounded-xl border border-red-200 bg-red-50 px-3 py-1.5 text-xs text-red-700">
                 <p className="font-semibold">Stock changed on another terminal</p>
                 <p className="mt-1">
                   {orderStockIssues[0].itemName} now has only {fmt(orderStockIssues[0].availableStock)} stock unit(s) available,
@@ -1388,22 +1396,22 @@ export default function POS() {
             )}
 
             {orderItems.length > 0 && (
-              <>
+              <div className="shrink-0">
                 <textarea
-                  className={`input mb-2 resize-none ${touchMode ? 'text-sm' : 'text-sm'}`}
-                  rows={touchMode ? 2 : 2}
+                  className={`input mb-1.5 shrink-0 resize-none ${touchMode ? 'text-sm' : 'text-xs'}`}
+                  rows={touchMode ? 2 : 1}
                   placeholder="Notes (optional)..."
                   value={orderNotes}
                   onChange={(e) => setOrderNotes(e.target.value)}
                 />
-                <div className="mb-2 border-t border-slate-100 pt-2">
+                <div className="mb-1.5 shrink-0 border-t border-slate-100 pt-1.5 text-sm">
                   <div className="flex justify-between font-bold text-slate-800">
                     <span>Total</span>
                     <span>{currency} {fmt(orderTotal)}</span>
                   </div>
                   {customerType === 'room' && selectedRoom ? (
                     offlineMode ? (
-                        <div className="mt-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                        <div className="mt-1.5 rounded-xl border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs text-amber-900">
                         <p className="font-semibold">Offline folio charge</p>
                         <p className="mt-1">
                           This room charge is only being staged on this machine for now. It will reach the guest folio after sync succeeds when internet returns.
@@ -1433,7 +1441,7 @@ export default function POS() {
                     </p>
                   )}
                 </div>
-                <div className={touchMode ? 'grid grid-cols-2 gap-2' : 'flex gap-2'}>
+                <div className={touchMode ? 'grid shrink-0 grid-cols-2 gap-2' : 'flex shrink-0 gap-2'}>
                   <button
                     onClick={() => setOrderItems([])}
                     disabled={submitting}
@@ -1449,7 +1457,7 @@ export default function POS() {
                     {submitting ? 'Processing...' : 'Complete Order'}
                   </button>
                 </div>
-              </>
+              </div>
             )}
 
             {orderSuccess && (
@@ -1998,7 +2006,7 @@ export default function POS() {
                     value={menuForm.outlet_id}
                     onChange={(e) => setMenuForm({ ...menuForm, outlet_id: e.target.value })}
                   >
-                    <option value="">— Unassigned —</option>
+                    <option value="">— Others —</option>
                     {posOutlets.map((o) => (
                       <option key={o.id || o.name} value={o.id || ''}>{o.name}</option>
                     ))}

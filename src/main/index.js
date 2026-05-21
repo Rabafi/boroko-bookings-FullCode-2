@@ -10,6 +10,7 @@ import * as db from './database.js'
 import { readCache } from './domains/cacheStore.js'
 import { createAiOrchestrator, writeAiAuditLog } from './ai/aiOrchestrator.js'
 import { buildCapabilitySnapshot, normalizeAppRole } from '../shared/accessControl.js'
+import { normalizeDayUseReportRow } from '../shared/dayUseReporting.js'
 import {
   getEmailConfig,
   saveEmailConfig,
@@ -238,6 +239,65 @@ function createAppLogoNativeImage() {
   }
 }
 
+function normalizeImportHeader(value, fallback) {
+  const cleaned = String(value || '').replace(/\s+/g, ' ').trim()
+  return cleaned || fallback
+}
+
+function normalizeParsedImportRows(rows = []) {
+  const headerMap = new Map()
+  const columns = []
+  const normalizedRows = rows.map((row) => {
+    const next = {}
+    Object.entries(row || {}).forEach(([rawKey, value]) => {
+      const normalizedKey = normalizeImportHeader(rawKey, '')
+      if (!normalizedKey) return
+      const count = headerMap.get(normalizedKey) || 0
+      const safeKey = count === 0 ? normalizedKey : `${normalizedKey} ${count + 1}`
+      headerMap.set(normalizedKey, count + 1)
+      if (!columns.includes(safeKey)) columns.push(safeKey)
+      next[safeKey] = value
+    })
+    headerMap.clear()
+    return next
+  })
+
+  return {
+    rows: normalizedRows,
+    columns: columns.filter((column) => normalizedRows.some((row) => String(row[column] ?? '').trim() !== ''))
+  }
+}
+
+function buildImportTemplateWorkbook({ type, fields, sample }) {
+  const headerRow = {}
+  fields.forEach((f) => { headerRow[f.label] = '' })
+
+  const dataSheet = XLSX.utils.json_to_sheet([{ ...headerRow, ...sample }])
+  dataSheet['!cols'] = fields.map((field) => ({
+    wch: Math.max(14, Math.min(28, field.label.length + 4))
+  }))
+  dataSheet['!autofilter'] = { ref: XLSX.utils.encode_range(XLSX.utils.decode_range(dataSheet['!ref'] || 'A1:A1')) }
+
+  const required = fields.filter((field) => field.required).map((field) => field.label).join(', ') || 'None'
+  const readMeRows = [
+    ['Boroko Bookings Import Template'],
+    ['Template type', type],
+    ['Use this sheet', 'Import Data'],
+    ['Required columns', required],
+    ['Row limit', 'Import up to 500 rows at a time. Split larger files before importing.'],
+    ['Dates', 'Use YYYY-MM-DD where possible. DD/MM/YYYY is also accepted.'],
+    ['Safety', 'Imports create new records only. Existing matches are skipped or reported before saving.'],
+    ['Tip', 'Keep the header row unchanged for the fastest auto-mapping.']
+  ]
+  const readMeSheet = XLSX.utils.aoa_to_sheet(readMeRows)
+  readMeSheet['!cols'] = [{ wch: 24 }, { wch: 86 }]
+
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, dataSheet, 'Import Data')
+  XLSX.utils.book_append_sheet(wb, readMeSheet, 'Read Me')
+  return wb
+}
+
 function buildSplashHtml() {
   const logoPath = getAppDarkLogoPath()
   const logoMarkup = logoPath
@@ -300,6 +360,35 @@ function buildSplashHtml() {
           font-size: 13px;
           color: rgba(209, 250, 229, 0.75);
         }
+        .status {
+          width: min(320px, 74vw);
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+          align-items: center;
+        }
+        .status-text {
+          font-size: 12px;
+          color: rgba(236, 253, 245, 0.82);
+        }
+        .progress {
+          position: relative;
+          width: 100%;
+          height: 7px;
+          overflow: hidden;
+          border-radius: 999px;
+          background: rgba(236, 253, 245, 0.16);
+          box-shadow: inset 0 0 0 1px rgba(236, 253, 245, 0.12);
+        }
+        .progress::before {
+          content: "";
+          position: absolute;
+          inset: 0 auto 0 0;
+          width: 46%;
+          border-radius: inherit;
+          background: linear-gradient(90deg, rgba(52, 211, 153, 0.25), rgba(236, 253, 245, 0.95), rgba(52, 211, 153, 0.25));
+          animation: progressSweep 1.35s ease-in-out infinite;
+        }
         .dots {
           display: inline-flex;
           gap: 5px;
@@ -327,6 +416,10 @@ function buildSplashHtml() {
           0%, 80%, 100% { transform: translateY(0); opacity: 0.45; }
           40% { transform: translateY(-4px); opacity: 1; }
         }
+        @keyframes progressSweep {
+          0% { transform: translateX(-110%); }
+          100% { transform: translateX(230%); }
+        }
       </style>
     </head>
     <body>
@@ -334,6 +427,10 @@ function buildSplashHtml() {
         <div class="logo">${logoMarkup}</div>
         <div class="title">Boroko Bookings</div>
         <div class="subtitle">Starting up <span class="dots"><span></span><span></span><span></span></span></div>
+        <div class="status" role="status" aria-live="polite">
+          <div class="status-text">Checking internet connection and online database access</div>
+          <div class="progress" aria-hidden="true"></div>
+        </div>
       </div>
     </body>
   </html>`
@@ -1118,7 +1215,7 @@ const EXPORT_SECTION_LABELS = {
   supplyItems: 'Supply Items',
   supplyPurchases: 'Supply Purchases',
   conferenceBookings: 'Conference',
-  dayUseEntries: 'Pool Day Use',
+  dayUseEntries: 'Day Use & Facility Access',
   users: 'Staff',
   activityLog: 'Activity Log'
 }
@@ -1385,15 +1482,77 @@ function buildFullExportWorkbook(data) {
   ), 'Conference')
 
   if (hasSection('dayUseEntries')) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
-    (data.dayUseEntries || []).map(entry => ({
-      'Date': entry.date || entry.created_at || '',
-      'Guest': entry.customer_name || entry.walk_in_name || '',
-      'Adults': entry.adults || 0,
-      'Children': entry.children || 0,
-      'Amount': Number(entry.total_amount || entry.amount || 0),
-      'Method': entry.payment_method || ''
-    }))
-  ), 'Pool Day Use')
+    (data.dayUseEntries || []).map((entry) => {
+      const row = normalizeDayUseReportRow(entry)
+      return {
+        'Date': row.date,
+        'Guest': row.guest,
+        'Template': row.templateName,
+        'Activity': row.activityLabel,
+        'Status': row.statusLabel,
+        'Access': row.accessSummary,
+        'Start Time': row.startTime,
+        'End Time': row.endTime,
+        'Duration (hrs)': row.durationHours,
+        'Pricing Mode': row.pricingMode,
+        'Package': row.packageName,
+        'Resource': row.resourceName,
+        'Adults': row.adults,
+        'Children': row.children,
+        'Extras': row.extrasSummary,
+        'Extras Total': row.extrasTotal,
+        'Deposit': row.depositAmount,
+        'Balance Due': row.balanceDue,
+        'Total': row.total,
+        'Method': row.paymentMethod,
+        'Service Notes': row.serviceNotes,
+        'Notes': row.notes
+      }
+    })), 'Day Use & Facility')
+
+  if (hasSection('dayUseEntries')) {
+    const templateMap = new Map()
+    const resourceMap = new Map()
+    const extrasMap = new Map()
+    const balances = []
+    for (const entry of data.dayUseEntries || []) {
+      const row = normalizeDayUseReportRow(entry)
+      const templateKey = row.templateName || row.activityLabel
+      const templateSummary = templateMap.get(templateKey) || { 'Type': 'Template', 'Label': templateKey, 'Count': 0, 'Quantity': '', 'Revenue': 0, 'Balance': '' }
+      templateSummary.Count += 1
+      templateSummary.Revenue += row.total
+      templateMap.set(templateKey, templateSummary)
+
+      if (row.resourceName) {
+        const resourceSummary = resourceMap.get(row.resourceName) || { 'Type': 'Resource', 'Label': row.resourceName, 'Count': 0, 'Quantity': '', 'Revenue': 0, 'Balance': '' }
+        resourceSummary.Count += 1
+        resourceSummary.Revenue += row.total
+        resourceMap.set(row.resourceName, resourceSummary)
+      }
+
+      for (const extra of Array.isArray(entry.extras) ? entry.extras : []) {
+        const label = String(extra?.name || '').trim()
+        if (!label) continue
+        const extraSummary = extrasMap.get(label) || { 'Type': 'Extra', 'Label': label, 'Count': '', 'Quantity': 0, 'Revenue': 0, 'Balance': '' }
+        extraSummary.Quantity += Number(extra?.quantity || 0)
+        extraSummary.Revenue += Number(extra?.quantity || 0) * Number(extra?.unit_price || 0)
+        extrasMap.set(label, extraSummary)
+      }
+
+      if (row.balanceDue > 0 && row.status !== 'cancelled') {
+        balances.push({ 'Type': 'Outstanding Balance', 'Label': row.guest, 'Count': '', 'Quantity': '', 'Revenue': row.total, 'Balance': row.balanceDue })
+      }
+    }
+    const insightRows = [
+      ...Array.from(templateMap.values()),
+      ...Array.from(resourceMap.values()),
+      ...Array.from(extrasMap.values()),
+      ...balances
+    ]
+    if (insightRows.length > 0) {
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(insightRows), 'Day Use Insights')
+    }
+  }
 
   if (hasSection('users')) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
     (data.users || []).map(u => ({
@@ -3672,6 +3831,12 @@ app.whenReady().then(async () => {
       return await db.deleteInventoryItem(id)
     } catch (e) { return { success: false, error: e.message } }
   })
+  ipcMain.handle('inventory:discardDraft', async (_, id) => {
+    try {
+      await requireCapability('inventory.manage')
+      return await db.discardDraft(id)
+    } catch (e) { return { success: false, error: e.message } }
+  })
   ipcMain.handle('inventory:addPurchase', async (_, data) => {
     try {
       await requireCapability('inventory.manage')
@@ -4054,23 +4219,37 @@ app.whenReady().then(async () => {
     return await db.updateConferenceBookingPayment(id, amount, method, 'payment', null, intentKey)
   })
 
-  // ── Pool / Day Use ─────────────────────────────────────────────────────────
+  // ── Day Use Entries ───────────────────────────────────────────────────────
   ipcMain.handle('dayuse:getAll', async (_, start, end) => {
-    try { await requireCapability('pool.view'); return await db.getPoolDayUse(start, end).catch(() => []) }
+    try { await requireCapability('pool.view'); return await db.getDayUseEntries(start, end).catch(() => []) }
     catch { return [] }
   })
   ipcMain.handle('dayuse:add', async (_, data) => {
     await requireCapability('pool.manage')
-    return await db.addPoolDayUse(data)
+    return await db.addDayUseEntry(data)
   })
   ipcMain.handle('dayuse:delete', async (_, id) => {
     await requireCapability('pool.manage')
-    await assertResourceBelongsToCurrentLodge('Pool day-use entry', id, db.getPoolDayUseById)
-    return await db.deletePoolDayUse(id)
+    await assertResourceBelongsToCurrentLodge('Day use entry', id, db.getDayUseEntryById)
+    return await db.deleteDayUseEntry(id)
+  })
+  ipcMain.handle('dayuse:updateStatus', async (_, id, status) => {
+    await requireCapability('pool.manage')
+    await assertResourceBelongsToCurrentLodge('Day use entry', id, db.getDayUseEntryById)
+    return await db.updateDayUseEntryStatus(id, status)
+  })
+  ipcMain.handle('dayuse:settleBalance', async (_, id, method, markCompleted = true) => {
+    await requireCapability('payments.record')
+    await assertResourceBelongsToCurrentLodge('Day use entry', id, db.getDayUseEntryById)
+    return await db.settleDayUseEntryBalance(id, method, markCompleted)
   })
   ipcMain.handle('dayuse:summary', async (_, date) => {
-    try { await requireCapability('pool.view'); return await db.getPoolDayUseSummary(date).catch(() => ({ total: 0, adults: 0, children: 0, entries: [] })) }
+    try { await requireCapability('pool.view'); return await db.getDayUseEntrySummary(date).catch(() => ({ total: 0, adults: 0, children: 0, entries: [] })) }
     catch { return { total: 0, adults: 0, children: 0, entries: [] } }
+  })
+  ipcMain.handle('dayuse:getInventoryItems', async () => {
+    try { await requireCapability('pool.manage'); return await db.getDayUseInventoryItems().catch(() => []) }
+    catch { return [] }
   })
 
   // ── Analytics & Cost Reports ───────────────────────────────────────────────
@@ -4322,24 +4501,49 @@ app.whenReady().then(async () => {
   })
 
   // ── Data Import (Excel) ───────────────────────────────────────────────────
-  ipcMain.handle('import:parseExcel', async (event) => {
+  ipcMain.handle('import:parseExcel', async (event, providedFilePath = '') => {
     await requireCapability('data.import')
-    const win = BrowserWindow.fromWebContents(event.sender)
-    const result = await dialog.showOpenDialog(win, {
-      title: 'Select Excel File to Import',
-      filters: [{ name: 'Excel Files', extensions: ['xlsx', 'xls'] }],
-      properties: ['openFile']
-    })
-    if (result.canceled || !result.filePaths[0]) return null
     try {
-      const workbook = XLSX.readFile(result.filePaths[0])
-      const sheetName = workbook.SheetNames[0]
+      let filePath = String(providedFilePath || '').trim()
+      if (!filePath) {
+        const win = BrowserWindow.fromWebContents(event.sender)
+        const result = await dialog.showOpenDialog(win, {
+          title: 'Select Excel File to Import',
+          filters: [{ name: 'Excel Files', extensions: ['xlsx', 'xls'] }],
+          properties: ['openFile']
+        })
+        if (result.canceled || !result.filePaths[0]) return null
+        filePath = result.filePaths[0]
+      }
+      const ext = String(filePath.split('.').pop() || '').toLowerCase()
+      if (!['xlsx', 'xls'].includes(ext)) return { error: 'Choose an Excel file ending in .xlsx or .xls.' }
+
+      const stats = fs.statSync(filePath)
+      if (stats.size <= 0) return { error: 'The selected Excel file is empty.' }
+      if (stats.size > 10 * 1024 * 1024) return { error: 'The selected Excel file is too large. Keep imports under 10 MB.' }
+
+      const workbook = XLSX.read(fs.readFileSync(filePath), { type: 'buffer', cellDates: false })
+      const sheetName = workbook.SheetNames.find((name) => {
+        const ref = workbook.Sheets[name]?.['!ref']
+        return ref && XLSX.utils.sheet_to_json(workbook.Sheets[name], { defval: '', blankrows: false }).length > 0
+      }) || workbook.SheetNames[0]
+      if (!sheetName) return { error: 'No worksheets were found in this Excel file.' }
+
       const sheet = workbook.Sheets[sheetName]
-      const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' })
-      const columns = rows.length > 0 ? Object.keys(rows[0]) : []
-      return { fileName: result.filePaths[0].split(/[\\/]/).pop(), sheetName, columns, rows: rows.slice(0, 500) }
+      const rawRows = XLSX.utils.sheet_to_json(sheet, { defval: '', blankrows: false })
+      if (rawRows.length === 0) return { error: 'The selected worksheet has headers only or no data rows.' }
+      const { rows, columns } = normalizeParsedImportRows(rawRows)
+      if (columns.length === 0) return { error: 'No column headers were found. Put field names in the first row.' }
+      return {
+        fileName: filePath.split(/[\\/]/).pop(),
+        sheetName,
+        columns,
+        rows: rows.slice(0, 500),
+        totalRows: rows.length,
+        truncated: rows.length > 500
+      }
     } catch (e) {
-      return { error: e.message }
+      return { error: e?.message ? `Could not read this Excel file: ${e.message}` : 'Could not read this Excel file.' }
     }
   })
 
@@ -4368,6 +4572,42 @@ app.whenReady().then(async () => {
       await requireCapability('data.import')
       return db.dryRunImport(type, mappedRows || [])
     } catch (e) { return { error: e.message } }
+  })
+
+  ipcMain.handle('import:exportErrors', async (event, payload = {}) => {
+    await requireCapability('data.import')
+    const win = BrowserWindow.fromWebContents(event.sender)
+    const rows = Array.isArray(payload.rows) ? payload.rows : []
+    const errors = Array.isArray(payload.errors) ? payload.errors : []
+    if (!errors.length) return { error: 'Run a dry check first. No row issues were found to export.' }
+
+    const errorRows = errors.map((entry) => {
+      const rowNumber = Number(entry.row || 0)
+      const source = rows[rowNumber - 1] || {}
+      const messages = Array.isArray(entry.errors) ? entry.errors : [entry.error].filter(Boolean)
+      return {
+        Row: rowNumber || '',
+        Issue: messages.join(' '),
+        Suggestion: entry.suggestions?.room_number?.length ? `Try room ${entry.suggestions.room_number.join(', ')}` : '',
+        ...source
+      }
+    })
+    const wb = XLSX.utils.book_new()
+    const ws = XLSX.utils.json_to_sheet(errorRows)
+    ws['!cols'] = Object.keys(errorRows[0] || { Row: '', Issue: '' }).map((key) => ({ wch: Math.max(12, Math.min(42, key.length + 8)) }))
+    XLSX.utils.book_append_sheet(wb, ws, 'Rows To Fix')
+    const result = await dialog.showSaveDialog(win, {
+      title: 'Save Import Issues Workbook',
+      defaultPath: `boroko-import-issues-${new Date().toISOString().slice(0, 10)}.xlsx`,
+      filters: [{ name: 'Excel Files', extensions: ['xlsx'] }]
+    })
+    if (result.canceled || !result.filePath) return { canceled: true }
+    try {
+      XLSX.writeFile(wb, result.filePath)
+      return { success: true, filePath: result.filePath }
+    } catch (e) {
+      return { error: e.message }
+    }
   })
 
   ipcMain.handle('import:getTypes', async () => {
@@ -4405,8 +4645,6 @@ app.whenReady().then(async () => {
     await requireCapability('data.import')
     const win = BrowserWindow.fromWebContents(event.sender)
     const fields = db.generateImportTemplate(type)
-    const headerRow = {}
-    fields.forEach((f) => { headerRow[f.label] = '' })
     const samples = {
       bookings: {
       'Guest Name': 'John Smith',
@@ -4431,9 +4669,11 @@ app.whenReady().then(async () => {
       supplies: { 'Supply Item': 'Bath Towel', 'Category': 'Linen', 'Unit': 'piece', 'Current Stock': 30, 'Reorder Level': 8 },
       expenses: { 'Date': '2026-04-23', 'Category': 'Repairs', 'Description': 'Plumbing repair', 'Amount': 450, 'Paid By': 'Cash' }
     }
-    const ws = XLSX.utils.json_to_sheet([{ ...headerRow, ...(samples[type] || samples.bookings) }])
-    const wb = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(wb, ws, 'Import Template')
+    const wb = buildImportTemplateWorkbook({
+      type: String(type || 'bookings'),
+      fields,
+      sample: samples[type] || samples.bookings
+    })
     const result = await dialog.showSaveDialog(win, {
       title: 'Save Import Template',
       defaultPath: `boroko-${String(type || 'bookings')}-import-template.xlsx`,

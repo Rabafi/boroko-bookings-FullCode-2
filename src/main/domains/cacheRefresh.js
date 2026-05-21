@@ -5,7 +5,8 @@ import { broadcastSyncStatus } from './connectivity.js';
 import { mergeSessionUserScope } from './authCache.js';
 import { mergeRemoteBookingsWithLocalState } from './bookingMerge.js';
 import { mergeRemotePosOrdersWithLocalState } from './posMerge.js';
-import { applyQueuedPosInventoryReservations } from './posOffline.js';
+import { applyQueuedPosInventoryReservations, applyQueuedDayUseInventoryReservations } from './posOffline.js';
+import { mergeRemoteInventoryWithLocalState } from './inventoryMerge.js';
 
 const SYNC_REFRESH_RETRY_BASE_DELAY_MS = 5_000;
 const SYNC_REFRESH_RETRY_MAX_DELAY_MS = 60_000;
@@ -101,7 +102,9 @@ async function refreshCacheStrict(...names) {
       return;
     }
     if (name === 'inventory-items') {
-      writeCache(name, applyQueuedPosInventoryReservations(data || []), { source: 'remote' });
+      // Merge with local state so pending-sync offline creations are preserved
+      const liveRows = applyQueuedDayUseInventoryReservations(applyQueuedPosInventoryReservations(data || []));
+      writeCache(name, mergeRemoteInventoryWithLocalState(liveRows), { source: 'remote' });
       return;
     }
     if (name === 'pos-orders') {

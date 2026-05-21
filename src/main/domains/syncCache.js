@@ -5,7 +5,7 @@ import {
   writeFailedSyncQueue,
   writeSyncQueue
 } from './syncStore.js';
-import { getQueuedPosOrderId, getSyncItemBookingId } from './syncShared.js';
+import { getQueuedPosOrderId, getSyncItemBookingId, isInventoryItemQueueItem, getQueuedInventoryItemId } from './syncShared.js';
 
 function getSyncItemEntityId(item, prefix) {
   const directId = item?.data?.p_id || item?.data?.payload?.id || item?.data?.payload?.user_id || null;
@@ -161,8 +161,37 @@ export function patchCachedQuotationSyncState(quotationId, patch = {}) {
   return patchCachedRowSyncState('quotations', quotationId, patch);
 }
 
+export function patchCachedInventoryItemSyncState(itemId, patch = {}) {
+  if (!itemId) return false;
+  const cachedItems = readCache('inventory-items');
+  const index = cachedItems.findIndex((row) => row?.id === itemId);
+  if (index < 0) {
+    console.warn('[INVENTORY SYNC] Patch skipped: item not found in cache', itemId);
+    return false;
+  }
+  const next = [...cachedItems];
+  next[index] = { ...(cachedItems[index] || {}), ...patch };
+  writeCache('inventory-items', next);
+  return true;
+}
+
+export function patchCachedDayUseSyncState(entryId, patch = {}) {
+  return patchCachedRowSyncState('pool-day-use', entryId, patch);
+}
+
 export function markClearedSyncItemForManualReview(item) {
   const manualReviewMessage = `${item?.table || 'sync item'} was cleared from failed sync without server confirmation. Review manually before trusting local data.`;
+  if (isInventoryItemQueueItem(item)) {
+    const itemId = getQueuedInventoryItemId(item);
+    if (itemId) {
+      patchCachedInventoryItemSyncState(itemId, {
+        _pending_sync: true,
+        _sync_state: 'manual_review_required',
+        _sync_error: manualReviewMessage
+      });
+      return;
+    }
+  }
   const customerId = getSyncItemCustomerId(item);
   if (customerId && /customer/i.test(String(item?.table || item?._queue_id || ''))) {
     patchCachedCustomerSyncState(customerId, {

@@ -40,6 +40,12 @@ import {
   updateProfileMetadata,
   writeProfilesRegistry
 } from './profiles.js';
+import {
+  DEFAULT_DAY_USE_RESOURCES,
+  DEFAULT_DAY_USE_TEMPLATES,
+  resolveDayUseResources,
+  resolveDayUseTemplates
+} from '../../shared/dayUseConfig.js';
 
 const DEFAULT_SETTINGS = {
   lodge_name: '',
@@ -56,6 +62,8 @@ const DEFAULT_SETTINGS = {
   currency: 'P',
   logo: '',
   business_type: 'lodge',
+  day_use_templates: DEFAULT_DAY_USE_TEMPLATES,
+  day_use_resources: DEFAULT_DAY_USE_RESOURCES,
   setup_complete: false
 };
 
@@ -100,15 +108,24 @@ export async function getSettings() {
     try {
       const { data } = await getRemoteSettingsRecord();
       if (data) {
-        writeCache('settings', [data]);
-        return data;
+        const normalized = {
+          ...data,
+          day_use_templates: resolveDayUseTemplates(data),
+          day_use_resources: resolveDayUseResources(data)
+        };
+        writeCache('settings', [normalized]);
+        return normalized;
       }
     } catch (e) {
       console.error('[SETTINGS] load failed:', e.message);
     }
   }
   const cached = readCache('settings');
-  return cached[0] || getDefaultSettings();
+  return cached[0] ? {
+    ...cached[0],
+    day_use_templates: resolveDayUseTemplates(cached[0]),
+    day_use_resources: resolveDayUseResources(cached[0])
+  } : getDefaultSettings();
 }
 
 export async function getLodgeDiagnostics(expectedLodgeId = '') {
@@ -281,6 +298,8 @@ export async function saveSettings(data) {
     currency: data.currency || 'P',
     logo: data.logo || '',
     business_type: data.business_type || 'lodge',
+    day_use_templates: resolveDayUseTemplates(data),
+    day_use_resources: resolveDayUseResources(data),
     slug: data.slug ? data.slug.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') : null,
     booking_tagline: data.booking_tagline || '',
     booking_description: data.booking_description || '',

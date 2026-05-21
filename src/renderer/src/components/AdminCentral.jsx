@@ -34,7 +34,7 @@ const FEAT_LABEL = {
   reports: 'Reports', expenses: 'Expenses', staff: 'Staff Management', pwa: 'Manager mobile app',
   audit: 'Night Audit', import: 'Data Import',
   pos: 'POS / Bar', inventory: 'Inventory', supplies: 'Room Supplies',
-  conference: 'Conference', pool: 'Pool / Day Use'
+  conference: 'Conference', pool: 'Day Use'
 }
 
 // ── Subscription Tiers ────────────────────────────────────────────────────────

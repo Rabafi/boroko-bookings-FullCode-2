@@ -17,7 +17,7 @@ import {
   Boxes,
   ClipboardList,
   Presentation,
-  Waves,
+  Briefcase,
   Database,
   FileText
 } from 'lucide-react'
@@ -100,7 +100,7 @@ export const ALL_NAV = [
   {
     to: '/dayuse',
     label: 'Day Use',
-    icon: Waves,
+    icon: Briefcase,
     types: ['lodge'],
     group: 'Front Desk',
     feature: 'pool',

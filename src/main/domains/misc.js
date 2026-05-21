@@ -213,6 +213,41 @@ function friendlyImportError(msg = '') {
   return msg || 'An unexpected error occurred.';
 }
 
+function normalizeRoomCandidate(value = '') {
+  return String(value || '').toLowerCase().replace(/^room\s+/i, '').replace(/[^a-z0-9]/g, '');
+}
+
+function levenshteinDistance(a = '', b = '') {
+  const left = String(a);
+  const right = String(b);
+  const dp = Array.from({ length: left.length + 1 }, (_, i) => [i]);
+  for (let j = 1; j <= right.length; j += 1) dp[0][j] = j;
+  for (let i = 1; i <= left.length; i += 1) {
+    for (let j = 1; j <= right.length; j += 1) {
+      dp[i][j] = left[i - 1] === right[j - 1] ?
+      dp[i - 1][j - 1] :
+      Math.min(dp[i - 1][j - 1], dp[i - 1][j], dp[i][j - 1]) + 1;
+    }
+  }
+  return dp[left.length][right.length];
+}
+
+function suggestRoomNumbers(inputRoomNumber, rooms = []) {
+  const target = normalizeRoomCandidate(inputRoomNumber);
+  if (!target) return [];
+  return rooms.
+  map((room) => {
+    const label = String(room.room_number || '').trim();
+    const normalized = normalizeRoomCandidate(label);
+    const containsBonus = normalized.includes(target) || target.includes(normalized) ? -2 : 0;
+    return { room_number: label, score: levenshteinDistance(target, normalized) + containsBonus };
+  }).
+  filter((entry) => entry.room_number && entry.score <= Math.max(2, Math.ceil(target.length / 2))).
+  sort((a, b) => a.score - b.score || a.room_number.localeCompare(b.room_number)).
+  slice(0, 3).
+  map((entry) => entry.room_number);
+}
+
 function ensureDir(dirPath) {
   if (!fs.existsSync(dirPath)) fs.mkdirSync(dirPath, { recursive: true });
 }
@@ -320,6 +355,7 @@ export function dryRunBookingImport(rows = []) {
     const room = roomMap[String(row.room_number || '').trim()];
     const rowErrors = [];
     if (!guestName) rowErrors.push('Guest name is required.');
+    const roomSuggestions = !room ? suggestRoomNumbers(row.room_number, rooms) : [];
     if (!room) rowErrors.push('Room number was not found.');
     if (!row.check_in || !row.check_out) rowErrors.push('Check-in and check-out dates are required.');
     if (row.check_in && row.check_out && row.check_in >= row.check_out) rowErrors.push('Check-out must be after check-in.');
@@ -341,7 +377,12 @@ export function dryRunBookingImport(rows = []) {
     customers.find((c) => c.name?.toLowerCase() === guestName.toLowerCase() || c.full_name?.toLowerCase() === guestName.toLowerCase());
 
     if (rowErrors.length > 0) {
-      report.errors.push({ row: rowNum, guest: guestName, errors: rowErrors });
+      report.errors.push({
+        row: rowNum,
+        guest: guestName,
+        errors: rowErrors,
+        ...(roomSuggestions.length > 0 ? { suggestions: { room_number: roomSuggestions } } : {})
+      });
     } else {
       report.valid += 1;
       if (existingCustomer) report.would_reuse_customers += 1;else

@@ -156,6 +156,7 @@ const SYNC_OP_LABEL = {
   delete_user:              'Remove staff account',
   add_booking_charge:       'Add charge',
   void_pos_order:           'Remove sale',
+  create_inventory_item:    'New inventory product',
 }
 
 function syncOpLabel(table) {
@@ -173,6 +174,8 @@ const PLAIN_LABEL_OVERRIDES = {
   db_init: 'Database',
   replay_auth: 'Sign-in',
   manager_mobile_app: 'Manager mobile app',
+  inventory_rpc: 'Inventory',
+  inventory_item: 'Inventory',
 }
 
 function plainLabel(value) {
@@ -608,6 +611,15 @@ export default function SystemHealthPanel() {
       }
     }
 
+    // Inventory items
+    if (item.table === 'create_inventory_item') {
+      return {
+        label: 'Review Inventory',
+        route: '/inventory',
+        state: {}
+      }
+    }
+
     // Booking Payments
     if (item.table === 'update_booking_payment') {
       const bid = getFailedItemBookingId(item)
@@ -840,7 +852,10 @@ export default function SystemHealthPanel() {
                     { key: 'rooms', label: 'Rooms' },
                     { key: 'users', label: 'Users' },
                     { key: 'quotations', label: 'Quotations' },
-                    { key: 'posOrders', label: 'POS Orders' }
+                    { key: 'posOrders', label: 'POS Orders' },
+                    { key: 'conferenceBookings', label: 'Conference Bookings' },
+                    { key: 'poolDayUse', label: 'Day Use Entries' },
+                    { key: 'inventoryItems', label: 'Inventory' }
                   ].filter(({ key }) => (unresolvedLocal[key]?.count ?? 0) > 0).map(({ key, label }) => (
                     <div key={key} className="text-xs text-amber-800">
                       <span className="font-medium">{label}:</span> {unresolvedLocal[key].count} still open

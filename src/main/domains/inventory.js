@@ -1,10 +1,18 @@
+import { randomUUID } from 'crypto'
 import { state } from '../state.js'
 import { recordCriticalError } from './operationalLog.js'
 import {
+  applyQueuedDayUseInventoryReservations,
   applyQueuedPosInventoryReservations,
+  queueOperation,
   readCache,
   writeCache
 } from './infrastructure.js'
+import { mergeRemoteInventoryWithLocalState } from './inventoryMerge.js'
+import {
+  patchQueuedInventoryDraftPayload,
+  removeQueuedInventoryDraft
+} from './inventoryDrafts.js'
 
 // ─── INVENTORY ────────────────────────────────────────────────────────────────
 
@@ -24,9 +32,11 @@ export async function getInventoryItems() {
           return cached;
         }
       }
-      const rows = applyQueuedPosInventoryReservations(data || []);
-      writeCache('inventory-items', rows);
-      return rows;
+      const liveRows = applyQueuedDayUseInventoryReservations(applyQueuedPosInventoryReservations(data || []));
+      // Merge with local state to preserve any pending-sync or failed items
+      const merged = mergeRemoteInventoryWithLocalState(liveRows);
+      writeCache('inventory-items', merged);
+      return merged;
     }
     const cached = readCache('inventory-items');
     if (cached.length > 0) {
@@ -36,6 +46,11 @@ export async function getInventoryItems() {
     throw new Error(error.message);
   }
   return readCache('inventory-items');
+}
+
+export async function getDayUseInventoryItems() {
+  const rows = await getInventoryItems().catch(() => readCache('inventory-items'));
+  return (rows || []).filter((item) => !item?.outlet_id);
 }
 
 export async function getInventoryItemById(id) {
@@ -55,7 +70,9 @@ export async function getInventoryItemById(id) {
 }
 
 export async function createInventoryItem(data) {
+  const id = randomUUID();
   const item = {
+    id,
     lodge_id: state.lodgeId,
     name: data.name,
     category: data.category || 'Bar',
@@ -74,7 +91,14 @@ export async function createInventoryItem(data) {
     writeCache('inventory-items', [...cached, { ...item, id: result?.id }]);
     return { success: true, id: result?.id };
   }
-  return { success: false, error: 'Requires internet connection' };
+  // Offline: write to cache optimistically and queue the RPC for later replay
+  const cached = readCache('inventory-items');
+  const newItem = { ...item, _pending_sync: true, created_at: new Date().toISOString() };
+  writeCache('inventory-items', [...cached, newItem]);
+  queueOperation('rpc', 'create_inventory_item', { payload: item }, null, {
+    _queue_id: `inventory-item-${id}`
+  });
+  return { success: true, id, offline: true };
 }
 
 export async function updateInventoryItem(id, data) {
@@ -88,6 +112,29 @@ export async function updateInventoryItem(id, data) {
     {}),
     ...(data.outlet_id !== undefined ? { outlet_id: data.outlet_id || null } : {})
   };
+  const cached = readCache('inventory-items') || [];
+  const existing = cached.find((row) => row.id === id);
+  if (existing && existing._pending_sync) {
+    const updatedRow = { ...existing, ...update };
+    writeCache('inventory-items', cached.map((row) => row.id === id ? updatedRow : row));
+
+    const { readSyncQueue, writeSyncQueue, readFailedSyncQueue, writeFailedSyncQueue } = await import('./syncStore.js');
+
+    const activeQueue = readSyncQueue();
+    const patchedActiveQueue = patchQueuedInventoryDraftPayload(activeQueue, id, update);
+    if (patchedActiveQueue.updated) {
+      writeSyncQueue(patchedActiveQueue.queue);
+    }
+
+    const failedQueue = readFailedSyncQueue();
+    const patchedFailedQueue = patchQueuedInventoryDraftPayload(failedQueue, id, update);
+    if (patchedFailedQueue.updated) {
+      writeFailedSyncQueue(patchedFailedQueue.queue);
+    }
+
+    return { success: true };
+  }
+
   if (state.isOnline) {
     const { data: result, error } = await state.supabase.rpc('update_inventory_item', {
       p_id: id,
@@ -436,4 +483,21 @@ export async function getLowStockItems() {
   return (rows || []).filter(
     (item) => Number(item.reorder_level) > 0 && Number(item.current_stock) <= Number(item.reorder_level)
   );
+}
+
+export async function discardDraft(id) {
+  const { readSyncQueue, writeSyncQueue, readFailedSyncQueue, writeFailedSyncQueue } = await import('./syncStore.js');
+  const trimmedActiveQueue = removeQueuedInventoryDraft(readSyncQueue(), id);
+  if (trimmedActiveQueue.removed) {
+    writeSyncQueue(trimmedActiveQueue.queue);
+  }
+  const trimmedFailedQueue = removeQueuedInventoryDraft(readFailedSyncQueue(), id);
+  if (trimmedFailedQueue.removed) {
+    writeFailedSyncQueue(trimmedFailedQueue.queue);
+  }
+
+  const cached = readCache('inventory-items');
+  writeCache('inventory-items', cached.filter((item) => item.id !== id));
+
+  return { success: true };
 }

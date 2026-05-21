@@ -78,8 +78,63 @@ const IMPORT_FIELD_SETS = {
 const getFieldsForType = (type) => IMPORT_FIELD_SETS[type] || IMPORT_FIELD_SETS.bookings
 
 const STEPS = ['Upload File', 'Map Columns', 'Preview & Edit', 'Import']
+const IMPORT_MAPPING_MEMORY_KEY = 'bb_import_mapping_memory_v1'
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+const FIELD_ALIASES = {
+  guest_name:     ['guest', 'name', 'full name', 'guest name', 'client', 'customer', 'customer name', 'client name', 'visitor', 'occupant', 'tenant'],
+  email:          ['email', 'e-mail', 'mail', 'email address', 'guest email'],
+  phone:          ['phone', 'mobile', 'cell', 'contact', 'tel', 'telephone', 'contact number', 'phone number', 'mobile number'],
+  id_number:      ['id', 'id number', 'passport', 'national id', 'id/passport', 'passport no', 'passport number', 'document number'],
+  nationality:    ['nationality', 'country', 'origin'],
+  room_number:    ['room', 'room no', 'room number', 'room_number', 'room #', 'unit', 'unit no', 'unit number', 'room name', 'cabin', 'suite'],
+  check_in:       ['check in', 'check-in', 'checkin', 'arrival', 'arrival date', 'from', 'start', 'start date', 'date in', 'in date'],
+  check_out:      ['check out', 'check-out', 'checkout', 'departure', 'departure date', 'to', 'end', 'end date', 'date out', 'out date'],
+  adults:         ['adults', 'adult', 'pax', 'guests', 'adult guests', 'no adults'],
+  children:       ['children', 'child', 'kids', 'minors', 'no children'],
+  total_amount:   ['total', 'total amount', 'rate', 'room total', 'grand total', 'total cost', 'amount due', 'booking total', 'charge'],
+  amount_paid:    ['paid', 'amount paid', 'payment', 'deposit', 'paid amount', 'deposit paid', 'received', 'amount received'],
+  payment_method: ['payment method', 'method', 'payment type', 'how paid', 'paid by', 'paid via', 'pay type', 'payment mode', 'mode of payment', 'tender', 'tender type'],
+  status:         ['status', 'booking status', 'state', 'booking state', 'reservation status'],
+  notes:          ['notes', 'note', 'remarks', 'comments', 'comment', 'special requests'],
+  name:           ['name', 'item name', 'supply item', 'guest name', 'full name', 'product', 'product name', 'description'],
+  room_type:      ['room type', 'type'],
+  rate:           ['rate', 'nightly rate', 'rate per night', 'price'],
+  max_adults:     ['max adults', 'adults', 'maximum adults'],
+  max_children:   ['max children', 'children', 'maximum children'],
+  category:       ['category', 'type', 'group', 'department'],
+  unit:           ['unit', 'uom', 'measure', 'measurement'],
+  current_stock:  ['current stock', 'stock', 'quantity', 'qty', 'opening stock', 'on hand'],
+  reorder_level:  ['reorder level', 'minimum stock', 'low stock', 'min stock', 'par level'],
+  selling_price:  ['selling price', 'price', 'sale price', 'retail price'],
+  date:           ['date', 'expense date', 'transaction date', 'paid date'],
+  description:    ['description', 'details', 'item', 'expense', 'expense item', 'particulars'],
+  amount:         ['amount', 'cost', 'total', 'expense amount', 'value'],
+  paid_by:        ['paid by', 'method', 'payment method', 'paid via', 'payment type'],
+}
+
+function normalizeHeaderText(value) {
+  return String(value || '').toLowerCase().replace(/[_\-/#]+/g, ' ').replace(/\s+/g, ' ').trim()
+}
+
+function compactHeaderText(value) {
+  return normalizeHeaderText(value).replace(/[^a-z0-9]/g, '')
+}
+
+function headerTokens(value) {
+  return normalizeHeaderText(value).split(' ').filter(Boolean)
+}
+
+function readMappingMemory() {
+  try {
+    const stored = window.localStorage?.getItem(IMPORT_MAPPING_MEMORY_KEY)
+    const parsed = stored ? JSON.parse(stored) : {}
+    return parsed && typeof parsed === 'object' ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
 function normaliseDate(val) {
   if (!val) return ''
   if (typeof val === 'number') {
@@ -88,55 +143,197 @@ function normaliseDate(val) {
   }
   const s = String(val).trim()
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s
-  const dmy = s.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})$/)
-  if (dmy) return `${dmy[3]}-${dmy[2].padStart(2,'0')}-${dmy[1].padStart(2,'0')}`
+  const short = s.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2}|\d{4})$/)
+  if (short) {
+    const first = Number(short[1])
+    const second = Number(short[2])
+    const year = short[3].length === 2 ? `20${short[3]}` : short[3]
+    const useMonthDayYear = first <= 12 && second > 12
+    const day = useMonthDayYear ? second : first
+    const month = useMonthDayYear ? first : second
+    if (day >= 1 && day <= 31 && month >= 1 && month <= 12) {
+      return `${year}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`
+    }
+  }
   const d = new Date(s)
   if (!isNaN(d)) return formatLocalDate(d)
   return s
 }
 
-function smartGuess(columns, fieldKey) {
-  const lower = columns.map((c) => c.toLowerCase())
+function normalizeImportStatus(value) {
+  const raw = String(value || '').trim().toLowerCase().replace(/\s+/g, '_').replace(/-/g, '_')
+  if (!raw) return ''
   const aliases = {
-    guest_name:     ['guest', 'name', 'full name', 'guest name', 'client', 'customer'],
-    email:          ['email', 'e-mail', 'mail'],
-    phone:          ['phone', 'mobile', 'cell', 'contact', 'tel', 'telephone'],
-    id_number:      ['id', 'id number', 'passport', 'national id', 'id/passport'],
-    nationality:    ['nationality', 'country', 'origin'],
-    room_number:    ['room', 'room no', 'room number', 'room_number', 'room #', 'unit'],
-    check_in:       ['check in', 'check-in', 'checkin', 'arrival', 'from', 'start', 'date in'],
-    check_out:      ['check out', 'check-out', 'checkout', 'departure', 'to', 'end', 'date out'],
-    adults:         ['adults', 'adult', 'pax', 'guests'],
-    children:       ['children', 'child', 'kids'],
-    total_amount:   ['total', 'total amount', 'rate', 'room total', 'grand total', 'total cost'],
-    amount_paid:    ['paid', 'amount paid', 'payment', 'deposit', 'paid amount'],
-    payment_method: ['payment method', 'method', 'payment type', 'how paid'],
-    status:         ['status', 'booking status', 'state'],
-    notes:          ['notes', 'note', 'remarks', 'comments', 'comment', 'special requests'],
-    name:           ['name', 'item name', 'supply item', 'guest name', 'full name'],
-    room_type:      ['room type', 'type'],
-    rate:           ['rate', 'nightly rate', 'rate per night', 'price'],
-    max_adults:     ['max adults', 'adults', 'maximum adults'],
-    max_children:   ['max children', 'children', 'maximum children'],
-    category:       ['category', 'type', 'group'],
-    unit:           ['unit', 'uom', 'measure'],
-    current_stock:  ['current stock', 'stock', 'quantity', 'opening stock'],
-    reorder_level:  ['reorder level', 'minimum stock', 'low stock'],
-    selling_price:  ['selling price', 'price'],
-    date:           ['date', 'expense date'],
-    description:    ['description', 'details', 'item', 'expense'],
-    amount:         ['amount', 'cost', 'total'],
-    paid_by:        ['paid by', 'method', 'payment method'],
+    checkedout: 'checked_out',
+    check_out: 'checked_out',
+    checkout: 'checked_out',
+    checkedin: 'checked_in',
+    check_in: 'checked_in',
+    checkin: 'checked_in',
+    confirm: 'confirmed',
+    booked: 'confirmed',
+    active: 'confirmed',
+    cancelled: 'cancelled',
+    canceled: 'cancelled'
   }
-  const patterns = aliases[fieldKey] || []
-  for (const pat of patterns) {
-    const idx = lower.findIndex((c) => c === pat || c.includes(pat))
-    if (idx >= 0) return columns[idx]
-  }
-  return ''
+  return aliases[raw] || raw
 }
 
-function applyMapping(rawRows, mapping, fields = IMPORT_FIELD_SETS.bookings) {
+function normalizePaymentMethod(value) {
+  const raw = String(value || '').trim()
+  if (!raw) return ''
+  const compact = raw.toLowerCase().replace(/[\s_-]+/g, '')
+  const aliases = {
+    card: 'Card',
+    creditcard: 'Card',
+    debitcard: 'Card',
+    cash: 'Cash',
+    orange: 'Orange Money',
+    orangemoney: 'Orange Money',
+    banktransfer: 'Bank Transfer',
+    eft: 'Bank Transfer',
+    mobilemoney: 'Mobile Money'
+  }
+  return aliases[compact] || raw
+}
+
+function cleanupImportRow(row, importType) {
+  const next = Object.fromEntries(Object.entries(row || {}).map(([key, value]) => [key, typeof value === 'string' ? value.trim() : value]))
+  ;['check_in', 'check_out', 'date'].forEach((key) => {
+    if (next[key]) next[key] = normaliseDate(next[key])
+  })
+  if (next.status) next.status = normalizeImportStatus(next.status)
+  if (next.payment_method || importType === 'bookings') next.payment_method = normalizePaymentMethod(next.payment_method)
+  return next
+}
+
+function buildImportRisk(dryRunReport, activeCount) {
+  if (!dryRunReport) return { label: 'Not checked', tone: 'slate', detail: 'Run a dry check before importing.' }
+  const total = Number(dryRunReport.total || activeCount || 0)
+  const errors = Array.isArray(dryRunReport.errors) ? dryRunReport.errors.length : 0
+  const overlaps = Number(dryRunReport.overlaps || 0)
+  const duplicates = Number(dryRunReport.duplicates || 0)
+  if (!total) return { label: 'No rows', tone: 'amber', detail: 'There are no active rows to import.' }
+  if (errors > 0 || overlaps > 0) return { label: 'High review needed', tone: 'red', detail: `${errors || overlaps} row issue${(errors || overlaps) === 1 ? '' : 's'} should be fixed first.` }
+  if (duplicates > 0) return { label: 'Needs review', tone: 'amber', detail: `${duplicates} duplicate record${duplicates === 1 ? '' : 's'} will be skipped.` }
+  return { label: 'Looks good', tone: 'green', detail: `${total} row${total === 1 ? '' : 's'} passed the dry check.` }
+}
+
+function scoreHeaderMatch(column, fieldKey) {
+  const columnText = normalizeHeaderText(column)
+  const columnCompact = compactHeaderText(column)
+  const columnTokens = new Set(headerTokens(column))
+  const patterns = [fieldKey.replace(/_/g, ' '), ...(FIELD_ALIASES[fieldKey] || [])]
+  let best = 0
+
+  patterns.forEach((patternRaw) => {
+    const patternText = normalizeHeaderText(patternRaw)
+    const patternCompact = compactHeaderText(patternRaw)
+    const patternTokens = headerTokens(patternRaw)
+    if (!patternText || !patternCompact) return
+
+    if (columnText === patternText) best = Math.max(best, 100)
+    if (columnCompact === patternCompact) best = Math.max(best, 96)
+    if (columnText.includes(patternText) && patternText.length >= 3) best = Math.max(best, 74 + Math.min(patternText.length, 20))
+    if (patternText.includes(columnText) && columnText.length >= 4) best = Math.max(best, 52)
+
+    const shared = patternTokens.filter((token) => columnTokens.has(token)).length
+    if (shared) {
+      const fullTokenMatch = shared === patternTokens.length
+      best = Math.max(best, (shared * 18) + (fullTokenMatch ? 20 : 0))
+    }
+  })
+
+  return best
+}
+
+function smartGuess(columns, fieldKey) {
+  const best = columns.reduce((winner, column) => {
+    const score = scoreHeaderMatch(column, fieldKey)
+    return score > winner.score ? { column, score } : winner
+  }, { column: '', score: 0 })
+  return best.score >= 45 ? best.column : ''
+}
+
+function buildSmartMapping(columns, fields) {
+  const used = new Set()
+  const mapping = {}
+  fields.forEach(({ key }) => {
+    const guess = smartGuess(columns.filter((column) => !used.has(column)), key)
+    mapping[key] = guess
+    if (guess) used.add(guess)
+  })
+  return mapping
+}
+
+function getMappingStats(mapping, fields) {
+  const mapped = fields.filter((field) => mapping[field.key]).length
+  const required = fields.filter((field) => field.required)
+  const requiredMapped = required.filter((field) => mapping[field.key]).length
+  return {
+    mapped,
+    total: fields.length,
+    requiredMapped,
+    requiredTotal: required.length,
+    percent: fields.length ? Math.round((mapped / fields.length) * 100) : 0,
+    requiredComplete: requiredMapped === required.length
+  }
+}
+
+function applyMappingMemory(columns, importType, fields, baseMapping = {}) {
+  const remembered = readMappingMemory()[importType] || {}
+  const columnByName = new Map(columns.map((column) => [normalizeHeaderText(column), column]))
+  const next = { ...baseMapping }
+  const used = new Set(Object.values(next).filter(Boolean))
+
+  fields.forEach(({ key }) => {
+    const column = columnByName.get(remembered[key])
+    if (column && !used.has(column)) {
+      if (next[key]) used.delete(next[key])
+      next[key] = column
+      used.add(column)
+    }
+  })
+
+  return next
+}
+
+function mappingUsesMemory(columns, importType, fields, mapping = {}) {
+  const remembered = readMappingMemory()[importType] || {}
+  const available = new Set(columns.map(normalizeHeaderText))
+  return fields.some(({ key }) => {
+    const rememberedColumn = remembered[key]
+    return rememberedColumn && available.has(rememberedColumn) && normalizeHeaderText(mapping[key]) === rememberedColumn
+  })
+}
+
+function saveMappingMemory(importType, fields, mapping = {}) {
+  try {
+    const current = readMappingMemory()
+    const nextTypeMemory = { ...(current[importType] || {}) }
+    fields.forEach(({ key }) => {
+      if (mapping[key]) nextTypeMemory[key] = normalizeHeaderText(mapping[key])
+    })
+    window.localStorage?.setItem(IMPORT_MAPPING_MEMORY_KEY, JSON.stringify({ ...current, [importType]: nextTypeMemory }))
+  } catch {
+    // Import should continue even if the browser refuses local storage.
+  }
+}
+
+function detectImportType(columns, importTypes) {
+  const candidates = (Array.isArray(importTypes) && importTypes.length ? importTypes : [{ key: 'bookings', label: 'Bookings' }])
+    .map((type) => {
+      const fields = getFieldsForType(type.key)
+      const mapping = buildSmartMapping(columns, fields)
+      const stats = getMappingStats(mapping, fields)
+      const score = (stats.requiredMapped * 4) + stats.mapped
+      return { ...type, mapping, stats, score }
+    })
+    .sort((a, b) => b.score - a.score)
+  return candidates[0] || { key: 'bookings', label: 'Bookings', mapping: {}, stats: { percent: 0 } }
+}
+
+function applyMapping(rawRows, mapping, fields = IMPORT_FIELD_SETS.bookings, importType = 'bookings') {
   return rawRows.map((raw) => {
     const row = {}
     fields.forEach(({ key }) => {
@@ -145,7 +342,7 @@ function applyMapping(rawRows, mapping, fields = IMPORT_FIELD_SETS.bookings) {
       if (key === 'check_in' || key === 'check_out' || key === 'date') val = normaliseDate(val)
       row[key] = val !== undefined && val !== null ? String(val) : ''
     })
-    return row
+    return cleanupImportRow(row, importType)
   })
 }
 
@@ -175,11 +372,12 @@ function UploadStep({ onParsed, importType, setImportType, importTypes }) {
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState('')
   const [templateSaving, setTemplateSaving] = useState(false)
+  const [dragActive, setDragActive] = useState(false)
 
-  const handleBrowse = async () => {
+  const parseSelectedFile = async (filePath) => {
     setLoading(true); setErr('')
     try {
-      const result = await window.api.import.parseExcel()
+      const result = await window.api.import.parseExcel(filePath)
       if (!result) { setLoading(false); return }
       if (result.error) { setErr(result.error); setLoading(false); return }
       if (result.rows.length === 0) { setErr('The Excel file has no data rows.'); setLoading(false); return }
@@ -188,6 +386,28 @@ function UploadStep({ onParsed, importType, setImportType, importTypes }) {
       setErr(e.message)
       setLoading(false)
     }
+  }
+
+  const handleBrowse = async () => {
+    await parseSelectedFile('')
+  }
+
+  const handleDrop = async (event) => {
+    event.preventDefault()
+    setDragActive(false)
+    const file = event.dataTransfer?.files?.[0]
+    if (!file) return
+    const name = String(file.name || '')
+    if (!/\.(xlsx|xls)$/i.test(name)) {
+      setErr('Drop an Excel file ending in .xlsx or .xls.')
+      return
+    }
+    const filePath = window.api.import.getDroppedFilePath?.(file)
+    if (!filePath) {
+      setErr('Could not read the dropped file path. Use Browse Excel File instead.')
+      return
+    }
+    await parseSelectedFile(filePath)
   }
 
   const handleTemplate = async () => {
@@ -210,8 +430,8 @@ function UploadStep({ onParsed, importType, setImportType, importTypes }) {
       <div className="text-center">
         <h2 className="text-xl font-bold text-gray-800 mb-2">Import Data Safely</h2>
         <p className="text-gray-500 text-sm max-w-md">
-          Upload an Excel file (.xlsx or .xls) containing past guest bookings.
-          This import saves directly to Supabase, so it must be done while online.
+          Upload an Excel file (.xlsx or .xls), review the mapping, run a dry check, then import only the rows you approve.
+          Imports save directly to the online database, so they must be done while online.
         </p>
       </div>
       <div className="w-full max-w-md">
@@ -238,6 +458,29 @@ function UploadStep({ onParsed, importType, setImportType, importTypes }) {
           </p>
         )}
       </div>
+      <div
+        onDragEnter={(event) => {
+          event.preventDefault()
+          setDragActive(true)
+        }}
+        onDragOver={(event) => {
+          event.preventDefault()
+          setDragActive(true)
+        }}
+        onDragLeave={(event) => {
+          event.preventDefault()
+          setDragActive(false)
+        }}
+        onDrop={handleDrop}
+        className={`w-full max-w-md rounded-2xl border-2 border-dashed px-6 py-7 text-center transition-colors ${
+          dragActive ? 'border-green-500 bg-green-50' : 'border-gray-300 bg-gray-50'
+        }`}
+      >
+        <Upload size={22} className={`mx-auto mb-2 ${dragActive ? 'text-green-700' : 'text-gray-500'}`} />
+        <p className="text-sm font-semibold text-gray-800">Drop an Excel file here</p>
+        <p className="mt-1 text-xs text-gray-500">The app will detect the import type and pre-map the columns.</p>
+      </div>
+
       <div className="flex gap-3">
         <button
           onClick={handleBrowse}
@@ -266,7 +509,8 @@ function UploadStep({ onParsed, importType, setImportType, importTypes }) {
         <p>• First row should be column headers (e.g. "Guest Name", "Check-In", "Room")</p>
         <p>• Dates should be in YYYY-MM-DD or DD/MM/YYYY format</p>
         <p>• Room numbers must match rooms already set up in the system</p>
-        <p>• Optional "Total Amount" column overrides calculated rate x nights</p>
+        <p>• Download the template for a clean "Import Data" sheet and short read-me guide</p>
+        <p>• For bookings, optional "Total Amount" overrides calculated rate x nights</p>
         <p>• Maximum 500 rows per import</p>
         <p>• Import and undo both require an internet connection</p>
       </div>
@@ -278,12 +522,11 @@ function UploadStep({ onParsed, importType, setImportType, importTypes }) {
 function MappingStep({ parsed, onMapped, onBack, fields }) {
   const { columns, fileName, sheetName } = parsed
   const [mapping, setMapping] = useState(() => {
-    const m = {}
-    fields.forEach(({ key }) => { m[key] = smartGuess(columns, key) })
-    return m
+    return parsed.suggestedMapping || buildSmartMapping(columns, fields)
   })
 
   const missingRequired = fields.filter((f) => f.required && !mapping[f.key])
+  const mappingStats = getMappingStats(mapping, fields)
 
   const inp = "w-full bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
 
@@ -294,14 +537,44 @@ function MappingStep({ parsed, onMapped, onBack, fields }) {
         <div>
           <p className="text-sm font-semibold text-green-800">{fileName}</p>
           <p className="text-xs text-green-600">Sheet: {sheetName} &nbsp;·&nbsp; {parsed.rows.length} rows &nbsp;·&nbsp; {columns.length} columns detected</p>
+          {parsed.detectedImportLabel && (
+            <p className="mt-1 text-xs text-green-700">
+              Detected as {parsed.detectedImportLabel} import with {parsed.detectedConfidence || 0}% initial mapping confidence.
+            </p>
+          )}
+          {parsed.usedMappingMemory && (
+            <p className="mt-1 text-xs text-green-700">
+              Reused saved column choices from a previous import.
+            </p>
+          )}
         </div>
       </div>
+      {parsed.truncated && (
+        <div className="mb-4 flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+          <AlertTriangle size={15} />
+          Only the first 500 rows were loaded from {parsed.totalRows} rows. Import those first, then split the remaining rows into another file.
+        </div>
+      )}
 
       <p className="text-sm text-gray-600 mb-4">
         Match each <strong>app field</strong> on the left to the corresponding <strong>Excel column</strong> on the right.
         Fields marked <span className="text-red-500">*</span> are required.
         Smart guesses have been pre-filled — review and adjust as needed.
       </p>
+
+      <div className={`mb-4 rounded-xl border px-3 py-2 text-sm ${
+        mappingStats.requiredComplete ? 'border-green-200 bg-green-50 text-green-800' : 'border-amber-200 bg-amber-50 text-amber-800'
+      }`}>
+        <p className="font-semibold">
+          Smart mapping confidence: {mappingStats.percent}%
+          <span className="ml-2 text-xs font-normal">
+            {mappingStats.mapped} of {mappingStats.total} fields matched · {mappingStats.requiredMapped} of {mappingStats.requiredTotal} required fields ready
+          </span>
+        </p>
+        {!mappingStats.requiredComplete && (
+          <p className="mt-1 text-xs">Choose the missing required columns below before previewing.</p>
+        )}
+      </div>
 
       <div className="space-y-2 max-h-[400px] overflow-y-auto pr-1">
         {fields.map(({ key, label, required, hint }) => (
@@ -353,12 +626,23 @@ function PreviewStep({ rows, onBack, onImport, dryRunReport, onDryRun, dryRunnin
   const [editCell, setEditCell] = useState(null)
   const [checking, setChecking] = useState(false)
   const [checked, setChecked] = useState(false)
+  const [exportingErrors, setExportingErrors] = useState(false)
 
   const activeRows = data.filter((r) => !r._skip)
   const skippedRows = data.filter((r) => r._skip)
   const duplicateRows = data.filter((r) => r._duplicate && !r._skip)
+  const supportsBookingOverlapCheck = importType === 'bookings'
+  const dryRunErrors = Array.isArray(dryRunReport?.errors) ? dryRunReport.errors : []
+  const risk = buildImportRisk(dryRunReport, activeRows.length)
+  const riskClass = {
+    green: 'border-green-200 bg-green-50 text-green-800',
+    amber: 'border-amber-200 bg-amber-50 text-amber-800',
+    red: 'border-red-200 bg-red-50 text-red-800',
+    slate: 'border-slate-200 bg-slate-50 text-slate-700'
+  }[risk.tone] || 'border-slate-200 bg-slate-50 text-slate-700'
 
   const checkDuplicates = async () => {
+    if (!supportsBookingOverlapCheck) return
     setChecking(true)
     try {
       const rowsToCheck = data.filter((r) => !r._skip).map(({ guest_name, room_number, check_in, check_out }) => ({
@@ -399,6 +683,35 @@ function PreviewStep({ rows, onBack, onImport, dryRunReport, onDryRun, dryRunnin
     setData((prev) => prev.map((r) => r._duplicate ? { ...r, _skip: true } : r))
   }
 
+  const applyCommonFixes = () => {
+    setData((prev) => prev.map((row) => row._skip ? row : { ...cleanupImportRow(row, importType), _id: row._id, _skip: row._skip, _duplicate: row._duplicate }))
+    setChecked(false)
+  }
+
+  const applyRoomSuggestion = (rowNumber, roomNumber) => {
+    const target = activeRows[rowNumber - 1]
+    if (!target) return
+    setData((prev) => prev.map((row) => row._id === target._id ? { ...row, room_number: roomNumber } : row))
+    setChecked(false)
+  }
+
+  const exportErrorWorkbook = async () => {
+    if (dryRunErrors.length === 0) return
+    setExportingErrors(true)
+    try {
+      const result = await window.api.import.exportErrors?.({
+        importType,
+        rows: activeRows.map(({ _id: _i, _skip: _s, _duplicate: _d, ...rest }) => rest),
+        errors: dryRunErrors
+      })
+      if (result?.error) alert(result.error)
+    } catch (e) {
+      alert(e.message || 'Could not export import issues.')
+    } finally {
+      setExportingErrors(false)
+    }
+  }
+
   const visibleFields = importType === 'bookings'
     ? fields.filter((f) => ['guest_name','room_number','check_in','check_out','adults','total_amount','amount_paid','payment_method','status','notes'].includes(f.key))
     : fields
@@ -417,14 +730,16 @@ function PreviewStep({ rows, onBack, onImport, dryRunReport, onDryRun, dryRunnin
           <p className="text-xs text-gray-500">Click any cell to edit it. Use the trash button to skip a row.</p>
         </div>
         <div className="flex gap-2">
-          <button
-            onClick={checkDuplicates}
-            disabled={checking}
-            className="flex items-center gap-1 text-xs bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-60"
-          >
-            <ShieldAlert size={12} />
-            {checking ? 'Checking...' : checked ? 'Re-check Duplicates' : 'Check for Duplicates'}
-          </button>
+          {supportsBookingOverlapCheck && (
+            <button
+              onClick={checkDuplicates}
+              disabled={checking || activeRows.length === 0}
+              className="flex items-center gap-1 text-xs bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-60"
+            >
+              <ShieldAlert size={12} />
+              {checking ? 'Checking...' : checked ? 'Re-check Overlaps' : 'Check Room Overlaps'}
+            </button>
+          )}
           <button
             onClick={() => onDryRun(activeRows.map(({ _id: _i, _skip: _s, _duplicate: _d, ...rest }) => rest))}
             disabled={dryRunning || activeRows.length === 0}
@@ -432,6 +747,14 @@ function PreviewStep({ rows, onBack, onImport, dryRunReport, onDryRun, dryRunnin
           >
             <ShieldAlert size={12} />
             {dryRunning ? 'Checking...' : 'Dry Run Report'}
+          </button>
+          <button
+            onClick={applyCommonFixes}
+            disabled={activeRows.length === 0}
+            className="flex items-center gap-1 text-xs bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-60"
+          >
+            <RotateCcw size={12} />
+            Auto-clean
           </button>
           {skippedRows.length > 0 && (
             <button onClick={resetAll} className="flex items-center gap-1 text-xs text-gray-600 border hover:bg-gray-50 px-3 py-1.5 rounded-lg transition-colors">
@@ -463,15 +786,64 @@ function PreviewStep({ rows, onBack, onImport, dryRunReport, onDryRun, dryRunnin
       )}
       {dryRunReport && (
         <div className="mb-3 rounded-xl border border-purple-200 bg-purple-50 p-3 text-sm text-purple-800">
-          <p className="font-semibold">Dry-run report</p>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p className="font-semibold">Dry-run report</p>
+              <div className={`mt-2 inline-flex rounded-lg border px-2.5 py-1 text-xs font-semibold ${riskClass}`}>
+                Risk score: {risk.label} — {risk.detail}
+              </div>
+            </div>
+            {dryRunErrors.length > 0 && (
+              <button
+                type="button"
+                onClick={exportErrorWorkbook}
+                disabled={exportingErrors}
+                className="inline-flex items-center gap-1 rounded-lg border border-purple-200 bg-white px-3 py-1.5 text-xs font-semibold text-purple-700 hover:bg-purple-100 disabled:opacity-60"
+              >
+                <Download size={12} />
+                {exportingErrors ? 'Exporting...' : 'Export Issues'}
+              </button>
+            )}
+          </div>
           <p className="mt-1 text-xs">
             {dryRunReport.valid || 0} valid of {dryRunReport.total || 0} rows
             {importType === 'bookings'
               ? ` · ${dryRunReport.would_create_customers || 0} new guests · ${dryRunReport.would_reuse_customers || 0} existing guests · ${dryRunReport.overlaps || 0} overlaps`
               : ` · ${dryRunReport.would_create || 0} new records · ${dryRunReport.duplicates || 0} duplicates skipped`}
           </p>
-          {Array.isArray(dryRunReport.errors) && dryRunReport.errors.length > 0 && (
-            <p className="mt-1 text-xs">{dryRunReport.errors.length} rows need correction before import.</p>
+          {dryRunErrors.length > 0 && (
+            <div className="mt-2 rounded-lg border border-purple-200 bg-white/60 p-2">
+              <p className="text-xs font-semibold">{dryRunErrors.length} rows need correction before import.</p>
+              <div className="mt-1 max-h-24 overflow-y-auto space-y-1">
+                {dryRunErrors.slice(0, 6).map((entry, idx) => {
+                  const messages = Array.isArray(entry.errors) ? entry.errors : [entry.error].filter(Boolean)
+                  const roomSuggestions = entry.suggestions?.room_number || []
+                  return (
+                    <div key={`${entry.row || idx}-${idx}`} className="text-xs">
+                      <p><span className="font-semibold">Row {entry.row || idx + 1}:</span> {messages.join(' ')}</p>
+                      {roomSuggestions.length > 0 && (
+                        <div className="mt-1 flex flex-wrap items-center gap-1">
+                          <span className="opacity-75">Try:</span>
+                          {roomSuggestions.map((roomNumber) => (
+                            <button
+                              key={roomNumber}
+                              type="button"
+                              onClick={() => applyRoomSuggestion(entry.row || idx + 1, roomNumber)}
+                              className="rounded-md border border-purple-200 bg-white px-2 py-0.5 font-semibold text-purple-700 hover:bg-purple-100"
+                            >
+                              Room {roomNumber}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+                {dryRunErrors.length > 6 && (
+                  <p className="text-xs opacity-75">And {dryRunErrors.length - 6} more row issue{dryRunErrors.length - 6 === 1 ? '' : 's'}.</p>
+                )}
+              </div>
+            </div>
           )}
         </div>
       )}
@@ -562,13 +934,14 @@ function PreviewStep({ rows, onBack, onImport, dryRunReport, onDryRun, dryRunnin
 }
 
 // Step 4 ─ Importing / Results (with progress bar + undo)
-function ResultStep({ result, progress, onReset, onUndo, undoing }) {
+function ResultStep({ result, progress, onReset, onUndo, undoing, importType }) {
+  const entityLabel = importType === 'bookings' ? 'bookings' : 'records'
   if (!result) {
     const pct = progress ? Math.round((progress.current / progress.total) * 100) : 0
     return (
       <div className="flex flex-col items-center justify-center py-16 gap-4">
         <div className="w-12 h-12 border-4 border-green-500 border-t-transparent rounded-full animate-spin" />
-        <p className="text-gray-600 font-medium">Importing bookings...</p>
+        <p className="text-gray-600 font-medium">Importing {entityLabel}...</p>
         {progress ? (
           <div className="w-64">
             <div className="flex justify-between text-xs text-gray-500 mb-1">
@@ -621,7 +994,7 @@ function ResultStep({ result, progress, onReset, onUndo, undoing }) {
       <div className="flex gap-4">
         <div className="bg-green-50 border border-green-200 rounded-xl px-6 py-4 text-center">
           <p className="text-3xl font-bold text-green-700">{imported}</p>
-          <p className="text-xs text-green-600 mt-1">Bookings Imported</p>
+          <p className="text-xs text-green-600 mt-1">{importType === 'bookings' ? 'Bookings' : 'Records'} Imported</p>
         </div>
         {skipped > 0 && (
           <div className="bg-amber-50 border border-amber-200 rounded-xl px-6 py-4 text-center">
@@ -764,13 +1137,29 @@ export default function DataImport() {
   }, [])
 
   const handleParsed = (data) => {
-    setParsed(data)
+    const detected = detectImportType(data.columns || [], importTypes)
+    const detectedFields = getFieldsForType(detected.key)
+    const rememberedMapping = applyMappingMemory(data.columns || [], detected.key, detectedFields, detected.mapping || {})
+    const rememberedStats = getMappingStats(rememberedMapping, detectedFields)
+    setImportType(detected.key)
+    setParsed({
+      ...data,
+      detectedImportType: detected.key,
+      detectedImportLabel: detected.label,
+      detectedConfidence: rememberedStats.percent || detected.stats?.percent || 0,
+      suggestedMapping: rememberedMapping,
+      usedMappingMemory: mappingUsesMemory(data.columns || [], detected.key, detectedFields, rememberedMapping)
+    })
+    setMapping(null)
+    setPreviewRows(null)
+    setDryRunReport(null)
     setStep(1)
   }
 
   const handleMapped = (m) => {
     setMapping(m)
-    const mapped = applyMapping(parsed.rows, m, fields)
+    saveMappingMemory(importType, fields, m)
+    const mapped = applyMapping(parsed.rows, m, fields, importType)
     setPreviewRows(mapped)
     setDryRunReport(null)
     setStep(2)
@@ -898,6 +1287,7 @@ export default function DataImport() {
               onReset={reset}
               onUndo={handleUndo}
               undoing={undoing}
+              importType={importType}
             />
           )}
         </div>

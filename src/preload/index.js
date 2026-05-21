@@ -1,4 +1,6 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import electron from 'electron'
+
+const { contextBridge, ipcRenderer, webUtils } = electron
 
 const onIpc = (channel, cb) => {
   const listener = (_, value) => cb(value)
@@ -268,7 +270,8 @@ const api = {
     createStocktake: (data) => ipcRenderer.invoke('inventory:createStocktake', data),
     getStocktake: (stocktakeId) => ipcRenderer.invoke('inventory:getStocktake', stocktakeId),
     saveStocktakeCounts: (stocktakeId, lines) => ipcRenderer.invoke('inventory:saveStocktakeCounts', stocktakeId, lines),
-    postStocktake: (stocktakeId, notes) => ipcRenderer.invoke('inventory:postStocktake', stocktakeId, notes)
+    postStocktake: (stocktakeId, notes) => ipcRenderer.invoke('inventory:postStocktake', stocktakeId, notes),
+    discardDraft: (id) => ipcRenderer.invoke('inventory:discardDraft', id)
   },
   supplies: {
     getItems: () => ipcRenderer.invoke('supplies:getItems'),
@@ -395,7 +398,9 @@ const api = {
     }
   },
   import: {
-    parseExcel: () => ipcRenderer.invoke('import:parseExcel'),
+    parseExcel: (filePath) => ipcRenderer.invoke('import:parseExcel', filePath),
+    getDroppedFilePath: (file) => webUtils?.getPathForFile?.(file) || file?.path || '',
+    exportErrors: (payload) => ipcRenderer.invoke('import:exportErrors', payload),
     execute: (rows, filename, type) => ipcRenderer.invoke('import:execute', rows, filename, type),
     dryRun: (rows, type) => ipcRenderer.invoke('import:dryRun', rows, type),
     getTypes: () => ipcRenderer.invoke('import:getTypes'),
@@ -421,7 +426,10 @@ const api = {
     getAll: (start, end) => ipcRenderer.invoke('dayuse:getAll', start, end),
     add: (data) => ipcRenderer.invoke('dayuse:add', data),
     delete: (id) => ipcRenderer.invoke('dayuse:delete', id),
-    summary: (date) => ipcRenderer.invoke('dayuse:summary', date)
+    updateStatus: (id, status) => ipcRenderer.invoke('dayuse:updateStatus', id, status),
+    settleBalance: (id, method, markCompleted = true) => ipcRenderer.invoke('dayuse:settleBalance', id, method, markCompleted),
+    summary: (date) => ipcRenderer.invoke('dayuse:summary', date),
+    getInventoryItems: () => ipcRenderer.invoke('dayuse:getInventoryItems')
   },
   email: {
     getConfig: () => ipcRenderer.invoke('email:getConfig'),

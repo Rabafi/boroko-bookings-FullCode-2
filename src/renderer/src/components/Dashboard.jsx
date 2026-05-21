@@ -15,7 +15,7 @@ import {
   Receipt,
   ClipboardList,
   Presentation,
-  Waves,
+  Briefcase,
   ShoppingCart,
   Package,
   Boxes,
@@ -52,7 +52,7 @@ const SHORTCUTS = [
   { label: 'Reports',       to: '/reports',    icon: BarChart3,     feature: 'reports',    tier: 'Standard' },
   { label: 'Night Audit',   to: '/audit',      icon: ClipboardList, feature: 'audit',      tier: 'Standard' },
   { label: 'Conference',    to: '/conference', icon: Presentation,  feature: 'conference', tier: 'Standard' },
-  { label: 'Day Use',       to: '/dayuse',     icon: Waves,         feature: 'pool',       tier: 'Standard' },
+  { label: 'Day Use',       to: '/dayuse',     icon: Briefcase,     feature: 'pool',       tier: 'Standard' },
   { label: 'Staff',         to: '/staff',      icon: Users,         feature: 'staff',      tier: 'Standard' },
   { label: 'POS',           to: '/pos',        icon: ShoppingCart,  feature: 'pos',        tier: 'Pro' },
   { label: 'Inventory',     to: '/inventory',  icon: Package,       feature: 'inventory',  tier: 'Pro' },
@@ -374,6 +374,12 @@ export default function Dashboard() {
     ...(upcoming.tomorrow || []).map((b) => ({ ...b, _label: 'Tomorrow' })),
     ...(upcoming.dayAfter || []).map((b) => ({ ...b, _label: 'Day After' }))
   ], [upcoming])
+  const dayUseCollectionQueue = useMemo(
+    () => allUpcoming
+      .filter((entry) => entry.booking_type === 'day_use' && Number(entry.balance_due || 0) > 0 && entry.status !== 'cancelled')
+      .sort((left, right) => Number(right.balance_due || 0) - Number(left.balance_due || 0)),
+    [allUpcoming]
+  )
   const currentPlan = normalizeSubscriptionPlan(usageSnapshot?.plan || settings?.subscription_plan || 'Starter')
   const isProPlan = currentPlan === 'Pro'
   const usageLimits = getPlanUsageLimits(currentPlan)
@@ -1081,6 +1087,51 @@ export default function Dashboard() {
         </section>
       )}
 
+      {dayUseCollectionQueue.length > 0 && (
+        <section className="bb-card p-5 border-l-4 border-l-violet-500">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200/80 pb-4">
+            <div>
+              <h2 className="text-lg font-semibold tracking-[-0.02em] text-slate-800">Day Use Balance Follow-up</h2>
+              <p className="mt-1 text-sm text-slate-500">Reserved and active walk-in entries that still need payment collection.</p>
+            </div>
+            <Link
+              to="/dayuse"
+              className="inline-flex items-center gap-1 rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-sm font-medium text-violet-700 transition-colors hover:bg-violet-100"
+            >
+              Open Day Use <ArrowRight size={14} />
+            </Link>
+          </div>
+          <div className="mt-4 space-y-3">
+            {dayUseCollectionQueue.slice(0, 4).map((entry) => (
+              <div key={`dayuse-balance-${entry.id}`} className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="truncate text-sm font-semibold text-slate-900">{entry.customer_name || 'Walk-in Guest'}</p>
+                    <span className="rounded-full bg-cyan-100 px-2 py-0.5 text-[11px] font-semibold text-cyan-700">
+                      {entry.template_name || 'Day Use'}
+                    </span>
+                    <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-semibold text-violet-700">
+                      Balance {currency}{Number(entry.balance_due || 0).toFixed(2)}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-xs text-slate-500">
+                    {entry.check_in} · {entry.resource_name || 'No resource'} · {entry.payment_method || 'Cash'}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => navigate('/dayuse')}
+                  className="inline-flex items-center gap-2 rounded-xl bg-violet-600 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-violet-700"
+                >
+                  <CreditCard size={13} />
+                  Settle in Day Use
+                </button>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
       {/* 30-Day Occupancy Forecast */}
       {forecast.length > 0 && (
         <section className="bb-card p-5">
@@ -1275,8 +1326,8 @@ export default function Dashboard() {
                       {b.booking_type === 'conference' && (
                         <span className="shrink-0 rounded-full bg-amber-100 px-2 py-1 text-[11px] font-medium text-amber-700">Conference</span>
                       )}
-                      {b.booking_type === 'pool' && (
-                        <span className="shrink-0 rounded-full bg-cyan-100 px-2 py-1 text-[11px] font-medium text-cyan-700">Pool</span>
+                      {b.booking_type === 'day_use' && (
+                        <span className="shrink-0 rounded-full bg-cyan-100 px-2 py-1 text-[11px] font-medium text-cyan-700">Day Use</span>
                       )}
                       <span className={`shrink-0 rounded-full px-2 py-1 text-[11px] font-medium ${
                         b._label === 'Today'
@@ -1292,9 +1343,11 @@ export default function Dashboard() {
                       <p className="mt-1 text-xs text-slate-500">
                         {b.room_number} · {b.adults} attendees · {b.check_in}{b.start_time ? ` ${b.start_time}–${b.end_time}` : ''}
                       </p>
-                    ) : b.booking_type === 'pool' ? (
+                    ) : b.booking_type === 'day_use' ? (
                       <p className="mt-1 text-xs text-slate-500">
-                        Pool Day Use · {b.adults}A{b.children > 0 ? ` ${b.children}C` : ''} · {b.check_in}
+                        {b.template_name || 'Day Use Entry'} · {b.adults}A{b.children > 0 ? ` ${b.children}C` : ''} · {b.check_in}
+                        {b.resource_name ? ` · ${b.resource_name}` : ''}
+                        {Number(b.balance_due || 0) > 0 ? ` · Balance ${currency}${Number(b.balance_due || 0).toFixed(2)}` : ''}
                       </p>
                     ) : (
                       <p className="mt-1 text-xs text-slate-500">
@@ -1304,7 +1357,7 @@ export default function Dashboard() {
                   </div>
                 </div>
                 {/* Action buttons — room bookings only */}
-                {b.booking_type !== 'conference' && b.booking_type !== 'pool' && (
+                {b.booking_type !== 'conference' && b.booking_type !== 'day_use' && (
                 <div className="mt-3 flex flex-wrap gap-2">
                   {b.customer_phone && (
                     <button

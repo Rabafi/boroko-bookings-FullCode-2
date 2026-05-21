@@ -20,7 +20,7 @@ import {
 } from './infrastructure.js';
 import { broadcastSyncStatus, checkOnline } from './connectivity.js';
 import { buildSyncStatusSnapshot } from './syncStatus.js';
-import { markClearedSyncItemForManualReview, patchCachedPosOrderSyncState } from './syncCache.js';
+import { markClearedSyncItemForManualReview, patchCachedPosOrderSyncState, patchCachedInventoryItemSyncState, patchCachedDayUseSyncState } from './syncCache.js';
 import {
   DEAD_LETTER_AUTO_RETRY_AFTER_MS,
   ensureQueuedItem,
@@ -28,7 +28,9 @@ import {
   getSyncItemBookingId,
   getSyncItemScope,
   isPosCreateOrderQueueItem,
-  normalizeQueuedSyncItemForReplay
+  normalizeQueuedSyncItemForReplay,
+  isInventoryItemQueueItem,
+  getQueuedInventoryItemId
 } from './syncShared.js';
 
 const HEALTH_FAULTS_FILE = 'health-faults.json';
@@ -41,7 +43,9 @@ const QUEUED_DEPENDENCY_CACHE_MAP = [
   { prefix: 'quotation-', cache: 'quotations' },
   { prefix: 'pos-order-', cache: 'pos-orders' },
   { prefix: 'conference-booking-', cache: 'conference-bookings' },
-  { prefix: 'pool-day-use-', cache: 'pool-day-use' }
+  { prefix: 'pool-day-use-', cache: 'pool-day-use' },
+  { prefix: 'dayuse-', cache: 'pool-day-use' },
+  { prefix: 'inventory-item-', cache: 'inventory-items' }
 ];
 
 function isQueuedDependencyResolved(dependencyId) {
@@ -201,15 +205,31 @@ export function getSyncDetails() {
   const financialPendingCount = pending.filter((i) => FINANCIAL_SYNC_TABLES.has(i?.table)).length;
   const financialFailedCount = failed.filter((i) => FINANCIAL_SYNC_TABLES.has(i?.table)).length;
   const groupedCounts = buildSyncGroupedCounts(pending, failed);
-  const unresolvedLocal = [
-  ...readCache('bookings').filter((row) => row?._pending_sync || row?._sync_state === 'manual_review_required').map((row) => ({ type: 'booking', id: row.id, sync_state: row._sync_state || 'pending' })),
-  ...readCache('customers').filter((row) => row?._pending_sync || row?._sync_state === 'manual_review_required').map((row) => ({ type: 'customer', id: row.id, sync_state: row._sync_state || 'pending' })),
-  ...readCache('rooms').filter((row) => row?._pending_sync || row?._sync_state === 'manual_review_required').map((row) => ({ type: 'room', id: row.id, sync_state: row._sync_state || 'pending' })),
-  ...readCache('users').filter((row) => row?._pending_sync || row?._sync_state === 'manual_review_required').map((row) => ({ type: 'user', id: row.id, sync_state: row._sync_state || 'pending' })),
-  ...readCache('quotations').filter((row) => row?._pending_sync || row?._sync_state === 'manual_review_required').map((row) => ({ type: 'quotation', id: row.id, sync_state: row._sync_state || 'pending' })),
-  ...readCache('pos-orders').filter((row) => row?._pending_sync || row?._sync_state === 'manual_review_required').map((row) => ({ type: 'pos-order', id: row.id, sync_state: row._sync_state || 'pending' })),
-  ...readCache('conference-bookings').filter((row) => row?._pending_sync || row?._sync_state === 'manual_review_required').map((row) => ({ type: 'conference-booking', id: row.id, sync_state: row._sync_state || 'pending' })),
-  ...readCache('pool-day-use').filter((row) => row?._pending_sync || row?._sync_state === 'manual_review_required').map((row) => ({ type: 'pool-day-use', id: row.id, sync_state: row._sync_state || 'pending' }))];
+  const bookings = readCache('bookings').filter((row) => row?._pending_sync || row?._sync_state === 'manual_review_required');
+  const customers = readCache('customers').filter((row) => row?._pending_sync || row?._sync_state === 'manual_review_required');
+  const rooms = readCache('rooms').filter((row) => row?._pending_sync || row?._sync_state === 'manual_review_required');
+  const users = readCache('users').filter((row) => row?._pending_sync || row?._sync_state === 'manual_review_required');
+  const quotations = readCache('quotations').filter((row) => row?._pending_sync || row?._sync_state === 'manual_review_required');
+  const posOrders = readCache('pos-orders').filter((row) => row?._pending_sync || row?._sync_state === 'manual_review_required');
+  const conferenceBookings = readCache('conference-bookings').filter((row) => row?._pending_sync || row?._sync_state === 'manual_review_required');
+  const poolDayUse = readCache('pool-day-use').filter((row) => row?._pending_sync || row?._sync_state === 'manual_review_required');
+  const inventoryItems = readCache('inventory-items').filter((row) => row?._pending_sync || row?._sync_state === 'manual_review_required');
+
+  const total = bookings.length + customers.length + rooms.length + users.length + quotations.length + posOrders.length + conferenceBookings.length + poolDayUse.length + inventoryItems.length;
+
+  const unresolvedLocal = {
+    total,
+    length: total, // Preserve array compatibility for details.unresolvedLocal?.length in health.js
+    bookings: { count: bookings.length, ids: bookings.map(r => r.id) },
+    customers: { count: customers.length, ids: customers.map(r => r.id) },
+    rooms: { count: rooms.length, ids: rooms.map(r => r.id) },
+    users: { count: users.length, ids: users.map(r => r.id) },
+    quotations: { count: quotations.length, ids: quotations.map(r => r.id) },
+    posOrders: { count: posOrders.length, ids: posOrders.map(r => r.id) },
+    conferenceBookings: { count: conferenceBookings.length, ids: conferenceBookings.map(r => r.id) },
+    poolDayUse: { count: poolDayUse.length, ids: poolDayUse.map(r => r.id) },
+    inventoryItems: { count: inventoryItems.length, ids: inventoryItems.map(r => r.id) }
+  };
 
   const enrichedCacheFreshness = Object.fromEntries(
     Object.entries(cacheFreshness).map(([name, meta]) => {
@@ -275,6 +295,27 @@ export async function retrySyncItems(queueIds = []) {
       if (orderId) {
         console.log('[POS SYNC] Retrying order', orderId);
         patchCachedPosOrderSyncState(orderId, {
+          _sync_state: 'pending',
+          _sync_error: null
+        });
+      }
+    }
+    if (isInventoryItemQueueItem(cleanItem)) {
+      const itemId = getQueuedInventoryItemId(cleanItem);
+      if (itemId) {
+        console.log('[INVENTORY SYNC] Retrying inventory item', itemId);
+        patchCachedInventoryItemSyncState(itemId, {
+          _pending_sync: true,
+          _sync_state: 'pending',
+          _sync_error: null
+        });
+      }
+    }
+    if ((cleanItem?.type === 'update' && cleanItem?.table === 'pool_day_use') || (cleanItem?._queue_id || '').startsWith('dayuse-status-')) {
+      const entryId = cleanItem?.id || cleanItem?.data?.p_id || null;
+      if (entryId) {
+        patchCachedDayUseSyncState(entryId, {
+          _pending_sync: true,
           _sync_state: 'pending',
           _sync_error: null
         });

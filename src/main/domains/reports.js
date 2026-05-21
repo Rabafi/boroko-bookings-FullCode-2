@@ -1028,12 +1028,16 @@ export async function getUpcomingCheckins() {
       customer_name: pd.guest_name,
       check_in: pd.date,
       check_out: pd.date,
-      room_number: 'Pool',
+      room_number: 'Day Use',
       adults: pd.adults || 0,
       children: pd.children || 0,
       total_amount: pd.total || 0,
+      deposit_amount: Number(pd.deposit_amount || 0),
+      balance_due: Number(pd.balance_due || 0),
+      template_name: pd.template_name || '',
+      resource_name: pd.resource_name || '',
       payment_method: pd.payment_method,
-      booking_type: 'pool'
+      booking_type: 'day_use'
     }));
   } else {
     const customers = readCache('customers');
@@ -1067,12 +1071,16 @@ export async function getUpcomingCheckins() {
       customer_name: pd.guest_name,
       check_in: pd.date,
       check_out: pd.date,
-      room_number: 'Pool',
+      room_number: 'Day Use',
       adults: Number(pd.adults) || 0,
       children: Number(pd.children) || 0,
       total_amount: Number(pd.total) || 0,
+      deposit_amount: Number(pd.deposit_amount || 0),
+      balance_due: Number(pd.balance_due || 0),
+      template_name: pd.template_name || '',
+      resource_name: pd.resource_name || '',
       payment_method: pd.payment_method,
-      booking_type: 'pool'
+      booking_type: 'day_use'
     }));
   }
 
