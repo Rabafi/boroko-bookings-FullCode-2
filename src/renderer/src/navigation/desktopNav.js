@@ -33,6 +33,15 @@ export const ALL_NAV = [
     keywords: ['home', 'overview', 'kpi', 'occupancy']
   },
   {
+    to: '/ai',
+    label: 'Assistant',
+    icon: Sparkles,
+    end: true,
+    types: ['lodge', 'restaurant'],
+    capability: 'dashboard.view',
+    keywords: ['ai', 'assistant', 'help', 'instructions', 'guide', 'find feature', 'locate function', 'how do i', 'local']
+  },
+  {
     to: '/bookings',
     label: 'Bookings',
     icon: BookOpen,

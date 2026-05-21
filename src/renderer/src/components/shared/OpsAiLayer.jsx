@@ -1,30 +1,22 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, Sparkles, X } from 'lucide-react'
 import { useLocation, useNavigate } from 'react-router-dom'
+import { useSettings } from '../../app-context'
 
 function safeParseJson(raw, fallback = null) {
   try { return JSON.parse(raw) } catch { return fallback }
 }
 
-function readAiEnabled() {
-  try { return localStorage.getItem('bb_ai_enabled') === 'true' } catch { return false }
-}
-
 export default function OpsAiLayer() {
   const navigate = useNavigate()
   const location = useLocation()
-  const [enabled, setEnabled] = useState(() => readAiEnabled())
+  const { settings } = useSettings()
   const [badge, setBadge] = useState(0)
   const [toasts, setToasts] = useState([])
   const lastAlertKeyRef = useRef('')
 
   const routeKey = location?.pathname || '/'
-
-  useEffect(() => {
-    const handleToggle = () => setEnabled(readAiEnabled())
-    window.addEventListener('bb_ai_toggle', handleToggle)
-    return () => window.removeEventListener('bb_ai_toggle', handleToggle)
-  }, [])
+  const enabled = settings?.assistant_enabled === true
 
   useEffect(() => {
     if (!window.api?.ai?.onAlert) return
@@ -65,7 +57,7 @@ export default function OpsAiLayer() {
     return () => clearInterval(interval)
   }, [toasts.length])
 
-  if (!enabled) return null
+  if (!enabled || routeKey === '/ai') return null
 
   return (
     <div className="fixed bottom-5 right-5 z-[9999] pointer-events-none">
@@ -97,12 +89,12 @@ export default function OpsAiLayer() {
                       if (actionType) {
                         window.dispatchEvent(new CustomEvent('bb_ai_action', { detail: { type: actionType, label: t.action?.label || t.message || '' } }))
                       } else {
-                        navigate('/ai', { state: { seedPrompt: t.action?.prompt || '' } })
+                        navigate('/ai', { state: { initialPrompt: t.action?.prompt || '' } })
                       }
                     }}
                     className="mt-2 inline-flex items-center gap-2 rounded-xl bg-slate-900 px-3 py-2 text-xs font-semibold text-white transition hover:bg-slate-800"
                   >
-                    {t.action?.type === 'investigate_fraud' ? 'Open Ops AI' : 'Take Action'}
+                    {t.action?.type === 'investigate_fraud' ? 'Open Assistant' : 'Open Guide'}
                   </button>
                 )}
               </div>
@@ -127,14 +119,14 @@ export default function OpsAiLayer() {
           navigate('/ai', { state: { from: routeKey } })
         }}
         className="pointer-events-auto relative inline-flex items-center gap-3 rounded-full bg-slate-900 px-4 py-3 text-white shadow-[0_24px_60px_rgba(15,23,42,0.25)] transition hover:bg-slate-800"
-        title="Open Boroko Ops AI"
+        title="Open Boroko Assistant"
       >
         <div className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-white/10">
           <Sparkles size={16} />
         </div>
         <div className="text-left">
-          <div className="text-xs font-semibold uppercase tracking-[0.18em] text-white/70">Ops AI</div>
-          <div className="text-sm font-semibold leading-tight">Assistant is live</div>
+          <div className="text-xs font-semibold uppercase tracking-[0.18em] text-white/70">Assistant</div>
+          <div className="text-sm font-semibold leading-tight">Local guide is live</div>
         </div>
         {badge > 0 && (
           <div className="absolute -top-1 -right-1 h-6 min-w-6 px-1.5 rounded-full bg-rose-600 text-white text-xs font-bold inline-flex items-center justify-center shadow">

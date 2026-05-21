@@ -1,9 +1,24 @@
 import assert from 'node:assert/strict'
-import { readFile } from 'node:fs/promises'
+import { readFile, readdir } from 'node:fs/promises'
 import { isFinancialSyncItem, pickNextReadySyncItemIndex } from '../src/shared/syncQueue.js'
 
 async function read(path) {
   return readFile(new URL(`../${path}`, import.meta.url), 'utf8')
+}
+
+async function readTree(path) {
+  const root = new URL(`../${path}/`, import.meta.url)
+  const entries = await readdir(root, { withFileTypes: true })
+  const sources = []
+  for (const entry of entries) {
+    const childPath = `${path}/${entry.name}`
+    if (entry.isDirectory()) {
+      sources.push(...await readTree(childPath))
+    } else if (entry.isFile() && entry.name.endsWith('.js')) {
+      sources.push(await read(childPath))
+    }
+  }
+  return sources
 }
 
 async function run() {
@@ -14,7 +29,8 @@ async function run() {
   assert.match(preload, /saveSupportBundle:\s*\(limit\)\s*=>\s*ipcRenderer\.invoke\('reports:saveSupportBundle', limit\)/)
 
   const mainIndex = await read('src/main/index.js')
-  const database = await read('src/main/database.js')
+  const databaseFacade = await read('src/main/database.js')
+  const database = [databaseFacade, ...(await readTree('src/main/domains'))].join('\n')
   assert.match(mainIndex, /ipcMain\.handle\('reports:snapshot'/)
   assert.match(mainIndex, /ipcMain\.handle\('reports:saveSupportBundle'/)
   assert.match(mainIndex, /function buildReportExportFilename\(/)
@@ -50,7 +66,7 @@ async function run() {
   assert.match(database, /export async function getInventoryItemById\(/)
   assert.match(database, /export async function getSupplyItemById\(/)
   assert.match(database, /export async function getPosMenuItemById\(/)
-  assert.match(database, /import \{ FINANCIAL_SYNC_TABLES, isFinancialSyncItem, pickNextReadySyncItemIndex \} from '\.\.\/shared\/syncQueue\.js'/)
+  assert.match(database, /FINANCIAL_SYNC_TABLES[\s\S]{0,120}isFinancialSyncItem[\s\S]{0,120}pickNextReadySyncItemIndex[\s\S]{0,120}shared\/syncQueue\.js/)
   assert.match(database, /Blocked: unresolved sync dependency cycle/)
   assert.match(database, /failedQueueIds\.has\(item\._depends_on\)/)
   assert.match(mainIndex, /assertResourceBelongsToCurrentLodge\('User', id, db\.getUserById\)/)
@@ -67,7 +83,8 @@ async function run() {
   const panel = await read('src/renderer/src/components/SystemHealthPanel.jsx')
   assert.match(panel, /financialValidationAlerts\?\.\(8\)/)
   assert.match(panel, /criticalErrors\?\.\(8\)/)
-  assert.match(panel, /Export Bundle/)
+  assert.match(panel, /getSupportBundle\?\.\(25\)/)
+  assert.match(panel, /Send Report/)
   assert.match(panel, /This device only — does not reflect PWA\/browser queue state/)
   assert.match(panel, /Validation Alerts/)
   assert.match(panel, /Critical Error Log/)
@@ -97,7 +114,7 @@ async function run() {
     'Staff user creation could not sync because this lodge is above the current plan user limit after a downgrade. Upgrade or reduce staff users, then retry.'
   )
 
-  assert.match(database, /'pos-orders':\s*\(\)\s*=>\s*supabase[\s\S]*?from\('pos_orders'\)/)
+  assert.match(database, /'pos-orders':\s*\(\)\s*=>\s*(state\.)?supabase[\s\S]*?from\('pos_orders'\)/)
   assert.match(database, /function markClearedSyncItemForManualReview\(/)
   assert.match(database, /_sync_state:\s*'manual_review_required'/)
   assert.match(database, /type:\s*isFinancial\s*\?\s*'financial_dead_letter_cleared'\s*:\s*'dead_letter_cleared'/)
@@ -122,8 +139,8 @@ async function run() {
   assert.match(database, /shouldRefreshInventory = true/)
   assert.match(database, /inventory_item_id:\s*item\.inventory_item_id\s*\|\|\s*null/)
   assert.match(database, /depletion_qty:\s*Math\.max\(1,\s*Number\(item\.depletion_qty \|\| 1\)\)/)
-  assert.match(database, /'inventory-items':\s*\(\)\s*=>\s*supabase[\s\S]*?from\('inventory_items'\)/)
-  assert.match(database, /'inventory-purchases':\s*\(\)\s*=>\s*supabase[\s\S]*?from\('inventory_purchases'\)/)
+  assert.match(database, /'inventory-items':\s*\(\)\s*=>\s*(state\.)?supabase[\s\S]*?from\('inventory_items'\)/)
+  assert.match(database, /'inventory-purchases':\s*\(\)\s*=>\s*(state\.)?supabase[\s\S]*?from\('inventory_purchases'\)/)
   assert.match(database, /refreshCache\(\s*'inventory-items',\s*'inventory-purchases'\s*\)\.catch\(\(\) => \{\}\)/)
   assert.match(database, /export async function getInventoryItems\(\)\s*\{[\s\S]*?await checkOnline\(\)/)
   assert.match(database, /getInventoryItems received empty live result; using cached inventory items instead/)

@@ -1999,10 +1999,22 @@ app.whenReady().then(async () => {
       const message = String(payload?.message || '').trim()
       if (!message) return { success: false, error: 'Message is required.' }
       const model = payload?.model || null
-      const result = await ai.turn({ message, model })
+      const route = String(payload?.route || '').trim() || null
+      const threadId = String(payload?.threadId || '').trim() || 'default'
+      const uiContext = payload?.uiContext && typeof payload.uiContext === 'object' ? payload.uiContext : null
+      const result = await ai.turn({ message, model, route, threadId, uiContext })
       return { success: true, ...result }
     } catch (e) {
       return { success: false, error: e.message || 'AI request failed.' }
+    }
+  })
+
+  ipcMain.handle('ai:catalog', async () => {
+    try {
+      await requireCapability('dashboard.view')
+      return { success: true, items: ai.getLocalCatalog() }
+    } catch (e) {
+      return { success: false, error: e.message || 'Could not load assistant topics.', items: [] }
     }
   })
 
@@ -4444,7 +4456,7 @@ app.whenReady().then(async () => {
     catch (e) { return { success: false, code: e.code || 'setup_failed', error: e.message || 'Setup failed.' } }
   })
   ipcMain.handle('sync:getStatus', async () => {
-    try { return await db.getSyncStatus() }
+    try { return await Promise.resolve(db.getSyncStatus()) }
     catch { return { pending: 0, failed: 0, isOnline: false } }
   })
   ipcMain.handle('sync:getDetails', async () => {

@@ -28,6 +28,7 @@ import borokoLogo from '../assets/boroko-bookings-logo.svg'
 import borokoLogoDark from '../assets/boroko-bookings-logo-dark.png'
 import CommandPalette from './CommandPalette'
 import OfflineNotice from './shared/OfflineNotice'
+import OpsAiLayer from './shared/OpsAiLayer'
 import { ALL_NAV, NAV_GROUPS, getDesktopNavItems } from '../navigation/desktopNav'
 import {
   SUBSCRIPTION_PLAN_ORDER,
@@ -502,6 +503,7 @@ export default function Layout() {
   }, [isBrowserPreview, user?.id])
 
   const bizType = settings?.business_type || 'lodge'
+  const assistantEnabled = settings?.assistant_enabled === true
 
   useEffect(() => {
     const handleQuickSearch = (event) => {
@@ -515,7 +517,9 @@ export default function Layout() {
     return () => window.removeEventListener('keydown', handleQuickSearch)
   }, [])
 
-  const navItems = useMemo(() => getDesktopNavItems(bizType, access), [bizType, access])
+  const navItems = useMemo(() => (
+    getDesktopNavItems(bizType, access).filter((item) => assistantEnabled || item.to !== '/ai')
+  ), [bizType, access, assistantEnabled])
   const standaloneTop = useMemo(
     () => navItems.filter((item) => !item.group && item.to !== '/settings'),
     [navItems]
@@ -967,6 +971,20 @@ export default function Layout() {
               </div>
 
               <div className="ml-auto flex shrink-0 items-center justify-end gap-2">
+                {assistantEnabled && (
+                  <button
+                    type="button"
+                    onClick={() => navigateWithGuard('/ai', { state: { initialPrompt: `What can I do on ${activeNavItem?.label || 'this screen'}?`, sourceRoute: location.pathname, sourceLabel: activeNavItem?.label || 'this screen' } })}
+                    className="group inline-flex h-10 items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-600 px-3 text-left text-white shadow-sm transition-all hover:bg-emerald-700 hover:shadow-md"
+                    title="Ask Boroko Assistant"
+                  >
+                    <Sparkles size={16} className="text-emerald-50" />
+                    <span className="hidden text-sm font-semibold lg:inline">Ask</span>
+                    <span className="hidden rounded-lg border border-white/20 bg-white/12 px-2 py-1 text-[10px] font-bold text-white/85 md:inline-flex">
+                      Local
+                    </span>
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => setPaletteOpen(true)}
@@ -1100,6 +1118,8 @@ export default function Layout() {
         onSelect={handlePaletteSelect}
         currentPath={location.pathname}
       />
+
+      {assistantEnabled && <OpsAiLayer />}
 
       {/* Mandatory Backup Block */}
       {backupStatus.overdue && location.pathname !== '/settings' && (

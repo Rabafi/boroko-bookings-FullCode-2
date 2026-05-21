@@ -86,6 +86,7 @@ async function run() {
 
   test('SUPPORTED_PROVIDERS set exists with correct values', () => {
     assert.match(aiOrchestrator, /SUPPORTED_PROVIDERS/, 'Should define SUPPORTED_PROVIDERS set')
+    assert.match(aiOrchestrator, /'local'/, 'Should include local')
     assert.match(aiOrchestrator, /'deepseek'/, 'Should include deepseek')
     assert.match(aiOrchestrator, /'gemini'/, 'Should include gemini')
     assert.match(aiOrchestrator, /'opencode'/, 'Should include opencode')
@@ -98,11 +99,11 @@ async function run() {
 
   test('resolveProvider returns safe error for unsupported provider', () => {
     assert.match(aiOrchestrator, /Unsupported AI provider configured/, 'Should reject unsupported providers with friendly message')
-    assert.match(aiOrchestrator, /Please set BOROKO_AI_PROVIDER to deepseek, gemini, opencode/, 'Should list supported providers in error')
+    assert.match(aiOrchestrator, /Please set BOROKO_AI_PROVIDER to local, deepseek, gemini, opencode/, 'Should list supported providers in error')
   })
 
-  test('resolveProvider defaults to gemini when BOROKO_AI_PROVIDER is unset', () => {
-    assert.match(aiOrchestrator, /if\s*\(!raw\)\s*return\s*'gemini'/, 'Unset provider should default to gemini')
+  test('resolveProvider defaults to local when BOROKO_AI_PROVIDER is unset', () => {
+    assert.match(aiOrchestrator, /if\s*\(!raw\)\s*return\s*'local'/, 'Unset provider should default to local assistant')
   })
 
   test('aiGenerate uses resolveProvider and has explicit switch/case routing', () => {
@@ -162,8 +163,8 @@ async function run() {
     assert.match(aiOrchestrator, /needs an internet connection/, 'Friendly offline message should be present')
   })
 
-  test('Offline message says Boroko still works offline', () => {
-    assert.match(aiOrchestrator, /Boroko can still work offline/, 'Should mention Boroko works offline')
+  test('Offline message says local assistant still works offline', () => {
+    assert.match(aiOrchestrator, /local app-help questions offline/, 'Should mention local app help still works offline')
   })
 
   test('AI orchestrator does not write to sync queue', () => {
@@ -407,6 +408,9 @@ async function run() {
     const approved = new Set([
       'get_attention', 'get_today_revenue', 'list_unpaid_bookings', 'get_unpaid_summary',
       'detect_payment_anomalies', 'get_daily_briefing', 'get_overdue_checkouts',
+      'get_revenue_comparison', 'get_room_availability', 'get_room_rate', 'search_guest', 'lookup_booking',
+      'get_occupancy_forecast', 'get_low_stock_overview', 'get_pending_online_requests',
+      'get_backup_status', 'get_handover_report', 'get_sync_impact', 'get_maintenance_satisfaction_risk', 'get_operational_cleanliness_audit',
       'create_booking', 'check_in', 'check_out', 'record_payment', 'bulk_record_payment', 'bulk_check_out'
     ])
     const newTools = toolNames.filter(n => !approved.has(n))

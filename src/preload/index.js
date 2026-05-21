@@ -372,6 +372,7 @@ const api = {
   },
   ai: {
     turn: (payload) => ipcRenderer.invoke('ai:turn', payload),
+    catalog: () => ipcRenderer.invoke('ai:catalog'),
     execute: (payload) => ipcRenderer.invoke('ai:execute', payload),
     collections: {
       preview: (payload) => ipcRenderer.invoke('ai:collections:preview', payload),

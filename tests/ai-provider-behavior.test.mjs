@@ -44,19 +44,20 @@ function test(name, fn) {
 // code in isolation. This simulates what happens at module load time.
 
 const PROVIDER_RESOLVE_CODE = `
-const SUPPORTED_PROVIDERS = new Set(['deepseek', 'gemini', 'opencode', 'zen']);
+const SUPPORTED_PROVIDERS = new Set(['local', 'deepseek', 'gemini', 'opencode', 'zen']);
 
 function resolveProvider() {
   const raw = process.env.BOROKO_AI_PROVIDER;
-  if (!raw) return 'gemini';
+  if (!raw) return 'local';
   const normalized = raw.trim().toLowerCase();
   if (!SUPPORTED_PROVIDERS.has(normalized)) {
-    throw new Error('Unsupported AI provider configured: ' + raw.trim() + '. Please set BOROKO_AI_PROVIDER to deepseek, gemini, opencode, or another supported provider.');
+    throw new Error('Unsupported AI provider configured: ' + raw.trim() + '. Please set BOROKO_AI_PROVIDER to local, deepseek, gemini, opencode, or another supported provider.');
   }
   return normalized;
 }
 
 const PROVIDER_DEFAULT_MODELS = {
+  local: 'boroko-local-assistant',
   gemini: 'gemini-2.5-flash',
   opencode: 'opencode-zen',
   zen: 'opencode-zen',
@@ -66,7 +67,7 @@ const PROVIDER_DEFAULT_MODELS = {
 function getProviderModel(provider, requestedModel) {
   if (requestedModel) return requestedModel;
   if (process.env.BOROKO_AI_MODEL) return process.env.BOROKO_AI_MODEL;
-  return PROVIDER_DEFAULT_MODELS[provider] || 'gemini-2.5-flash';
+  return PROVIDER_DEFAULT_MODELS[provider] || 'boroko-local-assistant';
 }
 
 try {
@@ -81,7 +82,7 @@ try {
 const ERROR_NORM_CODE = `
 function normalizeProviderError(err, statusCode) {
   if (err && /fetch failed|ECONNRESET|ENOTFOUND|ETIMEDOUT|AbortError/i.test(err.message || err)) {
-    return 'The AI assistant needs an internet connection. Boroko can still work offline, but AI chat is unavailable until you reconnect.';
+    return 'The cloud AI provider needs an internet connection. Boroko Assistant can still answer local app-help questions offline.';
   }
   if (statusCode) {
     if (statusCode === 401 || statusCode === 403) {
@@ -110,12 +111,12 @@ console.log(JSON.stringify({
 console.log('\n=== AI Provider Behavioral Tests ===\n')
 console.log('--- Provider Resolution ---\n')
 
-// 1. Unset provider → defaults to gemini
-test('Unset BOROKO_AI_PROVIDER defaults to gemini', () => {
+// 1. Unset provider → defaults to local
+test('Unset BOROKO_AI_PROVIDER defaults to local assistant', () => {
   const result = runNode(PROVIDER_RESOLVE_CODE, {})
   const parsed = JSON.parse(result.stdout)
-  assert.equal(parsed.provider, 'gemini')
-  assert.equal(parsed.model, 'gemini-2.5-flash')
+  assert.equal(parsed.provider, 'local')
+  assert.equal(parsed.model, 'boroko-local-assistant')
   assert.equal(result.exitCode, 0)
 })
 
@@ -202,7 +203,7 @@ test('fetch failed → offline message', () => {
   const result = runNode(ERROR_NORM_CODE, {})
   const parsed = JSON.parse(result.stdout)
   assert.match(parsed.offline, /internet connection/)
-  assert.match(parsed.offline, /Boroko can still work offline/)
+  assert.match(parsed.offline, /local app-help questions offline/)
 })
 
 test('401 → auth failure message', () => {

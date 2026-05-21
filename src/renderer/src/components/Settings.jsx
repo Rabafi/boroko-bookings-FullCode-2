@@ -568,6 +568,7 @@ export default function Settings() {
       const res = await window.api.settings.save(form)
       if (res.success) {
         setGlobalSettings(res.data)
+        window.dispatchEvent(new CustomEvent('bb_ai_toggle'))
         savedFormSnapshotRef.current = JSON.parse(JSON.stringify(res.data))
         setSaved(true)
         setTimeout(() => setSaved(false), 3000)
@@ -713,6 +714,34 @@ export default function Settings() {
           ════════════════════════════════════════════════════════════════ */}
       {activeTab === 'general' && (
         <>
+          {/* ── Assistant Visibility ────────────────────────────────────── */}
+          <div className="bg-white rounded-xl shadow-sm p-5 mb-6 flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 bg-emerald-50 rounded-lg flex items-center justify-center">
+                <Sparkles size={17} className="text-emerald-600" />
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-gray-800">Boroko Assistant</p>
+                <p className="text-xs text-gray-400">Show Assistant in the sidebar, header, and floating guide button</p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => set('assistant_enabled', form?.assistant_enabled !== true)}
+              className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${
+                form?.assistant_enabled === true ? 'bg-green-600' : 'bg-gray-200'
+              }`}
+              aria-pressed={form?.assistant_enabled === true}
+              aria-label="Toggle Boroko Assistant"
+            >
+              <span
+                className={`inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform ${
+                  form?.assistant_enabled === true ? 'translate-x-6' : 'translate-x-1'
+                }`}
+              />
+            </button>
+          </div>
+
           {/* ── Dark Mode ───────────────────────────────────────────────── */}
           <div className="bg-white rounded-xl shadow-sm p-5 mb-6 flex items-center justify-between">
             <div className="flex items-center gap-3">

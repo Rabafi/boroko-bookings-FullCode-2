@@ -48,6 +48,7 @@ const DayUse      = lazy(() => import('./components/DayUse'))
 const DataManagement = lazy(() => import('./components/DataManagement'))
 const Quotations     = lazy(() => import('./components/Quotations'))
 const BookingInvoices = lazy(() => import('./components/BookingInvoices'))
+const OpsAi = lazy(() => import('./components/OpsAi'))
 
 // ── Loading fallback for lazy routes ─────────────────────────────────────────
 function PageLoader() {
@@ -1358,7 +1359,7 @@ export default function App() {
                 <Route path="pos"        element={<UpgradeWall feature="pos">       <Lazy><POS /></Lazy>        </UpgradeWall>} />
                 <Route path="inventory"  element={<UpgradeWall feature="inventory"> <Lazy><Inventory /></Lazy>  </UpgradeWall>} />
                 <Route path="supplies"   element={<UpgradeWall feature="supplies">  <Lazy><RoomSupplies /></Lazy></UpgradeWall>} />
-                <Route path="ai"         element={<Navigate to="/" replace />} />
+                <Route path="ai"         element={<Lazy><OpsAi /></Lazy>} />
               </Route>
               <Route path="*" element={<Navigate to={user ? '/' : preAuthFallbackPath} replace />} />
             </Routes>
