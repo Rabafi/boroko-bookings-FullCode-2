@@ -176,6 +176,7 @@ async function readRpcJson(rpcName, params, fallbackMessage) {
 async function buildDashboardSnapshotLegacy(lodgeId, today = formatDate(new Date())) {
   const monthStart = today.slice(0, 7) + '-01'
   const todayDate = new Date(`${today}T00:00:00`)
+  const monthEnd = formatDate(new Date(todayDate.getFullYear(), todayDate.getMonth() + 1, 0))
   const monthEndExclusive = formatDate(new Date(todayDate.getFullYear(), todayDate.getMonth() + 1, 1))
   const nextWeek = formatDate(addDays(today, 7))
   const previousWeek = Array.from({ length: 7 }, (_, index) => formatDate(addDays(today, index - 6)))
@@ -911,7 +912,7 @@ export async function listStaff(lodgeId) {
     lodgeId,
     key: 'staff',
     fallback: [],
-    fetcher: () => safeSelect(supabase.from('users').select('id, name, email, role, created_at, lodge_id').eq('lodge_id', lodgeId).order('name'), [])
+    fetcher: () => safeSelect(supabase.from('users').select('id, name, email, role, status, created_at, lodge_id, last_sign_in_at, last_desktop_sign_in_at, last_pwa_sign_in_at, last_activity_at, invite_sent_at, password_updated_at, pwa_enabled, pwa_password_set_at, pwa_disabled_reason, allowed_outlet_ids, capability_overrides').eq('lodge_id', lodgeId).order('name'), [])
   })
 }
 

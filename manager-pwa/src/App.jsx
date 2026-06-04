@@ -11,9 +11,9 @@ import { getRuntimeMeta, getUnreadPwaNotificationCount, listPwaNotifications, ma
 
 import Login from './pages/Login'
 import ResetPassword from './pages/ResetPassword'
-import Dashboard from './pages/Dashboard'
 import borokoLogoDark from './assets/boroko-bookings-logo-dark.png'
 
+const Dashboard = lazy(() => import('./pages/Dashboard'))
 const Rooms = lazy(() => import('./pages/Rooms'))
 const Bookings = lazy(() => import('./pages/Bookings'))
 const Reports = lazy(() => import('./pages/Reports'))
@@ -624,7 +624,7 @@ function ManagerPwaPlanLocked() {
 
 function AuthenticatedShell({ alertCount, dark, setDark, setAlertCount, notificationCount, setNotificationCount }) {
   const { user } = useAuth()
-  const { entitlement, loading: entitlementLoading } = useFeatures()
+  const { entitlement, features, loading: entitlementLoading } = useFeatures()
   const lastUserRef = useRef(null)
 
   useEffect(() => {
@@ -636,6 +636,72 @@ function AuthenticatedShell({ alertCount, dark, setDark, setAlertCount, notifica
       lastUserRef.current = null
     }
   }, [user?.id])
+
+  useEffect(() => {
+    if (!user?.lodge_id) {
+      setAlertCount(0)
+      return undefined
+    }
+
+    let cancelled = false
+    const inventoryEnabled = Object.keys(features || {}).length === 0 || features?.inventory !== false
+
+    const safeRows = async (query) => {
+      try {
+        const { data, error } = await query
+        if (error) return []
+        return Array.isArray(data) ? data : []
+      } catch {
+        return []
+      }
+    }
+
+    const refreshAlertCount = async () => {
+      const today = new Date().toISOString().slice(0, 10)
+      const blockedSince = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
+      const lodgeId = user.lodge_id
+
+      const [overdue, unpaid, maintenance, stock, blockedDemand] = await Promise.all([
+        safeRows(supabase.from('bookings').select('id').eq('lodge_id', lodgeId).eq('status', 'checked_in').lt('check_out', today)),
+        safeRows(supabase.from('bookings').select('id').eq('lodge_id', lodgeId).in('payment_status', ['unpaid', 'partial']).neq('status', 'cancelled')),
+        safeRows(supabase.from('maintenance_tickets').select('id').eq('lodge_id', lodgeId).eq('status', 'open')),
+        inventoryEnabled
+          ? safeRows(supabase.from('inventory_items').select('id, quantity, current_stock, reorder_level').eq('lodge_id', lodgeId))
+          : Promise.resolve([]),
+        safeRows(
+          supabase
+            .from('rejected_online_bookings')
+            .select('id')
+            .eq('lodge_id', lodgeId)
+            .eq('rejection_reason', 'maintenance')
+            .gte('attempted_at', blockedSince)
+        )
+      ])
+
+      if (cancelled) return
+
+      const lowStock = stock.filter((item) => {
+        const reorder = Number(item.reorder_level ?? 0)
+        const current = Number(item.current_stock ?? item.quantity ?? 0)
+        return reorder > 0 && current <= reorder
+      })
+
+      setAlertCount(overdue.length + unpaid.length + maintenance.length + lowStock.length + blockedDemand.length)
+    }
+
+    refreshAlertCount()
+    const interval = window.setInterval(refreshAlertCount, 60_000)
+    const handleVisible = () => {
+      if (document.visibilityState === 'visible') refreshAlertCount()
+    }
+    document.addEventListener('visibilitychange', handleVisible)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(interval)
+      document.removeEventListener('visibilitychange', handleVisible)
+    }
+  }, [features, setAlertCount, user?.lodge_id])
 
   if (entitlementLoading) {
     return (
@@ -676,7 +742,7 @@ function AuthenticatedShell({ alertCount, dark, setDark, setAlertCount, notifica
 
       <div className="flex-1 pwa-page-shell">
         <Routes>
-          <Route path="/" element={<Dashboard />} />
+          <Route path="/" element={<Suspense fallback={<PageLoader />}><Dashboard /></Suspense>} />
           <Route path="/rooms" element={<Suspense fallback={<PageLoader />}><Rooms /></Suspense>} />
           <Route path="/bookings" element={<Suspense fallback={<PageLoader />}><Bookings /></Suspense>} />
           <Route path="/reports" element={<Suspense fallback={<PageLoader />}><Guard capability="reports.view"><Reports /></Guard></Suspense>} />

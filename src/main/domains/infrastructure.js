@@ -25,6 +25,7 @@ import {
   getQueuedPosOrderId,
   getSyncItemBookingId,
   getSyncItemScope,
+  isInventoryAdjustmentQueueItem,
   isInventoryItemQueueItem,
   isPosCreateOrderQueueItem,
   isPosVoidQueueItem,
@@ -49,6 +50,7 @@ import {
   getUserById,
   getUsers
 } from './users.js';
+import { initializeProfileRuntime } from './profiles.js';
 import {
   applyOfflinePosInventoryReservation,
   applyQueuedPosInventoryReservations,
@@ -118,6 +120,7 @@ export {
   getQueuedPosOrderId,
   getSyncItemBookingId,
   getSyncItemScope,
+  isInventoryAdjustmentQueueItem,
   isInventoryItemQueueItem,
   isPosCreateOrderQueueItem,
   isPosVoidQueueItem,
@@ -273,15 +276,6 @@ export {
   getAuthRedirectUrl
 } from './authClients.js';
 
-// ─── PROFILES / LEGACY LODGE ID ──────────────────────────────────────────────
-// Older builds stored a single lodge ID and one shared cache directory.
-// Newer builds store multiple lodge profiles on one PC and activate one at a
-// time by swapping the runtime lodgeId/cacheDir underneath existing functions.
-
-function initializeProfileRuntime() {
-  return import('./' + 'profiles.js').then((module) => module.initializeProfileRuntime());
-}
-
 // Returns the admin (service-role) Supabase client, or throws a clear error if
 // the SUPABASE_SERVICE_ROLE_KEY env var was not set on this machine.
 // Use this in any function that queries across all lodges (Command Central only).
@@ -307,6 +301,7 @@ export {
   createSessionNonce,
   getCurrentUser,
   logoutCurrentUser,
+  restoreCurrentTrustedSession,
   restoreSavedTrustedSession,
   restoreUserSession,
   setCurrentUser,
@@ -438,6 +433,7 @@ function queueItemNeedsInventoryRefresh(item) {
   // create_inventory_item: always refresh so the local pending-sync item is
   // replaced by the definitive server row (with the confirmed UUID).
   if (item?.type === 'rpc' && item?.table === 'create_inventory_item') return true;
+  if (isInventoryAdjustmentQueueItem(item)) return true;
   if (isPosCreateOrderQueueItem(item) || isPosVoidQueueItem(item)) {
     const items = Array.isArray(item?.data?.payload?.items) ? item.data.payload.items : [];
     return items.some((entry) => !!entry?.menu_item_id || !!entry?.inventory_item_id);
@@ -749,6 +745,17 @@ async function _runSyncQueue() {
           });
         }
       }
+      if (isInventoryAdjustmentQueueItem(item)) {
+        const inventoryItemId = item?.data?.p_item_id || null;
+        if (inventoryItemId) {
+          console.warn('[INVENTORY SYNC] Failed adjust_inventory_stock', inventoryItemId, errorMessage);
+          patchCachedInventoryItemSyncState(inventoryItemId, {
+            _pending_sync: true,
+            _sync_state: 'failed',
+            _sync_error: errorMessage
+          });
+        }
+      }
       // P1-13: mark rejected optimistic state for update/payment/status RPCs
       if (item.type === 'rpc' && ['update_booking', 'update_booking_status', 'update_booking_payment', 'add_booking_charge', 'delete_booking_charge', 'approve_booking_refund'].includes(item.table)) {
         const bookingId = item.data?.p_booking_id || item.data?.p_id || null;
@@ -925,6 +932,18 @@ async function _runSyncQueue() {
             _synced_at: new Date().toISOString()
           });
           console.log('[INVENTORY SYNC] Synced inventory item', inventoryItemId);
+        }
+      }
+      if (isInventoryAdjustmentQueueItem(item)) {
+        const inventoryItemId = item?.data?.p_item_id || null;
+        if (inventoryItemId) {
+          patchCachedInventoryItemSyncState(inventoryItemId, {
+            _pending_sync: false,
+            _sync_state: 'synced',
+            _sync_error: null,
+            _synced_at: new Date().toISOString()
+          });
+          console.log('[INVENTORY SYNC] Synced stock adjustment', inventoryItemId);
         }
       }
       if (item.type === 'update' && item.table === 'pool_day_use') {

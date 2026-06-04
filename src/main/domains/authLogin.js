@@ -10,12 +10,14 @@ import {
 import { readCache } from './cacheStore.js';
 import { checkOnline } from './connectivity.js';
 import { restoreSavedTrustedSession } from './authSession.js';
+import { touchUserPresence } from './users.js';
 import {
   isBackendAuthSchemaError,
   normalizeEmail,
   normalizeLodgeId,
   normalizeUserRecord
 } from './shared.js';
+import { normalizeStaffStatus } from '../../shared/accessControl.js';
 
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_KEY;
 
@@ -50,9 +52,20 @@ export function normalizeAuthContractRow(row) {
     id: row.id || null,
     email: normalizeEmail(row.email),
     role: row.role || null,
+    status: normalizeStaffStatus(row.status),
     lodge_id: normalizeLodgeId(row.lodge_id),
     name: row.name || '',
     password_hash: row.password_hash || null,
+    last_sign_in_at: row.last_sign_in_at || null,
+    last_desktop_sign_in_at: row.last_desktop_sign_in_at || null,
+    last_pwa_sign_in_at: row.last_pwa_sign_in_at || null,
+    last_activity_at: row.last_activity_at || null,
+    invite_sent_at: row.invite_sent_at || null,
+    password_updated_at: row.password_updated_at || null,
+    capability_overrides:
+      row.capability_overrides && typeof row.capability_overrides === 'object' && !Array.isArray(row.capability_overrides)
+        ? row.capability_overrides
+        : {},
     session_token: row.session_token || null,
     session_expires_at: row.session_expires_at || null
   };
@@ -134,6 +147,10 @@ export function toSafeUser(user) {
     ...safeUser
   } = user;
   return safeUser;
+}
+
+function isStaffAccountActive(user) {
+  return normalizeStaffStatus(user?.status) === 'active';
 }
 
 export async function fetchAuthenticateUserContract(emailLower) {
@@ -521,6 +538,16 @@ async function authenticateWithSupabaseAuth(emailLower, password) {
       };
     }
 
+    if (!isStaffAccountActive(normalized)) {
+      return {
+        user: null,
+        code: 'account_inactive',
+        error: normalized.status === 'archived'
+          ? 'This staff account has been archived. Ask an admin to restore it before signing in.'
+          : 'This staff account is suspended. Ask an admin to reactivate it before signing in.'
+      };
+    }
+
     return {
       user: toSafeUser(normalized),
       source: 'supabase_auth',
@@ -685,6 +712,12 @@ export async function loginUser(email, password) {
       } catch {
         if (!online.user.allowed_outlet_ids) online.user.allowed_outlet_ids = [];
       }
+      await touchUserPresence({
+        userId: online.user.id,
+        lodgeId: state.lodgeId,
+        sessionType: 'desktop',
+        markSignIn: true
+      });
       if (online.source !== 'supabase_auth') {
         await createSupabaseAuthUserForStaff(emailLower, password);
       }

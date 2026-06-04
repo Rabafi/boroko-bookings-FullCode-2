@@ -1,3 +1,5 @@
+import { normalizeStaffStatus } from '../../shared/accessControl.js';
+
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export function normalizeEmail(email) {
@@ -19,7 +21,12 @@ export function normalizeUserRecord(user) {
     ...user,
     id: user.id || user.user_id || null,
     email,
-    lodge_id: normalizeLodgeId(user.lodge_id || user.lodgeId || null)
+    lodge_id: normalizeLodgeId(user.lodge_id || user.lodgeId || null),
+    status: normalizeStaffStatus(user.status),
+    capability_overrides:
+      user.capability_overrides && typeof user.capability_overrides === 'object' && !Array.isArray(user.capability_overrides)
+        ? user.capability_overrides
+        : {}
   };
 }
 

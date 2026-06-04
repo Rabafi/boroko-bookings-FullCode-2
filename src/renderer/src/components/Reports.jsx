@@ -808,9 +808,9 @@ export default function Reports() {
           ) : (
             <>
               {/* Summary cards */}
-              <div className="grid grid-cols-3 gap-4 mb-6">
+              <div className="grid gap-4 mb-6 sm:grid-cols-2 xl:grid-cols-4">
                 <SummaryCard icon={DollarSign} label="Total POS Revenue"
-                  value={`${currency} ${Number(posSales.total_revenue).toFixed(2)}`}
+                  value={`${currency} ${Number(posSales.net_revenue ?? posSales.total_revenue).toFixed(2)}`}
                   color="bg-green-50 text-green-600" />
                 <SummaryCard icon={ShoppingCart} label="Total Orders"
                   value={posSales.total_orders}
@@ -818,6 +818,21 @@ export default function Reports() {
                 <SummaryCard icon={TrendingUp} label="Avg Order Value"
                   value={`${currency} ${Number(posSales.avg_order).toFixed(2)}`}
                   color="bg-purple-50 text-purple-600" />
+                <SummaryCard icon={DollarSign} label="Gross Sales"
+                  value={`${currency} ${Number(posSales.gross_revenue ?? posSales.total_revenue).toFixed(2)}`}
+                  color="bg-slate-50 text-slate-700" />
+                <SummaryCard icon={DollarSign} label="Discounts"
+                  value={`${currency} ${Number(posSales.discount_total || 0).toFixed(2)}`}
+                  color="bg-emerald-50 text-emerald-700" />
+                <SummaryCard icon={DollarSign} label="Returns"
+                  value={`${currency} ${Number(posSales.returns_total || 0).toFixed(2)}`}
+                  color="bg-red-50 text-red-600" />
+                <SummaryCard icon={DollarSign} label="Tax/VAT"
+                  value={`${currency} ${Number(posSales.tax_total || 0).toFixed(2)}`}
+                  color="bg-amber-50 text-amber-700" />
+                <SummaryCard icon={DollarSign} label="Tips"
+                  value={`${currency} ${Number(posSales.tip_total || 0).toFixed(2)}`}
+                  color="bg-cyan-50 text-cyan-700" />
               </div>
 
               {/* Payment method breakdown */}
@@ -846,6 +861,20 @@ export default function Reports() {
                 </div>
               )}
 
+              {posSales.by_cashier && Object.keys(posSales.by_cashier).length > 0 && (
+                <div className="bb-card mb-6 p-5">
+                  <h2 className="mb-4 text-lg font-semibold tracking-[-0.02em] text-slate-800">By Operator</h2>
+                  <div className="space-y-2">
+                    {Object.entries(posSales.by_cashier).sort((a, b) => b[1] - a[1]).map(([cashier, amt]) => (
+                      <div key={cashier} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 text-sm">
+                        <span className="font-medium text-slate-700">{cashier}</span>
+                        <span className="font-semibold text-slate-900">{currency} {Number(amt).toFixed(2)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* Top selling items */}
               {posSales.top_items.length > 0 && (
                 <div className="bb-table-shell mb-6">
@@ -860,6 +889,7 @@ export default function Reports() {
                         <th className="px-5 py-3 text-left">Item</th>
                         <th className="px-5 py-3 text-right">Qty Sold</th>
                         <th className="px-5 py-3 text-right">Revenue</th>
+                        <th className="px-5 py-3 text-right">Margin</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
@@ -870,6 +900,9 @@ export default function Reports() {
                           <td className="px-5 py-3 text-right text-slate-600">{item.qty}</td>
                           <td className="px-5 py-3 text-right font-semibold text-slate-800">
                             {currency} {Number(item.revenue).toFixed(2)}
+                          </td>
+                          <td className="px-5 py-3 text-right font-semibold text-slate-800">
+                            {item.margin == null ? '—' : `${currency} ${Number(item.margin).toFixed(2)}`}
                           </td>
                         </tr>
                       ))}

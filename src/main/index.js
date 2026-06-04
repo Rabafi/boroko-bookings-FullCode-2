@@ -2,7 +2,7 @@ import { app, shell, BrowserWindow, ipcMain, Notification, dialog, Menu, nativeI
 import { join, dirname, basename } from 'path'
 import fs from 'fs'
 import crypto from 'crypto'
-import * as XLSX from 'xlsx'
+import * as XLSX from '@e965/xlsx'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import autoUpdaterPkg from 'electron-updater'
 const { autoUpdater } = autoUpdaterPkg
@@ -144,11 +144,27 @@ if (process.env.BOROKO_TEST_USER_DATA_DIR) {
 }
 
 // ── URL safety guard (used by shell:openExternal and setWindowOpenHandler) ────
-const ALLOWED_PROTOCOLS = ['https:', 'http:']
+const ALLOWED_EXTERNAL_PROTOCOLS = new Set(['https:', 'mailto:'])
 function isSafeExternalUrl(url) {
   try {
     const parsed = new URL(url)
-    return ALLOWED_PROTOCOLS.includes(parsed.protocol)
+    if (ALLOWED_EXTERNAL_PROTOCOLS.has(parsed.protocol)) return true
+    if (parsed.protocol !== 'http:') return false
+    return ['localhost', '127.0.0.1', '::1'].includes(parsed.hostname)
+  } catch {
+    return false
+  }
+}
+
+function isAllowedAppNavigation(url) {
+  try {
+    const parsed = new URL(url)
+    if (parsed.protocol === 'file:') return true
+    if (parsed.protocol === 'about:') return true
+    if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
+      return parsed.origin === new URL(process.env['ELECTRON_RENDERER_URL']).origin
+    }
+    return false
   } catch {
     return false
   }
@@ -801,15 +817,17 @@ function buildRoomSuppliesPdfHtml({
 const EDGE_FN_URL = process.env.SUPABASE_URL
   ? `${process.env.SUPABASE_URL}/functions/v1`
   : null
+const PUSH_FUNCTION_SECRET = process.env.PUSH_FUNCTION_SECRET || process.env.BOROKO_PUSH_FUNCTION_SECRET || ''
 
 function notifyLodge(lodgeId, title, body) {
   showDesktopNotification({ title, body, sound: true, flash: true })
-  if (!EDGE_FN_URL || !lodgeId) return
+  if (!EDGE_FN_URL || !lodgeId || !PUSH_FUNCTION_SECRET) return
   fetch(`${EDGE_FN_URL}/send-push`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY || ''}`
+      'Authorization': `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY || ''}`,
+      'x-boroko-function-secret': PUSH_FUNCTION_SECRET
     },
     body: JSON.stringify({ lodge_id: lodgeId, title, body })
   }).catch(() => {})
@@ -980,6 +998,7 @@ function createWindow() {
     height: 800,
     minWidth: 900,
     minHeight: 600,
+    maximized: true,
     show: false,
     autoHideMenuBar: true,
     title: 'Boroko Bookings',
@@ -991,7 +1010,8 @@ function createWindow() {
       // Security enforced via contextIsolation: true (contextBridge) + nodeIntegration: false.
       sandbox: false,
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      backgroundThrottling: false
     }
   })
 
@@ -1090,6 +1110,9 @@ function createWindow() {
     didShowWindow = true
     if (INPUT_FOCUS_DEBUG) console.log('[WINDOW] show requested:', reason)
     mainWindow.show()
+    if (!mainWindow.isMaximized()) mainWindow.maximize()
+    mainWindow.focus()
+    mainWindow.webContents.focus()
     closeSplashWindow()
   }
 
@@ -1168,6 +1191,36 @@ function createWindow() {
     if (INPUT_FOCUS_DEBUG) console.log('[WINDOW] show')
   })
 
+  try {
+    ipcMain.removeHandler('window:repairInputFocus')
+  } catch {
+    // handler may not exist yet
+  }
+  ipcMain.handle('window:repairInputFocus', async (event, reason = 'renderer-request') => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (!win || win.isDestroyed()) return { success: false, error: 'Window is not available.' }
+    try {
+      if (win.isMinimized()) win.restore()
+      if (!win.isVisible()) win.show()
+      win.focus()
+      win.webContents.focus()
+      // Send a dummy Shift key event to wake Chromium's compositor/input pipeline
+      // when the focused element appears focused but won't accept keyboard input.
+      // This is a known Electron-on-Windows issue that minimize/restore normally fixes,
+      // but this synthetic event achieves the same reset without visual disruption.
+      try {
+        win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Shift' })
+        win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Shift' })
+      } catch {
+        // non-fatal — may not be available in all Electron versions
+      }
+      if (INPUT_FOCUS_DEBUG) console.log('[WINDOW] repaired input focus:', reason)
+      return { success: true }
+    } catch (error) {
+      return { success: false, error: error?.message || 'Could not repair input focus.' }
+    }
+  })
+
   // Right-click context menu with cut/copy/paste/select-all
   mainWindow.webContents.on('context-menu', (_e, params) => {
     const items = []
@@ -1186,6 +1239,12 @@ function createWindow() {
   mainWindow.webContents.setWindowOpenHandler((details) => {
     if (isSafeExternalUrl(details.url)) shell.openExternal(details.url)
     return { action: 'deny' }
+  })
+
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    if (isAllowedAppNavigation(url)) return
+    event.preventDefault()
+    if (isSafeExternalUrl(url)) shell.openExternal(url)
   })
 
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
@@ -1576,12 +1635,27 @@ function buildFullExportWorkbook(data) {
   return wb
 }
 
+function formatFileSaveError(filePath, error) {
+  const message = error?.message || 'Unknown file save error.'
+  const code = error?.code ? ` (${error.code})` : ''
+  return `Cannot save file "${filePath}"${code}. ${message} Close the file if it is open, check that the folder is available, then try again.`
+}
+
+function writeWorkbookFile(wb, filePath) {
+  try {
+    fs.mkdirSync(dirname(filePath), { recursive: true })
+    const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' })
+    fs.writeFileSync(filePath, buffer)
+  } catch (error) {
+    throw new Error(formatFileSaveError(filePath, error))
+  }
+}
+
 async function exportAllDataWorkbookToPath(filePath, options = {}) {
   const data = await collectFullExportData(options)
   if (typeof options?.onProgress === 'function') options.onProgress({ stage: 'writing workbook' })
   const wb = buildFullExportWorkbook(data)
-  fs.mkdirSync(dirname(filePath), { recursive: true })
-  XLSX.writeFile(wb, filePath)
+  writeWorkbookFile(wb, filePath)
   if (typeof options?.onProgress === 'function') options.onProgress({ stage: 'complete' })
   return { success: true, filePath, sections: data.options.sections }
 }
@@ -1789,8 +1863,8 @@ app.whenReady().then(async () => {
         db.clearBackendSession()
         db.setCurrentUser(masterAdmin)
         db.runScheduledFinancialValidation('startup').catch(() => {})
-        const nonce = db.createSessionNonce(masterAdmin, password)
-        return { ok: true, code: null, user: masterAdmin, mode: 'online', nonce }
+        db.createSessionNonce(masterAdmin, password)
+        return { ok: true, code: null, user: masterAdmin, mode: 'online' }
       }
 
       // Regular user login
@@ -1801,15 +1875,14 @@ app.whenReady().then(async () => {
         console.log('[AUTH] SUCCESS')
         db.setCurrentUser(result.user)
         db.runScheduledFinancialValidation('startup').catch(() => {})
-        const nonce = db.createSessionNonce(result.user, password)
+        db.createSessionNonce(result.user, password)
 
         return {
           ok: true,
           code: null,
           user: result.user,
           mode: result.mode,
-          warning: result.warning,
-          nonce
+          warning: result.warning
         }
       }
 
@@ -1861,6 +1934,14 @@ app.whenReady().then(async () => {
       if (restored?.user) db.runScheduledFinancialValidation('startup').catch(() => {})
       return restored
     } catch { return { user: null, nonce: '' } }
+  })
+
+  ipcMain.handle('auth:restoreCurrentSession', () => {
+    try {
+      const restored = db.restoreCurrentTrustedSession?.()
+      if (restored) db.runScheduledFinancialValidation('startup').catch(() => {})
+      return restored
+    } catch { return null }
   })
 
   ipcMain.handle('auth:validateSession', async () => {
@@ -3152,6 +3233,15 @@ app.whenReady().then(async () => {
     return { success: true }
   })
 
+  ipcMain.handle('app:setTestOfflineMode', async (_, forceOffline) => {
+    if (app.isPackaged && !process.env.BOROKO_TEST_USER_DATA_DIR) {
+      return { success: false, error: 'Test offline mode is disabled in production builds.' }
+    }
+    process.env.BOROKO_TEST_FORCE_OFFLINE = forceOffline ? 'true' : 'false'
+    await db.checkOnline?.().catch(() => false)
+    return { success: true, forceOffline: process.env.BOROKO_TEST_FORCE_OFFLINE === 'true' }
+  })
+
   // ── Excel Export ──────────────────────────────────────────────────────────
   ipcMain.handle('reports:saveExcel', async (event, payload = {}) => {
     await requireCapability('reports.view')
@@ -3670,6 +3760,29 @@ app.whenReady().then(async () => {
       return { success: false, error: e.message }
     }
   })
+  ipcMain.handle('receipts:listPrinters', async (event) => {
+    try {
+      const win = BrowserWindow.fromWebContents(event.sender)
+      return await win.webContents.getPrintersAsync()
+    } catch {
+      return []
+    }
+  })
+  ipcMain.handle('receipts:printCurrent', async (event, options = {}) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    const deviceName = String(options?.deviceName || '').trim()
+    const silent = options?.silent === true && !!deviceName
+    return await new Promise((resolve) => {
+      win.webContents.print({
+        silent,
+        deviceName: deviceName || undefined,
+        printBackground: true,
+        margins: { marginType: 'none' }
+      }, (success, failureReason) => {
+        resolve(success ? { success: true } : { success: false, error: failureReason || 'Print failed.' })
+      })
+    })
+  })
 
   // ── Quotation PDF Save ────────────────────────────────────────────────────
   // quotationId is used to reliably auto-set status='sent' in the backend
@@ -3797,6 +3910,193 @@ app.whenReady().then(async () => {
       return { success: false, error: e.message }
     }
   })
+  ipcMain.handle('pos:createPartialReturnWithPin', async (_, data) => {
+    try {
+      await requireCapability('pos.view')
+      const outletFilter = db.getUserPosOutletFilter()
+      if (outletFilter !== null && data?.outlet_id && !outletFilter.includes(data.outlet_id)) {
+        return { success: false, error: 'Access denied: you do not have access to this outlet.' }
+      }
+      return await db.createPosPartialReturnWithPin(data)
+    } catch (e) {
+      console.error('pos:createPartialReturnWithPin failed:', e)
+      return { success: false, error: e.message }
+    }
+  })
+  ipcMain.handle('pos:getCashupSummary', async (_, filters) => {
+    try {
+      await requireCapability('pos.view')
+      const outletFilter = db.getUserPosOutletFilter()
+      if (outletFilter !== null && filters?.outlet_id && !outletFilter.includes(filters.outlet_id)) {
+        return { success: false, error: 'Access denied: you do not have access to this outlet.' }
+      }
+      return await db.getPosCashupSummary({ ...(filters || {}), outlet_filter: outletFilter })
+    } catch (e) {
+      return { success: false, error: e.message }
+    }
+  })
+  ipcMain.handle('pos:getCashups', async (_, limit, filters) => {
+    try {
+      await requireCapability('pos.view')
+      return await db.getPosCashups(limit, db.getUserPosOutletFilter(), filters || {})
+    } catch {
+      return []
+    }
+  })
+  ipcMain.handle('pos:createCashup', async (_, data) => {
+    try {
+      await requireCapability('pos.view')
+      const outletFilter = db.getUserPosOutletFilter()
+      if (outletFilter !== null && data?.outlet_id && !outletFilter.includes(data.outlet_id)) {
+        return { success: false, error: 'Access denied: you do not have access to this outlet.' }
+      }
+      return await db.createPosCashupSession({ ...(data || {}), outlet_filter: outletFilter })
+    } catch (e) {
+      return { success: false, error: e.message }
+    }
+  })
+  ipcMain.handle('pos:getTabs', async () => {
+    try { await requireCapability('pos.view'); return await db.getPosTabs() }
+    catch { return [] }
+  })
+  ipcMain.handle('pos:saveTab', async (_, data) => {
+    try {
+      await requireCapability('pos.manage')
+      const outletFilter = db.getUserPosOutletFilter()
+      if (outletFilter !== null && data?.outlet_id && !outletFilter.includes(data.outlet_id)) {
+        return { success: false, error: 'Access denied: you do not have access to this outlet.' }
+      }
+      return await db.savePosTab(data || {})
+    } catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:closeTab', async (_, id) => {
+    try { await requireCapability('pos.manage'); return await db.closePosTab(id) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:updateTabStatus', async (_, id, status) => {
+    try { await requireCapability('pos.manage'); return await db.updatePosTabStatus(id, status) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:overrideTableTab', async (_, data) => {
+    try { await requireCapability('pos.manage'); return await db.overridePosTableTab(data || {}) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:getTablesWithStatus', async (_, outletId) => {
+    try { await requireCapability('pos.view'); return await db.getPosTablesWithStatus(outletId || null) }
+    catch { return [] }
+  })
+  ipcMain.handle('pos:getActiveTableTab', async (_, tableName, outletId) => {
+    try { await requireCapability('pos.view'); return await db.getActivePosTableTab(tableName, outletId || null) }
+    catch { return null }
+  })
+  ipcMain.handle('pos:openTableSession', async (_, data) => {
+    try {
+      await requireCapability('pos.manage')
+      const outletFilter = db.getUserPosOutletFilter()
+      if (outletFilter !== null && data?.outlet_id && !outletFilter.includes(data.outlet_id)) {
+        return { success: false, error: 'Access denied: you do not have access to this outlet.' }
+      }
+      return await db.openPosTableSession(data || {})
+    } catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:getTables', async () => {
+    try { await requireCapability('pos.view'); return await db.getPosTables() }
+    catch { return [] }
+  })
+  ipcMain.handle('pos:saveTable', async (_, data) => {
+    try {
+      await requireCapability('pos.view')
+      const outletFilter = db.getUserPosOutletFilter()
+      if (outletFilter !== null && data?.outlet_id && !outletFilter.includes(data.outlet_id)) {
+        return { success: false, error: 'Access denied: you do not have access to this outlet.' }
+      }
+      return await db.savePosTable(data || {})
+    } catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:deleteTable', async (_, id) => {
+    try { await requireCapability('pos.view'); return await db.deletePosTable(id) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:getTickets', async (_, filters) => {
+    try { await requireCapability('pos.view'); return await db.getPosTickets(filters || {}) }
+    catch { return [] }
+  })
+  ipcMain.handle('pos:updateTicketStatus', async (_, id, status) => {
+    try { await requireCapability('pos.manage'); return await db.updatePosTicketStatus(id, status) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:getCurrentShift', async (_, outletId, cashierId) => {
+    try { await requireCapability('pos.view'); return await db.getCurrentPosShift(outletId || null, cashierId || null) }
+    catch { return null }
+  })
+  ipcMain.handle('pos:openShift', async (_, data) => {
+    try { await requireCapability('pos.manage'); return await db.openPosShift(data || {}) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:closeShift', async (_, data) => {
+    try { await requireCapability('pos.view'); return await db.closePosShift(data || {}) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:getHardwareSettings', async () => {
+    try { await requireCapability('pos.view'); return await db.getPosHardwareSettings() }
+    catch { return {} }
+  })
+  ipcMain.handle('pos:saveHardwareSettings', async (_, data) => {
+    try { await requireCapability('pos.view'); return await db.savePosHardwareSettings(data || {}) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:testHardware', async (_, kind) => {
+    try { await requireCapability('pos.view'); return await db.testPosHardware(kind || 'receipt') }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:getStaff', async () => {
+    try { await requireCapability('pos.view'); return await db.getPosStaff() }
+    catch { return [] }
+  })
+  ipcMain.handle('pos:selectStaffWithPin', async (_, data) => {
+    try { await requireCapability('pos.view'); return await db.selectPosStaffWithPin(data || {}) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:getModifierGroups', async () => {
+    try { await requireCapability('pos.view'); return await db.getPosModifierGroups() }
+    catch { return [] }
+  })
+  ipcMain.handle('pos:saveModifierGroup', async (_, data) => {
+    try { await requireCapability('pos.manage'); return await db.savePosModifierGroup(data || {}) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:getPromotions', async () => {
+    try { await requireCapability('pos.view'); return await db.getPosPromotions() }
+    catch { return [] }
+  })
+  ipcMain.handle('pos:savePromotion', async (_, data) => {
+    try { await requireCapability('pos.discount'); return await db.savePosPromotion(data || {}) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:getFloorLayout', async () => {
+    try { await requireCapability('pos.view'); return await db.getPosFloorLayout() }
+    catch { return { areas: [] } }
+  })
+  ipcMain.handle('pos:saveFloorLayout', async (_, data) => {
+    try { await requireCapability('pos.manage'); return await db.savePosFloorLayout(data || {}) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:updateCustomerDisplay', async (_, data) => {
+    try { await requireCapability('pos.view'); return await db.updatePosCustomerDisplay(data || {}) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:getCustomerDisplay', async () => {
+    try { await requireCapability('pos.view'); return await db.getPosCustomerDisplay() }
+    catch { return null }
+  })
+  ipcMain.handle('pos:sendPaymentTerminalTotal', async (_, data) => {
+    try { await requireCapability('pos.view'); return await db.sendPaymentTerminalTotal(data || {}) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:getAuditLog', async (_, limit) => {
+    try { await requireCapability('pos.view'); return await db.getPosAuditLog(limit || 100) }
+    catch { return [] }
+  })
   ipcMain.handle('pos:getActiveBookingForRoom', async (_, roomId) => {
     try { await requireCapability('pos.view'); await assertResourceBelongsToCurrentLodge('Room', roomId, db.getRoomById); return await db.getActiveBookingForRoom(roomId).catch(() => null) }
     catch { return null }
@@ -3869,6 +4169,16 @@ app.whenReady().then(async () => {
       await assertResourceBelongsToCurrentLodge('Inventory item', itemId, db.getInventoryItemById)
       return await db.adjustInventoryStock(itemId, delta, notes, managerPin)
     } catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('inventory:getMovements', async (_, filters) => {
+    try {
+      await requireCapability('inventory.view')
+      if (filters?.item_id) await assertResourceBelongsToCurrentLodge('Inventory item', filters.item_id, db.getInventoryItemById)
+      return await db.getInventoryMovements(filters || {})
+    } catch (e) {
+      console.error('inventory:getMovements failed:', e)
+      return []
+    }
   })
   ipcMain.handle('inventory:getStocktakes', async (_, limit) => {
     try { await requireCapability('inventory.view'); return await db.getInventoryStocktakes(limit) }
@@ -4263,6 +4573,14 @@ app.whenReady().then(async () => {
     try { await requireCapability('pool.manage'); return await db.getDayUseInventoryItems().catch(() => []) }
     catch { return [] }
   })
+  ipcMain.handle('dayuse:getConfig', async () => {
+    try { await requireCapability('pool.view'); return await db.getDayUseConfig() }
+    catch { return db.getDayUseConfig().catch(() => ({ templates: [], resources: [] })) }
+  })
+  ipcMain.handle('dayuse:saveConfig', async (_, data) => {
+    await requireCapability('pool.manage')
+    return await db.saveDayUseConfig(data)
+  })
 
   // ── Analytics & Cost Reports ───────────────────────────────────────────────
   ipcMain.handle('reports:posSales', async (_, start, end, outletId) => {
@@ -4521,20 +4839,25 @@ app.whenReady().then(async () => {
         const win = BrowserWindow.fromWebContents(event.sender)
         const result = await dialog.showOpenDialog(win, {
           title: 'Select Excel File to Import',
-          filters: [{ name: 'Excel Files', extensions: ['xlsx', 'xls'] }],
+          filters: [{ name: 'Excel Files', extensions: ['xlsx'] }],
           properties: ['openFile']
         })
         if (result.canceled || !result.filePaths[0]) return null
         filePath = result.filePaths[0]
       }
       const ext = String(filePath.split('.').pop() || '').toLowerCase()
-      if (!['xlsx', 'xls'].includes(ext)) return { error: 'Choose an Excel file ending in .xlsx or .xls.' }
+      if (ext !== 'xlsx') return { error: 'Choose an Excel file ending in .xlsx.' }
 
       const stats = fs.statSync(filePath)
       if (stats.size <= 0) return { error: 'The selected Excel file is empty.' }
       if (stats.size > 10 * 1024 * 1024) return { error: 'The selected Excel file is too large. Keep imports under 10 MB.' }
 
-      const workbook = XLSX.read(fs.readFileSync(filePath), { type: 'buffer', cellDates: false })
+      const workbook = XLSX.read(fs.readFileSync(filePath), {
+        type: 'buffer',
+        cellDates: false,
+        bookVBA: false,
+        sheetRows: 501
+      })
       const sheetName = workbook.SheetNames.find((name) => {
         const ref = workbook.Sheets[name]?.['!ref']
         return ref && XLSX.utils.sheet_to_json(workbook.Sheets[name], { defval: '', blankrows: false }).length > 0

@@ -3,6 +3,7 @@ import path from 'path';
 import { state } from '../state.js';
 import { readCache, writeCache } from './cacheStore.js';
 import { normalizeEmail, normalizeLodgeId, normalizeUserRecord } from './shared.js';
+import { normalizeStaffStatus } from '../../shared/accessControl.js';
 
 export function normalizeSessionUser(user) {
   if (!user || typeof user !== 'object') return user || null;
@@ -13,7 +14,12 @@ export function normalizeSessionUser(user) {
     email: normalizeEmail(user.email),
     name: typeof user.name === 'string' ? user.name : user.name || '',
     role: user.role || null,
-    lodge_id: normalizeLodgeId(user.lodge_id || user.lodgeId || null)
+    lodge_id: normalizeLodgeId(user.lodge_id || user.lodgeId || null),
+    status: normalizeStaffStatus(user.status),
+    capability_overrides:
+      user.capability_overrides && typeof user.capability_overrides === 'object' && !Array.isArray(user.capability_overrides)
+        ? user.capability_overrides
+        : {}
   };
 
   if (Object.prototype.hasOwnProperty.call(user, 'allowed_outlet_ids')) {

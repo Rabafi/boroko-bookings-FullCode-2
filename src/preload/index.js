@@ -15,6 +15,7 @@ const api = {
     healthCheck:    (email)           => ipcRenderer.invoke('auth:healthCheck', email),
     sendPasswordReset: (email)         => ipcRenderer.invoke('auth:sendPasswordReset', email),
     restoreSession: (nonce)           => ipcRenderer.invoke('auth:restoreSession', nonce),
+    restoreCurrentSession: ()          => ipcRenderer.invoke('auth:restoreCurrentSession'),
     restoreSavedSession: (email, password) => ipcRenderer.invoke('auth:restoreSavedSession', email, password),
     validateSession: ()               => ipcRenderer.invoke('auth:validateSession'),
     logout:         ()                => ipcRenderer.invoke('auth:logout')
@@ -81,7 +82,9 @@ const api = {
     resolve: (id, roomId) => ipcRenderer.invoke('maintenance:resolve', id, roomId)
   },
   receipts: {
-    savePDF: (payload) => ipcRenderer.invoke('receipts:savePDF', payload)
+    savePDF: (payload) => ipcRenderer.invoke('receipts:savePDF', payload),
+    listPrinters: () => ipcRenderer.invoke('receipts:listPrinters'),
+    printCurrent: (options) => ipcRenderer.invoke('receipts:printCurrent', options)
   },
   quotations: {
     getAll:     ()                                      => ipcRenderer.invoke('quotations:getAll'),
@@ -154,6 +157,7 @@ const api = {
     openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url)
   },
   window: {
+    repairInputFocus: (reason) => ipcRenderer.invoke('window:repairInputFocus', reason),
     onFocusRecovery: (cb) => {
       const listener = (_, payload) => cb(payload)
       ipcRenderer.on('window:focus-recovery', listener)
@@ -255,6 +259,41 @@ const api = {
     createOrder: (data) => ipcRenderer.invoke('pos:createOrder', data),
     voidOrder: (id) => ipcRenderer.invoke('pos:voidOrder', id),
     approveVoidWithPin: (data) => ipcRenderer.invoke('pos:approveVoidWithPin', data),
+    createPartialReturnWithPin: (data) => ipcRenderer.invoke('pos:createPartialReturnWithPin', data),
+    getCashupSummary: (filters) => ipcRenderer.invoke('pos:getCashupSummary', filters),
+    getCashups: (limit, filters) => ipcRenderer.invoke('pos:getCashups', limit, filters),
+    createCashup: (data) => ipcRenderer.invoke('pos:createCashup', data),
+    getTabs: () => ipcRenderer.invoke('pos:getTabs'),
+    saveTab: (data) => ipcRenderer.invoke('pos:saveTab', data),
+    closeTab: (id) => ipcRenderer.invoke('pos:closeTab', id),
+    updateTabStatus: (id, status) => ipcRenderer.invoke('pos:updateTabStatus', id, status),
+    overrideTableTab: (data) => ipcRenderer.invoke('pos:overrideTableTab', data),
+    getTablesWithStatus: (outletId) => ipcRenderer.invoke('pos:getTablesWithStatus', outletId),
+    getActiveTableTab: (tableName, outletId) => ipcRenderer.invoke('pos:getActiveTableTab', tableName, outletId),
+    openTableSession: (data) => ipcRenderer.invoke('pos:openTableSession', data),
+    getTables: () => ipcRenderer.invoke('pos:getTables'),
+    saveTable: (data) => ipcRenderer.invoke('pos:saveTable', data),
+    deleteTable: (id) => ipcRenderer.invoke('pos:deleteTable', id),
+    getTickets: (filters) => ipcRenderer.invoke('pos:getTickets', filters),
+    updateTicketStatus: (id, status) => ipcRenderer.invoke('pos:updateTicketStatus', id, status),
+    getCurrentShift: (outletId, cashierId) => ipcRenderer.invoke('pos:getCurrentShift', outletId, cashierId),
+    openShift: (data) => ipcRenderer.invoke('pos:openShift', data),
+    closeShift: (data) => ipcRenderer.invoke('pos:closeShift', data),
+    getHardwareSettings: () => ipcRenderer.invoke('pos:getHardwareSettings'),
+    saveHardwareSettings: (data) => ipcRenderer.invoke('pos:saveHardwareSettings', data),
+    testHardware: (kind) => ipcRenderer.invoke('pos:testHardware', kind),
+    getStaff: () => ipcRenderer.invoke('pos:getStaff'),
+    selectStaffWithPin: (data) => ipcRenderer.invoke('pos:selectStaffWithPin', data),
+    getModifierGroups: () => ipcRenderer.invoke('pos:getModifierGroups'),
+    saveModifierGroup: (data) => ipcRenderer.invoke('pos:saveModifierGroup', data),
+    getPromotions: () => ipcRenderer.invoke('pos:getPromotions'),
+    savePromotion: (data) => ipcRenderer.invoke('pos:savePromotion', data),
+    getFloorLayout: () => ipcRenderer.invoke('pos:getFloorLayout'),
+    saveFloorLayout: (data) => ipcRenderer.invoke('pos:saveFloorLayout', data),
+    updateCustomerDisplay: (data) => ipcRenderer.invoke('pos:updateCustomerDisplay', data),
+    getCustomerDisplay: () => ipcRenderer.invoke('pos:getCustomerDisplay'),
+    sendPaymentTerminalTotal: (data) => ipcRenderer.invoke('pos:sendPaymentTerminalTotal', data),
+    getAuditLog: (limit) => ipcRenderer.invoke('pos:getAuditLog', limit),
     getActiveBookingForRoom: (roomId) => ipcRenderer.invoke('pos:getActiveBookingForRoom', roomId)
   },
   inventory: {
@@ -265,6 +304,7 @@ const api = {
     addPurchase: (data) => ipcRenderer.invoke('inventory:addPurchase', data),
     getPurchases: (itemId) => ipcRenderer.invoke('inventory:getPurchases', itemId),
     adjustStock: (itemId, delta, notes, managerPin) => ipcRenderer.invoke('inventory:adjustStock', itemId, delta, notes, managerPin),
+    getMovements: (filters) => ipcRenderer.invoke('inventory:getMovements', filters),
     getLowStock: () => ipcRenderer.invoke('inventory:getLowStock'),
     getStocktakes: (limit) => ipcRenderer.invoke('inventory:getStocktakes', limit),
     createStocktake: (data) => ipcRenderer.invoke('inventory:createStocktake', data),
@@ -430,7 +470,9 @@ const api = {
     updateStatus: (id, status) => ipcRenderer.invoke('dayuse:updateStatus', id, status),
     settleBalance: (id, method, markCompleted = true) => ipcRenderer.invoke('dayuse:settleBalance', id, method, markCompleted),
     summary: (date) => ipcRenderer.invoke('dayuse:summary', date),
-    getInventoryItems: () => ipcRenderer.invoke('dayuse:getInventoryItems')
+    getInventoryItems: () => ipcRenderer.invoke('dayuse:getInventoryItems'),
+    getConfig: () => ipcRenderer.invoke('dayuse:getConfig'),
+    saveConfig: (data) => ipcRenderer.invoke('dayuse:saveConfig', data)
   },
   email: {
     getConfig: () => ipcRenderer.invoke('email:getConfig'),

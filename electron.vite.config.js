@@ -35,7 +35,7 @@ export default defineConfig({
             if (id.includes('node_modules/@supabase/supabase-js')) {
               return 'supabase'
             }
-            if (id.includes('node_modules/xlsx')) {
+            if (id.includes('node_modules/@e965/xlsx') || id.includes('node_modules/xlsx')) {
               return 'xlsx'
             }
             return undefined

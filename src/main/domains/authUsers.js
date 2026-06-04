@@ -31,12 +31,15 @@ import { assertCreationWithinUsageLimit } from './usage.js';
 import {
   buildPwaAccessInput,
   getAllUsers,
+  normalizeCapabilityOverrides,
   normalizeStaffRole,
   resolvePwaAccessUpdate
 } from './users.js';
 import { readCache, writeCache } from './cacheStore.js';
+import { normalizeStaffStatus } from '../../shared/accessControl.js';
 
 const AUTH_CONTRACT_VERSION = 2;
+const ADMIN_GUARD_STATUSES = new Set(['active', 'suspended']);
 
 function authTrace(label, payload = {}) {
   if (process.env.BOROKO_AUTH_TRACE !== '1') return;
@@ -52,6 +55,18 @@ function queueOperationBridge(...args) {
     throw new Error('Queue operation runtime is not available.');
   }
   return state.queueOperation(...args);
+}
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function isProtectedAdmin(user) {
+  return normalizeStaffRole(user?.role) === 'admin' && ADMIN_GUARD_STATUSES.has(normalizeStaffStatus(user?.status));
+}
+
+function countProtectedAdmins(users = [], excludingId = null) {
+  return users.filter((user) => user?.id !== excludingId && isProtectedAdmin(user)).length;
 }
 
 export async function runAuthHealthCheck(email = '', options = {}) {
@@ -258,13 +273,21 @@ export async function createUser(data) {
     email: emailLower,
     password_hash: hash,
     role: normalizeStaffRole(data.role),
+    status: normalizeStaffStatus(data.status),
     lodge_id: state.lodgeId,
+    last_sign_in_at: null,
+    last_desktop_sign_in_at: null,
+    last_pwa_sign_in_at: null,
+    last_activity_at: null,
+    invite_sent_at: null,
+    password_updated_at: nowIso(),
     pwa_enabled: pwaAccess.enabled === true,
     pwa_password_hash: pwaAccess.password_hash,
     pwa_password_set_at: pwaAccess.password_hash ? new Date().toISOString() : null,
     pwa_password_reset_by: pwaAccess.password_hash ? state.currentUser?.id || null : null,
     pwa_disabled_reason: pwaAccess.enabled === true ? null : pwaAccess.requested ? pwaAccess.disabled_reason : null,
-    allowed_outlet_ids: Array.isArray(data.allowed_outlet_ids) ? data.allowed_outlet_ids : []
+    allowed_outlet_ids: Array.isArray(data.allowed_outlet_ids) ? data.allowed_outlet_ids : [],
+    capability_overrides: normalizeCapabilityOverrides(data.capability_overrides)
   };
   if (data.pin) {
     user.pin_hash = bcrypt.hashSync(String(data.pin).trim(), 10);
@@ -316,8 +339,15 @@ export async function createUser(data) {
       name: user.name,
       email: user.email,
       role: user.role,
+      status: user.status,
       lodge_id: user.lodge_id,
       pin_hash: user.pin_hash || null,
+      last_sign_in_at: null,
+      last_desktop_sign_in_at: null,
+      last_pwa_sign_in_at: null,
+      last_activity_at: null,
+      invite_sent_at: null,
+      password_updated_at: user.password_updated_at,
       pwa_enabled: user.pwa_enabled,
       pwa_password_set_at: user.pwa_password_set_at,
       pwa_password_reset_by: user.pwa_password_reset_by,
@@ -332,8 +362,15 @@ export async function createUser(data) {
         name: user.name,
         email: user.email,
         role: user.role,
+        status: user.status,
         lodge_id: user.lodge_id,
         pin_hash: user.pin_hash || null,
+        last_sign_in_at: null,
+        last_desktop_sign_in_at: null,
+        last_pwa_sign_in_at: null,
+        last_activity_at: null,
+        invite_sent_at: null,
+        password_updated_at: user.password_updated_at,
         pwa_enabled: user.pwa_enabled,
         pwa_password_set_at: user.pwa_password_set_at,
         pwa_password_reset_by: user.pwa_password_reset_by,
@@ -385,14 +422,38 @@ export async function updateUser(id, data) {
   if (Object.prototype.hasOwnProperty.call(data, 'name')) update.name = data.name;
   if (Object.prototype.hasOwnProperty.call(data, 'email') && data.email) update.email = data.email.trim().toLowerCase();
   if (Object.prototype.hasOwnProperty.call(data, 'role')) update.role = normalizeStaffRole(data.role);
+  if (Object.prototype.hasOwnProperty.call(data, 'status')) update.status = normalizeStaffStatus(data.status);
   if (Object.prototype.hasOwnProperty.call(data, 'allowed_outlet_ids')) {
     update.allowed_outlet_ids = Array.isArray(data.allowed_outlet_ids) ? data.allowed_outlet_ids : [];
+  }
+  if (Object.prototype.hasOwnProperty.call(data, 'capability_overrides')) {
+    update.capability_overrides = normalizeCapabilityOverrides(data.capability_overrides);
   }
   const password_hash = data.password ? bcrypt.hashSync(data.password, 10) : null;
   if (data.pin) {
     update.pin_hash = bcrypt.hashSync(String(data.pin).trim(), 10);
   }
+  if (password_hash) {
+    update.password_updated_at = nowIso();
+  }
   const pwaAccess = resolvePwaAccessUpdate(existingUser, buildPwaAccessInput(data));
+  const nextRole = update.role || existingUser.role;
+  const nextStatus = update.status || existingUser.status;
+  const currentStatus = normalizeStaffStatus(existingUser.status);
+  const becomingProtectedAdmin = normalizeStaffRole(nextRole) === 'admin' && ADMIN_GUARD_STATUSES.has(normalizeStaffStatus(nextStatus));
+  const remainsProtectedAdmin = isProtectedAdmin(existingUser) && becomingProtectedAdmin;
+
+  if (state.currentUser?.id === id && normalizeStaffStatus(nextStatus) !== 'active') {
+    throw new Error('You cannot suspend or archive the account you are currently signed in with.');
+  }
+
+  if (state.currentUser?.id === id && normalizeStaffRole(nextRole) !== normalizeStaffRole(existingUser.role)) {
+    throw new Error('You cannot change the role of the account you are currently signed in with.');
+  }
+
+  if (isProtectedAdmin(existingUser) && !remainsProtectedAdmin && countProtectedAdmins(cachedUsers, id) === 0) {
+    throw new Error('You cannot remove or archive the last admin in this lodge.');
+  }
 
   if (state.isOnline) {
     if (Object.keys(update).length > 0) {
@@ -482,6 +543,9 @@ export async function updateUser(id, data) {
     pwaAccess.autoDisableForRole ? `suspended because the role changed to ${update.role || existingUser?.role}` : 'disabled';
     logActivity('pwa_access_updated', `${subject} · manager mobile app ${action}`);
   }
+  if (Object.prototype.hasOwnProperty.call(update, 'status')) {
+    logActivity('staff_status_updated', `${update.name || existingUser?.name || existingUser?.email || 'Staff account'} · status set to ${update.status}`);
+  }
 }
 
 export async function resetUserPassword(id, password) {
@@ -522,6 +586,7 @@ export async function resetUserPassword(id, password) {
   }
 
   upsertAuthEntry(existingUser.email.trim().toLowerCase(), bcrypt.hashSync(password, 10));
+  logActivity('staff_password_reset', `${existingUser.name || existingUser.email} · desktop password updated`);
 }
 
 export async function getAuthStatus(email = '') {
@@ -593,11 +658,8 @@ export async function deleteUser(id) {
   if (!existingUser) throw new Error('Staff account not found.');
   if (state.currentUser?.id === id) throw new Error('You cannot delete the account you are currently signed in with.');
 
-  if (normalizeStaffRole(existingUser.role) === 'admin') {
-    const adminCount = users.filter((u) => normalizeStaffRole(u.role) === 'admin').length;
-    if (adminCount <= 1) {
-      throw new Error('You cannot delete the last admin in this lodge.');
-    }
+  if (isProtectedAdmin(existingUser) && countProtectedAdmins(users, id) === 0) {
+    throw new Error('You cannot delete the last admin in this lodge.');
   }
 
   if (state.isOnline) {

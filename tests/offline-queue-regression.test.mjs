@@ -1,12 +1,36 @@
 import assert from 'node:assert/strict'
-import { readFile } from 'node:fs/promises'
+import { readFile, readdir } from 'node:fs/promises'
 
 async function read(path) {
-  return readFile(new URL(`../${path}`, import.meta.url), 'utf8')
+  try {
+    return await readFile(new URL(`../${path}`, import.meta.url), 'utf8')
+  } catch (error) {
+    if (error?.code !== 'ENOENT' || !path.startsWith('supabase/migrations/')) throw error
+    const fileName = path.split('/').pop()
+    return readFile(new URL(`../supabase/migrations_archive/2026-05-26-pre-baseline/${fileName}`, import.meta.url), 'utf8')
+  }
+}
+
+async function readTree(path) {
+  const root = new URL(`../${path}/`, import.meta.url)
+  const entries = await readdir(root, { withFileTypes: true })
+  const sources = []
+  for (const entry of entries) {
+    const childPath = `${path}/${entry.name}`
+    if (entry.isDirectory()) {
+      sources.push(...await readTree(childPath))
+    } else if (entry.isFile() && entry.name.endsWith('.js')) {
+      sources.push(await read(childPath))
+    }
+  }
+  return sources
 }
 
 async function run() {
-  const database = await read('src/main/database.js')
+  const database = [
+    await read('src/main/database.js'),
+    ...(await readTree('src/main/domains'))
+  ].join('\n')
   const mainIndex = await read('src/main/index.js')
   const packageJson = await read('package.json')
   const bookingsUi = await read('src/renderer/src/components/Bookings.jsx')
@@ -19,31 +43,32 @@ async function run() {
   const quotationsUi = await read('src/renderer/src/components/Quotations.jsx')
   const posReplaySql = await read('supabase/migrations/20260507_pos_offline_inventory_payload.sql')
   const posVoidHardeningSql = await read('supabase/migrations/20260524_pos_void_pin_stock_hardening.sql')
+  const posLaunchReadinessSql = await read('supabase/migrations/20260604120000_pos_inventory_launch_readiness.sql')
 
   assert.match(packageJson, /"test:offline-queue-critical":\s*"node \.\\\\tests\\\\offline-queue-regression\.test\.mjs"/)
 
   // Shared offline queue / replay contract
   assert.match(database, /async function processSyncQueue\(\)/)
-  assert.match(database, /if \(!replayAuthReady\)/)
+  assert.match(database, /if \(!state\.replayAuthReady\)/)
   assert.match(database, /function queueOperation\(type, table, data, id = null, meta = \{\}\)/)
   assert.match(database, /pending:\s*queue\.length/)
   assert.match(database, /failed:\s*failed\.length/)
   assert.match(database, /syncInProgress/)
   assert.match(database, /replayAuthReady/)
   assert.match(database, /const CONNECTIVITY_CHECK_INTERVAL_MS = 3000/)
-  assert.match(database, /const CONNECTIVITY_PROBE_TIMEOUT_MS = 1500/)
-  assert.match(database, /const CONNECTIVITY_OFFLINE_FAILURE_THRESHOLD = 2/)
+  assert.match(database, /const CONNECTIVITY_PROBE_TIMEOUT_MS = 10000/)
+  assert.match(database, /const CONNECTIVITY_OFFLINE_FAILURE_THRESHOLD = 3/)
   assert.match(database, /const PERIODIC_SYNC_INTERVAL_MS = 15000/)
   assert.match(database, /setTimeout\(\(\) => ctrl\.abort\(\), CONNECTIVITY_PROBE_TIMEOUT_MS\)/)
   assert.match(database, /connectivityCheckInProgress/)
   assert.match(database, /hasPendingSync/)
-  assert.match(database, /wasOnline !== isOnline/)
+  assert.match(database, /wasOnline !== state\.isOnline/)
   assert.match(database, /dependencyState:\s*item\?\._depends_on/)
   assert.match(database, /manualRetryOnly:\s*manualReviewOnly/)
   assert.match(database, /function normalizeQueuedSyncItemForReplay\(item = \{\}\)/)
   assert.match(database, /function resolveQueuedItemCreatedAtRaw\(item = \{\}\)/)
   assert.match(database, /item\?\.timestamp[\s\S]{0,180}item\?\.createdAt[\s\S]{0,180}item\?\.created_at[\s\S]{0,180}item\?\.queued_at/)
-  assert.match(database, /next\.table === 'update_quotation'[\s\S]{0,160}next\.data\.p_expected_updated_at = null/)
+  assert.match(database, /\['update_booking', 'update_customer', 'update_room', 'update_quotation'\]\.includes\(next\.table\)[\s\S]{0,180}next\.data\.p_expected_updated_at = null/)
   assert.match(database, /next\.table === 'update_booking_status'[\s\S]{0,240}startsWith\('booking-'\)[\s\S]{0,120}next\.data\.p_expected_updated_at = null/)
   assert.match(database, /function isBenignBookingDriftFault\(fault = \{\}\)/)
   assert.match(database, /parsed\.filter\(\(fault\) => !isBenignBookingDriftFault\(fault\)\)/)
@@ -139,7 +164,8 @@ async function run() {
   assert.match(database, /function buildQueuedPosInventoryUsage\(/)
   assert.match(database, /function applyQueuedPosInventoryReservations\(/)
   assert.match(database, /function mergeRemotePosOrdersWithLocalState\(/)
-  assert.match(database, /writeCache\(name, applyQueuedPosInventoryReservations\(data \|\| \[\]\), \{ source: 'remote' \}\)/)
+  assert.match(database, /applyQueuedPosInventoryReservations\(data \|\| \[\]\)/)
+  assert.match(database, /writeCache\(name, mergeRemoteInventoryWithLocalState\(liveRows\), \{ source: 'remote' \}\)/)
   assert.match(database, /writeCache\(name, mergeRemotePosOrdersWithLocalState\(data \|\| \[\]\), \{ source: 'remote' \}\)/)
   assert.match(database, /const mergedLiveRows = mergeRemotePosOrdersWithLocalState\(data \|\| \[\], cachedOrders\)/)
   assert.match(database, /return applyPosOrderFilters\(mergedLiveRows, startDate, endDate, outletFilter\)/)
@@ -150,11 +176,11 @@ async function run() {
   assert.match(database, /restoreOfflinePosInventoryReservation\(orderItems/)
   assert.match(database, /upsertLocalPosVoidHistory/)
   assert.match(database, /inventory_item_id:\s*item\.inventory_item_id \|\| null/)
-  assert.match(database, /depletion_qty:\s*Math\.max\(1, Number\(item\.depletion_qty \|\| 1\)\)/)
+  assert.match(database, /depletion_qty:\s*normalizePositiveQty\(item\.depletion_qty, 1\)/)
   assert.match(database, /inventory_item_id:\s*i\.inventory_item_id \|\| null/)
-  assert.match(database, /depletion_qty:\s*Math\.max\(1, Number\(i\.depletion_qty \|\| 1\)\)/)
+  assert.match(database, /depletion_qty:\s*normalizePositiveQty\(i\.depletion_qty, 1\)/)
   assert.match(database, /refreshTargets\.push\('pos-orders'\)/)
-  assert.match(database, /resolveQueuedPosInventoryLink\(entry, \{ outletId \}\)\.inventoryItemId/)
+  assert.match(database, /const link = resolveQueuedPosInventoryLink\(entry, \{ outletId \}\)/)
   assert.match(posUi, /Pending Sync/)
   assert.match(posUi, /Failed Sync/)
   assert.match(posUi, /Needs Attention/)
@@ -164,6 +190,9 @@ async function run() {
   assert.match(posReplaySql, /create or replace function public\.create_pos_order\(payload jsonb\)/)
   assert.match(posReplaySql, /nullif\(v_item->>'inventory_item_id', ''\)::uuid/)
   assert.match(posReplaySql, /coalesce\(nullif\(v_item->>'depletion_qty', ''\)::numeric, 1\)/)
+  assert.match(posLaunchReadinessSql, /public\._positive_depletion_qty/)
+  assert.match(posLaunchReadinessSql, /inventory_item_id, depletion_qty/)
+  assert.match(posLaunchReadinessSql, /v_required_stock <= 0 or coalesce\(current_stock, 0\) >= v_required_stock/)
   assert.match(posReplaySql, /update public\.inventory_items/)
   assert.match(posVoidHardeningSql, /add column if not exists inventory_item_id uuid references public\.inventory_items\(id\)/)
   assert.match(posVoidHardeningSql, /create or replace function public\.populate_pos_order_item_inventory_link\(\)/)

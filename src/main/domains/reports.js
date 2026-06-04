@@ -848,7 +848,12 @@ export async function getDashboardStats() {
     } catch (error) {
       if (!dashboardSnapshotWarningShown) {
         dashboardSnapshotWarningShown = true;
-        console.warn('[Dashboard] Server snapshot unavailable, using legacy stats fallback:', error?.message || error);
+        const message = String(error?.message || error || '');
+        if (/column "charges_total" does not exist/i.test(message)) {
+          console.warn('[Dashboard] Remote dashboard snapshot is still on an older schema; using legacy stats fallback.');
+        } else {
+          console.warn('[Dashboard] Server snapshot unavailable, using legacy stats fallback:', message);
+        }
       }
     }
 

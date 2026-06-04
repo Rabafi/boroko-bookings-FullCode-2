@@ -40,12 +40,6 @@ import {
   updateProfileMetadata,
   writeProfilesRegistry
 } from './profiles.js';
-import {
-  DEFAULT_DAY_USE_RESOURCES,
-  DEFAULT_DAY_USE_TEMPLATES,
-  resolveDayUseResources,
-  resolveDayUseTemplates
-} from '../../shared/dayUseConfig.js';
 
 const DEFAULT_SETTINGS = {
   lodge_name: '',
@@ -62,8 +56,7 @@ const DEFAULT_SETTINGS = {
   currency: 'P',
   logo: '',
   business_type: 'lodge',
-  day_use_templates: DEFAULT_DAY_USE_TEMPLATES,
-  day_use_resources: DEFAULT_DAY_USE_RESOURCES,
+  assistant_enabled: false,
   setup_complete: false
 };
 
@@ -88,16 +81,47 @@ async function getRemoteSettingsRecord(targetLodgeId = state.lodgeId) {
 }
 
 async function saveRemoteSettingsRecord(settings) {
-  let result = await state.supabase.from('settings').upsert(settings, { onConflict: 'lodge_id' }).select().maybeSingle();
-  if (!result.error) {
-    return { data: result.data || settings, mode: 'lodge' };
+  const optionalRemoteColumns = new Set([
+    'assistant_enabled',
+    'slug',
+    'booking_tagline',
+    'booking_description',
+    'hero_image',
+    'whatsapp_number',
+    'booking_check_in_from',
+    'booking_check_out_until',
+    'booking_cancellation_policy',
+    'booking_payment_terms',
+    'booking_house_rules',
+    'booking_faq'
+  ]);
+  const remoteSettings = { ...settings };
+  const skippedColumns = [];
+
+  for (let attempt = 0; attempt <= optionalRemoteColumns.size; attempt += 1) {
+    const result = await state.supabase.from('settings').upsert(remoteSettings, { onConflict: 'lodge_id' }).select().maybeSingle();
+    if (!result.error) {
+      return { data: { ...settings, ...(result.data || {}) }, mode: 'lodge', skippedColumns };
+    }
+
+    const message = result.error.message || '';
+    const missingColumn = [...optionalRemoteColumns].find((column) => new RegExp(`'${column}'|\\b${column}\\b`, 'i').test(message));
+    if (missingColumn) {
+      delete remoteSettings[missingColumn];
+      optionalRemoteColumns.delete(missingColumn);
+      skippedColumns.push(missingColumn);
+      continue;
+    }
+
+    if (!/column .*lodge_id|constraint|on conflict/i.test(message)) {
+      throw new Error(message);
+    }
+    const err = new Error('The Supabase settings table is missing the required lodge_id UUID contract. Apply the current settings migration, then try again.');
+    err.code = 'backend_auth_schema_outdated';
+    throw err;
   }
-  if (!/column .*lodge_id|constraint|on conflict/i.test(result.error.message || '')) {
-    throw new Error(result.error.message);
-  }
-  const err = new Error('The Supabase settings table is missing the required lodge_id UUID contract. Apply the current settings migration, then try again.');
-  err.code = 'backend_auth_schema_outdated';
-  throw err;
+
+  throw new Error('Settings could not be saved because the remote settings table is missing too many expected columns.');
 }
 
 export async function getSettings() {
@@ -110,8 +134,7 @@ export async function getSettings() {
       if (data) {
         const normalized = {
           ...data,
-          day_use_templates: resolveDayUseTemplates(data),
-          day_use_resources: resolveDayUseResources(data)
+          ...data
         };
         writeCache('settings', [normalized]);
         return normalized;
@@ -123,8 +146,7 @@ export async function getSettings() {
   const cached = readCache('settings');
   return cached[0] ? {
     ...cached[0],
-    day_use_templates: resolveDayUseTemplates(cached[0]),
-    day_use_resources: resolveDayUseResources(cached[0])
+    ...cached[0]
   } : getDefaultSettings();
 }
 
@@ -299,8 +321,6 @@ export async function saveSettings(data) {
     logo: data.logo || '',
     business_type: data.business_type || 'lodge',
     assistant_enabled: data.assistant_enabled === true,
-    day_use_templates: resolveDayUseTemplates(data),
-    day_use_resources: resolveDayUseResources(data),
     slug: data.slug ? data.slug.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') : null,
     booking_tagline: data.booking_tagline || '',
     booking_description: data.booking_description || '',

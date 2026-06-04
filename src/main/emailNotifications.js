@@ -5,7 +5,7 @@
  */
 
 import nodemailer from 'nodemailer'
-import { app } from 'electron'
+import { app, safeStorage } from 'electron'
 import fs from 'fs'
 import path from 'path'
 import { formatSubscriptionPlan, getSubscriptionPlan } from '../shared/subscriptionPlans.js'
@@ -23,13 +23,24 @@ function configPath() {
   return path.join(app.getPath('userData'), 'email-config.json')
 }
 
+function decryptStoredPassword(config = {}) {
+  if (config?.pass_encrypted && safeStorage?.isEncryptionAvailable?.()) {
+    try {
+      return safeStorage.decryptString(Buffer.from(String(config.pass_encrypted), 'base64'))
+    } catch {
+      return ''
+    }
+  }
+  return config?.pass || ''
+}
+
 function normalizeEmailConfig(config = {}) {
   return {
     provider: config?.provider || 'custom',
     host: config?.host || '',
     port: Number(config?.port) || 587,
     user: config?.user || '',
-    pass: config?.pass || '',
+    pass: decryptStoredPassword(config),
     from: config?.from || '',
     to: config?.to || '',
     reply_to: config?.reply_to || '',
@@ -56,7 +67,13 @@ export function getEmailConfig() {
 export function saveEmailConfig(config) {
   try {
     const normalized = normalizeEmailConfig(config)
-    fs.writeFileSync(configPath(), JSON.stringify(normalized, null, 2), 'utf8')
+    const persisted = { ...normalized }
+    if (persisted.pass && safeStorage?.isEncryptionAvailable?.()) {
+      persisted.pass_encrypted = safeStorage.encryptString(persisted.pass).toString('base64')
+      persisted.pass_encryption = 'electron-safe-storage-v1'
+      persisted.pass = ''
+    }
+    fs.writeFileSync(configPath(), JSON.stringify(persisted, null, 2), 'utf8')
     return { success: true }
   } catch (e) {
     return { success: false, error: e.message }

@@ -3,7 +3,8 @@ import {
   FEATURE_LABELS,
   ROLE_DEFINITIONS,
   buildCapabilitySnapshot,
-  normalizeAppRole
+  normalizeAppRole,
+  normalizeStaffStatus
 } from '@shared/accessControl'
 import { getSession, readLocalJson, writeLocalJson } from './runtime'
 
@@ -20,15 +21,21 @@ export function normalizeSessionUser(row = {}) {
     name: row.name || row.user_name || 'Boroko User',
     email: String(row.email || '').trim().toLowerCase(),
     role: normalizeAppRole(row.role || 'manager'),
+    status: normalizeStaffStatus(row.status),
     lodge_id: String(row.lodge_id || '').trim().toLowerCase(),
-    lodge_display_name: row.lodge_display_name || row.lodge_name || row.company_name || 'Your Lodge'
+    lodge_display_name: row.lodge_display_name || row.lodge_name || row.company_name || 'Your Lodge',
+    capability_overrides:
+      row.capability_overrides && typeof row.capability_overrides === 'object' && !Array.isArray(row.capability_overrides)
+        ? row.capability_overrides
+        : {}
   }
 }
 
 export function buildAccessSnapshot(user, features = {}) {
   const snapshot = buildCapabilitySnapshot({
     role: normalizeAppRole(user?.role),
-    features
+    features,
+    capabilityOverrides: user?.capability_overrides || {}
   })
 
   const blockedOnMobile = new Set([

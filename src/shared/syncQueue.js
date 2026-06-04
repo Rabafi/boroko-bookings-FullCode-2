@@ -11,6 +11,7 @@ export const FINANCIAL_SYNC_TABLES = new Set([
   'create_pos_order',
   'void_pos_order',
   'approve_pos_void_with_pin',
+  'upsert_pos_cashup',
   'create_conference_booking',
   'update_conference_booking',
   'update_conference_booking_payment',

@@ -6,9 +6,15 @@ import { readCache, writeCache } from './cacheStore.js';
 
 const PWA_DISABLED_MESSAGE = 'Manager mobile app access disabled.';
 const PWA_ROLE_DISABLED_MESSAGE = 'Only manager and admin roles can use the manager mobile app.';
+const USER_SELECT = 'id, auth_user_id, name, email, role, status, lodge_id, created_at, last_sign_in_at, last_desktop_sign_in_at, last_pwa_sign_in_at, last_activity_at, invite_sent_at, password_updated_at, pwa_enabled, pwa_password_set_at, pwa_disabled_reason, pwa_password_reset_by, allowed_outlet_ids, pin_hash, capability_overrides';
+const LEGACY_USER_SELECT = 'id, auth_user_id, name, email, role, lodge_id, created_at, pwa_enabled, pwa_password_set_at, pwa_disabled_reason, pwa_password_reset_by, allowed_outlet_ids, pin_hash';
 
 export function normalizeStaffRole(role) {
   return String(role || '').trim().toLowerCase() || 'receptionist';
+}
+
+export function normalizeCapabilityOverrides(overrides = {}) {
+  return overrides && typeof overrides === 'object' && !Array.isArray(overrides) ? overrides : {};
 }
 
 function isPwaEligibleRole(role) {
@@ -103,13 +109,30 @@ function sanitizeUserForRenderer(user) {
   return safeUser;
 }
 
+function isLegacyUserSchemaError(error) {
+  const message = String(error?.message || '');
+  return /column users\.(status|last_sign_in_at|last_desktop_sign_in_at|last_pwa_sign_in_at|last_activity_at|invite_sent_at|password_updated_at|capability_overrides) does not exist/i.test(message);
+}
+
+async function selectUsersWithSchemaFallback() {
+  const primary = await state.supabase
+    .from('users')
+    .select(USER_SELECT)
+    .eq('lodge_id', state.lodgeId)
+    .order('name');
+  if (!primary.error || !isLegacyUserSchemaError(primary.error)) {
+    return primary;
+  }
+  return state.supabase
+    .from('users')
+    .select(LEGACY_USER_SELECT)
+    .eq('lodge_id', state.lodgeId)
+    .order('name');
+}
+
 export async function getAllUsers() {
   if (state.isOnline) {
-    const { data } = await state.supabase.
-    from('users').
-    select('id, auth_user_id, name, email, role, lodge_id, created_at, pwa_enabled, pwa_password_set_at, pwa_disabled_reason, pwa_password_reset_by, allowed_outlet_ids, pin_hash').
-    eq('lodge_id', state.lodgeId).
-    order('name');
+    const { data } = await selectUsersWithSchemaFallback();
     const normalized = (data || []).map(normalizeUserRecord).filter(Boolean);
     if (data) writeCache('users', normalized);
     return normalized.map(sanitizeUserForRenderer);
@@ -124,16 +147,42 @@ export async function getUsers() {
 export async function getUserById(id) {
   if (!id) return null;
   try {
-    const { data, error } = await state.supabase.
-    from('users').
-    select('id, auth_user_id, name, email, role, lodge_id, created_at, pwa_enabled, pwa_password_set_at, pwa_disabled_reason, pwa_password_reset_by, allowed_outlet_ids, pin_hash').
-    eq('id', id).
-    eq('lodge_id', state.lodgeId).
-    single();
+    let { data, error } = await state.supabase.
+      from('users').
+      select(USER_SELECT).
+      eq('id', id).
+      eq('lodge_id', state.lodgeId).
+      single();
+    if (error && isLegacyUserSchemaError(error)) {
+      const legacyResult = await state.supabase.
+        from('users').
+        select(LEGACY_USER_SELECT).
+        eq('id', id).
+        eq('lodge_id', state.lodgeId).
+        single();
+      data = legacyResult.data;
+      error = legacyResult.error;
+    }
     if (error) throw error;
     return sanitizeUserForRenderer(normalizeUserRecord(data));
   } catch {
     const user = readCache('users').map(normalizeUserRecord).filter(Boolean).find((entry) => entry.id === id) || null;
     return sanitizeUserForRenderer(user);
+  }
+}
+
+export async function touchUserPresence({ userId, lodgeId = state.lodgeId, sessionType = 'desktop', markSignIn = false } = {}) {
+  if (!userId || !lodgeId || !state.isOnline) return false;
+  try {
+    const { data, error } = await state.supabase.rpc('touch_user_presence', {
+      p_user_id: userId,
+      p_lodge_id: lodgeId,
+      p_session_type: sessionType,
+      p_mark_sign_in: markSignIn === true
+    });
+    if (error || data?.success === false) return false;
+    return true;
+  } catch {
+    return false;
   }
 }

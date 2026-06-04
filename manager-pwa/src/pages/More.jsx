@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom'
-import { Bell, Briefcase, Building2, Cpu, Package, Shield, Users, Wrench } from 'lucide-react'
+import { Bell, Briefcase, Building2, Cpu, FileText, Package, Shield, Users, Wrench } from 'lucide-react'
 import { useFeatures } from '../contexts/FeaturesContext'
 
 function SectionCard({ to, title, sub, icon: Icon }) {
@@ -23,6 +23,7 @@ export default function More() {
     can('guests.view') && { to: '/guests', title: 'Guests', sub: 'Guest history and stay profile', icon: Users },
     can('staff.view') && isEnabled('staff') && { to: '/staff', title: 'Staff', sub: 'Team visibility and roles', icon: Shield },
     { to: '/alerts', title: 'Alerts', sub: 'Urgent issues and unpaid follow-up', icon: Bell },
+    can('reports.view') && isEnabled('reports') && { to: '/reports', title: 'Reports', sub: 'Cash, occupancy, usage, and operating snapshot', icon: FileText },
     can('conference.view') && isEnabled('conference') && { to: '/conference', title: 'Conference', sub: 'Event and venue bookings', icon: Building2 },
     can('pool.view') && isEnabled('pool') && { to: '/day-use', title: 'Day Use', sub: 'Walk-in activity visibility', icon: Briefcase },
     can('inventory.view') && isEnabled('inventory') && { to: '/inventory', title: 'Inventory', sub: 'Low stock and replenishment watch', icon: Package },

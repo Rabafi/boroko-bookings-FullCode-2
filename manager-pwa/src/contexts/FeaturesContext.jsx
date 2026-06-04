@@ -43,7 +43,7 @@ export function FeaturesProvider({ children }) {
     return () => {
       cancelled = true
     }
-  }, [user?.lodge_id, user?.role])
+  }, [user?.lodge_id, user?.role, user?.capability_overrides])
 
   const isEnabled = (feature) => {
     if (Object.keys(features).length === 0) return true

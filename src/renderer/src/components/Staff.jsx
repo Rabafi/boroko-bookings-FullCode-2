@@ -33,12 +33,14 @@ import { useAccess, useAuth, useSettings } from '../app-context'
 import {
   CAPABILITY_LABELS,
   ROLE_DEFINITIONS,
+  STAFF_STATUS_LABELS,
   buildCapabilitySnapshot,
   getRoleOptions,
   canAccessCapability,
   isPwaEligibleRole,
   isPosOutletScopedRole,
-  normalizeAppRole
+  normalizeAppRole,
+  normalizeStaffStatus
 } from '../../../shared/accessControl'
 import { MONTHLY_USAGE_RESET_COPY, canCreateUser, getEarlyUpgradePromptState, getPlanUsageLimits, normalizeSubscriptionPlan } from '../../../shared/subscriptionPlans'
 
@@ -47,10 +49,12 @@ const emptyForm = {
   email: '',
   pin: '',
   role: 'receptionist',
+  status: 'active',
   pwa_enabled: false,
   pwa_password: '',
   pwa_disabled_reason: '',
-  allowed_outlet_ids: []
+  allowed_outlet_ids: [],
+  capability_overrides: {}
 }
 
 const emptyResetForm = {
@@ -60,6 +64,8 @@ const emptyResetForm = {
 
 function roleTone(role) {
   return {
+    cashier: 'bg-orange-100 text-orange-700',
+    supervisor: 'bg-teal-100 text-teal-700',
     receptionist: 'bg-emerald-100 text-emerald-700',
     operations: 'bg-amber-100 text-amber-700',
     finance: 'bg-sky-100 text-sky-700',
@@ -73,12 +79,44 @@ function formatShortDate(value) {
   return new Date(value).toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' })
 }
 
+function formatDateTime(value) {
+  if (!value) return ''
+  return new Date(value).toLocaleString([], {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  })
+}
+
+function statusTone(status) {
+  return {
+    active: 'bg-emerald-100 text-emerald-700',
+    suspended: 'bg-amber-100 text-amber-700',
+    archived: 'bg-slate-200 text-slate-700'
+  }[normalizeStaffStatus(status)] || 'bg-slate-100 text-slate-600'
+}
+
+function summarizeActivity(staffUser) {
+  const items = []
+  if (staffUser.last_desktop_sign_in_at) items.push(`Desktop sign-in ${formatDateTime(staffUser.last_desktop_sign_in_at)}`)
+  if (staffUser.last_pwa_sign_in_at) items.push(`Mobile sign-in ${formatDateTime(staffUser.last_pwa_sign_in_at)}`)
+  if (staffUser.last_activity_at) items.push(`Last activity ${formatDateTime(staffUser.last_activity_at)}`)
+  if (staffUser.invite_sent_at && !staffUser.last_sign_in_at) items.push(`Invite sent ${formatDateTime(staffUser.invite_sent_at)}`)
+  if (staffUser.password_updated_at) items.push(`Password updated ${formatDateTime(staffUser.password_updated_at)}`)
+  items.push(staffUser.pin_hash ? 'Approval PIN set' : 'No approval PIN')
+  return items
+}
+
 function buildUserPayload(form, existingUser = null) {
   const payload = {
     name: form.name,
     email: form.email,
     role: form.role,
-    allowed_outlet_ids: Array.isArray(form.allowed_outlet_ids) ? form.allowed_outlet_ids : []
+    status: form.status,
+    allowed_outlet_ids: Array.isArray(form.allowed_outlet_ids) ? form.allowed_outlet_ids : [],
+    capability_overrides: form.capability_overrides && typeof form.capability_overrides === 'object' ? form.capability_overrides : {}
   }
 
   if (form.pin) payload.pin = form.pin
@@ -167,9 +205,10 @@ function StaffMembers() {
   }, [])
 
   const adminCount = useMemo(
-    () => users.filter((user) => normalizeAppRole(user.role) === 'admin').length,
+    () => users.filter((user) => normalizeAppRole(user.role) === 'admin' && ['active', 'suspended'].includes(normalizeStaffStatus(user.status))).length,
     [users]
   )
+  const userLimitStatus = usageSnapshot?.statuses?.users || canCreateUser({ plan: access?.entitlement?.plan || 'Starter', used: users.length })
   const staffEarlyPrompt = getEarlyUpgradePromptState({
     plan: currentPlan,
     bookingsUsage: usageSnapshot?.usage?.monthlyBookings ?? 0,
@@ -209,12 +248,36 @@ function StaffMembers() {
       }
     })
   }, [access?.features, sortBy, users])
-  const userLimitStatus = usageSnapshot?.statuses?.users || canCreateUser({ plan: access?.entitlement?.plan || 'Starter', used: users.length })
   const userLimitMessage = userLimitStatus.isAbovePlan
     ? `This lodge is above the ${usageSnapshot?.plan || access?.entitlement?.plan || 'Starter'} plan limits. Existing records remain available, but new records are restricted until usage is reduced or the plan is upgraded.`
     : userLimitStatus.isBlocked
       ? `Staff creation is restricted because this lodge has reached the ${usageSnapshot?.plan || access?.entitlement?.plan || 'Starter'} user limit.`
       : ''
+  const rolePreview = useMemo(() => {
+    const previousRole = editingUser?.role || 'receptionist'
+    const fromSnapshot = buildCapabilitySnapshot({
+      role: previousRole,
+      features: access?.features || {},
+      capabilityOverrides: editingUser?.capability_overrides || {}
+    })
+    const toSnapshot = buildCapabilitySnapshot({
+      role: form.role,
+      features: access?.features || {},
+      capabilityOverrides: form.capability_overrides || {}
+    })
+    const gained = Object.keys(toSnapshot.capabilities || {}).filter((capability) => (
+      toSnapshot.capabilities?.[capability] === true && fromSnapshot.capabilities?.[capability] !== true
+    ))
+    const lost = Object.keys(fromSnapshot.capabilities || {}).filter((capability) => (
+      fromSnapshot.capabilities?.[capability] === true && toSnapshot.capabilities?.[capability] !== true
+    ))
+    return {
+      fromSnapshot,
+      toSnapshot,
+      gained,
+      lost
+    }
+  }, [access?.features, editingUser?.capability_overrides, editingUser?.role, form.capability_overrides, form.role])
 
   useEffect(() => {
     load()
@@ -244,10 +307,12 @@ function StaffMembers() {
       email: user.email,
       pin: '',
       role: user.role || 'receptionist',
+      status: normalizeStaffStatus(user.status),
       pwa_enabled: user.pwa_enabled === true,
       pwa_password: '',
       pwa_disabled_reason: user.pwa_disabled_reason || '',
-      allowed_outlet_ids: Array.isArray(user.allowed_outlet_ids) ? user.allowed_outlet_ids : []
+      allowed_outlet_ids: Array.isArray(user.allowed_outlet_ids) ? user.allowed_outlet_ids : [],
+      capability_overrides: user.capability_overrides && typeof user.capability_overrides === 'object' ? user.capability_overrides : {}
     })
     setShowPin(false)
     setShowPwaPassword(false)
@@ -414,6 +479,32 @@ function StaffMembers() {
     await load()
   }
 
+  const handleStatusChange = async (staffUser, status) => {
+    const nextStatus = normalizeStaffStatus(status)
+    const result = await window.api.users.update(staffUser.id, { status: nextStatus })
+    if (result?.success === false) {
+      setInviteNotice(result.error || 'Could not update staff status.')
+      return
+    }
+    setInviteNotice(`${staffUser.name} is now ${STAFF_STATUS_LABELS[nextStatus].toLowerCase()}.`)
+    await load()
+  }
+
+  const setCapabilityOverride = (capability, value) => {
+    setForm((current) => {
+      const next = { ...(current.capability_overrides || {}) }
+      if (value === null) {
+        delete next[capability]
+      } else {
+        next[capability] = value
+      }
+      return {
+        ...current,
+        capability_overrides: next
+      }
+    })
+  }
+
   return (
     <div>
       <div className="mb-5 flex items-center justify-between">
@@ -485,17 +576,22 @@ function StaffMembers() {
         {sortedUsers.map((staffUser) => {
           const snapshot = buildCapabilitySnapshot({
             role: staffUser.role,
-            features: access?.features || {}
+            features: access?.features || {},
+            capabilityOverrides: staffUser.capability_overrides || {}
           })
           const roleInfo = ROLE_DEFINITIONS[snapshot.role] || ROLE_DEFINITIONS.receptionist
           const pwaEligible = isPwaEligibleRole(staffUser.role)
           const pwaEnabled = pwaEligible && staffUser.pwa_enabled === true
           const isSelf = staffUser.id === currentUser?.id
-          const isLastAdmin = normalizeAppRole(staffUser.role) === 'admin' && adminCount <= 1
+          const isLastAdmin = normalizeAppRole(staffUser.role) === 'admin' && ['active', 'suspended'].includes(normalizeStaffStatus(staffUser.status)) && adminCount <= 1
+          const activitySummary = summarizeActivity(staffUser)
+          const hasOverrides = Object.keys(staffUser.capability_overrides || {}).length > 0
           const deleteBlockedReason = isSelf
             ? 'You cannot delete the account you are currently signed in with.'
             : isLastAdmin
               ? 'You cannot delete the last admin in this lodge.'
+              : normalizeStaffStatus(staffUser.status) !== 'archived'
+                ? 'Archive this account first. Permanent deletion is reserved for already archived staff.'
               : ''
 
           return (
@@ -513,6 +609,9 @@ function StaffMembers() {
                     <div className="mt-2 flex items-center gap-2">
                       <span className={`text-xs px-2 py-0.5 rounded-full font-medium capitalize ${roleTone(snapshot.role)}`}>
                         {roleInfo.label}
+                      </span>
+                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${statusTone(staffUser.status)}`}>
+                        {STAFF_STATUS_LABELS[normalizeStaffStatus(staffUser.status)]}
                       </span>
                       <span className="text-xs text-slate-400">
                         {Object.values(snapshot.capabilities).filter(Boolean).length} active permissions
@@ -568,6 +667,11 @@ function StaffMembers() {
                 {staffUser.id === currentUser?.id && (
                   <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded-full">(you)</span>
                 )}
+                {hasOverrides && (
+                  <span className="rounded-full bg-sky-100 px-2 py-1 text-xs text-sky-700">
+                    Custom permission overrides
+                  </span>
+                )}
                 {pwaEligible && (
                   <span className={`text-xs px-2 py-1 rounded-full ${
                     pwaEnabled ? 'bg-indigo-100 text-indigo-700' : 'bg-amber-100 text-amber-700'
@@ -581,10 +685,46 @@ function StaffMembers() {
                   </span>
                 )}
               </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {activitySummary.map((item) => (
+                  <span key={item} className="rounded-full bg-slate-100 px-2 py-1 text-xs text-slate-600">
+                    {item}
+                  </span>
+                ))}
+              </div>
               {pwaEligible && !pwaEnabled && staffUser.pwa_disabled_reason && (
                 <p className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-xl px-3 py-2 mt-3">
                   {staffUser.pwa_disabled_reason}
                 </p>
+              )}
+
+              {canManageStaff && (
+                <div className="mt-4 flex flex-wrap gap-2">
+                  {normalizeStaffStatus(staffUser.status) === 'active' && !isSelf && (
+                    <button
+                      onClick={() => handleStatusChange(staffUser, 'suspended')}
+                      className="rounded-lg border border-amber-200 px-3 py-1.5 text-xs font-medium text-amber-700 transition-colors hover:bg-amber-50"
+                    >
+                      Suspend
+                    </button>
+                  )}
+                  {normalizeStaffStatus(staffUser.status) !== 'archived' && !isSelf && (
+                    <button
+                      onClick={() => handleStatusChange(staffUser, 'archived')}
+                      className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50"
+                    >
+                      Archive
+                    </button>
+                  )}
+                  {normalizeStaffStatus(staffUser.status) !== 'active' && (
+                    <button
+                      onClick={() => handleStatusChange(staffUser, 'active')}
+                      className="rounded-lg border border-emerald-200 px-3 py-1.5 text-xs font-medium text-emerald-700 transition-colors hover:bg-emerald-50"
+                    >
+                      Restore Active
+                    </button>
+                  )}
+                </div>
               )}
 
               <div className="mt-4 border-t border-slate-100 pt-4">
@@ -698,6 +838,83 @@ function StaffMembers() {
                 {ROLE_DEFINITIONS[form.role]?.description || ROLE_DEFINITIONS.receptionist.description}
               </p>
             </div>
+
+            <div>
+              <label className="mb-1 block text-sm font-medium text-slate-700">Account Status</label>
+              <select
+                className="input"
+                value={form.status}
+                onChange={(event) => setForm((current) => ({ ...current, status: event.target.value }))}
+              >
+                {Object.entries(STAFF_STATUS_LABELS).map(([value, label]) => (
+                  <option key={value} value={value}>{label}</option>
+                ))}
+              </select>
+              <p className="mt-2 text-xs text-slate-500">
+                Active staff can sign in. Suspended staff keep history but cannot use the app. Archived staff are hidden from day-to-day operations until restored.
+              </p>
+            </div>
+
+            {(rolePreview.gained.length > 0 || rolePreview.lost.length > 0) && (
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <p className="text-sm font-medium text-slate-800">Role change preview</p>
+                {rolePreview.gained.length > 0 && (
+                  <div className="mt-2">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Will gain</p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {rolePreview.gained.slice(0, 10).map((capability) => (
+                        <span key={capability} className="rounded-full bg-emerald-100 px-2 py-1 text-xs text-emerald-700">
+                          {CAPABILITY_LABELS[capability]}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {rolePreview.lost.length > 0 && (
+                  <div className="mt-3">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-rose-700">Will lose</p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {rolePreview.lost.slice(0, 10).map((capability) => (
+                        <span key={capability} className="rounded-full bg-rose-100 px-2 py-1 text-xs text-rose-700">
+                          {CAPABILITY_LABELS[capability]}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {canSetRoles && (
+              <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <div>
+                  <p className="text-sm font-medium text-slate-800">Permission overrides</p>
+                  <p className="mt-1 text-xs text-slate-500">Leave actions on Default to follow the selected role. Use Allow or Block only for exceptions.</p>
+                </div>
+                <div className="space-y-2">
+                  {Object.entries(CAPABILITY_LABELS).map(([capability, label]) => {
+                    const overrideValue = Object.prototype.hasOwnProperty.call(form.capability_overrides || {}, capability)
+                      ? form.capability_overrides[capability]
+                      : null
+                    return (
+                      <div key={capability} className="flex items-center justify-between gap-3 rounded-xl bg-white px-3 py-2">
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium text-slate-700">{label}</p>
+                          <p className="text-xs text-slate-400">
+                            Role default: {rolePreview.toSnapshot.allowedByRole?.[capability] ? 'allowed' : 'blocked'}
+                          </p>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-1 rounded-lg border border-slate-200 p-1">
+                          <button type="button" onClick={() => setCapabilityOverride(capability, null)} className={`rounded-md px-2 py-1 text-xs ${overrideValue === null ? 'bg-slate-800 text-white' : 'text-slate-500'}`}>Default</button>
+                          <button type="button" onClick={() => setCapabilityOverride(capability, true)} className={`rounded-md px-2 py-1 text-xs ${overrideValue === true ? 'bg-emerald-600 text-white' : 'text-slate-500'}`}>Allow</button>
+                          <button type="button" onClick={() => setCapabilityOverride(capability, false)} className={`rounded-md px-2 py-1 text-xs ${overrideValue === false ? 'bg-rose-600 text-white' : 'text-slate-500'}`}>Block</button>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
 
             {/* POS Outlet Access — only shown for outlet-scoped roles (cashier / supervisor) */}
             {isPosOutletScopedRole(form.role) && outlets.length > 0 && (

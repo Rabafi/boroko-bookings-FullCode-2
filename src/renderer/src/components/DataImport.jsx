@@ -398,8 +398,8 @@ function UploadStep({ onParsed, importType, setImportType, importTypes }) {
     const file = event.dataTransfer?.files?.[0]
     if (!file) return
     const name = String(file.name || '')
-    if (!/\.(xlsx|xls)$/i.test(name)) {
-      setErr('Drop an Excel file ending in .xlsx or .xls.')
+    if (!/\.xlsx$/i.test(name)) {
+      setErr('Drop an Excel file ending in .xlsx.')
       return
     }
     const filePath = window.api.import.getDroppedFilePath?.(file)
@@ -430,7 +430,7 @@ function UploadStep({ onParsed, importType, setImportType, importTypes }) {
       <div className="text-center">
         <h2 className="text-xl font-bold text-gray-800 mb-2">Import Data Safely</h2>
         <p className="text-gray-500 text-sm max-w-md">
-          Upload an Excel file (.xlsx or .xls), review the mapping, run a dry check, then import only the rows you approve.
+          Upload an Excel file (.xlsx), review the mapping, run a dry check, then import only the rows you approve.
           Imports save directly to the online database, so they must be done while online.
         </p>
       </div>

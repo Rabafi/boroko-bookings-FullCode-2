@@ -13,8 +13,78 @@ import {
   patchQueuedInventoryDraftPayload,
   removeQueuedInventoryDraft
 } from './inventoryDrafts.js'
+import {
+  readFailedSyncQueue,
+  readSyncQueue,
+  writeFailedSyncQueue,
+  writeSyncQueue
+} from './syncStore.js'
 
 // ─── INVENTORY ────────────────────────────────────────────────────────────────
+
+const INVENTORY_MOVEMENTS_CACHE = 'inventory-movements';
+
+function normalizeStockNumber(value, fallback = 0) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : fallback;
+}
+
+function normalizePositiveQty(value, fallback = 1) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : fallback;
+}
+
+function movementSort(a, b) {
+  return String(b.created_at || b.date || '').localeCompare(String(a.created_at || a.date || ''));
+}
+
+function movementIdentity(row = {}) {
+  if (row.reference_type && row.reference_id && row.item_id && row.movement_type) {
+    return `${row.reference_type}:${row.reference_id}:${row.item_id}:${row.movement_type}`;
+  }
+  return row.id || `${row.item_id}:${row.movement_type}:${row.created_at || row.date || ''}:${row.quantity || 0}`;
+}
+
+function readInventoryMovementsCache() {
+  const rows = readCache(INVENTORY_MOVEMENTS_CACHE);
+  return Array.isArray(rows) ? rows : [];
+}
+
+function writeInventoryMovementsCache(rows = []) {
+  writeCache(INVENTORY_MOVEMENTS_CACHE, rows.slice(0, 1000));
+}
+
+function upsertLocalInventoryMovement(entry = {}) {
+  if (!entry?.item_id || !entry?.movement_type) return null;
+  const row = {
+    id: entry.id || randomUUID(),
+    lodge_id: state.lodgeId,
+    item_id: entry.item_id,
+    movement_type: entry.movement_type,
+    quantity: normalizeStockNumber(entry.quantity),
+    unit_cost: normalizeStockNumber(entry.unit_cost),
+    total_cost: normalizeStockNumber(entry.total_cost),
+    notes: entry.notes || null,
+    reference_type: entry.reference_type || null,
+    reference_id: entry.reference_id || null,
+    source: entry.source || 'local',
+    created_by: entry.created_by || state.currentUser?.id || null,
+    created_by_name: entry.created_by_name || state.currentUser?.name || null,
+    created_at: entry.created_at || new Date().toISOString(),
+    _pending_sync: entry._pending_sync === true,
+    _sync_state: entry._sync_state || (entry._pending_sync ? 'pending' : 'synced')
+  };
+  const current = readInventoryMovementsCache();
+  const next = [
+    row,
+    ...current.filter((existing) =>
+      existing?.id !== row.id &&
+      !(row.reference_type && row.reference_id && existing?.reference_type === row.reference_type && existing?.reference_id === row.reference_id && existing?.item_id === row.item_id && existing?.movement_type === row.movement_type)
+    )
+  ].sort(movementSort);
+  writeInventoryMovementsCache(next);
+  return row;
+}
 
 export async function getInventoryItems() {
   if (state.isOnline) {
@@ -88,13 +158,38 @@ export async function createInventoryItem(data) {
     if (error) throw new Error(error.message);
     if (!result?.success) throw new Error(result?.error || 'Could not create inventory item');
     const cached = readCache('inventory-items');
-    writeCache('inventory-items', [...cached, { ...item, id: result?.id }]);
+    const savedId = result?.id || id;
+    writeCache('inventory-items', [...cached, { ...item, id: savedId }]);
+    if (Number(item.current_stock || 0) > 0) {
+      upsertLocalInventoryMovement({
+        item_id: savedId,
+        movement_type: 'opening_stock',
+        quantity: item.current_stock,
+        notes: 'Opening stock recorded when product was created',
+        reference_type: 'inventory_item',
+        reference_id: savedId,
+        source: 'inventory'
+      });
+    }
     return { success: true, id: result?.id };
   }
   // Offline: write to cache optimistically and queue the RPC for later replay
   const cached = readCache('inventory-items');
   const newItem = { ...item, _pending_sync: true, created_at: new Date().toISOString() };
   writeCache('inventory-items', [...cached, newItem]);
+  if (Number(item.current_stock || 0) > 0) {
+    upsertLocalInventoryMovement({
+      item_id: id,
+      movement_type: 'opening_stock',
+      quantity: item.current_stock,
+      notes: 'Opening stock recorded while offline',
+      reference_type: 'inventory_item',
+      reference_id: id,
+      source: 'inventory',
+      _pending_sync: true,
+      _sync_state: 'pending'
+    });
+  }
   queueOperation('rpc', 'create_inventory_item', { payload: item }, null, {
     _queue_id: `inventory-item-${id}`
   });
@@ -117,8 +212,6 @@ export async function updateInventoryItem(id, data) {
   if (existing && existing._pending_sync) {
     const updatedRow = { ...existing, ...update };
     writeCache('inventory-items', cached.map((row) => row.id === id ? updatedRow : row));
-
-    const { readSyncQueue, writeSyncQueue, readFailedSyncQueue, writeFailedSyncQueue } = await import('./syncStore.js');
 
     const activeQueue = readSyncQueue();
     const patchedActiveQueue = patchQueuedInventoryDraftPayload(activeQueue, id, update);
@@ -195,6 +288,18 @@ export async function addInventoryPurchase(data) {
   { ...purchase, id: result?.id || `local-${Date.now()}` },
   ...cachedPurchases]
   );
+  upsertLocalInventoryMovement({
+    item_id: data.item_id,
+    movement_type: 'purchase',
+    quantity: qty,
+    unit_cost: unitCost,
+    total_cost: cost,
+    notes: purchase.notes,
+    reference_type: 'inventory_purchase',
+    reference_id: result?.id || null,
+    source: 'purchase',
+    created_at: purchase.date ? `${purchase.date}T12:00:00.000Z` : new Date().toISOString()
+  });
   return { success: true };
 }
 
@@ -261,18 +366,61 @@ export async function getAllInventoryPurchases() {
 }
 
 export async function adjustInventoryStock(itemId, delta, notes) {
-  if (!state.isOnline) return { success: false, error: 'Requires internet connection' };
+  const numericDelta = Number(delta);
+  if (!Number.isFinite(numericDelta) || numericDelta === 0) {
+    return { success: false, error: 'Enter a non-zero stock adjustment.' };
+  }
+  const cached = readCache('inventory-items');
+  const existing = cached.find((row) => row.id === itemId);
+
+  if (!state.isOnline) {
+    if (!existing) return { success: false, error: 'Inventory item not found on this computer.' };
+    const adjustmentId = randomUUID();
+    const newStock = Math.max(0, normalizeStockNumber(existing.current_stock) + numericDelta);
+    writeCache('inventory-items', cached.map((row) => row.id === itemId ?
+    {
+      ...row,
+      current_stock: newStock,
+      _pending_sync: true,
+      _sync_state: 'pending'
+    } :
+    row
+    ));
+    upsertLocalInventoryMovement({
+      id: adjustmentId,
+      item_id: itemId,
+      movement_type: numericDelta >= 0 ? 'adjustment_increase' : 'adjustment_decrease',
+      quantity: numericDelta,
+      unit_cost: existing.latest_unit_cost || 0,
+      total_cost: numericDelta * Number(existing.latest_unit_cost || 0),
+      notes: notes || null,
+      reference_type: 'inventory_adjustment',
+      reference_id: adjustmentId,
+      source: 'adjustment',
+      _pending_sync: true,
+      _sync_state: 'pending'
+    });
+    queueOperation('rpc', 'adjust_inventory_stock', {
+      p_item_id: itemId,
+      p_lodge_id: state.lodgeId,
+      p_delta: numericDelta,
+      p_notes: notes || null
+    }, null, {
+      _queue_id: `inventory-adjust-${adjustmentId}`
+    });
+    return { success: true, new_stock: newStock, offline: true };
+  }
+
   const { data: result, error } = await state.supabase.rpc('adjust_inventory_stock', {
     p_item_id: itemId,
     p_lodge_id: state.lodgeId,
-    p_delta: Number(delta),
+    p_delta: numericDelta,
     p_notes: notes || null
   });
   if (error) throw new Error(error.message);
   if (!result?.success) throw new Error(result?.error || 'Could not adjust inventory stock');
   // Update cache with RPC result. Treat cache failures as non-fatal (backend is source of truth).
   try {
-    const cached = readCache('inventory-items');
     writeCache('inventory-items', cached.map((row) => row.id === itemId ?
     { ...row, current_stock: result?.new_stock ?? row.current_stock } :
     row
@@ -281,7 +429,145 @@ export async function adjustInventoryStock(itemId, delta, notes) {
     console.warn('[INVENTORY] Cache update failed after RPC succeeded:', e);
     // Continue anyway — the backend state is correct, cache is secondary
   }
+  upsertLocalInventoryMovement({
+    item_id: itemId,
+    movement_type: numericDelta >= 0 ? 'adjustment_increase' : 'adjustment_decrease',
+    quantity: numericDelta,
+    unit_cost: existing?.latest_unit_cost || 0,
+    total_cost: numericDelta * Number(existing?.latest_unit_cost || 0),
+    notes: notes || null,
+    reference_type: 'inventory_adjustment',
+    reference_id: result?.id || null,
+    source: 'adjustment'
+  });
   return { success: true, new_stock: result?.new_stock };
+}
+
+function decorateMovementRows(rows = []) {
+  const itemMap = new Map((readCache('inventory-items') || []).map((item) => [item.id, item]));
+  return (rows || []).map((row) => {
+    const item = itemMap.get(row.item_id) || row.inventory_items || {};
+    return {
+      ...row,
+      item_name: row.item_name || item?.name || 'Inventory item',
+      item_unit: row.item_unit || item?.unit || 'unit',
+      item_category: row.item_category || item?.category || 'Other',
+      outlet_id: row.outlet_id || item?.outlet_id || null
+    };
+  });
+}
+
+function buildDerivedInventoryMovements() {
+  const rows = [];
+  const inventoryItems = readCache('inventory-items') || [];
+  const itemMap = new Map(inventoryItems.map((item) => [item.id, item]));
+  const cachedLocalMovements = readInventoryMovementsCache();
+
+  rows.push(...cachedLocalMovements);
+
+  for (const purchase of readCache('inventory-purchases') || []) {
+    if (!purchase?.item_id) continue;
+    rows.push({
+      id: `purchase-${purchase.id || purchase.item_id}-${purchase.date || purchase.created_at || ''}`,
+      lodge_id: purchase.lodge_id || state.lodgeId,
+      item_id: purchase.item_id,
+      movement_type: 'purchase',
+      quantity: normalizeStockNumber(purchase.quantity_purchased),
+      unit_cost: normalizeStockNumber(purchase.unit_cost),
+      total_cost: normalizeStockNumber(purchase.total_cost),
+      notes: purchase.notes || null,
+      reference_type: 'inventory_purchase',
+      reference_id: purchase.id || null,
+      source: 'purchase',
+      created_at: purchase.created_at || (purchase.date ? `${purchase.date}T12:00:00.000Z` : new Date().toISOString())
+    });
+  }
+
+  const voidsByOrder = new Map((readCache('pos-void-history') || []).map((entry) => [entry.order_id, entry]));
+  for (const order of readCache('pos-orders') || []) {
+    const orderItems = Array.isArray(order?.pos_order_items) ? order.pos_order_items : Array.isArray(order?.items) ? order.items : [];
+    for (const line of orderItems) {
+      const inventoryItemId = line?.inventory_item_id || null;
+      if (!inventoryItemId) continue;
+      const item = itemMap.get(inventoryItemId) || {};
+      const soldQty = Number(line.quantity || 0) * normalizePositiveQty(line.depletion_qty, 1);
+      if (soldQty !== 0) {
+        rows.push({
+          id: `pos-sale-${order.id}-${line.id || line.item_name || inventoryItemId}`,
+          lodge_id: order.lodge_id || state.lodgeId,
+          item_id: inventoryItemId,
+          movement_type: soldQty < 0 ? 'pos_return' : 'pos_sale',
+          quantity: -soldQty,
+          unit_cost: normalizeStockNumber(item.latest_unit_cost),
+          total_cost: -soldQty * normalizeStockNumber(item.latest_unit_cost),
+          notes: order.notes || null,
+          reference_type: line.id ? 'pos_order_item' : 'pos_order',
+          reference_id: line.id || order.id,
+          source: 'pos',
+          created_at: order.created_at || new Date().toISOString(),
+          _pending_sync: order._pending_sync === true,
+          _sync_state: order._sync_state || (order._pending_sync ? 'pending' : 'synced')
+        });
+      }
+      if (order.status === 'voided') {
+        const voidEntry = voidsByOrder.get(order.id);
+        const restoredQty = Math.max(0, Number(line.quantity || 0)) * normalizePositiveQty(line.depletion_qty, 1);
+        if (restoredQty > 0) {
+          rows.push({
+            id: `pos-void-${order.id}-${line.id || line.item_name || inventoryItemId}`,
+            lodge_id: order.lodge_id || state.lodgeId,
+            item_id: inventoryItemId,
+            movement_type: 'pos_void_restore',
+            quantity: restoredQty,
+            unit_cost: normalizeStockNumber(item.latest_unit_cost),
+            total_cost: restoredQty * normalizeStockNumber(item.latest_unit_cost),
+            notes: voidEntry?.reason || order._void_reason || null,
+            reference_type: 'pos_void',
+            reference_id: voidEntry?.id || order.id,
+            source: 'pos',
+            created_at: voidEntry?.created_at || order.created_at || new Date().toISOString(),
+            _pending_sync: voidEntry?._pending_sync === true || order._pending_void === true,
+            _sync_state: voidEntry?._sync_state || (order._pending_void ? 'pending' : 'synced')
+          });
+        }
+      }
+    }
+  }
+
+  const unique = new Map();
+  for (const row of rows) {
+    unique.set(movementIdentity(row), row);
+  }
+  return decorateMovementRows([...unique.values()].sort(movementSort));
+}
+
+export async function getInventoryMovements(filters = {}) {
+  const itemId = filters?.item_id || filters?.itemId || null;
+  const limit = Math.max(1, Math.min(500, Number(filters?.limit || 200)));
+  if (state.isOnline) {
+    try {
+      let query = state.supabase.
+      from('inventory_movements').
+      select('*, inventory_items(name, unit, category, outlet_id)').
+      eq('lodge_id', state.lodgeId).
+      order('created_at', { ascending: false }).
+      limit(limit);
+      if (itemId) query = query.eq('item_id', itemId);
+      const { data, error } = await query;
+      if (error) throw error;
+      const liveRows = decorateMovementRows(data || []);
+      if (!itemId) writeInventoryMovementsCache(liveRows);
+      return liveRows;
+    } catch (error) {
+      if (!/inventory_movements|does not exist|schema cache|PGRST/i.test(String(error?.message || error))) {
+        console.warn('[INVENTORY] Movement ledger query failed; using derived history:', error?.message || error);
+      }
+    }
+  }
+
+  return buildDerivedInventoryMovements().
+  filter((row) => !itemId || row.item_id === itemId).
+  slice(0, limit);
 }
 
 export async function getInventoryStocktakes(limit = 12) {
@@ -486,7 +772,6 @@ export async function getLowStockItems() {
 }
 
 export async function discardDraft(id) {
-  const { readSyncQueue, writeSyncQueue, readFailedSyncQueue, writeFailedSyncQueue } = await import('./syncStore.js');
   const trimmedActiveQueue = removeQueuedInventoryDraft(readSyncQueue(), id);
   if (trimmedActiveQueue.removed) {
     writeSyncQueue(trimmedActiveQueue.queue);

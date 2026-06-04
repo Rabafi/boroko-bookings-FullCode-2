@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { state } from '../../state.js';
+import { broadcastSyncStatus } from '../connectivity.js';
 
 export const meshState = {
   enabled: false,
@@ -113,8 +114,7 @@ export function registerPeer(nodeId, address, httpPort, clockOffsetMs = 0) {
     lastSeenAt: new Date().toISOString(),
     clockOffsetMs
   });
-  // Dynamically broadcast the updated mesh status to the React renderer
-  import('../connectivity.js').then((m) => m.broadcastSyncStatus()).catch(() => {});
+  broadcastSyncStatus();
 }
 
 /**
@@ -124,7 +124,6 @@ export function removePeer(nodeId) {
   if (meshState.peers.has(nodeId)) {
     meshState.peers.delete(nodeId);
     console.log(`[MeshState] Peer disconnected: ${nodeId}`);
-    // Dynamically broadcast the updated mesh status to the React renderer
-    import('../connectivity.js').then((m) => m.broadcastSyncStatus()).catch(() => {});
+    broadcastSyncStatus();
   }
 }

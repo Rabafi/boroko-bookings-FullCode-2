@@ -1,16 +1,32 @@
-# React + Vite
+# Boroko Manager PWA
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+The Manager PWA is the mobile operations surface for lodge managers and admins. It is designed for dashboard visibility, alerts, approvals, reports, maintenance, inventory checks, and light operational actions.
 
-Currently, two official plugins are available:
+## Local Checks
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+Run from the repository root:
 
-## React Compiler
+- `npm run manager:install`
+- `npm run manager:lint`
+- `npm run manager:build`
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+Or run inside this folder:
 
-## Expanding the ESLint configuration
+- `npm ci`
+- `npm run lint`
+- `npm run build`
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+## Production Notes
+
+- The app uses Supabase Auth plus Boroko app-session validation.
+- High-risk booking, payment, quotation, conference, and financial mutations are blocked from the PWA and must be handled in the Front Desk desktop app.
+- Offline queue health shown in the PWA is device-local only. It does not replace the desktop System Health panel.
+- Keep service-role keys out of this app. It must use only public browser-safe environment values.
+
+## Release Checklist
+
+- Lint and build pass.
+- Login works for an enabled manager user.
+- Dashboard, alerts, bookings, money, control, and more screens load without console errors.
+- The service worker cache is refreshed after deploy.
+- The production site points at the intended Supabase project.

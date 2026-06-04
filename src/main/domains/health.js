@@ -205,6 +205,50 @@ export async function getSystemHealth() {
 
       }
     }).then((r) => ['create_pos_order', r]),
+    probeRpc('approve_pos_void_with_pin', {
+      payload: {
+        order_id: probePosOrderId,
+        lodge_id: state.lodgeId,
+        requested_by: state.currentUser?.id || null,
+        approved_by: state.currentUser?.id || null,
+        reason: 'contract probe',
+        override_log_id: randomUUID(),
+        created_at: probeNow
+      }
+    }).then((r) => ['approve_pos_void_with_pin', r]),
+    probeRpc('get_pos_sales_summary', {
+      p_lodge_id: state.lodgeId,
+      p_start_date: '2099-12-01',
+      p_end_date: '2099-12-02',
+      p_outlet_selector: 'all'
+    }, { expectSuccessEnvelope: false }).then((r) => ['get_pos_sales_summary', r]),
+    probeRpc('get_inventory_spend_summary', {
+      p_lodge_id: state.lodgeId,
+      p_start_date: '2099-12-01',
+      p_end_date: '2099-12-02',
+      p_outlet_selector: 'all'
+    }, { expectSuccessEnvelope: false }).then((r) => ['get_inventory_spend_summary', r]),
+    probeRpc('adjust_inventory_stock', {
+      p_item_id: randomUUID(),
+      p_lodge_id: state.lodgeId,
+      p_delta: 1,
+      p_notes: 'contract probe'
+    }).then((r) => ['adjust_inventory_stock', r]),
+    probeRpc('upsert_pos_cashup', {
+      payload: {
+        id: randomUUID(),
+        lodge_id: randomUUID(),
+        date: '2099-12-01',
+        opening_float: 0,
+        expected_cash_drawer: 0,
+        expected_by_method: {},
+        counted_by_method: {},
+        variance_by_method: {},
+        net_sales: 0,
+        notes: 'contract probe',
+        created_at: probeNow
+      }
+    }).then((r) => ['upsert_pos_cashup', r]),
     probeRpc('add_booking_charge', {
       p_booking_id: probeBookingId,
       p_lodge_id: state.lodgeId,

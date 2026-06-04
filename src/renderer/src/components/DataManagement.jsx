@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useLocation } from 'react-router-dom'
 import { Database, Upload, Download, FileSpreadsheet, Users, BedDouble, Receipt, ShoppingCart, CheckCircle2, AlertCircle, Loader2, HardDrive, ShieldCheck } from 'lucide-react'
 import DataImport from './DataImport'
 
@@ -177,14 +178,9 @@ function ExportTab() {
 
 function BackupsTab() {
   const [info, setInfo] = useState({ backups: [], backupDir: '', policy: null })
-  const [loading, setLoading] = useState(false)
-  const [result, setResult] = useState(null)
   const [policySaving, setPolicySaving] = useState(false)
   const [policyRunning, setPolicyRunning] = useState(false)
   const [policyResult, setPolicyResult] = useState(null)
-  const [verifying, setVerifying] = useState('')
-  const [verifyResult, setVerifyResult] = useState(null)
-  const [restoreResult, setRestoreResult] = useState(null)
   const [policy, setPolicy] = useState({
     enabled: false,
     target_dir: '',
@@ -209,15 +205,6 @@ function BackupsTab() {
   useEffect(() => {
     loadInfo()
   }, [])
-
-  const handleCreate = async () => {
-    setLoading(true)
-    setResult(null)
-    const res = await window.api.backup.createManual().catch((e) => ({ success: false, error: e.message }))
-    setResult(res)
-    setLoading(false)
-    loadInfo()
-  }
 
   const savePolicy = async (updates) => {
     setPolicySaving(true)
@@ -270,31 +257,6 @@ function BackupsTab() {
     } finally {
       setPolicyRunning(false)
     }
-  }
-
-  const verifyBackup = async (name) => {
-    setVerifying(name)
-    setVerifyResult(null)
-    try {
-      const res = await window.api.backup.verify(name)
-      setVerifyResult(res)
-    } catch (e) {
-      setVerifyResult({ success: false, error: e.message || 'Backup verification failed.' })
-    } finally {
-      setVerifying('')
-    }
-  }
-
-  const previewRestore = async (name) => {
-    setRestoreResult(null)
-    const res = await window.api.backup.previewRestore(name).catch((e) => ({ success: false, error: e.message }))
-    setRestoreResult(res)
-  }
-
-  const createRestoreRehearsal = async (name) => {
-    setRestoreResult(null)
-    const res = await window.api.backup.createRestoreRehearsal(name).catch((e) => ({ success: false, error: e.message }))
-    setRestoreResult(res)
   }
 
   const policyStatus = info.policy || {}
@@ -454,132 +416,20 @@ function BackupsTab() {
         )}
       </div>
 
-      <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-gray-200">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h2 className="text-lg font-bold text-gray-900">Backup Center</h2>
-            <p className="mt-1 text-sm text-gray-500">
-              Create expanded local snapshots for recovery, migration, or support-led restore work.
-            </p>
-          </div>
-          <div className="flex gap-2">
-            <button
-              onClick={handleCreate}
-              disabled={loading}
-              className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-700 disabled:opacity-60"
-            >
-              {loading ? <Loader2 size={16} className="animate-spin" /> : <HardDrive size={16} />}
-              {loading ? 'Creating…' : 'Create Manual Backup'}
-            </button>
-            <button
-              onClick={() => window.api.backup.openFolder()}
-              className="inline-flex items-center gap-2 rounded-xl border border-gray-200 px-4 py-2.5 text-sm font-semibold text-gray-700 transition hover:bg-gray-50"
-            >
-              <Download size={16} />
-              Open Backup Folder
-            </button>
-          </div>
-        </div>
-
-        {result?.success && (
-          <div className="mt-4 rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
-            Manual backup created: {result.filePath}
-          </div>
-        )}
-        {result?.error && (
-          <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-            {result.error}
-          </div>
-        )}
-        {verifyResult && (
-          <div className={`mt-4 rounded-xl border px-4 py-3 text-sm ${
-            verifyResult.success ? 'border-green-200 bg-green-50 text-green-700' : 'border-amber-200 bg-amber-50 text-amber-700'
-          }`}>
-            <p className="font-semibold">
-              {verifyResult.success ? 'Backup verified' : 'Backup needs attention'}
-            </p>
-            {verifyResult.error && <p className="mt-1">{verifyResult.error}</p>}
-            {verifyResult.name && (
-              <p className="mt-1">
-                {verifyResult.name} · {verifyResult.table_count || 0} table snapshots · {(Number(verifyResult.size || 0) / 1024).toFixed(1)} KB
-              </p>
-            )}
-            {verifyResult.counts && (
-              <p className="mt-1 text-xs">
-                Bookings: {verifyResult.counts.bookings || 0} · Guests: {verifyResult.counts.customers || 0} · Rooms: {verifyResult.counts.rooms || 0} · POS: {verifyResult.counts.pos_orders || 0}
-              </p>
-            )}
-            {Array.isArray(verifyResult.issues) && verifyResult.issues.length > 0 && (
-              <p className="mt-1 text-xs">{verifyResult.issues.join(' ')}</p>
-            )}
-          </div>
-        )}
-        {restoreResult && (
-          <div className={`mt-4 rounded-xl border px-4 py-3 text-sm ${
-            restoreResult.success ? 'border-blue-200 bg-blue-50 text-blue-700' : 'border-amber-200 bg-amber-50 text-amber-700'
-          }`}>
-            <p className="font-semibold">
-              {restoreResult.mode === 'preview' ? 'Restore preview' : restoreResult.success ? 'Restore rehearsal package created' : 'Restore preview needs attention'}
-            </p>
-            {restoreResult.error && <p className="mt-1">{restoreResult.error}</p>}
-            {restoreResult.recommendation && <p className="mt-1">{restoreResult.recommendation}</p>}
-            {restoreResult.reportPath && <p className="mt-1 break-all text-xs">Report: {restoreResult.reportPath}</p>}
-            {Array.isArray(restoreResult.restore_plan) && (
-              <p className="mt-1 text-xs">
-                Would restore: {restoreResult.restore_plan.map((entry) => `${entry.table} (${entry.count})`).join(', ') || 'no table data'}
-              </p>
-            )}
-          </div>
-        )}
-      </div>
-
-      <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-gray-200">
-        <h3 className="text-sm font-semibold text-gray-900">Recent Backups</h3>
-        <p className="mt-1 text-xs text-gray-500">{info.backupDir || 'Backup directory unavailable'}</p>
-        <div className="mt-4 space-y-3">
-          {(info.backups || []).map((backup) => (
-            <div key={backup.name} className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-gray-50 px-4 py-3">
-              <div>
-                <p className="text-sm font-semibold text-gray-900">{backup.name}</p>
-                <p className="mt-1 text-xs text-gray-500">
-                  {new Date(backup.created).toLocaleString('en-GB')} · {(Number(backup.size || 0) / 1024).toFixed(1)} KB
-                </p>
-              </div>
-              <button
-                onClick={() => verifyBackup(backup.name)}
-                disabled={verifying === backup.name}
-                className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 transition hover:bg-gray-50 disabled:opacity-60"
-              >
-                {verifying === backup.name ? <Loader2 size={13} className="animate-spin" /> : <ShieldCheck size={13} />}
-                {verifying === backup.name ? 'Checking...' : 'Verify'}
-              </button>
-              <button
-                onClick={() => previewRestore(backup.name)}
-                className="inline-flex items-center gap-2 rounded-lg border border-blue-200 bg-white px-3 py-1.5 text-xs font-semibold text-blue-700 transition hover:bg-blue-50"
-              >
-                Preview Restore
-              </button>
-              <button
-                onClick={() => createRestoreRehearsal(backup.name)}
-                className="inline-flex items-center gap-2 rounded-lg border border-purple-200 bg-white px-3 py-1.5 text-xs font-semibold text-purple-700 transition hover:bg-purple-50"
-              >
-                Rehearsal Copy
-              </button>
-            </div>
-          ))}
-          {!info.backups?.length && (
-            <div className="rounded-xl border border-dashed border-gray-200 px-4 py-8 text-center text-sm text-gray-500">
-              No local backups found yet. Create one to start building restore coverage for this device.
-            </div>
-          )}
-        </div>
-      </div>
     </div>
   )
 }
 
 export default function DataManagement() {
+  const location = useLocation()
   const [tab, setTab] = useState(0)
+
+  useEffect(() => {
+    const requestedTab = location.state?.activeTab
+    if (requestedTab === 'export') setTab(1)
+    if (requestedTab === 'backups') setTab(2)
+    if (requestedTab === 'import') setTab(0)
+  }, [location.state?.activeTab])
 
   return (
     <div className="p-6 max-w-5xl">

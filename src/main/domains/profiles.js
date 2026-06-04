@@ -5,20 +5,18 @@ import path from 'path'
 import { state } from '../state.js'
 import { writeAuthCache } from './authCache.js'
 import { clearActivityLog } from './misc.js'
+import { clearBackendSession } from './authClients.js'
+import { clearCache } from './cacheStore.js'
+import { refreshAllCaches } from './cacheRefresh.js'
 import { checkOnline } from './connectivity.js'
+import { ensureDir, readJsonFile, writeJsonFile } from './fileStore.js'
 import { isUuid, normalizeLodgeId } from './shared.js'
 import {
-  clearBackendSession,
-  clearCache,
-  clearSessionNonce,
-  ensureDir,
-  readJsonFile,
   readSyncMeta,
-  refreshAllCaches,
   writeFailedSyncQueue,
-  writeJsonFile,
   writeSyncQueue
-} from './infrastructure.js'
+} from './syncStore.js'
+import { clearSessionNonce } from './authSession.js'
 
 export const PROFILE_STATUS = {
   DRAFT: 'draft',
@@ -131,10 +129,22 @@ export function ensureProfileCacheFiles(profileLodgeId) {
   ['pool-day-use.json', []],
   ['inventory-items.json', []],
   ['inventory-purchases.json', []],
+  ['inventory-movements.json', []],
   ['pos-menu-items.json', []],
   ['pos-orders.json', []],
   ['pos-order-items.json', []],
   ['pos-void-history.json', []],
+  ['pos-cashups.json', []],
+  ['pos-tabs.json', []],
+  ['pos-tables.json', []],
+  ['pos-tickets.json', []],
+  ['pos-shifts.json', []],
+  ['pos-hardware-settings.json', []],
+  ['pos-modifier-groups.json', []],
+  ['pos-promotions.json', []],
+  ['pos-floor-layout.json', []],
+  ['pos-customer-display.json', null],
+  ['pos-audit-log.json', []],
   ['activity-log.json', []],
   ['auth-cache.json', []],
   ['sync-queue.json', []],
@@ -167,10 +177,12 @@ function hasLegacyCacheData() {
   'pool-day-use.json',
   'inventory-items.json',
   'inventory-purchases.json',
+  'inventory-movements.json',
   'pos-menu-items.json',
   'pos-orders.json',
   'pos-order-items.json',
   'pos-void-history.json',
+  'pos-cashups.json',
   'auth-cache.json',
   'sync-queue.json',
   'sync-failed.json',
@@ -215,10 +227,12 @@ function migrateLegacySingleLodgeProfile() {
   'pool-day-use.json',
   'inventory-items.json',
   'inventory-purchases.json',
+  'inventory-movements.json',
   'pos-menu-items.json',
   'pos-orders.json',
   'pos-order-items.json',
   'pos-void-history.json',
+  'pos-cashups.json',
   'auth-cache.json',
   'sync-queue.json',
   'sync-failed.json',

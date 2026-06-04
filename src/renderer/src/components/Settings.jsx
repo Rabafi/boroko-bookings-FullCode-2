@@ -1,9 +1,10 @@
 import { useEffect, useState, useRef, useContext, useMemo, lazy, Suspense } from 'react'
 import { useLocation } from 'react-router-dom'
-import { Building2, Phone, Mail, MapPin, Globe, Hash, Save, Upload, X, Image, Moon, RefreshCw, CheckCircle2, AlertTriangle, Key, ShieldCheck, Clock, CreditCard, Copy, TrendingUp, ArrowUpCircle, Settings as SettingsIcon, MessageCircle, FileText, Info, Send, Sparkles, Download, RotateCcw } from 'lucide-react'
+import { Building2, Phone, Mail, MapPin, Globe, Hash, Save, Upload, X, Image, Moon, RefreshCw, CheckCircle2, AlertTriangle, Key, ShieldCheck, Clock, CreditCard, Copy, TrendingUp, ArrowUpCircle, Settings as SettingsIcon, MessageCircle, FileText, Info, Send, Sparkles, Download, RotateCcw, Sun, Monitor } from 'lucide-react'
 import { useSettings, UnsavedChangesContext } from '../app-context'
 import { Modal } from './shared/Modal'
 import { extractReleaseHighlights, formatReleaseDate, normalizeReleaseNotes, toReleaseSections } from '../utils/updatePresentation'
+import { applyThemeMode, getStoredThemeMode, resolveThemeMode, saveThemeMode } from '../utils/themeMode'
 const SystemHealthPanel = lazy(() => import('./SystemHealthPanel'))
 const SubscriptionAccessPanel = lazy(() => import('./SubscriptionAccessPanel'))
 
@@ -75,6 +76,7 @@ export default function Settings() {
   const [form, setForm] = useState(null)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [saveError, setSaveError] = useState('')
   const [logoPreview, setLogoPreview] = useState(null)
   const [heroPreview, setHeroPreview] = useState(null)
   const [bookingFaqText, setBookingFaqText] = useState('')
@@ -88,10 +90,9 @@ export default function Settings() {
   const pendingNavRef = useRef(null)
   const navGuard = useContext(UnsavedChangesContext)
 
-  // Dark mode
-  const [darkMode, setDarkMode] = useState(
-    () => localStorage.getItem('bb_dark_mode') === 'true'
-  )
+  // Theme mode
+  const [themeMode, setThemeMode] = useState(() => getStoredThemeMode())
+  const [darkModeActive, setDarkModeActive] = useState(() => resolveThemeMode(getStoredThemeMode()))
 
   // App updates
   const [appVersion, setAppVersion] = useState('')
@@ -121,6 +122,7 @@ export default function Settings() {
   const [emailSaving, setEmailSaving] = useState(false)
   const [emailTesting, setEmailTesting] = useState(false)
   const [emailStatus, setEmailStatus] = useState(null)
+  const [emailTouched, setEmailTouched] = useState(false)
 
   const formatBytes = (bytes = 0) => {
     if (bytes < 1024) return `${bytes} B`
@@ -139,7 +141,7 @@ export default function Settings() {
     return JSON.stringify(emailConfig) !== JSON.stringify(savedEmailSnapshotRef.current)
   }, [emailConfig])
 
-  const isDirty = isFormDirty || isEmailDirty
+  const isDirty = isFormDirty || (emailTouched && isEmailDirty)
 
   useEffect(() => {
     if (!isDirty) return
@@ -344,11 +346,19 @@ export default function Settings() {
     setUpdateSnoozedUntil(new Date(until).toLocaleString())
   }
 
-  const toggleDarkMode = () => {
-    const next = !darkMode
-    setDarkMode(next)
-    localStorage.setItem('bb_dark_mode', String(next))
-    document.documentElement.classList.toggle('dark-mode', next)
+  useEffect(() => {
+    setDarkModeActive(applyThemeMode(themeMode))
+    if (themeMode !== 'system') return undefined
+    const media = window.matchMedia?.('(prefers-color-scheme: dark)')
+    if (!media) return undefined
+    const handleSystemTheme = () => setDarkModeActive(applyThemeMode('system'))
+    media.addEventListener?.('change', handleSystemTheme)
+    return () => media.removeEventListener?.('change', handleSystemTheme)
+  }, [themeMode])
+
+  const setTheme = (mode) => {
+    setThemeMode(mode)
+    setDarkModeActive(saveThemeMode(mode))
   }
 
   // License & Billing
@@ -500,7 +510,50 @@ export default function Settings() {
     })
   }, [globalSettings])
 
+  const normalizeSettingsForForm = (settings) => {
+    if (!settings) return settings
+    if (!settings.slug && settings.lodge_name) {
+      return { ...settings, slug: settings.lodge_name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') }
+    }
+    return settings
+  }
+
+  const applySavedSettings = (settings) => {
+    const savedSettings = normalizeSettingsForForm(settings)
+    setGlobalSettings(savedSettings)
+    setForm(JSON.parse(JSON.stringify(savedSettings)))
+    savedFormSnapshotRef.current = JSON.parse(JSON.stringify(savedSettings))
+    setLogoPreview(savedSettings?.logo || null)
+    setHeroPreview(savedSettings?.hero_image || null)
+    setBookingFaqText(faqToText(savedSettings?.booking_faq))
+  }
+
+  const discardChanges = () => {
+    const savedSettings = savedFormSnapshotRef.current
+      ? JSON.parse(JSON.stringify(savedFormSnapshotRef.current))
+      : null
+    if (savedSettings) {
+      setForm(savedSettings)
+      setGlobalSettings(savedSettings)
+      setLogoPreview(savedSettings?.logo || null)
+      setHeroPreview(savedSettings?.hero_image || null)
+      setBookingFaqText(faqToText(savedSettings?.booking_faq))
+    }
+    if (savedEmailSnapshotRef.current) {
+      setEmailConfig(JSON.parse(JSON.stringify(savedEmailSnapshotRef.current)))
+    }
+    setEmailTouched(false)
+    setSaved(false)
+    setSaveError('')
+  }
+
   const set = (field, value) => setForm((f) => ({ ...f, [field]: value }))
+
+  const toggleAssistant = () => {
+    const nextEnabled = form?.assistant_enabled !== true
+    set('assistant_enabled', nextEnabled)
+    setGlobalSettings((current) => current ? { ...current, assistant_enabled: nextEnabled } : current)
+  }
 
   // ── Logo handling ──────────────────────────────────────────────────────────
 
@@ -564,27 +617,31 @@ export default function Settings() {
     e?.preventDefault?.()
     setSaving(true)
     setSaved(false)
+    setSaveError('')
     try {
       const res = await window.api.settings.save(form)
       if (res.success) {
-        setGlobalSettings(res.data)
-        window.dispatchEvent(new CustomEvent('bb_ai_toggle'))
-        savedFormSnapshotRef.current = JSON.parse(JSON.stringify(res.data))
+        applySavedSettings(res.data)
         setSaved(true)
         setTimeout(() => setSaved(false), 3000)
+      } else {
+        setSaveError(res.error || 'Settings could not be saved right now.')
       }
     } catch (err) {
       console.error(err)
+      setSaveError(err?.message || 'Settings could not be saved right now.')
     }
     setSaving(false)
   }
 
   const setEmailField = (field, value) => {
+    setEmailTouched(true)
     setEmailConfig((current) => ({ ...current, [field]: value }))
   }
 
   const applyEmailProvider = (provider) => {
     const preset = EMAIL_PROVIDER_PRESETS[provider] || EMAIL_PROVIDER_PRESETS.custom
+    setEmailTouched(true)
     setEmailConfig((current) => ({
       ...current,
       provider,
@@ -612,6 +669,7 @@ export default function Settings() {
         const nextConfig = { ...emailConfig, from: fromValue || emailConfig.from }
         setEmailConfig(nextConfig)
         savedEmailSnapshotRef.current = JSON.parse(JSON.stringify(nextConfig))
+        setEmailTouched(false)
       } else {
         setEmailStatus({ ok: false, msg: result?.error || 'Could not save email setup right now.' })
       }
@@ -699,6 +757,13 @@ export default function Settings() {
           </button>
         )}
       </div>
+      {activeTab === 'general' && (saved || saveError) && (
+        <div className={`mb-4 rounded-lg border px-4 py-3 text-sm font-medium ${
+          saved ? 'border-green-200 bg-green-50 text-green-700' : 'border-red-200 bg-red-50 text-red-700'
+        }`}>
+          {saved ? 'Settings saved successfully.' : saveError}
+        </div>
+      )}
 
 {/* ── Tab bar ─────────────────────────────────────────────────────── */}
       <div className="flex gap-1 bg-gray-100 rounded-xl p-1 mb-6">
@@ -738,7 +803,7 @@ export default function Settings() {
             </div>
             <button
               type="button"
-              onClick={() => set('assistant_enabled', form?.assistant_enabled !== true)}
+              onClick={toggleAssistant}
               className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${
                 form?.assistant_enabled === true ? 'bg-green-600' : 'bg-gray-200'
               }`}
@@ -753,30 +818,45 @@ export default function Settings() {
             </button>
           </div>
 
-          {/* ── Dark Mode ───────────────────────────────────────────────── */}
-          <div className="bg-white rounded-xl shadow-sm p-5 mb-6 flex items-center justify-between">
+          {/* ── Theme ───────────────────────────────────────────────────── */}
+          <div className="bg-white rounded-xl shadow-sm p-5 mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex items-center gap-3">
               <div className="w-9 h-9 bg-gray-100 rounded-lg flex items-center justify-center">
                 <Moon size={17} className="text-gray-600" />
               </div>
               <div>
-                <p className="text-sm font-semibold text-gray-800">Dark Mode</p>
-                <p className="text-xs text-gray-400">Inverts the display for low-light environments</p>
+                <p className="text-sm font-semibold text-gray-800">Appearance</p>
+                <p className="text-xs text-gray-400">
+                  {themeMode === 'system'
+                    ? `Following this computer: ${darkModeActive ? 'dark' : 'light'}`
+                    : 'Saved on this computer'}
+                </p>
               </div>
             </div>
-            <button
-              type="button"
-              onClick={toggleDarkMode}
-              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                darkMode ? 'bg-green-600' : 'bg-gray-200'
-              }`}
-            >
-              <span
-                className={`inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform ${
-                  darkMode ? 'translate-x-6' : 'translate-x-1'
-                }`}
-              />
-            </button>
+            <div className="grid grid-cols-3 rounded-xl border border-gray-200 bg-gray-100 p-1 text-xs font-semibold text-gray-500">
+              {[
+                { id: 'light', label: 'Light', icon: Sun },
+                { id: 'dark', label: 'Dark', icon: Moon },
+                { id: 'system', label: 'System', icon: Monitor }
+              ].map((option) => {
+                const Icon = option.icon
+                const active = themeMode === option.id
+                return (
+                  <button
+                    key={option.id}
+                    type="button"
+                    onClick={() => setTheme(option.id)}
+                    className={`inline-flex min-w-[88px] items-center justify-center gap-2 rounded-lg px-3 py-2 transition ${
+                      active ? 'bg-white text-gray-800 shadow-sm' : 'hover:text-gray-700'
+                    }`}
+                    aria-pressed={active}
+                  >
+                    <Icon size={14} />
+                    {option.label}
+                  </button>
+                )
+              })}
+            </div>
           </div>
 
           {/* ── App Updates ─────────────────────────────────────────────── */}
@@ -1520,13 +1600,7 @@ export default function Settings() {
               {isDirty && (
                 <button
                   type="button"
-                  onClick={() => {
-                    setForm(JSON.parse(JSON.stringify(savedFormSnapshotRef.current)))
-                    setEmailConfig(JSON.parse(JSON.stringify(savedEmailSnapshotRef.current)))
-                    setLogoPreview(savedFormSnapshotRef.current?.logo || null)
-                    setHeroPreview(savedFormSnapshotRef.current?.hero_image || null)
-                    setBookingFaqText(faqToText(savedFormSnapshotRef.current?.booking_faq))
-                  }}
+                  onClick={discardChanges}
                   className="btn-secondary flex items-center gap-2"
                 >
                   <RotateCcw size={15} />
@@ -1535,6 +1609,11 @@ export default function Settings() {
               )}
               {saved && (
                 <span className="text-sm text-green-600 font-medium flex items-center gap-1">✓ Settings saved successfully!</span>
+              )}
+              {saveError && (
+                <span className="text-sm text-red-600 font-medium flex items-center gap-1">
+                  <AlertTriangle size={15} /> {saveError}
+                </span>
               )}
             </div>
           </form>
@@ -1557,6 +1636,7 @@ export default function Settings() {
             </button>
             <button
               onClick={() => {
+                discardChanges()
                 setShowUnsavedModal(false)
                 pendingNavRef.current?.()
               }}
@@ -1568,18 +1648,23 @@ export default function Settings() {
             <button
               onClick={async () => {
                 setModalSaving(true)
+                setSaveError('')
                 try {
                   const res = await window.api.settings.save(form)
                   if (res.success) {
-                    setGlobalSettings(res.data)
-                    savedFormSnapshotRef.current = JSON.parse(JSON.stringify(res.data))
+                    applySavedSettings(res.data)
+                    setModalSaving(false)
+                    setShowUnsavedModal(false)
+                    pendingNavRef.current?.()
+                    return
                   }
+                  setSaveError(res.error || 'Settings could not be saved right now.')
                 } catch (err) {
                   console.error(err)
+                  setSaveError(err?.message || 'Settings could not be saved right now.')
                 }
                 setModalSaving(false)
                 setShowUnsavedModal(false)
-                pendingNavRef.current?.()
               }}
               disabled={modalSaving}
               className="btn-primary flex items-center gap-2"

@@ -7,11 +7,16 @@ function normalizeInventoryStockValue(value) {
   return Number.isFinite(numeric) ? numeric : 0;
 }
 
+function normalizePositiveQty(value, fallback = 1) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : fallback;
+}
+
 function resolveQueuedPosInventoryLink(entry = {}, { outletId = null } = {}) {
   if (entry.inventory_item_id) {
     return {
       inventoryItemId: entry.inventory_item_id,
-      depletionQty: Math.max(1, Number(entry.depletion_qty || 1))
+      depletionQty: normalizePositiveQty(entry.depletion_qty, 1)
     };
   }
 
@@ -21,30 +26,32 @@ function resolveQueuedPosInventoryLink(entry = {}, { outletId = null } = {}) {
   if (menuItem?.inventory_item_id) {
     return {
       inventoryItemId: menuItem.inventory_item_id,
-      depletionQty: Math.max(1, Number(menuItem.depletion_qty || 1))
+      depletionQty: normalizePositiveQty(menuItem.depletion_qty, 1)
     };
   }
 
   const itemName = String(entry.item_name || '').trim().toLowerCase();
-  if (!itemName) return { inventoryItemId: null, depletionQty: Math.max(1, Number(entry.depletion_qty || 1)) };
+  if (!itemName) return { inventoryItemId: null, depletionQty: normalizePositiveQty(entry.depletion_qty, 1) };
   const matches = readCache('inventory-items').filter((item) =>
   String(item?.name || '').trim().toLowerCase() === itemName && (
   !outletId || !item?.outlet_id || item.outlet_id === outletId)
   );
   return {
     inventoryItemId: matches.length === 1 ? matches[0].id : null,
-    depletionQty: Math.max(1, Number(entry.depletion_qty || 1))
+    depletionQty: normalizePositiveQty(entry.depletion_qty, 1)
   };
 }
 
 function buildQueuedPosInventoryUsage(items = [], { outletId = null } = {}) {
   const usage = new Map();
   for (const entry of items || []) {
-    const inventoryItemId = resolveQueuedPosInventoryLink(entry, { outletId }).inventoryItemId;
-    const depletionQty = resolveQueuedPosInventoryLink(entry, { outletId }).depletionQty;
+    const link = resolveQueuedPosInventoryLink(entry, { outletId });
+    const inventoryItemId = link.inventoryItemId;
+    const depletionQty = link.depletionQty;
     if (!inventoryItemId) continue;
-    const quantity = Math.max(0, Number(entry.quantity || 0));
-    usage.set(inventoryItemId, (usage.get(inventoryItemId) || 0) + quantity * Math.max(1, Number(depletionQty || 1)));
+    const quantity = Number(entry.quantity || 0);
+    if (!quantity) continue;
+    usage.set(inventoryItemId, (usage.get(inventoryItemId) || 0) + quantity * normalizePositiveQty(depletionQty, 1));
   }
   return usage;
 }

@@ -154,7 +154,7 @@ export default function Login() {
         saveEmail(emailStorageKey, email.trim().toLowerCase())
         setSavedEmails(getSavedEmails(emailStorageKey))
         if (res.warning) setWarning(res.warning)
-        await login(res.user, res.nonce)
+        await login(res.user)
       } else if (res?.code === 'backend_auth_schema_outdated') {
         const nextError = res?.error || 'Sign-in failed.'
         setError(nextError)
@@ -215,7 +215,7 @@ export default function Login() {
         setError(saved?.error || 'The saved trusted session could not be opened. Connect to the internet and sign in again.')
         return
       }
-      await login(saved.user, saved.nonce || '')
+      await login(saved.user)
     } catch (e) {
       setError(e.message || 'Could not open the saved trusted session.')
     } finally {

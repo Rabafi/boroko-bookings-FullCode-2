@@ -80,7 +80,7 @@ export default function Alerts({ onCountChange }) {
       blockedDemand: blockedRes.data || []
     }
     setData(d)
-    const totalCount = d.overdue.length + d.maintenance.filter(m => m.priority === 'urgent').length
+    const totalCount = d.overdue.length + d.unpaid.length + d.maintenance.length + d.lowStock.length + d.blockedDemand.length
     onCountChange?.(totalCount)
     setLoading(false)
   }, [user.lodge_id, today, isEnabled])

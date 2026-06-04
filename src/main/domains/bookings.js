@@ -1281,25 +1281,47 @@ export async function getApplicableRate(roomId, checkIn, checkOut) {
   }
 }
 
-export async function getActiveBookingForRoom(roomId) {
-  if (!state.isOnline) return null;
+function getCachedActiveBookingForRoom(roomId) {
+  if (!roomId) return null;
   const today = new Date().toISOString().split('T')[0];
-  const { data } = await state.supabase.
-  from('bookings').
-  select('id, customer_id, customers(name)').
-  eq('lodge_id', state.lodgeId).
-  eq('room_id', roomId).
-  in('status', ['confirmed', 'checked_in']).
-  lte('check_in', today).
-  gt('check_out', today).
-  limit(1).
-  maybeSingle();
-  return data ?
-  {
-    ...data,
-    customer_name: data.customer_name || data.customers?.name || null
-  } :
-  null;
+  const cached = (readCache('bookings') || []).find((entry) =>
+    entry?.lodge_id === state.lodgeId &&
+    entry?.room_id === roomId &&
+    ['confirmed', 'checked_in'].includes(String(entry?.status || '').toLowerCase()) &&
+    entry?.check_in <= today &&
+    entry?.check_out > today
+  );
+  if (!cached) return null;
+  return {
+    ...cached,
+    customer_name: cached.customer_name || cached.customers?.name || null
+  };
+}
+
+export async function getActiveBookingForRoom(roomId) {
+  if (!state.isOnline) return getCachedActiveBookingForRoom(roomId);
+  const today = new Date().toISOString().split('T')[0];
+  try {
+    const { data, error } = await state.supabase.
+    from('bookings').
+    select('id, customer_id, customers(name)').
+    eq('lodge_id', state.lodgeId).
+    eq('room_id', roomId).
+    in('status', ['confirmed', 'checked_in']).
+    lte('check_in', today).
+    gt('check_out', today).
+    limit(1).
+    maybeSingle();
+    if (error) throw error;
+    return data ?
+    {
+      ...data,
+      customer_name: data.customer_name || data.customers?.name || null
+    } :
+    null;
+  } catch {
+    return getCachedActiveBookingForRoom(roomId);
+  }
 }
 
 async function getNextBookingInvoiceNumber() {

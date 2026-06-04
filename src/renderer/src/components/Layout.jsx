@@ -300,6 +300,10 @@ export default function Layout() {
   const isBrowserPreview = typeof window === 'undefined' || !window.api?.settings
 
   useEffect(() => {
+    if (location.pathname.startsWith('/pos')) setCollapsed(true)
+  }, [location.pathname])
+
+  useEffect(() => {
     const checkSync = async () => {
       try {
         const status = await window.api.sync.getStatus()
@@ -1122,8 +1126,8 @@ export default function Layout() {
       {assistantEnabled && <OpsAiLayer />}
 
       {/* Mandatory Backup Block */}
-      {backupStatus.overdue && location.pathname !== '/settings' && (
-        <MandatoryBackupModal onGoToBackup={() => { const dest = '/settings'; const state = { state: { activeTab: 'system' } }; if (navGuard.current?.isDirty) { navGuard.current.confirmLeave(() => navigate(dest, state)) } else { navigate(dest, state) } }} />
+      {backupStatus.overdue && location.pathname !== '/data-management' && (
+        <MandatoryBackupModal onGoToBackup={() => { const dest = '/data-management'; const state = { state: { activeTab: 'backups' } }; if (navGuard.current?.isDirty) { navGuard.current.confirmLeave(() => navigate(dest, state)) } else { navigate(dest, state) } }} />
       )}
     </div>
   )

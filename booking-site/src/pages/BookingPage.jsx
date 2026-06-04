@@ -199,11 +199,15 @@ export default function BookingPage() {
       return
     }
 
-    if (EMAIL_FUNCTION_URL) {
+    if (EMAIL_FUNCTION_URL && data.confirmation_token) {
       fetch(EMAIL_FUNCTION_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ booking_id: data.booking_id, guest_email: data.guest_email })
+        body: JSON.stringify({
+          booking_id: data.booking_id,
+          guest_email: data.guest_email,
+          confirmation_token: data.confirmation_token
+        })
       }).catch(() => {})
     }
 

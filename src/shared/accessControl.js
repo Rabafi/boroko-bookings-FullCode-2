@@ -87,12 +87,20 @@ export const CAPABILITY_LABELS = {
 
 export const ALL_CAPABILITIES = Object.keys(CAPABILITY_LABELS)
 
+export const STAFF_STATUSES = ['active', 'suspended', 'archived']
+
+export const STAFF_STATUS_LABELS = {
+  active: 'Active',
+  suspended: 'Suspended',
+  archived: 'Archived'
+}
+
 export const ROLE_DEFINITIONS = {
   cashier: {
-    label: 'POS Cashier',
-    description: 'POS terminal access for a single outlet. Cannot void orders, manage menu, or view reports.',
+    label: 'POS Operator',
+    description: 'POS terminal access for a single outlet. Suitable for cashiers or waiters who take orders, handle payments, and cash up.',
     accent: 'orange',
-    highlights: ['POS Terminal', 'Create Orders', 'Outlet-scoped']
+    highlights: ['POS Terminal', 'Create Orders', 'Cash-Up', 'Outlet-scoped']
   },
   supervisor: {
     label: 'POS Supervisor',
@@ -120,15 +128,15 @@ export const ROLE_DEFINITIONS = {
   },
   manager: {
     label: 'Manager',
-    description: 'Full lodge operations with team management and subscription visibility.',
+    description: 'Daily operations leader. Can run the lodge and manage staff, but does not own deeper system administration.',
     accent: 'violet',
-    highlights: ['Operations', 'Staff', 'Reports', 'Subscription']
+    highlights: ['Operations', 'Staff', 'Reports', 'Approvals']
   },
   admin: {
     label: 'Admin',
-    description: 'Full lodge administration, system controls, and subscription management.',
+    description: 'System owner for lodge configuration, subscription, recovery tools, and higher-risk controls.',
     accent: 'rose',
-    highlights: ['Everything in lodge', 'System health', 'Backups', 'Sync recovery']
+    highlights: ['System controls', 'Subscription', 'Backups', 'Recovery']
   },
   super_admin: {
     label: 'Super Admin',
@@ -242,10 +250,7 @@ const ROLE_CAPABILITIES = {
     'data.export',
     'settings.view',
     'settings.manage_general',
-    'settings.manage_subscription',
     'system.health',
-    'sync.manage',
-    'backup.manage',
     'pos.view',
     'pos.manage',
     'pos.void',
@@ -253,8 +258,7 @@ const ROLE_CAPABILITIES = {
     'pos.price_override',
     'pos.menu_manage',
     'pos.reports',
-    'pos.combined_reports',
-    'online_booking.manage'
+    'pos.combined_reports'
   ],
   admin: [
     ...ALL_CAPABILITIES.filter((capability) => capability.startsWith('admin.') === false)
@@ -303,11 +307,28 @@ export function normalizeAppRole(role) {
   return 'receptionist'
 }
 
+export function normalizeStaffStatus(status) {
+  const normalized = String(status || '').trim().toLowerCase()
+  return STAFF_STATUSES.includes(normalized) ? normalized : 'active'
+}
+
 function getRoleDefinition(role) {
   return ROLE_DEFINITIONS[normalizeAppRole(role)] || ROLE_DEFINITIONS.receptionist
 }
 
-export function buildCapabilitySnapshot({ role, isMasterAdmin = false, features = {} } = {}) {
+function normalizeCapabilityOverrides(overrides = null) {
+  if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) {
+    return {}
+  }
+
+  return Object.fromEntries(
+    Object.entries(overrides).filter(([capability, allowed]) => (
+      ALL_CAPABILITIES.includes(capability) && typeof allowed === 'boolean'
+    ))
+  )
+}
+
+export function buildCapabilitySnapshot({ role, isMasterAdmin = false, features = {}, capabilityOverrides = {} } = {}) {
   if (isMasterAdmin) {
     const allTrue = Object.fromEntries(ALL_CAPABILITIES.map((capability) => [capability, true]))
     return {
@@ -315,13 +336,16 @@ export function buildCapabilitySnapshot({ role, isMasterAdmin = false, features 
       roleLabel: 'Master Admin',
       capabilities: allTrue,
       allowedByRole: allTrue,
+      effectiveCapabilities: allTrue,
       blockedByFeature: {},
+      capabilityOverrides: {},
       features: { ...features },
       enabledCount: ALL_CAPABILITIES.length
     }
   }
 
   const normalizedRole = normalizeAppRole(role)
+  const normalizedOverrides = normalizeCapabilityOverrides(capabilityOverrides)
   const allowedByRole = Object.fromEntries(ALL_CAPABILITIES.map((capability) => [
     capability,
     (ROLE_CAPABILITIES[normalizedRole] || []).includes(capability)
@@ -329,24 +353,31 @@ export function buildCapabilitySnapshot({ role, isMasterAdmin = false, features 
 
   const blockedByFeature = {}
   const capabilities = {}
+  const effectiveCapabilities = {}
 
   ALL_CAPABILITIES.forEach((capability) => {
     const requiredFeature = CAPABILITY_FEATURE_REQUIREMENTS[capability]
     const roleAllows = allowedByRole[capability] === true
     const featureBlocked = Boolean(requiredFeature) && features?.[requiredFeature] === false
+    const override = Object.prototype.hasOwnProperty.call(normalizedOverrides, capability)
+      ? normalizedOverrides[capability]
+      : null
 
     if (featureBlocked) blockedByFeature[capability] = requiredFeature
     capabilities[capability] = roleAllows && !featureBlocked
+    effectiveCapabilities[capability] = featureBlocked ? false : override ?? roleAllows
   })
 
   return {
     role: normalizedRole,
     roleLabel: getRoleDefinition(normalizedRole).label,
-    capabilities,
+    capabilities: effectiveCapabilities,
     allowedByRole,
+    effectiveCapabilities,
     blockedByFeature,
+    capabilityOverrides: normalizedOverrides,
     features: { ...features },
-    enabledCount: Object.values(capabilities).filter(Boolean).length
+    enabledCount: Object.values(effectiveCapabilities).filter(Boolean).length
   }
 }
 
@@ -361,8 +392,8 @@ export function getRoleOptions() {
   }))
 }
 
-export function getRoleCapabilities(role, features = {}) {
-  return buildCapabilitySnapshot({ role, features }).capabilities
+export function getRoleCapabilities(role, features = {}, capabilityOverrides = {}) {
+  return buildCapabilitySnapshot({ role, features, capabilityOverrides }).capabilities
 }
 
 export function isPwaEligibleRole(role) {

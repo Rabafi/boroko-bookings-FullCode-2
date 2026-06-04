@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Plus, Pencil, Trash2, ShoppingCart, X, ChevronDown, ChevronUp, Scan, Eye, EyeOff, Keyboard, Printer } from 'lucide-react'
+import { Plus, Pencil, Trash2, ShoppingCart, X, ChevronDown, ChevronUp, Scan, Eye, EyeOff, Keyboard, Printer, BadgePercent, ReceiptText, Calculator, RefreshCw } from 'lucide-react'
 import { Modal } from './shared/Modal'
 import { POSReceipt } from './shared/POSReceipt'
 import HorizontalScrollArea from './shared/HorizontalScrollArea'
@@ -14,6 +14,7 @@ const BAR_PACK_TEMPLATES = [
   { size: 12, label: '12 Pack' },
   { size: 24, label: 'Case (24)' }
 ]
+const CASHUP_CORE_METHODS = ['cash', 'card', 'bank_transfer', 'orange_money', 'myzaka', 'smega', 'other']
 const POS_LIVE_REFRESH_MS = 5000
 const POS_TOUCH_MODE_STORAGE_KEY = 'bb_pos_touch_mode'
 
@@ -25,6 +26,21 @@ const formatIsoTimestamp = (value = new Date()) => {
 
 const currency = 'P'
 const fmt = (v) => Number(v || 0).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+const ACTIVE_TABLE_STATUSES = new Set(['open', 'running', 'ready', 'delivered'])
+
+function normalizeTableStatus(status) {
+  const value = String(status || '').toLowerCase()
+  if (value === 'open') return 'running'
+  return ['available', 'running', 'ready', 'delivered'].includes(value) ? value : 'available'
+}
+
+function getTableStatusClasses(status) {
+  const normalized = normalizeTableStatus(status)
+  if (normalized === 'available') return 'border-slate-200 bg-white text-slate-700 hover:border-emerald-300 hover:bg-emerald-50'
+  if (normalized === 'ready') return 'border-blue-300 bg-blue-50 text-blue-800'
+  if (normalized === 'delivered') return 'border-violet-300 bg-violet-50 text-violet-800'
+  return 'border-amber-300 bg-amber-50 text-amber-800'
+}
 
 /**
  * Sanitize raw sync error strings for POS operators.
@@ -85,12 +101,17 @@ function normalizeStockValue(value) {
   return Number.isFinite(numeric) ? Math.max(0, numeric) : 0
 }
 
+function normalizePositiveQty(value, fallback = 1) {
+  const numeric = Number(value)
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : fallback
+}
+
 function getInventoryAvailableUnits(inventoryMap, inventoryItemId, depletionQty = 1) {
   if (!inventoryItemId) return Number.POSITIVE_INFINITY
   const inventoryRow = inventoryMap.get(inventoryItemId)
   if (!inventoryRow) return 0
   const stock = normalizeStockValue(inventoryRow.current_stock)
-  const depletion = Math.max(1, Number(depletionQty || 1))
+  const depletion = normalizePositiveQty(depletionQty, 1)
   return Math.floor(stock / depletion)
 }
 
@@ -103,7 +124,7 @@ function buildOrderStockUsage(items = []) {
   const usage = new Map()
   for (const item of items || []) {
     if (!item?.inventory_item_id) continue
-    const delta = Math.max(0, Number(item.quantity || 0)) * Math.max(1, Number(item.depletion_qty || 1))
+    const delta = Math.max(0, Number(item.quantity || 0)) * normalizePositiveQty(item.depletion_qty, 1)
     usage.set(item.inventory_item_id, (usage.get(item.inventory_item_id) || 0) + delta)
   }
   return usage
@@ -113,11 +134,34 @@ function normalizePosSubmitSignatureItem(item = {}) {
   return {
     menu_item_id: item.menu_item_id || null,
     inventory_item_id: item.inventory_item_id || null,
-    depletion_qty: Math.max(1, Number(item.depletion_qty || 1)),
+    depletion_qty: normalizePositiveQty(item.depletion_qty, 1),
     item_name: String(item.item_name || '').trim(),
     quantity: Number(item.quantity || 0),
     unit_price: Number(item.unit_price || 0)
   }
+}
+
+function buildDiscountLine(discountAmount, reason = '') {
+  const amount = Number(discountAmount || 0)
+  if (!(amount > 0)) return null
+  return {
+    order_key: 'discount:order',
+    menu_item_id: null,
+    inventory_item_id: null,
+    depletion_qty: 1,
+    item_name: reason ? `Discount: ${String(reason).trim()}` : 'Discount',
+    quantity: 1,
+    unit_price: -Math.round(amount * 100) / 100
+  }
+}
+
+function formatElapsed(startedAt, now = Date.now()) {
+  const started = new Date(startedAt || now).getTime()
+  if (!Number.isFinite(started)) return '0m'
+  const minutes = Math.max(0, Math.floor((now - started) / 60000))
+  if (minutes < 60) return `${minutes}m`
+  const hours = Math.floor(minutes / 60)
+  return `${hours}h ${minutes % 60}m`
 }
 
 function buildPosSubmitSignature({
@@ -126,6 +170,11 @@ function buildPosSubmitSignature({
   walkInName,
   orderNotes,
   paymentMethod,
+  paymentBreakdown,
+  taxTotal,
+  tipTotal,
+  tableName,
+  activeTabId,
   selectedOutletId,
   orderItems
 }) {
@@ -135,6 +184,11 @@ function buildPosSubmitSignature({
     walk_in_name: customerType === 'walkin' ? String(walkInName || '').trim() : null,
     notes: String(orderNotes || '').trim(),
     payment_method: customerType === 'room' ? 'folio' : (paymentMethod || 'cash'),
+    payment_breakdown: paymentBreakdown || [],
+    tax_total: Number(taxTotal || 0),
+    tip_total: Number(tipTotal || 0),
+    table_name: tableName || null,
+    tab_id: activeTabId || null,
     outlet_id: selectedOutletId || null,
     items: (orderItems || [])
       .map(normalizePosSubmitSignatureItem)
@@ -154,12 +208,18 @@ export default function POS() {
       return false
     }
   })
+  const [showStaffLogin, setShowStaffLogin] = useState(false)
+  const [showPaymentDetails, setShowPaymentDetails] = useState(false)
+  const [showManagerControls, setShowManagerControls] = useState(false)
+  const [setupSection, setSetupSection] = useState('tables')
 
   // Permission flags
   const canVoid       = canAccessCapability(access, 'pos.void')
+  const canDiscount   = canAccessCapability(access, 'pos.discount')
+  const canManagePos  = canAccessCapability(access, 'pos.manage')
   const canManageMenu = canAccessCapability(access, 'pos.menu_manage')
 
-  const [tab, setTab] = useState('terminal') // terminal | menu | history
+  const [tab, setTab] = useState('terminal') // terminal | menu | history | cashup | tickets | setup
 
   // Outlets
   const [outlets, setOutlets] = useState([])
@@ -182,6 +242,49 @@ export default function POS() {
   const [walkInName, setWalkInName] = useState('')
   const [orderNotes, setOrderNotes] = useState('')
   const [paymentMethod, setPaymentMethod] = useState('cash')
+  const [paymentReference, setPaymentReference] = useState('')
+  const [splitPaymentsEnabled, setSplitPaymentsEnabled] = useState(false)
+  const [paymentSplits, setPaymentSplits] = useState([{ method: 'cash', amount: '', reference: '' }])
+  const [discountMode, setDiscountMode] = useState('amount')
+  const [discountValue, setDiscountValue] = useState('')
+  const [discountReason, setDiscountReason] = useState('')
+  const [taxEnabled, setTaxEnabled] = useState(false)
+  const [taxRate, setTaxRate] = useState('')
+  const [tipAmount, setTipAmount] = useState('')
+  const [serviceMode, setServiceMode] = useState('takeaway')
+  const [tableName, setTableName] = useState('')
+  const [waiterName, setWaiterName] = useState('')
+  const [posTables, setPosTables] = useState([])
+  const [tableForm, setTableForm] = useState({ name: '', area: '', seats: '' })
+  const [savingTable, setSavingTable] = useState(false)
+  const [activeTabId, setActiveTabId] = useState('')
+  const [openTabs, setOpenTabs] = useState([])
+  const [tickets, setTickets] = useState([])
+  const [currentShift, setCurrentShift] = useState(null)
+  const [shiftFloat, setShiftFloat] = useState('')
+  const [shiftCloseCash, setShiftCloseCash] = useState('')
+  const [hardwareSettings, setHardwareSettings] = useState(null)
+  const [hardwareMsg, setHardwareMsg] = useState('')
+  const [receiptPrinters, setReceiptPrinters] = useState([])
+  const [posStaff, setPosStaff] = useState([])
+  const [selectedPosStaff, setSelectedPosStaff] = useState(null)
+  const [pendingPosStaffId, setPendingPosStaffId] = useState('')
+  const [staffPin, setStaffPin] = useState('')
+  const [tableServiceMode, setTableServiceMode] = useState('operator')
+  const [selectedWaiterStaff, setSelectedWaiterStaff] = useState(null)
+  const [pendingWaiterStaffId, setPendingWaiterStaffId] = useState('')
+  const [waiterPin, setWaiterPin] = useState('')
+  const [showWaiterPicker, setShowWaiterPicker] = useState(false)
+  const [modifierGroups, setModifierGroups] = useState([])
+  const [promotions, setPromotions] = useState([])
+  const [floorLayout, setFloorLayout] = useState({ areas: [] })
+  const [auditLog, setAuditLog] = useState([])
+  const [modifierTargetIdx, setModifierTargetIdx] = useState(null)
+  const [modifierDraftNotes, setModifierDraftNotes] = useState('')
+  const [modifierForm, setModifierForm] = useState({ name: '', options: '' })
+  const [promotionForm, setPromotionForm] = useState({ name: '', discount_type: 'amount', discount_value: '', applies_to_category: 'All' })
+  const [floorAreaName, setFloorAreaName] = useState('')
+  const [ticketClock, setTicketClock] = useState(Date.now())
   const [submitting, setSubmitting] = useState(false)
   const [orderSuccess, setOrderSuccess] = useState(false)
   const [syncStatus, setSyncStatus] = useState(null)
@@ -196,6 +299,21 @@ export default function POS() {
   const liveRefreshBusyRef = useRef(false)
   const submitIntentRef = useRef({ signature: null, intentId: null })
   const [barcodeFlash, setBarcodeFlash] = useState(null) // null | { name, found, wrongOutlet? }
+
+  const currentOperator = selectedPosStaff || {
+    id: currentUser?.id || null,
+    name: currentUser?.name || currentUser?.email || 'Logged-in user',
+    email: currentUser?.email || null,
+    role: currentUser?.role || null
+  }
+  const tableWaiterName = serviceMode === 'table'
+    ? tableServiceMode === 'waiter'
+      ? (selectedWaiterStaff?.name || waiterName || '')
+      : (currentOperator.name || '')
+    : ''
+  const tableWaiterId = tableServiceMode === 'waiter'
+    ? (selectedWaiterStaff?.id || null)
+    : (currentOperator.id || null)
 
   // Order history
   const [orders, setOrders] = useState([])
@@ -212,6 +330,27 @@ export default function POS() {
   const [voidLoading, setVoidLoading] = useState(false)
   const [showVoidPin, setShowVoidPin] = useState(false)
   const [showReceiptOrder, setShowReceiptOrder] = useState(null)
+
+  const [returnModal, setReturnModal] = useState(false)
+  const [returnTarget, setReturnTarget] = useState(null)
+  const [returnLines, setReturnLines] = useState({})
+  const [returnPin, setReturnPin] = useState('')
+  const [returnReason, setReturnReason] = useState('')
+  const [returnPaymentMethod, setReturnPaymentMethod] = useState('cash')
+  const [returnError, setReturnError] = useState('')
+  const [returnLoading, setReturnLoading] = useState(false)
+  const [showReturnPin, setShowReturnPin] = useState(false)
+
+  const [cashupDate, setCashupDate] = useState(() => toLocalDateInput(new Date()))
+  const [cashupOutletId, setCashupOutletId] = useState('')
+  const [cashupOpeningFloat, setCashupOpeningFloat] = useState('')
+  const [cashupCounted, setCashupCounted] = useState({})
+  const [cashupNotes, setCashupNotes] = useState('')
+  const [cashupSummary, setCashupSummary] = useState(null)
+  const [cashupHistory, setCashupHistory] = useState([])
+  const [cashupLoading, setCashupLoading] = useState(false)
+  const [cashupSaving, setCashupSaving] = useState(false)
+  const [cashupError, setCashupError] = useState('')
 
   // Inventory items (for depletion linking)
   const [inventoryItems, setInventoryItems] = useState([])
@@ -302,7 +441,14 @@ export default function POS() {
   )
 
   useEffect(() => {
+    const enabled = settings?.vat_enabled === true
+    setTaxEnabled(enabled)
+    setTaxRate(enabled ? String(settings?.vat_rate || '') : '')
+  }, [settings?.vat_enabled, settings?.vat_rate])
+
+  useEffect(() => {
     selectedOutletRef.current = selectedOutlet
+    if (selectedOutlet?.id && !cashupOutletId) setCashupOutletId(selectedOutlet.id)
   }, [selectedOutlet])
 
   useEffect(() => {
@@ -356,6 +502,62 @@ export default function POS() {
     }
   }, [histEnd, histStart])
 
+  const loadCashup = useCallback(async () => {
+    setCashupLoading(true)
+    setCashupError('')
+    try {
+      const [summary, history] = await Promise.all([
+        window.api.pos.getCashupSummary({
+          date: cashupDate,
+          outlet_id: cashupOutletId || null,
+          opening_float: Number(cashupOpeningFloat || 0),
+          cashier_id: currentOperator.id || null,
+          cashier_name: currentOperator.name || null
+        }),
+        window.api.pos.getCashups(12, { cashier_id: currentOperator.id || null }).catch(() => [])
+      ])
+      if (summary?.success === false) {
+        setCashupError(summary.error || 'Could not load cash-up summary.')
+      } else {
+        setCashupSummary(summary || null)
+      }
+      setCashupHistory(Array.isArray(history) ? history : [])
+    } catch (err) {
+      setCashupError(err?.message || 'Could not load cash-up summary.')
+    } finally {
+      setCashupLoading(false)
+    }
+  }, [cashupDate, cashupOpeningFloat, cashupOutletId, currentOperator.id, currentOperator.name])
+
+  const loadPosOperations = useCallback(async () => {
+    const [tabs, ticketRows, shift, hardware, staffRows, modifierRows, promotionRows, floorRows, auditRows] = await Promise.all([
+      window.api.pos.getTabs?.().catch(() => []),
+      window.api.pos.getTickets?.({ station: 'all' }).catch(() => []),
+      window.api.pos.getCurrentShift?.(selectedOutlet?.id || null, selectedPosStaff?.id || currentUser?.id || null).catch(() => null),
+      window.api.pos.getHardwareSettings?.().catch(() => null),
+      window.api.pos.getStaff?.().catch(() => []),
+      window.api.pos.getModifierGroups?.().catch(() => []),
+      window.api.pos.getPromotions?.().catch(() => []),
+      window.api.pos.getFloorLayout?.().catch(() => ({ areas: [] })),
+      window.api.pos.getAuditLog?.(25).catch(() => [])
+    ])
+    const [tables, printers] = await Promise.all([
+      (window.api.pos.getTablesWithStatus?.(selectedOutlet?.id || null) || window.api.pos.getTables?.()).catch(() => []),
+      window.api.receipts.listPrinters?.().catch(() => [])
+    ])
+    setOpenTabs((tabs || []).filter((row) => ACTIVE_TABLE_STATUSES.has(String(row.status || 'open').toLowerCase())))
+    setTickets(ticketRows || [])
+    setCurrentShift(shift || null)
+    setHardwareSettings(hardware || null)
+    setPosStaff(staffRows || [])
+    setModifierGroups(modifierRows || [])
+    setPromotions(promotionRows || [])
+    setFloorLayout(floorRows || { areas: [] })
+    setAuditLog(auditRows || [])
+    setPosTables(tables || [])
+    setReceiptPrinters(printers || [])
+  }, [currentUser?.id, selectedOutlet?.id, selectedPosStaff?.id])
+
   useEffect(() => {
     if (tab !== 'history') return
     setHistEnd(toLocalDateInput(new Date()))
@@ -388,6 +590,20 @@ export default function POS() {
   }, [tab, loadOrders])
 
   useEffect(() => {
+    if (tab === 'cashup') loadCashup()
+  }, [tab, loadCashup])
+
+  useEffect(() => {
+    if (['terminal', 'tickets', 'setup', 'cashup'].includes(tab)) loadPosOperations()
+  }, [tab, loadPosOperations])
+
+  useEffect(() => {
+    if (tab !== 'tickets') return undefined
+    const timer = window.setInterval(() => setTicketClock(Date.now()), 60000)
+    return () => window.clearInterval(timer)
+  }, [tab])
+
+  useEffect(() => {
     if (!window.api?.sync?.getStatus || !window.api?.sync?.onStatusChanged) return
 
     let mounted = true
@@ -405,9 +621,11 @@ export default function POS() {
       if (mounted) {
         setSyncStatus(status || null)
         if (tab === 'history') loadOrders()
+        if (tab === 'cashup') loadCashup()
         if (tab === 'terminal') {
           loadMenu()
           loadInventoryItems()
+          loadPosOperations()
         }
       }
     })
@@ -426,11 +644,12 @@ export default function POS() {
     try {
       const tasks = [loadMenu(), loadInventoryItems()]
       if (includeOrders) tasks.push(loadOrders())
+      if (['terminal', 'tickets'].includes(tab)) tasks.push(loadPosOperations())
       await Promise.all(tasks)
     } finally {
       liveRefreshBusyRef.current = false
     }
-  }, [loadInventoryItems, loadMenu, loadOrders, offlineMode])
+  }, [loadInventoryItems, loadMenu, loadOrders, loadPosOperations, offlineMode, tab])
 
   useEffect(() => {
     if (offlineMode) return undefined
@@ -521,7 +740,11 @@ export default function POS() {
         order_key: orderKey,
         menu_item_id: item._virtual_inventory_item ? null : item.id,
         item_name: item.name,
+        category: item.category || null,
         unit_price: item.price,
+        base_unit_price: item.price,
+        modifiers: [],
+        item_notes: null,
         quantity: 1,
         inventory_item_id: item.inventory_item_id || null,
         depletion_qty: Number(item.depletion_qty || 1)
@@ -569,7 +792,31 @@ export default function POS() {
     })
   }
 
-  const orderTotal = orderItems.reduce((s, i) => s + i.quantity * i.unit_price, 0)
+  const orderSubtotal = orderItems.reduce((s, i) => s + i.quantity * i.unit_price, 0)
+  const parsedDiscountValue = Number(discountValue || 0)
+  const orderDiscountAmount = canDiscount && orderSubtotal > 0 && parsedDiscountValue > 0
+    ? Math.min(
+        orderSubtotal,
+        discountMode === 'percent'
+          ? orderSubtotal * Math.min(parsedDiscountValue, 100) / 100
+          : parsedDiscountValue
+      )
+    : 0
+  const discountLine = buildDiscountLine(orderDiscountAmount, discountReason)
+  const orderItemsForSubmit = discountLine ? [...orderItems, discountLine] : orderItems
+  const taxableSubtotal = Math.max(0, orderSubtotal - orderDiscountAmount)
+  const orderTaxTotal = taxEnabled ? Math.round((taxableSubtotal * Number(taxRate || 0) / 100) * 100) / 100 : 0
+  const orderTipTotal = Math.max(0, Number(tipAmount || 0))
+  const orderTotal = Math.max(0, taxableSubtotal + orderTaxTotal + orderTipTotal)
+  const normalizedPaymentBreakdown = splitPaymentsEnabled
+    ? paymentSplits.map((row) => ({
+        method: row.method || 'cash',
+        amount: Number(row.amount || 0),
+        reference: row.reference || null
+      })).filter((row) => row.amount > 0)
+    : [{ method: customerType === 'room' ? 'folio' : paymentMethod, amount: orderTotal, reference: paymentReference || null }]
+  const splitPaidTotal = normalizedPaymentBreakdown.reduce((sum, row) => sum + Number(row.amount || 0), 0)
+  const splitBalance = Math.round((orderTotal - splitPaidTotal) * 100) / 100
   const menuMutationsDisabled = offlineMode || menuSaving || !!barTemplateSavingKey
   const orderStockIssues = useMemo(() => {
     const usage = buildOrderStockUsage(orderItems)
@@ -585,13 +832,46 @@ export default function POS() {
       }
     }).filter(Boolean)
   }, [inventoryById, orderItems])
+  const currentOpenTab = useMemo(() => openTabs.find((row) => row.id === activeTabId) || null, [activeTabId, openTabs])
+  const visibleTables = useMemo(() => {
+    return posTables.filter((table) => table.active !== false && (!selectedOutlet?.id || !table.outlet_id || table.outlet_id === selectedOutlet.id))
+  }, [posTables, selectedOutlet?.id])
+
+  useEffect(() => {
+    if (!hardwareSettings?.customer_display_enabled) return
+    window.api.pos.updateCustomerDisplay?.({
+      outlet_id: selectedOutlet?.id || null,
+      table_name: serviceMode === 'table' ? tableName || null : null,
+      staff_name: currentOperator.name || tableWaiterName || null,
+      items: orderItems.map((item) => ({
+        item_name: item.item_name,
+        quantity: item.quantity,
+        unit_price: item.unit_price,
+        modifiers: item.modifiers || [],
+        item_notes: item.item_notes || null
+      })),
+      subtotal: orderSubtotal,
+      discount_total: orderDiscountAmount,
+      tax_total: orderTaxTotal,
+      tip_total: orderTipTotal,
+      total: orderTotal
+    }).catch(() => {})
+  }, [currentOperator.name, hardwareSettings?.customer_display_enabled, orderDiscountAmount, orderItems, orderSubtotal, orderTaxTotal, orderTipTotal, orderTotal, selectedOutlet?.id, serviceMode, tableName, tableWaiterName])
 
   const completeOrder = async () => {
     if (orderItems.length === 0) return
     if (outletsError || !selectedOutlet) { alert('No outlet is selected. Select Kitchen or Bar before completing the order.'); return }
     if (customerType === 'room' && !selectedRoom) { alert('Select a room first.'); return }
+    if (serviceMode === 'table') {
+      if (!tableName.trim()) { alert('Select a table first.'); return }
+      if (tableServiceMode === 'waiter' && !selectedWaiterStaff?.id && !waiterName.trim()) { alert('Select the waiter for this table.'); return }
+    }
     if (orderStockIssues.length > 0) {
       alert(`${orderStockIssues[0].itemName} no longer has enough stock for this order. Refresh the quantities and try again.`)
+      return
+    }
+    if (splitPaymentsEnabled && Math.abs(splitBalance) > 0.005) {
+      alert(`Split payments must match the order total. Remaining balance: ${currency} ${fmt(splitBalance)}`)
       return
     }
 
@@ -603,8 +883,13 @@ export default function POS() {
         walkInName,
         orderNotes,
         paymentMethod,
+        paymentBreakdown: normalizedPaymentBreakdown,
+        taxTotal: orderTaxTotal,
+        tipTotal: orderTipTotal,
+        tableName,
+        activeTabId,
         selectedOutletId: selectedOutlet?.id || null,
-        orderItems
+        orderItems: orderItemsForSubmit
       })
       if (submitIntentRef.current.signature !== submitSignature || !submitIntentRef.current.intentId) {
         submitIntentRef.current = {
@@ -614,6 +899,7 @@ export default function POS() {
       }
       const submitIntentId = submitIntentRef.current.intentId
 
+      let selectedBookingId = null
       if (customerType === 'room') {
         const booking = await window.api.pos.getActiveBookingForRoom(selectedRoom)
         if (!booking?.id) {
@@ -621,25 +907,111 @@ export default function POS() {
           setSubmitting(false)
           return
         }
+        selectedBookingId = booking.id
+      }
+
+      let tabIdForOrder = activeTabId || null
+      let tabNameForOrder = activeTabId ? openTabs.find((row) => row.id === activeTabId)?.tab_name || null : null
+      if (serviceMode === 'table' && !tabIdForOrder) {
+        const tableSession = await window.api.pos.openTableSession?.({
+          outlet_id: selectedOutlet.id,
+          table_name: tableName.trim(),
+          tab_name: tableName.trim(),
+          waiter_name: tableWaiterName || currentOperator.name || null,
+          waiter_id: tableWaiterId,
+          items: orderItems
+        })
+        if (!tableSession?.success) {
+          alert(tableSession?.error || 'Could not open table before completing the order.')
+          setSubmitting(false)
+          return
+        }
+        tabIdForOrder = tableSession.tab?.id || null
+        tabNameForOrder = tableSession.tab?.tab_name || tableName.trim()
       }
 
       const result = await window.api.pos.createOrder({
         id: submitIntentId,
         submit_intent_id: submitIntentId,
         room_id: customerType === 'room' ? selectedRoom : null,
+        booking_id: customerType === 'room' ? selectedBookingId : null,
         walk_in_name: customerType === 'walkin' ? (walkInName.trim() || 'Walk-in') : null,
-        items: orderItems,
+        items: orderItemsForSubmit,
         notes: orderNotes.trim() || null,
-        payment_method: customerType === 'room' ? 'folio' : paymentMethod,
-        outlet_id: selectedOutlet.id
+        payment_method: customerType === 'room' ? 'folio' : splitPaymentsEnabled ? 'split' : paymentMethod,
+        payment_breakdown: normalizedPaymentBreakdown,
+        gross_total: orderSubtotal,
+        discount_total: orderDiscountAmount,
+        tax_rate: taxEnabled ? Number(taxRate || 0) : 0,
+        tax_total: orderTaxTotal,
+        tip_total: orderTipTotal,
+        total: orderTotal,
+        service_mode: serviceMode,
+        table_name: serviceMode === 'table' ? tableName.trim() || null : null,
+        tab_name: tabNameForOrder,
+        waiter_name: serviceMode === 'table' ? tableWaiterName || null : null,
+        waiter_id: serviceMode === 'table' ? tableWaiterId || null : null,
+        cashier_id: currentOperator.id || null,
+        cashier_name: currentOperator.name || currentOperator.email || null,
+        tab_id: tabIdForOrder,
+        shift_id: currentShift?.id || null,
+        outlet_id: selectedOutlet.id,
+        outlet_name: selectedOutlet.name
       })
       if (result?.success) {
+        const receiptOrder = {
+          id: result.id || submitIntentId,
+          receipt_number: result.receipt_number || null,
+          room_id: customerType === 'room' ? selectedRoom : null,
+          booking_id: customerType === 'room' ? selectedBookingId : null,
+          walk_in_name: customerType === 'walkin' ? (walkInName.trim() || 'Walk-in') : null,
+          pos_order_items: orderItemsForSubmit.map((item, idx) => ({
+            id: item.id || `${submitIntentId}-${idx}`,
+            item_name: item.item_name,
+            quantity: Number(item.quantity || 0),
+            unit_price: Number(item.unit_price || 0),
+            modifiers: item.modifiers || [],
+            item_notes: item.item_notes || null
+          })),
+          payment_method: customerType === 'room' ? 'folio' : splitPaymentsEnabled ? 'split' : paymentMethod,
+          payment_breakdown: normalizedPaymentBreakdown,
+          gross_total: orderSubtotal,
+          discount_total: orderDiscountAmount,
+          tax_total: orderTaxTotal,
+          tip_total: orderTipTotal,
+          total: orderTotal,
+          table_name: serviceMode === 'table' ? tableName.trim() || null : null,
+          waiter_name: serviceMode === 'table' ? tableWaiterName || null : null,
+          cashier_name: currentOperator.name || currentOperator.email || null,
+          outlet_name: selectedOutlet.name,
+          created_at: new Date().toISOString(),
+          _pending_sync: result.offline === true,
+          _auto_print: hardwareSettings?.auto_print_receipts === true
+        }
         submitIntentRef.current = { signature: null, intentId: null }
         setOrderItems([])
         setWalkInName('')
         setOrderNotes('')
         setPaymentMethod('cash')
+        setPaymentReference('')
+        setDiscountValue('')
+        setDiscountReason('')
+        setDiscountMode('amount')
+        setTaxEnabled(settings?.vat_enabled === true)
+        setTaxRate(settings?.vat_enabled === true ? String(settings?.vat_rate || '') : '')
+        setTipAmount('')
+        setSplitPaymentsEnabled(false)
+        setPaymentSplits([{ method: 'cash', amount: '', reference: '' }])
+        setServiceMode('takeaway')
+        setTableName('')
+        setWaiterName('')
+        setSelectedWaiterStaff(null)
+        setPendingWaiterStaffId('')
+        setTableServiceMode('operator')
+        setActiveTabId('')
+        await loadPosOperations()
         await refreshLivePosState({ includeOrders: true })
+        if (receiptOrder._auto_print) setShowReceiptOrder(receiptOrder)
         setOrderSuccess(true)
         setTimeout(() => setOrderSuccess(false), 3000)
       } else {
@@ -912,7 +1284,7 @@ export default function POS() {
         order_id: voidTarget.id,
         pin: voidPin.trim(),
         reason: voidReason.trim(),
-        cashier_user_id: currentUser?.id || null,
+        cashier_user_id: currentOperator.id || currentUser?.id || null,
         outlet_id: voidTarget.outlet_id || selectedOutlet?.id || null
       })
 
@@ -949,9 +1321,421 @@ export default function POS() {
     }
   }
 
+  function openReturnModal(order) {
+    const lines = Object.fromEntries((order.pos_order_items || [])
+      .filter((line) => Number(line.quantity || 0) > 0 && Number(line.unit_price || 0) >= 0)
+      .map((line) => [line.id, '']))
+    setReturnTarget(order)
+    setReturnLines(lines)
+    setReturnPin('')
+    setReturnReason('')
+    setReturnPaymentMethod(order.payment_method || 'cash')
+    setReturnError('')
+    setShowReturnPin(false)
+    setReturnModal(true)
+  }
+
+  function closeReturnModal(force = false) {
+    if (returnLoading && !force) return
+    setReturnModal(false)
+    setReturnTarget(null)
+    setReturnLines({})
+    setReturnPin('')
+    setReturnReason('')
+    setReturnError('')
+    setShowReturnPin(false)
+  }
+
+  async function submitPartialReturn(e) {
+    e.preventDefault()
+    if (!returnTarget?.id) {
+      setReturnError('Order not found')
+      return
+    }
+    if (!returnPin.trim()) {
+      setReturnError('PIN is required')
+      return
+    }
+    if (!returnReason.trim()) {
+      setReturnError('Reason is required')
+      return
+    }
+    const selectedLines = Object.entries(returnLines)
+      .map(([line_id, quantity]) => ({ line_id, quantity: Number(quantity || 0) }))
+      .filter((line) => line.quantity > 0)
+    if (selectedLines.length === 0) {
+      setReturnError('Enter at least one quantity to return.')
+      return
+    }
+
+    setReturnLoading(true)
+    setReturnError('')
+    try {
+      const res = await window.api.pos.createPartialReturnWithPin({
+        order_id: returnTarget.id,
+        lines: selectedLines,
+        pin: returnPin.trim(),
+        reason: returnReason.trim(),
+        payment_method: returnPaymentMethod,
+        cashier_user_id: currentOperator.id || currentUser?.id || null,
+        outlet_id: returnTarget.outlet_id || selectedOutlet?.id || null
+      })
+      if (!res?.success) {
+        setReturnError(res?.error || 'Could not record this return.')
+        return
+      }
+      closeReturnModal(true)
+      await refreshLivePosState({ includeOrders: true })
+      if (tab === 'history') await loadOrders()
+    } catch (err) {
+      setReturnError(err?.message || 'Could not record this return.')
+    } finally {
+      setReturnLoading(false)
+    }
+  }
+
+  const cashupMethodRows = useMemo(() => {
+    const expected = cashupSummary?.by_method || {}
+    const keys = new Set(CASHUP_CORE_METHODS)
+    for (const [method, amount] of Object.entries(expected)) {
+      if (Number(amount || 0) !== 0) keys.add(method)
+    }
+    return DESKTOP_PAYMENT_METHODS.filter((method) => keys.has(method.value))
+  }, [cashupSummary])
+
+  const setCashupCountedMethod = (method, value) => {
+    setCashupCounted((current) => ({ ...current, [method]: value }))
+  }
+
+  const submitCashup = async (e) => {
+    e.preventDefault()
+    setCashupSaving(true)
+    setCashupError('')
+    try {
+      const counted = Object.fromEntries(
+        cashupMethodRows.map((method) => [method.value, Number(cashupCounted[method.value] || 0)])
+      )
+      const res = await window.api.pos.createCashup({
+        date: cashupDate,
+        outlet_id: cashupOutletId || null,
+        opening_float: Number(cashupOpeningFloat || 0),
+        counted,
+        notes: cashupNotes || null,
+        cashier_id: currentOperator.id || null,
+        cashier_name: currentOperator.name || null
+      })
+      if (!res?.success) {
+        setCashupError(res?.error || 'Could not save cash-up.')
+        return
+      }
+      setCashupNotes('')
+      setCashupCounted({})
+      await loadCashup()
+    } catch (err) {
+      setCashupError(err?.message || 'Could not save cash-up.')
+    } finally {
+      setCashupSaving(false)
+    }
+  }
+
+  const setSplitPayment = (idx, patch) => {
+    setPaymentSplits((rows) => rows.map((row, i) => i === idx ? { ...row, ...patch } : row))
+  }
+
+  const addSplitPayment = () => {
+    setPaymentSplits((rows) => [...rows, { method: 'cash', amount: '', reference: '' }])
+  }
+
+  const removeSplitPayment = (idx) => {
+    setPaymentSplits((rows) => rows.filter((_, i) => i !== idx))
+  }
+
+  const selectStaffForPos = async (staff) => {
+    if (!staff?.id) return
+    if (!staff.has_pin) {
+      alert('This staff member needs an approval PIN set in Staff before POS selection.')
+      return
+    }
+    const res = await window.api.pos.selectStaffWithPin?.({ staff_id: staff.id, pin: staffPin })
+    if (!res?.success) {
+      alert(res?.error || 'Could not select staff.')
+      return
+    }
+    setSelectedPosStaff(res.staff)
+    setPendingPosStaffId(res.staff?.id || '')
+    setStaffPin('')
+    setShowStaffLogin(false)
+  }
+
+  const selectWaiterForTable = async (staff) => {
+    if (!staff?.id) return
+    if (!staff.has_pin) {
+      alert('This waiter needs a POS PIN set in Staff first.')
+      return
+    }
+    const res = await window.api.pos.selectStaffWithPin?.({ staff_id: staff.id, pin: waiterPin })
+    if (!res?.success) {
+      alert(res?.error || 'Could not select waiter.')
+      return
+    }
+    setSelectedWaiterStaff(res.staff)
+    setPendingWaiterStaffId(res.staff?.id || '')
+    setWaiterName(res.staff?.name || '')
+    setWaiterPin('')
+    setShowWaiterPicker(false)
+  }
+
+  const applyPromotion = (promotion) => {
+    if (!promotion) return
+    setDiscountMode(promotion.discount_type === 'percent' ? 'percent' : 'amount')
+    setDiscountValue(String(promotion.discount_value || ''))
+    setDiscountReason(promotion.name || 'Promotion')
+  }
+
+  const openModifierEditor = (idx) => {
+    const line = orderItems[idx]
+    if (!line) return
+    setModifierTargetIdx(idx)
+    setModifierDraftNotes(line.item_notes || '')
+  }
+
+  const toggleLineModifier = (option) => {
+    if (modifierTargetIdx == null || !option?.name) return
+    setOrderItems((rows) => rows.map((line, idx) => {
+      if (idx !== modifierTargetIdx) return line
+      const current = Array.isArray(line.modifiers) ? line.modifiers : []
+      const exists = current.some((entry) => entry.name === option.name)
+      const nextModifiers = exists ? current.filter((entry) => entry.name !== option.name) : [...current, option]
+      const basePrice = Number(line.base_unit_price ?? line.unit_price ?? 0)
+      const delta = nextModifiers.reduce((sum, entry) => sum + Number(entry.price_delta || 0), 0)
+      return {
+        ...line,
+        base_unit_price: basePrice,
+        modifiers: nextModifiers,
+        unit_price: Math.round((basePrice + delta) * 100) / 100
+      }
+    }))
+  }
+
+  const saveLineInstructions = () => {
+    if (modifierTargetIdx == null) return
+    setOrderItems((rows) => rows.map((line, idx) => idx === modifierTargetIdx ? { ...line, item_notes: modifierDraftNotes.trim() || null } : line))
+    setModifierTargetIdx(null)
+    setModifierDraftNotes('')
+  }
+
+  const saveModifierGroup = async () => {
+    const options = modifierForm.options.split('\n').map((line) => {
+      const [name, price] = line.split('|')
+      return { name: String(name || '').trim(), price_delta: Number(price || 0) }
+    }).filter((option) => option.name)
+    const res = await window.api.pos.saveModifierGroup?.({ name: modifierForm.name, options })
+    if (!res?.success) {
+      alert(res?.error || 'Could not save modifier group.')
+      return
+    }
+    setModifierForm({ name: '', options: '' })
+    await loadPosOperations()
+  }
+
+  const savePromotion = async () => {
+    const res = await window.api.pos.savePromotion?.(promotionForm)
+    if (!res?.success) {
+      alert(res?.error || 'Could not save promotion.')
+      return
+    }
+    setPromotionForm({ name: '', discount_type: 'amount', discount_value: '', applies_to_category: 'All' })
+    await loadPosOperations()
+  }
+
+  const addFloorArea = async () => {
+    const name = floorAreaName.trim()
+    if (!name) return
+    const next = { areas: [...(floorLayout?.areas || []), { id: crypto.randomUUID(), name }] }
+    const res = await window.api.pos.saveFloorLayout?.(next)
+    if (!res?.success) {
+      alert(res?.error || 'Could not save floor area.')
+      return
+    }
+    setFloorAreaName('')
+    setFloorLayout(res.layout || next)
+  }
+
+  const saveCurrentTab = async () => {
+    if (orderItems.length === 0) return
+    if (serviceMode === 'table') {
+      if (!tableName.trim()) { alert('Select a table first.'); return }
+      if (tableServiceMode === 'waiter' && !selectedWaiterStaff?.id && !waiterName.trim()) { alert('Select the waiter for this table.'); return }
+    }
+    const name = tableName.trim() || walkInName.trim() || `Tab ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+    const res = await window.api.pos.saveTab?.({
+      id: activeTabId || undefined,
+      outlet_id: selectedOutlet?.id || null,
+      table_name: serviceMode === 'table' ? tableName.trim() || null : null,
+      tab_name: name,
+      customer_name: walkInName.trim() || null,
+      waiter_name: serviceMode === 'table' ? tableWaiterName || null : null,
+      waiter_id: serviceMode === 'table' ? tableWaiterId || null : null,
+      room_id: customerType === 'room' ? selectedRoom || null : null,
+      items: orderItems,
+      notes: orderNotes || null,
+      status: serviceMode === 'table' ? 'running' : 'open'
+    })
+    if (res?.already_open && res?.tab) {
+      alert(res.error || 'That table is already running. Loading it now.')
+      loadSavedTab(res.tab)
+      return
+    }
+    if (!res?.success) {
+      alert(res?.error || 'Could not save tab.')
+      return
+    }
+    setOrderItems([])
+    setOrderNotes('')
+    setWalkInName('')
+    setActiveTabId('')
+    await loadPosOperations()
+  }
+
+  const loadSavedTab = (savedTab) => {
+    setActiveTabId(savedTab.id)
+    setOrderItems(Array.isArray(savedTab.items) ? savedTab.items : [])
+    setOrderNotes(savedTab.notes || '')
+    setWalkInName(savedTab.customer_name || savedTab.tab_name || '')
+    setWaiterName(savedTab.waiter_name || '')
+    setSelectedWaiterStaff(null)
+    setPendingWaiterStaffId('')
+    setTableServiceMode(savedTab.waiter_name && savedTab.waiter_name !== currentOperator.name ? 'waiter' : 'operator')
+    setTableName(savedTab.table_name || '')
+    setServiceMode(savedTab.table_name ? 'table' : 'takeaway')
+  }
+
+  const selectTable = async (table) => {
+    if (!table?.name) return
+    const runningTab = table.tab || openTabs.find((row) =>
+      String(row.table_name || '').trim().toLowerCase() === String(table.name || '').trim().toLowerCase() &&
+      String(row.outlet_id || '') === String((table.outlet_id || selectedOutlet?.id || ''))
+    )
+    if (runningTab) {
+      if (orderItems.length > 0 && activeTabId !== runningTab.id && !window.confirm('Load this running table and replace the current unsaved order on screen?')) return
+      loadSavedTab(runningTab)
+      return
+    }
+    if (orderItems.length > 0 && !window.confirm('Start this table and clear the current unsaved order on screen?')) return
+    if (tableServiceMode === 'waiter' && !selectedWaiterStaff?.id && !waiterName.trim()) {
+      setServiceMode('table')
+      setTableName(table.name)
+      alert('Select the waiter for this table.')
+      return
+    }
+    setServiceMode('table')
+    setCustomerType('walkin')
+    setActiveTabId('')
+    setTableName(table.name)
+    setWalkInName(table.name)
+    setOrderItems([])
+    setOrderNotes('')
+    const res = await window.api.pos.openTableSession?.({
+      outlet_id: selectedOutlet?.id || table.outlet_id || null,
+      table_name: table.name,
+      tab_name: table.name,
+      waiter_name: tableWaiterName || currentOperator.name || null,
+      waiter_id: tableWaiterId,
+      items: []
+    })
+    if (!res?.success) {
+      alert(res?.error || 'Could not open table.')
+      return
+    }
+    if (res.tab) loadSavedTab(res.tab)
+    await loadPosOperations()
+  }
+
+  const runTableOverride = async (action) => {
+    if (!currentOpenTab?.id) return
+    let payload = { action, source_tab_id: currentOpenTab.id }
+    if (action === 'transfer' || action === 'merge') {
+      const target = window.prompt(action === 'transfer' ? 'Move this order to which table?' : 'Merge this order into which running table?')
+      if (!target?.trim()) return
+      payload.target_table_name = target.trim()
+    }
+    if (action === 'close') {
+      const reason = window.prompt('Reason for closing this table?') || 'Manager override'
+      payload.reason = reason
+      if (!window.confirm('Close this table without completing an order?')) return
+    }
+    const res = await window.api.pos.overrideTableTab?.(payload)
+    if (!res?.success) {
+      alert(res?.error || 'Could not update this table.')
+      return
+    }
+    if (res.tab) loadSavedTab(res.tab)
+    if (action === 'close') {
+      setOrderItems([])
+      setOrderNotes('')
+      setWalkInName('')
+      setActiveTabId('')
+      setTableName('')
+      setServiceMode('takeaway')
+    }
+    await loadPosOperations()
+  }
+
+  const openShift = async () => {
+    const res = await window.api.pos.openShift?.({
+      outlet_id: selectedOutlet?.id || null,
+      cashier_id: currentOperator.id || null,
+      cashier_name: currentOperator.name || currentOperator.email || null,
+      opening_float: Number(shiftFloat || 0)
+    })
+    if (!res?.success) {
+      alert(res?.error || 'Could not open shift.')
+      return
+    }
+    setShiftFloat('')
+    await loadPosOperations()
+  }
+
+  const closeShift = async () => {
+    const res = await window.api.pos.closeShift?.({
+      shift_id: currentShift?.id || null,
+      outlet_id: selectedOutlet?.id || null,
+      cashier_id: currentOperator.id || null,
+      cashier_name: currentOperator.name || currentOperator.email || null,
+      closing_cash: Number(shiftCloseCash || 0)
+    })
+    if (!res?.success) {
+      alert(res?.error || 'Could not close shift.')
+      return
+    }
+    setShiftCloseCash('')
+    await loadPosOperations()
+  }
+
+  const setTicketStatus = async (ticket, status) => {
+    const res = await window.api.pos.updateTicketStatus?.(ticket.id, status)
+    if (!res?.success) alert(res?.error || 'Could not update ticket.')
+    await loadPosOperations()
+  }
+
+  const saveHardware = async (patch = {}) => {
+    const res = await window.api.pos.saveHardwareSettings?.({ ...(hardwareSettings || {}), ...patch })
+    if (res?.success) {
+      setHardwareSettings(res.settings || null)
+      setHardwareMsg('POS hardware settings saved.')
+    } else {
+      setHardwareMsg(res?.error || 'Could not save hardware settings.')
+    }
+  }
+
+  const testHardware = async (kind) => {
+    const res = await window.api.pos.testHardware?.(kind)
+    setHardwareMsg(res?.message || res?.error || 'Hardware test finished.')
+  }
+
   const terminalShellClass = touchMode
-    ? 'grid min-h-0 flex-1 grid-cols-1 gap-2 overflow-hidden lg:grid-cols-[minmax(0,1fr)_minmax(20rem,0.42fr)] 2xl:grid-cols-[minmax(0,1fr)_minmax(22rem,0.38fr)]'
-    : 'grid min-h-0 flex-1 grid-cols-1 gap-2 overflow-hidden lg:grid-cols-[minmax(0,1fr)_minmax(18rem,0.34fr)] 2xl:grid-cols-[minmax(0,1fr)_minmax(20rem,0.32fr)]'
+    ? 'grid min-h-0 flex-1 grid-cols-1 gap-2 overflow-hidden lg:grid-cols-[minmax(0,1fr)_minmax(29rem,0.58fr)] 2xl:grid-cols-[minmax(0,1fr)_minmax(31rem,0.53fr)]'
+    : 'grid min-h-0 flex-1 grid-cols-1 gap-2 overflow-hidden lg:grid-cols-[minmax(0,1fr)_minmax(25rem,0.47fr)] 2xl:grid-cols-[minmax(0,1fr)_minmax(28rem,0.44fr)]'
   const terminalLayoutClass = touchMode
     ? 'flex min-h-0 flex-1 flex-col gap-2 overflow-hidden'
     : 'flex min-h-0 flex-1 flex-col gap-2 overflow-hidden'
@@ -961,7 +1745,7 @@ export default function POS() {
     : 'bb-card flex min-h-0 flex-col overflow-hidden p-2'
   const touchButtonClass = touchMode ? 'min-h-[2.4rem] rounded-xl text-sm' : 'rounded-xl text-xs'
   const touchInputClass = touchMode ? 'min-h-[2.35rem] text-sm' : 'min-h-[2.25rem] text-sm'
-  const touchItemGridClass = touchMode ? 'grid grid-cols-3 gap-2 2xl:grid-cols-4' : 'grid grid-cols-3 gap-1.5 2xl:grid-cols-5'
+  const touchItemGridClass = touchMode ? 'grid grid-cols-3 gap-2 xl:grid-cols-4 2xl:grid-cols-5' : 'grid grid-cols-3 gap-1.5 xl:grid-cols-4 2xl:grid-cols-6'
   const touchItemCardClass = touchMode
     ? 'bb-card min-h-[5rem] p-2 text-left transition-all active:scale-[0.99]'
     : 'bb-card min-h-[4.25rem] p-2 text-left transition-all'
@@ -1028,7 +1812,7 @@ export default function POS() {
               })}
             </div>
             <div className="bb-card flex gap-1 p-0.5">
-              {[['terminal', 'Terminal'], ...(canManageMenu ? [['menu', 'Menu Items']] : []), ['history', 'History']].map(([v, l]) => (
+              {[['terminal', 'Terminal'], ...(canManageMenu ? [['menu', 'Menu Items']] : []), ['history', 'History'], ['cashup', 'Cash-Up'], ['tickets', 'Tickets'], ['setup', 'Setup']].map(([v, l]) => (
                 <button
                   key={v}
                   onClick={() => setTab(v)}
@@ -1049,7 +1833,19 @@ export default function POS() {
       </div>
 
       {/* ── Terminal ── */}
-      {tab === 'terminal' && (
+      {tab === 'terminal' && !canManagePos && (
+        <div className="bb-card flex min-h-[420px] items-center justify-center p-6 text-center">
+          <div className="max-w-md">
+            <ShoppingCart size={36} className="mx-auto mb-3 text-slate-300" />
+            <h2 className="text-lg font-semibold text-slate-900">POS operator access required</h2>
+            <p className="mt-2 text-sm text-slate-500">
+              This account can view POS information, but it cannot create orders or manage tabs. Ask a manager to assign the POS Operator role.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {tab === 'terminal' && canManagePos && (
         <div className={terminalShellClass}>
           {/* Menu items panel */}
           <div className={menuPanelClass}>
@@ -1248,6 +2044,48 @@ export default function POS() {
                 {orderItemCount} item{orderItemCount === 1 ? '' : 's'}
               </span>
             </div>
+            <div className="mb-1.5 shrink-0">
+              <button
+                type="button"
+                className="flex w-full items-center justify-between rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700"
+                onClick={() => setShowStaffLogin((current) => !current)}
+              >
+                <span>{currentOperator?.name ? `Operator: ${currentOperator.name}` : 'Operator: logged-in user'}</span>
+                <span className="text-slate-400">{showStaffLogin ? 'Hide' : 'Change'}</span>
+              </button>
+              {showStaffLogin && (
+                <div className="mt-1.5 grid grid-cols-[1fr_4.5rem_auto] gap-1.5">
+                  <select
+                    className={`input ${touchInputClass}`}
+                    value={pendingPosStaffId || selectedPosStaff?.id || ''}
+                    onChange={(e) => {
+                      setPendingPosStaffId(e.target.value)
+                      if (!e.target.value) setSelectedPosStaff(null)
+                    }}
+                  >
+                    <option value="">{selectedPosStaff?.name || 'Select operator...'}</option>
+                    {posStaff.map((staff) => (
+                      <option key={staff.id} value={staff.id}>{staff.name}{staff.has_pin ? '' : ' (no PIN)'}</option>
+                    ))}
+                  </select>
+                  <input
+                    className={`input ${touchInputClass}`}
+                    value={staffPin}
+                    onChange={(e) => setStaffPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                    placeholder="PIN"
+                    type="password"
+                    inputMode="numeric"
+                  />
+                  <button
+                    type="button"
+                    className="rounded-lg bg-slate-900 px-3 text-xs font-semibold text-white"
+                    onClick={() => selectStaffForPos(posStaff.find((row) => row.id === (pendingPosStaffId || selectedPosStaff?.id)))}
+                  >
+                    Verify
+                  </button>
+                </div>
+              )}
+            </div>
             {touchMode && (
               <div className="mb-1.5 shrink-0 rounded-xl border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 shadow-sm">
                 <div className="flex items-center justify-between gap-4">
@@ -1334,8 +2172,185 @@ export default function POS() {
                       Bank transfer payments must include proof of payment before completion.
                     </p>
                   )}
+                  {paymentMethod !== 'cash' && !splitPaymentsEnabled && showPaymentDetails && (
+                    <>
+                      <input
+                        className="input mt-1.5 text-xs"
+                        value={paymentReference}
+                        onChange={(e) => setPaymentReference(e.target.value)}
+                        placeholder="Payment reference, slip no. or approval code"
+                      />
+                      {paymentMethod === 'card' && (
+                        <button
+                          type="button"
+                          className="mt-1.5 w-full rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-700"
+                          onClick={async () => {
+                            const res = await window.api.pos.sendPaymentTerminalTotal?.({ amount: orderTotal, reference: activeTabId || tableName || null })
+                            alert(res?.message || res?.error || 'Payment terminal request finished.')
+                          }}
+                        >
+                          Send Total to Card Machine
+                        </button>
+                      )}
+                    </>
+                  )}
                 </div>
               </>
+            )}
+
+            <div className="mb-1.5 grid shrink-0 grid-cols-3 gap-1.5">
+              {['takeaway', 'table', 'room'].map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => {
+                    setServiceMode(mode)
+                    if (mode === 'room') setCustomerType('room')
+                    if (mode !== 'room') setCustomerType('walkin')
+                  }}
+                  className={`rounded-lg px-2 py-1.5 text-xs font-semibold ${serviceMode === mode ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600'}`}
+                >
+                  {mode === 'takeaway' ? 'Quick' : mode === 'table' ? 'Table' : 'Room'}
+                </button>
+              ))}
+            </div>
+
+            {serviceMode === 'table' && (
+              <div className="mb-1.5 shrink-0 space-y-2">
+                <div className="rounded-xl border border-slate-200 bg-white p-2">
+                  <div className="grid grid-cols-2 gap-1.5 text-xs font-semibold">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setTableServiceMode('operator')
+                        setSelectedWaiterStaff(null)
+                        setPendingWaiterStaffId('')
+                        setWaiterName(currentOperator.name || '')
+                      }}
+                      className={`rounded-lg px-2 py-1.5 ${tableServiceMode === 'operator' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600'}`}
+                    >
+                      Operator serves
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setTableServiceMode('waiter')
+                        setShowWaiterPicker((current) => !current)
+                      }}
+                      className={`rounded-lg px-2 py-1.5 ${tableServiceMode === 'waiter' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600'}`}
+                    >
+                      Separate waiter
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    className="mt-1.5 flex w-full items-center justify-between rounded-lg bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-700"
+                    onClick={() => tableServiceMode === 'waiter' && setShowWaiterPicker((current) => !current)}
+                  >
+                    <span>Served by: {tableWaiterName || (tableServiceMode === 'waiter' ? 'Select waiter' : currentOperator.name)}</span>
+                    {tableServiceMode === 'waiter' && <span className="text-slate-400">{showWaiterPicker ? 'Hide' : 'Change'}</span>}
+                  </button>
+                  {tableServiceMode === 'waiter' && showWaiterPicker && (
+                    <div className="mt-1.5 grid grid-cols-[1fr_4.5rem_auto] gap-1.5">
+                      <select
+                        className={`input ${touchInputClass}`}
+                        value={pendingWaiterStaffId || selectedWaiterStaff?.id || ''}
+                        onChange={(e) => {
+                          setPendingWaiterStaffId(e.target.value)
+                          if (!e.target.value) {
+                            setSelectedWaiterStaff(null)
+                            setWaiterName('')
+                          }
+                        }}
+                      >
+                        <option value="">{selectedWaiterStaff?.name || 'Select waiter...'}</option>
+                        {posStaff.map((staff) => (
+                          <option key={staff.id} value={staff.id}>{staff.name}{staff.has_pin ? '' : ' (no PIN)'}</option>
+                        ))}
+                      </select>
+                      <input
+                        className={`input ${touchInputClass}`}
+                        value={waiterPin}
+                        onChange={(e) => setWaiterPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                        placeholder="PIN"
+                        type="password"
+                        inputMode="numeric"
+                      />
+                      <button
+                        type="button"
+                        className="rounded-lg bg-slate-900 px-3 text-xs font-semibold text-white"
+                        onClick={() => selectWaiterForTable(posStaff.find((row) => row.id === (pendingWaiterStaffId || selectedWaiterStaff?.id)))}
+                      >
+                        Verify
+                      </button>
+                    </div>
+                  )}
+                </div>
+                <div className="grid max-h-40 grid-cols-2 gap-1.5 overflow-y-auto pr-1">
+                  {visibleTables.map((table) => {
+                    const status = normalizeTableStatus(table.status || table.tab?.status)
+                    const selected = tableName === table.name
+                    return (
+                      <button
+                        key={table.id}
+                        type="button"
+                        onClick={() => selectTable(table)}
+                        className={`min-h-[3rem] rounded-lg border px-2 py-1.5 text-left text-xs font-semibold transition ${getTableStatusClasses(status)} ${selected ? 'ring-2 ring-slate-900/20' : ''}`}
+                      >
+                        <span className="block truncate">{table.name}</span>
+                        <span className="mt-0.5 block text-[0.68rem] uppercase tracking-wide opacity-75">
+                          {status === 'available' ? 'Available' : status === 'ready' ? 'Ready' : status === 'delivered' ? 'Delivered' : 'Running'}
+                        </span>
+                      </button>
+                    )
+                  })}
+                  {visibleTables.length === 0 && (
+                    <div className="col-span-2 rounded-lg bg-slate-50 px-3 py-4 text-center text-xs text-slate-500">
+                      No tables set up for this outlet.
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {openTabs.length > 0 && (
+              <div className="mb-1.5 flex shrink-0 gap-1.5 overflow-x-auto pb-1">
+                {openTabs.slice(0, 8).map((savedTab) => (
+                  <button
+                    key={savedTab.id}
+                    type="button"
+                    onClick={() => loadSavedTab(savedTab)}
+                    className={`shrink-0 rounded-lg border px-2 py-1 text-xs font-semibold ${activeTabId === savedTab.id ? 'border-emerald-300 bg-emerald-50 text-emerald-800' : 'border-slate-200 bg-white text-slate-600'}`}
+                  >
+                    {savedTab.table_name || savedTab.tab_name || 'Open tab'}
+                    {savedTab.table_name && (
+                      <span className="ml-1 font-normal opacity-70">· {normalizeTableStatus(savedTab.status) === 'available' ? 'Running' : normalizeTableStatus(savedTab.status)}</span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {currentOpenTab?.table_name && (
+              <div className="mb-1.5 rounded-xl border border-slate-200 bg-white p-2 text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <p className="font-semibold text-slate-800">{currentOpenTab.table_name} · {normalizeTableStatus(currentOpenTab.status) === 'available' ? 'Running' : normalizeTableStatus(currentOpenTab.status)}</p>
+                    <p className="text-slate-500">Served by: {currentOpenTab.waiter_name || tableWaiterName || currentOperator.name || 'Not set'}</p>
+                  </div>
+                  <button type="button" className="rounded-lg bg-slate-100 px-2 py-1 font-semibold text-slate-700" onClick={() => setShowManagerControls((current) => !current)}>
+                    Manager
+                  </button>
+                </div>
+                {showManagerControls && (
+                  <div className="mt-2 grid grid-cols-4 gap-1.5">
+                    <button type="button" className="rounded-lg bg-violet-100 px-2 py-1 font-semibold text-violet-700" onClick={() => runTableOverride('deliver')}>Delivered</button>
+                    <button type="button" className="rounded-lg bg-slate-100 px-2 py-1 font-semibold text-slate-700" onClick={() => runTableOverride('transfer')}>Transfer</button>
+                    <button type="button" className="rounded-lg bg-slate-100 px-2 py-1 font-semibold text-slate-700" onClick={() => runTableOverride('merge')}>Merge</button>
+                    <button type="button" className="rounded-lg bg-red-50 px-2 py-1 font-semibold text-red-700" onClick={() => runTableOverride('close')}>Close</button>
+                  </div>
+                )}
+              </div>
             )}
 
             {/* Order items */}
@@ -1354,12 +2369,25 @@ export default function POS() {
                     <div className="flex-1 min-w-0">
                       <p className={`truncate text-slate-800 ${touchMode ? 'text-[15px] font-medium' : 'text-sm'}`}>{item.item_name}</p>
                       <p className={`${touchMode ? 'text-xs' : 'text-xs'} text-slate-400`}>{currency} {fmt(item.unit_price)} ea</p>
+                      {(item.modifiers?.length > 0 || item.item_notes) && (
+                        <p className="mt-0.5 text-[11px] text-slate-500">
+                          {[...(item.modifiers || []).map((mod) => mod.name), item.item_notes].filter(Boolean).join(' · ')}
+                        </p>
+                      )}
                     </div>
                     <span className={`${touchMode ? 'text-sm' : 'text-xs'} shrink-0 text-right font-semibold text-slate-800`}>
                       {currency} {fmt(item.quantity * item.unit_price)}
                     </span>
                   </div>
-                  <div className={`mt-1.5 flex items-center justify-end ${touchMode ? 'gap-1.5' : 'gap-1'}`}>
+                  <div className={`mt-1.5 flex items-center justify-between ${touchMode ? 'gap-1.5' : 'gap-1'}`}>
+                    <button
+                      type="button"
+                      onClick={() => openModifierEditor(idx)}
+                      className="rounded bg-slate-100 px-2 py-1 text-[11px] font-semibold text-slate-600 hover:bg-slate-200"
+                    >
+                      Modifiers
+                    </button>
+                    <div className={`flex items-center ${touchMode ? 'gap-1.5' : 'gap-1'}`}>
                     <button
                       onClick={() => updateQty(idx, -1)}
                       className={touchMode ? qtyButtonClass : 'flex h-6 w-6 items-center justify-center rounded bg-slate-100 text-sm font-bold text-slate-600 hover:bg-red-50 hover:text-red-600'}
@@ -1378,6 +2406,7 @@ export default function POS() {
                       onClick={() => updateQty(idx, 1)}
                       className={touchMode ? qtyButtonPlusClass : 'flex h-6 w-6 items-center justify-center rounded bg-slate-100 text-sm font-bold text-slate-600 hover:bg-green-50 hover:text-green-600'}
                     >+</button>
+                    </div>
                   </div>
                   </div>
                 ))}
@@ -1404,7 +2433,152 @@ export default function POS() {
                   value={orderNotes}
                   onChange={(e) => setOrderNotes(e.target.value)}
                 />
+                <button
+                  type="button"
+                  className="mb-1.5 flex w-full items-center justify-between rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700"
+                  onClick={() => setShowPaymentDetails((current) => !current)}
+                >
+                  <span>Payment details</span>
+                  <span className="text-slate-400">
+                    {showPaymentDetails ? 'Hide' : [
+                      orderDiscountAmount > 0 ? `Discount ${currency}${fmt(orderDiscountAmount)}` : null,
+                      orderTipTotal > 0 ? `Tip ${currency}${fmt(orderTipTotal)}` : null,
+                      splitPaymentsEnabled ? 'Split' : null,
+                      paymentReference ? 'Reference set' : null
+                    ].filter(Boolean).join(' · ') || 'Add tip, discount, split, reference'}
+                  </span>
+                </button>
+                {showPaymentDetails && canDiscount && (
+                  <div className="mb-1.5 rounded-xl border border-emerald-100 bg-emerald-50/60 p-2">
+                    <div className="mb-1.5 flex items-center justify-between gap-2">
+                      <p className="flex items-center gap-1 text-xs font-semibold text-emerald-800">
+                        <BadgePercent size={13} /> Discount
+                      </p>
+                      {orderDiscountAmount > 0 && (
+                        <span className="rounded-full bg-white px-2 py-0.5 text-[11px] font-semibold text-emerald-700">
+                          -{currency} {fmt(orderDiscountAmount)}
+                        </span>
+                      )}
+                    </div>
+                    {promotions.filter((promo) => promo.active !== false).length > 0 && (
+                      <div className="mb-1.5 flex gap-1 overflow-x-auto pb-1">
+                        {promotions.filter((promo) => promo.active !== false).slice(0, 6).map((promo) => (
+                          <button
+                            key={promo.id}
+                            type="button"
+                            onClick={() => applyPromotion(promo)}
+                            className="shrink-0 rounded-lg bg-white px-2 py-1 text-[11px] font-semibold text-emerald-700"
+                          >
+                            {promo.name}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    <div className="grid grid-cols-[5.5rem_minmax(0,1fr)] gap-2">
+                      <select
+                        className="input text-xs"
+                        value={discountMode}
+                        onChange={(e) => setDiscountMode(e.target.value)}
+                      >
+                        <option value="amount">{currency}</option>
+                        <option value="percent">%</option>
+                      </select>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        className="input text-xs"
+                        value={discountValue}
+                        onChange={(e) => setDiscountValue(e.target.value)}
+                        placeholder={discountMode === 'percent' ? 'Percent' : 'Amount'}
+                      />
+                    </div>
+                    {Number(discountValue || 0) > 0 && (
+                      <input
+                        type="text"
+                        className="input mt-2 text-xs"
+                        value={discountReason}
+                        onChange={(e) => setDiscountReason(e.target.value)}
+                        placeholder="Reason, e.g. manager special"
+                      />
+                    )}
+                  </div>
+                )}
+                {showPaymentDetails && (
+                <div className="mb-1.5 rounded-xl border border-slate-100 bg-white p-2">
+                  <div className="grid grid-cols-2 gap-2">
+                    {settings?.vat_enabled === true && (
+                      <>
+                        <p className="text-xs font-semibold text-slate-700">Tax/VAT</p>
+                        <p className="rounded-lg bg-slate-50 px-3 py-2 text-right text-xs font-semibold text-slate-700">{Number(taxRate || 0)}%</p>
+                      </>
+                    )}
+                    <label className="text-xs font-semibold text-slate-700">Tip</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      className="input text-xs"
+                      value={tipAmount}
+                      onChange={(e) => setTipAmount(e.target.value)}
+                      placeholder="0.00"
+                    />
+                  </div>
+                  {customerType !== 'room' && (
+                    <div className="mt-2">
+                      <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
+                        <input type="checkbox" checked={splitPaymentsEnabled} onChange={(e) => setSplitPaymentsEnabled(e.target.checked)} />
+                        Split payment
+                      </label>
+                      {splitPaymentsEnabled && (
+                        <div className="mt-2 space-y-2">
+                          {paymentSplits.map((row, idx) => (
+                            <div key={idx} className="grid grid-cols-[1fr_5.5rem_auto] gap-1.5">
+                              <select className="input text-xs" value={row.method} onChange={(e) => setSplitPayment(idx, { method: e.target.value })}>
+                                {DESKTOP_PAYMENT_METHODS.map((method) => <option key={method.value} value={method.value}>{method.label}</option>)}
+                              </select>
+                              <input className="input text-right text-xs" type="number" step="0.01" min="0" value={row.amount} onChange={(e) => setSplitPayment(idx, { amount: e.target.value })} placeholder="0.00" />
+                              <button type="button" className="rounded-lg bg-slate-100 px-2 text-xs font-semibold text-slate-600" onClick={() => removeSplitPayment(idx)} disabled={paymentSplits.length === 1}>×</button>
+                              {row.method !== 'cash' && (
+                                <input className="input col-span-3 text-xs" value={row.reference || ''} onChange={(e) => setSplitPayment(idx, { reference: e.target.value })} placeholder="Reference, slip no. or approval code" />
+                              )}
+                            </div>
+                          ))}
+                          <div className="flex items-center justify-between text-xs">
+                            <button type="button" className="font-semibold text-emerald-700" onClick={addSplitPayment}>Add method</button>
+                            <span className={Math.abs(splitBalance) < 0.005 ? 'font-semibold text-emerald-700' : 'font-semibold text-red-700'}>
+                              Balance {currency} {fmt(splitBalance)}
+                            </span>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+                )}
                 <div className="mb-1.5 shrink-0 border-t border-slate-100 pt-1.5 text-sm">
+                  <div className="mb-1 flex justify-between text-xs text-slate-500">
+                    <span>Gross</span>
+                    <span>{currency} {fmt(orderSubtotal)}</span>
+                  </div>
+                  {orderDiscountAmount > 0 && (
+                      <div className="mb-1 flex justify-between text-xs font-semibold text-emerald-700">
+                        <span>Discount</span>
+                        <span>-{currency} {fmt(orderDiscountAmount)}</span>
+                      </div>
+                  )}
+                  {orderTaxTotal > 0 && (
+                    <div className="mb-1 flex justify-between text-xs text-slate-500">
+                      <span>Tax</span>
+                      <span>{currency} {fmt(orderTaxTotal)}</span>
+                    </div>
+                  )}
+                  {orderTipTotal > 0 && (
+                    <div className="mb-1 flex justify-between text-xs text-slate-500">
+                      <span>Tip</span>
+                      <span>{currency} {fmt(orderTipTotal)}</span>
+                    </div>
+                  )}
                   <div className="flex justify-between font-bold text-slate-800">
                     <span>Total</span>
                     <span>{currency} {fmt(orderTotal)}</span>
@@ -1448,6 +2622,13 @@ export default function POS() {
                     className={`btn-secondary flex items-center justify-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed ${touchMode ? 'min-h-[2.5rem] text-sm' : ''}`}
                   >
                     <X size={14} /> Clear
+                  </button>
+                  <button
+                    onClick={saveCurrentTab}
+                    disabled={submitting || orderItems.length === 0}
+                    className={`btn-secondary flex items-center justify-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed ${touchMode ? 'min-h-[2.5rem] text-sm' : ''}`}
+                  >
+                    Save Tab
                   </button>
                   <button
                     onClick={completeOrder}
@@ -1587,7 +2768,7 @@ export default function POS() {
               <div className="rounded-2xl border border-blue-100 bg-blue-50/80 px-4 py-4">
                 <p className="text-sm font-semibold text-blue-950">Bar POS is inventory-backed</p>
                 <p className="mt-1 text-sm text-blue-800">
-                  Bottle items come from Bar inventory automatically. Enable 6-pack, 12-pack, and case templates here for faster cashier sales.
+                  Bottle items come from Bar inventory automatically. Enable 6-pack, 12-pack, and case templates here for faster operator sales.
                 </p>
               </div>
 
@@ -1893,20 +3074,32 @@ export default function POS() {
                                 <p className="mt-2 text-xs text-amber-700">
                                   Resolve this POS sync issue in System Health before voiding.
                                 </p>
-                              ) : canVoid ? (
-                                <button
-                                  onClick={() => openVoidModal(o)}
-                                  className="mt-2 text-xs text-red-500 hover:text-red-700 disabled:cursor-not-allowed disabled:opacity-40"
-                                >
-                                  Void Order
-                                </button>
                               ) : (
-                                <button
-                                  onClick={() => openVoidModal(o)}
-                                  className="mt-2 text-xs text-amber-600 hover:text-amber-800 disabled:cursor-not-allowed disabled:opacity-40"
-                                >
-                                  Request Void Approval
-                                </button>
+                                <div className="mt-2 flex flex-wrap gap-3">
+                                  {Number(o.total || 0) > 0 && (
+                                    <button
+                                      onClick={() => openReturnModal(o)}
+                                      className="text-xs text-blue-600 hover:text-blue-800 disabled:cursor-not-allowed disabled:opacity-40"
+                                    >
+                                      Partial Return
+                                    </button>
+                                  )}
+                                  {canVoid ? (
+                                    <button
+                                      onClick={() => openVoidModal(o)}
+                                      className="text-xs text-red-500 hover:text-red-700 disabled:cursor-not-allowed disabled:opacity-40"
+                                    >
+                                      Void Order
+                                    </button>
+                                  ) : (
+                                    <button
+                                      onClick={() => openVoidModal(o)}
+                                      className="text-xs text-amber-600 hover:text-amber-800 disabled:cursor-not-allowed disabled:opacity-40"
+                                    >
+                                      Request Void Approval
+                                    </button>
+                                  )}
+                                </div>
                               )
                             )}
                           </td>
@@ -1921,6 +3114,548 @@ export default function POS() {
             )}
           </div>
         </div>
+      )}
+
+      {/* ── Cash-Up ── */}
+      {tab === 'cashup' && (
+        <div className="grid gap-5 xl:grid-cols-[0.58fr_0.42fr]">
+          <div className="bb-card p-5">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h2 className="flex items-center gap-2 text-base font-semibold text-slate-900">
+                  <Calculator size={17} /> Close Cash-Up
+                </h2>
+                <p className="mt-1 text-sm text-slate-500">Compare {currentOperator.name}'s expected totals with what was counted at the till.</p>
+              </div>
+              <button onClick={loadCashup} disabled={cashupLoading} className="btn-secondary text-sm">
+                <RefreshCw size={14} /> Refresh
+              </button>
+            </div>
+
+            {cashupError && (
+              <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                {cashupError}
+              </div>
+            )}
+
+            <div className="mt-4 grid gap-3 md:grid-cols-3">
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-slate-500">Date</label>
+                <input type="date" className="input" value={cashupDate} onChange={(e) => setCashupDate(e.target.value)} />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-slate-500">Outlet</label>
+                <select className="input" value={cashupOutletId} onChange={(e) => setCashupOutletId(e.target.value)}>
+                  <option value="">All outlets</option>
+                  {visibleOutlets.map((outlet) => (
+                    <option key={outlet.id} value={outlet.id}>{outlet.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-slate-500">Opening Float</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  className="input"
+                  value={cashupOpeningFloat}
+                  onChange={(e) => setCashupOpeningFloat(e.target.value)}
+                  placeholder="0.00"
+                />
+              </div>
+            </div>
+
+            <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+              <span className="font-semibold text-slate-900">Operator:</span> {currentOperator.name}
+              <span className="ml-2 text-slate-400">Only this operator's POS payments are included.</span>
+            </div>
+
+            <div className="mt-4 grid gap-3 sm:grid-cols-4">
+              {[
+                ['Orders', cashupSummary?.orders_count || 0],
+                ['Voids', cashupSummary?.void_count || 0],
+                ['Returns', `${currency} ${fmt(cashupSummary?.returns_total || 0)}`],
+                ['Net Sales', `${currency} ${fmt(cashupSummary?.net_sales || 0)}`]
+              ].map(([label, value]) => (
+                <div key={label} className="rounded-xl bg-slate-50 px-3 py-3">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">{label}</p>
+                  <p className="mt-1 text-lg font-bold text-slate-900">{value}</p>
+                </div>
+              ))}
+            </div>
+
+            {cashupSummary?.pending_count > 0 && (
+              <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
+                {cashupSummary.pending_count} order{cashupSummary.pending_count === 1 ? '' : 's'} in this cash-up period are still waiting to sync.
+              </div>
+            )}
+
+            <form onSubmit={submitCashup} className="mt-5 space-y-4">
+              <div className="bb-table-shell">
+                <HorizontalScrollArea>
+                  <table className="min-w-[760px] w-full text-sm">
+                    <thead className="bg-slate-50 text-xs uppercase tracking-[0.16em] text-slate-500">
+                      <tr>
+                        <th className="px-4 py-3 text-left">Method</th>
+                        <th className="px-4 py-3 text-right">Expected</th>
+                        <th className="px-4 py-3 text-right">Counted</th>
+                        <th className="px-4 py-3 text-right">Variance</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {cashupMethodRows.map((method) => {
+                        const expected = method.value === 'cash'
+                          ? Number(cashupSummary?.expected_cash_drawer || 0)
+                          : Number(cashupSummary?.by_method?.[method.value] || 0)
+                        const counted = Number(cashupCounted[method.value] || 0)
+                        const variance = counted - expected
+                        return (
+                          <tr key={method.value} className="hover:bg-slate-50">
+                            <td className="px-4 py-3 font-medium text-slate-800">
+                              {formatPaymentMethod(method.value, { plain: true })}
+                              {method.value === 'cash' && (
+                                <p className="mt-0.5 text-xs text-slate-400">Includes opening float</p>
+                              )}
+                            </td>
+                            <td className="px-4 py-3 text-right font-semibold text-slate-700">{currency} {fmt(expected)}</td>
+                            <td className="px-4 py-3 text-right">
+                              <input
+                                type="number"
+                                step="0.01"
+                                min="0"
+                                className="input ml-auto w-32 text-right"
+                                value={cashupCounted[method.value] || ''}
+                                onChange={(e) => setCashupCountedMethod(method.value, e.target.value)}
+                                placeholder="0.00"
+                              />
+                            </td>
+                            <td className={`px-4 py-3 text-right font-semibold ${Math.abs(variance) < 0.005 ? 'text-slate-500' : variance > 0 ? 'text-emerald-700' : 'text-red-600'}`}>
+                              {currency} {fmt(variance)}
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </HorizontalScrollArea>
+              </div>
+
+              <textarea
+                className="input h-20 resize-none"
+                value={cashupNotes}
+                onChange={(e) => setCashupNotes(e.target.value)}
+                placeholder="Notes, e.g. cash short reason or card slip batch number"
+              />
+              <div className="flex flex-wrap justify-end gap-3">
+                <button type="button" onClick={() => setCashupCounted({})} className="btn-secondary">
+                  Clear Counts
+                </button>
+                <button type="submit" disabled={cashupSaving || cashupLoading} className="btn-primary">
+                  {cashupSaving ? 'Saving...' : offlineMode ? 'Save Offline Cash-Up' : 'Close Cash-Up'}
+                </button>
+              </div>
+            </form>
+          </div>
+
+          <div className="bb-card p-5">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h2 className="flex items-center gap-2 text-base font-semibold text-slate-900">
+                  <ReceiptText size={17} /> Recent Cash-Ups
+                </h2>
+                <p className="mt-1 text-sm text-slate-500">Saved closes from this device and server.</p>
+              </div>
+            </div>
+            <div className="mt-4 space-y-3">
+              {cashupHistory.map((row) => (
+                <div key={row.id} className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="font-semibold text-slate-900">{row.date}</p>
+                      <p className="mt-1 text-xs text-slate-500">{row.outlet_name || outlets.find((outlet) => outlet.id === row.outlet_id)?.name || 'All outlets'}</p>
+                      <p className="mt-1 text-xs font-semibold text-slate-600">{row.cashier_name || row.created_by_name || 'Operator not recorded'}</p>
+                    </div>
+                    <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
+                      Math.abs(Number(row.cash_over_short || 0)) < 0.005 ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'
+                    }`}>
+                      {currency} {fmt(row.cash_over_short || 0)}
+                    </span>
+                  </div>
+                  <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                    <div className="rounded-lg bg-white px-3 py-2">
+                      <p className="text-slate-400">Net sales</p>
+                      <p className="font-semibold text-slate-800">{currency} {fmt(row.net_sales || 0)}</p>
+                    </div>
+                    <div className="rounded-lg bg-white px-3 py-2">
+                      <p className="text-slate-400">Orders</p>
+                      <p className="font-semibold text-slate-800">{row.orders_count || 0}</p>
+                    </div>
+                  </div>
+                  {row._pending_sync && (
+                    <p className="mt-2 text-xs font-semibold text-amber-700">Pending sync</p>
+                  )}
+                </div>
+              ))}
+              {cashupHistory.length === 0 && (
+                <div className="bb-empty-state min-h-[220px]">
+                  <ReceiptText size={28} className="mx-auto mb-2 opacity-30" />
+                  <p className="text-base font-semibold text-slate-800">No cash-ups saved yet</p>
+                  <p className="text-sm text-slate-500">Close today’s till to start a daily trail.</p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {tab === 'tickets' && (
+        <div className="grid gap-4 lg:grid-cols-2">
+          {['kitchen', 'bar'].map((station) => (
+            <div key={station} className="bb-card p-5">
+              <div className="mb-4 flex items-center justify-between">
+                <div>
+                  <h2 className="text-base font-semibold capitalize text-slate-900">{station} Tickets</h2>
+                  <p className="mt-1 text-sm text-slate-500">Orders waiting for preparation.</p>
+                </div>
+                <button className="btn-secondary text-sm" onClick={loadPosOperations}><RefreshCw size={14} /> Refresh</button>
+              </div>
+              <div className="space-y-3">
+                {tickets.filter((ticket) => ticket.station === station && ticket.status !== 'served' && ticket.status !== 'cancelled').map((ticket) => (
+                  <div key={ticket.id} className="rounded-xl border border-slate-200 bg-white p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="font-semibold text-slate-900">{ticket.table_name || ticket.tab_name || (ticket.room_id ? 'Room order' : 'POS order')}</p>
+                        <p className="mt-1 text-xs text-slate-500">
+                          {new Date(ticket.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · Running {formatElapsed(ticket.created_at, ticketClock)}
+                        </p>
+                        {ticket.waiter_name && <p className="mt-1 text-xs font-semibold text-slate-600">Served by: {ticket.waiter_name}</p>}
+                      </div>
+                      <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-700">{ticket.status}</span>
+                    </div>
+                    <div className="mt-3 space-y-1 text-sm">
+                      {(ticket.items || []).map((item, idx) => (
+                        <div key={idx} className="rounded-lg bg-slate-50 px-3 py-2">
+                          <div className="flex justify-between gap-3">
+                          <span className="font-medium text-slate-800">{item.item_name}</span>
+                          <span className="text-slate-500">x{item.quantity}</span>
+                          </div>
+                          {(item.modifiers?.length > 0 || item.item_notes) && (
+                            <p className="mt-1 text-xs font-semibold text-amber-700">
+                              {[...(item.modifiers || []).map((mod) => mod.name), item.item_notes].filter(Boolean).join(' · ')}
+                            </p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                    {ticket.notes && <p className="mt-3 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600">{ticket.notes}</p>}
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {['preparing', 'ready', 'served', 'cancelled'].map((status) => (
+                        <button key={status} type="button" className="rounded-lg bg-slate-100 px-3 py-1 text-xs font-semibold capitalize text-slate-700" onClick={() => setTicketStatus(ticket, status)}>
+                          {status === 'served' ? 'Delivered / Close' : status}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+                {tickets.filter((ticket) => ticket.station === station && ticket.status !== 'served' && ticket.status !== 'cancelled').length === 0 && (
+                  <div className="bb-empty-state min-h-[180px]"><p className="text-sm text-slate-500">No open {station} tickets.</p></div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {tab === 'setup' && (
+        <>
+        <div className="mb-4 flex flex-wrap gap-2">
+          {[
+            ['shift', 'Shift'],
+            ['tables', 'Tables'],
+            ['hardware', 'Hardware'],
+            ['modifiers', 'Modifiers'],
+            ['promos', 'Promos'],
+            ['floor', 'Floor'],
+            ['audit', 'Audit']
+          ].map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setSetupSection(key)}
+              className={`rounded-lg px-3 py-1.5 text-sm font-semibold ${setupSection === key ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600'}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <div className="grid gap-5 lg:grid-cols-2">
+          <div className={`${setupSection === 'shift' ? '' : 'hidden'} bb-card p-5`}>
+            <h2 className="text-base font-semibold text-slate-900">Operator Shift</h2>
+            <p className="mt-1 text-sm text-slate-500">Each operator who handles cash or card payments can open and close their own shift.</p>
+            {currentShift ? (
+              <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+                <p className="font-semibold text-emerald-900">Open shift</p>
+                <p className="mt-1 text-sm text-emerald-800">Operator: {currentShift.cashier_name || currentOperator.name}</p>
+                <p className="mt-1 text-sm text-emerald-800">Opened {new Date(currentShift.opened_at).toLocaleString()}</p>
+                <p className="mt-1 text-sm text-emerald-800">Opening float: {currency} {fmt(currentShift.opening_float || 0)}</p>
+                <div className="mt-3 flex gap-2">
+                  <input className="input" type="number" step="0.01" min="0" value={shiftCloseCash} onChange={(e) => setShiftCloseCash(e.target.value)} placeholder="Closing cash" />
+                  <button className="btn-primary" onClick={closeShift}>Close</button>
+                </div>
+              </div>
+            ) : (
+              <div className="mt-4 flex gap-2">
+                <input className="input" type="number" step="0.01" min="0" value={shiftFloat} onChange={(e) => setShiftFloat(e.target.value)} placeholder="Opening float" />
+                <button className="btn-primary" onClick={openShift}>Open Shift</button>
+              </div>
+            )}
+          </div>
+
+          <div className={`${setupSection === 'tables' ? '' : 'hidden'} bb-card p-5`}>
+            <h2 className="text-base font-semibold text-slate-900">Tables</h2>
+            <p className="mt-1 text-sm text-slate-500">Create table names once, then select them in the terminal.</p>
+            <div className="mt-4 grid gap-2 sm:grid-cols-[1fr_1fr_6rem_auto]">
+              <input className="input" value={tableForm.name} onChange={(e) => setTableForm((prev) => ({ ...prev, name: e.target.value }))} placeholder="Table name" />
+              <input className="input" value={tableForm.area} onChange={(e) => setTableForm((prev) => ({ ...prev, area: e.target.value }))} placeholder="Area" />
+              <input className="input" type="number" min="0" value={tableForm.seats} onChange={(e) => setTableForm((prev) => ({ ...prev, seats: e.target.value }))} placeholder="Seats" />
+              <button
+                className="btn-primary disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={savingTable}
+                onClick={async () => {
+                  if (savingTable) return
+                  const name = tableForm.name.trim()
+                  if (!name) {
+                    alert('Table name is required.')
+                    return
+                  }
+                  if (!window.api?.pos?.saveTable) {
+                    alert('Table setup is not available in this app build. Please restart after updating.')
+                    return
+                  }
+                  try {
+                    setSavingTable(true)
+                    const res = await window.api.pos.saveTable({ ...tableForm, name, outlet_id: selectedOutlet?.id || null })
+                    if (!res?.success) {
+                      alert(res?.error || 'Could not save table.')
+                      return
+                    }
+                    setTableForm({ name: '', area: '', seats: '' })
+                    await loadPosOperations()
+                  } catch (error) {
+                    alert(error?.message || 'Could not save table.')
+                  } finally {
+                    setSavingTable(false)
+                  }
+                }}
+              >
+                {savingTable ? (
+                  <>
+                    <RefreshCw size={14} className="animate-spin" />
+                    Saving...
+                  </>
+                ) : (
+                  'Add'
+                )}
+              </button>
+            </div>
+            <div className="mt-4 space-y-2">
+              {posTables.map((table) => (
+                <div key={table.id} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 text-sm">
+                  <span className="font-medium text-slate-800">{table.name}{table.area ? ` · ${table.area}` : ''}{table.seats ? ` · ${table.seats} seats` : ''}</span>
+                  <button className="text-xs font-semibold text-red-600" onClick={async () => { await window.api.pos.deleteTable?.(table.id); await loadPosOperations() }}>Remove</button>
+                </div>
+              ))}
+              {posTables.length === 0 && <p className="rounded-lg bg-slate-50 px-3 py-6 text-center text-sm text-slate-500">No tables set up yet.</p>}
+            </div>
+          </div>
+
+          <div className={`${setupSection === 'hardware' ? '' : 'hidden'} bb-card p-5`}>
+            <h2 className="text-base font-semibold text-slate-900">Receipt Printer & Cash Drawer</h2>
+            <p className="mt-1 text-sm text-slate-500">Save preferred printer settings and run basic tests.</p>
+            <div className="mt-4 grid gap-3">
+              <select
+                className="input"
+                value={hardwareSettings?.receipt_printer_name || ''}
+                onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), receipt_printer_name: e.target.value }))}
+              >
+                <option value="">System default printer</option>
+                {receiptPrinters.map((printer) => (
+                  <option key={printer.name} value={printer.name}>{printer.displayName || printer.name}</option>
+                ))}
+              </select>
+              <select
+                className="input"
+                value={hardwareSettings?.receipt_paper_width || '80mm'}
+                onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), receipt_paper_width: e.target.value }))}
+              >
+                <option value="58mm">58mm</option>
+                <option value="80mm">80mm</option>
+                <option value="A4">A4</option>
+              </select>
+              <label className="flex items-center gap-2 text-sm font-semibold text-slate-700">
+                <input type="checkbox" checked={hardwareSettings?.auto_print_receipts === true} onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), auto_print_receipts: e.target.checked }))} />
+                Auto print receipts
+              </label>
+              <label className="flex items-center gap-2 text-sm font-semibold text-slate-700">
+                <input type="checkbox" checked={hardwareSettings?.cash_drawer_enabled === true} onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), cash_drawer_enabled: e.target.checked }))} />
+                Cash drawer connected
+              </label>
+              <label className="flex items-center gap-2 text-sm font-semibold text-slate-700">
+                <input type="checkbox" checked={hardwareSettings?.escpos_enabled === true} onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), escpos_enabled: e.target.checked }))} />
+                ESC/POS direct mode
+              </label>
+              <label className="flex items-center gap-2 text-sm font-semibold text-slate-700">
+                <input type="checkbox" checked={hardwareSettings?.customer_display_enabled === true} onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), customer_display_enabled: e.target.checked }))} />
+                Customer-facing display feed
+              </label>
+              <input
+                className="input"
+                value={hardwareSettings?.escpos_printer_path || ''}
+                onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), escpos_printer_path: e.target.value }))}
+                placeholder="ESC/POS device path or Windows printer share"
+              />
+              <div className="grid gap-2 sm:grid-cols-2">
+                <input
+                  className="input"
+                  value={hardwareSettings?.payment_terminal_provider || ''}
+                  onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), payment_terminal_provider: e.target.value }))}
+                  placeholder="Card terminal provider"
+                />
+                <input
+                  className="input"
+                  value={hardwareSettings?.payment_terminal_name || ''}
+                  onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), payment_terminal_name: e.target.value }))}
+                  placeholder="Terminal model/name"
+                />
+              </div>
+              <select
+                className="input"
+                value={hardwareSettings?.payment_terminal_mode || 'manual'}
+                onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), payment_terminal_mode: e.target.value }))}
+              >
+                <option value="manual">Manual card terminal</option>
+                <option value="provider_api">Provider API</option>
+                <option value="local_bridge">Local device bridge</option>
+              </select>
+              {hardwareMsg && <p className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-600">{hardwareMsg}</p>}
+              <div className="flex flex-wrap gap-2">
+                <button className="btn-primary" onClick={() => saveHardware()}>Save Settings</button>
+                <button className="btn-secondary" onClick={() => testHardware('receipt')}><Printer size={14} /> Test Receipt</button>
+                <button className="btn-secondary" onClick={() => testHardware('drawer')}>Test Drawer</button>
+                <button className="btn-secondary" onClick={() => testHardware('escpos')}>Test ESC/POS</button>
+                <button className="btn-secondary" onClick={() => testHardware('payment-terminal')}>Test Card Terminal</button>
+              </div>
+            </div>
+          </div>
+
+          <div className={`${setupSection === 'modifiers' ? '' : 'hidden'} bb-card p-5`}>
+            <h2 className="text-base font-semibold text-slate-900">Modifiers & Instructions</h2>
+            <div className="mt-4 grid gap-2">
+              <input className="input" value={modifierForm.name} onChange={(e) => setModifierForm((prev) => ({ ...prev, name: e.target.value }))} placeholder="Group name, e.g. Burger options" />
+              <textarea className="input h-24 resize-none" value={modifierForm.options} onChange={(e) => setModifierForm((prev) => ({ ...prev, options: e.target.value }))} placeholder={'One per line: No onion|0\nExtra cheese|5'} />
+              <button className="btn-primary" onClick={saveModifierGroup}>Save Modifier Group</button>
+              <div className="space-y-2">
+                {modifierGroups.map((group) => (
+                  <div key={group.id} className="rounded-lg bg-slate-50 px-3 py-2 text-sm">
+                    <p className="font-semibold text-slate-800">{group.name}</p>
+                    <p className="text-xs text-slate-500">{(group.options || []).map((option) => `${option.name}${Number(option.price_delta || 0) ? ` +${currency}${fmt(option.price_delta)}` : ''}`).join(' · ')}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className={`${setupSection === 'promos' ? '' : 'hidden'} bb-card p-5`}>
+            <h2 className="text-base font-semibold text-slate-900">Promotions</h2>
+            <div className="mt-4 grid gap-2">
+              <input className="input" value={promotionForm.name} onChange={(e) => setPromotionForm((prev) => ({ ...prev, name: e.target.value }))} placeholder="Promotion name" />
+              <div className="grid grid-cols-[1fr_1fr] gap-2">
+                <select className="input" value={promotionForm.discount_type} onChange={(e) => setPromotionForm((prev) => ({ ...prev, discount_type: e.target.value }))}>
+                  <option value="amount">Amount</option>
+                  <option value="percent">Percent</option>
+                </select>
+                <input className="input" type="number" step="0.01" min="0" value={promotionForm.discount_value} onChange={(e) => setPromotionForm((prev) => ({ ...prev, discount_value: e.target.value }))} placeholder="Discount" />
+              </div>
+              <button className="btn-primary" onClick={savePromotion}>Save Promotion</button>
+              <div className="space-y-2">
+                {promotions.map((promo) => (
+                  <div key={promo.id} className="rounded-lg bg-slate-50 px-3 py-2 text-sm">
+                    <p className="font-semibold text-slate-800">{promo.name}</p>
+                    <p className="text-xs text-slate-500">{promo.discount_type === 'percent' ? `${promo.discount_value}%` : `${currency} ${fmt(promo.discount_value)}`} discount</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className={`${setupSection === 'floor' ? '' : 'hidden'} bb-card p-5`}>
+            <h2 className="text-base font-semibold text-slate-900">Floor Layout</h2>
+            <div className="mt-4 flex gap-2">
+              <input className="input" value={floorAreaName} onChange={(e) => setFloorAreaName(e.target.value)} placeholder="Area name, e.g. Patio" />
+              <button className="btn-primary" onClick={addFloorArea}>Add</button>
+            </div>
+            <div className="mt-4 flex flex-wrap gap-2">
+              {(floorLayout?.areas || []).map((area) => (
+                <span key={area.id} className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">{area.name}</span>
+              ))}
+            </div>
+          </div>
+
+          <div className={`${setupSection === 'audit' ? '' : 'hidden'} bb-card p-5`}>
+            <h2 className="text-base font-semibold text-slate-900">POS Audit Trail</h2>
+            <div className="mt-4 max-h-72 space-y-2 overflow-y-auto">
+              {auditLog.map((row) => (
+                <div key={row.id} className="rounded-lg bg-slate-50 px-3 py-2 text-xs">
+                  <p className="font-semibold text-slate-800">{row.action}</p>
+                  <p className="text-slate-500">{row.staff_name || 'System'} · {new Date(row.created_at).toLocaleString()}</p>
+                </div>
+              ))}
+              {auditLog.length === 0 && <p className="rounded-lg bg-slate-50 px-3 py-6 text-center text-sm text-slate-500">No POS audit events yet.</p>}
+            </div>
+          </div>
+        </div>
+        </>
+      )}
+
+      {modifierTargetIdx != null && orderItems[modifierTargetIdx] && (
+        <Modal title={`Modifiers: ${orderItems[modifierTargetIdx].item_name}`} onClose={() => setModifierTargetIdx(null)} size="sm">
+          <div className="space-y-4">
+            {modifierGroups.filter((group) => group.active !== false).map((group) => (
+              <div key={group.id}>
+                <p className="mb-2 text-sm font-semibold text-slate-800">{group.name}</p>
+                <div className="flex flex-wrap gap-2">
+                  {(group.options || []).map((option) => {
+                    const selected = (orderItems[modifierTargetIdx].modifiers || []).some((mod) => mod.name === option.name)
+                    return (
+                      <button
+                        key={option.id || option.name}
+                        type="button"
+                        onClick={() => toggleLineModifier(option)}
+                        className={`rounded-lg border px-3 py-1.5 text-sm font-semibold ${selected ? 'border-emerald-300 bg-emerald-50 text-emerald-800' : 'border-slate-200 bg-white text-slate-700'}`}
+                      >
+                        {option.name}{Number(option.price_delta || 0) ? ` +${currency} ${fmt(option.price_delta)}` : ''}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            ))}
+            {modifierGroups.length === 0 && (
+              <p className="rounded-lg bg-slate-50 px-3 py-6 text-center text-sm text-slate-500">No modifier groups set up yet.</p>
+            )}
+            <textarea
+              className="input h-24 resize-none"
+              value={modifierDraftNotes}
+              onChange={(e) => setModifierDraftNotes(e.target.value)}
+              placeholder="Kitchen/bar instruction, e.g. no onion, extra ice..."
+            />
+            <div className="flex justify-end gap-2">
+              <button className="btn-secondary" onClick={() => setModifierTargetIdx(null)}>Cancel</button>
+              <button className="btn-primary" onClick={saveLineInstructions}>Save</button>
+            </div>
+          </div>
+        </Modal>
       )}
 
       {/* Menu Item Modal */}
@@ -2161,9 +3896,137 @@ export default function POS() {
         </Modal>
       )}
 
+      {returnModal && returnTarget && (
+        <Modal title="Partial Return Approval" onClose={() => closeReturnModal()} size="md">
+          <form onSubmit={submitPartialReturn} className="space-y-4">
+            <p className="text-sm text-slate-600">
+              Return selected items from this order. Stock-linked items will be restored and the return will appear as a negative POS order.
+            </p>
+
+            {returnError && (
+              <div className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">
+                {returnError}
+              </div>
+            )}
+
+            <div className="bb-table-shell">
+              <HorizontalScrollArea>
+                <table className="min-w-[640px] w-full text-sm">
+                  <thead className="bg-slate-50 text-xs uppercase tracking-[0.16em] text-slate-500">
+                    <tr>
+                      <th className="px-4 py-3 text-left">Item</th>
+                      <th className="px-4 py-3 text-right">Sold</th>
+                      <th className="px-4 py-3 text-right">Unit Price</th>
+                      <th className="px-4 py-3 text-right">Return Qty</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {(returnTarget.pos_order_items || [])
+                      .filter((line) => Number(line.quantity || 0) > 0 && Number(line.unit_price || 0) >= 0)
+                      .map((line) => (
+                        <tr key={line.id}>
+                          <td className="px-4 py-3 font-medium text-slate-800">{line.item_name}</td>
+                          <td className="px-4 py-3 text-right text-slate-600">{line.quantity}</td>
+                          <td className="px-4 py-3 text-right text-slate-600">{currency} {fmt(line.unit_price)}</td>
+                          <td className="px-4 py-3 text-right">
+                            <input
+                              type="number"
+                              step="1"
+                              min="0"
+                              max={line.quantity}
+                              className="input ml-auto w-24 text-right"
+                              value={returnLines[line.id] || ''}
+                              onChange={(e) => {
+                                const maxQty = Number(line.quantity || 0)
+                                const nextQty = Math.max(0, Math.min(maxQty, Number(e.target.value || 0)))
+                                setReturnLines((current) => ({ ...current, [line.id]: e.target.value === '' ? '' : String(nextQty) }))
+                              }}
+                              placeholder="0"
+                            />
+                          </td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </HorizontalScrollArea>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div>
+                <label className="mb-1 block text-sm font-medium text-slate-700">Refund Method</label>
+                {returnTarget.payment_method === 'folio' ? (
+                  <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700">
+                    Room folio credit
+                  </div>
+                ) : (
+                  <select className="input" value={returnPaymentMethod} onChange={(e) => setReturnPaymentMethod(e.target.value)}>
+                    {DESKTOP_PAYMENT_METHODS.filter((method) => method.value !== 'bank_transfer' || returnTarget.payment_method === 'bank_transfer').map((method) => (
+                      <option key={method.value} value={method.value}>{method.label}</option>
+                    ))}
+                  </select>
+                )}
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium text-slate-700">Supervisor PIN *</label>
+                <div className="relative">
+                  <input
+                    type={showReturnPin ? 'text' : 'password'}
+                    inputMode="numeric"
+                    className="input pr-10"
+                    placeholder="Enter PIN"
+                    value={returnPin}
+                    onChange={(e) => setReturnPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                    maxLength={6}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowReturnPin((current) => !current)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                  >
+                    {showReturnPin ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <label className="mb-1 block text-sm font-medium text-slate-700">Reason *</label>
+              <input
+                type="text"
+                className="input"
+                placeholder="e.g. Guest returned one drink"
+                value={returnReason}
+                onChange={(e) => setReturnReason(e.target.value)}
+                maxLength={200}
+              />
+            </div>
+
+            <div className="flex gap-3 pt-1">
+              <button
+                type="button"
+                onClick={() => closeReturnModal()}
+                disabled={returnLoading}
+                className="flex-1 rounded-xl border border-slate-200 py-2 text-sm text-slate-600 hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+
+              <button
+                type="submit"
+                disabled={returnLoading}
+                className="flex-1 rounded-xl bg-blue-600 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+              >
+                {returnLoading ? 'Verifying...' : offlineMode ? 'Approve Offline Return' : 'Approve Return'}
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
       {showReceiptOrder && (
         <POSReceipt
           order={showReceiptOrder}
+          autoPrint={showReceiptOrder?._auto_print === true}
           onClose={() => setShowReceiptOrder(null)}
         />
       )}

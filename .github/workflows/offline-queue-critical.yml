@@ -25,6 +25,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Install manager PWA dependencies
+        run: npm run manager:install
+
+      - name: Install booking site dependencies
+        run: npm run booking:install
+
       - name: Run production guardrails
         run: npm test
 
@@ -34,5 +40,17 @@ jobs:
       - name: Run critical offline POS regression suite
         run: npm run test:offline-pos-critical
 
+      - name: Run production dependency audit
+        run: npm run audit:prod
+
       - name: Build desktop app
         run: npm run build
+
+      - name: Lint manager PWA
+        run: npm run manager:lint
+
+      - name: Build manager PWA
+        run: npm run manager:build
+
+      - name: Build public booking site
+        run: npm run booking:build

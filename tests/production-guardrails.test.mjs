@@ -3,7 +3,13 @@ import { readFile, readdir } from 'node:fs/promises'
 import { isFinancialSyncItem, pickNextReadySyncItemIndex } from '../src/shared/syncQueue.js'
 
 async function read(path) {
-  return readFile(new URL(`../${path}`, import.meta.url), 'utf8')
+  try {
+    return await readFile(new URL(`../${path}`, import.meta.url), 'utf8')
+  } catch (error) {
+    if (error?.code !== 'ENOENT' || !path.startsWith('supabase/migrations/')) throw error
+    const fileName = path.split('/').pop()
+    return readFile(new URL(`../supabase/migrations_archive/2026-05-26-pre-baseline/${fileName}`, import.meta.url), 'utf8')
+  }
 }
 
 async function readTree(path) {
@@ -66,6 +72,10 @@ async function run() {
   assert.match(database, /export async function getInventoryItemById\(/)
   assert.match(database, /export async function getSupplyItemById\(/)
   assert.match(database, /export async function getPosMenuItemById\(/)
+  assert.match(database, /function getCachedActiveBookingForRoom\(roomId\)/)
+  assert.match(database, /if \(!state\.isOnline\) return getCachedActiveBookingForRoom\(roomId\)/)
+  assert.match(database, /let bookingId = cachedBooking\?\.id \|\| data\.booking_id \|\| null/)
+  assert.match(database, /getActiveBookingForRoom\(data\.room_id\)/)
   assert.match(database, /FINANCIAL_SYNC_TABLES[\s\S]{0,120}isFinancialSyncItem[\s\S]{0,120}pickNextReadySyncItemIndex[\s\S]{0,120}shared\/syncQueue\.js/)
   assert.match(database, /Blocked: unresolved sync dependency cycle/)
   assert.match(database, /failedQueueIds\.has\(item\._depends_on\)/)
@@ -138,7 +148,9 @@ async function run() {
   assert.match(database, /applyOfflinePosInventoryReservation\(inventoryReservations\)/)
   assert.match(database, /shouldRefreshInventory = true/)
   assert.match(database, /inventory_item_id:\s*item\.inventory_item_id\s*\|\|\s*null/)
-  assert.match(database, /depletion_qty:\s*Math\.max\(1,\s*Number\(item\.depletion_qty \|\| 1\)\)/)
+  assert.match(database, /depletion_qty:\s*normalizePositiveQty\(item\.depletion_qty, 1\)/)
+  assert.match(database, /queueOperation\('rpc', 'adjust_inventory_stock'/)
+  assert.match(database, /export async function getInventoryMovements\(/)
   assert.match(database, /'inventory-items':\s*\(\)\s*=>\s*(state\.)?supabase[\s\S]*?from\('inventory_items'\)/)
   assert.match(database, /'inventory-purchases':\s*\(\)\s*=>\s*(state\.)?supabase[\s\S]*?from\('inventory_purchases'\)/)
   assert.match(database, /refreshCache\(\s*'inventory-items',\s*'inventory-purchases'\s*\)\.catch\(\(\) => \{\}\)/)
@@ -214,6 +226,8 @@ async function run() {
   assert.match(posUi, /Approve Offline Void/)
   assert.match(posUi, /Awaiting sync record/)
   assert.match(posUi, /inputMode="numeric"/)
+  assert.match(posUi, /let selectedBookingId = null/)
+  assert.match(posUi, /booking_id: customerType === 'room' \? selectedBookingId : null/)
 
   const resetSql = await read('supabase/migrations/20260426_test_reset_invoice_cleanup_fix.sql')
   assert.match(resetSql, /invoice_number = any\(v_invoice_numbers\)/)
@@ -249,6 +263,13 @@ async function run() {
   assert.match(posReplaySql, /inventory_item_id/)
   assert.match(posReplaySql, /depletion_qty/)
   assert.match(posReplaySql, /name = v_item_name/)
+
+  const posLaunchReadinessSql = await read('supabase/migrations/20260604120000_pos_inventory_launch_readiness.sql')
+  assert.match(posLaunchReadinessSql, /create table if not exists public\.inventory_movements/)
+  assert.match(posLaunchReadinessSql, /create table if not exists public\.pos_cashup_sessions/)
+  assert.match(posLaunchReadinessSql, /create or replace function public\.upsert_pos_cashup/)
+  assert.match(posLaunchReadinessSql, /public\._positive_depletion_qty/)
+  assert.match(posLaunchReadinessSql, /inventory_item_id, depletion_qty/)
 
   const posVoidHardeningSql = await read('supabase/migrations/20260524_pos_void_pin_stock_hardening.sql')
   assert.match(posVoidHardeningSql, /alter table public\.pos_order_items/)

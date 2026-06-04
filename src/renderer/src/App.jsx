@@ -6,6 +6,7 @@ import { SUBSCRIPTION_PLAN_ORDER, getAllSubscriptionPlans, getFeatureRequiredPla
 import AppErrorBoundary from './components/AppErrorBoundary'
 import { Modal } from './components/shared/Modal'
 import { extractReleaseHighlights, formatReleaseDate, toReleaseSections } from './utils/updatePresentation'
+import { applyThemeMode, getStoredThemeMode } from './utils/themeMode'
 import borokoLogoDark from './assets/boroko-bookings-logo-dark.png'
 import {
   AuthContext,
@@ -812,14 +813,20 @@ export default function App() {
   const focusRecoveryQueuedRef = useRef(false)
   const lastEditablePointerRef = useRef(null)
   const focusObservedRef = useRef(false)
+  const lastRecoveryTimeRef = useRef(0)
   const restoreAttemptedRef = useRef(false)
   const navigationGuardRef = useRef({ isDirty: false, confirmLeave: null })
 
-  // Dark mode — apply saved preference on startup
+  // Theme — apply saved preference on startup and follow system changes when requested.
   useEffect(() => {
-    if (localStorage.getItem('bb_dark_mode') === 'true') {
-      document.documentElement.classList.add('dark-mode')
+    applyThemeMode(getStoredThemeMode())
+    const media = window.matchMedia?.('(prefers-color-scheme: dark)')
+    if (!media) return undefined
+    const syncSystemTheme = () => {
+      if (getStoredThemeMode() === 'system') applyThemeMode('system')
     }
+    media.addEventListener?.('change', syncSystemTheme)
+    return () => media.removeEventListener?.('change', syncSystemTheme)
   }, [])
 
   // Poll for pending online booking requests every 60 seconds
@@ -840,7 +847,11 @@ export default function App() {
     return () => clearInterval(interval)
   }, [activeProfile?.status, isBrowserPreview, refreshOnlineRequests, user])
 
-  const runFocusRecovery = useCallback((reason) => {
+  const runFocusRecovery = useCallback((reason, preferredTarget = null) => {
+    const now = Date.now()
+    const RECOVERY_COOLDOWN_MS = 250
+    if (now - lastRecoveryTimeRef.current < RECOVERY_COOLDOWN_MS) return
+    lastRecoveryTimeRef.current = now
     if (focusRecoveryQueuedRef.current) return
     focusRecoveryQueuedRef.current = true
     if (INPUT_FOCUS_DEBUG) {
@@ -852,7 +863,22 @@ export default function App() {
     }
     requestAnimationFrame(() => {
       window.focus()
-      requestAnimationFrame(() => {
+      const target = isEditableFieldTarget(preferredTarget) ? preferredTarget.closest('input, textarea, [contenteditable]') : null
+      if (target?.focus) {
+        try {
+          target.focus({ preventScroll: true })
+        } catch {
+          target.focus()
+        }
+      }
+      setTimeout(() => {
+        if (target?.focus && document.activeElement !== target) {
+          try {
+            target.focus({ preventScroll: true })
+          } catch {
+            target.focus()
+          }
+        }
         document.body?.offsetHeight
         focusRecoveryQueuedRef.current = false
         if (INPUT_FOCUS_DEBUG) {
@@ -862,7 +888,7 @@ export default function App() {
             activeType: document.activeElement?.getAttribute?.('type') || null
           })
         }
-      })
+      }, 30)
     })
   }, [])
 
@@ -890,7 +916,6 @@ export default function App() {
 
   const clearStoredRendererSession = useCallback(() => {
     localStorage.removeItem('bb_user')
-    localStorage.removeItem('bb_session_nonce')
     localStorage.removeItem(USER_SCOPE_KEY)
     restoreAttemptedRef.current = false
     setUser(null)
@@ -1054,11 +1079,8 @@ export default function App() {
     }
   }, [activeProfile?.lodge_id, clearStoredRendererSession, isBrowserPreview, isLoggingIn, profilesLoading, user])
 
-  // Re-establish main-process currentUser on startup using the session nonce.
-  // After an Electron restart, currentUser in database.js is null even though
-  // the renderer restored the user from localStorage. The nonce proves this
-  // renderer instance previously authenticated — identity is derived from the
-  // nonce file in the main process, not from renderer-supplied data.
+  // Re-establish main-process currentUser on startup using the trusted session
+  // kept by the main process. The renderer keeps only display-safe user state.
   useEffect(() => {
     if (isBrowserPreview) {
       setAuthRestoreLoading(false)
@@ -1070,7 +1092,7 @@ export default function App() {
   }, [isBrowserPreview, user])
 
   useEffect(() => {
-    if (profilesLoading || !user || restoreAttemptedRef.current || !window.api?.auth?.restoreSession) return
+    if (profilesLoading || !user || restoreAttemptedRef.current || !window.api?.auth?.restoreCurrentSession) return
 
     if (!user.isMasterAdmin) {
       const storedScope = localStorage.getItem(USER_SCOPE_KEY) || ''
@@ -1079,20 +1101,13 @@ export default function App() {
     }
 
     restoreAttemptedRef.current = true
-    const nonce = localStorage.getItem('bb_session_nonce') || ''
-    const restorePromise = nonce
-      ? window.api.auth.restoreSession(nonce).then((restored) => ({ user: restored, nonce }))
-      : (window.api.auth.restoreSavedSession?.() || Promise.resolve({ user: null, nonce: '' }))
+    const restorePromise = window.api.auth.restoreCurrentSession()
 
-    restorePromise.then((result) => {
-      const restored = result?.user || result
+    restorePromise.then((restored) => {
       if (!restored) {
         clearStoredRendererSession()
         setAuthRestoreLoading(false)
         return null
-      }
-      if (result?.nonce) {
-        localStorage.setItem('bb_session_nonce', result.nonce)
       }
       return window.api.auth.validateSession?.()
         .then((validated) => {
@@ -1111,10 +1126,6 @@ export default function App() {
   useEffect(() => {
     if (isBrowserPreview) return undefined
 
-    const unsubscribe = window.api?.window?.onFocusRecovery?.((payload) => {
-      runFocusRecovery(payload?.reason || 'window')
-    })
-
     const handleFocusIn = (event) => {
       focusObservedRef.current = true
       if (INPUT_FOCUS_DEBUG) {
@@ -1129,6 +1140,20 @@ export default function App() {
       if (!isEditableFieldTarget(event.target)) return
       lastEditablePointerRef.current = event.target
       focusObservedRef.current = false
+
+      // Immediately attempt focus — this is the most direct fix.
+      // Chromium on Windows sometimes fails to route keyboard input to an element
+      // that received focus via its own internal pointer handling. By explicitly
+      // calling focus() here (synchronous, during pointer capture), we preempt
+      // the broken codepath.
+      const field = event.target.closest('input, textarea, [contenteditable]')
+      if (field && document.activeElement !== field) {
+        try {
+          field.focus({ preventScroll: true })
+        } catch {
+          field.focus()
+        }
+      }
 
       if (INPUT_FOCUS_DEBUG) {
         console.log('[INPUT FOCUS] pointerdown editable target:', {
@@ -1145,7 +1170,7 @@ export default function App() {
           const active = document.activeElement
           const targetOwnsFocus = active === target || (target.contains?.(active) ?? false)
           if (!focusObservedRef.current && !targetOwnsFocus) {
-            runFocusRecovery('editable-pointerdown')
+            runFocusRecovery('editable-pointerdown', target)
           }
         })
       })
@@ -1155,17 +1180,15 @@ export default function App() {
     document.addEventListener('pointerdown', handlePointerDown, true)
 
     return () => {
-      unsubscribe?.()
       document.removeEventListener('focusin', handleFocusIn, true)
       document.removeEventListener('pointerdown', handlePointerDown, true)
     }
   }, [isBrowserPreview, runFocusRecovery])
 
-  const login = useCallback(async (userData, nonce) => {
+  const login = useCallback(async (userData) => {
     setIsLoggingIn(true)
     try {
       localStorage.setItem('bb_user', JSON.stringify(userData))
-      localStorage.setItem('bb_session_nonce', nonce || '')
       
       // Force refresh from main process (especially important for offline login)
       const refreshed = await reloadProfiles()
@@ -1254,7 +1277,8 @@ export default function App() {
     ...buildCapabilitySnapshot({
       role: user?.role,
       isMasterAdmin: user?.isMasterAdmin,
-      features
+      features,
+      capabilityOverrides: user?.capability_overrides || {}
     }),
     entitlement: trialStatus,
     allowedOutletIds: _allowedOutletIds

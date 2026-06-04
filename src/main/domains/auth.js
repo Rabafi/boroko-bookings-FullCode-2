@@ -38,6 +38,7 @@ export async function sendUserInviteOrReset(id) {
   if (!emailLower) throw new Error('Staff account is missing an email address.')
   await checkOnline()
   if (!state.isOnline) throw new Error('Internet connection required to send staff invites.')
+  const inviteSentAt = new Date().toISOString()
 
   if (!user.auth_user_id) {
     const admin = requireAdmin()
@@ -58,8 +59,13 @@ export async function sendUserInviteOrReset(id) {
         .eq('id', user.id)
         .eq('lodge_id', state.lodgeId)
       if (linkError) throw new Error(linkError.message || 'Invite sent, but the staff account could not be linked.')
-      upsertCachedUser({ ...user, auth_user_id: authUserId })
+      upsertCachedUser({ ...user, auth_user_id: authUserId, invite_sent_at: inviteSentAt })
     }
+    await admin
+      .from('users')
+      .update({ invite_sent_at: inviteSentAt })
+      .eq('id', user.id)
+      .eq('lodge_id', state.lodgeId)
     logActivity('staff_invite_sent', `${user.name || emailLower} · Supabase Auth invite sent`)
     return {
       success: true,
@@ -71,6 +77,7 @@ export async function sendUserInviteOrReset(id) {
   }
 
   const result = await sendPasswordResetEmail(emailLower)
+  upsertCachedUser({ ...user, invite_sent_at: inviteSentAt })
   logActivity('staff_password_reset_sent', `${user.name || emailLower} · password reset email sent`)
   return {
     ...result,
@@ -84,6 +91,7 @@ export {
   setCurrentUser,
   getCurrentUser,
   logoutCurrentUser,
+  restoreCurrentTrustedSession,
   restoreUserSession,
   restoreSavedTrustedSession,
   validateCurrentSession,

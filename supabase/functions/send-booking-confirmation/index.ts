@@ -13,7 +13,7 @@
  *   SMTP_USER                  – sender email address
  *   SMTP_PASS                  – sender email password / app password
  *   SMTP_FROM_NAME             – display name, e.g. "Boroko Bookings"
- *   BOOKING_FUNCTION_SECRET    – shared secret required in x-boroko-function-secret
+ *   BOOKING_FUNCTION_SECRET    – optional server-to-server override secret
  */
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
@@ -39,14 +39,58 @@ function jsonResponse(body: Record<string, unknown>, status = 200) {
   })
 }
 
-function requireFunctionSecret(req: Request) {
-  if (!FUNCTION_SECRET) {
-    return jsonResponse({ error: 'Booking confirmation function is not configured for secure delivery' }, 503)
+function hasFunctionSecret(req: Request) {
+  return Boolean(FUNCTION_SECRET && req.headers.get('x-boroko-function-secret') === FUNCTION_SECRET)
+}
+
+function escapeHtml(value: unknown) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+function cleanHeaderValue(value: unknown) {
+  return String(value ?? '').replace(/[\r\n]+/g, ' ').trim()
+}
+
+function isUuid(value: unknown) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(value || ''))
+}
+
+function safeErrorMessage(value: unknown) {
+  return String(value || '').replace(/\s+/g, ' ').trim().slice(0, 500) || null
+}
+
+async function recordBookingEmailEvent(
+  supabase: any,
+  context: Record<string, unknown>,
+  status: string,
+  details: Record<string, unknown> = {}
+) {
+  if (!supabase) return
+  try {
+    const metadata = {
+      source: 'send-booking-confirmation',
+      ...(details.metadata && typeof details.metadata === 'object' ? details.metadata as Record<string, unknown> : {})
+    }
+    const { error } = await supabase.rpc('record_booking_email_delivery', {
+      p_lodge_id: isUuid(context.lodge_id) ? context.lodge_id : null,
+      p_booking_id: isUuid(context.booking_id) ? context.booking_id : null,
+      p_reference: context.reference || null,
+      p_delivery_status: status,
+      p_recipient: context.recipient || null,
+      p_error_message: safeErrorMessage(details.error_message),
+      p_metadata: metadata
+    })
+    if (error) {
+      console.error('[send-booking-confirmation] delivery log error:', error)
+    }
+  } catch (err) {
+    console.error('[send-booking-confirmation] delivery log failed:', err)
   }
-  if (req.headers.get('x-boroko-function-secret') !== FUNCTION_SECRET) {
-    return jsonResponse({ error: 'Unauthorized' }, 401)
-  }
-  return null
 }
 
 Deno.serve(async (req) => {
@@ -54,23 +98,28 @@ Deno.serve(async (req) => {
     return new Response(null, { headers: corsHeaders })
   }
 
-  try {
-    const authError = requireFunctionSecret(req)
-    if (authError) return authError
+  let supabase: any = null
+  const logContext: Record<string, unknown> = {}
 
-    const { booking_id, guest_email } = await req.json()
+  try {
+    const { booking_id, guest_email, confirmation_token } = await req.json()
+    logContext.booking_id = booking_id
 
     if (!booking_id) {
       return jsonResponse({ error: 'booking_id is required' }, 400)
     }
+    if (!guest_email) {
+      return jsonResponse({ error: 'guest_email is required' }, 400)
+    }
 
     // Fetch booking details using service role (bypasses RLS)
-    const supabase = createClient(SUPABASE_URL, SUPABASE_KEY)
+    supabase = createClient(SUPABASE_URL, SUPABASE_KEY)
 
     const { data: booking, error: fetchError } = await supabase
       .from('bookings')
       .select(`
         id,
+        lodge_id,
         check_in,
         check_out,
         adults,
@@ -79,6 +128,7 @@ Deno.serve(async (req) => {
         notes,
         source,
         create_idempotency_key,
+        online_confirmation_token,
         rooms ( room_number, room_type ),
         customers ( first_name, last_name, email, phone )
       `)
@@ -87,24 +137,25 @@ Deno.serve(async (req) => {
 
     if (fetchError || !booking) {
       console.error('Booking fetch error:', fetchError)
+      await recordBookingEmailEvent(supabase, logContext, 'booking_not_found', {
+        error_message: fetchError?.message || 'Booking not found'
+      })
       return jsonResponse({ error: 'Booking not found' }, 404)
     }
 
-    // Fetch lodge name from settings via lodge_id in bookings table
-    const { data: bookingRaw } = await supabase
-      .from('bookings')
-      .select('lodge_id')
-      .eq('id', booking_id)
-      .single()
+    const reference = 'ONL-' + booking.id.substring(0, 8).toUpperCase()
+    logContext.booking_id = booking.id
+    logContext.lodge_id = booking.lodge_id
+    logContext.reference = reference
 
     let lodgeName = 'the lodge'
     let lodgePhone = ''
     let lodgeEmail = ''
-    if (bookingRaw?.lodge_id) {
+    if (booking.lodge_id) {
       const { data: settings } = await supabase
         .from('settings')
         .select('lodge_name, company_name, phone, email')
-        .eq('lodge_id', bookingRaw.lodge_id)
+        .eq('lodge_id', booking.lodge_id)
         .single()
       if (settings) {
         lodgeName  = settings.lodge_name || settings.company_name || lodgeName
@@ -115,21 +166,52 @@ Deno.serve(async (req) => {
 
     const customerEmail = String(booking.customers?.email || '').trim().toLowerCase()
     const requestedEmail = String(guest_email || '').trim().toLowerCase()
-    if (requestedEmail && requestedEmail !== customerEmail) {
+    logContext.recipient = customerEmail || null
+    if (!requestedEmail || requestedEmail !== customerEmail) {
+      await recordBookingEmailEvent(supabase, logContext, 'guest_mismatch', {
+        error_message: 'Guest email did not match booking customer email',
+        metadata: { requested_email_present: Boolean(requestedEmail) }
+      })
       return jsonResponse({ error: 'Guest email does not match booking' }, 403)
+    }
+
+    const requestedToken = String(confirmation_token || '').trim()
+    const storedToken = String(booking.online_confirmation_token || '').trim()
+    if (!hasFunctionSecret(req) && (!requestedToken || !storedToken || requestedToken !== storedToken)) {
+      await recordBookingEmailEvent(supabase, logContext, 'token_invalid', {
+        error_message: 'Confirmation token missing or invalid',
+        metadata: {
+          token_present: Boolean(requestedToken),
+          stored_token_present: Boolean(storedToken),
+          server_override: false
+        }
+      })
+      return jsonResponse({ error: 'Unauthorized' }, 401)
     }
 
     const toEmail = booking.customers?.email
     if (!toEmail) {
+      await recordBookingEmailEvent(supabase, logContext, 'failed', {
+        error_message: 'No guest email available'
+      })
       return jsonResponse({ error: 'No guest email available' }, 422)
     }
 
     const guestName = [booking.customers?.first_name, booking.customers?.last_name].filter(Boolean).join(' ') || 'Guest'
-    const reference = 'ONL-' + booking.id.substring(0, 8).toUpperCase()
     const nights    = Math.max(1, Math.ceil((new Date(booking.check_out).getTime() - new Date(booking.check_in).getTime()) / 86400000))
+    const safeLodgeName = escapeHtml(lodgeName)
+    const safeGuestName = escapeHtml(guestName)
+    const safeRoomNumber = escapeHtml(booking.rooms?.room_number || '—')
+    const safeRoomType = escapeHtml(booking.rooms?.room_type || '—')
+    const safeCheckIn = escapeHtml(booking.check_in)
+    const safeCheckOut = escapeHtml(booking.check_out)
+    const safeReference = escapeHtml(reference)
+    const safeLodgePhone = escapeHtml(lodgePhone)
+    const safeLodgeEmail = escapeHtml(lodgeEmail)
+    const safeTotal = escapeHtml(Number(booking.total_amount || 0).toLocaleString())
 
     // Build email body
-    const subject = `Booking Request Received — ${lodgeName} (${reference})`
+    const subject = cleanHeaderValue(`Booking Request Received — ${lodgeName} (${reference})`)
 
     const html = `
 <!DOCTYPE html>
@@ -139,17 +221,17 @@ Deno.serve(async (req) => {
   <div style="max-width:520px;margin:0 auto;background:#fff;border-radius:16px;overflow:hidden;border:1px solid #e7e5e4;">
     <div style="background:#059669;padding:32px 32px 24px;text-align:center;">
       <h1 style="color:#fff;margin:0;font-size:22px;">Booking Request Received</h1>
-      <p style="color:#a7f3d0;margin:8px 0 0;font-size:14px;">${lodgeName}</p>
+      <p style="color:#a7f3d0;margin:8px 0 0;font-size:14px;">${safeLodgeName}</p>
     </div>
     <div style="padding:28px 32px;">
       <p style="color:#1c1917;font-size:15px;margin:0 0 20px;">
-        Dear ${guestName},<br><br>
-        Thank you for your booking request. <strong>${lodgeName}</strong> will review and confirm your reservation within 24 hours.
+        Dear ${safeGuestName},<br><br>
+        Thank you for your booking request. <strong>${safeLodgeName}</strong> will review and confirm your reservation within 24 hours.
       </p>
 
       <div style="background:#f5f5f4;border-radius:12px;padding:20px;margin-bottom:20px;text-align:center;">
         <div style="color:#78716c;font-size:11px;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:6px;">Your Reference</div>
-        <div style="font-size:28px;font-weight:bold;color:#1c1917;font-family:monospace;letter-spacing:0.05em;">${reference}</div>
+        <div style="font-size:28px;font-weight:bold;color:#1c1917;font-family:monospace;letter-spacing:0.05em;">${safeReference}</div>
         <div style="color:#a8a29e;font-size:11px;margin-top:4px;">Keep this for your records</div>
       </div>
 
@@ -157,16 +239,16 @@ Deno.serve(async (req) => {
         <tr style="border-bottom:1px solid #e7e5e4;">
           <td style="padding:10px 0;color:#78716c;">Room</td>
           <td style="padding:10px 0;color:#1c1917;font-weight:600;text-align:right;">
-            ${booking.rooms?.room_number || '—'} (${booking.rooms?.room_type || '—'})
+            ${safeRoomNumber} (${safeRoomType})
           </td>
         </tr>
         <tr style="border-bottom:1px solid #e7e5e4;">
           <td style="padding:10px 0;color:#78716c;">Check-in</td>
-          <td style="padding:10px 0;color:#1c1917;font-weight:600;text-align:right;">${booking.check_in}</td>
+          <td style="padding:10px 0;color:#1c1917;font-weight:600;text-align:right;">${safeCheckIn}</td>
         </tr>
         <tr style="border-bottom:1px solid #e7e5e4;">
           <td style="padding:10px 0;color:#78716c;">Check-out</td>
-          <td style="padding:10px 0;color:#1c1917;font-weight:600;text-align:right;">${booking.check_out}</td>
+          <td style="padding:10px 0;color:#1c1917;font-weight:600;text-align:right;">${safeCheckOut}</td>
         </tr>
         <tr style="border-bottom:1px solid #e7e5e4;">
           <td style="padding:10px 0;color:#78716c;">Nights</td>
@@ -175,7 +257,7 @@ Deno.serve(async (req) => {
         <tr>
           <td style="padding:10px 0;color:#78716c;">Estimated Total</td>
           <td style="padding:10px 0;color:#1c1917;font-weight:700;text-align:right;">
-            ${Number(booking.total_amount || 0).toLocaleString()}
+            ${safeTotal}
           </td>
         </tr>
       </table>
@@ -185,9 +267,9 @@ Deno.serve(async (req) => {
       </div>
 
       <p style="font-size:13px;color:#78716c;margin:0;">
-        Questions? Contact ${lodgeName} directly:
-        ${lodgePhone ? `<br>📞 ${lodgePhone}` : ''}
-        ${lodgeEmail ? `<br>✉️ ${lodgeEmail}` : ''}
+        Questions? Contact ${safeLodgeName} directly:
+        ${lodgePhone ? `<br>Phone: ${safeLodgePhone}` : ''}
+        ${lodgeEmail ? `<br>Email: ${safeLodgeEmail}` : ''}
       </p>
     </div>
     <div style="background:#f5f5f4;padding:16px 32px;text-align:center;">
@@ -201,6 +283,10 @@ Deno.serve(async (req) => {
     if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
       console.log(`[send-booking-confirmation] SMTP not configured — would send to ${toEmail}`)
       console.log(`Subject: ${subject}`)
+      await recordBookingEmailEvent(supabase, logContext, 'smtp_missing', {
+        error_message: 'SMTP not configured',
+        metadata: { host_present: Boolean(SMTP_HOST), user_present: Boolean(SMTP_USER), pass_present: Boolean(SMTP_PASS) }
+      })
       return jsonResponse({ sent: false, reason: 'SMTP not configured' })
     }
 
@@ -226,10 +312,25 @@ Deno.serve(async (req) => {
 
     await client.close()
 
+    await recordBookingEmailEvent(supabase, logContext, 'sent', {
+      metadata: { smtp_host: SMTP_HOST, smtp_port: SMTP_PORT }
+    })
+
+    if (!hasFunctionSecret(req) && storedToken) {
+      await supabase
+        .from('bookings')
+        .update({ online_confirmation_token: null })
+        .eq('id', booking.id)
+        .eq('online_confirmation_token', storedToken)
+    }
+
     return jsonResponse({ sent: true, to: toEmail, reference })
 
   } catch (err) {
     console.error('[send-booking-confirmation] error:', err)
-    return jsonResponse({ error: err.message }, 500)
+    await recordBookingEmailEvent(supabase, logContext, 'failed', {
+      error_message: (err as Error)?.message || 'Booking confirmation email failed'
+    })
+    return jsonResponse({ error: (err as Error)?.message || 'Booking confirmation email failed' }, 500)
   }
 })

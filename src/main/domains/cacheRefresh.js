@@ -10,6 +10,8 @@ import { mergeRemoteInventoryWithLocalState } from './inventoryMerge.js';
 
 const SYNC_REFRESH_RETRY_BASE_DELAY_MS = 5_000;
 const SYNC_REFRESH_RETRY_MAX_DELAY_MS = 60_000;
+const USER_SELECT = 'id, auth_user_id, name, email, role, status, lodge_id, created_at, last_sign_in_at, last_desktop_sign_in_at, last_pwa_sign_in_at, last_activity_at, invite_sent_at, password_updated_at, pwa_enabled, pwa_password_set_at, pwa_disabled_reason, pwa_password_reset_by, allowed_outlet_ids, pin_hash, capability_overrides';
+const LEGACY_USER_SELECT = 'id, auth_user_id, name, email, role, lodge_id, created_at, pwa_enabled, pwa_password_set_at, pwa_disabled_reason, pwa_password_reset_by, allowed_outlet_ids, pin_hash';
 
 function uniqueSyncNames(names = []) {
   return [...new Set((names || []).filter(Boolean))];
@@ -51,10 +53,31 @@ function clearSyncRefreshStale(names = []) {
   broadcastSyncStatus();
 }
 
+function isLegacyUserSchemaError(error) {
+  const message = String(error?.message || '');
+  return /column users\.(status|last_sign_in_at|last_desktop_sign_in_at|last_pwa_sign_in_at|last_activity_at|invite_sent_at|password_updated_at|capability_overrides) does not exist/i.test(message);
+}
+
+async function fetchUsersForRefresh() {
+  const primary = await state.supabase
+    .from('users')
+    .select(USER_SELECT)
+    .eq('lodge_id', state.lodgeId)
+    .order('name');
+  if (!primary.error || !isLegacyUserSchemaError(primary.error)) {
+    return primary;
+  }
+  return state.supabase
+    .from('users')
+    .select(LEGACY_USER_SELECT)
+    .eq('lodge_id', state.lodgeId)
+    .order('name');
+}
+
 async function refreshCacheStrict(...names) {
   if (!state.lodgeId) return;
   const fetchers = {
-    users: () => state.supabase.from('users').select('id, auth_user_id, name, email, role, lodge_id, created_at, pwa_enabled, pwa_password_set_at, pwa_disabled_reason, pwa_password_reset_by, allowed_outlet_ids, pin_hash').eq('lodge_id', state.lodgeId).order('name'),
+    users: () => fetchUsersForRefresh(),
     rooms: () => state.supabase.from('rooms').select('*').eq('lodge_id', state.lodgeId).order('room_number'),
     customers: () => state.supabase.from('customers').select('*').eq('lodge_id', state.lodgeId).order('name'),
     bookings: () => state.supabase.from('bookings').select('*').eq('lodge_id', state.lodgeId).order('check_in', { ascending: false }),

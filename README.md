@@ -30,12 +30,22 @@ npm run dev
 
 ## Critical Release Gate
 
-Before shipping changes that touch offline queues, bookings, quotations, conference, day bookings, POS, or sync plumbing, this repo now requires:
+Before shipping changes, this repo requires:
 
+- `npm test`
 - `npm run test:offline-queue-critical`
+- `npm run test:offline-pos-critical`
+- `npm run test:inventory-offline-sync`
+- `npm run test:import-critical`
+- `npm run audit:prod`
 - `npm run build`
+- `npm run manager:lint`
+- `npm run manager:build`
+- `npm run booking:build`
 
-The same gate now runs automatically in GitHub Actions on every push and pull request through `.github/workflows/offline-queue-critical.yml`.
+The same core gate runs automatically in GitHub Actions on every push and pull request through `.github/workflows/offline-queue-critical.yml`.
+
+See [docs/SHIP_READY_RUNBOOK.md](</C:/Users/Botswapelo Studios/Documents/Work/Boroko Bookings/docs/SHIP_READY_RUNBOOK.md>) for the full operator release checklist.
 
 ## Desktop Release Publish
 

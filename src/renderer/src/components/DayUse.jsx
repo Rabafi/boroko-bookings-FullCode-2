@@ -167,7 +167,7 @@ function buildSlipReference(entry = {}) {
 }
 
 export default function DayUse() {
-  const { settings, setSettings } = useSettings()
+  const { settings } = useSettings()
   const currency = settings?.currency || 'P'
 
   const [entries, setEntries] = useState([])
@@ -181,8 +181,9 @@ export default function DayUse() {
   const [activityFilter, setActivityFilter] = useState('all')
   const [resourceFilter, setResourceFilter] = useState('all')
   const [balanceFilter, setBalanceFilter] = useState('all')
-  const templates = useMemo(() => resolveDayUseTemplates(settings || {}), [settings])
-  const resources = useMemo(() => resolveDayUseResources(settings || {}), [settings])
+  const [dayUseConfig, setDayUseConfig] = useState({ templates: [], resources: [] })
+  const templates = useMemo(() => resolveDayUseTemplates({ day_use_templates: dayUseConfig.templates }), [dayUseConfig.templates])
+  const resources = useMemo(() => resolveDayUseResources({ day_use_resources: dayUseConfig.resources }), [dayUseConfig.resources])
   const defaultTemplate = templates[0] || normalizeDayUseTemplate({})
   const [form, setForm] = useState(buildFormFromTemplate(settings, defaultTemplate))
   const [saving, setSaving] = useState(false)
@@ -210,6 +211,20 @@ export default function DayUse() {
   useEffect(() => {
     setConfigResources(resources)
   }, [resources])
+
+  useEffect(() => {
+    let active = true
+    window.api.dayuse.getConfig()
+      .then((config) => {
+        if (!active || !config) return
+        setDayUseConfig({
+          templates: config.templates || config.day_use_templates || [],
+          resources: config.resources || config.day_use_resources || []
+        })
+      })
+      .catch(() => {})
+    return () => { active = false }
+  }, [])
 
   const inventoryById = useMemo(
     () => Object.fromEntries((inventoryItems || []).map((item) => [item.id, item])),
@@ -427,15 +442,17 @@ export default function DayUse() {
     setConfigSuccess('')
     try {
       const payload = {
-        ...(settings || {}),
-        day_use_templates: nextTemplates.map((template) => normalizeDayUseTemplate({
+        templates: nextTemplates.map((template) => normalizeDayUseTemplate({
           ...template,
           bundled_extras: (template.bundled_extras || []).map((extra) => normalizeDayUseExtraPreset(extra))
         })),
-        day_use_resources: nextResources.map((resource) => normalizeDayUseResource(resource))
+        resources: nextResources.map((resource) => normalizeDayUseResource(resource))
       }
-      const saved = await window.api.settings.save(payload)
-      setSettings?.(saved)
+      const saved = await window.api.dayuse.saveConfig(payload)
+      setDayUseConfig({
+        templates: saved.templates || [],
+        resources: saved.resources || []
+      })
       setConfigSuccess('Day Use setup saved.')
       setTemplateDraft(emptyTemplateDraft())
       setResourceDraft(emptyResourceDraft())

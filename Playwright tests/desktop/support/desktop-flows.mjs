@@ -78,22 +78,20 @@ export async function restoreBackendSession(page, seed, { reload = false } = {})
     }
   }
 
-  await page.evaluate(({ user, nonce, scope }) => {
+  await page.evaluate(({ user, scope }) => {
     localStorage.setItem('bb_user', JSON.stringify(user))
-    localStorage.setItem('bb_session_nonce', nonce)
     localStorage.setItem('bb_user_scope', scope)
   }, {
     user: seed.localStorageUser,
-    nonce: seed.sessionNonce,
     scope: seed.lodgeId
   })
 
-  const restored = await page.evaluate(async (nonce) => {
-    const restoredUser = await window.api.auth.restoreSession(nonce)
+  const restored = await page.evaluate(async () => {
+    const restoredUser = await window.api.auth.restoreCurrentSession()
     if (!restoredUser) return false
     await window.api.auth.validateSession?.()
     return true
-  }, seed.sessionNonce)
+  })
   expect(restored).toBe(true)
 
   if (reload) {

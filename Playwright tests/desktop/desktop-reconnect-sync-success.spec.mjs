@@ -64,17 +64,15 @@ test('desktop reconnects online and syncs offline booking and payment without du
 
     restoreSeededSessionNonce(userDataDir, seed)
 
-    const restored = await page.evaluate(async ({ user, nonce, scope }) => {
+    const restored = await page.evaluate(async ({ user, scope }) => {
       localStorage.setItem('bb_user', JSON.stringify(user))
-      localStorage.setItem('bb_session_nonce', nonce)
       localStorage.setItem('bb_user_scope', scope)
-      const restoredUser = await window.api.auth.restoreSession(nonce)
+      const restoredUser = await window.api.auth.restoreCurrentSession()
       if (!restoredUser) return false
       await window.api.auth.validateSession?.()
       return true
     }, {
       user: seed.localStorageUser,
-      nonce: seed.sessionNonce,
       scope: seed.lodgeId
     })
     expect(restored).toBe(true)

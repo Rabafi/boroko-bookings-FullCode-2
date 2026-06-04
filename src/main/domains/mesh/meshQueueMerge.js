@@ -7,6 +7,7 @@ import { readSyncQueue, writeSyncQueue } from '../syncStore.js';
 import { detectConflicts } from './meshConflict.js';
 import { computeBodyHash } from './meshSecurity.js';
 import { readCache, writeCache } from '../cacheStore.js';
+import { broadcastSyncStatus } from '../connectivity.js';
 
 const ALLOWED_RPC_TABLES = new Set([
   'create_booking',
@@ -32,8 +33,10 @@ const ALLOWED_RPC_TABLES = new Set([
   'delete_conference_booking',
   'add_pool_day_use',
   'delete_pool_day_use',
+  'adjust_inventory_stock',
   'create_pos_order',
-  'approve_pos_void_with_pin'
+  'approve_pos_void_with_pin',
+  'upsert_pos_cashup'
 ]);
 
 function isPlainObject(value) {
@@ -56,14 +59,19 @@ function isFiniteNumber(value) {
   return Number.isFinite(Number(value));
 }
 
+function normalizePositiveQty(value, fallback = 1) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : fallback;
+}
+
 function getPosInventoryUsage(items = []) {
   const usage = new Map();
   for (const entry of items || []) {
     const inventoryItemId = String(entry?.inventory_item_id || '').trim();
     if (!inventoryItemId) continue;
-    const quantity = Math.max(0, Number(entry.quantity || 0));
-    const depletionQty = Math.max(1, Number(entry.depletion_qty || 1));
-    if (quantity <= 0) continue;
+    const quantity = Number(entry.quantity || 0);
+    const depletionQty = normalizePositiveQty(entry.depletion_qty, 1);
+    if (quantity === 0) continue;
     usage.set(inventoryItemId, (usage.get(inventoryItemId) || 0) + quantity * depletionQty);
   }
   return usage;
@@ -217,10 +225,10 @@ export function validateSyncQueueItem(item) {
       if (!hasString(line.item_name) && !hasString(line.menu_item_id) && !hasString(line.inventory_item_id)) {
         return { isValid: false, reason: 'create_pos_order line item missing identity' };
       }
-      if (!isFiniteNumber(line.quantity) || Number(line.quantity) <= 0) {
+      if (!isFiniteNumber(line.quantity) || Number(line.quantity) === 0) {
         return { isValid: false, reason: 'create_pos_order line item has invalid quantity' };
       }
-      if (!isFiniteNumber(line.unit_price) || Number(line.unit_price) < 0) {
+      if (!isFiniteNumber(line.unit_price)) {
         return { isValid: false, reason: 'create_pos_order line item has invalid unit price' };
       }
       if (line.inventory_item_id && (!isFiniteNumber(line.depletion_qty) || Number(line.depletion_qty) <= 0)) {
@@ -237,6 +245,24 @@ export function validateSyncQueueItem(item) {
     }
     if (payload.items && !Array.isArray(payload.items)) {
       return { isValid: false, reason: 'approve_pos_void_with_pin items must be an array' };
+    }
+  }
+
+  if (item.table === 'adjust_inventory_stock') {
+    const data = item.data;
+    if (!hasString(data.p_item_id) || !hasString(data.p_lodge_id)) {
+      return { isValid: false, reason: 'adjust_inventory_stock missing item or lodge' };
+    }
+    if (!isFiniteNumber(data.p_delta) || Number(data.p_delta) === 0) {
+      return { isValid: false, reason: 'adjust_inventory_stock has invalid adjustment quantity' };
+    }
+  }
+
+  if (item.table === 'upsert_pos_cashup') {
+    const payload = item.data.payload;
+    if (!isPlainObject(payload)) return { isValid: false, reason: 'upsert_pos_cashup missing payload object' };
+    if (!hasString(payload.id) || !hasString(payload.lodge_id) || !hasString(payload.date)) {
+      return { isValid: false, reason: 'upsert_pos_cashup missing required cash-up fields' };
     }
   }
 
@@ -405,6 +431,6 @@ export async function syncMeshQueues() {
       console.error('[MeshMerge] Error triggering conflict detection post-merge:', conflictErr);
     }
     // Update local UI immediately
-    import('../connectivity.js').then((m) => m.broadcastSyncStatus()).catch(() => {});
+    broadcastSyncStatus();
   }
 }

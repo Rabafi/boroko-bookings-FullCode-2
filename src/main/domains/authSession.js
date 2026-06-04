@@ -15,6 +15,11 @@ import {
 } from './authClients.js';
 import { readCache } from './cacheStore.js';
 import { checkOnline } from './connectivity.js';
+import { touchUserPresence } from './users.js';
+import {
+  normalizeStaffStatus,
+  STAFF_STATUS_LABELS
+} from '../../shared/accessControl.js';
 import {
   normalizeEmail,
   normalizeLodgeId,
@@ -34,7 +39,16 @@ function isPosFullAccessRole(role) {
   return ['admin', 'manager', 'super_admin'].includes((role || '').toLowerCase());
 }
 
-const SESSION_NONCE_MAX_AGE_MS = 60 * 24 * 60 * 60 * 1000; // 60 days
+function ensureActiveSessionUser(user) {
+  const status = normalizeStaffStatus(user?.status);
+  if (status === 'active') return null;
+  return status === 'archived'
+    ? `This staff account is ${STAFF_STATUS_LABELS[status].toLowerCase()}. Connect to the internet and ask an admin to restore it before signing in again.`
+    : `This staff account is ${STAFF_STATUS_LABELS[status].toLowerCase()}. Connect to the internet and ask an admin to reactivate it before signing in again.`;
+}
+
+const CURRENT_SESSION_NONCE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+const TRUSTED_SESSION_MAX_AGE_MS = 60 * 24 * 60 * 60 * 1000; // password-unlocked offline sessions
 
 function getSessionNoncePath() {
   return path.join(state.cacheDir, 'session-nonce.json');
@@ -66,7 +80,7 @@ export function pruneExpiredTrustedSessions(sessions = readTrustedSessions()) {
   const now = Date.now();
   const active = sessions.filter((session) => {
     const createdAt = new Date(session?.createdAt || 0).getTime();
-    return Number.isFinite(createdAt) && now - createdAt <= SESSION_NONCE_MAX_AGE_MS;
+    return Number.isFinite(createdAt) && now - createdAt <= TRUSTED_SESSION_MAX_AGE_MS;
   });
   if (active.length !== sessions.length) writeTrustedSessions(active);
   return active;
@@ -193,7 +207,17 @@ export function logoutCurrentUser({ forgetTrustedSession = false } = {}) {
   }).catch((err) => console.error('[Mesh] Failed to shutdown mesh:', err));
 }
 
-export function restoreUserSession(nonce) {
+export function restoreCurrentTrustedSession() {
+  const stored = readSessionNonce();
+  const nonce = typeof stored?.nonce === 'string' ? stored.nonce : '';
+  if (!nonce) return null;
+  return restoreUserSession(nonce);
+}
+
+export function restoreUserSession(nonce, options = {}) {
+  const maxAgeMs = options?.trustedUnlock === true
+    ? TRUSTED_SESSION_MAX_AGE_MS
+    : CURRENT_SESSION_NONCE_MAX_AGE_MS;
   authTrace('restoreSession start', { hasNonce: !!nonce, nonceLength: typeof nonce === 'string' ? nonce.length : null });
   console.log('[AUTH] restoreSession requested');
   if (!nonce) {
@@ -221,7 +245,7 @@ export function restoreUserSession(nonce) {
   }
 
   const age = Date.now() - new Date(stored.createdAt).getTime();
-  if (age > SESSION_NONCE_MAX_AGE_MS) {
+  if (age > maxAgeMs) {
     console.warn('[AUTH] restoreSession REJECTED: nonce expired', { ageMs: age });
     state.currentUser = null;
     clearBackendSession();
@@ -282,6 +306,14 @@ export function restoreUserSession(nonce) {
       }
     );
     const safeUser = normalizeSessionUser(mergedUser);
+    const inactiveMessage = ensureActiveSessionUser(safeUser);
+    if (inactiveMessage) {
+      state.currentUser = null;
+      clearBackendSession();
+      clearSessionNonce();
+      authTrace('restoreSession result', { restored: false, reason: 'inactive_staff', userId: safeUser.id, status: safeUser.status });
+      return null;
+    }
     setCurrentUser(safeUser);
     console.log('[AUTH] restoreSession restored from nonce metadata:', {
       userId: safeUser.id,
@@ -306,6 +338,14 @@ export function restoreUserSession(nonce) {
     return null;
   }
   const { password_hash: _ph, ...safeUser } = user;
+  const inactiveMessage = ensureActiveSessionUser(safeUser);
+  if (inactiveMessage) {
+    state.currentUser = null;
+    clearBackendSession();
+    clearSessionNonce();
+    authTrace('restoreSession result', { restored: false, reason: 'inactive_staff', userId: safeUser.id, status: safeUser.status });
+    return null;
+  }
   setCurrentUser(safeUser);
   console.log('[AUTH] restoreSession restored:', {
     userId: safeUser.id,
@@ -364,9 +404,13 @@ export function restoreSavedTrustedSession(email = '', password = '') {
     return { user: null, nonce: '', code: 'wrong_password', error: 'Incorrect password for this saved offline session.' };
   }
 
-  const user = restoreUserSession(session.nonce);
+  const user = restoreUserSession(session.nonce, { trustedUnlock: true });
+  const inactiveMessage = ensureActiveSessionUser(user);
+  if (inactiveMessage) {
+    return { user: null, nonce: '', code: 'account_inactive', error: inactiveMessage };
+  }
   return user ?
-  { user, nonce: session.nonce, code: null } :
+  { user, nonce: '', code: null } :
   { user: null, nonce: '', code: 'saved_session_invalid', error: 'The saved offline session could not be opened. Connect to the internet and sign in again.' };
 }
 
@@ -439,6 +483,12 @@ export async function validateCurrentSession() {
 
     setCurrentUser(refreshedUser);
     upsertCachedUser(refreshedUser);
+    await touchUserPresence({
+      userId: refreshedUser.id,
+      lodgeId: refreshedUser.lodge_id || state.lodgeId,
+      sessionType: row.session_type || session.session_type || 'desktop',
+      markSignIn: false
+    });
 
     const stored = readSessionNonce();
     if (stored?.nonce) {

@@ -221,6 +221,10 @@ declare
   v_amount numeric := coalesce(nullif(p_payload->>'monthly_fee', '')::numeric, 0);
   v_invoice_amount numeric;
 begin
+  if not public.app_is_service_role() then
+    raise exception 'Unauthorized' using errcode = '42501';
+  end if;
+
   if v_lodge_key is null then
     return jsonb_build_object('success', false, 'error', 'A lodge must be selected before issuing a subscription.');
   end if;
@@ -326,6 +330,10 @@ declare
   v_payment_status text;
   v_event_type text := 'subscription_updated';
 begin
+  if not public.app_is_service_role() then
+    raise exception 'Unauthorized' using errcode = '42501';
+  end if;
+
   select *
   into v_before
   from public.licenses
@@ -385,7 +393,9 @@ $function$;
 -- Re-grants
 grant execute on function public.get_lodge_entitlement(uuid) to anon, authenticated, service_role;
 grant execute on function public.activate_license_key(uuid, text) to anon, authenticated, service_role;
-grant execute on function public.issue_subscription_contract(jsonb) to anon, authenticated, service_role;
-grant execute on function public.update_subscription_contract(uuid, jsonb) to anon, authenticated, service_role;
+revoke execute on function public.issue_subscription_contract(jsonb) from anon, authenticated;
+revoke execute on function public.update_subscription_contract(uuid, jsonb) from anon, authenticated;
+grant execute on function public.issue_subscription_contract(jsonb) to service_role;
+grant execute on function public.update_subscription_contract(uuid, jsonb) to service_role;
 
 commit;

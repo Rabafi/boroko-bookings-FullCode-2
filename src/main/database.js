@@ -11,7 +11,8 @@ export {
 // Do not add new logic here.
 
 export {
-  initDatabase
+  initDatabase,
+  checkOnline
 } from './domains/infrastructure.js'
 export {
   getProfiles,
@@ -27,6 +28,7 @@ export {
   setCurrentUser,
   getCurrentUser,
   logoutCurrentUser,
+  restoreCurrentTrustedSession,
   restoreUserSession,
   restoreSavedTrustedSession,
   validateCurrentSession,
@@ -80,6 +82,7 @@ export {
   getInventoryPurchases,
   getAllInventoryPurchases,
   adjustInventoryStock,
+  getInventoryMovements,
   getInventoryStocktakes,
   createInventoryStocktakeSession,
   getInventoryStocktakeSession,
@@ -155,6 +158,41 @@ export {
   createPosOrder,
   voidPosOrder,
   approvePosVoidWithPin,
+  createPosPartialReturnWithPin,
+  getPosCashupSummary,
+  getPosCashups,
+  createPosCashupSession,
+  getPosTabs,
+  savePosTab,
+  closePosTab,
+  updatePosTabStatus,
+  overridePosTableTab,
+  getPosTablesWithStatus,
+  getActivePosTableTab,
+  openPosTableSession,
+  getPosTables,
+  savePosTable,
+  deletePosTable,
+  getPosTickets,
+  updatePosTicketStatus,
+  getCurrentPosShift,
+  openPosShift,
+  closePosShift,
+  getPosHardwareSettings,
+  savePosHardwareSettings,
+  testPosHardware,
+  getPosStaff,
+  selectPosStaffWithPin,
+  getPosModifierGroups,
+  savePosModifierGroup,
+  getPosPromotions,
+  savePosPromotion,
+  getPosFloorLayout,
+  savePosFloorLayout,
+  updatePosCustomerDisplay,
+  getPosCustomerDisplay,
+  sendPaymentTerminalTotal,
+  getPosAuditLog,
   getPosRevenueSummary
 } from './domains/pos.js'
 export {
@@ -234,6 +272,10 @@ export {
   updateDayUseEntryStatus,
   settleDayUseEntryBalance
 } from './domains/dayUseEntries.js'
+export {
+  getDayUseConfig,
+  saveDayUseConfig
+} from './domains/dayUseConfig.js'
 export {
   getPoolDayUse,
   getPoolDayUseById,

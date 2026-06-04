@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Plus, Pencil, Trash2, AlertTriangle, TrendingUp, Package, ClipboardCheck, RefreshCw } from 'lucide-react'
+import { Plus, Pencil, Trash2, AlertTriangle, TrendingUp, Package, ClipboardCheck, RefreshCw, History, Upload } from 'lucide-react'
 import { Modal } from './shared/Modal'
 import HorizontalScrollArea from './shared/HorizontalScrollArea'
 import { useSettings } from '../app-context'
@@ -21,11 +21,25 @@ function sortItems(list) {
   ))
 }
 
+function movementLabel(type) {
+  const labels = {
+    opening_stock: 'Opening Stock',
+    purchase: 'Purchase',
+    pos_sale: 'POS Sale',
+    pos_return: 'POS Return',
+    pos_void_restore: 'Void Restore',
+    adjustment_increase: 'Adjustment In',
+    adjustment_decrease: 'Adjustment Out',
+    stocktake: 'Stock Take'
+  }
+  return labels[type] || String(type || 'Movement').replace(/_/g, ' ')
+}
+
 export default function Inventory() {
   const { settings } = useSettings()
   const currency = settings?.currency || 'P'
 
-  const [tab, setTab] = useState('stock') // stock | purchases | stocktake
+  const [tab, setTab] = useState('stock') // stock | purchases | movements | stocktake
 
   const [items, setItems] = useState([])
   const [outlets, setOutlets] = useState([])
@@ -66,6 +80,10 @@ export default function Inventory() {
   const [purchaseHistory, setPurchaseHistory] = useState([])
   const [historyItemId, setHistoryItemId] = useState(null)
 
+  const [movementHistory, setMovementHistory] = useState([])
+  const [movementItemId, setMovementItemId] = useState('')
+  const [movementLoading, setMovementLoading] = useState(false)
+
   // Adjust stock modal
   const [adjustModal, setAdjustModal] = useState(false)
   const [adjustItem, setAdjustItem] = useState(null)
@@ -74,6 +92,14 @@ export default function Inventory() {
   const [adjustPin, setAdjustPin] = useState('')
   const [adjustSaving, setAdjustSaving] = useState(false)
   const [adjustError, setAdjustError] = useState('')
+
+  const [openingModal, setOpeningModal] = useState(false)
+  const [openingItemId, setOpeningItemId] = useState('')
+  const [openingQty, setOpeningQty] = useState('')
+  const [openingNotes, setOpeningNotes] = useState('')
+  const [openingPin, setOpeningPin] = useState('')
+  const [openingSaving, setOpeningSaving] = useState(false)
+  const [openingError, setOpeningError] = useState('')
 
   const [stocktakes, setStocktakes] = useState([])
   const [activeStocktakeId, setActiveStocktakeId] = useState('')
@@ -92,6 +118,7 @@ export default function Inventory() {
     const unsubscribe = window.api.sync.onStatusChanged(() => {
       loadItems(true)
       if (tab === 'purchases' && historyItemId) loadPurchases(historyItemId)
+      if (tab === 'movements') loadMovements(true)
       if (tab === 'stocktake' && activeStocktakeId) loadStocktakeSession(activeStocktakeId)
     })
     return () => unsubscribe?.()
@@ -103,6 +130,9 @@ export default function Inventory() {
   useEffect(() => {
     if (tab === 'purchases' && historyItemId) loadPurchases(historyItemId)
   }, [tab])
+  useEffect(() => {
+    if (tab === 'movements') loadMovements()
+  }, [tab, movementItemId])
   useEffect(() => {
     if (tab === 'stocktake') loadStocktakes()
   }, [tab])
@@ -149,6 +179,23 @@ export default function Inventory() {
     } catch (err) {
       setPurchaseHistory([])
       setPageError(err?.message || 'Could not load purchase history right now.')
+    }
+  }
+
+  const loadMovements = async (silent = false) => {
+    if (!silent) setMovementLoading(true)
+    setPageError('')
+    try {
+      const rows = await window.api.inventory.getMovements({
+        item_id: movementItemId || null,
+        limit: 250
+      })
+      setMovementHistory(Array.isArray(rows) ? rows : [])
+    } catch (err) {
+      setMovementHistory([])
+      setPageError(err?.message || 'Could not load movement history right now.')
+    } finally {
+      setMovementLoading(false)
     }
   }
 
@@ -494,6 +541,15 @@ export default function Inventory() {
     setAdjustModal(true)
   }
 
+  const openOpeningStock = (item = null) => {
+    setOpeningItemId(item?.id || '')
+    setOpeningQty(item ? String(item.current_stock || 0) : '')
+    setOpeningNotes('Opening stock setup')
+    setOpeningPin('')
+    setOpeningError('')
+    setOpeningModal(true)
+  }
+
   const handleAdjustSubmit = async (e) => {
     e.preventDefault()
     setAdjustSaving(true)
@@ -508,11 +564,55 @@ export default function Inventory() {
         ? { ...row, current_stock: result?.new_stock ?? row.current_stock }
         : row
       ))
+      if (tab === 'movements') loadMovements(true)
       setAdjustModal(false)
     } catch (err) {
       setAdjustError(err.message || 'Failed to adjust stock. Please try again.')
     } finally {
       setAdjustSaving(false)
+    }
+  }
+
+  const handleOpeningSubmit = async (e) => {
+    e.preventDefault()
+    const item = items.find((row) => row.id === openingItemId)
+    if (!item) {
+      setOpeningError('Select a product first.')
+      return
+    }
+    const targetQty = Number(openingQty)
+    if (!Number.isFinite(targetQty) || targetQty < 0) {
+      setOpeningError('Enter a valid opening quantity.')
+      return
+    }
+    const delta = targetQty - Number(item.current_stock || 0)
+    if (delta === 0) {
+      setOpeningError('This product is already at that quantity.')
+      return
+    }
+    setOpeningSaving(true)
+    setOpeningError('')
+    try {
+      const result = await window.api.inventory.adjustStock(
+        item.id,
+        delta,
+        openingNotes || `Opening stock set to ${targetQty} ${item.unit}`,
+        openingPin
+      )
+      if (!result?.success) {
+        setOpeningError(result?.error || 'Could not set opening stock.')
+        return
+      }
+      setItems((prev) => prev.map((row) => row.id === item.id
+        ? { ...row, current_stock: result?.new_stock ?? targetQty }
+        : row
+      ))
+      if (tab === 'movements') loadMovements(true)
+      setOpeningModal(false)
+    } catch (err) {
+      setOpeningError(err?.message || 'Could not set opening stock.')
+    } finally {
+      setOpeningSaving(false)
     }
   }
 
@@ -562,7 +662,7 @@ export default function Inventory() {
         </div>
         <div className="flex items-center gap-3">
           <div className="flex overflow-hidden rounded-2xl border border-slate-200 bg-white text-sm shadow-sm">
-            {[['stock', 'Stock'], ['purchases', 'Purchases'], ['stocktake', 'Stock Take']].map(([v, l]) => (
+            {[['stock', 'Stock'], ['purchases', 'Purchases'], ['movements', 'Movements'], ['stocktake', 'Stock Take']].map(([v, l]) => (
               <button
                 key={v}
                 onClick={() => setTab(v)}
@@ -860,9 +960,14 @@ export default function Inventory() {
                 <option value="low">Low stock only</option>
               </select>
             </div>
-            <button onClick={openCreate} className="btn-primary flex items-center gap-2 whitespace-nowrap">
-              <Plus size={16} /> Add New Product
-            </button>
+            <div className="flex items-center gap-2">
+              <button onClick={() => openOpeningStock()} className="btn-secondary flex items-center gap-2 whitespace-nowrap">
+                <Upload size={16} /> Opening Stock
+              </button>
+              <button onClick={openCreate} className="btn-primary flex items-center gap-2 whitespace-nowrap">
+                <Plus size={16} /> Add New Product
+              </button>
+            </div>
           </div>
           <div className="mb-4 text-xs text-slate-500">Category filters help isolate low-stock items faster during stock checks.</div>
 
@@ -1151,6 +1256,108 @@ export default function Inventory() {
         </div>
       )}
 
+      {/* ── Movements Tab ── */}
+      {tab === 'movements' && (
+        <div>
+          <div className="bb-filter-bar mb-5 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <select
+                className="input w-auto min-w-[220px]"
+                value={movementItemId}
+                onChange={(e) => setMovementItemId(e.target.value)}
+              >
+                <option value="">All products</option>
+                {items.map((item) => (
+                  <option key={item.id} value={item.id}>{item.name}</option>
+                ))}
+              </select>
+              <button onClick={() => loadMovements()} className="btn-secondary text-sm flex items-center gap-2">
+                <RefreshCw size={14} /> Refresh
+              </button>
+            </div>
+            <span className="text-xs text-slate-500">Purchases, POS sales, returns, void restores, and manual stock changes.</span>
+          </div>
+
+          <div className="bb-table-shell">
+            {movementLoading ? (
+              <div className="bb-empty-state min-h-[220px]">
+                <p className="text-sm font-medium text-slate-500">Loading stock movement history…</p>
+              </div>
+            ) : (
+              <HorizontalScrollArea>
+                <table className="min-w-[1080px] w-full text-sm">
+                  <thead className="sticky top-0 z-10 bg-slate-50 text-xs uppercase tracking-[0.16em] text-slate-500">
+                    <tr>
+                      <th className="px-5 py-3 text-left">Date</th>
+                      <th className="px-5 py-3 text-left">Product</th>
+                      <th className="px-5 py-3 text-left">Movement</th>
+                      <th className="px-5 py-3 text-right">Quantity</th>
+                      <th className="px-5 py-3 text-right">Cost Impact</th>
+                      <th className="px-5 py-3 text-left">Source</th>
+                      <th className="px-5 py-3 text-left">Notes</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {movementHistory.map((movement) => {
+                      const qty = Number(movement.quantity || 0)
+                      const isIn = qty > 0
+                      return (
+                        <tr key={movement.id || `${movement.reference_type}-${movement.reference_id}-${movement.item_id}`} className="hover:bg-slate-50">
+                          <td className="whitespace-nowrap px-5 py-3 text-slate-600">
+                            {movement.created_at ? new Date(movement.created_at).toLocaleString() : '—'}
+                          </td>
+                          <td className="px-5 py-3">
+                            <p className="font-medium text-slate-800">{movement.item_name}</p>
+                            <p className="text-xs text-slate-400">{movement.item_category} · {movement.item_unit}</p>
+                          </td>
+                          <td className="px-5 py-3">
+                            <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ${
+                              isIn ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-red-50 text-red-700 border border-red-200'
+                            }`}>
+                              {movementLabel(movement.movement_type)}
+                            </span>
+                          </td>
+                          <td className={`px-5 py-3 text-right font-semibold ${isIn ? 'text-emerald-700' : 'text-red-600'}`}>
+                            {qty > 0 ? '+' : ''}{fmt(qty, 2)} {movement.item_unit || ''}
+                          </td>
+                          <td className="px-5 py-3 text-right text-slate-600">
+                            {Number(movement.total_cost || 0) !== 0 ? `${currency} ${fmt(movement.total_cost)}` : '—'}
+                          </td>
+                          <td className="px-5 py-3">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium capitalize text-slate-600">
+                                {movement.source || movement.reference_type || 'local'}
+                              </span>
+                              {movement._pending_sync && (
+                                <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-700">
+                                  Pending Sync
+                                </span>
+                              )}
+                            </div>
+                          </td>
+                          <td className="px-5 py-3 text-xs text-slate-500">{movement.notes || '—'}</td>
+                        </tr>
+                      )
+                    })}
+                    {movementHistory.length === 0 && (
+                      <tr>
+                        <td colSpan={7} className="px-5 py-12">
+                          <div className="bb-empty-state py-10">
+                            <History size={32} className="mx-auto mb-2 opacity-30" />
+                            <p className="text-base font-semibold text-slate-800">No stock movements yet</p>
+                            <p className="text-sm text-slate-500">Record a purchase, POS sale, stock adjustment, or stock take to populate this ledger.</p>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </HorizontalScrollArea>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Item Modal */}
       {itemModal && (
         <Modal
@@ -1425,6 +1632,90 @@ export default function Inventory() {
               </button>
               <button type="submit" disabled={purchaseSaving || !purchaseItem} className="btn-primary flex-1">
                 {purchaseSaving ? "Saving..." : "Record Purchase"}
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {/* Opening Stock Modal */}
+      {openingModal && (
+        <Modal
+          title="Set Opening Stock"
+          onClose={() => setOpeningModal(false)}
+          size="sm"
+        >
+          <form onSubmit={handleOpeningSubmit} className="space-y-4">
+            {openingError && (
+              <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                {openingError}
+              </div>
+            )}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Product *</label>
+              <select
+                className="input"
+                value={openingItemId}
+                onChange={(e) => {
+                  const item = items.find((row) => row.id === e.target.value)
+                  setOpeningItemId(e.target.value)
+                  setOpeningQty(item ? String(item.current_stock || 0) : '')
+                }}
+                required
+              >
+                <option value="">Select a product...</option>
+                {items.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.name} ({fmt(item.current_stock, 1)} {item.unit})
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Target Opening Quantity *</label>
+              <input
+                type="number"
+                step="0.1"
+                min="0"
+                className="input"
+                value={openingQty}
+                onChange={(e) => setOpeningQty(e.target.value)}
+                required
+                placeholder="Counted quantity on hand"
+              />
+              {openingItemId && (
+                <p className="mt-1 text-xs text-slate-500">
+                  This will record the difference from the current saved stock as an opening-stock adjustment.
+                </p>
+              )}
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Reason</label>
+              <input
+                type="text"
+                className="input"
+                value={openingNotes}
+                onChange={(e) => setOpeningNotes(e.target.value)}
+                placeholder="Opening balance, import correction, launch count"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Manager PIN *</label>
+              <input
+                type="password"
+                className="input"
+                value={openingPin}
+                onChange={(e) => setOpeningPin(e.target.value)}
+                required
+                placeholder="Manager PIN"
+              />
+            </div>
+            <div className="flex gap-3 pt-2">
+              <button type="button" onClick={() => setOpeningModal(false)} className="btn-secondary flex-1">
+                Cancel
+              </button>
+              <button type="submit" disabled={openingSaving} className="btn-primary flex-1">
+                {openingSaving ? 'Saving...' : 'Set Opening Stock'}
               </button>
             </div>
           </form>

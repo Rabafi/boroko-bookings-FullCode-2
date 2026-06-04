@@ -25,6 +25,10 @@ export function isInventoryItemQueueItem(item) {
   return item?.type === 'rpc' && item?.table === 'create_inventory_item';
 }
 
+export function isInventoryAdjustmentQueueItem(item) {
+  return item?.type === 'rpc' && item?.table === 'adjust_inventory_stock';
+}
+
 export function getQueuedInventoryItemId(item) {
   const payloadId = String(item?.data?.payload?.id || '').trim();
   if (payloadId) return payloadId;
@@ -98,6 +102,10 @@ export function getSyncItemScope(item) {
   }
   if (isInventoryItemQueueItem(item)) {
     const itemId = getQueuedInventoryItemId(item);
+    if (itemId) return `inventory-item:${itemId}`;
+  }
+  if (isInventoryAdjustmentQueueItem(item)) {
+    const itemId = String(item?.data?.p_item_id || '').trim();
     if (itemId) return `inventory-item:${itemId}`;
   }
   return item?.table || 'unknown';

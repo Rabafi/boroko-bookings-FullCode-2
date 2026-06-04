@@ -2,10 +2,13 @@ import { state } from '../../state.js';
 import { meshState, getOrCreateLocalNodeId } from './meshState.js';
 import { startMeshServer, stopMeshServer } from './meshServer.js';
 import { app } from 'electron';
+import fs from 'fs';
+import path from 'path';
 import { readCache } from '../cacheStore.js';
 
 // Register clean exit handler if Electron environment is present
 let meshSyncIntervalId = null;
+let meshSecretColumnWarningShown = false;
 
 if (app) {
   app.on('will-quit', () => {
@@ -30,8 +33,26 @@ async function loadLodgeMeshSecret() {
       const remoteSecret = String(data?.lodge_mesh_secret || '').trim();
       if (remoteSecret) return remoteSecret;
     } catch (error) {
-      console.warn('[MeshLifecycle] Could not load lodge_mesh_secret from Supabase:', error?.message || error);
+      const message = String(error?.message || error || '');
+      if (/column settings\.lodge_mesh_secret does not exist/i.test(message)) {
+        if (!meshSecretColumnWarningShown) {
+          meshSecretColumnWarningShown = true;
+          console.warn('[MeshLifecycle] Remote settings table is missing lodge_mesh_secret; mesh will rely on cached local settings until the database schema is updated.');
+        }
+      } else {
+        console.warn('[MeshLifecycle] Could not load lodge_mesh_secret from Supabase:', message);
+      }
     }
+  }
+
+  if (app && !app.isPackaged) {
+    try {
+      const secretPath = path.join(app.getPath('appData'), 'boroko-bookings-local-mesh-secret.json');
+      if (fs.existsSync(secretPath)) {
+        const secret = String(JSON.parse(fs.readFileSync(secretPath, 'utf8'))?.lodge_mesh_secret || '').trim();
+        if (secret) return secret;
+      }
+    } catch {}
   }
 
   return null;
