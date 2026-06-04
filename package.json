@@ -47,7 +47,7 @@
     "@electron-toolkit/utils": "^3.0.0",
     "@supabase/supabase-js": "^2.39.0",
     "bcryptjs": "^2.4.3",
-    "better-sqlite3": "^12.2.0",
+    "better-sqlite3": "^12.10.0",
     "date-fns": "^3.3.1",
     "electron-updater": "^6.8.3",
     "lucide-react": "^0.344.0",
