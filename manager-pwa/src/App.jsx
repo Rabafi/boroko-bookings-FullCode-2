@@ -7,7 +7,7 @@ import { getSubscriptionPlan, normalizeSubscriptionPlan } from '@shared/subscrip
 import { supabase } from './lib/supabase'
 import BottomNav from './components/BottomNav'
 import { flushOfflineQueue, getQueueStatus } from './lib/api'
-import { getRuntimeMeta, getUnreadPwaNotificationCount, listPwaNotifications, markPwaNotificationRead, removePwaNotification, subscribeRuntimeEvent } from './lib/runtime'
+import { dismissPwaNotification, getRuntimeMeta, getUnreadPwaNotificationCount, listPwaNotifications, markPwaNotificationRead, subscribeRuntimeEvent } from './lib/runtime'
 import { shortDateTime } from './lib/format'
 import { normalizeSupportMessages, supportMessageSide, supportSenderMeta, supportSenderName } from '@shared/supportThreads'
 
@@ -608,7 +608,7 @@ function NotificationCenter({ notificationCount, setNotificationCount }) {
   }, [activeNotification, notifications])
 
   const clearNotification = (item) => {
-    removePwaNotification(user.lodge_id, item.sourceKey || item.id)
+    dismissPwaNotification(user.lodge_id, item.sourceKey || item.id)
     if (activeNotification?.id === item.id) {
       setActiveNotification(null)
     }

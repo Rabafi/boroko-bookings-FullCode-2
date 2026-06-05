@@ -4,6 +4,7 @@ const QUEUE_PREFIX = 'boroko_pwa_queue'
 const META_PREFIX = 'boroko_pwa_meta'
 const ISSUE_LOG_LIMIT = 100
 const NOTIFICATION_LIMIT = 40
+const DISMISSED_NOTIFICATION_LIMIT = 120
 
 function normalizeNotificationPart(value) {
   return String(value ?? '')
@@ -256,6 +257,66 @@ function notificationStoreKey(lodgeId) {
   return scoped(META_PREFIX, lodgeId, 'notifications')
 }
 
+function dismissedNotificationStoreKey(lodgeId) {
+  return scoped(META_PREFIX, lodgeId, 'dismissed-notifications')
+}
+
+function stableNotificationMessage(message) {
+  return {
+    body: String(message?.body || message?.message || '').trim(),
+    sender_type: String(message?.sender_type || '').trim(),
+    sender_name: String(message?.sender_name || '').trim(),
+    sender_role: String(message?.sender_role || '').trim(),
+    sender_surface: String(message?.sender_surface || '').trim()
+  }
+}
+
+function notificationFingerprint(notification = {}) {
+  const meta = notification?.meta && typeof notification.meta === 'object' ? notification.meta : {}
+  const messages = Array.isArray(meta.messages) ? meta.messages.map(stableNotificationMessage) : []
+  return JSON.stringify({
+    title: String(notification?.title || '').trim(),
+    message: String(notification?.message || '').trim(),
+    tone: String(notification?.tone || 'info').trim(),
+    category: String(notification?.category || 'general').trim(),
+    href: notification?.href || null,
+    requestTitle: String(meta.requestTitle || '').trim(),
+    requestBody: String(meta.requestBody || '').trim(),
+    deskResponse: String(meta.deskResponse || '').trim(),
+    requestStatus: String(meta.requestStatus || '').trim(),
+    requestCategory: String(meta.requestCategory || '').trim(),
+    requestPriority: String(meta.requestPriority || '').trim(),
+    messageCount: messages.length,
+    messages
+  })
+}
+
+function getDismissedNotifications(lodgeId) {
+  const current = readLocalJson(dismissedNotificationStoreKey(lodgeId), [])
+  return Array.isArray(current) ? current : []
+}
+
+function setDismissedNotifications(lodgeId, items) {
+  writeLocalJson(
+    dismissedNotificationStoreKey(lodgeId),
+    (Array.isArray(items) ? items : [])
+      .sort((left, right) => String(right.dismissedAt || '').localeCompare(String(left.dismissedAt || '')))
+      .slice(0, DISMISSED_NOTIFICATION_LIMIT)
+  )
+}
+
+function clearDismissedNotification(lodgeId, sourceKey) {
+  const current = getDismissedNotifications(lodgeId)
+  const next = current.filter((item) => item?.sourceKey !== sourceKey)
+  if (next.length !== current.length) setDismissedNotifications(lodgeId, next)
+}
+
+function isDismissedNotification(lodgeId, sourceKey, fingerprint) {
+  return getDismissedNotifications(lodgeId).some((item) => (
+    item?.sourceKey === sourceKey && item?.fingerprint === fingerprint
+  ))
+}
+
 export function listPwaNotifications(lodgeId, limit = NOTIFICATION_LIMIT) {
   const current = readLocalJson(notificationStoreKey(lodgeId), [])
   return (Array.isArray(current) ? current : [])
@@ -274,6 +335,14 @@ export function upsertPwaNotification(lodgeId, notification) {
   const sourceKey = notification?.sourceKey || notification?.id || crypto.randomUUID()
   const index = list.findIndex((item) => (item?.sourceKey || item?.id) === sourceKey)
   const previous = index >= 0 ? list[index] : null
+  const incomingFingerprint = notificationFingerprint({ ...notification, sourceKey })
+  if (!previous && isDismissedNotification(lodgeId, sourceKey, incomingFingerprint)) {
+    emit('boroko:pwa-notifications', { lodgeId, items: list, suppressed: sourceKey })
+    return null
+  }
+  if (!previous) {
+    clearDismissedNotification(lodgeId, sourceKey)
+  }
   const nextItem = {
     id: previous?.id || notification?.id || crypto.randomUUID(),
     sourceKey,
@@ -290,6 +359,7 @@ export function upsertPwaNotification(lodgeId, notification) {
   if (previous?.meta && notification?.meta && typeof previous.meta === 'object' && typeof notification.meta === 'object') {
     nextItem.meta = { ...previous.meta, ...notification.meta }
   }
+  nextItem.fingerprint = notificationFingerprint(nextItem)
   if (index >= 0) list[index] = { ...previous, ...nextItem }
   else list.unshift(nextItem)
   const trimmed = list
@@ -316,6 +386,27 @@ export function removePwaNotification(lodgeId, sourceKey) {
   const next = (Array.isArray(current) ? current : []).filter((item) => (item?.sourceKey || item?.id) !== sourceKey)
   writeLocalJson(key, next)
   emit('boroko:pwa-notifications', { lodgeId, items: next, removed: sourceKey })
+}
+
+export function dismissPwaNotification(lodgeId, sourceKey) {
+  const key = notificationStoreKey(lodgeId)
+  const current = readLocalJson(key, [])
+  const list = Array.isArray(current) ? current : []
+  const item = list.find((entry) => (entry?.sourceKey || entry?.id) === sourceKey)
+  if (item) {
+    const fingerprint = item.fingerprint || notificationFingerprint(item)
+    const dismissed = getDismissedNotifications(lodgeId)
+      .filter((entry) => entry?.sourceKey !== sourceKey || entry?.fingerprint !== fingerprint)
+    setDismissedNotifications(lodgeId, [
+      {
+        sourceKey,
+        fingerprint,
+        dismissedAt: new Date().toISOString()
+      },
+      ...dismissed
+    ])
+  }
+  removePwaNotification(lodgeId, sourceKey)
 }
 
 export function markPwaNotificationRead(lodgeId, notificationId) {
