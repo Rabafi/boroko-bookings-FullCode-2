@@ -136,6 +136,7 @@ export default function Dashboard() {
   const [requestStatus, setRequestStatus] = useState('open')
   const [requestNote, setRequestNote] = useState('')
   const [requestSaving, setRequestSaving] = useState(false)
+  const [requestError, setRequestError] = useState('')
   const pendingOnlineRequests = onlineRequests || []
   const pendingFrontDeskRequests = useMemo(
     () => frontDeskRequests.filter((request) => !['resolved', 'closed'].includes(String(request.status || '').toLowerCase())),
@@ -339,11 +340,13 @@ export default function Dashboard() {
     setRequestDialog(request)
     setRequestStatus(request?.status || 'open')
     setRequestNote('')
+    setRequestError('')
   }, [])
 
   const saveRequestUpdate = useCallback(async () => {
     if (!requestDialog?.id || !window.api?.requests?.update) return
     setRequestSaving(true)
+    setRequestError('')
     try {
       const body = requestNote.trim()
       const result = body && window.api?.requests?.addMessage
@@ -359,6 +362,8 @@ export default function Dashboard() {
       if (!result?.success) throw new Error(result?.error || 'Could not update request')
       setRequestDialog(null)
       await loadData()
+    } catch (error) {
+      setRequestError(error?.message || 'Could not save this inbox update.')
     } finally {
       setRequestSaving(false)
     }
@@ -366,6 +371,12 @@ export default function Dashboard() {
 
   useEffect(() => {
     loadData()
+  }, [loadData])
+
+  useEffect(() => {
+    const refreshInbox = () => loadData()
+    window.addEventListener('boroko:desktop-inbox-updated', refreshInbox)
+    return () => window.removeEventListener('boroko:desktop-inbox-updated', refreshInbox)
   }, [loadData])
 
   const handleOnlineBookingAction = async (bookingId, action) => {
@@ -1517,6 +1528,11 @@ export default function Dashboard() {
             </div>
 
             <div className="mt-6 flex flex-wrap gap-3">
+              {requestError && (
+                <div className="w-full rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+                  {requestError}
+                </div>
+              )}
               <button type="button" onClick={() => setRequestDialog(null)} className="btn-secondary">
                 Close
               </button>

@@ -48,6 +48,10 @@ function latestSupportMessage(row) {
   return messages[messages.length - 1] || null
 }
 
+function supportAlertId(request, latest) {
+  return `${request?.id || 'request'}:${latest?.id || latest?.created_at || latest?.body || request?.updated_at || request?.created_at || 'latest'}`
+}
+
 // ── Support Ticket Modal ──────────────────────────────────────────────────────
 function SupportModal({ onClose, settings }) {
   const [form, setForm] = useState({ title: '', description: '', category: 'General', priority: 'Normal' })
@@ -299,11 +303,34 @@ export default function Layout() {
   const [collectionSummary, setCollectionSummary] = useState({ count: 0, amount: 0 })
   const [backupStatus, setBackupStatus] = useState({ latestAt: null, overdue: false, enabled: false })
   const [paletteOpen, setPaletteOpen] = useState(false)
+  const [inboxAlerts, setInboxAlerts] = useState([])
   const onlineRequestIdsRef = useRef(new Set())
   const supportRequestIdsRef = useRef(new Map())
   const onlineRequestsPrimedRef = useRef(false)
   const supportRequestsPrimedRef = useRef(false)
   const isBrowserPreview = typeof window === 'undefined' || !window.api?.settings
+
+  const pushInboxAlert = (request, latest, variant = 'new') => {
+    const id = supportAlertId(request, latest)
+    setInboxAlerts((current) => {
+      if (current.some((item) => item.id === id)) return current
+      return [
+        {
+          id,
+          requestId: request?.id || null,
+          title: variant === 'reply'
+            ? `New reply from ${supportSenderName(latest)}`
+            : `New manager inbox message`,
+          message: latest?.body || request?.description || request?.title || 'A manager mobile message arrived.',
+          createdAt: new Date().toISOString()
+        },
+        ...current
+      ].slice(0, 3)
+    })
+    window.setTimeout(() => {
+      setInboxAlerts((current) => current.filter((item) => item.id !== id))
+    }, 18_000)
+  }
 
   useEffect(() => {
     if (location.pathname.startsWith('/pos')) setCollapsed(true)
@@ -500,6 +527,7 @@ export default function Layout() {
           newFrontDeskRequests.slice(0, 3).forEach((request) => {
             const latest = latestSupportMessage(request)
             const note = latest?.body || request.description || request.admin_notes || 'A new request arrived from the manager mobile app.'
+            pushInboxAlert(request, latest, 'new')
             window.api.app.notify({
               title: `Front desk request: ${request.title}`,
               body: note,
@@ -512,6 +540,7 @@ export default function Layout() {
         if (updatedFrontDeskRequests.length > 0) {
           updatedFrontDeskRequests.slice(0, 3).forEach((request) => {
             const latest = latestSupportMessage(request)
+            pushInboxAlert(request, latest, 'reply')
             window.api.app.notify({
               title: `New inbox reply from ${supportSenderName(latest)}`,
               body: latest?.body || request.title || 'The manager mobile app added a message.',
@@ -521,6 +550,14 @@ export default function Layout() {
           })
         }
 
+        if (newFrontDeskRequests.length > 0 || updatedFrontDeskRequests.length > 0) {
+          window.dispatchEvent(new CustomEvent('boroko:desktop-inbox-updated', {
+            detail: {
+              requests: [...newFrontDeskRequests, ...updatedFrontDeskRequests]
+            }
+          }))
+        }
+
         supportRequestIdsRef.current = new Map(nextRows.map((row) => [row.id, row]))
       } catch {
         // Best-effort only.
@@ -528,7 +565,7 @@ export default function Layout() {
     }
 
     loadSupportRequests()
-    const interval = setInterval(loadSupportRequests, 45_000)
+    const interval = setInterval(loadSupportRequests, 15_000)
     return () => {
       cancelled = true
       clearInterval(interval)
@@ -1130,6 +1167,54 @@ export default function Layout() {
           <Outlet />
         </div>
       </div>
+
+      {!isPosRoute && inboxAlerts.length > 0 && (
+        <div className="pointer-events-none fixed right-5 top-5 z-[70] w-[min(420px,calc(100vw-2.5rem))] space-y-3">
+          {inboxAlerts.map((alert) => (
+            <div
+              key={alert.id}
+              className="pointer-events-auto rounded-[22px] border border-emerald-200 bg-white p-4 shadow-[0_22px_70px_rgba(15,23,42,0.22)]"
+            >
+              <div className="flex items-start gap-3">
+                <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-emerald-100 text-emerald-700">
+                  <BellDot size={19} />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-bold text-slate-900">{alert.title}</p>
+                  <p className="mt-1 line-clamp-3 text-sm leading-relaxed text-slate-600">{alert.message}</p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setInboxAlerts((current) => current.filter((item) => item.id !== alert.id))
+                        navigateWithGuard('/', { state: { focusInbox: true, requestId: alert.requestId } })
+                      }}
+                      className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-700 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-emerald-800"
+                    >
+                      Open inbox <ArrowRight size={13} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setInboxAlerts((current) => current.filter((item) => item.id !== alert.id))}
+                      className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 transition-colors hover:bg-slate-50"
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setInboxAlerts((current) => current.filter((item) => item.id !== alert.id))}
+                  className="shrink-0 rounded-xl p-1.5 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700"
+                  aria-label="Dismiss inbox alert"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Support ticket modal */}
       {showHelp && <SupportModal onClose={() => setShowHelp(false)} settings={settings} />}

@@ -1991,6 +1991,7 @@ function SupportTickets({ companies }) {
   const [notes, setNotes] = useState('')
   const [newStatus, setNewStatus] = useState('')
   const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState('')
 
   const load = useCallback(async () => {
     const data = await window.api.admin.getSupportTickets({}).catch(() => [])
@@ -1999,22 +2000,27 @@ function SupportTickets({ companies }) {
 
   useEffect(() => { load() }, [load])
 
-  const openDetail = (t) => { setDetail(t); setNotes(''); setNewStatus(t.status) }
+  const openDetail = (t) => { setDetail(t); setNotes(''); setNewStatus(t.status); setSaveError('') }
 
   const updateTicket = async () => {
     setSaving(true)
+    setSaveError('')
     const body = notes.trim()
-    if (body && window.api.admin.addSupportTicketMessage) {
-      await window.api.admin.addSupportTicketMessage(detail.id, {
-        lodge_id: detail.lodge_id,
-        body,
-        status: newStatus,
-        metadata: { source: 'command_central_support_tickets' }
-      }).catch(() => { })
-    } else {
-      await window.api.admin.updateSupportTicket(detail.id, { status: newStatus }).catch(() => { })
+    try {
+      const result = body && window.api.admin.addSupportTicketMessage
+        ? await window.api.admin.addSupportTicketMessage(detail.id, {
+          lodge_id: detail.lodge_id,
+          body,
+          status: newStatus,
+          metadata: { source: 'command_central_support_tickets' }
+        })
+        : await window.api.admin.updateSupportTicket(detail.id, { status: newStatus })
+      if (result?.success === false) throw new Error(result.error || 'Could not save ticket update')
+      setSaving(false); setDetail(null); load()
+    } catch (error) {
+      setSaveError(error?.message || 'Could not save ticket update')
+      setSaving(false)
     }
-    setSaving(false); setDetail(null); load()
   }
 
   const del = async (t) => { if (!confirm('Delete ticket?')) return; await window.api.admin.deleteSupportTicket(t.id); load() }
@@ -2202,6 +2208,11 @@ function SupportTickets({ companies }) {
                 <Field label="Reply">
                   <textarea className={`${inp} h-24 resize-none`} value={notes} onChange={e => setNotes(e.target.value)} placeholder="Write the next reply in this inbox conversation…" />
                 </Field>
+                {saveError && (
+                  <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-200">
+                    {saveError}
+                  </div>
+                )}
                 <div className="flex gap-3">
                   <button onClick={() => setDetail(null)} className={`flex-1 ${btn('ghost')} py-2 rounded-lg text-sm`}>Cancel</button>
                   <button onClick={updateTicket} disabled={saving} className={`flex-1 ${btn()} py-2 rounded-lg text-sm font-medium disabled:opacity-60`}>{saving ? 'Saving...' : notes.trim() ? 'Send Reply' : 'Save Status'}</button>

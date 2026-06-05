@@ -710,6 +710,19 @@ export async function updateLodgeSupportTicket(id, updates = {}) {
     updates.admin_notes :
     null
   });
+  if ((error?.message || data?.error || '').toLowerCase().includes('invalid request status') && String(updates.status || '').toLowerCase() === 'closed') {
+    const retry = await state.supabase.rpc('update_lodge_support_ticket', {
+      p_ticket_id: id,
+      p_lodge_id: state.lodgeId,
+      p_status: 'resolved',
+      p_admin_notes: Object.prototype.hasOwnProperty.call(updates, 'admin_notes') ?
+      updates.admin_notes :
+      null
+    });
+    if (retry.error) throw new Error(retry.error.message);
+    if (retry.data?.success === false) throw new Error(retry.data.error || 'Could not update request');
+    return { success: true, status: 'resolved' };
+  }
   if (error) throw new Error(error.message);
   if (data?.success === false) throw new Error(data.error || 'Could not update request');
   return { success: true };
@@ -730,6 +743,23 @@ export async function addLodgeSupportTicketMessage(id, payload = {}) {
     p_metadata: payload.metadata || {},
     p_status: payload.status || null
   });
+  if ((error?.message || data?.error || '').toLowerCase().includes('invalid request status') && String(payload.status || '').toLowerCase() === 'closed') {
+    const retry = await state.supabase.rpc('add_lodge_support_ticket_message', {
+      p_ticket_id: id,
+      p_lodge_id: state.lodgeId,
+      p_body: payload.body || payload.message || '',
+      p_sender_type: payload.sender_type || author.sender_type,
+      p_sender_name: payload.sender_name || author.sender_name,
+      p_sender_role: payload.sender_role || author.sender_role,
+      p_sender_user_id: payload.sender_user_id || author.sender_user_id,
+      p_sender_surface: payload.sender_surface || author.sender_surface,
+      p_metadata: payload.metadata || {},
+      p_status: 'resolved'
+    });
+    if (retry.error) throw new Error(retry.error.message);
+    if (retry.data?.success === false) throw new Error(retry.data.error || 'Could not send reply');
+    return { success: true, status: 'resolved' };
+  }
   if (error) throw new Error(error.message);
   if (data?.success === false) throw new Error(data.error || 'Could not send reply');
   return { success: true };
@@ -787,6 +817,23 @@ export async function addSupportTicketMessage(id, payload = {}) {
     p_metadata: payload.metadata || {},
     p_status: payload.status || null
   });
+  if ((error?.message || data?.error || '').toLowerCase().includes('invalid request status') && String(payload.status || '').toLowerCase() === 'closed') {
+    const retry = await requireAdmin().rpc('add_lodge_support_ticket_message', {
+      p_ticket_id: id,
+      p_lodge_id: ticketLodgeId,
+      p_body: payload.body || payload.message || '',
+      p_sender_type: payload.sender_type || author.sender_type,
+      p_sender_name: payload.sender_name || author.sender_name,
+      p_sender_role: payload.sender_role || author.sender_role,
+      p_sender_user_id: payload.sender_user_id || author.sender_user_id,
+      p_sender_surface: payload.sender_surface || author.sender_surface,
+      p_metadata: payload.metadata || {},
+      p_status: 'resolved'
+    });
+    if (retry.error) throw new Error(retry.error.message);
+    if (retry.data?.success === false) throw new Error(retry.data.error || 'Could not send reply');
+    return { success: true, status: 'resolved' };
+  }
   if (error) throw new Error(error.message);
   if (data?.success === false) throw new Error(data.error || 'Could not send reply');
   return { success: true };
