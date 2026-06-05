@@ -5,6 +5,7 @@ const META_PREFIX = 'boroko_pwa_meta'
 const ISSUE_LOG_LIMIT = 100
 const NOTIFICATION_LIMIT = 40
 const DISMISSED_NOTIFICATION_LIMIT = 120
+const TRUSTED_DEVICE_DAYS = 365
 
 function normalizeNotificationPart(value) {
   return String(value ?? '')
@@ -98,10 +99,12 @@ export function getSession() {
 }
 
 export function setSession(session) {
+  const trustedUntil = new Date(Date.now() + TRUSTED_DEVICE_DAYS * 86400000).toISOString()
   const trustedSession = {
     ...session,
     trusted_device: true,
-    trusted_until: session.session_expires_at || null
+    trusted_until: trustedUntil,
+    trusted_days: TRUSTED_DEVICE_DAYS
   }
   writeLocalJson(SESSION_KEY, trustedSession)
   writeStorage(getSessionStorageArea(), SESSION_KEY, trustedSession)

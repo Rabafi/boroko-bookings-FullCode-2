@@ -1521,6 +1521,26 @@ export async function validateManagerSession(sessionToken = null) {
   }
 }
 
+export async function refreshManagerSession(sessionToken = null) {
+  const { data, error } = await supabase.rpc('refresh_pwa_app_session', {
+    p_session_token: sessionToken
+  })
+  if (error) {
+    if (/could not find the function|schema cache|refresh_pwa_app_session/i.test(error.message || '')) {
+      return null
+    }
+    throw new Error(friendlyErrorMessage(error, 'Could not refresh this mobile session.'))
+  }
+
+  const rows = extractManagerCandidates(data)
+  const row = rows[0] || null
+  if (!row || row.session_type !== 'pwa') return null
+  return {
+    ...row,
+    session_token: row.session_token || sessionToken || null
+  }
+}
+
 export async function logoutManagerSession(sessionToken = null) {
   const { data, error } = await supabase.rpc('revoke_app_session', {
     p_session_token: sessionToken
