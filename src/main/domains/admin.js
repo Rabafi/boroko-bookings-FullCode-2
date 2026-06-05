@@ -24,6 +24,7 @@ import {
   getNextSubscriptionPlan,
   MONTHLY_USAGE_RESET_COPY
 } from '../../shared/subscriptionPlans.js'
+import { normalizeSupportTickets } from '../../shared/supportThreads.js'
 
 // ─── ADMIN: MASTER ADMIN ──────────────────────────────────────────────────────
 
@@ -583,6 +584,44 @@ export async function getOverdueLicenses() {
 
 // ─── ADMIN: SUPPORT TICKETS ────────────────────────────────────────────────────
 
+function getSupportAuthor(surface = 'desktop') {
+  const user = state.currentUser || {};
+  const isCommandCentral = user?.isMasterAdmin || String(user?.role || '').toLowerCase() === 'super_admin';
+  return {
+    sender_type: isCommandCentral ? 'command_central' : surface,
+    sender_name: user?.name || user?.email || (isCommandCentral ? 'Command Central' : 'Front desk'),
+    sender_role: user?.role || (isCommandCentral ? 'super_admin' : 'front desk'),
+    sender_user_id: user?.id || '',
+    sender_surface: isCommandCentral ? 'command_central' : surface
+  };
+}
+
+async function attachSupportMessages(tickets = []) {
+  if (!tickets.length) return [];
+  try {
+    const ids = tickets.map((ticket) => ticket.id).filter(Boolean);
+    if (!ids.length) return normalizeSupportTickets(tickets);
+    const { data, error } = await requireAdmin().
+    from('support_ticket_messages').
+    select('*').
+    in('ticket_id', ids).
+    order('created_at', { ascending: true });
+    if (error) throw error;
+    const byTicket = new Map();
+    (data || []).forEach((message) => {
+      const list = byTicket.get(message.ticket_id) || [];
+      list.push(message);
+      byTicket.set(message.ticket_id, list);
+    });
+    return normalizeSupportTickets(tickets.map((ticket) => ({
+      ...ticket,
+      messages: byTicket.get(ticket.id) || ticket.messages || []
+    })));
+  } catch {
+    return normalizeSupportTickets(tickets);
+  }
+}
+
 export async function getSupportTickets(filters = {}) {
   if (!state.isOnline) return [];
   let q = requireAdmin().from('support_tickets').select('*');
@@ -590,28 +629,59 @@ export async function getSupportTickets(filters = {}) {
   if (filters.priority) q = q.eq('priority', filters.priority);
   if (filters.lodge_id) q = q.eq('lodge_id', filters.lodge_id);
   const { data } = await q.order('created_at', { ascending: false });
-  return data || [];
+  return attachSupportMessages(data || []);
 }
 
 export async function createSupportTicket({ lodge_id, lodge_name, title, description, category, priority }) {
   if (!state.isOnline) throw new Error('Requires internet connection');
+  const targetLodgeId = lodge_id || state.lodgeId;
+  const author = getSupportAuthor('desktop');
+  if (!state.adminDb) {
+    const { data, error } = await state.supabase.rpc('create_support_ticket', {
+      payload: {
+        lodge_id: targetLodgeId,
+        lodge_name: lodge_name || null,
+        title,
+        description,
+        category: category || 'General',
+        priority: priority || 'Normal',
+        source: 'desktop_support_modal',
+        ...author,
+        requester_name: author.sender_name,
+        requester_role: author.sender_role,
+        requester_user_id: author.sender_user_id,
+        requester_surface: author.sender_surface
+      }
+    });
+    if (error) throw new Error(error.message);
+    if (data?.success === false) throw new Error(data.error || 'Could not create support request');
+    return { success: true, id: data?.id || null };
+  }
   // Use the admin client when available (Command Central machine) to bypass RLS.
-  // On lodge machines (no service key), fall back to the anon client — the anon
-  // client can INSERT but cannot SELECT from support_tickets, so we skip .select()
-  // to avoid a false RLS failure on the read-back that would mask a successful insert.
-  const { error } = await (state.adminDb || state.supabase).
+  const { data, error } = await state.adminDb.
   from('support_tickets').
   insert({
-    lodge_id: lodge_id || state.lodgeId,
+    lodge_id: targetLodgeId,
     lodge_name: lodge_name || null,
     title,
     description,
     category: category || 'General',
     priority: priority || 'Normal',
     status: 'open'
-  });
+  }).
+  select('id').
+  single();
   if (error) throw new Error(error.message);
-  return { success: true };
+  if (data?.id) {
+    await state.adminDb.from('support_ticket_messages').insert({
+      ticket_id: data.id,
+      lodge_id: targetLodgeId,
+      body: description,
+      ...author,
+      metadata: { source: 'desktop_support_modal' }
+    }).catch(() => {});
+  }
+  return { success: true, id: data?.id || null };
 }
 
 export async function getLodgeSupportTickets(limit = 20) {
@@ -621,7 +691,7 @@ export async function getLodgeSupportTickets(limit = 20) {
     p_limit: Math.min(Math.max(Number(limit) || 20, 1), 100)
   });
   if (error) throw new Error(error.message);
-  return Array.isArray(data) ? data : [];
+  return normalizeSupportTickets(data);
 }
 
 export async function getLodgeSupportTicketById(id) {
@@ -645,6 +715,26 @@ export async function updateLodgeSupportTicket(id, updates = {}) {
   return { success: true };
 }
 
+export async function addLodgeSupportTicketMessage(id, payload = {}) {
+  if (!state.isOnline) throw new Error('Requires internet connection');
+  const author = getSupportAuthor('desktop');
+  const { data, error } = await state.supabase.rpc('add_lodge_support_ticket_message', {
+    p_ticket_id: id,
+    p_lodge_id: state.lodgeId,
+    p_body: payload.body || payload.message || '',
+    p_sender_type: payload.sender_type || author.sender_type,
+    p_sender_name: payload.sender_name || author.sender_name,
+    p_sender_role: payload.sender_role || author.sender_role,
+    p_sender_user_id: payload.sender_user_id || author.sender_user_id,
+    p_sender_surface: payload.sender_surface || author.sender_surface,
+    p_metadata: payload.metadata || {},
+    p_status: payload.status || null
+  });
+  if (error) throw new Error(error.message);
+  if (data?.success === false) throw new Error(data.error || 'Could not send reply');
+  return { success: true };
+}
+
 export async function updateSupportTicket(id, updates) {
   if (!state.isOnline) throw new Error('Requires internet connection');
   const payload = { ...updates, updated_at: new Date().toISOString() };
@@ -653,6 +743,52 @@ export async function updateSupportTicket(id, updates) {
   }
   const { error } = await requireAdmin().from('support_tickets').update(payload).eq('id', id);
   if (error) throw new Error(error.message);
+  const note = Object.prototype.hasOwnProperty.call(updates || {}, 'admin_notes') ?
+  String(updates.admin_notes || '').trim() :
+  '';
+  if (note) {
+    const { data: ticket } = await requireAdmin().
+    from('support_tickets').
+    select('id,lodge_id').
+    eq('id', id).
+    maybeSingle();
+    const author = getSupportAuthor('command_central');
+    if (ticket?.lodge_id) {
+      await requireAdmin().from('support_ticket_messages').insert({
+        ticket_id: id,
+        lodge_id: ticket.lodge_id,
+        body: note,
+        ...author,
+        metadata: { source: 'command_central_update' }
+      }).catch(() => {});
+    }
+  }
+  return { success: true };
+}
+
+export async function addSupportTicketMessage(id, payload = {}) {
+  if (!state.isOnline) throw new Error('Requires internet connection');
+  const ticketLodgeId = payload.lodge_id || (await requireAdmin().
+  from('support_tickets').
+  select('lodge_id').
+  eq('id', id).
+  maybeSingle()).data?.lodge_id;
+  if (!ticketLodgeId) throw new Error('Request not found');
+  const author = getSupportAuthor('command_central');
+  const { data, error } = await requireAdmin().rpc('add_lodge_support_ticket_message', {
+    p_ticket_id: id,
+    p_lodge_id: ticketLodgeId,
+    p_body: payload.body || payload.message || '',
+    p_sender_type: payload.sender_type || author.sender_type,
+    p_sender_name: payload.sender_name || author.sender_name,
+    p_sender_role: payload.sender_role || author.sender_role,
+    p_sender_user_id: payload.sender_user_id || author.sender_user_id,
+    p_sender_surface: payload.sender_surface || author.sender_surface,
+    p_metadata: payload.metadata || {},
+    p_status: payload.status || null
+  });
+  if (error) throw new Error(error.message);
+  if (data?.success === false) throw new Error(data.error || 'Could not send reply');
   return { success: true };
 }
 

@@ -1,16 +1,15 @@
 import { NavLink } from 'react-router-dom'
-import { BedDouble, Briefcase, BookOpen, Home, Menu } from 'lucide-react'
+import { AlertTriangle, BedDouble, BookOpen, CreditCard, Home } from 'lucide-react'
 
 const NAV = [
   { to: '/', label: 'Home', icon: Home, end: true },
   { to: '/bookings', label: 'Bookings', icon: BookOpen },
   { to: '/rooms', label: 'Rooms', icon: BedDouble },
-  { to: '/money', label: 'Money', icon: Briefcase },
-  { to: '/more', label: 'More', icon: Menu }
+  { to: '/money', label: 'Money', icon: CreditCard },
+  { to: '/alerts', label: 'Alerts', icon: AlertTriangle }
 ]
 
-export default function BottomNav({ alertCount = 0, notificationCount = 0 }) {
-  const moreBadgeCount = alertCount + notificationCount
+export default function BottomNav({ alertCount = 0 }) {
   return (
     <nav
       className="pwa-bottom-nav fixed bottom-0 left-0 right-0 z-40 mx-auto flex max-w-xl items-center justify-around border-t border-white/10 bg-gray-900/92 px-2"
@@ -30,9 +29,9 @@ export default function BottomNav({ alertCount = 0, notificationCount = 0 }) {
         >
           <div className="relative">
             <Icon size={22} />
-            {label === 'More' && moreBadgeCount > 0 && (
+            {label === 'Alerts' && alertCount > 0 && (
               <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[10px] font-bold w-4 h-4 rounded-full flex items-center justify-center">
-                {moreBadgeCount > 9 ? '9+' : moreBadgeCount}
+                {alertCount > 9 ? '9+' : alertCount}
               </span>
             )}
           </div>

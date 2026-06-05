@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, lazy, Suspense, createContext, useContext, useMemo } from 'react'
 import { HashRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom'
-import { Bell, Moon, RefreshCw, Sun, X } from 'lucide-react'
+import { Bell, Download, Moon, RefreshCw, Sun, X } from 'lucide-react'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { FeaturesProvider, useFeatures } from './contexts/FeaturesContext'
 import { getSubscriptionPlan, normalizeSubscriptionPlan } from '@shared/subscriptionPlans'
@@ -8,10 +8,13 @@ import { supabase } from './lib/supabase'
 import BottomNav from './components/BottomNav'
 import { flushOfflineQueue, getQueueStatus } from './lib/api'
 import { getRuntimeMeta, getUnreadPwaNotificationCount, listPwaNotifications, markPwaNotificationRead, removePwaNotification, subscribeRuntimeEvent } from './lib/runtime'
+import { shortDateTime } from './lib/format'
+import { normalizeSupportMessages, supportMessageSide, supportSenderMeta, supportSenderName } from '@shared/supportThreads'
 
 import Login from './pages/Login'
 import ResetPassword from './pages/ResetPassword'
 import borokoLogoDark from './assets/boroko-bookings-logo-dark.png'
+import borokoLogoLight from './assets/boroko-bookings-logo-light.png'
 
 const Dashboard = lazy(() => import('./pages/Dashboard'))
 const Rooms = lazy(() => import('./pages/Rooms'))
@@ -45,8 +48,32 @@ let swRegistration = null
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('/sw.js')
-      .then((registration) => { swRegistration = registration })
+      .then((registration) => {
+        swRegistration = registration
+
+        const notifyUpdate = () => {
+          window.dispatchEvent(new CustomEvent('boroko:pwa-update-ready', { detail: { registration } }))
+        }
+
+        if (registration.waiting && navigator.serviceWorker.controller) notifyUpdate()
+        registration.addEventListener('updatefound', () => {
+          const worker = registration.installing
+          if (!worker) return
+          worker.addEventListener('statechange', () => {
+            if (worker.state === 'installed' && navigator.serviceWorker.controller) {
+              notifyUpdate()
+            }
+          })
+        })
+      })
       .catch(() => {})
+  })
+
+  let reloadingForUpdate = false
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (reloadingForUpdate) return
+    reloadingForUpdate = true
+    window.location.reload()
   })
 }
 
@@ -151,6 +178,100 @@ function BroadcastBanners() {
   )
 }
 
+function PwaLifecyclePrompts() {
+  const [installPrompt, setInstallPrompt] = useState(null)
+  const [updateRegistration, setUpdateRegistration] = useState(null)
+  const [dismissedInstall, setDismissedInstall] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
+
+  useEffect(() => {
+    const handleInstallPrompt = (event) => {
+      event.preventDefault()
+      setInstallPrompt(event)
+      setDismissedInstall(false)
+    }
+    const handleInstalled = () => {
+      setInstallPrompt(null)
+      setDismissedInstall(true)
+    }
+    const handleUpdateReady = (event) => {
+      setUpdateRegistration(event.detail?.registration || swRegistration)
+    }
+    window.addEventListener('beforeinstallprompt', handleInstallPrompt)
+    window.addEventListener('appinstalled', handleInstalled)
+    window.addEventListener('boroko:pwa-update-ready', handleUpdateReady)
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleInstallPrompt)
+      window.removeEventListener('appinstalled', handleInstalled)
+      window.removeEventListener('boroko:pwa-update-ready', handleUpdateReady)
+    }
+  }, [])
+
+  const install = async () => {
+    if (!installPrompt) return
+    await installPrompt.prompt()
+    setInstallPrompt(null)
+  }
+
+  const update = () => {
+    const waiting = updateRegistration?.waiting
+    if (!waiting) {
+      updateRegistration?.update?.()
+      return
+    }
+    setRefreshing(true)
+    waiting.postMessage({ type: 'SKIP_WAITING' })
+  }
+
+  if (!installPrompt && !updateRegistration) return null
+
+  return (
+    <div className="mx-3 mt-2 space-y-2">
+      {updateRegistration && (
+        <div className="rounded-2xl border border-emerald-900 bg-emerald-950/40 px-4 py-3 text-sm text-emerald-100">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <p className="font-semibold">New version ready</p>
+              <p className="mt-1 text-xs text-emerald-200/80">Refresh Boroko Manager to use the latest mobile build.</p>
+            </div>
+            <button
+              type="button"
+              onClick={update}
+              disabled={refreshing}
+              className="shrink-0 rounded-xl bg-emerald-600 px-3 py-2 text-xs font-semibold text-white disabled:opacity-70"
+            >
+              {refreshing ? 'Updating' : 'Update'}
+            </button>
+          </div>
+        </div>
+      )}
+      {installPrompt && !dismissedInstall && (
+        <div className="rounded-2xl border border-blue-900 bg-blue-950/40 px-4 py-3 text-sm text-blue-100">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <p className="font-semibold">Install Boroko Manager</p>
+              <p className="mt-1 text-xs text-blue-200/80">Add it to this device for faster opening and offline access.</p>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <button type="button" onClick={() => setDismissedInstall(true)} className="rounded-xl bg-white/5 p-2 text-blue-200">
+                <X size={15} />
+              </button>
+              <button
+                type="button"
+                onClick={install}
+                className="rounded-xl bg-blue-600 p-2 text-white"
+                title="Install"
+              >
+                <Download size={16} />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function SyncBanner() {
   const { user } = useAuth()
   const [online, setOnline] = useState(typeof navigator === 'undefined' ? true : navigator.onLine)
@@ -206,6 +327,22 @@ function SyncBanner() {
   )
 }
 
+function ConversationBubble({ side = 'desk', label, meta, time, children, muted = false }) {
+  const isManager = side === 'manager'
+  return (
+    <div className={`flex ${isManager ? 'justify-end' : 'justify-start'}`}>
+      <div className={`max-w-[86%] rounded-2xl px-4 py-3 ${isManager ? 'rounded-br-md bg-emerald-700 text-white' : muted ? 'rounded-bl-md bg-gray-900 text-gray-400 border border-gray-800' : 'rounded-bl-md bg-sky-950/35 text-sky-50 border border-sky-900/60'}`}>
+        <div className="mb-1 flex items-center justify-between gap-3">
+          <p className={`text-[11px] font-semibold uppercase tracking-[0.16em] ${isManager ? 'text-emerald-100' : muted ? 'text-gray-500' : 'text-sky-300'}`}>{label}</p>
+          {time && <span className="text-[10px] opacity-70">{shortDateTime(time)}</span>}
+        </div>
+        {meta && <p className={`mb-1 text-[10px] ${isManager ? 'text-emerald-100/75' : muted ? 'text-gray-500' : 'text-sky-200/75'}`}>{meta}</p>}
+        <p className="whitespace-pre-wrap text-sm leading-relaxed">{children}</p>
+      </div>
+    </div>
+  )
+}
+
 function NotificationDetailSheet({ item, onClose, onClear }) {
   if (!item) return null
 
@@ -220,6 +357,18 @@ function NotificationDetailSheet({ item, onClose, onClear }) {
   const requestStatus = prettify(item.meta?.requestStatus || (item.category === 'frontDeskRequest' ? 'open' : 'info'))
   const requestCategory = prettify(item.meta?.requestCategory || item.category || 'general')
   const isFrontDeskThread = Boolean(item.meta?.requestBody || item.meta?.deskResponse || item.category === 'frontDeskRequest')
+  const threadMessages = isFrontDeskThread
+    ? normalizeSupportMessages({
+      id: item.meta?.requestId || item.id,
+      lodge_id: item.lodgeId,
+      description: requestBody,
+      admin_notes: deskResponse,
+      messages: item.meta?.messages,
+      created_at: sentAt,
+      updated_at: updatedAt
+    })
+    : []
+  const relatedHref = item.href || (isFrontDeskThread ? '/control' : '')
 
   return (
     <div className="fixed inset-0 z-[80] flex items-end bg-black/60 backdrop-blur-sm" onClick={onClose}>
@@ -230,7 +379,7 @@ function NotificationDetailSheet({ item, onClose, onClear }) {
         <div className="mx-auto mb-4 h-1.5 w-12 rounded-full bg-gray-700" />
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-emerald-300">Notification</p>
+            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-emerald-300">{isFrontDeskThread ? 'Request thread' : 'Notification'}</p>
             <h2 className="mt-1 text-lg font-bold text-white">{item.title}</h2>
             <p className="mt-1 text-xs text-gray-400">{requestCategory} • {requestStatus}</p>
           </div>
@@ -240,26 +389,23 @@ function NotificationDetailSheet({ item, onClose, onClear }) {
         </div>
 
         <div className="mt-4 space-y-3">
-          <div className="rounded-2xl border border-gray-800 bg-gray-900 px-4 py-3">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-400">What was sent</p>
-            <p className="mt-2 whitespace-pre-wrap text-sm text-white">{requestBody || 'No request text was recorded.'}</p>
-          </div>
-
-          <div className="rounded-2xl border border-sky-900/60 bg-sky-950/30 px-4 py-3">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-sky-300">Front desk response</p>
-            <p className="mt-2 whitespace-pre-wrap text-sm text-sky-50">{deskResponse || 'Waiting for front desk to reply.'}</p>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <div className="rounded-2xl border border-gray-800 bg-gray-900 px-4 py-3">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-400">Sent</p>
-              <p className="mt-1 text-sm text-white">{sentAt ? new Date(sentAt).toLocaleString() : 'Just now'}</p>
-            </div>
-            <div className="rounded-2xl border border-gray-800 bg-gray-900 px-4 py-3">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-400">Updated</p>
-              <p className="mt-1 text-sm text-white">{updatedAt ? new Date(updatedAt).toLocaleString() : 'Waiting'}</p>
-            </div>
-          </div>
+          {threadMessages.length > 0 ? (
+            threadMessages.map((message) => (
+              <ConversationBubble
+                key={message.id}
+                side={supportMessageSide(message)}
+                label={supportSenderName(message)}
+                meta={supportSenderMeta(message)}
+                time={message.created_at}
+              >
+                {message.body}
+              </ConversationBubble>
+            ))
+          ) : (
+            <ConversationBubble side="desk" label="Front desk" muted>
+              Waiting for front desk to reply or update the request status.
+            </ConversationBubble>
+          )}
 
           {item.message && item.message !== requestBody && (
             <div className="rounded-2xl border border-gray-800 bg-gray-900 px-4 py-3">
@@ -268,17 +414,28 @@ function NotificationDetailSheet({ item, onClose, onClear }) {
             </div>
           )}
 
+          <div className="grid grid-cols-2 gap-3">
+            <div className="rounded-2xl border border-gray-800 bg-gray-900 px-4 py-3">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-400">Sent</p>
+              <p className="mt-1 text-sm text-white">{sentAt ? shortDateTime(sentAt) : 'Just now'}</p>
+            </div>
+            <div className="rounded-2xl border border-gray-800 bg-gray-900 px-4 py-3">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-400">Updated</p>
+              <p className="mt-1 text-sm text-white">{updatedAt ? shortDateTime(updatedAt) : 'Waiting'}</p>
+            </div>
+          </div>
+
           <div className="flex flex-wrap gap-2">
-            {item.href && (
+            {relatedHref && (
               <button
                 type="button"
                 onClick={() => {
-                  window.location.hash = `#${item.href}`
+                  window.location.hash = `#${relatedHref}`
                   onClose()
                 }}
                 className="rounded-2xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white"
               >
-                Open related screen
+                {isFrontDeskThread ? 'Open Inbox & Sync' : 'Open related screen'}
               </button>
             )}
             <button
@@ -289,12 +446,6 @@ function NotificationDetailSheet({ item, onClose, onClear }) {
               Clear from inbox
             </button>
           </div>
-
-          {!isFrontDeskThread && (
-            <p className="text-xs text-gray-500">
-              This is a general alert. Front desk requests show the sent note and reply together.
-            </p>
-          )}
         </div>
       </div>
     </div>
@@ -409,6 +560,7 @@ function NotificationCenter({ notificationCount, setNotificationCount }) {
   const [notifications, setNotifications] = useState([])
   const lastAnnouncedRef = useRef(null)
   const [activeNotification, setActiveNotification] = useState(null)
+  const [inboxOpen, setInboxOpen] = useState(false)
 
   useEffect(() => {
     if (!user?.lodge_id) return undefined
@@ -417,12 +569,14 @@ function NotificationCenter({ notificationCount, setNotificationCount }) {
       setNotifications(next)
       setNotificationCount(getUnreadPwaNotificationCount(user.lodge_id))
       const latest = detail?.latest
+      const announcementId = latest ? `${latest.id}:${latest.updatedAt || latest.createdAt || ''}` : ''
       if (
         latest &&
-        latest.id !== lastAnnouncedRef.current &&
+        (detail?.isNew || detail?.frontDeskUpdated) &&
+        announcementId !== lastAnnouncedRef.current &&
         !latest.readAt
       ) {
-        lastAnnouncedRef.current = latest.id
+        lastAnnouncedRef.current = announcementId
         showToast({
           title: latest.title,
           message: latest.message,
@@ -453,8 +607,6 @@ function NotificationCenter({ notificationCount, setNotificationCount }) {
     }
   }, [activeNotification, notifications])
 
-  if (!notifications.length) return null
-
   const clearNotification = (item) => {
     removePwaNotification(user.lodge_id, item.sourceKey || item.id)
     if (activeNotification?.id === item.id) {
@@ -462,38 +614,73 @@ function NotificationCenter({ notificationCount, setNotificationCount }) {
     }
   }
 
+  if (!notifications.length) return null
+
   return (
-    <div className="mx-3 mt-2 space-y-2">
-      <div className="rounded-3xl border border-white/10 bg-gray-900/90 px-4 py-3 shadow-xl">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <p className="text-sm font-semibold text-white">Notification inbox</p>
-            <p className="text-xs text-gray-400 mt-1">
-              Open a card to see the thread. Swipe left on mobile to clear it from the inbox.
-            </p>
+    <>
+      <button
+        type="button"
+        onClick={() => setInboxOpen(true)}
+        className="fixed right-4 z-50 flex h-12 w-12 items-center justify-center rounded-full border border-white/10 bg-gray-900/95 text-white shadow-2xl backdrop-blur"
+        style={{ bottom: 'calc(env(safe-area-inset-bottom) + 5.5rem)' }}
+        aria-label="Open notification inbox"
+        title="Inbox"
+      >
+        <span className="relative">
+          <Bell size={17} />
+          {notificationCount > 0 && (
+            <span className="absolute -right-1.5 -top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold text-white">
+              {notificationCount > 9 ? '9+' : notificationCount}
+            </span>
+          )}
+        </span>
+      </button>
+
+      {inboxOpen && (
+        <div className="fixed inset-0 z-[70] flex items-end bg-black/55 backdrop-blur-sm" onClick={() => setInboxOpen(false)}>
+          <div
+            className="w-full max-h-[82vh] overflow-y-auto overscroll-contain rounded-t-[28px] border border-white/10 bg-gray-950 px-4 pb-8 pt-4 shadow-[0_-24px_90px_rgba(0,0,0,0.45)]"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="mx-auto mb-4 h-1.5 w-12 rounded-full bg-gray-700" />
+            <div className="mb-3 flex items-start justify-between gap-3">
+              <div>
+                <p className="text-lg font-bold text-white">Inbox</p>
+                <p className="mt-1 text-xs text-gray-400">Front desk replies and lodge alerts. Swipe left to clear an item.</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="rounded-full bg-white/10 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-white/80">
+                  {notificationCount} unread
+                </span>
+                <button onClick={() => setInboxOpen(false)} className="rounded-full bg-white/5 p-2 text-gray-300">
+                  <X size={18} />
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              {notifications.slice(0, 8).map((item) => (
+                <NotificationCard
+                  key={item.id}
+                  item={item}
+                  onOpen={(notification) => {
+                    markPwaNotificationRead(user.lodge_id, notification.id)
+                    setActiveNotification(notification)
+                  }}
+                  onClear={clearNotification}
+                />
+              ))}
+            </div>
           </div>
-          <span className="rounded-full bg-white/10 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-white/80">
-            {notificationCount} unread
-          </span>
         </div>
-      </div>
-      {notifications.slice(0, 4).map((item) => (
-        <NotificationCard
-          key={item.id}
-          item={item}
-          onOpen={(notification) => {
-            markPwaNotificationRead(user.lodge_id, notification.id)
-            setActiveNotification(notification)
-          }}
-          onClear={clearNotification}
-        />
-      ))}
+      )}
+
       <NotificationDetailSheet
         item={activeNotification}
         onClose={() => setActiveNotification(null)}
         onClear={clearNotification}
       />
-    </div>
+    </>
   )
 }
 
@@ -558,29 +745,54 @@ export function useToast() {
 function GlobalStatusFooter() {
   const { user } = useAuth()
   const location = useLocation()
+  const [online, setOnline] = useState(() => (typeof navigator === 'undefined' ? true : navigator.onLine))
   const [queueCount, setQueueCount] = useState(() => user?.lodge_id ? getQueueStatus(user.lodge_id).count : 0)
   const [lastSync, setLastSync] = useState(() => user?.lodge_id ? getRuntimeMeta(user.lodge_id, 'last-sync', null) : null)
 
   useEffect(() => {
     if (!user?.lodge_id) return undefined
     const refresh = () => {
+      setOnline(typeof navigator === 'undefined' ? true : navigator.onLine)
       setQueueCount(getQueueStatus(user.lodge_id).count)
       setLastSync(getRuntimeMeta(user.lodge_id, 'last-sync', null))
     }
     const unsubscribeQueue = subscribeRuntimeEvent('boroko:pwa-queue', refresh)
     const unsubscribeCache = subscribeRuntimeEvent('boroko:pwa-cache', refresh)
+    window.addEventListener('online', refresh)
+    window.addEventListener('offline', refresh)
     refresh()
     return () => {
       unsubscribeQueue?.()
       unsubscribeCache?.()
+      window.removeEventListener('online', refresh)
+      window.removeEventListener('offline', refresh)
     }
   }, [user?.lodge_id])
 
+  const pageLabels = {
+    '/': 'Home',
+    '/bookings': 'Bookings',
+    '/rooms': 'Rooms',
+    '/money': 'Money',
+    '/alerts': 'Alerts',
+    '/more': 'More tools',
+    '/control': 'Inbox & Sync'
+  }
+  const pageLabel = pageLabels[location.pathname] || location.pathname.replace('/', '').replace('-', ' ')
+  const syncLabel = !online
+    ? 'Offline mode'
+    : queueCount > 0
+      ? `${queueCount} request${queueCount === 1 ? '' : 's'} waiting`
+      : lastSync?.updatedAt
+        ? `Synced ${shortDateTime(lastSync.updatedAt)}`
+        : 'Synced'
+
   return (
     <div className="px-4 pb-20 pt-2 text-[11px] text-gray-500 flex items-center justify-between gap-3">
-      <span className="truncate capitalize">{location.pathname === '/' ? 'Dashboard' : location.pathname.replace('/', '').replace('-', ' ')}</span>
-      <span className="shrink-0">{queueCount > 0 ? `${queueCount} queued` : 'Synced'}</span>
-      <span className="truncate text-right">{lastSync ? `Last sync moved ${lastSync.processed || 0}` : 'Live status'}</span>
+      <span className="truncate capitalize">{pageLabel}</span>
+      <span className={`shrink-0 rounded-full px-2 py-1 ${!online ? 'bg-amber-950/40 text-amber-300' : queueCount > 0 ? 'bg-blue-950/40 text-blue-300' : 'bg-green-950/30 text-green-300'}`}>
+        {syncLabel}
+      </span>
     </div>
   )
 }
@@ -626,6 +838,7 @@ function AuthenticatedShell({ alertCount, dark, setDark, setAlertCount, notifica
   const { user } = useAuth()
   const { entitlement, features, loading: entitlementLoading } = useFeatures()
   const lastUserRef = useRef(null)
+  const logoSrc = dark ? borokoLogoDark : borokoLogoLight
 
   useEffect(() => {
     if (user) {
@@ -720,7 +933,7 @@ function AuthenticatedShell({ alertCount, dark, setDark, setAlertCount, notifica
       <div className="flex items-center justify-between gap-3 px-4 pt-3 pb-1">
         <div className="flex items-center gap-3">
           <div className="flex h-14 w-44 items-center">
-            <img src={borokoLogoDark} alt="Boroko Manager" className="max-h-full max-w-full object-contain" draggable="false" />
+            <img src={logoSrc} alt="Boroko Manager" className="max-h-full max-w-full object-contain" draggable="false" />
           </div>
           <div className="min-w-0">
             <p className="text-xs uppercase tracking-[0.2em] text-gray-500">Boroko</p>
@@ -736,6 +949,7 @@ function AuthenticatedShell({ alertCount, dark, setDark, setAlertCount, notifica
         </button>
       </div>
 
+      <PwaLifecyclePrompts />
       <SyncBanner />
       <BroadcastBanners />
       <NotificationCenter notificationCount={notificationCount} setNotificationCount={setNotificationCount} />

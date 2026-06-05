@@ -296,7 +296,17 @@ export function upsertPwaNotification(lodgeId, notification) {
     .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))
     .slice(0, NOTIFICATION_LIMIT)
   writeLocalJson(key, trimmed)
-  emit('boroko:pwa-notifications', { lodgeId, items: trimmed, latest: nextItem })
+  emit('boroko:pwa-notifications', {
+    lodgeId,
+    items: trimmed,
+    latest: nextItem,
+    isNew: index < 0,
+    frontDeskUpdated: Boolean(
+      previous?.meta &&
+      notification?.meta?.deskResponse &&
+      notification.meta.deskResponse !== previous.meta?.deskResponse
+    )
+  })
   return nextItem
 }
 

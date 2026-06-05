@@ -28,14 +28,14 @@ export default function More() {
     can('pool.view') && isEnabled('pool') && { to: '/day-use', title: 'Day Use', sub: 'Walk-in activity visibility', icon: Briefcase },
     can('inventory.view') && isEnabled('inventory') && { to: '/inventory', title: 'Inventory', sub: 'Low stock and replenishment watch', icon: Package },
     can('maintenance.view') && { to: '/rooms', title: 'Rooms & Maintenance', sub: 'Room status and ticket watch', icon: Wrench },
-    { to: '/control', title: 'Control', sub: 'Sync confidence, requests, and support', icon: Cpu }
+    { to: '/control', title: 'Inbox & Sync', sub: 'Front desk replies, saved requests, and device sync', icon: Cpu }
   ].filter(Boolean)
 
   return (
     <div className="min-h-screen bg-gray-950 pb-24">
       <div className="bg-gray-900 px-4 pt-12 pb-4">
         <h1 className="text-lg font-bold text-white">More</h1>
-        <p className="text-xs text-gray-400">People, operations, and control tools</p>
+        <p className="text-xs text-gray-400">People, operations, reports, and support tools</p>
       </div>
 
       <div className="px-4 py-4 grid grid-cols-1 gap-3">

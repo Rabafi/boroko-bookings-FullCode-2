@@ -1,10 +1,14 @@
-import { useEffect, useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Link, useSearchParams } from 'react-router-dom'
 import { ArrowRight, FileText, HandCoins, ReceiptText, RefreshCw, ScrollText, X } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
-import { createSupportTicket, getNightAudit, getRefundHistory, listExpenses, listInvoices, listQuotations } from '../lib/api'
+import { getNightAudit, getRefundHistory, listExpenses, listInvoices, listQuotations } from '../lib/api'
 import { money, paymentStatusClass, shortDate, shortDateTime, titleCase } from '../lib/format'
-import { buildPwaNotificationSourceKey, readCacheEntry, upsertPwaNotification } from '../lib/runtime'
+import { sendFrontDeskRequest } from '../lib/frontDeskRequests'
+import { readCacheEntry } from '../lib/runtime'
+import DataFreshness from '../components/DataFreshness'
+import EmptyState from '../components/EmptyState'
+import MobileBoundaryNotice from '../components/MobileBoundaryNotice'
 import { useToast } from '../App'
 
 function RouteCard({ to, title, value, sub, icon: Icon }) {
@@ -41,12 +45,15 @@ function Sheet({ title, onClose, children }) {
 export default function Money() {
   const { user } = useAuth()
   const { showToast } = useToast()
+  const [searchParams] = useSearchParams()
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
   const [sendingRequest, setSendingRequest] = useState('')
   const [requestNote, setRequestNote] = useState('')
   const [lastUpdated, setLastUpdated] = useState(null)
   const [sheet, setSheet] = useState(null)
+  const balancesRef = useRef(null)
+  const handledFocusRef = useRef('')
   const [snapshot, setSnapshot] = useState({
     quotations: [],
     invoices: [],
@@ -119,6 +126,14 @@ export default function Money() {
     .sort((left, right) => Number(right.balance_due || 0) - Number(left.balance_due || 0))
     .slice(0, 5)
 
+  useEffect(() => {
+    const focus = searchParams.get('focus')
+    if (focus !== 'outstanding' || loading || handledFocusRef.current === focus) return
+    handledFocusRef.current = focus
+    setSheet('balances')
+    window.setTimeout(() => balancesRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' }), 120)
+  }, [loading, searchParams])
+
   async function sendRequest(type) {
     setSendingRequest(type)
     const templates = {
@@ -146,35 +161,13 @@ export default function Money() {
       const description = note
         ? `${templates[type].description}\n\nAdded note: ${note}`
         : templates[type].description
-      const now = new Date().toISOString()
-      const result = await createSupportTicket(user.lodge_id, {
-        ...templates[type],
+      const result = await sendFrontDeskRequest({
+        user,
+        title: templates[type].title,
         description,
-        lodge_name: user.lodge_display_name
-      })
-      upsertPwaNotification(user.lodge_id, {
-        sourceKey: buildPwaNotificationSourceKey(
-          'frontdesk-request',
-          templates[type].title,
-          description,
-          templates[type].category,
-          templates[type].priority
-        ),
-        title: `Sent to front desk: ${templates[type].title}`,
-        message: description,
-        tone: 'info',
-        category: 'frontDeskRequest',
-        href: '/control',
-        meta: {
-          requestTitle: templates[type].title,
-          requestBody: description,
-          deskResponse: '',
-          requestStatus: 'open',
-          requestCategory: templates[type].category,
-          requestPriority: templates[type].priority,
-          sentAt: now,
-          updatedAt: now
-        }
+        category: templates[type].category,
+        priority: templates[type].priority,
+        context: { kind: `money-${type}` }
       })
       if (!result?.queued) setRequestNote('')
       showToast({
@@ -202,7 +195,7 @@ export default function Money() {
           <div>
             <h1 className="text-lg font-bold text-white">Money</h1>
             <p className="text-xs text-gray-400">Watch cash, refunds, balances, and spend without changing financial records from mobile</p>
-            <p className="text-[11px] text-gray-500 mt-1">{typeof navigator !== 'undefined' && navigator.onLine === false ? 'Offline cache' : lastUpdated ? `Updated ${shortDateTime(lastUpdated)}` : 'Live data'}</p>
+            <DataFreshness updatedAt={lastUpdated} loading={loading} error={loadError} className="mt-1" />
           </div>
           <button
             onClick={async () => {
@@ -257,7 +250,7 @@ export default function Money() {
           <RouteCard to="/audit" title="Night Audit" value="Daily close" sub="End-of-day summary and payment follow-up" icon={FileText} />
         </div>
 
-        <div className="bg-gray-800 rounded-2xl p-4">
+        <div ref={balancesRef} className="bg-gray-800 rounded-2xl p-4">
           <div className="flex items-center justify-between mb-3">
             <p className="text-sm font-semibold text-white">Shift Snapshot</p>
             <Link to="/audit" className="text-xs text-green-400">Full audit</Link>
@@ -332,7 +325,12 @@ export default function Money() {
               </div>
             ))}
             {!loading && snapshot.invoices.length === 0 && (
-              <p className="text-sm text-gray-500">No invoices found yet.</p>
+              <EmptyState
+                embedded
+                icon={ReceiptText}
+                title="No open invoices"
+                message="There are no invoices cached on this device. Refresh Money or ask front desk if an expected balance is missing."
+              />
             )}
           </div>
         </div>
@@ -355,7 +353,14 @@ export default function Money() {
                 <p className="text-xs text-gray-500 mt-2">Retained {money(refund.retained_amount)} • {Number(refund.retained_percent || 0)}%</p>
               </div>
             ))}
-            {!loading && snapshot.refunds.length === 0 && <p className="text-sm text-gray-500">No refunds recorded recently.</p>}
+            {!loading && snapshot.refunds.length === 0 && (
+              <EmptyState
+                embedded
+                icon={FileText}
+                title="No recent refunds"
+                message="Refund activity will appear here after it is recorded on desktop."
+              />
+            )}
           </div>
         </div>
 
@@ -371,7 +376,14 @@ export default function Money() {
                 <p className="text-sm font-semibold text-red-300">{money(entry.amount)}</p>
               </div>
             ))}
-            {!loading && expenseCategories.length === 0 && <p className="text-sm text-gray-500">No expenses recorded this month.</p>}
+            {!loading && expenseCategories.length === 0 && (
+              <EmptyState
+                embedded
+                icon={HandCoins}
+                title="No expense categories yet"
+                message="This month’s spend will appear here after front desk or desktop records expenses."
+              />
+            )}
           </div>
         </div>
 
@@ -390,8 +402,20 @@ export default function Money() {
                 <p className="text-sm font-semibold text-yellow-300">{money(invoice.balance_due)}</p>
               </div>
             ))}
+            {!loading && topBalances.length === 0 && (
+              <EmptyState
+                embedded
+                icon={ReceiptText}
+                title="No outstanding balances"
+                message="Nothing needs collection follow-up from the Money view right now."
+              />
+            )}
           </div>
         </div>
+
+        <MobileBoundaryNotice compact>
+          Money is review-and-request on mobile. Front desk or desktop completes payments, invoices, refunds, and expense changes.
+        </MobileBoundaryNotice>
       </div>
       {sheet === 'shift' && (
         <Sheet title="Shift Snapshot" onClose={() => setSheet(null)}>

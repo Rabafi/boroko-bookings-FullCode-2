@@ -3,6 +3,7 @@ import { useAuth } from '../contexts/AuthContext'
 import { Eye, EyeOff, LogIn, Building2, ChevronRight, Mail } from 'lucide-react'
 import { sendPasswordResetEmail } from '../lib/supabase'
 import borokoLogoDark from '../assets/boroko-bookings-logo-dark.png'
+import borokoLogoLight from '../assets/boroko-bookings-logo-light.png'
 
 export default function Login() {
   const { login, pendingLodges, selectLodge } = useAuth()
@@ -49,6 +50,8 @@ export default function Login() {
   }
 
   const inp = 'w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-green-500'
+  const lightMode = typeof document !== 'undefined' && document.documentElement.classList.contains('light-mode')
+  const logoSrc = lightMode ? borokoLogoLight : borokoLogoDark
 
   // ── Lodge picker (shown when same email exists in multiple lodges) ──
   if (pendingLodges) {
@@ -56,7 +59,7 @@ export default function Login() {
       <div className="min-h-screen bg-gray-950 flex flex-col items-center justify-center px-6">
         <div className="mb-8 text-center">
           <div className="mx-auto mb-4 flex h-28 w-80 max-w-[88vw] items-center justify-center">
-            <img src={borokoLogoDark} alt="Boroko Manager" className="max-h-full max-w-full object-contain" draggable="false" />
+            <img src={logoSrc} alt="Boroko Manager" className="max-h-full max-w-full object-contain" draggable="false" />
           </div>
           <h1 className="text-xl font-bold text-white">Select Your Lodge</h1>
           <p className="text-gray-400 text-sm mt-1">Your account is linked to multiple properties</p>
@@ -89,7 +92,7 @@ export default function Login() {
     <div className="min-h-screen bg-gray-950 flex flex-col items-center justify-center px-6">
       <div className="mb-8 text-center">
         <div className="mx-auto mb-4 flex h-32 w-96 max-w-[88vw] items-center justify-center">
-          <img src={borokoLogoDark} alt="Boroko Manager" className="max-h-full max-w-full object-contain" draggable="false" />
+          <img src={logoSrc} alt="Boroko Manager" className="max-h-full max-w-full object-contain" draggable="false" />
         </div>
         <h1 className="text-2xl font-bold text-white">Boroko Manager Mobile App</h1>
         <p className="text-gray-400 text-sm mt-1">Leadership access for lodge managers and admins</p>

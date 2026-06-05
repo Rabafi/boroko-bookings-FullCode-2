@@ -2569,6 +2569,10 @@ app.whenReady().then(async () => {
     try { requireRole('super_admin'); return await db.updateSupportTicket(id, updates) }
     catch (e) { return { success: false, error: e.message } }
   })
+  ipcMain.handle('admin:addSupportTicketMessage', async (_, id, payload) => {
+    try { requireRole('super_admin'); return await db.addSupportTicketMessage(id, payload || {}) }
+    catch (e) { return { success: false, error: e.message } }
+  })
   ipcMain.handle('admin:deleteSupportTicket', async (_, id) => {
     try { requireRole('super_admin'); return await db.deleteSupportTicket(id) }
     catch (e) { return { success: false, error: e.message } }
@@ -3172,6 +3176,15 @@ app.whenReady().then(async () => {
       requireRole('receptionist', 'manager', 'admin', 'super_admin')
       await assertResourceBelongsToCurrentLodge('Support request', id, db.getLodgeSupportTicketById)
       return await db.updateLodgeSupportTicket(id, updates || {})
+    } catch (e) {
+      return { success: false, error: e.message }
+    }
+  })
+  ipcMain.handle('requests:addMessage', async (_, id, payload) => {
+    try {
+      requireRole('receptionist', 'manager', 'admin', 'super_admin')
+      await assertResourceBelongsToCurrentLodge('Support request', id, db.getLodgeSupportTicketById)
+      return await db.addLodgeSupportTicketMessage(id, payload || {})
     } catch (e) {
       return { success: false, error: e.message }
     }

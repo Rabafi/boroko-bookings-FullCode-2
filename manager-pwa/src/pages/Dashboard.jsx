@@ -1,12 +1,16 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { AlertTriangle, BellRing, CalendarClock, CreditCard, FileText, MessageSquare, Package, RefreshCw, TrendingUp, Wrench, X } from 'lucide-react'
+import { AlertTriangle, BellRing, CalendarClock, CreditCard, FileText, MessageSquare, Package, RefreshCw, TrendingUp, Wrench } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { useFeatures } from '../contexts/FeaturesContext'
-import { createSupportTicket, getDashboardSnapshot, getFinancialActivityFeed, getSupportRequests, listBookings } from '../lib/api'
+import { getDashboardSnapshot, getFinancialActivityFeed, getSupportRequests, listBookings } from '../lib/api'
 import { money, shortDate, shortDateTime } from '../lib/format'
-import { buildPwaNotificationSourceKey, getSession, readCacheEntry, upsertPwaNotification } from '../lib/runtime'
+import { sendFrontDeskRequest } from '../lib/frontDeskRequests'
+import { getSession, readCacheEntry } from '../lib/runtime'
 import { useToast } from '../App'
+import { supportMessageSide } from '@shared/supportThreads'
+import DataFreshness from '../components/DataFreshness'
+import MobileBoundaryNotice from '../components/MobileBoundaryNotice'
 
 const TONE = {
   red: 'bg-red-950/50 text-red-300',
@@ -33,27 +37,6 @@ function KpiCard({ label, value, sub, accent = 'text-white', to, onClick }) {
 
 function MetricSkeleton() {
   return <div className="bg-gray-800 rounded-2xl p-4 animate-pulse h-[92px]" />
-}
-
-function DrilldownSheet({ title, rows, onClose, renderRow }) {
-  return (
-    <div className="fixed inset-0 z-[70] flex items-end bg-black/60" onClick={onClose}>
-      <div
-        className="bg-gray-900 rounded-t-3xl p-5 pb-28 w-full max-h-[85vh] overflow-y-auto overscroll-contain shadow-[0_-20px_80px_rgba(0,0,0,0.45)]"
-        onClick={(event) => event.stopPropagation()}
-      >
-        <div className="w-10 h-1 bg-gray-700 rounded-full mx-auto mb-4" />
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-bold text-white">{title}</h2>
-          <button onClick={onClose} className="text-gray-500"><X size={20} /></button>
-        </div>
-        <div className="space-y-2">
-          {rows.map(renderRow)}
-          {rows.length === 0 && <p className="text-sm text-gray-500">Nothing to show here.</p>}
-        </div>
-      </div>
-    </div>
-  )
 }
 
 function AttentionRow({ item }) {
@@ -86,6 +69,10 @@ function QuickLink({ to, icon: Icon, label, sub }) {
   )
 }
 
+function latestDeskMessage(request) {
+  return [...(request?.messages || [])].reverse().find((message) => supportMessageSide(message) === 'desk') || null
+}
+
 export default function Dashboard() {
   const { user, logout } = useAuth()
   const { can } = useFeatures()
@@ -96,7 +83,6 @@ export default function Dashboard() {
   const [bookings, setBookings] = useState([])
   const [lastUpdated, setLastUpdated] = useState(null)
   const [loadError, setLoadError] = useState('')
-  const [sheet, setSheet] = useState(null)
   const [requestFeed, setRequestFeed] = useState([])
   const [deskNote, setDeskNote] = useState('')
   const [sendingDeskRequest, setSendingDeskRequest] = useState(false)
@@ -142,7 +128,7 @@ export default function Dashboard() {
     [bookings, today]
   )
   const deskResponses = useMemo(
-    () => requestFeed.filter((request) => String(request.status || 'open') !== 'open' || String(request.admin_notes || '').trim()),
+    () => requestFeed.filter((request) => String(request.status || 'open') !== 'open' || latestDeskMessage(request) || String(request.admin_notes || '').trim()),
     [requestFeed]
   )
 
@@ -151,10 +137,6 @@ export default function Dashboard() {
     Number(data?.openMaintenanceCount || 0) +
     Number(data?.unpaidCount || 0) +
     Number(data?.lowStockCount || 0)
-
-  const confidenceLabel = typeof navigator !== 'undefined' && navigator.onLine === false
-    ? 'Offline cache'
-    : lastUpdated ? `Live • updated ${shortDateTime(lastUpdated)}` : 'Live'
 
   const attentionItems = useMemo(() => {
     const items = []
@@ -167,7 +149,7 @@ export default function Dashboard() {
         label: 'Checkout',
         title: `${overdueCheckouts.length} overdue checkout${overdueCheckouts.length === 1 ? '' : 's'}`,
         sub: `${guestLabel(overdueCheckouts[0])} ${overdueCheckouts.length > 1 ? `and ${overdueCheckouts.length - 1} more` : ''}`,
-        to: '/alerts'
+        to: '/alerts?filter=overdue'
       })
     }
 
@@ -179,7 +161,7 @@ export default function Dashboard() {
         label: 'Online',
         title: `${pendingOnline.length} online request${pendingOnline.length === 1 ? '' : 's'} waiting`,
         sub: `${guestLabel(pendingOnline[0])} needs front desk confirmation on desktop.`,
-        to: '/bookings'
+        to: '/bookings?filter=pending_online'
       })
     }
 
@@ -191,7 +173,7 @@ export default function Dashboard() {
         label: 'Maintenance',
         title: `${data.urgentMaintenanceCount} urgent maintenance issue${data.urgentMaintenanceCount === 1 ? '' : 's'}`,
         sub: 'Open Alerts to review priority work before rooms are sold.',
-        to: '/alerts'
+        to: '/alerts?filter=maintenance'
       })
     }
 
@@ -203,7 +185,7 @@ export default function Dashboard() {
         label: 'Balance',
         title: guestLabel(booking),
         sub: `Outstanding ${money(booking.balance)} • ${shortDate(booking.check_in)}`,
-        to: '/money'
+        to: '/money?focus=outstanding'
       })
     })
 
@@ -215,18 +197,19 @@ export default function Dashboard() {
         label: 'Stock',
         title: item.name || 'Low stock item',
         sub: `${item.current_stock ?? item.quantity ?? 0} left • reorder at ${item.reorder_level}`,
-        to: '/alerts'
+        to: '/alerts?filter=stock'
       })
     })
 
     deskResponses.slice(0, 1).forEach((request) => {
+      const deskMessage = latestDeskMessage(request)
       items.push({
         id: `desk-${request.id}`,
         icon: BellRing,
         tone: 'blue',
         label: 'Desk',
         title: request.title,
-        sub: request.admin_notes || `Status changed to ${request.status || 'open'}.`,
+        sub: deskMessage?.body || request.admin_notes || `Status changed to ${request.status || 'open'}.`,
         to: '/control'
       })
     })
@@ -258,36 +241,13 @@ export default function Dashboard() {
     if (!description) return
 
     setSendingDeskRequest(true)
-    const title = 'Manager desk message'
-    const category = 'Front Desk Request'
-    const priority = 'Normal'
-    const now = new Date().toISOString()
-
     try {
-      const result = await createSupportTicket(user.lodge_id, {
-        lodge_name: user.lodge_display_name,
-        title,
+      const result = await sendFrontDeskRequest({
+        user,
+        title: 'Manager desk message',
         description,
-        category,
-        priority
-      })
-      upsertPwaNotification(user.lodge_id, {
-        sourceKey: buildPwaNotificationSourceKey('frontdesk-request', title, description, category, priority),
-        title: `Sent to front desk: ${title}`,
-        message: description,
-        tone: 'info',
-        category: 'frontDeskRequest',
-        href: '/control',
-        meta: {
-          requestTitle: title,
-          requestBody: description,
-          deskResponse: '',
-          requestStatus: 'open',
-          requestCategory: category,
-          requestPriority: priority,
-          sentAt: now,
-          updatedAt: now
-        }
+        priority: 'Normal',
+        context: { kind: 'dashboard-message' }
       })
       if (!result?.queued) setDeskNote('')
       showToast({
@@ -315,7 +275,7 @@ export default function Dashboard() {
           <p className="text-xs text-gray-400">Welcome back</p>
           <h1 className="text-lg font-bold text-white truncate">{user.name}</h1>
           <p className="text-xs text-green-400 capitalize mt-1">{user.role} • {user.lodge_display_name}</p>
-          <p className="text-[11px] text-gray-500 mt-1">{confidenceLabel}</p>
+          <DataFreshness updatedAt={lastUpdated} loading={loading} error={loadError} className="mt-1" />
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <button onClick={load} className="p-2 text-gray-400"><RefreshCw size={18} className={loading ? 'animate-spin' : ''} /></button>
@@ -330,13 +290,6 @@ export default function Dashboard() {
           </div>
         )}
 
-        <div className="rounded-2xl border border-green-900/50 bg-green-950/20 px-4 py-3">
-          <p className="text-sm font-semibold text-green-100">Today + action queue</p>
-          <p className="mt-1 text-xs text-green-300/80">
-            Mobile is for visibility and requests. Front desk still executes booking and money changes on desktop.
-          </p>
-        </div>
-
         <div className="grid grid-cols-2 gap-3">
           {loading
             ? Array.from({ length: 6 }).map((_, index) => <MetricSkeleton key={index} />)
@@ -345,12 +298,12 @@ export default function Dashboard() {
                 <KpiCard
                   label="Today Arrivals"
                   value={todayArrivals.length}
-                  onClick={() => setSheet({ title: 'Today Arrivals', rows: todayArrivals, type: 'booking' })}
+                  to="/bookings?filter=arrivals"
                 />
                 <KpiCard
                   label="Today Departures"
                   value={todayDepartures.length}
-                  onClick={() => setSheet({ title: 'Today Departures', rows: todayDepartures, type: 'booking' })}
+                  to="/bookings?filter=departures"
                 />
                 <KpiCard
                   label="Occupancy"
@@ -363,21 +316,21 @@ export default function Dashboard() {
                   label="Outstanding"
                   value={money(data?.outstandingTotal)}
                   accent={Number(data?.outstandingTotal || 0) > 0 ? 'text-yellow-300' : 'text-green-300'}
-                  to="/money"
+                  to="/money?focus=outstanding"
                 />
                 <KpiCard
                   label="Open Alerts"
                   value={openAlertCount}
                   sub={openAlertCount > 0 ? 'Needs review' : 'All clear'}
                   accent={openAlertCount > 0 ? 'text-amber-300' : 'text-green-300'}
-                  to="/alerts"
+                  to="/alerts?filter=all"
                 />
                 <KpiCard
                   label="Online Requests"
                   value={pendingOnline.length}
                   sub="Pending desktop confirmation"
                   accent={pendingOnline.length > 0 ? 'text-amber-300' : 'text-green-300'}
-                  onClick={() => setSheet({ title: 'Online Requests', rows: pendingOnline, type: 'booking' })}
+                  to="/bookings?filter=pending_online"
                 />
               </>
             )}
@@ -407,7 +360,7 @@ export default function Dashboard() {
               <p className="text-sm font-semibold text-white flex items-center gap-2"><MessageSquare size={16} className="text-green-300" /> Message front desk</p>
               <p className="mt-1 text-xs text-gray-500">Send a simple request without changing records from mobile.</p>
             </div>
-            <Link to="/control" className="text-xs text-green-400">Tracker</Link>
+            <Link to="/control" className="text-xs text-green-400">Inbox & Sync</Link>
           </div>
           <textarea
             className="mt-3 w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-3 text-white text-sm h-24 resize-none"
@@ -427,9 +380,9 @@ export default function Dashboard() {
         </div>
 
         <div className="grid grid-cols-2 gap-3">
-          <QuickLink to="/alerts" icon={AlertTriangle} label="Alerts" sub={`${openAlertCount} open`} />
-          <QuickLink to="/money" icon={TrendingUp} label="Money" sub="Balances and audit" />
-          <QuickLink to="/control" icon={MessageSquare} label="Control" sub="Requests and sync" />
+          <QuickLink to="/alerts?filter=all" icon={AlertTriangle} label="Alerts" sub={`${openAlertCount} open`} />
+          <QuickLink to="/money?focus=outstanding" icon={TrendingUp} label="Money" sub="Balances and audit" />
+          <QuickLink to="/control" icon={MessageSquare} label="Inbox & Sync" sub="Requests and device sync" />
           {can('reports.view') ? (
             <QuickLink to="/reports" icon={FileText} label="Reports" sub="Full snapshot" />
           ) : (
@@ -453,32 +406,12 @@ export default function Dashboard() {
             {timelineItems.length === 0 && <p className="text-sm text-gray-500">Nothing notable has happened yet today.</p>}
           </div>
         </div>
+
+        <MobileBoundaryNotice compact>
+          Mobile is for visibility and requests. Front desk still executes booking and money changes on desktop.
+        </MobileBoundaryNotice>
       </div>
 
-      {sheet && (
-        <DrilldownSheet
-          title={sheet.title}
-          rows={sheet.rows}
-          onClose={() => setSheet(null)}
-          renderRow={(row) => (
-            <div key={row.id} className="bg-gray-800 rounded-xl px-3 py-3">
-              <div className="flex flex-wrap items-center gap-2">
-                <p className="text-sm font-semibold text-white">{guestLabel(row)}</p>
-                {row.source === 'online' && row.status === 'pending' && (
-                  <span className="rounded-full bg-amber-950/60 px-2 py-0.5 text-[10px] font-semibold text-amber-300">
-                    Waiting for front desk
-                  </span>
-                )}
-              </div>
-              <p className="text-xs text-gray-400 mt-1">
-                {`${shortDate(row.check_in)}${row.check_out ? ` -> ${shortDate(row.check_out)}` : ''}`}
-              </p>
-              {row.room_number && <p className="text-[11px] text-gray-500 mt-1">Room {row.room_number}</p>}
-              {row.manager_arrival_note && <p className="text-[11px] text-amber-300 mt-2">{row.manager_arrival_note}</p>}
-            </div>
-          )}
-        />
-      )}
     </div>
   )
 }

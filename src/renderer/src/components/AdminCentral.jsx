@@ -16,6 +16,7 @@ import {
   normalizeSubscriptionPlan,
   trackUpgradeIntent
 } from '../../../shared/subscriptionPlans'
+import { normalizeSupportMessages, supportMessageSide, supportSenderMeta, supportSenderName } from '../../../shared/supportThreads'
 import {
   LayoutDashboard, Building2, CreditCard, ToggleRight, Megaphone,
   LifeBuoy, Activity, LogOut, Shield, RefreshCw, Plus, Trash2,
@@ -58,7 +59,7 @@ const TIER_FLAGS = {
   }
 }
 const PRIORITY_COLOR = { Low: 'text-gray-400', Normal: 'text-blue-400', High: 'text-orange-400', Urgent: 'text-red-400' }
-const STATUS_COLOR = { open: 'bg-yellow-500/20 text-yellow-300', in_progress: 'bg-blue-500/20 text-blue-300', resolved: 'bg-green-500/20 text-green-300', closed: 'bg-gray-500/20 text-gray-400' }
+const STATUS_COLOR = { open: 'bg-yellow-500/20 text-yellow-300', acknowledged: 'bg-amber-500/20 text-amber-300', in_progress: 'bg-blue-500/20 text-blue-300', resolved: 'bg-green-500/20 text-green-300', closed: 'bg-gray-500/20 text-gray-400' }
 const DEFAULT_PLAN = 'Starter'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -1998,11 +1999,21 @@ function SupportTickets({ companies }) {
 
   useEffect(() => { load() }, [load])
 
-  const openDetail = (t) => { setDetail(t); setNotes(t.admin_notes || ''); setNewStatus(t.status) }
+  const openDetail = (t) => { setDetail(t); setNotes(''); setNewStatus(t.status) }
 
   const updateTicket = async () => {
     setSaving(true)
-    await window.api.admin.updateSupportTicket(detail.id, { status: newStatus, admin_notes: notes }).catch(() => { })
+    const body = notes.trim()
+    if (body && window.api.admin.addSupportTicketMessage) {
+      await window.api.admin.addSupportTicketMessage(detail.id, {
+        lodge_id: detail.lodge_id,
+        body,
+        status: newStatus,
+        metadata: { source: 'command_central_support_tickets' }
+      }).catch(() => { })
+    } else {
+      await window.api.admin.updateSupportTicket(detail.id, { status: newStatus }).catch(() => { })
+    }
     setSaving(false); setDetail(null); load()
   }
 
@@ -2015,7 +2026,7 @@ function SupportTickets({ companies }) {
     return true
   })
 
-  const openCount = tickets.filter(t => t.status === 'open' || t.status === 'in_progress').length
+  const openCount = tickets.filter(t => ['open', 'acknowledged', 'in_progress'].includes(t.status)).length
 
   return (
     <div className="space-y-4">
@@ -2028,7 +2039,7 @@ function SupportTickets({ companies }) {
           <input className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 w-48" placeholder="Search…" value={filter.q} onChange={e => setFilter({ ...filter, q: e.target.value })} />
           <select className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-300 focus:outline-none" value={filter.status} onChange={e => setFilter({ ...filter, status: e.target.value })}>
             <option value="">All Status</option>
-            {['open', 'in_progress', 'resolved', 'closed'].map(s => <option key={s} value={s}>{s}</option>)}
+            {['open', 'acknowledged', 'in_progress', 'resolved', 'closed'].map(s => <option key={s} value={s}>{s}</option>)}
           </select>
           <select className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-300 focus:outline-none" value={filter.priority} onChange={e => setFilter({ ...filter, priority: e.target.value })}>
             <option value="">All Priority</option>
@@ -2125,9 +2136,47 @@ function SupportTickets({ companies }) {
                     )}
                   </div>
                 )}
-                <div className="bg-gray-800 rounded-lg p-4">
-                  <p className="text-xs text-gray-400 mb-1">Lodge: {detail.lodge_name || detail.lodge_id}</p>
-                  <p className="text-sm text-gray-200 whitespace-pre-wrap">{detail.description}</p>
+                <div className="rounded-xl border border-gray-700 bg-gray-900 p-4">
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500">Inbox Conversation</p>
+                      <p className="mt-1 text-xs text-gray-400">Lodge: {detail.lodge_name || detail.lodge_id}</p>
+                    </div>
+                    <span className="rounded-full bg-gray-800 px-2.5 py-1 text-[11px] font-semibold text-gray-300">
+                      {normalizeSupportMessages(detail).length} message{normalizeSupportMessages(detail).length === 1 ? '' : 's'}
+                    </span>
+                  </div>
+                  <div className="max-h-80 space-y-3 overflow-y-auto pr-1">
+                    {normalizeSupportMessages(detail).map((message) => {
+                      const isManager = supportMessageSide(message) === 'manager'
+                      return (
+                        <div key={message.id} className={`flex ${isManager ? 'justify-start' : 'justify-end'}`}>
+                          <div className={`max-w-[84%] rounded-2xl px-4 py-3 ${
+                            isManager
+                              ? 'rounded-bl-md border border-gray-700 bg-gray-800 text-gray-100'
+                              : 'rounded-br-md bg-emerald-700 text-white'
+                          }`}>
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <p className={`text-[11px] font-semibold uppercase tracking-[0.16em] ${isManager ? 'text-gray-400' : 'text-emerald-100'}`}>
+                                  {supportSenderName(message)}
+                                </p>
+                                {supportSenderMeta(message) && (
+                                  <p className={`mt-0.5 text-[11px] ${isManager ? 'text-gray-500' : 'text-emerald-100/75'}`}>
+                                    {supportSenderMeta(message)}
+                                  </p>
+                                )}
+                              </div>
+                              <span className={`shrink-0 text-[11px] ${isManager ? 'text-gray-500' : 'text-emerald-100/75'}`}>
+                                {timeAgo(message.created_at)}
+                              </span>
+                            </div>
+                            <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed">{message.body}</p>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
                 </div>
                 {upgrade && (upgrade.requestedOutcome || upgrade.commercialValue) && (
                   <div className="rounded-xl border border-gray-700 bg-gray-900 p-4 space-y-3">
@@ -2147,15 +2196,15 @@ function SupportTickets({ companies }) {
                 )}
                 <Field label="Update Status">
                   <select className={inp} value={newStatus} onChange={e => setNewStatus(e.target.value)}>
-                    {['open', 'in_progress', 'resolved', 'closed'].map(s => <option key={s} value={s}>{s}</option>)}
+                    {['open', 'acknowledged', 'in_progress', 'resolved', 'closed'].map(s => <option key={s} value={s}>{s}</option>)}
                   </select>
                 </Field>
-                <Field label="Admin Notes">
-                  <textarea className={`${inp} h-24 resize-none`} value={notes} onChange={e => setNotes(e.target.value)} placeholder="Internal notes…" />
+                <Field label="Reply">
+                  <textarea className={`${inp} h-24 resize-none`} value={notes} onChange={e => setNotes(e.target.value)} placeholder="Write the next reply in this inbox conversation…" />
                 </Field>
                 <div className="flex gap-3">
                   <button onClick={() => setDetail(null)} className={`flex-1 ${btn('ghost')} py-2 rounded-lg text-sm`}>Cancel</button>
-                  <button onClick={updateTicket} disabled={saving} className={`flex-1 ${btn()} py-2 rounded-lg text-sm font-medium disabled:opacity-60`}>{saving ? 'Saving…' : 'Save Update'}</button>
+                  <button onClick={updateTicket} disabled={saving} className={`flex-1 ${btn()} py-2 rounded-lg text-sm font-medium disabled:opacity-60`}>{saving ? 'Saving...' : notes.trim() ? 'Send Reply' : 'Save Status'}</button>
                 </div>
               </div>
             )

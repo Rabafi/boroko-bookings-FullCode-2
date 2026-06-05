@@ -147,7 +147,8 @@ const api = {
   },
   requests: {
     getAll: (limit) => ipcRenderer.invoke('requests:getAll', limit),
-    update: (id, updates) => ipcRenderer.invoke('requests:update', id, updates)
+    update: (id, updates) => ipcRenderer.invoke('requests:update', id, updates),
+    addMessage: (id, payload) => ipcRenderer.invoke('requests:addMessage', id, payload)
   },
   notifications: {
     today: () => ipcRenderer.invoke('notifications:today'),
@@ -371,6 +372,7 @@ const api = {
     getSupportTickets: (filters) => ipcRenderer.invoke('admin:getSupportTickets', filters),
     createSupportTicket: (data) => ipcRenderer.invoke('admin:createSupportTicket', data),
     updateSupportTicket: (id, updates) => ipcRenderer.invoke('admin:updateSupportTicket', id, updates),
+    addSupportTicketMessage: (id, payload) => ipcRenderer.invoke('admin:addSupportTicketMessage', id, payload),
     deleteSupportTicket: (id) => ipcRenderer.invoke('admin:deleteSupportTicket', id),
     // Activity logs
     getActivityLogs: (filters) => ipcRenderer.invoke('admin:getActivityLogs', filters),

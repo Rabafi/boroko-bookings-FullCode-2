@@ -38,9 +38,15 @@ import {
   normalizeSubscriptionPlan,
   trackUpgradeIntent
 } from '../../../shared/subscriptionPlans'
+import { normalizeSupportMessages, supportMessageSide, supportSenderName } from '../../../shared/supportThreads'
 
 // ── Tier definitions (mirrors AdminCentral) ───────────────────────────────────
 const TIERS = SUBSCRIPTION_PLAN_ORDER
+
+function latestSupportMessage(row) {
+  const messages = normalizeSupportMessages(row)
+  return messages[messages.length - 1] || null
+}
 
 // ── Support Ticket Modal ──────────────────────────────────────────────────────
 function SupportModal({ onClose, settings }) {
@@ -480,12 +486,35 @@ export default function Layout() {
           return !supportRequestIdsRef.current.has(row.id)
         })
 
+        const updatedFrontDeskRequests = nextRows.filter((row) => {
+          if (String(row.category || '').trim().toLowerCase() !== 'front desk request') return false
+          const previous = supportRequestIdsRef.current.get(row.id)
+          if (!previous) return false
+          const latest = latestSupportMessage(row)
+          const previousLatest = latestSupportMessage(previous)
+          if (!latest || supportMessageSide(latest) !== 'manager') return false
+          return String(latest.id || latest.created_at || latest.body) !== String(previousLatest?.id || previousLatest?.created_at || previousLatest?.body || '')
+        })
+
         if (newFrontDeskRequests.length > 0) {
           newFrontDeskRequests.slice(0, 3).forEach((request) => {
-            const note = request.description || request.admin_notes || 'A new request arrived from the manager mobile app.'
+            const latest = latestSupportMessage(request)
+            const note = latest?.body || request.description || request.admin_notes || 'A new request arrived from the manager mobile app.'
             window.api.app.notify({
               title: `Front desk request: ${request.title}`,
               body: note,
+              sound: true,
+              flash: true
+            }).catch(() => {})
+          })
+        }
+
+        if (updatedFrontDeskRequests.length > 0) {
+          updatedFrontDeskRequests.slice(0, 3).forEach((request) => {
+            const latest = latestSupportMessage(request)
+            window.api.app.notify({
+              title: `New inbox reply from ${supportSenderName(latest)}`,
+              body: latest?.body || request.title || 'The manager mobile app added a message.',
               sound: true,
               flash: true
             }).catch(() => {})

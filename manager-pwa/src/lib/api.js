@@ -1,6 +1,7 @@
 import { signInWithSupabaseAuth, supabase } from './supabase'
 import { assertCapability, getStoredEntitlement, normalizeSessionUser, storeEntitlement } from './access'
 import { getSubscriptionPlan } from '@shared/subscriptionPlans'
+import { normalizeSupportTickets } from '@shared/supportThreads'
 import { titleCase } from './format'
 import {
   appendIssueLog,
@@ -57,9 +58,30 @@ function guestName(record) {
   return record?.guest_name || record?.customer_name || record?.name || 'Guest'
 }
 
+function friendlyErrorMessage(error, fallback = 'Unexpected issue') {
+  const raw = (() => {
+    if (!error) return fallback
+    if (typeof error === 'string') return error
+    if (error instanceof Error && error.message) return error.message
+    if (typeof error?.message === 'string' && error.message) return error.message
+    return fallback
+  })()
+  if (/cannot execute .* in a read-only transaction|read-only transaction/i.test(raw)) {
+    return 'This mobile view is review-and-request only. Ask front desk to complete the record change on desktop.'
+  }
+  if (/violates row-level security|new row violates row-level security|permission denied for table/i.test(raw)) {
+    return 'This record is not available for mobile changes. Ask front desk to complete it on desktop.'
+  }
+  return raw || fallback
+}
+
+export function getFriendlyErrorMessage(error, fallback = 'Unexpected issue') {
+  return friendlyErrorMessage(error, fallback)
+}
+
 function ensureSuccess(result, error, fallbackMessage) {
-  if (error) throw new Error(error.message || fallbackMessage)
-  if (result?.success === false) throw new Error(result.error || fallbackMessage)
+  if (error) throw new Error(friendlyErrorMessage(error, fallbackMessage))
+  if (result?.success === false) throw new Error(friendlyErrorMessage(result.error, fallbackMessage))
   return result
 }
 
@@ -107,16 +129,12 @@ function normalizeMoney(value, fieldLabel, { max = MAX_FINANCIAL_AMOUNT, allowBl
 
 async function safeSelect(queryBuilder, fallback = []) {
   const { data, error } = await queryBuilder
-  if (error) throw new Error(error.message)
+  if (error) throw new Error(friendlyErrorMessage(error, 'Could not load data.'))
   return data || fallback
 }
 
 function getErrorMessage(error, fallback = 'Unexpected issue') {
-  if (!error) return fallback
-  if (typeof error === 'string') return error
-  if (error instanceof Error && error.message) return error.message
-  if (typeof error?.message === 'string' && error.message) return error.message
-  return fallback
+  return friendlyErrorMessage(error, fallback)
 }
 
 function describeReadError(scope, error, fallbackMessage = '') {
@@ -169,7 +187,7 @@ function recordPwaIssue(lodgeId, scope, error, context = {}) {
 
 async function readRpcJson(rpcName, params, fallbackMessage) {
   const { data, error } = await supabase.rpc(rpcName, params)
-  if (error) throw new Error(error.message || fallbackMessage)
+  if (error) throw new Error(friendlyErrorMessage(error, fallbackMessage))
   return data
 }
 
@@ -438,13 +456,13 @@ async function fetchSettingsRecord(lodgeId) {
     .select('*')
     .eq('lodge_id', lodgeId)
     .maybeSingle()
-  if (error) throw new Error(error.message)
+  if (error) throw new Error(friendlyErrorMessage(error, 'Could not load lodge settings.'))
   return data || null
 }
 
 async function fetchEntitlementRpc(lodgeId) {
   const { data, error } = await supabase.rpc('get_lodge_entitlement', { p_lodge_id: lodgeId })
-  if (error) throw error
+  if (error) throw new Error(friendlyErrorMessage(error, 'Could not load lodge access.'))
   return data
 }
 
@@ -638,10 +656,36 @@ async function executeSupport(payload) {
       title: payload.title,
       description: payload.description,
       category: payload.category || 'General',
-      priority: payload.priority || 'Normal'
+      priority: payload.priority || 'Normal',
+      source: payload.source || 'manager_pwa',
+      sender_type: payload.sender_type || payload.requester_surface || 'manager_pwa',
+      sender_name: payload.sender_name || payload.requester_name || '',
+      sender_role: payload.sender_role || payload.requester_role || '',
+      sender_user_id: payload.sender_user_id || payload.requester_user_id || '',
+      sender_surface: payload.sender_surface || payload.requester_surface || 'manager_pwa',
+      requester_name: payload.requester_name || payload.sender_name || '',
+      requester_role: payload.requester_role || payload.sender_role || '',
+      requester_user_id: payload.requester_user_id || payload.sender_user_id || ''
     }
   })
   ensureSuccess(data, error, 'Could not create support request')
+  return data
+}
+
+async function executeSupportMessage(payload) {
+  const { data, error } = await supabase.rpc('add_lodge_support_ticket_message', {
+    p_ticket_id: payload.ticket_id,
+    p_lodge_id: payload.lodge_id,
+    p_body: payload.body,
+    p_sender_type: payload.sender_type || 'manager_pwa',
+    p_sender_name: payload.sender_name || 'Manager PWA',
+    p_sender_role: payload.sender_role || 'manager',
+    p_sender_user_id: payload.sender_user_id || '',
+    p_sender_surface: payload.sender_surface || 'manager_pwa',
+    p_metadata: payload.metadata || {},
+    p_status: payload.status || null
+  })
+  ensureSuccess(data, error, 'Could not add request message')
   return data
 }
 
@@ -816,7 +860,7 @@ export async function getBookingPayments(lodgeId, bookingId) {
     p_booking_id: bookingId,
     p_lodge_id: lodgeId
   })
-  if (error) throw new Error(error.message)
+  if (error) throw new Error(friendlyErrorMessage(error, 'Could not load booking payments.'))
   return data || []
 }
 
@@ -969,7 +1013,7 @@ export async function listInvoices(lodgeId, options = {}) {
           p_lodge_id: lodgeId,
           p_booking_id: null
         })
-        if (error) throw new Error(error.message)
+        if (error) throw new Error(friendlyErrorMessage(error, 'Could not load invoices.'))
         return (data || [])
           .map((invoice) => ({
             ...invoice,
@@ -1076,7 +1120,7 @@ export async function getRefundHistory(lodgeId, limit = 20) {
     p_booking_id: null,
     p_limit: Math.min(Math.max(Number(limit) || 20, 1), 100)
   })
-  if (error) throw new Error(error.message)
+  if (error) throw new Error(friendlyErrorMessage(error, 'Could not load refund history.'))
   return Array.isArray(data) ? data : []
 }
 
@@ -1087,7 +1131,7 @@ async function getInvoiceDeliveryHistory(lodgeId, limit = 20) {
     p_booking_id: null,
     p_limit: Math.min(Math.max(Number(limit) || 20, 1), 100)
   })
-  if (error) throw new Error(error.message)
+  if (error) throw new Error(friendlyErrorMessage(error, 'Could not load invoice delivery history.'))
   return Array.isArray(data) ? data : []
 }
 
@@ -1098,7 +1142,7 @@ async function getFinancialValidationAlerts(lodgeId, limit = 10) {
       p_lodge_id: lodgeId,
       p_limit: Math.min(Math.max(Number(limit) || 10, 1), 50)
     })
-    if (error) throw new Error(error.message)
+    if (error) throw new Error(friendlyErrorMessage(error, 'Could not load validation alerts.'))
     return Array.isArray(data) ? data : []
   } catch (error) {
     recordPwaIssue(lodgeId, 'validation-alerts.load', error, { source: 'validation-alerts', severity: 'warn' })
@@ -1178,8 +1222,8 @@ export async function getSupportRequests(lodgeId, limit = 20) {
     p_lodge_id: lodgeId,
     p_limit: Math.min(Math.max(Number(limit) || 20, 1), 100)
   })
-  if (error) throw new Error(error.message)
-  return Array.isArray(data) ? data : []
+  if (error) throw new Error(friendlyErrorMessage(error, 'Could not load support requests.'))
+  return normalizeSupportTickets(data)
 }
 
 export async function createSupportTicket(lodgeId, payload) {
@@ -1189,6 +1233,25 @@ export async function createSupportTicket(lodgeId, payload) {
     label: 'Create support request',
     payload: { ...payload, lodge_id: lodgeId },
     execute: () => executeSupport({ ...payload, lodge_id: lodgeId }),
+    optimistic: null
+  })
+}
+
+export async function addSupportTicketMessage(lodgeId, ticketId, payload = {}) {
+  return queueOrRun({
+    lodgeId,
+    type: 'support/message',
+    label: 'Send request message',
+    payload: {
+      ...payload,
+      ticket_id: ticketId,
+      lodge_id: lodgeId
+    },
+    execute: () => executeSupportMessage({
+      ...payload,
+      ticket_id: ticketId,
+      lodge_id: lodgeId
+    }),
     optimistic: null
   })
 }
@@ -1265,6 +1328,9 @@ async function performOfflineQueueFlush(lodgeId) {
         case 'support/create':
           await executeSupport(item.payload)
           break
+        case 'support/message':
+          await executeSupportMessage(item.payload)
+          break
         default:
           remaining.push(item)
           continue
@@ -1280,7 +1346,7 @@ async function performOfflineQueueFlush(lodgeId) {
   const nextQueue = [...remaining, ...enqueuedDuringFlush]
 
   setOfflineQueue(lodgeId, nextQueue)
-  setRuntimeMeta(lodgeId, 'last-sync', { processed, remaining: nextQueue.length })
+  setRuntimeMeta(lodgeId, 'last-sync', { processed, remaining: nextQueue.length, updatedAt: new Date().toISOString() })
 
   await Promise.allSettled([
     listBookings(lodgeId),
@@ -1444,7 +1510,7 @@ export async function validateManagerSession(sessionToken = null) {
   const { data, error } = await supabase.rpc('validate_app_session', {
     p_session_token: sessionToken
   })
-  if (error) throw error
+  if (error) throw new Error(friendlyErrorMessage(error, 'Could not validate this mobile session.'))
 
   const rows = extractManagerCandidates(data)
   const row = rows[0] || null
@@ -1459,6 +1525,6 @@ export async function logoutManagerSession(sessionToken = null) {
   const { data, error } = await supabase.rpc('revoke_app_session', {
     p_session_token: sessionToken
   })
-  if (error) throw error
+  if (error) throw new Error(friendlyErrorMessage(error, 'Could not sign out this mobile session.'))
   return data
 }

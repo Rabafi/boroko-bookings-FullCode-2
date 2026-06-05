@@ -1,6 +1,6 @@
 /* global self, clients */
 
-const CACHE = 'boroko-manager-v2'
+const CACHE = 'boroko-manager-v3'
 const STATIC = [
   '/',
   '/index.html',
@@ -25,7 +25,6 @@ function sanitizeNotificationUrl(value) {
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(STATIC)))
-  self.skipWaiting()
 })
 
 self.addEventListener('activate', (event) => {
@@ -72,4 +71,10 @@ self.addEventListener('push', (event) => {
 self.addEventListener('notificationclick', (event) => {
   event.notification.close()
   event.waitUntil(clients.openWindow(sanitizeNotificationUrl(event.notification.data)))
+})
+
+self.addEventListener('message', (event) => {
+  if (event.data?.type === 'SKIP_WAITING') {
+    self.skipWaiting()
+  }
 })

@@ -45,6 +45,7 @@ import {
   getUsageStateKey,
   normalizeSubscriptionPlan
 } from '../../../shared/subscriptionPlans'
+import { normalizeSupportMessages, supportMessageSide, supportSenderMeta, supportSenderName } from '../../../shared/supportThreads'
 
 const SHORTCUTS = [
   { label: 'Bookings',      to: '/bookings',   icon: BookOpen },
@@ -92,6 +93,15 @@ function getRequestAgeMeta(createdAt) {
   }
 }
 
+function getLatestSupportMessage(request) {
+  const messages = normalizeSupportMessages(request)
+  return messages[messages.length - 1] || null
+}
+
+function getLatestDeskMessage(request) {
+  return [...normalizeSupportMessages(request)].reverse().find((message) => supportMessageSide(message) === 'desk') || null
+}
+
 function formatWhatsAppPhone(phone) {
   if (!phone) return ''
   let p = phone.replace(/\D/g, '')
@@ -128,7 +138,7 @@ export default function Dashboard() {
   const [requestSaving, setRequestSaving] = useState(false)
   const pendingOnlineRequests = onlineRequests || []
   const pendingFrontDeskRequests = useMemo(
-    () => frontDeskRequests.filter((request) => request.status !== 'resolved'),
+    () => frontDeskRequests.filter((request) => !['resolved', 'closed'].includes(String(request.status || '').toLowerCase())),
     [frontDeskRequests]
   )
 
@@ -328,17 +338,24 @@ export default function Dashboard() {
   const openRequestDialog = useCallback((request) => {
     setRequestDialog(request)
     setRequestStatus(request?.status || 'open')
-    setRequestNote(request?.admin_notes || '')
+    setRequestNote('')
   }, [])
 
   const saveRequestUpdate = useCallback(async () => {
     if (!requestDialog?.id || !window.api?.requests?.update) return
     setRequestSaving(true)
     try {
-      const result = await window.api.requests.update(requestDialog.id, {
-        status: requestStatus,
-        admin_notes: requestNote
-      })
+      const body = requestNote.trim()
+      const result = body && window.api?.requests?.addMessage
+        ? await window.api.requests.addMessage(requestDialog.id, {
+          body,
+          status: requestStatus,
+          metadata: { source: 'desktop_dashboard_action_inbox' }
+        })
+        : await window.api.requests.update(requestDialog.id, {
+          status: requestStatus,
+          admin_notes: null
+        })
       if (!result?.success) throw new Error(result?.error || 'Could not update request')
       setRequestDialog(null)
       await loadData()
@@ -858,35 +875,39 @@ export default function Dashboard() {
                 </button>
               )
             })}
-            {pendingFrontDeskRequests.slice(0, 3).map((request) => (
-              <button
-                key={`top-${request.id}`}
-                type="button"
-                onClick={() => openRequestDialog(request)}
-                className="rounded-2xl border border-emerald-100 bg-white/90 px-4 py-3 text-left shadow-sm transition-colors hover:bg-white"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="text-sm font-semibold text-slate-900">{request.title}</p>
-                    <p className="mt-1 text-xs text-slate-500">
-                      {request.category || 'Request'} · {request.updated_at || request.created_at ? new Date(request.updated_at || request.created_at).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : 'Just now'}
-                    </p>
+            {pendingFrontDeskRequests.slice(0, 3).map((request) => {
+              const latest = getLatestSupportMessage(request)
+              const latestDesk = getLatestDeskMessage(request)
+              return (
+                <button
+                  key={`top-${request.id}`}
+                  type="button"
+                  onClick={() => openRequestDialog(request)}
+                  className="rounded-2xl border border-emerald-100 bg-white/90 px-4 py-3 text-left shadow-sm transition-colors hover:bg-white"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-slate-900">{request.title}</p>
+                      <p className="mt-1 text-xs text-slate-500">
+                        {request.requester_name ? `${request.requester_name} · ` : ''}{request.category || 'Request'} · {request.updated_at || request.created_at ? new Date(request.updated_at || request.created_at).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : 'Just now'}
+                      </p>
+                    </div>
+                    <span className={`shrink-0 rounded-full px-2.5 py-1 text-[11px] font-semibold ${requestStatusTone(request.status)}`}>
+                      {requestStatusLabel(request.status)}
+                    </span>
                   </div>
-                  <span className={`shrink-0 rounded-full px-2.5 py-1 text-[11px] font-semibold ${requestStatusTone(request.status)}`}>
-                    {requestStatusLabel(request.status)}
-                  </span>
-                </div>
-                <p className="mt-2 text-sm text-slate-700 line-clamp-2">{request.description || 'No extra detail was added.'}</p>
-                {request.admin_notes ? (
-                  <div className="mt-3 rounded-xl bg-emerald-50 px-3 py-2">
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-700">Latest desk note</p>
-                    <p className="mt-1 text-xs text-emerald-950">{request.admin_notes}</p>
-                  </div>
-                ) : (
-                  <p className="mt-3 text-xs text-slate-500">No desk update added yet.</p>
-                )}
-              </button>
-            ))}
+                  <p className="mt-2 text-sm text-slate-700 line-clamp-2">{latest?.body || request.description || 'No extra detail was added.'}</p>
+                  {latestDesk ? (
+                    <div className="mt-3 rounded-xl bg-emerald-50 px-3 py-2">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-700">Latest desk reply</p>
+                      <p className="mt-1 text-xs text-emerald-950">{latestDesk.body}</p>
+                    </div>
+                  ) : (
+                    <p className="mt-3 text-xs text-slate-500">No desk reply added yet.</p>
+                  )}
+                </button>
+              )
+            })}
           </div>
         </section>
       )}
@@ -1419,23 +1440,50 @@ export default function Dashboard() {
 
       {requestDialog && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/45 p-4 backdrop-blur-sm" onClick={() => setRequestDialog(null)}>
-          <div className="w-full max-w-xl rounded-[28px] border border-white/70 bg-white p-6 shadow-[0_28px_90px_rgba(15,23,42,0.28)]" onClick={(event) => event.stopPropagation()}>
+          <div className="w-full max-w-2xl rounded-[28px] border border-white/70 bg-white p-6 shadow-[0_28px_90px_rgba(15,23,42,0.28)]" onClick={(event) => event.stopPropagation()}>
             <div className="flex items-start justify-between gap-4">
               <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-700">Manager Request</p>
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-700">Inbox Conversation</p>
                 <h3 className="mt-2 text-xl font-semibold tracking-[-0.02em] text-slate-900">{requestDialog.title}</h3>
-                <p className="mt-2 text-sm text-slate-600">{requestDialog.description || 'No extra detail was added.'}</p>
+                <p className="mt-2 text-sm text-slate-600">
+                  {requestDialog.requester_name ? `Started by ${requestDialog.requester_name}` : 'Manager mobile request'} · {requestDialog.category || 'Request'}
+                </p>
               </div>
               <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${requestStatusTone(requestDialog.status)}`}>
                 {requestStatusLabel(requestDialog.status)}
               </span>
             </div>
 
-            <div className="mt-5 rounded-2xl bg-sky-50 px-4 py-3">
-              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-700">Why this matters</p>
-              <p className="mt-1 text-sm text-sky-950">
-                This update goes back to the manager’s phone, so they can see whether the desk has acknowledged it, is working on it, or has finished it.
-              </p>
+            <div className="mt-5 max-h-80 space-y-3 overflow-y-auto rounded-2xl border border-slate-200 bg-slate-50 p-3">
+              {normalizeSupportMessages(requestDialog).map((message) => {
+                const isManager = supportMessageSide(message) === 'manager'
+                return (
+                  <div key={message.id} className={`flex ${isManager ? 'justify-start' : 'justify-end'}`}>
+                    <div className={`max-w-[82%] rounded-2xl px-4 py-3 shadow-sm ${
+                      isManager
+                        ? 'rounded-bl-md border border-slate-200 bg-white text-slate-800'
+                        : 'rounded-br-md bg-emerald-700 text-white'
+                    }`}>
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className={`text-[11px] font-semibold uppercase tracking-[0.16em] ${isManager ? 'text-slate-500' : 'text-emerald-100'}`}>
+                            {supportSenderName(message)}
+                          </p>
+                          {supportSenderMeta(message) && (
+                            <p className={`mt-0.5 text-[11px] ${isManager ? 'text-slate-400' : 'text-emerald-100/75'}`}>
+                              {supportSenderMeta(message)}
+                            </p>
+                          )}
+                        </div>
+                        <span className={`shrink-0 text-[11px] ${isManager ? 'text-slate-400' : 'text-emerald-100/75'}`}>
+                          {message.created_at ? new Date(message.created_at).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : 'Now'}
+                        </span>
+                      </div>
+                      <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed">{message.body}</p>
+                    </div>
+                  </div>
+                )
+              })}
             </div>
 
             <div className="mt-5 grid gap-4 sm:grid-cols-2">
@@ -1446,6 +1494,7 @@ export default function Dashboard() {
                   <option value="acknowledged">Acknowledged</option>
                   <option value="in_progress">In progress</option>
                   <option value="resolved">Resolved</option>
+                  <option value="closed">Closed</option>
                 </select>
               </div>
               <div>
@@ -1457,14 +1506,14 @@ export default function Dashboard() {
             </div>
 
             <div className="mt-4">
-              <label className="mb-1.5 block text-sm font-medium text-slate-700">Desk note</label>
+              <label className="mb-1.5 block text-sm font-medium text-slate-700">Reply to manager</label>
               <textarea
                 className="input h-28 w-full resize-none"
                 value={requestNote}
                 onChange={(event) => setRequestNote(event.target.value)}
-                placeholder="Short update for the manager, for example: Guest was called and promised to settle before 18:00."
+                placeholder="Write the next inbox reply, for example: Guest was called and promised to settle before 18:00."
               />
-              <p className="mt-2 text-xs text-slate-500">Keep it short and practical. This note is shown back in the manager mobile app.</p>
+              <p className="mt-2 text-xs text-slate-500">This is added to the conversation thread and shown back in the manager mobile app.</p>
             </div>
 
             <div className="mt-6 flex flex-wrap gap-3">
@@ -1472,7 +1521,7 @@ export default function Dashboard() {
                 Close
               </button>
               <button type="button" onClick={saveRequestUpdate} disabled={requestSaving} className="btn-primary">
-                {requestSaving ? 'Saving…' : 'Save Update'}
+                {requestSaving ? 'Saving...' : requestNote.trim() ? 'Send Reply' : 'Save Status'}
               </button>
             </div>
           </div>
@@ -1500,12 +1549,13 @@ function requestStatusLabel(status) {
   if (value === 'acknowledged') return 'Acknowledged'
   if (value === 'in_progress') return 'In progress'
   if (value === 'resolved') return 'Resolved'
+  if (value === 'closed') return 'Closed'
   return 'Open'
 }
 
 function requestStatusTone(status) {
   const value = String(status || 'open').trim().toLowerCase()
-  if (value === 'resolved') return 'bg-emerald-100 text-emerald-700'
+  if (value === 'resolved' || value === 'closed') return 'bg-emerald-100 text-emerald-700'
   if (value === 'in_progress') return 'bg-sky-100 text-sky-700'
   if (value === 'acknowledged') return 'bg-amber-100 text-amber-700'
   return 'bg-slate-100 text-slate-700'
