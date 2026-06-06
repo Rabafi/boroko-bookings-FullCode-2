@@ -435,7 +435,7 @@ function NotificationDetailSheet({ item, onClose, onClear }) {
                 }}
                 className="rounded-2xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white"
               >
-                {isFrontDeskThread ? 'Open Inbox & Sync' : 'Open related screen'}
+                {isFrontDeskThread ? 'Open Inbox' : 'Open related screen'}
               </button>
             )}
             <button
@@ -833,7 +833,7 @@ function GlobalStatusFooter() {
     '/money': 'Money',
     '/alerts': 'Alerts',
     '/more': 'More tools',
-    '/control': 'Inbox & Sync'
+    '/control': 'Inbox'
   }
   const pageLabel = pageLabels[location.pathname] || location.pathname.replace('/', '').replace('-', ' ')
   const syncLabel = !online

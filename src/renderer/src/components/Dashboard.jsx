@@ -27,7 +27,9 @@ import {
   CreditCard,
   HardDrive,
   ShieldCheck,
-  Settings
+  Settings,
+  MessageCircle,
+  Send
 } from 'lucide-react'
 import { StatusBadge } from './shared/StatusBadge'
 import HorizontalScrollArea from './shared/HorizontalScrollArea'
@@ -98,10 +100,6 @@ function getLatestSupportMessage(request) {
   return messages[messages.length - 1] || null
 }
 
-function getLatestDeskMessage(request) {
-  return [...normalizeSupportMessages(request)].reverse().find((message) => supportMessageSide(message) === 'desk') || null
-}
-
 function formatWhatsAppPhone(phone) {
   if (!phone) return ''
   let p = phone.replace(/\D/g, '')
@@ -132,16 +130,22 @@ export default function Dashboard() {
   const [frontDeskRequests, setFrontDeskRequests] = useState([])
   const [activeSpecials, setActiveSpecials] = useState([])
   const [backupInfo, setBackupInfo] = useState(null)
-  const [requestDialog, setRequestDialog] = useState(null)
-  const [requestStatus, setRequestStatus] = useState('open')
-  const [requestNote, setRequestNote] = useState('')
-  const [requestSaving, setRequestSaving] = useState(false)
-  const [requestError, setRequestError] = useState('')
+  const [activeInboxRequestId, setActiveInboxRequestId] = useState('')
+  const [inboxDraft, setInboxDraft] = useState('')
+  const [inboxSending, setInboxSending] = useState(false)
+  const [inboxError, setInboxError] = useState('')
   const pendingOnlineRequests = onlineRequests || []
+  const managerInboxRequests = useMemo(
+    () => frontDeskRequests
+      .filter((request) => String(request.category || '').trim().toLowerCase() === 'front desk request')
+      .sort((left, right) => String(right.updated_at || right.created_at || '').localeCompare(String(left.updated_at || left.created_at || ''))),
+    [frontDeskRequests]
+  )
   const pendingFrontDeskRequests = useMemo(
     () => frontDeskRequests.filter((request) => !['resolved', 'closed'].includes(String(request.status || '').toLowerCase())),
     [frontDeskRequests]
   )
+  const activeInboxRequest = managerInboxRequests.find((request) => request.id === activeInboxRequestId) || managerInboxRequests[0] || null
 
   useEffect(() => {
     const handleNavigate = (e) => {
@@ -164,7 +168,7 @@ export default function Dashboard() {
         window.api.dashboard.forecast(30).catch(() => []),
         window.api.inventory.getLowStock().catch(() => []),
         window.api.dashboard.bookingPaymentsToday().catch(() => ({ total_collected: 0, gross_collected: 0, refunds_issued: 0, by_method: {}, payment_count: 0, date: null })),
-        window.api.requests?.getAll?.(8).catch(() => []),
+        window.api.requests?.getAll?.(50).catch(() => []),
         window.api.rooms.getAll().catch(() => []),
         window.api.users.getAll().catch(() => []),
         window.api.rateOverrides.getAll().catch(() => []),
@@ -336,38 +340,39 @@ export default function Dashboard() {
     }
   }, [])
 
-  const openRequestDialog = useCallback((request) => {
-    setRequestDialog(request)
-    setRequestStatus(request?.status || 'open')
-    setRequestNote('')
-    setRequestError('')
-  }, [])
+  useEffect(() => {
+    if (managerInboxRequests.length === 0) {
+      setActiveInboxRequestId('')
+      return
+    }
+    if (!managerInboxRequests.some((request) => request.id === activeInboxRequestId)) {
+      setActiveInboxRequestId(managerInboxRequests[0].id)
+      setInboxDraft('')
+      setInboxError('')
+    }
+  }, [activeInboxRequestId, managerInboxRequests])
 
-  const saveRequestUpdate = useCallback(async () => {
-    if (!requestDialog?.id || !window.api?.requests?.update) return
-    setRequestSaving(true)
-    setRequestError('')
+  const sendInboxReply = useCallback(async () => {
+    if (!activeInboxRequest?.id || !window.api?.requests?.addMessage) return
+    const body = inboxDraft.trim()
+    if (!body) return
+    setInboxSending(true)
+    setInboxError('')
     try {
-      const body = requestNote.trim()
-      const result = body && window.api?.requests?.addMessage
-        ? await window.api.requests.addMessage(requestDialog.id, {
-          body,
-          status: requestStatus,
-          metadata: { source: 'desktop_dashboard_action_inbox' }
-        })
-        : await window.api.requests.update(requestDialog.id, {
-          status: requestStatus,
-          admin_notes: null
-        })
-      if (!result?.success) throw new Error(result?.error || 'Could not update request')
-      setRequestDialog(null)
+      const result = await window.api.requests.addMessage(activeInboxRequest.id, {
+        body,
+        status: 'in_progress',
+        metadata: { source: 'desktop_dashboard_inbox' }
+      })
+      if (!result?.success) throw new Error(result?.error || 'Could not send inbox reply')
+      setInboxDraft('')
       await loadData()
     } catch (error) {
-      setRequestError(error?.message || 'Could not save this inbox update.')
+      setInboxError(error?.message || 'Could not send this inbox reply.')
     } finally {
-      setRequestSaving(false)
+      setInboxSending(false)
     }
-  }, [loadData, requestDialog?.id, requestNote, requestStatus])
+  }, [activeInboxRequest?.id, inboxDraft, loadData])
 
   useEffect(() => {
     loadData()
@@ -820,108 +825,156 @@ export default function Dashboard() {
         </section>
       )}
 
-      {(pendingOnlineRequests.length > 0 || pendingFrontDeskRequests.length > 0) && (
-        <section className="bb-card p-6 border-l-4 border-l-emerald-500">
-          <div className="flex flex-wrap items-start justify-between gap-4">
-            <div className="min-w-0">
-              <p className="text-xs font-semibold uppercase tracking-[0.22em] text-emerald-700">Action Inbox</p>
-              <h2 className="mt-2 text-xl font-semibold text-emerald-950">
-                {pendingOnlineRequests.length > 0
-                  ? `${pendingOnlineRequests.length} online booking request${pendingOnlineRequests.length === 1 ? '' : 's'} waiting`
-                  : 'No online booking requests'}
-                {' · '}
-                {pendingFrontDeskRequests.length > 0
-                  ? `${pendingFrontDeskRequests.length} front desk request${pendingFrontDeskRequests.length === 1 ? '' : 's'} waiting`
-                  : 'no front desk requests'}
-              </h2>
-              <p className="mt-1 text-sm text-emerald-900/80">
-                Online booking requests and manager mobile app messages are surfaced here first so they are harder to miss.
-              </p>
+      <section className="bb-card overflow-hidden p-0">
+        <div className="border-b border-slate-200 px-5 py-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-emerald-100 text-emerald-700">
+                <MessageCircle size={18} />
+              </div>
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Inbox</p>
+                <h2 className="mt-1 text-lg font-semibold text-slate-900">Manager mobile chats</h2>
+              </div>
             </div>
-            <div className="flex flex-wrap gap-2">
-              {pendingOnlineRequests.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => navigate('/bookings', { state: { showPendingOnline: true } })}
-                  className="inline-flex items-center gap-2 rounded-xl border border-emerald-300 bg-white px-3 py-2 text-xs font-semibold text-emerald-800 transition-colors hover:bg-emerald-50"
-                >
-                  Open booking queue <ArrowRight size={13} />
-                </button>
-              )}
-              {pendingFrontDeskRequests.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => openRequestDialog(pendingFrontDeskRequests[0])}
-                  className="inline-flex items-center gap-2 rounded-xl bg-emerald-700 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-emerald-800"
-                >
-                  Review front desk
-                </button>
-              )}
-            </div>
+            {pendingFrontDeskRequests.length > 0 ? (
+              <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-700">
+                {pendingFrontDeskRequests.length} open
+              </span>
+            ) : null}
           </div>
-          <div className="mt-3 grid gap-2 sm:grid-cols-2">
-            {pendingOnlineRequests.slice(0, 1).map((booking) => {
-              const ageMeta = getRequestAgeMeta(booking.created_at)
-              return (
-                <button
-                  key={`online-${booking.id}`}
-                  type="button"
-                  onClick={() => navigate('/bookings', { state: { showPendingOnline: true } })}
-                  className="rounded-2xl border border-amber-100 bg-white/90 px-4 py-3 text-left shadow-sm transition-colors hover:bg-white"
-                >
-                  <div className="flex items-start justify-between gap-3">
+        </div>
+
+        <div className="grid min-h-[440px] lg:grid-cols-[320px_1fr]">
+          <div className="border-b border-slate-200 bg-slate-50/70 lg:border-b-0 lg:border-r">
+            {managerInboxRequests.length === 0 ? (
+              <div className="px-5 py-12 text-center">
+                <MessageCircle size={30} className="mx-auto text-slate-300" />
+                <p className="mt-3 text-sm font-semibold text-slate-900">No manager chats yet</p>
+                <p className="mt-1 text-sm text-slate-500">Messages from the manager mobile app will appear here.</p>
+              </div>
+            ) : (
+              <div className="max-h-[440px] overflow-y-auto">
+                {managerInboxRequests.map((request) => {
+                  const latest = getLatestSupportMessage(request)
+                  const active = activeInboxRequest?.id === request.id
+                  return (
+                    <button
+                      key={request.id}
+                      type="button"
+                      onClick={() => {
+                        setActiveInboxRequestId(request.id)
+                        setInboxDraft('')
+                        setInboxError('')
+                      }}
+                      className={`flex w-full items-center gap-3 px-4 py-3 text-left transition-colors ${
+                        active ? 'bg-white shadow-sm' : 'hover:bg-white/70'
+                      }`}
+                    >
+                      <div className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-bold ${
+                        active ? 'bg-emerald-600 text-white' : 'bg-slate-200 text-slate-700'
+                      }`}>
+                        {(request.requester_name || 'Manager').split(/\s+/).slice(0, 2).map((part) => part[0]).join('').toUpperCase() || 'MG'}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-start justify-between gap-2">
+                          <p className="truncate text-sm font-semibold text-slate-900">{request.title || 'Manager message'}</p>
+                          <span className="shrink-0 text-[11px] text-slate-400">{timeAgo(request.updated_at || request.created_at)}</span>
+                        </div>
+                        <p className="mt-0.5 truncate text-xs text-slate-500">
+                          {supportSenderName(latest || request)}: {latest?.body || request.description || 'No messages yet'}
+                        </p>
+                      </div>
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+
+          <div className="flex min-h-[440px] flex-col">
+            {activeInboxRequest ? (
+              <>
+                <div className="border-b border-slate-200 px-5 py-4">
+                  <div className="flex items-start justify-between gap-4">
                     <div className="min-w-0">
-                      <p className="text-sm font-semibold text-slate-900">{booking.customer_name || 'Guest'} booking</p>
-                      <p className="mt-1 text-xs text-slate-500">
-                        {booking.room_number || 'Room TBD'} · {booking.room_type || 'Online request'} · {ageMeta.label}
+                      <p className="truncate text-base font-semibold text-slate-900">{activeInboxRequest.title}</p>
+                      <p className="mt-1 text-sm text-slate-500">
+                        {activeInboxRequest.requester_name ? `${activeInboxRequest.requester_name} - ` : ''}{activeInboxRequest.created_at ? new Date(activeInboxRequest.created_at).toLocaleString('en-GB') : 'Recently'}
                       </p>
                     </div>
-                    <span className="shrink-0 rounded-full bg-amber-100 px-2.5 py-1 text-[11px] font-semibold text-amber-800">
-                      Online
+                    <span className={`shrink-0 rounded-full px-2.5 py-1 text-[11px] font-semibold ${requestStatusTone(activeInboxRequest.status)}`}>
+                      {requestStatusLabel(activeInboxRequest.status)}
                     </span>
                   </div>
-                  <p className="mt-2 text-sm text-slate-700 line-clamp-2">
-                    {ageMeta.detail}
-                  </p>
-                </button>
-              )
-            })}
-            {pendingFrontDeskRequests.slice(0, 3).map((request) => {
-              const latest = getLatestSupportMessage(request)
-              const latestDesk = getLatestDeskMessage(request)
-              return (
-                <button
-                  key={`top-${request.id}`}
-                  type="button"
-                  onClick={() => openRequestDialog(request)}
-                  className="rounded-2xl border border-emerald-100 bg-white/90 px-4 py-3 text-left shadow-sm transition-colors hover:bg-white"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="text-sm font-semibold text-slate-900">{request.title}</p>
-                      <p className="mt-1 text-xs text-slate-500">
-                        {request.requester_name ? `${request.requester_name} · ` : ''}{request.category || 'Request'} · {request.updated_at || request.created_at ? new Date(request.updated_at || request.created_at).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : 'Just now'}
-                      </p>
+                </div>
+
+                <div className="flex-1 space-y-3 overflow-y-auto bg-slate-50 px-5 py-4">
+                  {normalizeSupportMessages(activeInboxRequest).map((message) => {
+                    const isDesk = supportMessageSide(message) === 'desk'
+                    return (
+                      <div key={message.id} className={`flex ${isDesk ? 'justify-end' : 'justify-start'}`}>
+                        <div className={`max-w-[78%] rounded-2xl px-4 py-3 shadow-sm ${
+                          isDesk
+                            ? 'rounded-br-md bg-emerald-700 text-white'
+                            : 'rounded-bl-md border border-slate-200 bg-white text-slate-800'
+                        }`}>
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className={`text-[11px] font-semibold uppercase tracking-[0.16em] ${isDesk ? 'text-emerald-100' : 'text-slate-500'}`}>
+                                {supportSenderName(message)}
+                              </p>
+                              {supportSenderMeta(message) ? (
+                                <p className={`mt-0.5 text-[11px] ${isDesk ? 'text-emerald-100/75' : 'text-slate-400'}`}>
+                                  {supportSenderMeta(message)}
+                                </p>
+                              ) : null}
+                            </div>
+                            <span className={`shrink-0 text-[11px] ${isDesk ? 'text-emerald-100/75' : 'text-slate-400'}`}>
+                              {message.created_at ? new Date(message.created_at).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : 'Now'}
+                            </span>
+                          </div>
+                          <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed">{message.body}</p>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+
+                <div className="border-t border-slate-200 bg-white px-5 py-4">
+                  {inboxError ? (
+                    <div className="mb-3 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+                      {inboxError}
                     </div>
-                    <span className={`shrink-0 rounded-full px-2.5 py-1 text-[11px] font-semibold ${requestStatusTone(request.status)}`}>
-                      {requestStatusLabel(request.status)}
-                    </span>
+                  ) : null}
+                  <div className="flex items-end gap-3">
+                    <textarea
+                      className="input min-h-[52px] flex-1 resize-none"
+                      value={inboxDraft}
+                      onChange={(event) => setInboxDraft(event.target.value)}
+                      placeholder="Write a reply..."
+                    />
+                    <button
+                      type="button"
+                      onClick={sendInboxReply}
+                      disabled={inboxSending || !inboxDraft.trim()}
+                      className="btn-primary shrink-0"
+                    >
+                      <Send size={15} /> {inboxSending ? 'Sending...' : 'Send'}
+                    </button>
                   </div>
-                  <p className="mt-2 text-sm text-slate-700 line-clamp-2">{latest?.body || request.description || 'No extra detail was added.'}</p>
-                  {latestDesk ? (
-                    <div className="mt-3 rounded-xl bg-emerald-50 px-3 py-2">
-                      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-700">Latest desk reply</p>
-                      <p className="mt-1 text-xs text-emerald-950">{latestDesk.body}</p>
-                    </div>
-                  ) : (
-                    <p className="mt-3 text-xs text-slate-500">No desk reply added yet.</p>
-                  )}
-                </button>
-              )
-            })}
+                </div>
+              </>
+            ) : (
+              <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
+                <MessageCircle size={34} className="text-slate-300" />
+                <p className="mt-3 text-sm font-semibold text-slate-900">Select a chat</p>
+                <p className="mt-1 text-sm text-slate-500">Manager mobile conversations will open here.</p>
+              </div>
+            )}
           </div>
-        </section>
-      )}
+        </div>
+      </section>
 
       <section className="bb-card p-5">
         <div className="mb-4 flex items-center justify-between gap-4">
@@ -1448,101 +1501,6 @@ export default function Dashboard() {
           </div>
         </section>
       </div>
-
-      {requestDialog && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/45 p-4 backdrop-blur-sm" onClick={() => setRequestDialog(null)}>
-          <div className="w-full max-w-2xl rounded-[28px] border border-white/70 bg-white p-6 shadow-[0_28px_90px_rgba(15,23,42,0.28)]" onClick={(event) => event.stopPropagation()}>
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-700">Inbox Conversation</p>
-                <h3 className="mt-2 text-xl font-semibold tracking-[-0.02em] text-slate-900">{requestDialog.title}</h3>
-                <p className="mt-2 text-sm text-slate-600">
-                  {requestDialog.requester_name ? `Started by ${requestDialog.requester_name}` : 'Manager mobile request'} · {requestDialog.category || 'Request'}
-                </p>
-              </div>
-              <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${requestStatusTone(requestDialog.status)}`}>
-                {requestStatusLabel(requestDialog.status)}
-              </span>
-            </div>
-
-            <div className="mt-5 max-h-80 space-y-3 overflow-y-auto rounded-2xl border border-slate-200 bg-slate-50 p-3">
-              {normalizeSupportMessages(requestDialog).map((message) => {
-                const isManager = supportMessageSide(message) === 'manager'
-                return (
-                  <div key={message.id} className={`flex ${isManager ? 'justify-start' : 'justify-end'}`}>
-                    <div className={`max-w-[82%] rounded-2xl px-4 py-3 shadow-sm ${
-                      isManager
-                        ? 'rounded-bl-md border border-slate-200 bg-white text-slate-800'
-                        : 'rounded-br-md bg-emerald-700 text-white'
-                    }`}>
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <p className={`text-[11px] font-semibold uppercase tracking-[0.16em] ${isManager ? 'text-slate-500' : 'text-emerald-100'}`}>
-                            {supportSenderName(message)}
-                          </p>
-                          {supportSenderMeta(message) && (
-                            <p className={`mt-0.5 text-[11px] ${isManager ? 'text-slate-400' : 'text-emerald-100/75'}`}>
-                              {supportSenderMeta(message)}
-                            </p>
-                          )}
-                        </div>
-                        <span className={`shrink-0 text-[11px] ${isManager ? 'text-slate-400' : 'text-emerald-100/75'}`}>
-                          {message.created_at ? new Date(message.created_at).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : 'Now'}
-                        </span>
-                      </div>
-                      <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed">{message.body}</p>
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
-
-            <div className="mt-5 grid gap-4 sm:grid-cols-2">
-              <div>
-                <label className="mb-1.5 block text-sm font-medium text-slate-700">Status</label>
-                <select className="input w-full" value={requestStatus} onChange={(event) => setRequestStatus(event.target.value)}>
-                  <option value="open">Open</option>
-                  <option value="acknowledged">Acknowledged</option>
-                  <option value="in_progress">In progress</option>
-                  <option value="resolved">Resolved</option>
-                  <option value="closed">Closed</option>
-                </select>
-              </div>
-              <div>
-                <p className="mb-1.5 block text-sm font-medium text-slate-700">Requested</p>
-                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-                  {requestDialog.created_at ? new Date(requestDialog.created_at).toLocaleString('en-GB') : 'Recently'}
-                </div>
-              </div>
-            </div>
-
-            <div className="mt-4">
-              <label className="mb-1.5 block text-sm font-medium text-slate-700">Reply to manager</label>
-              <textarea
-                className="input h-28 w-full resize-none"
-                value={requestNote}
-                onChange={(event) => setRequestNote(event.target.value)}
-                placeholder="Write the next inbox reply, for example: Guest was called and promised to settle before 18:00."
-              />
-              <p className="mt-2 text-xs text-slate-500">This is added to the conversation thread and shown back in the manager mobile app.</p>
-            </div>
-
-            <div className="mt-6 flex flex-wrap gap-3">
-              {requestError && (
-                <div className="w-full rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-                  {requestError}
-                </div>
-              )}
-              <button type="button" onClick={() => setRequestDialog(null)} className="btn-secondary">
-                Close
-              </button>
-              <button type="button" onClick={saveRequestUpdate} disabled={requestSaving} className="btn-primary">
-                {requestSaving ? 'Saving...' : requestNote.trim() ? 'Send Reply' : 'Save Status'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
     </div>
   )

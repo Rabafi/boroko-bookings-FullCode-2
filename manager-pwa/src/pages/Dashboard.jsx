@@ -360,7 +360,7 @@ export default function Dashboard() {
               <p className="text-sm font-semibold text-white flex items-center gap-2"><MessageSquare size={16} className="text-green-300" /> Message front desk</p>
               <p className="mt-1 text-xs text-gray-500">Send a simple request without changing records from mobile.</p>
             </div>
-            <Link to="/control" className="text-xs text-green-400">Inbox & Sync</Link>
+            <Link to="/control" className="text-xs text-green-400">Inbox</Link>
           </div>
           <textarea
             className="mt-3 w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-3 text-white text-sm h-24 resize-none"
@@ -382,7 +382,7 @@ export default function Dashboard() {
         <div className="grid grid-cols-2 gap-3">
           <QuickLink to="/alerts?filter=all" icon={AlertTriangle} label="Alerts" sub={`${openAlertCount} open`} />
           <QuickLink to="/money?focus=outstanding" icon={TrendingUp} label="Money" sub="Balances and audit" />
-          <QuickLink to="/control" icon={MessageSquare} label="Inbox & Sync" sub="Requests and device sync" />
+          <QuickLink to="/control" icon={MessageSquare} label="Inbox" sub="Front desk chat" />
           {can('reports.view') ? (
             <QuickLink to="/reports" icon={FileText} label="Reports" sub="Full snapshot" />
           ) : (
