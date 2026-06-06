@@ -838,7 +838,6 @@ export default function POS() {
   }, [posTables, selectedOutlet?.id])
 
   useEffect(() => {
-    if (!hardwareSettings?.customer_display_enabled) return
     window.api.pos.updateCustomerDisplay?.({
       outlet_id: selectedOutlet?.id || null,
       table_name: serviceMode === 'table' ? tableName || null : null,
@@ -856,7 +855,7 @@ export default function POS() {
       tip_total: orderTipTotal,
       total: orderTotal
     }).catch(() => {})
-  }, [currentOperator.name, hardwareSettings?.customer_display_enabled, orderDiscountAmount, orderItems, orderSubtotal, orderTaxTotal, orderTipTotal, orderTotal, selectedOutlet?.id, serviceMode, tableName, tableWaiterName])
+  }, [currentOperator.name, orderDiscountAmount, orderItems, orderSubtotal, orderTaxTotal, orderTipTotal, orderTotal, selectedOutlet?.id, serviceMode, tableName, tableWaiterName])
 
   const completeOrder = async () => {
     if (orderItems.length === 0) return
@@ -3515,10 +3514,6 @@ export default function POS() {
                 <input type="checkbox" checked={hardwareSettings?.escpos_enabled === true} onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), escpos_enabled: e.target.checked }))} />
                 ESC/POS direct mode
               </label>
-              <label className="flex items-center gap-2 text-sm font-semibold text-slate-700">
-                <input type="checkbox" checked={hardwareSettings?.customer_display_enabled === true} onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), customer_display_enabled: e.target.checked }))} />
-                Customer-facing display feed
-              </label>
               <input
                 className="input"
                 value={hardwareSettings?.escpos_printer_path || ''}
@@ -3569,14 +3564,7 @@ export default function POS() {
                   <div className="min-w-0 flex-1">
                     <p className="font-semibold text-emerald-950">Customer-facing display</p>
                     <p className="mt-1 text-sm text-emerald-800">Shows the guest their current basket and total as the cashier adds items.</p>
-                    <label className="mt-3 flex items-center gap-2 text-sm font-semibold text-emerald-900">
-                      <input
-                        type="checkbox"
-                        checked={hardwareSettings?.customer_display_enabled === true}
-                        onChange={(e) => saveHardware({ customer_display_enabled: e.target.checked })}
-                      />
-                      Send live basket to customer display
-                    </label>
+                    <p className="mt-3 rounded-xl bg-white/70 px-3 py-2 text-sm font-semibold text-emerald-900">Updates automatically from the active POS cart.</p>
                   </div>
                 </div>
                 <button type="button" className="btn-primary mt-4" onClick={() => openDisplay('customer')}>
