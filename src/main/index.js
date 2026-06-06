@@ -1260,6 +1260,58 @@ function createWindow() {
   return mainWindow
 }
 
+const POS_DISPLAY_ROUTES = {
+  customer: '/pos/customer-display',
+  kitchen: '/pos/kitchen-display',
+  bar: '/pos/bar-display'
+}
+
+const POS_DISPLAY_TITLES = {
+  customer: 'Customer Display',
+  kitchen: 'Kitchen Tickets',
+  bar: 'Bar Tickets'
+}
+
+function openPosDisplayWindow(kind = 'customer') {
+  const displayKind = Object.hasOwn(POS_DISPLAY_ROUTES, kind) ? kind : 'customer'
+  const appIcon = createAppLogoNativeImage() || undefined
+  const displayWindow = new BrowserWindow({
+    width: displayKind === 'customer' ? 1024 : 1280,
+    height: displayKind === 'customer' ? 720 : 800,
+    minWidth: 800,
+    minHeight: 560,
+    autoHideMenuBar: true,
+    title: `Boroko Bookings - ${POS_DISPLAY_TITLES[displayKind]}`,
+    icon: appIcon,
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.mjs'),
+      sandbox: false,
+      contextIsolation: true,
+      nodeIntegration: false,
+      backgroundThrottling: false
+    }
+  })
+
+  displayWindow.webContents.setWindowOpenHandler((details) => {
+    if (isSafeExternalUrl(details.url)) shell.openExternal(details.url)
+    return { action: 'deny' }
+  })
+  displayWindow.webContents.on('will-navigate', (event, url) => {
+    if (isAllowedAppNavigation(url)) return
+    event.preventDefault()
+    if (isSafeExternalUrl(url)) shell.openExternal(url)
+  })
+
+  const route = POS_DISPLAY_ROUTES[displayKind]
+  if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
+    displayWindow.loadURL(`${process.env['ELECTRON_RENDERER_URL']}#${route}`)
+  } else {
+    displayWindow.loadFile(join(__dirname, '../renderer/index.html'), { hash: route })
+  }
+  displayWindow.show()
+  return { success: true, kind: displayKind }
+}
+
 const EXPORT_SECTION_LABELS = {
   bookings: 'Bookings',
   customers: 'Guests',
@@ -4101,6 +4153,14 @@ app.whenReady().then(async () => {
   ipcMain.handle('pos:getCustomerDisplay', async () => {
     try { await requireCapability('pos.view'); return await db.getPosCustomerDisplay() }
     catch { return null }
+  })
+  ipcMain.handle('pos:openDisplay', async (_, kind) => {
+    try {
+      await requireCapability('pos.view')
+      return openPosDisplayWindow(kind || 'customer')
+    } catch (e) {
+      return { success: false, error: e?.message || 'Could not open POS display.' }
+    }
   })
   ipcMain.handle('pos:sendPaymentTerminalTotal', async (_, data) => {
     try { await requireCapability('pos.view'); return await db.sendPaymentTerminalTotal(data || {}) }

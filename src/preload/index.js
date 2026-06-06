@@ -293,6 +293,7 @@ const api = {
     saveFloorLayout: (data) => ipcRenderer.invoke('pos:saveFloorLayout', data),
     updateCustomerDisplay: (data) => ipcRenderer.invoke('pos:updateCustomerDisplay', data),
     getCustomerDisplay: () => ipcRenderer.invoke('pos:getCustomerDisplay'),
+    openDisplay: (kind) => ipcRenderer.invoke('pos:openDisplay', kind),
     sendPaymentTerminalTotal: (data) => ipcRenderer.invoke('pos:sendPaymentTerminalTotal', data),
     getAuditLog: (limit) => ipcRenderer.invoke('pos:getAuditLog', limit),
     getActiveBookingForRoom: (roomId) => ipcRenderer.invoke('pos:getActiveBookingForRoom', roomId)

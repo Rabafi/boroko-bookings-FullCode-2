@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Plus, Pencil, Trash2, ShoppingCart, X, ChevronDown, ChevronUp, Scan, Eye, EyeOff, Keyboard, Printer, BadgePercent, ReceiptText, Calculator, RefreshCw } from 'lucide-react'
+import { Plus, Pencil, Trash2, ShoppingCart, X, ChevronDown, ChevronUp, Scan, Eye, EyeOff, Keyboard, Printer, BadgePercent, ReceiptText, Calculator, RefreshCw, Monitor, Utensils } from 'lucide-react'
 import { Modal } from './shared/Modal'
 import { POSReceipt } from './shared/POSReceipt'
 import HorizontalScrollArea from './shared/HorizontalScrollArea'
@@ -1733,6 +1733,15 @@ export default function POS() {
     setHardwareMsg(res?.message || res?.error || 'Hardware test finished.')
   }
 
+  const openDisplay = async (kind) => {
+    const res = await window.api.pos.openDisplay?.(kind)
+    if (!res?.success) {
+      setHardwareMsg(res?.error || 'Could not open POS display.')
+      return
+    }
+    setHardwareMsg(`${kind === 'customer' ? 'Customer display' : kind === 'bar' ? 'Bar tickets' : 'Kitchen tickets'} opened in a separate window.`)
+  }
+
   const terminalShellClass = touchMode
     ? 'grid min-h-0 flex-1 grid-cols-1 gap-2 overflow-hidden lg:grid-cols-[minmax(0,1fr)_minmax(29rem,0.58fr)] 2xl:grid-cols-[minmax(0,1fr)_minmax(31rem,0.53fr)]'
     : 'grid min-h-0 flex-1 grid-cols-1 gap-2 overflow-hidden lg:grid-cols-[minmax(0,1fr)_minmax(25rem,0.47fr)] 2xl:grid-cols-[minmax(0,1fr)_minmax(28rem,0.44fr)]'
@@ -3373,6 +3382,7 @@ export default function POS() {
           {[
             ['shift', 'Shift'],
             ['tables', 'Tables'],
+            ['displays', 'Displays'],
             ['hardware', 'Hardware'],
             ['modifiers', 'Modifiers'],
             ['promos', 'Promos'],
@@ -3545,6 +3555,65 @@ export default function POS() {
                 <button className="btn-secondary" onClick={() => testHardware('drawer')}>Test Drawer</button>
                 <button className="btn-secondary" onClick={() => testHardware('escpos')}>Test ESC/POS</button>
                 <button className="btn-secondary" onClick={() => testHardware('payment-terminal')}>Test Card Terminal</button>
+              </div>
+            </div>
+          </div>
+
+          <div className={`${setupSection === 'displays' ? '' : 'hidden'} bb-card p-5`}>
+            <h2 className="text-base font-semibold text-slate-900">Customer, Kitchen & Bar Displays</h2>
+            <p className="mt-1 text-sm text-slate-500">Open dedicated full-screen displays, then move each window to the guest monitor, kitchen screen, or bar screen.</p>
+            <div className="mt-4 grid gap-3">
+              <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-4">
+                <div className="flex items-start gap-3">
+                  <Monitor size={22} className="mt-0.5 text-emerald-700" />
+                  <div className="min-w-0 flex-1">
+                    <p className="font-semibold text-emerald-950">Customer-facing display</p>
+                    <p className="mt-1 text-sm text-emerald-800">Shows the guest their current basket and total as the cashier adds items.</p>
+                    <label className="mt-3 flex items-center gap-2 text-sm font-semibold text-emerald-900">
+                      <input
+                        type="checkbox"
+                        checked={hardwareSettings?.customer_display_enabled === true}
+                        onChange={(e) => saveHardware({ customer_display_enabled: e.target.checked })}
+                      />
+                      Send live basket to customer display
+                    </label>
+                  </div>
+                </div>
+                <button type="button" className="btn-primary mt-4" onClick={() => openDisplay('customer')}>
+                  <Monitor size={15} /> Open Customer Display
+                </button>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="rounded-2xl border border-orange-100 bg-orange-50 p-4">
+                  <div className="flex items-start gap-3">
+                    <Utensils size={22} className="mt-0.5 text-orange-700" />
+                    <div>
+                      <p className="font-semibold text-orange-950">Kitchen ticket screen</p>
+                      <p className="mt-1 text-sm text-orange-800">Food tickets with New, Preparing, and Ready lanes.</p>
+                    </div>
+                  </div>
+                  <button type="button" className="btn-secondary mt-4" onClick={() => openDisplay('kitchen')}>
+                    <Monitor size={15} /> Open Kitchen Screen
+                  </button>
+                </div>
+
+                <div className="rounded-2xl border border-blue-100 bg-blue-50 p-4">
+                  <div className="flex items-start gap-3">
+                    <Monitor size={22} className="mt-0.5 text-blue-700" />
+                    <div>
+                      <p className="font-semibold text-blue-950">Bar ticket screen</p>
+                      <p className="mt-1 text-sm text-blue-800">Drink tickets with the same simple prep workflow.</p>
+                    </div>
+                  </div>
+                  <button type="button" className="btn-secondary mt-4" onClick={() => openDisplay('bar')}>
+                    <Monitor size={15} /> Open Bar Screen
+                  </button>
+                </div>
+              </div>
+
+              <div className="rounded-xl bg-slate-50 px-4 py-3 text-sm text-slate-600">
+                Keep the main POS on the cashier terminal. Put the customer display on the guest-facing monitor, and put the kitchen or bar display on a tablet, TV, or second workstation.
               </div>
             </div>
           </div>

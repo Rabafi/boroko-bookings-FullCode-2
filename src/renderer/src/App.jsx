@@ -8,6 +8,7 @@ import { Modal } from './components/shared/Modal'
 import { extractReleaseHighlights, formatReleaseDate, toReleaseSections } from './utils/updatePresentation'
 import { applyThemeMode, getStoredThemeMode } from './utils/themeMode'
 import borokoLogoDark from './assets/boroko-bookings-logo-dark.png'
+import { CustomerDisplay, PrepDisplay } from './components/POSDisplays'
 import {
   AuthContext,
   SettingsContext,
@@ -1385,6 +1386,36 @@ export default function App() {
                 <Route path="supplies"   element={<UpgradeWall feature="supplies">  <Lazy><RoomSupplies /></Lazy></UpgradeWall>} />
                 <Route path="ai"         element={<Lazy><OpsAi /></Lazy>} />
               </Route>
+              <Route
+                path="/pos/customer-display"
+                element={
+                  <ProtectedRoute fallbackPath={preAuthFallbackPath} isTransitioning={isLoggingIn}>
+                    <UpgradeWall feature="pos">
+                      <CustomerDisplay />
+                    </UpgradeWall>
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/pos/kitchen-display"
+                element={
+                  <ProtectedRoute fallbackPath={preAuthFallbackPath} isTransitioning={isLoggingIn}>
+                    <UpgradeWall feature="pos">
+                      <PrepDisplay station="kitchen" />
+                    </UpgradeWall>
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/pos/bar-display"
+                element={
+                  <ProtectedRoute fallbackPath={preAuthFallbackPath} isTransitioning={isLoggingIn}>
+                    <UpgradeWall feature="pos">
+                      <PrepDisplay station="bar" />
+                    </UpgradeWall>
+                  </ProtectedRoute>
+                }
+              />
               <Route path="*" element={<Navigate to={user ? '/' : preAuthFallbackPath} replace />} />
             </Routes>
             </UnsavedChangesContext.Provider>
