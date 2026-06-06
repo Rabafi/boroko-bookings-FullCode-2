@@ -1272,8 +1272,9 @@ const POS_DISPLAY_TITLES = {
   bar: 'Bar Tickets'
 }
 
-function openPosDisplayWindow(kind = 'customer') {
+function openPosDisplayWindow(kind = 'customer', options = {}) {
   const displayKind = Object.hasOwn(POS_DISPLAY_ROUTES, kind) ? kind : 'customer'
+  const openFullScreen = options?.fullScreen === true
   const appIcon = createAppLogoNativeImage() || undefined
   const displayWindow = new BrowserWindow({
     width: displayKind === 'customer' ? 1024 : 1280,
@@ -1281,6 +1282,7 @@ function openPosDisplayWindow(kind = 'customer') {
     minWidth: 800,
     minHeight: 560,
     autoHideMenuBar: true,
+    fullscreen: openFullScreen,
     title: `Boroko Bookings - ${POS_DISPLAY_TITLES[displayKind]}`,
     icon: appIcon,
     webPreferences: {
@@ -1308,8 +1310,9 @@ function openPosDisplayWindow(kind = 'customer') {
   } else {
     displayWindow.loadFile(join(__dirname, '../renderer/index.html'), { hash: route })
   }
+  if (openFullScreen) displayWindow.setFullScreen(true)
   displayWindow.show()
-  return { success: true, kind: displayKind }
+  return { success: true, kind: displayKind, fullScreen: openFullScreen }
 }
 
 const EXPORT_SECTION_LABELS = {
@@ -4154,10 +4157,10 @@ app.whenReady().then(async () => {
     try { await requireCapability('pos.view'); return await db.getPosCustomerDisplay() }
     catch { return null }
   })
-  ipcMain.handle('pos:openDisplay', async (_, kind) => {
+  ipcMain.handle('pos:openDisplay', async (_, kind, options) => {
     try {
       await requireCapability('pos.view')
-      return openPosDisplayWindow(kind || 'customer')
+      return openPosDisplayWindow(kind || 'customer', options || {})
     } catch (e) {
       return { success: false, error: e?.message || 'Could not open POS display.' }
     }

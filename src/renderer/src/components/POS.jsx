@@ -1732,13 +1732,13 @@ export default function POS() {
     setHardwareMsg(res?.message || res?.error || 'Hardware test finished.')
   }
 
-  const openDisplay = async (kind) => {
-    const res = await window.api.pos.openDisplay?.(kind)
+  const openDisplay = async (kind, options = {}) => {
+    const res = await window.api.pos.openDisplay?.(kind, options)
     if (!res?.success) {
       setHardwareMsg(res?.error || 'Could not open POS display.')
       return
     }
-    setHardwareMsg(`${kind === 'customer' ? 'Customer display' : kind === 'bar' ? 'Bar tickets' : 'Kitchen tickets'} opened in a separate window.`)
+    setHardwareMsg(`${kind === 'customer' ? 'Customer display' : kind === 'bar' ? 'Bar tickets' : 'Kitchen tickets'} opened${options.fullScreen ? ' in full screen' : ' in a separate window'}.`)
   }
 
   const terminalShellClass = touchMode
@@ -3567,9 +3567,14 @@ export default function POS() {
                     <p className="mt-3 rounded-xl bg-white/70 px-3 py-2 text-sm font-semibold text-emerald-900">Updates automatically from the active POS cart.</p>
                   </div>
                 </div>
-                <button type="button" className="btn-primary mt-4" onClick={() => openDisplay('customer')}>
-                  <Monitor size={15} /> Open Customer Display
-                </button>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <button type="button" className="btn-primary" onClick={() => openDisplay('customer')}>
+                    <Monitor size={15} /> Open Customer Display
+                  </button>
+                  <button type="button" className="btn-secondary" onClick={() => openDisplay('customer', { fullScreen: true })}>
+                    Full Screen
+                  </button>
+                </div>
               </div>
 
               <div className="grid gap-3 md:grid-cols-2">
@@ -3581,9 +3586,14 @@ export default function POS() {
                       <p className="mt-1 text-sm text-orange-800">Food tickets with New, Preparing, and Ready lanes.</p>
                     </div>
                   </div>
-                  <button type="button" className="btn-secondary mt-4" onClick={() => openDisplay('kitchen')}>
-                    <Monitor size={15} /> Open Kitchen Screen
-                  </button>
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <button type="button" className="btn-secondary" onClick={() => openDisplay('kitchen')}>
+                      <Monitor size={15} /> Open Kitchen Screen
+                    </button>
+                    <button type="button" className="btn-secondary" onClick={() => openDisplay('kitchen', { fullScreen: true })}>
+                      Full Screen
+                    </button>
+                  </div>
                 </div>
 
                 <div className="rounded-2xl border border-blue-100 bg-blue-50 p-4">
@@ -3594,9 +3604,14 @@ export default function POS() {
                       <p className="mt-1 text-sm text-blue-800">Drink tickets with the same simple prep workflow.</p>
                     </div>
                   </div>
-                  <button type="button" className="btn-secondary mt-4" onClick={() => openDisplay('bar')}>
-                    <Monitor size={15} /> Open Bar Screen
-                  </button>
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <button type="button" className="btn-secondary" onClick={() => openDisplay('bar')}>
+                      <Monitor size={15} /> Open Bar Screen
+                    </button>
+                    <button type="button" className="btn-secondary" onClick={() => openDisplay('bar', { fullScreen: true })}>
+                      Full Screen
+                    </button>
+                  </div>
                 </div>
               </div>
 
