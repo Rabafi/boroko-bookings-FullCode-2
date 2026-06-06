@@ -225,7 +225,7 @@ function appendPosAudit(action, details = {}) {
   };
   writePosAuditLog([row, ...readPosAuditLog()]);
   if (state.isOnline && state.supabase) {
-    state.supabase.rpc('append_pos_audit_log', { payload: row }).catch(() => {});
+    Promise.resolve(state.supabase.rpc('append_pos_audit_log', { payload: row })).catch(() => {});
   }
   return row;
 }
