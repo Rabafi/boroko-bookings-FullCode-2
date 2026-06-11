@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Contact Boroko Bookings | free 1-month trial</title>
+    <title>Contact Boroko Bookings | Free 1-Month Trial</title>
     <meta name="description" content="Contact Boroko Bookings to request a free 1-month trial, ask about packages, or start a conversation about running your lodge with Boroko." />
     <meta property="og:title" content="Contact Boroko Bookings" />
     <meta property="og:description" content="Request a free 1-month trial or ask about the best Boroko Bookings package for your lodge." />
@@ -20,15 +20,27 @@
     <link rel="alternate icon" type="image/png" href="./assets/boroko-bookings-logo-light.png" />
     <link rel="stylesheet" href="./styles.css" />
     <!-- Google Analytics 4 — Google Analytics 4 -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "BreadcrumbList",
+      "itemListElement": [
+        { "@type": "ListItem", "position": 1, "name": "Home", "item": "https://borokobookings.com/" },
+        { "@type": "ListItem", "position": 2, "name": "Contact", "item": "https://borokobookings.com/contact" }
+      ]
+    }
+    </script>
     <script async src="https://www.googletagmanager.com/gtag/js?id=G-37DYXS6K47"></script>
     <script>
       window.dataLayer = window.dataLayer || [];
       function gtag(){dataLayer.push(arguments);}
       gtag('js', new Date());
+      gtag('consent', 'default', { analytics_storage: 'denied' });
       gtag('config', 'G-37DYXS6K47');
     </script>
   </head>
   <body data-page="contact">
+    <a href="#main" class="skip-link">Skip to content</a>
     <div class="scroll-progress" id="scroll-progress"></div>
     <div class="site-shell">
       <header class="topbar" id="topbar">
@@ -87,7 +99,13 @@
         </div>
       </div>
 
-      <main>
+      <main id="main">
+        <nav class="container" aria-label="Breadcrumb" style="padding-top:100px;">
+          <ol class="breadcrumbs">
+            <li><a href="./index.html">Home</a></li>
+            <li><span class="breadcrumbs-current">Contact</span></li>
+          </ol>
+        </nav>
         <section class="page-hero">
           <div class="container page-hero-grid">
             <div>
@@ -116,7 +134,7 @@
         <section class="section">
           <div class="container demo-grid">
             <div class="demo-copy">
-              <span class="section-tag">free 1-month trial</span>
+              <span class="section-tag">Free 1-month trial</span>
               <h2>Tell us a little about the lodge and what you want to improve.</h2>
               <p>
                 The stronger the detail, the better the conversation can be. Boroko is best sold around workflow pain: front desk control,
@@ -176,7 +194,7 @@
                 <textarea name="notes" rows="5" placeholder="Tell us the number of rooms, whether you have a bar or kitchen, and what needs fixing first."></textarea>
               </label>
               <div class="demo-actions">
-                <button class="btn btn-primary" type="submit">Start free 1-month trial</button>
+                <button class="btn btn-primary" type="submit">Start free trial</button>
                 <a class="btn btn-secondary" href="https://wa.me/26772789415?text=Hello%20Boroko%20Bookings%2C%20I%20want%20to%20request%20the%20free%201-month%20trial." target="_blank" rel="noreferrer">Chat on WhatsApp</a>
                 <a class="btn btn-secondary" href="mailto:hello@borokobookings.com?subject=Boroko%20Bookings%20enquiry">Email directly</a>
               </div>
@@ -248,7 +266,9 @@
           </div>
           <div class="footer-links">
             <a href="./index.html">Home</a>
-            <a href="./features.html">Features</a>
+            <a href="./features.html">Product</a>
+            <a href="./booking-site.html">Booking Site</a>
+            <a href="./manager-app.html">Manager App</a>
             <a href="./packages.html">Packages</a>
             <a href="./why-switch.html">Why Switch</a>
             <a href="./download.html">Download</a>

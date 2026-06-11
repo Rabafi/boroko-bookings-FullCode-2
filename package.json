@@ -39,6 +39,7 @@
     "dist": "npm run build && electron-builder",
     "dist:publish": "npm run build && electron-builder --publish always",
     "icons:build": "node ./scripts/build-icons.mjs",
+    "marketing:images": "node ./scripts/build-marketing-images.mjs",
     "postinstall": "electron-builder install-app-deps",
     "db:push": "node ./scripts/db-push.mjs"
   },

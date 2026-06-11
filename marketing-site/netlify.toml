@@ -68,3 +68,8 @@
   from = "/admin"
   to = "/admin.html"
   status = 200
+
+[[redirects]]
+  from = "/control-center"
+  to = "/control-center.html"
+  status = 200

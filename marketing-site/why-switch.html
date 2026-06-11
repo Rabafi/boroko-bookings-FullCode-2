@@ -12,6 +12,11 @@
     <meta property="og:description" content="Understand the business reasons to move from manual lodge admin to Boroko Bookings." />
     <meta property="og:type" content="website" />
     <meta property="og:image" content="https://borokobookings.com/assets/og-image.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:site" content="@borokobookings" />
+    <meta name="twitter:title" content="Why Switch to Boroko Bookings" />
+    <meta name="twitter:description" content="See why lodges switch from manual systems to Boroko Bookings for better control, visibility, and growth." />
+    <meta name="twitter:image" content="https://borokobookings.com/assets/og-image.png" />
     <meta name="theme-color" content="#18352b" />
     <link rel="canonical" href="https://borokobookings.com/why-switch" />
     <link rel="icon" type="image/svg+xml" href="./assets/boroko-bookings-logo.svg" />
@@ -22,10 +27,12 @@
       window.dataLayer = window.dataLayer || [];
       function gtag(){dataLayer.push(arguments);}
       gtag('js', new Date());
+      gtag('consent', 'default', { analytics_storage: 'denied' });
       gtag('config', 'G-37DYXS6K47');
     </script>
   </head>
   <body data-page="why-switch">
+    <a href="#main" class="skip-link">Skip to content</a>
     <div class="scroll-progress" id="scroll-progress"></div>
     <div class="site-shell">
       <header class="topbar" id="topbar">
@@ -84,7 +91,13 @@
         </div>
       </div>
 
-      <main>
+      <main id="main">
+        <nav class="container" aria-label="Breadcrumb" style="padding-top:100px;">
+          <ol class="breadcrumbs">
+            <li><a href="./index.html">Home</a></li>
+            <li><span class="breadcrumbs-current">Why Switch</span></li>
+          </ol>
+        </nav>
         <section class="page-hero">
           <div class="container page-hero-grid">
             <div>
@@ -95,9 +108,8 @@
                 the team down, hiding the truth of the business, and making growth harder than it should be. Boroko is built by Batswana for Batswana hospitality businesses, and every customer can start with a free 1-month trial.
               </p>
               <div class="hero-actions">
-                <a class="btn btn-primary" href="./contact.html">Start free 1-month trial</a>
+                <a class="btn btn-primary" href="./contact.html">Start free trial</a>
                 <a class="btn btn-secondary" href="./features.html">See the product</a>
-                <a class="btn btn-secondary" href="https://wa.me/26772789415?text=Hello%20Boroko%20Bookings%2C%20I%20want%20to%20learn%20more%20about%20switching%20to%20Boroko." target="_blank" rel="noreferrer">Chat on WhatsApp</a>
               </div>
             </div>
             <div class="page-hero-card">
@@ -195,9 +207,8 @@
                 <p>That is usually the clearest way to identify the right package and the strongest first Boroko workflow for the lodge.</p>
               </div>
               <div class="cta-actions">
-                <a class="btn btn-primary" href="./contact.html">Start free 1-month trial</a>
+                <a class="btn btn-primary" href="./contact.html">Start free trial</a>
                 <a class="btn btn-secondary" href="./packages.html">See packages</a>
-                <a class="btn btn-secondary" href="https://wa.me/26772789415?text=Hello%20Boroko%20Bookings%2C%20I%20want%20to%20talk%20about%20switching%20my%20lodge%20to%20Boroko." target="_blank" rel="noreferrer">Chat on WhatsApp</a>
               </div>
             </div>
           </div>
@@ -225,7 +236,9 @@
           </div>
           <div class="footer-links">
             <a href="./index.html">Home</a>
-            <a href="./features.html">Features</a>
+            <a href="./features.html">Product</a>
+            <a href="./booking-site.html">Booking Site</a>
+            <a href="./manager-app.html">Manager App</a>
             <a href="./packages.html">Packages</a>
             <a href="./download.html">Download</a>
             <a href="./blog.html">Blog</a>
@@ -248,6 +261,16 @@
         </div>
       </div>
     </div>
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "BreadcrumbList",
+      "itemListElement": [
+        { "@type": "ListItem", "position": 1, "name": "Home", "item": "https://borokobookings.com/" },
+        { "@type": "ListItem", "position": 2, "name": "Why Switch", "item": "https://borokobookings.com/why-switch" }
+      ]
+    }
+    </script>
     <script src="./script.js" defer></script>
   </body>
 </html>

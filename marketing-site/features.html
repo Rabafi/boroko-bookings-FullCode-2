@@ -17,15 +17,37 @@
     <link rel="icon" type="image/svg+xml" href="./assets/boroko-bookings-logo.svg" />
     <link rel="alternate icon" type="image/png" href="./assets/boroko-bookings-logo-light.png" />
     <link rel="stylesheet" href="./styles.css" />
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "Product",
+      "name": "Boroko Bookings Features",
+      "description": "Explore Boroko Bookings features for bookings, rooms, housekeeping, billing, reports, bar or kitchen sales, inventory, room supplies, and online reservations.",
+      "brand": { "@type": "Brand", "name": "Boroko Bookings" },
+      "url": "https://borokobookings.com/features"
+    }
+    </script>
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "BreadcrumbList",
+      "itemListElement": [
+        { "@type": "ListItem", "position": 1, "name": "Home", "item": "https://borokobookings.com/" },
+        { "@type": "ListItem", "position": 2, "name": "Product", "item": "https://borokobookings.com/features" }
+      ]
+    }
+    </script>
     <script async src="https://www.googletagmanager.com/gtag/js?id=G-37DYXS6K47"></script>
     <script>
       window.dataLayer = window.dataLayer || [];
       function gtag(){dataLayer.push(arguments);}
       gtag('js', new Date());
+      gtag('consent', 'default', { analytics_storage: 'denied' });
       gtag('config', 'G-37DYXS6K47');
     </script>
   </head>
   <body data-page="features">
+    <a href="#main" class="skip-link">Skip to content</a>
     <div class="scroll-progress" id="scroll-progress"></div>
     <div class="site-shell">
       <header class="topbar" id="topbar">
@@ -84,20 +106,25 @@
         </div>
       </div>
 
-      <main>
+      <main id="main">
+        <nav class="container" aria-label="Breadcrumb" style="padding-top:100px;">
+          <ol class="breadcrumbs">
+            <li><a href="./index.html">Home</a></li>
+            <li><span class="breadcrumbs-current">Product</span></li>
+          </ol>
+        </nav>
         <section class="page-hero">
           <div class="container page-hero-grid">
             <div>
               <div class="section-tag">Features</div>
-              <h1>Software capabilities arranged around the whole lodge, not just reservations.</h1>
+              <h1 class="gradient-text">Software capabilities arranged around the whole lodge, not just reservations.</h1>
               <p class="hero-lead">
                 Boroko Bookings is strongest when the front desk, operations, owner visibility, and commercial tools all work together. Every customer can start with a free 1-month trial.
                 These are the major product areas that make that possible.
               </p>
               <div class="hero-actions">
-                <a class="btn btn-primary" href="#" data-action="download">Start free 1-month trial</a>
-                <a class="btn btn-secondary" href="./packages.html">See package fit</a>
-                <a class="btn btn-secondary" href="https://wa.me/26772789415?text=Hello%20Boroko%20Bookings%2C%20I%20want%20to%20learn%20more%20about%20the%20product." target="_blank" rel="noreferrer">Chat on WhatsApp</a>
+                <a class="btn btn-primary" href="#" data-action="download">Start free trial</a>
+                <a class="btn btn-secondary" href="./packages.html">See packages</a>
               </div>
             </div>
             <div class="page-hero-card">
@@ -108,174 +135,285 @@
                 <li>Owner and manager visibility through reports, expenses, audit, and staff control</li>
                 <li>Commercial expansion through bar or kitchen sales, inventory, online reservations, and a manager overview app</li>
               </ul>
+              <a class="text-link" href="./control-center.html">See the owner control layer</a>
             </div>
           </div>
         </section>
 
-        <section class="section">
+        <div class="features-nav-bar" id="features-nav">
+          <div class="container">
+            <nav class="features-tabs" aria-label="Feature sections">
+              <a href="#flagship" class="features-tab is-active">Flagship</a>
+              <a href="#bookings" class="features-tab">Bookings</a>
+              <a href="#payments" class="features-tab">Payments</a>
+              <a href="#rooms" class="features-tab">Rooms</a>
+              <a href="#pos" class="features-tab">POS</a>
+              <a href="#inventory" class="features-tab">Inventory</a>
+              <a href="#reports" class="features-tab">Reports</a>
+              <a href="#offline" class="features-tab">Offline</a>
+              <a href="#staff" class="features-tab">Staff</a>
+            </nav>
+          </div>
+        </div>
+
+        <section id="flagship" class="section">
           <div class="container">
             <div class="section-head compact">
-              <span class="section-tag">Core areas</span>
-              <h2>What the product helps the property do every day.</h2>
+              <span class="section-tag">Flagship features</span>
+              <h2>The capabilities that make Boroko different from generic lodge software.</h2>
             </div>
-
-            <div class="stack-grid">
-              <article class="content-card">
-                <h3>Bookings and guests</h3>
-                <ul>
-                  <li>Make, edit, and manage bookings with a clearer front-desk workflow</li>
-                  <li>Create quotations before a stay is confirmed</li>
-                  <li>Convert quotations into bookings as the guest confirms</li>
-                  <li>Keep guest information tied to the stay, room, and invoice</li>
-                </ul>
+            <div class="flagship-grid">
+              <article class="flagship-card gradient-border glass">
+                <div class="flagship-icon">OFF</div>
+                <h3>Offline front desk operations</h3>
+                <p>Take bookings, process payments, and run POS sales without internet. Everything syncs automatically when the connection returns. Your front desk never stops working.</p>
+                <span class="flagship-tag">Available in all packages</span>
               </article>
-
-              <article class="content-card">
-                <h3>Rooms and availability</h3>
-                <ul>
-                  <li>Use the room board for live room decisions and front-desk action</li>
-                  <li>Use planning views to see occupancy flow and pressure points ahead</li>
-                  <li>Track housekeeping status and maintenance attention around room readiness</li>
-                  <li>Keep room-level visibility close to daily operations</li>
-                </ul>
+              <article class="flagship-card gradient-border glass">
+                <div class="flagship-icon">$</div>
+                <h3>Financial control and balances</h3>
+                <p>Bookings, invoices, receipts, refunds, and end-of-day checks sit in the same workflow. Unpaid balances are harder to miss. Cash and outstanding balances stay visible.</p>
+                <span class="flagship-tag">Standard and Pro</span>
               </article>
-
-              <article class="content-card">
-                <h3>Billing and cash control</h3>
-                <ul>
-                  <li>Create invoices from stays and follow balances more clearly</li>
-                  <li>Capture payments, deposits, and billing progress</li>
-                  <li>Connect the operational side of the stay to the financial side</li>
-                  <li>Reduce the drift that happens when billing sits outside the main system</li>
-                </ul>
+              <article class="flagship-card gradient-border glass">
+                <div class="flagship-icon">POS</div>
+                <h3>POS linked to lodge operations</h3>
+                <p>Bar, kitchen, and service sales are processed through POS and linked directly to room invoices. Stock levels update automatically with every sale.</p>
+                <span class="flagship-tag">Pro package</span>
               </article>
-
-              <article class="content-card">
-                <h3>Operational control</h3>
-                <ul>
-                  <li>Track housekeeping work with more clarity than paper-based routines</li>
-                  <li>Capture maintenance issues and, when needed, repair costs</li>
-                  <li>Manage room supplies with live balances, loading, usage, and stock take</li>
-                  <li>See which rooms or stock lines are low before they become a service problem</li>
-                </ul>
+              <article class="flagship-card gradient-border glass">
+                <div class="flagship-icon">STK</div>
+                <h3>Inventory and stocktake</h3>
+                <p>Track stock levels, run stocktakes, set low-stock alerts, and see which rooms or supply lines are running low before they become a service problem.</p>
+                <span class="flagship-tag">Pro package</span>
               </article>
-
-              <article class="content-card">
-                <h3>Business visibility</h3>
-                <ul>
-                  <li>Use reports and expenses to move from daily firefighting to management control</li>
-                  <li>Track room contribution more clearly through supply and maintenance cost signals</li>
-                  <li>Keep staff roles and business control in the same platform</li>
-                  <li>Use an end-of-day check to confirm cash, balances, and anything that still needs management attention</li>
-                </ul>
+              <article class="flagship-card gradient-border glass">
+                <div class="flagship-icon">APP</div>
+                <h3>Manager mobile visibility</h3>
+                <p>Owners and managers see occupancy, revenue, alerts, reports, staff activity, and operational requests from any phone — no computer needed.</p>
+                <span class="flagship-tag">Pro package</span>
               </article>
-
-              <article class="content-card">
-                <h3>Growth and commercial tools</h3>
-                <ul>
-                  <li>Run sales and inventory for properties with a bar or kitchen</li>
-                  <li>Support branded public reservations pages for Pro lodges</li>
-                  <li>Give owners stronger oversight beyond the reception desk alone</li>
-                  <li>Support the move from simple property operations into a broader hospitality business</li>
-                </ul>
+              <article class="flagship-card gradient-border glass">
+                <div class="flagship-icon">WEB</div>
+                <h3>Direct booking site</h3>
+                <p>Your own branded reservations page lets guests search dates, browse rooms, send booking requests, and contact the lodge directly. No commission.</p>
+                <span class="flagship-tag">Pro package</span>
               </article>
             </div>
           </div>
         </section>
 
-        <section class="section section-contrast">
+        <section id="bookings" class="section section-contrast">
           <div class="container">
             <div class="section-head compact">
-              <span class="section-tag">Unique to Boroko</span>
-              <h2>Features that competing lodge systems do not have.</h2>
+              <span class="section-tag">Bookings &amp; Guests</span>
+              <h2>Every reservation flows from enquiry to invoice without leaving the system.</h2>
             </div>
-            <div class="stack-grid">
-              <article class="content-card">
-                <h3>Built-in AI assistant</h3>
-                <ul>
-                  <li>Ask questions in plain language — "show me unpaid bookings", "check in Room 5"</li>
-                  <li>Understands lodge vocabulary: chalet, rondavel, banda, folio, tab</li>
-                  <li>Corrects common misspellings automatically</li>
-                  <li>Flags unusual activity — suspicious voids, revenue leakage, payment anomalies</li>
-                  <li>Full investigation view with audit trail for flagged transactions</li>
-                </ul>
+            <div class="feature-detail-grid">
+              <article class="feature-detail-card">
+                <h3>Smart booking workflow</h3>
+                <p>Create quotations, convert to bookings, manage arrivals and departures — all from one connected flow.</p>
               </article>
+              <article class="feature-detail-card">
+                <h3>Guest records</h3>
+                <p>Keep guest information tied to the stay, room, and invoice. History stays accessible for return visits.</p>
+              </article>
+              <article class="feature-detail-card">
+                <h3>Planning calendar</h3>
+                <p>See occupancy flow and pressure points ahead. Make decisions before problems arrive.</p>
+              </article>
+              <article class="feature-detail-card">
+                <h3>Conference &amp; event bookings</h3>
+                <p>Multiple setup types, catering options, deposit tracking, and date conflict detection for event spaces.</p>
+              </article>
+            </div>
+          </div>
+        </section>
 
-              <article class="content-card">
+        <section id="payments" class="section">
+          <div class="container">
+            <div class="section-head compact">
+              <span class="section-tag">Payments &amp; Billing</span>
+              <h2>Financial control that stays connected to the operational side of the stay.</h2>
+            </div>
+            <div class="feature-detail-grid">
+              <article class="feature-detail-card">
+                <h3>Invoices from stays</h3>
+                <p>Create invoices automatically from bookings. Track balances, deposits, and payment progress in one view.</p>
+              </article>
+              <article class="feature-detail-card">
+                <h3>Payment recording</h3>
+                <p>Capture cash, card, and mobile payments. Each payment links back to the correct booking and invoice.</p>
+              </article>
+              <article class="feature-detail-card">
+                <h3>End-of-day balancing</h3>
+                <p>Reconcile cash, outstanding balances, and anomalies before the day closes. Night audit catches what manual checks miss.</p>
+              </article>
+              <article class="feature-detail-card">
+                <h3>Expense tracking</h3>
+                <p>Record and categorise expenses. See which rooms or departments consume the most resources.</p>
+              </article>
+            </div>
+          </div>
+        </section>
+
+        <section id="rooms" class="section section-contrast">
+          <div class="container">
+            <div class="section-head compact">
+              <span class="section-tag">Rooms &amp; Property</span>
+              <h2>Room status, housekeeping, and maintenance stay visible to the whole team.</h2>
+            </div>
+            <div class="feature-detail-grid">
+              <article class="feature-detail-card">
+                <h3>Room board</h3>
+                <p>Colour-coded room status at a glance — clean, dirty, occupied, out-of-service. Front desk makes faster decisions.</p>
+              </article>
+              <article class="feature-detail-card">
+                <h3>Housekeeping workflows</h3>
+                <p>Track room status, assign cleaning tasks, and monitor completion. More clarity than paper-based routines.</p>
+              </article>
+              <article class="feature-detail-card">
+                <h3>Maintenance tracking</h3>
+                <p>Capture issues as they happen. Track repair costs and resolution status per room.</p>
+              </article>
+              <article class="feature-detail-card">
+                <h3>Room supplies</h3>
+                <p>Manage consumables with live balances, loading, usage tracking, and stock take. Low-stock alerts before service problems.</p>
+              </article>
+            </div>
+          </div>
+        </section>
+
+        <section id="pos" class="section">
+          <div class="container">
+            <div class="section-head compact">
+              <span class="section-tag">Point of Sale</span>
+              <h2>Bar, kitchen, and service sales connected to the lodge operation.</h2>
+            </div>
+            <div class="feature-detail-grid">
+              <article class="feature-detail-card">
+                <h3>Multi-outlet POS</h3>
+                <p>Run separate outlets for bar, kitchen, spa, or shop. Each outlet tracks its own stock and sales.</p>
+              </article>
+              <article class="feature-detail-card">
+                <h3>Room charge linking</h3>
+                <p>Sales can be charged directly to a guest's room invoice. No separate slips to reconcile later.</p>
+              </article>
+              <article class="feature-detail-card">
+                <h3>Quick-sale interface</h3>
+                <p>Fast touchscreen interface for busy service periods. Minimal taps, maximum speed.</p>
+              </article>
+              <article class="feature-detail-card">
+                <h3>Sales history</h3>
+                <p>Full audit trail of every transaction. Void, refund, and discount actions are tracked and visible.</p>
+              </article>
+            </div>
+          </div>
+        </section>
+
+        <section id="inventory" class="section section-contrast">
+          <div class="container">
+            <div class="section-head compact">
+              <span class="section-tag">Inventory</span>
+              <h2>Stock visibility that prevents quiet leakage.</h2>
+            </div>
+            <div class="feature-detail-grid">
+              <article class="feature-detail-card">
+                <h3>Stock tracking</h3>
+                <p>Track stock levels across outlets and storerooms. See what is moving and what is not.</p>
+              </article>
+              <article class="feature-detail-card">
+                <h3>Stocktake</h3>
+                <p>Run regular stocktakes. Compare expected vs actual counts. Identify shrinkage early.</p>
+              </article>
+              <article class="feature-detail-card">
+                <h3>Low-stock alerts</h3>
+                <p>Set minimum levels. Get notified before items run out. Prevent service disruptions.</p>
+              </article>
+              <article class="feature-detail-card">
+                <h3>Supplier management</h3>
+                <p>Record supplier details, track orders, and manage reorder points for critical items.</p>
+              </article>
+            </div>
+          </div>
+        </section>
+
+        <section id="reports" class="section">
+          <div class="container">
+            <div class="section-head compact">
+              <span class="section-tag">Reports &amp; Visibility</span>
+              <h2>From daily firefighting to management control.</h2>
+            </div>
+            <div class="feature-detail-grid">
+              <article class="feature-detail-card">
+                <h3>Occupancy reports</h3>
+                <p>See occupancy trends, room performance, and revenue per available room over time.</p>
+              </article>
+              <article class="feature-detail-card">
+                <h3>Financial summary</h3>
+                <p>Revenue, expenses, cash collected, outstanding balances — all in one daily view.</p>
+              </article>
+              <article class="feature-detail-card">
+                <h3>Staff activity</h3>
+                <p>See who did what, when. Role-based audit trail for accountability.</p>
+              </article>
+              <article class="feature-detail-card">
+                <h3>AI-powered insights</h3>
+                <p>Ask questions in plain language. The AI understands lodge vocabulary and flags unusual activity.</p>
+              </article>
+            </div>
+          </div>
+        </section>
+
+        <section id="offline" class="section section-contrast">
+          <div class="container">
+            <div class="section-head compact">
+              <span class="section-tag">Offline &amp; Sync</span>
+              <h2>Built for lodges where internet is unreliable.</h2>
+            </div>
+            <div class="feature-detail-grid">
+              <article class="feature-detail-card">
+                <h3>Works without internet</h3>
+                <p>Every operation — bookings, payments, POS, inventory — works offline. No waiting for connectivity.</p>
+              </article>
+              <article class="feature-detail-card">
+                <h3>Automatic sync</h3>
+                <p>Changes queue locally and sync via Supabase RPCs when connection returns. Financial operations are prioritised.</p>
+              </article>
+              <article class="feature-detail-card">
                 <h3>Multi-desk LAN sync</h3>
-                <ul>
-                  <li>Multiple front-desk computers discover each other automatically on the local network</li>
-                  <li>Sync bookings, room status, and payments peer-to-peer — no internet required</li>
-                  <li>Conflict detection prevents two receptionists booking the same room for overlapping dates</li>
-                  <li>Advisory room locks broadcast across all desks so screens show who is editing what</li>
-                  <li>Offline sync queues merge intelligently with dependency resolution</li>
-                </ul>
+                <p>Multiple front-desk computers sync over local network. No internet required. Conflict detection prevents double-bookings.</p>
               </article>
-
-              <article class="content-card">
-                <h3>Offline-first architecture</h3>
-                <ul>
-                  <li>Every operation works without internet — bookings, payments, POS, inventory</li>
-                  <li>Changes queue locally and replay via Supabase RPCs when connectivity returns</li>
-                  <li>Financial operations are prioritized in the sync queue</li>
-                  <li>Failed items go to a dead-letter queue with auto-retry</li>
-                  <li>Cache freshness tracking knows which data may be stale</li>
-                </ul>
+              <article class="feature-detail-card">
+                <h3>Cache freshness</h3>
+                <p>The system knows which data may be stale. Staff see freshness indicators so they can make informed decisions.</p>
               </article>
+            </div>
+          </div>
+        </section>
 
-              <article class="content-card">
-                <h3>Manager mobile app (PWA)</h3>
-                <ul>
-                  <li>Install on any phone — no app store needed</li>
-                  <li>Real-time dashboard: occupancy, revenue, booking summary</li>
-                  <li>Alerts: overdue checkouts, low stock, maintenance, outstanding balances</li>
-                  <li>Money sheet: invoices, expenses, night audit, refunds at a glance</li>
-                  <li>Staff view: roles, last sign-in, PWA access status</li>
-                </ul>
+        <section id="staff" class="section">
+          <div class="container">
+            <div class="section-head compact">
+              <span class="section-tag">Staff &amp; Permissions</span>
+              <h2>Control who can do what across the entire system.</h2>
+            </div>
+            <div class="feature-detail-grid">
+              <article class="feature-detail-card">
+                <h3>80+ granular permissions</h3>
+                <p>Control who can manage bookings, void sales, issue refunds, access reports, or change settings.</p>
               </article>
-
-              <article class="content-card">
-                <h3>Conference and event bookings</h3>
-                <ul>
-                  <li>Multiple setup types: Theatre, Boardroom, Classroom, U-Shape, Banquet, Cocktail</li>
-                  <li>Catering toggle with notes</li>
-                  <li>Deposit tracking with payment status</li>
-                  <li>Date conflict detection prevents double-booking</li>
-                  <li>Visible in the manager mobile app</li>
-                </ul>
+              <article class="feature-detail-card">
+                <h3>Predefined roles</h3>
+                <p>Owner, manager, receptionist, housekeeper, accountant — start with roles, customise as needed.</p>
               </article>
-
-              <article class="content-card">
-                <h3>Pool and day-use management</h3>
-                <ul>
-                  <li>Configurable templates: Pool Access, Facility Chill, Braai/Barbecue</li>
-                  <li>Multiple pricing modes: per person, flat fee, hourly, or package</li>
-                  <li>Resource allocation with conflict detection</li>
-                  <li>Extras linked to inventory — firewood, braai setup, food items auto-deplete</li>
-                  <li>Walk-in workflow for day visitors</li>
-                </ul>
+              <article class="feature-detail-card">
+                <h3>Staff lifecycle</h3>
+                <p>Active, suspended, archived status with full audit trail. POS outlet scoping for role-based access.</p>
               </article>
-
-              <article class="content-card">
-                <h3>In-app support and messaging</h3>
-                <ul>
-                  <li>Managers send requests to front desk from the mobile app</li>
-                  <li>Front desk escalates issues to management</li>
-                  <li>Threaded conversations with sender identification</li>
-                  <li>Push notifications on responses</li>
-                  <li>Keeps operational conversations out of scattered WhatsApp chats</li>
-                </ul>
-              </article>
-
-              <article class="content-card">
-                <h3>Role-based access control</h3>
-                <ul>
-                  <li>80+ granular permissions — who can manage bookings, void sales, issue refunds</li>
-                  <li>Predefined roles: owner, manager, receptionist, housekeeper, accountant</li>
-                  <li>Custom overrides per staff member</li>
-                  <li>POS outlet scoping — restrict staff to specific outlets</li>
-                  <li>Staff lifecycle: active, suspended, archived with audit trail</li>
-                </ul>
+              <article class="feature-detail-card">
+                <h3>In-app messaging</h3>
+                <p>Managers and front desk communicate through threaded conversations. No more scattered WhatsApp chats.</p>
               </article>
             </div>
           </div>
@@ -304,6 +442,16 @@
           </div>
         </section>
 
+        <div class="sticky-cta-bar" id="sticky-cta">
+          <div class="container sticky-cta-inner">
+            <span>See how these capabilities work together for your lodge.</span>
+            <div class="sticky-cta-actions">
+              <a class="btn btn-primary" href="#" data-action="download">Start Free Trial</a>
+              <a class="btn btn-secondary" href="./packages.html">See Packages</a>
+            </div>
+          </div>
+        </div>
+
         <section class="section">
           <div class="container">
             <div class="cta-banner">
@@ -313,9 +461,8 @@
                 <p>See how these capabilities are arranged across Starter, Standard, and Pro so the pricing story matches the product clearly.</p>
               </div>
               <div class="cta-actions">
-                <a class="btn btn-primary" href="./packages.html">Open packages</a>
-                <a class="btn btn-secondary" href="./contact.html">Start free 1-month trial</a>
-                <a class="btn btn-secondary" href="https://wa.me/26772789415?text=Hello%20Boroko%20Bookings%2C%20I%20want%20to%20learn%20more%20about%20the%20features." target="_blank" rel="noreferrer">Chat on WhatsApp</a>
+                <a class="btn btn-primary" href="./packages.html">See packages</a>
+                <a class="btn btn-secondary" href="./contact.html">Start free trial</a>
               </div>
             </div>
           </div>
@@ -343,6 +490,8 @@
           </div>
           <div class="footer-links">
             <a href="./index.html">Home</a>
+            <a href="./booking-site.html">Booking Site</a>
+            <a href="./manager-app.html">Manager App</a>
             <a href="./packages.html">Packages</a>
             <a href="./why-switch.html">Why Switch</a>
             <a href="./download.html">Download</a>

@@ -25,6 +25,7 @@
       window.dataLayer = window.dataLayer || [];
       function gtag(){dataLayer.push(arguments);}
       gtag('js', new Date());
+      gtag('consent', 'default', { analytics_storage: 'denied' });
       gtag('config', 'G-37DYXS6K47');
     </script>
     <script type="application/ld+json">
@@ -65,8 +66,19 @@
       ]
     }
     </script>
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "BreadcrumbList",
+      "itemListElement": [
+        { "@type": "ListItem", "position": 1, "name": "Home", "item": "https://borokobookings.com/" },
+        { "@type": "ListItem", "position": 2, "name": "Packages", "item": "https://borokobookings.com/packages" }
+      ]
+    }
+    </script>
   </head>
   <body data-page="packages">
+    <a href="#main" class="skip-link">Skip to content</a>
     <div class="scroll-progress" id="scroll-progress"></div>
     <div class="site-shell">
       <header class="topbar" id="topbar">
@@ -125,12 +137,23 @@
         </div>
       </div>
 
-      <main>
+      <main id="main">
+        <nav class="container" aria-label="Breadcrumb" style="padding-top:100px;">
+          <ol class="breadcrumbs">
+            <li><a href="./index.html">Home</a></li>
+            <li><span class="breadcrumbs-current">Packages</span></li>
+          </ol>
+        </nav>
+        <div class="trial-banner">
+          <div class="container">
+            <p><strong>Start with a free 1-month trial. No credit card required.</strong></p>
+          </div>
+        </div>
         <section class="page-hero">
           <div class="container page-hero-grid">
             <div>
               <div class="section-tag">Packages</div>
-              <h1>A commercial structure designed to feel useful first, then naturally worth upgrading.</h1>
+              <h1 class="gradient-text">A commercial structure designed to feel useful first, then naturally worth upgrading.</h1>
               <p class="hero-lead">
                 Boroko Bookings is not packaged as three random bundles. Each package has a job: Starter gets the lodge operating,
                 Standard becomes the management package, and Pro becomes the growth package.
@@ -150,7 +173,7 @@
         <section class="section pricing-section">
           <div class="container">
             <div class="pricing-grid">
-              <article class="pricing-card">
+              <article class="pricing-card tilt-card">
                 <div class="plan-chip">Daily Ops</div>
                 <h3>Starter</h3>
                 <p class="plan-price"><strong>P8,999</strong><span>/year</span></p>
@@ -163,10 +186,10 @@
                   <li>Built-in AI assistant included</li>
                   <li>Up to 50 bookings/month, 6 rooms, 2 users</li>
                 </ul>
-                <a class="btn btn-secondary" href="./contact.html">Ask about Starter</a>
+                <a class="btn btn-secondary" href="#" data-action="download">Start free trial</a>
               </article>
 
-              <article class="pricing-card pricing-card-featured">
+              <article class="pricing-card pricing-card-featured gradient-border tilt-card">
                 <div class="plan-chip plan-chip-featured">Most Popular</div>
                 <h3>Standard</h3>
                 <p class="plan-price"><strong>P12,999</strong><span>/year</span></p>
@@ -180,7 +203,7 @@
                   <li>Data imports</li>
                   <li>Up to 200 bookings/month, 20 rooms, 5 users</li>
                 </ul>
-                <a class="btn btn-primary" href="./contact.html">Ask about Standard</a>
+                <a class="btn btn-primary" href="#" data-action="download">Start free trial</a>
               </article>
 
               <article class="pricing-card">
@@ -224,6 +247,7 @@
                   <li>You need the package that most serious lodges should land on</li>
                   <li>You want a package that feels complete without yet going into the full commercial suite</li>
                 </ul>
+                <a class="text-link" href="./control-center.html">See the control story behind Standard</a>
               </article>
               <article class="content-card">
                 <h3>Choose Pro if</h3>
@@ -277,7 +301,7 @@
                 <p>Tell us about the number of rooms, whether you have a bar or kitchen, and whether online reservations matter yet. Every customer can start with a free 1-month trial.</p>
               </div>
               <div class="cta-actions">
-                <a class="btn btn-primary" href="./contact.html">Start free 1-month trial</a>
+                <a class="btn btn-primary" href="./contact.html">Start free trial</a>
                 <a class="btn btn-secondary" href="./features.html">See detailed features</a>
                 <a class="btn btn-secondary" href="https://wa.me/26772789415?text=Hello%20Boroko%20Bookings%2C%20I%20want%20help%20choosing%20the%20right%20package." target="_blank" rel="noreferrer">Chat on WhatsApp</a>
               </div>
@@ -307,11 +331,13 @@
           </div>
           <div class="footer-links">
             <a href="./index.html">Home</a>
-            <a href="./features.html">Features</a>
+            <a href="./features.html">Product</a>
+            <a href="./booking-site.html">Booking Site</a>
+            <a href="./manager-app.html">Manager App</a>
             <a href="./why-switch.html">Why Switch</a>
             <a href="./download.html">Download</a>
             <a href="./blog.html">Blog</a>
-            <a href="./contact.html">free 1-month trial</a>
+            <a href="./contact.html">Contact</a>
             <a href="https://wa.me/26772789415" target="_blank" rel="noreferrer">WhatsApp: +267 72 789 415</a>
             <a href="mailto:hello@borokobookings.com">hello@borokobookings.com</a>
             <a href="./privacy.html">Privacy Policy</a>

@@ -1,0 +1,183 @@
+{
+  "booking-site-book.png": {
+    "fileName": "booking-site-book.png",
+    "width": 1280,
+    "height": 900,
+    "orientation": "landscape",
+    "widths": [
+      640,
+      960,
+      1280
+    ]
+  },
+  "booking-site-lodge.png": {
+    "fileName": "booking-site-lodge.png",
+    "width": 1280,
+    "height": 900,
+    "orientation": "landscape",
+    "widths": [
+      640,
+      960,
+      1280
+    ]
+  },
+  "debug-desktop-state.png": {
+    "fileName": "debug-desktop-state.png",
+    "width": 1920,
+    "height": 993,
+    "orientation": "landscape",
+    "widths": [
+      640,
+      960,
+      1280,
+      1600,
+      1920
+    ]
+  },
+  "desktop-bookings.png": {
+    "fileName": "desktop-bookings.png",
+    "width": 1920,
+    "height": 993,
+    "orientation": "landscape",
+    "widths": [
+      640,
+      960,
+      1280,
+      1600,
+      1920
+    ]
+  },
+  "desktop-dashboard.png": {
+    "fileName": "desktop-dashboard.png",
+    "width": 1920,
+    "height": 993,
+    "orientation": "landscape",
+    "widths": [
+      640,
+      960,
+      1280,
+      1600,
+      1920
+    ]
+  },
+  "desktop-guests.png": {
+    "fileName": "desktop-guests.png",
+    "width": 1920,
+    "height": 993,
+    "orientation": "landscape",
+    "widths": [
+      640,
+      960,
+      1280,
+      1600,
+      1920
+    ]
+  },
+  "desktop-invoices.png": {
+    "fileName": "desktop-invoices.png",
+    "width": 1920,
+    "height": 993,
+    "orientation": "landscape",
+    "widths": [
+      640,
+      960,
+      1280,
+      1600,
+      1920
+    ]
+  },
+  "desktop-pos.png": {
+    "fileName": "desktop-pos.png",
+    "width": 1920,
+    "height": 993,
+    "orientation": "landscape",
+    "widths": [
+      640,
+      960,
+      1280,
+      1600,
+      1920
+    ]
+  },
+  "desktop-reports.png": {
+    "fileName": "desktop-reports.png",
+    "width": 1920,
+    "height": 993,
+    "orientation": "landscape",
+    "widths": [
+      640,
+      960,
+      1280,
+      1600,
+      1920
+    ]
+  },
+  "desktop-room-grid.png": {
+    "fileName": "desktop-room-grid.png",
+    "width": 1920,
+    "height": 993,
+    "orientation": "landscape",
+    "widths": [
+      640,
+      960,
+      1280,
+      1600,
+      1920
+    ]
+  },
+  "pwa-alerts.png": {
+    "fileName": "pwa-alerts.png",
+    "width": 390,
+    "height": 844,
+    "orientation": "portrait",
+    "widths": [
+      240,
+      320,
+      390
+    ]
+  },
+  "pwa-bookings.png": {
+    "fileName": "pwa-bookings.png",
+    "width": 390,
+    "height": 844,
+    "orientation": "portrait",
+    "widths": [
+      240,
+      320,
+      390
+    ]
+  },
+  "pwa-dashboard.png": {
+    "fileName": "pwa-dashboard.png",
+    "width": 390,
+    "height": 844,
+    "orientation": "portrait",
+    "widths": [
+      240,
+      320,
+      390
+    ]
+  },
+  "pwa-money.png": {
+    "fileName": "pwa-money.png",
+    "width": 390,
+    "height": 844,
+    "orientation": "portrait",
+    "widths": [
+      240,
+      320,
+      390
+    ]
+  },
+  "pwa-rooms.png": {
+    "fileName": "pwa-rooms.png",
+    "width": 390,
+    "height": 844,
+    "orientation": "portrait",
+    "widths": [
+      240,
+      320,
+      390
+    ]
+  }
+}

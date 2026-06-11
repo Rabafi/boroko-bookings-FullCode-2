@@ -19,15 +19,27 @@
     <link rel="icon" type="image/svg+xml" href="./assets/boroko-bookings-logo.svg" />
     <link rel="alternate icon" type="image/png" href="./assets/boroko-bookings-logo-light.png" />
     <link rel="stylesheet" href="./styles.css" />
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "BreadcrumbList",
+      "itemListElement": [
+        { "@type": "ListItem", "position": 1, "name": "Home", "item": "https://borokobookings.com/" },
+        { "@type": "ListItem", "position": 2, "name": "Booking Site", "item": "https://borokobookings.com/booking-site" }
+      ]
+    }
+    </script>
     <script async src="https://www.googletagmanager.com/gtag/js?id=G-37DYXS6K47"></script>
     <script>
       window.dataLayer = window.dataLayer || [];
       function gtag(){dataLayer.push(arguments);}
       gtag('js', new Date());
+      gtag('consent', 'default', { analytics_storage: 'denied' });
       gtag('config', 'G-37DYXS6K47');
     </script>
   </head>
   <body data-page="booking-site">
+    <a href="#main" class="skip-link">Skip to content</a>
     <div class="scroll-progress" id="scroll-progress"></div>
     <div class="site-shell">
       <header class="topbar" id="topbar">
@@ -83,7 +95,13 @@
         </div>
       </div>
 
-      <main>
+      <main id="main">
+        <nav class="container" aria-label="Breadcrumb" style="padding-top:100px;">
+          <ol class="breadcrumbs">
+            <li><a href="./index.html">Home</a></li>
+            <li><span class="breadcrumbs-current">Booking Site</span></li>
+          </ol>
+        </nav>
         <section class="page-hero">
           <div class="container page-hero-grid">
             <div>
@@ -91,8 +109,8 @@
               <h1>Your own branded booking page. Guests book direct.</h1>
               <p class="hero-lead">Give your lodge a professional online presence. Guests search availability, browse rooms with photo galleries, and send booking requests — all from your own branded page. No commission. No middleman.</p>
               <div class="hero-actions">
-                <a class="btn btn-primary" href="./packages.html">Get started with Pro</a>
-                <a class="btn btn-secondary" href="./contact.html">Ask us a question</a>
+                <a class="btn btn-primary" href="#" data-action="download">Start free trial</a>
+                <a class="btn btn-secondary" href="./packages.html">See packages</a>
               </div>
             </div>
             <div class="hero-surface" style="min-height:320px;">
@@ -103,7 +121,11 @@
                   <span style="width:10px;height:10px;border-radius:50%;background:#28c840;"></span>
                   <span style="flex:1;text-align:center;font-size:0.7rem;color:var(--ink-soft);font-weight:600;letter-spacing:0.04em;">booking.safarilodge.co.bw</span>
                 </div>
-                <img src="./assets/screenshots/booking-site-lodge.png" alt="Boroko online booking site showing lodge rooms, photo galleries, and availability search" width="760" height="480" style="width:100%;display:block;object-fit:cover;" />
+                <picture class="responsive-picture">
+                  <source type="image/avif" srcset="./assets/generated/screenshots/booking-site-lodge-640.avif 640w, ./assets/generated/screenshots/booking-site-lodge-960.avif 960w, ./assets/generated/screenshots/booking-site-lodge-1280.avif 1280w" sizes="(max-width: 900px) 92vw, 760px" />
+                  <source type="image/webp" srcset="./assets/generated/screenshots/booking-site-lodge-640.webp 640w, ./assets/generated/screenshots/booking-site-lodge-960.webp 960w, ./assets/generated/screenshots/booking-site-lodge-1280.webp 1280w" sizes="(max-width: 900px) 92vw, 760px" />
+                  <img src="./assets/screenshots/booking-site-lodge.png" alt="Boroko online booking site showing lodge rooms, photo galleries, and availability search" width="1280" height="900" style="object-fit:cover;" fetchpriority="high" decoding="async" />
+                </picture>
               </div>
             </div>
           </div>
@@ -163,7 +185,11 @@
                     <span style="width:8px;height:8px;border-radius:50%;background:#28c840;"></span>
                     <span style="flex:1;text-align:center;font-size:0.65rem;color:var(--ink-soft);font-weight:600;">booking.safarilodge.co.bw/rooms</span>
                   </div>
-                  <img src="./assets/screenshots/booking-site-book.png" alt="Guest booking form with date selection, room details, and booking request" width="760" height="480" style="width:100%;display:block;object-fit:cover;" />
+                  <picture class="responsive-picture">
+                    <source type="image/avif" srcset="./assets/generated/screenshots/booking-site-book-640.avif 640w, ./assets/generated/screenshots/booking-site-book-960.avif 960w, ./assets/generated/screenshots/booking-site-book-1280.avif 1280w" sizes="(max-width: 900px) 92vw, 560px" />
+                    <source type="image/webp" srcset="./assets/generated/screenshots/booking-site-book-640.webp 640w, ./assets/generated/screenshots/booking-site-book-960.webp 960w, ./assets/generated/screenshots/booking-site-book-1280.webp 1280w" sizes="(max-width: 900px) 92vw, 560px" />
+                    <img src="./assets/screenshots/booking-site-book.png" alt="Guest booking form with date selection, room details, and booking request" width="1280" height="900" style="object-fit:cover;" loading="lazy" decoding="async" />
+                  </picture>
                 </div>
               </div>
             </div>
@@ -308,7 +334,7 @@
             </div>
             <div class="demo-actions">
               <a class="btn btn-primary" href="./packages.html">See packages</a>
-              <a class="btn btn-secondary" href="https://wa.me/26772789415" target="_blank" rel="noreferrer">WhatsApp us</a>
+              <a class="btn btn-secondary" href="https://wa.me/26772789415" target="_blank" rel="noreferrer">Chat on WhatsApp</a>
             </div>
           </div>
         </section>
@@ -335,11 +361,13 @@
           </div>
           <div class="footer-links">
             <a href="./index.html">Home</a>
+            <a href="./booking-site.html">Booking Site</a>
+            <a href="./manager-app.html">Manager App</a>
             <a href="./packages.html">Packages</a>
             <a href="./why-switch.html">Why Switch</a>
             <a href="./download.html">Download</a>
             <a href="./blog.html">Blog</a>
-            <a href="./contact.html">free 1-month trial</a>
+            <a href="./contact.html">Contact</a>
             <a href="https://wa.me/26772789415" target="_blank" rel="noreferrer">WhatsApp: +267 72 789 415</a>
             <a href="mailto:hello@borokobookings.com">hello@borokobookings.com</a>
             <a href="./privacy.html">Privacy Policy</a>

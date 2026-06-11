@@ -13,9 +13,10 @@
     <meta name="twitter:site" content="@borokobookings" />
     <meta name="twitter:title" content="Your free trial is on its way" />
     <meta name="twitter:description" content="Your Boroko Bookings free trial is downloading. Follow the setup guide to get started." />
+    <meta name="twitter:image" content="https://borokobookings.com/assets/og-image.png" />
     <meta name="theme-color" content="#18352b" />
     <meta name="robots" content="noindex" />
-    <link rel="canonical" href="https://borokobookings.com/thank-you.html" />
+    <link rel="canonical" href="https://borokobookings.com/thank-you" />
     <link rel="icon" type="image/svg+xml" href="./assets/boroko-bookings-logo.svg" />
     <link rel="alternate icon" type="image/png" href="./assets/boroko-bookings-logo-light.png" />
     <link rel="stylesheet" href="./styles.css" />
@@ -24,10 +25,12 @@
       window.dataLayer = window.dataLayer || [];
       function gtag(){dataLayer.push(arguments);}
       gtag('js', new Date());
+      gtag('consent', 'default', { analytics_storage: 'denied' });
       gtag('config', 'G-37DYXS6K47');
     </script>
   </head>
   <body data-page="thank-you">
+    <a href="#main" class="skip-link">Skip to content</a>
     <div class="scroll-progress" id="scroll-progress"></div>
     <div class="site-shell">
       <header class="topbar" id="topbar">
@@ -86,7 +89,13 @@
         </div>
       </div>
 
-      <main>
+      <main id="main">
+        <nav class="container" aria-label="Breadcrumb" style="padding-top:100px;">
+          <ol class="breadcrumbs">
+            <li><a href="./index.html">Home</a></li>
+            <li><span class="breadcrumbs-current">Thank You</span></li>
+          </ol>
+        </nav>
         <section class="page-hero thank-you-hero">
           <div class="container" style="text-align:center;max-width:640px;">
             <div class="thank-you-icon" style="margin:0 auto;">
@@ -168,12 +177,14 @@
             </div>
           </div>
           <div class="footer-links">
-            <a href="./features.html">Features</a>
+            <a href="./features.html">Product</a>
+            <a href="./booking-site.html">Booking Site</a>
+            <a href="./manager-app.html">Manager App</a>
             <a href="./packages.html">Packages</a>
             <a href="./why-switch.html">Why Switch</a>
             <a href="./download.html">Download</a>
             <a href="./blog.html">Blog</a>
-            <a href="./contact.html">free 1-month trial</a>
+            <a href="./contact.html">Contact</a>
             <a href="https://wa.me/26772789415" target="_blank" rel="noreferrer">WhatsApp: +267 72 789 415</a>
             <a href="mailto:hello@borokobookings.com">hello@borokobookings.com</a>
             <a href="./privacy.html">Privacy Policy</a>
@@ -182,7 +193,7 @@
         </div>
       </footer>
 
-      <div class="cookie-banner" role="dialog" aria-label="Cookie consent">
+      <div class="cookie-banner" role="dialog" aria-modal="true" aria-label="Cookie consent">
         <div class="container cookie-inner">
           <p>We use minimal cookies for analytics. By continuing, you accept our <a href="./privacy.html">Privacy Policy</a>.</p>
           <div class="cookie-actions">
@@ -193,6 +204,16 @@
       </div>
     </div>
 
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "BreadcrumbList",
+      "itemListElement": [
+        { "@type": "ListItem", "position": 1, "name": "Home", "item": "https://borokobookings.com/" },
+        { "@type": "ListItem", "position": 2, "name": "Thank You", "item": "https://borokobookings.com/thank-you" }
+      ]
+    }
+    </script>
     <script src="./script.js" defer></script>
   </body>
 </html>

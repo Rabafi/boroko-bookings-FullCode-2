@@ -221,7 +221,7 @@
         }
         if (submitBtn) {
           submitBtn.disabled = false
-          submitBtn.textContent = 'Start free 1-month trial'
+          submitBtn.textContent = 'Start free trial'
         }
       })
     })
@@ -677,6 +677,29 @@
     }, { passive: true })
   }
 
+  // ===== HERO PARALLAX ON POINTER MOVE =====
+  var heroSurface = document.getElementById('hero-surface')
+  if (heroSurface && window.matchMedia('(pointer: fine)').matches && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    var laptopMockup = document.getElementById('laptop-mockup')
+    var floatTags = heroSurface.querySelectorAll('.hero-float-tag')
+    heroSurface.addEventListener('mousemove', function (e) {
+      var rect = heroSurface.getBoundingClientRect()
+      var x = (e.clientX - rect.left) / rect.width - 0.5
+      var y = (e.clientY - rect.top) / rect.height - 0.5
+      if (laptopMockup) {
+        laptopMockup.style.transform = 'perspective(800px) rotateY(' + (x * 4) + 'deg) rotateX(' + (-y * 3) + 'deg)'
+      }
+      floatTags.forEach(function (tag, i) {
+        var depth = 0.5 + (i * 0.15)
+        tag.style.transform = 'translate(' + (x * 8 * depth) + 'px, ' + (y * 6 * depth) + 'px)'
+      })
+    })
+    heroSurface.addEventListener('mouseleave', function () {
+      if (laptopMockup) laptopMockup.style.transform = ''
+      floatTags.forEach(function (tag) { tag.style.transform = '' })
+    })
+  }
+
   // ===== SCROLL PROGRESS ENTRANCE =====
   var scrollProgress = document.getElementById('scroll-progress')
   if (scrollProgress) {
@@ -877,4 +900,29 @@
     })
   }, { passive: true })
   document.documentElement.style.setProperty('--noise-opacity', '0.025')
+
+  // ===== FEATURES TABS SCROLL SPY =====
+  var featuresTabs = document.querySelectorAll('.features-tab')
+  if (featuresTabs.length) {
+    var featureSections = []
+    featuresTabs.forEach(function (tab) {
+      var id = tab.getAttribute('href').replace('#', '')
+      var section = document.getElementById(id)
+      if (section) featureSections.push({ el: section, tab: tab })
+    })
+    var featuresNav = document.getElementById('features-nav')
+    if (featuresNav) {
+      window.addEventListener('scroll', function () {
+        var scrollY = window.scrollY + 160
+        var current = featureSections[0]
+        for (var i = 0; i < featureSections.length; i++) {
+          if (featureSections[i].el.offsetTop <= scrollY) {
+            current = featureSections[i]
+          }
+        }
+        featuresTabs.forEach(function (t) { t.classList.remove('is-active') })
+        if (current) current.tab.classList.add('is-active')
+      }, { passive: true })
+    }
+  }
 })()

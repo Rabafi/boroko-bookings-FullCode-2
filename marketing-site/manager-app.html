@@ -19,15 +19,27 @@
     <link rel="icon" type="image/svg+xml" href="./assets/boroko-bookings-logo.svg" />
     <link rel="alternate icon" type="image/png" href="./assets/boroko-bookings-logo-light.png" />
     <link rel="stylesheet" href="./styles.css" />
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "BreadcrumbList",
+      "itemListElement": [
+        { "@type": "ListItem", "position": 1, "name": "Home", "item": "https://borokobookings.com/" },
+        { "@type": "ListItem", "position": 2, "name": "Manager App", "item": "https://borokobookings.com/manager-app" }
+      ]
+    }
+    </script>
     <script async src="https://www.googletagmanager.com/gtag/js?id=G-37DYXS6K47"></script>
     <script>
       window.dataLayer = window.dataLayer || [];
       function gtag(){dataLayer.push(arguments);}
       gtag('js', new Date());
+      gtag('consent', 'default', { analytics_storage: 'denied' });
       gtag('config', 'G-37DYXS6K47');
     </script>
   </head>
   <body data-page="manager-app">
+    <a href="#main" class="skip-link">Skip to content</a>
     <div class="scroll-progress" id="scroll-progress"></div>
     <div class="site-shell">
       <header class="topbar" id="topbar">
@@ -83,7 +95,13 @@
         </div>
       </div>
 
-      <main>
+      <main id="main">
+        <nav class="container" aria-label="Breadcrumb" style="padding-top:100px;">
+          <ol class="breadcrumbs">
+            <li><a href="./index.html">Home</a></li>
+            <li><span class="breadcrumbs-current">Manager App</span></li>
+          </ol>
+        </nav>
         <section class="page-hero">
           <div class="container page-hero-grid">
             <div>
@@ -91,8 +109,8 @@
               <h1>Your lodge in your pocket. See everything, from anywhere.</h1>
               <p class="hero-lead">The Boroko Manager app lets lodge owners and managers monitor operations, check finances, and communicate with front desk staff — all from a phone. No install needed. Works in any browser.</p>
               <div class="hero-actions">
-                <a class="btn btn-primary" href="./packages.html">Get started with Pro</a>
-                <a class="btn btn-secondary" href="./contact.html">Ask us a question</a>
+                <a class="btn btn-primary" href="#" data-action="download">Start free trial</a>
+                <a class="btn btn-secondary" href="./packages.html">See packages</a>
               </div>
             </div>
             <div class="hero-surface" style="min-height:360px;">
@@ -101,7 +119,11 @@
                   <div style="width:52px;height:5px;border-radius:3px;background:var(--line);"></div>
                 </div>
                 <div style="border-radius:22px;overflow:hidden;">
-                  <img src="./assets/screenshots/pwa-dashboard.png" alt="Boroko Manager mobile app dashboard showing arrivals, occupancy, outstanding balance, and alerts" width="400" height="720" style="width:100%;display:block;object-fit:cover;" />
+                  <picture class="responsive-picture">
+                    <source type="image/avif" srcset="./assets/generated/screenshots/pwa-dashboard-240.avif 240w, ./assets/generated/screenshots/pwa-dashboard-320.avif 320w, ./assets/generated/screenshots/pwa-dashboard-390.avif 390w" sizes="280px" />
+                    <source type="image/webp" srcset="./assets/generated/screenshots/pwa-dashboard-240.webp 240w, ./assets/generated/screenshots/pwa-dashboard-320.webp 320w, ./assets/generated/screenshots/pwa-dashboard-390.webp 390w" sizes="280px" />
+                    <img src="./assets/screenshots/pwa-dashboard.png" alt="Boroko Manager mobile app dashboard showing arrivals, occupancy, outstanding balance, and alerts" width="390" height="844" style="object-fit:cover;" fetchpriority="high" decoding="async" />
+                  </picture>
                 </div>
               </div>
             </div>
@@ -176,11 +198,11 @@
             <div style="display:flex;gap:24px;justify-content:center;flex-wrap:wrap;">
               <div style="background:linear-gradient(180deg,rgba(23,76,58,0.06),rgba(23,76,58,0.02));border-radius:28px;padding:12px 10px;border:1px solid var(--line);box-shadow:var(--shadow);width:220px;">
                 <div style="display:flex;align-items:center;justify-content:center;padding:3px 0 8px;"><div style="width:40px;height:4px;border-radius:2px;background:var(--line);"></div></div>
-                <div style="border-radius:20px;overflow:hidden;"><img src="./assets/screenshots/pwa-bookings.png" alt="Boroko Manager app booking list showing filters for arrivals, departures, and in-house guests" width="400" height="720" style="width:100%;display:block;object-fit:cover;" /></div>
+                <div style="border-radius:20px;overflow:hidden;"><picture class="responsive-picture"><source type="image/avif" srcset="./assets/generated/screenshots/pwa-bookings-240.avif 240w, ./assets/generated/screenshots/pwa-bookings-320.avif 320w, ./assets/generated/screenshots/pwa-bookings-390.avif 390w" sizes="220px" /><source type="image/webp" srcset="./assets/generated/screenshots/pwa-bookings-240.webp 240w, ./assets/generated/screenshots/pwa-bookings-320.webp 320w, ./assets/generated/screenshots/pwa-bookings-390.webp 390w" sizes="220px" /><img src="./assets/screenshots/pwa-bookings.png" alt="Boroko Manager app booking list showing filters for arrivals, departures, and in-house guests" width="390" height="844" style="object-fit:cover;" loading="lazy" decoding="async" /></picture></div>
               </div>
               <div style="background:linear-gradient(180deg,rgba(23,76,58,0.06),rgba(23,76,58,0.02));border-radius:28px;padding:12px 10px;border:1px solid var(--line);box-shadow:var(--shadow);width:220px;">
                 <div style="display:flex;align-items:center;justify-content:center;padding:3px 0 8px;"><div style="width:40px;height:4px;border-radius:2px;background:var(--line);"></div></div>
-                <div style="border-radius:20px;overflow:hidden;"><img src="./assets/screenshots/pwa-rooms.png" alt="Boroko Manager app room grid showing colour-coded room status" width="400" height="720" style="width:100%;display:block;object-fit:cover;" /></div>
+                <div style="border-radius:20px;overflow:hidden;"><picture class="responsive-picture"><source type="image/avif" srcset="./assets/generated/screenshots/pwa-rooms-240.avif 240w, ./assets/generated/screenshots/pwa-rooms-320.avif 320w, ./assets/generated/screenshots/pwa-rooms-390.avif 390w" sizes="220px" /><source type="image/webp" srcset="./assets/generated/screenshots/pwa-rooms-240.webp 240w, ./assets/generated/screenshots/pwa-rooms-320.webp 320w, ./assets/generated/screenshots/pwa-rooms-390.webp 390w" sizes="220px" /><img src="./assets/screenshots/pwa-rooms.png" alt="Boroko Manager app room grid showing colour-coded room status" width="390" height="844" style="object-fit:cover;" loading="lazy" decoding="async" /></picture></div>
               </div>
             </div>
           </div>
@@ -215,7 +237,7 @@
             <div style="display:flex;justify-content:center;">
               <div style="background:linear-gradient(180deg,rgba(23,76,58,0.06),rgba(23,76,58,0.02));border-radius:28px;padding:12px 10px;border:1px solid var(--line);box-shadow:var(--shadow);width:240px;">
                 <div style="display:flex;align-items:center;justify-content:center;padding:3px 0 8px;"><div style="width:42px;height:4px;border-radius:2px;background:var(--line);"></div></div>
-                <div style="border-radius:20px;overflow:hidden;"><img src="./assets/screenshots/pwa-money.png" alt="Boroko Manager app money view showing invoices, expenses, and night audit reports" width="400" height="720" style="width:100%;display:block;object-fit:cover;" /></div>
+                <div style="border-radius:20px;overflow:hidden;"><picture class="responsive-picture"><source type="image/avif" srcset="./assets/generated/screenshots/pwa-money-240.avif 240w, ./assets/generated/screenshots/pwa-money-320.avif 320w, ./assets/generated/screenshots/pwa-money-390.avif 390w" sizes="240px" /><source type="image/webp" srcset="./assets/generated/screenshots/pwa-money-240.webp 240w, ./assets/generated/screenshots/pwa-money-320.webp 320w, ./assets/generated/screenshots/pwa-money-390.webp 390w" sizes="240px" /><img src="./assets/screenshots/pwa-money.png" alt="Boroko Manager app money view showing invoices, expenses, and night audit reports" width="390" height="844" style="object-fit:cover;" loading="lazy" decoding="async" /></picture></div>
               </div>
             </div>
           </div>
@@ -250,7 +272,7 @@
             <div style="display:flex;justify-content:center;">
               <div style="background:linear-gradient(180deg,rgba(23,76,58,0.06),rgba(23,76,58,0.02));border-radius:28px;padding:12px 10px;border:1px solid var(--line);box-shadow:var(--shadow);width:240px;">
                 <div style="display:flex;align-items:center;justify-content:center;padding:3px 0 8px;"><div style="width:42px;height:4px;border-radius:2px;background:var(--line);"></div></div>
-                <div style="border-radius:20px;overflow:hidden;"><img src="./assets/screenshots/pwa-alerts.png" alt="Boroko Manager app alerts board showing overdue checkouts, maintenance issues, and low stock warnings" width="400" height="720" style="width:100%;display:block;object-fit:cover;" /></div>
+                <div style="border-radius:20px;overflow:hidden;"><picture class="responsive-picture"><source type="image/avif" srcset="./assets/generated/screenshots/pwa-alerts-240.avif 240w, ./assets/generated/screenshots/pwa-alerts-320.avif 320w, ./assets/generated/screenshots/pwa-alerts-390.avif 390w" sizes="240px" /><source type="image/webp" srcset="./assets/generated/screenshots/pwa-alerts-240.webp 240w, ./assets/generated/screenshots/pwa-alerts-320.webp 320w, ./assets/generated/screenshots/pwa-alerts-390.webp 390w" sizes="240px" /><img src="./assets/screenshots/pwa-alerts.png" alt="Boroko Manager app alerts board showing overdue checkouts, maintenance issues, and low stock warnings" width="390" height="844" style="object-fit:cover;" loading="lazy" decoding="async" /></picture></div>
               </div>
             </div>
           </div>
@@ -362,7 +384,7 @@
             </div>
             <div class="demo-actions">
               <a class="btn btn-primary" href="./packages.html">See packages</a>
-              <a class="btn btn-secondary" href="https://wa.me/26772789415" target="_blank" rel="noreferrer">WhatsApp us</a>
+              <a class="btn btn-secondary" href="https://wa.me/26772789415" target="_blank" rel="noreferrer">Chat on WhatsApp</a>
             </div>
           </div>
         </section>
@@ -389,11 +411,13 @@
           </div>
           <div class="footer-links">
             <a href="./index.html">Home</a>
+            <a href="./booking-site.html">Booking Site</a>
+            <a href="./manager-app.html">Manager App</a>
             <a href="./packages.html">Packages</a>
             <a href="./why-switch.html">Why Switch</a>
             <a href="./download.html">Download</a>
             <a href="./blog.html">Blog</a>
-            <a href="./contact.html">free 1-month trial</a>
+            <a href="./contact.html">Contact</a>
             <a href="https://wa.me/26772789415" target="_blank" rel="noreferrer">WhatsApp: +267 72 789 415</a>
             <a href="mailto:hello@borokobookings.com">hello@borokobookings.com</a>
             <a href="./privacy.html">Privacy Policy</a>

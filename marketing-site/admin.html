@@ -16,49 +16,36 @@
       .crm-header { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 24px; }
       .crm-header h1 { margin: 0; font-size: 1.6rem; }
       .crm-user { display: flex; align-items: center; gap: 12px; color: var(--ink-soft); font-size: 0.9rem; }
-
       .crm-login { max-width: 400px; margin: 80px auto; text-align: center; }
       .crm-login .demo-form { text-align: left; }
-
       .crm-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }
       .crm-stat { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 16px; text-align: center; }
       .crm-stat strong { display: block; font-size: 1.8rem; color: var(--brand); }
       .crm-stat span { font-size: 0.82rem; color: var(--ink-soft); }
-
       .crm-filters { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
       .crm-filters select, .crm-filters input { padding: 10px 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--surface); font-size: 0.9rem; }
-
       .crm-table-wrap { overflow-x: auto; border-radius: 20px; border: 1px solid var(--line); background: var(--surface); box-shadow: var(--shadow); }
       .crm-table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
       .crm-table th { text-align: left; padding: 14px 16px; background: rgba(23,76,58,0.06); font-weight: 800; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--brand); border-bottom: 1px solid var(--line); white-space: nowrap; }
       .crm-table td { padding: 12px 16px; border-bottom: 1px solid rgba(22,50,41,0.06); vertical-align: top; }
       .crm-table tr:last-child td { border-bottom: 0; }
       .crm-table tr:hover td { background: rgba(23,76,58,0.02); }
-
       .status-badge { display: inline-block; padding: 4px 10px; border-radius: 999px; font-size: 0.78rem; font-weight: 700; }
       .status-new { background: #e8f0fe; color: #1a56db; }
       .status-contacted { background: #fef3c7; color: #b45309; }
       .status-qualified { background: #d1fae5; color: #065f46; }
       .status-converted { background: #ccfbf1; color: #134e4a; }
       .status-lost { background: #fce4ec; color: #b71c1c; }
-
       .crm-table select { padding: 6px 10px; border-radius: 8px; border: 1px solid var(--line); font-size: 0.82rem; background: white; cursor: pointer; }
       .crm-table .notes-preview { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-soft); font-size: 0.82rem; }
-
       .crm-empty { text-align: center; padding: 60px 20px; color: var(--ink-soft); }
-
       .crm-export { margin-bottom: 16px; }
-
       .crm-loading { text-align: center; padding: 60px; color: var(--ink-soft); }
-
       #login-error { color: #cc4444; font-size: 0.88rem; margin-top: 8px; display: none; }
       #login-error.is-visible { display: block; }
-
       .crm-error { text-align: center; padding: 40px; color: #cc4444; }
-
       .crm-logout-btn { padding: 8px 16px; border-radius: 999px; border: 1px solid var(--line); background: rgba(255,255,255,0.8); cursor: pointer; font-weight: 700; font-size: 0.82rem; color: var(--ink-soft); }
       .crm-logout-btn:hover { background: rgba(255,255,255,0.96); color: #cc4444; }
-
       @media (max-width: 720px) {
         .crm-stats { grid-template-columns: repeat(2, 1fr); }
         .crm-table th, .crm-table td { padding: 10px 12px; }
@@ -66,7 +53,8 @@
     </style>
   </head>
   <body class="crm-body">
-    <div class="crm-shell" id="app">
+    <a href="#main" class="skip-link">Skip to content</a>
+    <div class="crm-shell" id="main">
       <div id="login-view" style="display:none;">
         <div class="crm-login">
           <img src="./assets/boroko-bookings-logo-light.png" alt="Boroko Bookings" style="width:140px;height:auto;margin-bottom:16px;" />
@@ -238,175 +226,162 @@
 
         filtered.forEach(function (lead) {
           var tr = document.createElement('tr')
-          tr.innerHTML =
-            '<td style="white-space:nowrap;">' + formatDate(lead.created_at) + '</td>' +
-            '<td><strong>' + escapeHtml(lead.lodge_name) + '</strong></td>' +
-            '<td>' + escapeHtml(lead.contact_name) + '</td>' +
-            '<td><a href="mailto:' + encodeURIComponent(lead.email) + '" style="color:var(--brand);">' + escapeHtml(lead.email) + '</a></td>' +
-            '<td>' + (lead.phone ? escapeHtml(lead.phone) : '-') + '</td>' +
-            '<td>' + (lead.interest ? escapeHtml(lead.interest) : '-') + '</td>' +
-            '<td><div class="notes-preview" title="' + escapeHtml(lead.notes || '') + '">' + (lead.notes ? escapeHtml(lead.notes.substring(0, 60) + (lead.notes.length > 60 ? '...' : '')) : '-') + '</div></td>' +
-            '<td><select class="status-select" data-id="' + lead.id + '">' +
-              '<option value="new"' + (lead.status === 'new' ? ' selected' : '') + '>New</option>' +
-              '<option value="contacted"' + (lead.status === 'contacted' ? ' selected' : '') + '>Contacted</option>' +
-              '<option value="qualified"' + (lead.status === 'qualified' ? ' selected' : '') + '>Qualified</option>' +
-              '<option value="converted"' + (lead.status === 'converted' ? ' selected' : '') + '>Converted</option>' +
-              '<option value="lost"' + (lead.status === 'lost' ? ' selected' : '') + '>Lost</option>' +
-            '</select></td>'
+          tr.innerHTML = '' +
+            '<td>' + escapeHtml(formatDate(lead.created_at)) + '</td>' +
+            '<td><strong>' + escapeHtml(lead.lodge_name || '-') + '</strong></td>' +
+            '<td>' + escapeHtml(lead.contact_name || '-') + '</td>' +
+            '<td>' + escapeHtml(lead.email || '-') + '</td>' +
+            '<td>' + escapeHtml(lead.phone || '-') + '</td>' +
+            '<td>' + escapeHtml(lead.interest || '-') + '</td>' +
+            '<td><div class="notes-preview" title="' + escapeHtml(lead.notes || '') + '">' + escapeHtml(lead.notes || '-') + '</div></td>' +
+            '<td>' +
+              '<select data-id="' + escapeHtml(String(lead.id)) + '">' +
+                '<option value="new"' + (lead.status === 'new' ? ' selected' : '') + '>New</option>' +
+                '<option value="contacted"' + (lead.status === 'contacted' ? ' selected' : '') + '>Contacted</option>' +
+                '<option value="qualified"' + (lead.status === 'qualified' ? ' selected' : '') + '>Qualified</option>' +
+                '<option value="converted"' + (lead.status === 'converted' ? ' selected' : '') + '>Converted</option>' +
+                '<option value="lost"' + (lead.status === 'lost' ? ' selected' : '') + '>Lost</option>' +
+              '</select>' +
+            '</td>'
           leadsTbody.appendChild(tr)
         })
 
-        document.querySelectorAll('.status-select').forEach(function (sel) {
-          sel.addEventListener('change', function () {
-            updateLeadStatus(this.getAttribute('data-id'), this.value)
-          })
-        })
-
         updateStats(leads)
-      }
-
-      function filterLeads(leads) {
-        var status = statusFilter.value
-        var search = searchInput.value.toLowerCase().trim()
-        return leads.filter(function (l) {
-          if (status && l.status !== status) return false
-          if (search) {
-            var haystack = (l.lodge_name + ' ' + l.contact_name + ' ' + l.email + ' ' + (l.notes || '')).toLowerCase()
-            if (haystack.indexOf(search) === -1) return false
-          }
-          return true
-        })
+        attachStatusHandlers()
       }
 
       function updateStats(leads) {
         document.getElementById('stat-total').textContent = leads.length
-        document.getElementById('stat-new').textContent = leads.filter(function (l) { return l.status === 'new' }).length
+        document.getElementById('stat-new').textContent = leads.filter(function (l) { return l.status === 'new' || !l.status }).length
         document.getElementById('stat-contacted').textContent = leads.filter(function (l) { return l.status === 'contacted' }).length
         document.getElementById('stat-converted').textContent = leads.filter(function (l) { return l.status === 'converted' }).length
       }
 
-      function loadLeads() {
+      function filterLeads(leads) {
+        var statusValue = statusFilter.value
+        var searchValue = (searchInput.value || '').toLowerCase().trim()
+        return leads.filter(function (lead) {
+          var statusMatch = !statusValue || (lead.status || 'new') === statusValue
+          var haystack = [
+            lead.lodge_name,
+            lead.contact_name,
+            lead.email,
+            lead.phone,
+            lead.notes,
+            lead.interest
+          ].join(' ').toLowerCase()
+          var searchMatch = !searchValue || haystack.indexOf(searchValue) !== -1
+          return statusMatch && searchMatch
+        })
+      }
+
+      async function loadLeads() {
         loadingState.style.display = 'block'
         errorState.style.display = 'none'
         tableWrap.style.display = 'none'
         emptyState.style.display = 'none'
 
-        supabase.from('marketing_leads')
+        var response = await supabase
+          .from('marketing_leads')
           .select('*')
           .order('created_at', { ascending: false })
-          .then(function (res) {
-            loadingState.style.display = 'none'
-            if (res.error) {
-              errorState.textContent = 'Failed to load leads: ' + res.error.message
-              errorState.style.display = 'block'
-              return
-            }
-            renderLeads(res.data || [])
-          })
-      }
 
-      function updateLeadStatus(leadId, newStatus) {
-        supabase.rpc('update_lead_status', { p_lead_id: leadId, p_status: newStatus })
-          .then(function (res) {
-            if (res.error) {
-              loadLeads()
-            } else {
-              allLeads = allLeads.map(function (l) {
-                if (l.id === leadId) l.status = newStatus
-                return l
-              })
-              renderLeads(allLeads)
-            }
-          })
-      }
+        loadingState.style.display = 'none'
 
-      function exportCsv(leads) {
-        var filtered = filterLeads(leads)
-        if (filtered.length === 0) return
-        var rows = [['Date', 'Lodge Name', 'Contact Name', 'Email', 'Phone', 'Interest', 'Notes', 'Status', 'Source']]
-        filtered.forEach(function (l) {
-          rows.push([
-            l.created_at || '',
-            l.lodge_name || '',
-            l.contact_name || '',
-            l.email || '',
-            l.phone || '',
-            l.interest || '',
-            (l.notes || '').replace(/"/g, '""'),
-            l.status || '',
-            l.source || ''
-          ])
-        })
-        var csv = rows.map(function (r) { return r.map(function (c) { return '"' + String(c).replace(/"/g, '""') + '"' }).join(',') }).join('\n')
-        var blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
-        var link = document.createElement('a')
-        link.href = URL.createObjectURL(blob)
-        link.download = 'boroko-leads-' + new Date().toISOString().slice(0, 10) + '.csv'
-        link.click()
-      }
-
-      function checkSession() {
-        initSupabase()
-        supabase.auth.getSession().then(function (res) {
-          if (res.data && res.data.session) {
-            currentUser = res.data.session.user
-            showView('dashboard')
-            userEmail.textContent = currentUser.email
-            loadLeads()
-          } else {
-            showView('login')
-          }
-        })
-      }
-
-      loginForm.addEventListener('submit', function (e) {
-        e.preventDefault()
-        loginError.style.display = 'none'
-        var email = loginEmail.value.trim()
-        var password = loginPassword.value
-        if (!email || !password) return
-        var btn = loginForm.querySelector('button[type="submit"]')
-        btn.disabled = true
-        btn.textContent = 'Signing in...'
-
-        function trySignIn() {
-          supabase.auth.signInWithPassword({ email: email, password: password }).then(function (res) {
-            btn.disabled = false
-            btn.textContent = 'Sign in'
-            if (res.error) {
-              loginError.textContent = res.error.message
-              loginError.style.display = 'block'
-            } else {
-              checkSession()
-            }
-          }).catch(function (err) {
-            btn.disabled = false
-            btn.textContent = 'Sign in'
-            loginError.textContent = err.message || 'Authentication failed'
-            loginError.style.display = 'block'
-          })
+        if (response.error) {
+          errorState.style.display = 'block'
+          errorState.textContent = response.error.message
+          return
         }
 
-        fetch(EDGE_FUNCTION_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_ANON_KEY },
-          body: JSON.stringify({ email: email, password: password })
-        }).then(function (r) { return r.json() }).then(function (data) {
-          if (data.success) {
-            trySignIn()
-          } else {
-            trySignIn()
-          }
-        }).catch(function () {
-          trySignIn()
-        })
-      })
+        renderLeads(response.data || [])
+      }
 
-      logoutBtn.addEventListener('click', function () {
-        supabase.auth.signOut().then(function () {
-          currentUser = null
-          showView('login')
+      function attachStatusHandlers() {
+        leadsTbody.querySelectorAll('select[data-id]').forEach(function (select) {
+          select.addEventListener('change', async function () {
+            var id = select.getAttribute('data-id')
+            var status = select.value
+            select.disabled = true
+            var response = await supabase.from('marketing_leads').update({ status: status }).eq('id', id)
+            select.disabled = false
+            if (response.error) {
+              alert(response.error.message)
+              await loadLeads()
+              return
+            }
+            await loadLeads()
+          })
         })
+      }
+
+      function exportCsv() {
+        var rows = filterLeads(allLeads)
+        var headers = ['date', 'lodge_name', 'contact_name', 'email', 'phone', 'interest', 'notes', 'status']
+        var csv = [headers.join(',')]
+        rows.forEach(function (lead) {
+          csv.push(headers.map(function (header) {
+            var value = lead[header] || ''
+            return '"' + String(value).replace(/"/g, '""') + '"'
+          }).join(','))
+        })
+        var blob = new Blob([csv.join('\n')], { type: 'text/csv;charset=utf-8;' })
+        var url = URL.createObjectURL(blob)
+        var a = document.createElement('a')
+        a.href = url
+        a.download = 'boroko-leads.csv'
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        URL.revokeObjectURL(url)
+      }
+
+      async function signIn(email, password) {
+        loginError.classList.remove('is-visible')
+        loginError.textContent = ''
+
+        try {
+          var res = await fetch(EDGE_FUNCTION_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email: email, password: password })
+          })
+          var payload = await res.json()
+          if (!res.ok || !payload.access_token) throw new Error(payload.error || 'Invalid credentials')
+
+          var signInResponse = await supabase.auth.setSession({
+            access_token: payload.access_token,
+            refresh_token: payload.refresh_token
+          })
+
+          if (signInResponse.error) throw signInResponse.error
+
+          currentUser = signInResponse.data.user
+          userEmail.textContent = currentUser.email || email
+          showView('dashboard')
+          await loadLeads()
+        } catch (err) {
+          loginError.textContent = err.message || 'Unable to sign in'
+          loginError.classList.add('is-visible')
+        }
+      }
+
+      async function checkSession() {
+        var sessionResponse = await supabase.auth.getSession()
+        var session = sessionResponse.data && sessionResponse.data.session
+        if (session && session.user) {
+          currentUser = session.user
+          userEmail.textContent = currentUser.email || ''
+          showView('dashboard')
+          await loadLeads()
+        } else {
+          showView('login')
+        }
+      }
+
+      loginForm.addEventListener('submit', function (event) {
+        event.preventDefault()
+        signIn(loginEmail.value.trim(), loginPassword.value)
       })
 
       statusFilter.addEventListener('change', function () {
@@ -417,19 +392,24 @@
         renderLeads(allLeads)
       })
 
-      exportBtn.addEventListener('click', function () {
-        exportCsv(allLeads)
+      exportBtn.addEventListener('click', exportCsv)
+
+      logoutBtn.addEventListener('click', async function () {
+        await supabase.auth.signOut()
+        currentUser = null
+        showView('login')
       })
 
       if (togglePasswordBtn && loginPasswordInput) {
         togglePasswordBtn.addEventListener('click', function () {
-          var isHidden = loginPasswordInput.type === 'password'
-          loginPasswordInput.type = isHidden ? 'text' : 'password'
-          togglePasswordBtn.textContent = isHidden ? '🙈' : '👁'
-          togglePasswordBtn.title = isHidden ? 'Hide password' : 'Show password'
+          var isPassword = loginPasswordInput.type === 'password'
+          loginPasswordInput.type = isPassword ? 'text' : 'password'
+          togglePasswordBtn.textContent = isPassword ? '🙈' : '👁'
+          togglePasswordBtn.title = isPassword ? 'Hide password' : 'Show password'
         })
       }
 
+      initSupabase()
       checkSession()
     })()
     </script>

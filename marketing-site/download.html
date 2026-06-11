@@ -13,6 +13,7 @@
     <meta name="twitter:site" content="@borokobookings" />
     <meta name="twitter:title" content="Download Boroko Bookings" />
     <meta name="twitter:description" content="Download Boroko Bookings for Windows and start your free 1-month trial." />
+    <meta name="twitter:image" content="https://borokobookings.com/assets/og-image.png" />
     <meta name="theme-color" content="#18352b" />
     <link rel="canonical" href="https://borokobookings.com/download" />
     <link rel="icon" type="image/svg+xml" href="./assets/boroko-bookings-logo.svg" />
@@ -23,10 +24,12 @@
       window.dataLayer = window.dataLayer || [];
       function gtag(){dataLayer.push(arguments);}
       gtag('js', new Date());
+      gtag('consent', 'default', { analytics_storage: 'denied' });
       gtag('config', 'G-37DYXS6K47');
     </script>
   </head>
   <body data-page="download">
+    <a href="#main" class="skip-link">Skip to content</a>
     <div class="scroll-progress" id="scroll-progress"></div>
     <div class="site-shell">
       <header class="topbar" id="topbar">
@@ -85,7 +88,13 @@
         </div>
       </div>
 
-      <main>
+      <main id="main">
+        <nav class="container" aria-label="Breadcrumb" style="padding-top:100px;">
+          <ol class="breadcrumbs">
+            <li><a href="./index.html">Home</a></li>
+            <li><span class="breadcrumbs-current">Download</span></li>
+          </ol>
+        </nav>
         <section class="page-hero">
           <div class="container page-hero-grid">
             <div>
@@ -98,7 +107,7 @@
                 <a class="btn btn-primary" href="#" data-action="download">
                   Download for Windows
                 </a>
-                <a class="btn btn-secondary" href="./contact.html">Start free 1-month trial</a>
+                <a class="btn btn-secondary" href="./contact.html">Start free trial</a>
               </div>
               <p id="download-version" style="margin-top:12px;font-size:0.85rem;color:var(--ink-soft);">Version v1.3.16 — Windows 10+ (64-bit)</p>
             </div>
@@ -154,7 +163,7 @@
             </div>
             <div class="stack-grid">
               <article class="content-card">
-                <h3>free 1-month trial</h3>
+                <h3>Free 1-month trial</h3>
                 <ul>
                   <li>Full access to all features during the trial</li>
                   <li>No credit card required</li>
@@ -253,12 +262,14 @@
             </div>
           </div>
           <div class="footer-links">
-            <a href="./features.html">Features</a>
+            <a href="./features.html">Product</a>
+            <a href="./booking-site.html">Booking Site</a>
+            <a href="./manager-app.html">Manager App</a>
             <a href="./packages.html">Packages</a>
             <a href="./why-switch.html">Why Switch</a>
             <a href="./download.html">Download</a>
             <a href="./blog.html">Blog</a>
-            <a href="./contact.html">free 1-month trial</a>
+            <a href="./contact.html">Contact</a>
             <a href="https://wa.me/26772789415" target="_blank" rel="noreferrer">WhatsApp: +267 72 789 415</a>
             <a href="mailto:hello@borokobookings.com">hello@borokobookings.com</a>
             <a href="./privacy.html">Privacy Policy</a>
@@ -267,7 +278,7 @@
         </div>
       </footer>
 
-      <div class="cookie-banner" role="dialog" aria-label="Cookie consent">
+      <div class="cookie-banner" role="dialog" aria-modal="true" aria-label="Cookie consent">
         <div class="container cookie-inner">
           <p>We use minimal cookies for analytics. By continuing, you accept our <a href="./privacy.html">Privacy Policy</a>.</p>
           <div class="cookie-actions">
@@ -279,6 +290,16 @@
     </div>
 
 
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "BreadcrumbList",
+      "itemListElement": [
+        { "@type": "ListItem", "position": 1, "name": "Home", "item": "https://borokobookings.com/" },
+        { "@type": "ListItem", "position": 2, "name": "Download", "item": "https://borokobookings.com/download" }
+      ]
+    }
+    </script>
     <script src="./script.js" defer></script>
   </body>
 </html>
