@@ -1,8 +1,42 @@
 ;(function () {
   const SUPABASE_URL = 'https://oicgpknsmtvcsjacymum.supabase.co'
   const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9pY2dwa25zbXR2Y3NqYWN5bXVtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM2OTM1MTEsImV4cCI6MjA4OTI2OTUxMX0.WbC5C1QaVeNaTbTG0_xdcsUlK3BoA8onWC607B_uGlY'
-  const APP_VERSION = 'v1.3.15'
-  const DOWNLOAD_URL = 'https://github.com/Rabafi/boroko-bookings-releases/releases/download/' + APP_VERSION + '/Boroko-Bookings-1.3.15-x64.exe'
+  const GITHUB_LATEST_API = 'https://api.github.com/repos/Rabafi/boroko-bookings-releases/releases/latest'
+  const CACHE_KEY = 'bb_release_info'
+  const CACHE_TTL = 3600000
+
+  let RELEASE_VERSION = '1.3.16'
+  let DOWNLOAD_URL = 'https://github.com/Rabafi/boroko-bookings-releases/releases/download/v1.3.16/Boroko-Bookings-1.3.16-x64.exe'
+
+  async function fetchLatestRelease() {
+    var cached
+    try { cached = JSON.parse(localStorage.getItem(CACHE_KEY)) } catch (_) {}
+    if (cached && Date.now() - cached.ts < CACHE_TTL) {
+      DOWNLOAD_URL = cached.url
+      RELEASE_VERSION = cached.version
+    } else {
+      try {
+        var res = await fetch(GITHUB_LATEST_API)
+        if (res.ok) {
+          var data = await res.json()
+          var tag = data.tag_name || ''
+          var version = tag.replace(/^v/, '')
+          var asset = data.assets && data.assets.find(function (a) { return a.name.endsWith('-x64.exe') })
+          if (asset && asset.browser_download_url) {
+            DOWNLOAD_URL = asset.browser_download_url
+            RELEASE_VERSION = version
+            localStorage.setItem(CACHE_KEY, JSON.stringify({ url: DOWNLOAD_URL, version: RELEASE_VERSION, ts: Date.now() }))
+          }
+        }
+      } catch (_) {}
+    }
+    var fb = document.getElementById('fallback-download')
+    if (fb) fb.href = DOWNLOAD_URL
+    var ve = document.getElementById('download-version')
+    if (ve) ve.textContent = 'Version v' + RELEASE_VERSION + ' \u2014 Windows 10+ (64-bit)'
+  }
+
+  var releasePromise = fetchLatestRelease()
   const WHATSAPP_LINK = 'https://wa.me/26772789415'
 
   const nav = document.querySelector('#site-nav')
@@ -98,66 +132,41 @@
     })
   }
 
-  // Laptop 3D tilt, screen glare, and parallax
-  var heroSurface = document.getElementById('hero-surface')
-  var laptopMockup = document.getElementById('laptop-mockup')
-  if (heroSurface && laptopMockup && window.matchMedia('(min-width: 641px)').matches) {
-    var laptopImg = laptopMockup.querySelector('.laptop-screen img')
-    var laptopGlare = laptopMockup.querySelector('.laptop-screen-glare')
-    laptopMockup.classList.add('js-tilt')
-
-    heroSurface.addEventListener('mousemove', function (e) {
-      var rect = heroSurface.getBoundingClientRect()
-      var x = (e.clientX - rect.left) / rect.width
-      var y = (e.clientY - rect.top) / rect.height
-
-      // 3D tilt: map 0-1 to -6deg to 6deg
-      var rotateY = (x - 0.5) * 12
-      var rotateX = -(y - 0.5) * 8
-      laptopMockup.style.transform = 'rotateX(' + rotateX + 'deg) rotateY(' + rotateY + 'deg)'
-
-      // Glare position
-      if (laptopGlare) {
-        laptopGlare.style.setProperty('--glare-x', (x * 100) + '%')
-        laptopGlare.style.setProperty('--glare-y', (y * 100) + '%')
-      }
-
-      // Screen parallax: shift image opposite to mouse
-      if (laptopImg) {
-        var shiftX = (x - 0.5) * -12
-        var shiftY = (y - 0.5) * -8
-        laptopImg.style.transform = 'translate(' + shiftX + 'px, ' + shiftY + 'px) scale(1.02)'
-      }
-    })
-
-    heroSurface.addEventListener('mouseleave', function () {
-      laptopMockup.style.transform = ''
-      if (laptopImg) {
-        laptopImg.style.transform = ''
-      }
-    })
-  }
-
-  const revealTargets = document.querySelectorAll('.feature-card, .step-card, .pricing-card, .why-list article, .comparison-card, .demo-form, .faq-grid details, .section:not(.hero-section), .band-section, .story-card, .resource-card, .audience-card, .showcase-card, .stat-card, .content-card')
+  const cardRevealTargets = document.querySelectorAll('.feature-card, .step-card, .pricing-card, .why-list article, .story-card, .resource-card, .audience-card, .showcase-card, .stat-card, .content-card, .problem-card')
+  const sectionRevealTargets = document.querySelectorAll('.section:not(.hero-section), .band-section, .comparison-card, .demo-form, .faq-grid details')
   if ('IntersectionObserver' in window) {
-    const observer = new IntersectionObserver(function (entries) {
+    const cardObserver = new IntersectionObserver(function (entries) {
       entries.forEach(function (entry) {
         if (entry.isIntersecting) {
           entry.target.classList.add('is-visible')
-          observer.unobserve(entry.target)
+          cardObserver.unobserve(entry.target)
         }
       })
     }, { threshold: 0.12 })
-    revealTargets.forEach(function (el) {
+    cardRevealTargets.forEach(function (el) {
       el.classList.add('reveal')
-      observer.observe(el)
+      cardObserver.observe(el)
+    })
+
+    const sectionObserver = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        if (entry.isIntersecting) {
+          entry.target.classList.add('is-visible')
+          sectionObserver.unobserve(entry.target)
+        }
+      })
+    }, { threshold: 0.12 })
+    sectionRevealTargets.forEach(function (el) {
+      el.classList.add('reveal')
+      sectionObserver.observe(el)
     })
   }
 
   const forms = document.querySelectorAll('.demo-form')
   forms.forEach(function (form) {
-    form.addEventListener('submit', function (event) {
+    form.addEventListener('submit', async function (event) {
       event.preventDefault()
+      await releasePromise
       const data = new FormData(form)
       const lodgeName = (data.get('lodgeName') || '').trim()
       const contactName = (data.get('contactName') || '').trim()
@@ -183,7 +192,7 @@
       }
 
       function showSuccess(formEl, noteEl) {
-        formEl.innerHTML = '<div class="demo-success"><div class="demo-success-icon">&#10003;</div><h3 style="margin:16px 0 8px;">Your free trial is ready</h3><p style="color:var(--ink-soft);">Download the Boroko Bookings desktop app below and start your free 1-month trial. Install it, create your lodge, and start operating right away.</p><a class="btn btn-primary" href="https://github.com/Rabafi/boroko-bookings-releases/download/' + APP_VERSION + '/Boroko-Bookings-' + APP_VERSION + '-x64.exe" target="_blank" rel="noreferrer" style="margin-bottom:10px;">Download for Windows</a><p style="font-size:0.85rem;color:var(--ink-soft);margin-top:8px;">Version ' + APP_VERSION + ' — Windows 10+ (64-bit). Need help? <a href="https://wa.me/26772789415" target="_blank" rel="noreferrer" style="color:var(--brand);font-weight:700;">Chat on WhatsApp</a></p></div>'
+        formEl.innerHTML = '<div class="demo-success"><div class="demo-success-icon">&#10003;</div><h3 style="margin:16px 0 8px;">Your free trial is ready</h3><p style="color:var(--ink-soft);">Download the Boroko Bookings desktop app below and start your free 1-month trial. Install it, create your lodge, and start operating right away.</p><a class="btn btn-primary" href="' + DOWNLOAD_URL + '" target="_blank" rel="noreferrer" style="margin-bottom:10px;">Download for Windows</a><p style="font-size:0.85rem;color:var(--ink-soft);margin-top:8px;">Version v' + RELEASE_VERSION + ' — Windows 10+ (64-bit). Need help? <a href="https://wa.me/26772789415" target="_blank" rel="noreferrer" style="color:var(--brand);font-weight:700;">Chat on WhatsApp</a></p></div>'
         if (noteEl) noteEl.textContent = ''
       }
 
@@ -340,10 +349,12 @@
   if (cookieBanner && cookieAccept) {
     if (!localStorage.getItem('boroko-cookie-consent')) {
       cookieBanner.classList.add('is-visible')
+      document.body.classList.add('has-cookie-banner')
     }
     cookieAccept.addEventListener('click', function () {
       localStorage.setItem('boroko-cookie-consent', 'true')
       cookieBanner.classList.remove('is-visible')
+      document.body.classList.remove('has-cookie-banner')
       if (typeof gtag === 'function') {
         gtag('consent', 'update', { analytics_storage: 'granted' })
       }
@@ -352,6 +363,7 @@
       cookieDecline.addEventListener('click', function () {
         localStorage.setItem('boroko-cookie-consent', 'denied')
         cookieBanner.classList.remove('is-visible')
+        document.body.classList.remove('has-cookie-banner')
       })
     }
   }
@@ -381,8 +393,8 @@
     document.body.appendChild(el)
 
     const tooltip = document.getElementById('wa-tooltip')
-    setTimeout(function () { tooltip.classList.add('is-visible') }, 3000)
-    setTimeout(function () { tooltip.classList.remove('is-visible') }, 8000)
+    setTimeout(function () { tooltip.classList.add('is-visible') }, 9000)
+    setTimeout(function () { tooltip.classList.remove('is-visible') }, 13000)
   }
 
   initWhatsAppWidget()
@@ -441,8 +453,9 @@
     }
 
     function attachFormHandler() {
-      form.addEventListener('submit', function (e) {
+      form.addEventListener('submit', async function (e) {
         e.preventDefault()
+        await releasePromise
         const data = new FormData(form)
         const lodgeName = (data.get('lodgeName') || '').trim()
         const contactName = (data.get('contactName') || '').trim()
@@ -595,23 +608,6 @@
     statCards.forEach(function (el) { statObserver.observe(el) })
   }
 
-  const scrollProgress = document.getElementById('scroll-progress')
-  if (scrollProgress) {
-    let ticking = false
-    window.addEventListener('scroll', function () {
-      if (!ticking) {
-        requestAnimationFrame(function () {
-          const scrollTop = window.scrollY
-          const docHeight = document.documentElement.scrollHeight - window.innerHeight
-          const scrollPercent = docHeight > 0 ? (scrollTop / docHeight) * 100 : 0
-          scrollProgress.style.width = scrollPercent + '%'
-          ticking = false
-        })
-        ticking = true
-      }
-    }, { passive: true })
-  }
-
   const heroBackdrop = document.querySelector('.hero-backdrop')
   const heroBackdrop2 = document.querySelector('.hero-backdrop-2')
   if (heroBackdrop || heroBackdrop2) {
@@ -629,124 +625,82 @@
     }, { passive: true })
   }
 
-  const magneticBtns = document.querySelectorAll('.hero-actions .btn, .cta-actions .btn')
-  magneticBtns.forEach(function (btn) {
-    btn.addEventListener('mousemove', function (e) {
-      const rect = btn.getBoundingClientRect()
-      const x = e.clientX - rect.left - rect.width / 2
-      const y = e.clientY - rect.top - rect.height / 2
-      btn.style.transform = 'translate(' + (x * 0.15) + 'px, ' + (y * 0.15) + 'px)'
-    })
-    btn.addEventListener('mouseleave', function () {
-      btn.style.transform = ''
-    })
-  })
-
-  // ===== 1. HERO TYPING ANIMATION =====
-  const typingEl = document.getElementById('hero-typing')
-  if (typingEl) {
-    const phrases = [
-      'One system for your lodge.',
-      'Bookings, rooms, billing.',
-      'Your own online reservations.'
-    ]
-    let phraseIdx = 0
-    let charIdx = 0
-    let isDeleting = false
-    let typeSpeed = 60
-
-    function typeLoop() {
-      const current = phrases[phraseIdx]
-      if (!isDeleting) {
-        typingEl.textContent = current.substring(0, charIdx + 1)
-        charIdx++
-        if (charIdx === current.length) {
-          isDeleting = true
-          typeSpeed = 2000
-        } else {
-          typeSpeed = 55 + Math.random() * 40
-        }
-      } else {
-        typingEl.textContent = current.substring(0, charIdx - 1)
-        charIdx--
-        if (charIdx === 0) {
-          isDeleting = false
-          phraseIdx = (phraseIdx + 1) % phrases.length
-          typeSpeed = 400
-        } else {
-          typeSpeed = 30
-        }
-      }
-      setTimeout(typeLoop, typeSpeed)
-    }
-    setTimeout(typeLoop, 800)
-  }
-
-  // ===== 2. 3D CARD TILT =====
-  const tiltCards = document.querySelectorAll('.feature-card, .story-card, .audience-card, .resource-card, .content-card')
-  tiltCards.forEach(function (card) {
-    card.addEventListener('mousemove', function (e) {
-      const rect = card.getBoundingClientRect()
-      const x = (e.clientX - rect.left) / rect.width
-      const y = (e.clientY - rect.top) / rect.height
-      const tiltX = (y - 0.5) * -8
-      const tiltY = (x - 0.5) * 8
-      card.style.transform = 'perspective(800px) rotateX(' + tiltX + 'deg) rotateY(' + tiltY + 'deg) translateY(-4px)'
-    })
-    card.addEventListener('mouseleave', function () {
-      card.style.transform = ''
-    })
-  })
-
-  // ===== 3. CURSOR TRAIL =====
-  if (window.innerWidth > 860) {
-    const trailContainer = document.createElement('div')
-    trailContainer.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:9998;'
-    document.body.appendChild(trailContainer)
-    const trailDots = []
-    const trailCount = 8
-    for (var t = 0; t < trailCount; t++) {
-      var dot = document.createElement('div')
-      dot.className = 'cursor-trail-dot'
-      dot.style.cssText = 'background:' + (t % 2 === 0 ? 'rgba(23,76,58,0.3)' : 'rgba(203,126,48,0.25)') + ';width:' + (8 - t * 0.8) + 'px;height:' + (8 - t * 0.8) + 'px;'
-      trailContainer.appendChild(dot)
-      trailDots.push({ el: dot, x: 0, y: 0 })
-    }
-    var mouseX = 0, mouseY = 0
-    document.addEventListener('mousemove', function (e) {
-      mouseX = e.clientX
-      mouseY = e.clientY
-      trailDots.forEach(function (d) { d.el.classList.add('active') })
-    })
-    function animateTrail() {
-      var prevX = mouseX, prevY = mouseY
-      trailDots.forEach(function (d, i) {
-        var speed = 0.35 - (i * 0.03)
-        d.x += (prevX - d.x) * speed
-        d.y += (prevY - d.y) * speed
-        d.el.style.transform = 'translate(' + (d.x - 4) + 'px,' + (d.y - 4) + 'px)'
-        prevX = d.x
-        prevY = d.y
+  // ===== MAGNETIC BUTTONS =====
+  if (window.matchMedia('(pointer: fine)').matches) {
+    var magneticEls = document.querySelectorAll('.hero-actions .btn, .cta-actions .btn, .nav-cta-pill')
+    magneticEls.forEach(function (btn) {
+      btn.classList.add('is-magnetic')
+      btn.addEventListener('mousemove', function (e) {
+        var rect = btn.getBoundingClientRect()
+        var x = e.clientX - rect.left - rect.width / 2
+        var y = e.clientY - rect.top - rect.height / 2
+        btn.style.transform = 'translate(' + (x * 0.2) + 'px, ' + (y * 0.2) + 'px)'
       })
-      requestAnimationFrame(animateTrail)
-    }
-    animateTrail()
+      btn.addEventListener('mouseleave', function () {
+        btn.style.transform = ''
+      })
+    })
   }
 
-  // ===== 11. FLOATING PARTICLES =====
+  // ===== FLOATING PARTICLES =====
   var particleContainer = document.getElementById('hero-particles')
-  if (particleContainer) {
-    for (var p = 0; p < 20; p++) {
+  if (particleContainer && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    for (var p = 0; p < 18; p++) {
       var particle = document.createElement('div')
+      particle.className = 'hero-particle'
       var size = 3 + Math.random() * 4
       var isGold = Math.random() > 0.5
-      particle.style.cssText = 'position:absolute;width:' + size + 'px;height:' + size + 'px;border-radius:50%;background:' + (isGold ? 'rgba(203,126,48,0.2)' : 'rgba(23,76,58,0.15)') + ';left:' + (Math.random() * 100) + '%;bottom:-10px;animation:particleFloat ' + (6 + Math.random() * 8) + 's linear ' + (Math.random() * 5) + 's infinite;'
+      particle.style.width = size + 'px'
+      particle.style.height = size + 'px'
+      particle.style.background = isGold ? 'rgba(203,126,48,0.2)' : 'rgba(23,76,58,0.15)'
+      particle.style.left = (Math.random() * 100) + '%'
+      particle.style.bottom = '-10px'
+      particle.style.animationDuration = (6 + Math.random() * 8) + 's'
+      particle.style.animationDelay = (Math.random() * 5) + 's'
       particleContainer.appendChild(particle)
     }
-    var particleStyle = document.createElement('style')
-    particleStyle.textContent = '@keyframes particleFloat { 0% { transform: translateY(0) translateX(0); opacity: 0; } 10% { opacity: 1; } 90% { opacity: 1; } 100% { transform: translateY(-100vh) translateX(' + (Math.random() > 0.5 ? '' : '-') + '40px); opacity: 0; } }'
-    document.head.appendChild(particleStyle)
   }
+
+  // ===== HERO COPY PARALLAX =====
+  var heroCopy = document.querySelector('.hero-copy')
+  if (heroCopy && window.matchMedia('(min-width: 641px)').matches) {
+    var heroRafId = null
+    window.addEventListener('scroll', function () {
+      if (heroRafId) return
+      heroRafId = requestAnimationFrame(function () {
+        var scrollY = window.scrollY
+        if (scrollY < 600) {
+          heroCopy.style.transform = 'translateY(' + (scrollY * 0.08) + 'px)'
+        }
+        heroRafId = null
+      })
+    }, { passive: true })
+  }
+
+  // ===== SCROLL PROGRESS ENTRANCE =====
+  var scrollProgress = document.getElementById('scroll-progress')
+  if (scrollProgress) {
+    requestAnimationFrame(function () {
+      requestAnimationFrame(function () {
+        scrollProgress.classList.add('is-ready')
+      })
+    })
+    var progressTicking = false
+    window.addEventListener('scroll', function () {
+      if (!progressTicking) {
+        requestAnimationFrame(function () {
+          var scrollTop = window.scrollY
+          var docHeight = document.documentElement.scrollHeight - window.innerHeight
+          var scrollPercent = docHeight > 0 ? (scrollTop / docHeight) * 100 : 0
+          scrollProgress.style.width = scrollPercent + '%'
+          progressTicking = false
+        })
+        progressTicking = true
+      }
+    }, { passive: true })
+  }
+
+  // Keep the marketing site focused on trust and product clarity. Decorative effects that compete with buying intent stay out of the first impression.
 
   // ===== 13. RIPPLE CLICK EFFECT =====
   document.querySelectorAll('.btn').forEach(function (btn) {
@@ -829,107 +783,6 @@
     sections.forEach(function (s) { colorObserver.observe(s) })
   }
 
-  // ===== 7. CUSTOM CURSOR =====
-  if (window.matchMedia('(pointer: fine)').matches && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-    var cursor = document.createElement('div')
-    cursor.className = 'custom-cursor'
-    var cursorRing = document.createElement('div')
-    cursorRing.className = 'custom-cursor-ring'
-    document.body.appendChild(cursor)
-    document.body.appendChild(cursorRing)
-
-    var cursorX = 0, cursorY = 0
-    var ringX = 0, ringY = 0
-
-    document.addEventListener('mousemove', function (e) {
-      cursorX = e.clientX
-      cursorY = e.clientY
-      cursor.style.left = cursorX + 'px'
-      cursor.style.top = cursorY + 'px'
-    })
-
-    // Smooth ring follow
-    function animateRing() {
-      ringX += (cursorX - ringX) * 0.12
-      ringY += (cursorY - ringY) * 0.12
-      cursorRing.style.left = ringX + 'px'
-      cursorRing.style.top = ringY + 'px'
-      requestAnimationFrame(animateRing)
-    }
-    animateRing()
-
-    // Cursor states on hover
-    var ctaEls = document.querySelectorAll('.btn, .nav-cta-pill, .mobile-cta')
-    var linkEls = document.querySelectorAll('a, button:not(.menu-toggle):not(.lang-toggle)')
-    var hoverEls = document.querySelectorAll('.feature-card, .pricing-card, .story-card, .showcase-card, .faq-grid details, .content-card, .resource-card, .audience-card')
-
-    ctaEls.forEach(function (el) {
-      el.addEventListener('mouseenter', function () { cursor.classList.add('is-cta'); cursorRing.classList.add('is-cta') })
-      el.addEventListener('mouseleave', function () { cursor.classList.remove('is-cta'); cursorRing.classList.remove('is-cta') })
-    })
-    hoverEls.forEach(function (el) {
-      el.addEventListener('mouseenter', function () { cursor.classList.add('is-hover'); cursorRing.classList.add('is-hover') })
-      el.addEventListener('mouseleave', function () { cursor.classList.remove('is-hover'); cursorRing.classList.remove('is-hover') })
-    })
-    linkEls.forEach(function (el) {
-      if (!el.classList.contains('btn') && !el.classList.contains('nav-cta-pill')) {
-        el.addEventListener('mouseenter', function () { cursor.classList.add('is-link'); cursorRing.classList.add('is-link') })
-        el.addEventListener('mouseleave', function () { cursor.classList.remove('is-link'); cursorRing.classList.remove('is-link') })
-      }
-    })
-  }
-
-  // ===== 8. MAGNETIC BUTTONS =====
-  if (window.matchMedia('(pointer: fine)').matches) {
-    var magneticEls = document.querySelectorAll('.btn, .nav-cta-pill')
-    magneticEls.forEach(function (btn) {
-      btn.addEventListener('mousemove', function (e) {
-        var rect = btn.getBoundingClientRect()
-        var x = e.clientX - rect.left - rect.width / 2
-        var y = e.clientY - rect.top - rect.height / 2
-        btn.style.transform = 'translate(' + (x * 0.2) + 'px, ' + (y * 0.2) + 'px)'
-      })
-      btn.addEventListener('mouseleave', function () {
-        btn.style.transform = ''
-      })
-    })
-  }
-
-  // ===== 9. TEXT SCRAMBLE =====
-  var scrambleChars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%&*'
-  function scrambleText(el) {
-    var original = el.dataset.scramble || el.textContent
-    el.dataset.scramble = original
-    var iteration = 0
-    var maxIterations = original.length * 2
-    var interval = setInterval(function () {
-      el.textContent = original.split('').map(function (char, i) {
-        if (i < iteration / 2) return original[i]
-        if (char === ' ') return ' '
-        return scrambleChars[Math.floor(Math.random() * scrambleChars.length)]
-      }).join('')
-      iteration++
-      if (iteration > maxIterations) {
-        el.textContent = original
-        clearInterval(interval)
-      }
-    }, 30)
-  }
-
-  // Trigger scramble on feature card titles on scroll
-  var scrambleTargets = document.querySelectorAll('.feature-card h3, .step-card h3, .why-list h3')
-  if (scrambleTargets.length && 'IntersectionObserver' in window) {
-    var scrambleObserver = new IntersectionObserver(function (entries) {
-      entries.forEach(function (entry) {
-        if (entry.isIntersecting) {
-          scrambleText(entry.target)
-          scrambleObserver.unobserve(entry.target)
-        }
-      })
-    }, { threshold: 0.5 })
-    scrambleTargets.forEach(function (el) { scrambleObserver.observe(el) })
-  }
-
   // ===== 10. STAGGERED PAGE LOAD =====
   var staggerContainers = document.querySelectorAll('.topbar-pill, .hero-actions, .hero-highlights, .social-proof-inner')
   if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
@@ -940,4 +793,88 @@
       })
     })
   }
+
+  // ===== 11. CURSOR GLOW (dark sections) =====
+  var cursorGlow = document.createElement('div')
+  cursorGlow.className = 'cursor-glow'
+  cursorGlow.setAttribute('aria-hidden', 'true')
+  document.body.appendChild(cursorGlow)
+
+  var darkSections = document.querySelectorAll('.pricing-section, .site-footer')
+  darkSections.forEach(function (section) {
+    section.addEventListener('mouseenter', function () { cursorGlow.classList.add('is-active') })
+    section.addEventListener('mouseleave', function () { cursorGlow.classList.remove('is-active') })
+  })
+  document.addEventListener('mousemove', function (e) {
+    cursorGlow.style.left = e.clientX + 'px'
+    cursorGlow.style.top = e.clientY + 'px'
+  }, { passive: true })
+
+  // ===== 12. COMPARISON TABLE ROW ANIMATION =====
+  var compRows = document.querySelectorAll('.comparison-row:not(.comparison-head)')
+  if (compRows.length) {
+    var compObserver = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        if (entry.isIntersecting) {
+          entry.target.classList.add('is-visible')
+          compObserver.unobserve(entry.target)
+        }
+      })
+    }, { threshold: 0.15 })
+    compRows.forEach(function (row) { compObserver.observe(row) })
+  }
+
+  // ===== 13. IMAGE CLIP-PATH REVEAL =====
+  var imgFrames = document.querySelectorAll('.showcase-image-frame')
+  if (imgFrames.length) {
+    var imgObserver = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        if (entry.isIntersecting) {
+          var img = entry.target.querySelector('img')
+          if (img) img.classList.add('is-revealed')
+          imgObserver.unobserve(entry.target)
+        }
+      })
+    }, { threshold: 0.3 })
+    imgFrames.forEach(function (frame) { imgObserver.observe(frame) })
+  }
+
+  // ===== 14. GRADIENT MESH SPEED CONTROL ON SCROLL =====
+  var meshBlobs = document.querySelectorAll('.mesh-blob, .blob')
+  var heroEl = document.getElementById('hero')
+  if (meshBlobs.length && heroEl) {
+    var baseDurations = []
+    meshBlobs.forEach(function (blob) {
+      var cs = getComputedStyle(blob)
+      baseDurations.push(parseFloat(cs.animationDuration) || 20)
+    })
+    var meshTicking = false
+    window.addEventListener('scroll', function () {
+      if (meshTicking) return
+      meshTicking = true
+      requestAnimationFrame(function () {
+        var rect = heroEl.getBoundingClientRect()
+        var progress = Math.max(0, Math.min(1, -rect.top / rect.height))
+        var speedMult = 1 + progress * 3
+        meshBlobs.forEach(function (blob, i) {
+          blob.style.animationDuration = (baseDurations[i] / speedMult) + 's'
+        })
+        meshTicking = false
+      })
+    }, { passive: true })
+  }
+
+  // ===== 15. NOISE TEXTURE SCROLL-LINKED =====
+  var noiseTicking = false
+  window.addEventListener('scroll', function () {
+    if (noiseTicking) return
+    noiseTicking = true
+    requestAnimationFrame(function () {
+      var scrollPct = window.scrollY / (document.body.scrollHeight - window.innerHeight)
+      var opacity = 0.025 + scrollPct * 0.06
+      document.documentElement.style.setProperty('--noise-opacity', opacity.toFixed(4))
+      noiseTicking = false
+    })
+  }, { passive: true })
+  document.documentElement.style.setProperty('--noise-opacity', '0.025')
 })()
