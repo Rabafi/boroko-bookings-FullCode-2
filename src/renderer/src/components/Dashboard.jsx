@@ -844,156 +844,158 @@ export default function Dashboard() {
         </section>
       )}
 
-      <section className="bb-card overflow-hidden p-0">
-        <div className="border-b border-slate-200 px-5 py-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-emerald-100 text-emerald-700">
-                <MessageCircle size={18} />
-              </div>
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Inbox</p>
-                <h2 className="mt-1 text-lg font-semibold text-slate-900">Manager mobile chats</h2>
-              </div>
-            </div>
-            {pendingFrontDeskRequests.length > 0 ? (
-              <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-700">
-                {pendingFrontDeskRequests.length} open
-              </span>
-            ) : null}
-          </div>
-        </div>
-
-        <div className="grid min-h-[440px] lg:grid-cols-[320px_1fr]">
-          <div className="border-b border-slate-200 bg-slate-50/70 lg:border-b-0 lg:border-r">
-            {managerInboxRequests.length === 0 ? (
-              <div className="px-5 py-12 text-center">
-                <MessageCircle size={30} className="mx-auto text-slate-300" />
-                <p className="mt-3 text-sm font-semibold text-slate-900">No manager chats yet</p>
-                <p className="mt-1 text-sm text-slate-500">Messages from the manager mobile app will appear here.</p>
-              </div>
-            ) : (
-              <div className="max-h-[440px] overflow-y-auto">
-                {managerInboxRequests.map((request) => {
-                  const latest = getLatestSupportMessage(request)
-                  const active = activeInboxRequest?.id === request.id
-                  return (
-                    <button
-                      key={request.id}
-                      type="button"
-                      onClick={() => {
-                        setActiveInboxRequestId(request.id)
-                        setInboxDraft('')
-                        setInboxError('')
-                      }}
-                      className={`flex w-full items-center gap-3 px-4 py-3 text-left transition-colors ${
-                        active ? 'bg-white shadow-sm' : 'hover:bg-white/70'
-                      }`}
-                    >
-                      <div className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-bold ${
-                        active ? 'bg-emerald-600 text-white' : 'bg-slate-200 text-slate-700'
-                      }`}>
-                        {(request.requester_name || 'Manager').split(/\s+/).slice(0, 2).map((part) => part[0]).join('').toUpperCase() || 'MG'}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-start justify-between gap-2">
-                          <p className="truncate text-sm font-semibold text-slate-900">{request.title || 'Manager message'}</p>
-                          <span className="shrink-0 text-[11px] text-slate-400">{timeAgo(request.updated_at || request.created_at)}</span>
-                        </div>
-                        <p className="mt-0.5 truncate text-xs text-slate-500">
-                          {supportSenderName(latest || request)}: {latest?.body || request.description || 'No messages yet'}
-                        </p>
-                      </div>
-                    </button>
-                  )
-                })}
-              </div>
-            )}
-          </div>
-
-          <div className="flex min-h-[440px] flex-col">
-            {activeInboxRequest ? (
-              <>
-                <div className="border-b border-slate-200 px-5 py-4">
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="min-w-0">
-                      <p className="truncate text-base font-semibold text-slate-900">{activeInboxRequest.title}</p>
-                      <p className="mt-1 text-sm text-slate-500">
-                        {activeInboxRequest.requester_name ? `${activeInboxRequest.requester_name} - ` : ''}{activeInboxRequest.created_at ? new Date(activeInboxRequest.created_at).toLocaleString('en-GB') : 'Recently'}
-                      </p>
-                    </div>
-                    <span className={`shrink-0 rounded-full px-2.5 py-1 text-[11px] font-semibold ${requestStatusTone(activeInboxRequest.status)}`}>
-                      {requestStatusLabel(activeInboxRequest.status)}
-                    </span>
-                  </div>
+      {features.pwa === true && (
+        <section className="bb-card overflow-hidden p-0">
+          <div className="border-b border-slate-200 px-5 py-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-emerald-100 text-emerald-700">
+                  <MessageCircle size={18} />
                 </div>
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Inbox</p>
+                  <h2 className="mt-1 text-lg font-semibold text-slate-900">Manager mobile chats</h2>
+                </div>
+              </div>
+              {pendingFrontDeskRequests.length > 0 ? (
+                <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-700">
+                  {pendingFrontDeskRequests.length} open
+                </span>
+              ) : null}
+            </div>
+          </div>
 
-                <div className="flex-1 space-y-3 overflow-y-auto bg-slate-50 px-5 py-4">
-                  {normalizeSupportMessages(activeInboxRequest).map((message) => {
-                    const isDesk = supportMessageSide(message) === 'desk'
+          <div className="grid min-h-[440px] lg:grid-cols-[320px_1fr]">
+            <div className="border-b border-slate-200 bg-slate-50/70 lg:border-b-0 lg:border-r">
+              {managerInboxRequests.length === 0 ? (
+                <div className="px-5 py-12 text-center">
+                  <MessageCircle size={30} className="mx-auto text-slate-300" />
+                  <p className="mt-3 text-sm font-semibold text-slate-900">No manager chats yet</p>
+                  <p className="mt-1 text-sm text-slate-500">Messages from the manager mobile app will appear here.</p>
+                </div>
+              ) : (
+                <div className="max-h-[440px] overflow-y-auto">
+                  {managerInboxRequests.map((request) => {
+                    const latest = getLatestSupportMessage(request)
+                    const active = activeInboxRequest?.id === request.id
                     return (
-                      <div key={message.id} className={`flex ${isDesk ? 'justify-end' : 'justify-start'}`}>
-                        <div className={`max-w-[78%] rounded-2xl px-4 py-3 shadow-sm ${
-                          isDesk
-                            ? 'rounded-br-md bg-emerald-700 text-white'
-                            : 'rounded-bl-md border border-slate-200 bg-white text-slate-800'
+                      <button
+                        key={request.id}
+                        type="button"
+                        onClick={() => {
+                          setActiveInboxRequestId(request.id)
+                          setInboxDraft('')
+                          setInboxError('')
+                        }}
+                        className={`flex w-full items-center gap-3 px-4 py-3 text-left transition-colors ${
+                          active ? 'bg-white shadow-sm' : 'hover:bg-white/70'
+                        }`}
+                      >
+                        <div className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-bold ${
+                          active ? 'bg-emerald-600 text-white' : 'bg-slate-200 text-slate-700'
                         }`}>
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="min-w-0">
-                              <p className={`text-[11px] font-semibold uppercase tracking-[0.16em] ${isDesk ? 'text-emerald-100' : 'text-slate-500'}`}>
-                                {supportSenderName(message)}
-                              </p>
-                              {supportSenderMeta(message) ? (
-                                <p className={`mt-0.5 text-[11px] ${isDesk ? 'text-emerald-100/75' : 'text-slate-400'}`}>
-                                  {supportSenderMeta(message)}
-                                </p>
-                              ) : null}
-                            </div>
-                            <span className={`shrink-0 text-[11px] ${isDesk ? 'text-emerald-100/75' : 'text-slate-400'}`}>
-                              {message.created_at ? new Date(message.created_at).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : 'Now'}
-                            </span>
-                          </div>
-                          <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed">{message.body}</p>
+                          {(request.requester_name || 'Manager').split(/\s+/).slice(0, 2).map((part) => part[0]).join('').toUpperCase() || 'MG'}
                         </div>
-                      </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-start justify-between gap-2">
+                            <p className="truncate text-sm font-semibold text-slate-900">{request.title || 'Manager message'}</p>
+                            <span className="shrink-0 text-[11px] text-slate-400">{timeAgo(request.updated_at || request.created_at)}</span>
+                          </div>
+                          <p className="mt-0.5 truncate text-xs text-slate-500">
+                            {supportSenderName(latest || request)}: {latest?.body || request.description || 'No messages yet'}
+                          </p>
+                        </div>
+                      </button>
                     )
                   })}
                 </div>
+              )}
+            </div>
 
-                <div className="border-t border-slate-200 bg-white px-5 py-4">
-                  {inboxError ? (
-                    <div className="mb-3 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-                      {inboxError}
+            <div className="flex min-h-[440px] flex-col">
+              {activeInboxRequest ? (
+                <>
+                  <div className="border-b border-slate-200 px-5 py-4">
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="min-w-0">
+                        <p className="truncate text-base font-semibold text-slate-900">{activeInboxRequest.title}</p>
+                        <p className="mt-1 text-sm text-slate-500">
+                          {activeInboxRequest.requester_name ? `${activeInboxRequest.requester_name} - ` : ''}{activeInboxRequest.created_at ? new Date(activeInboxRequest.created_at).toLocaleString('en-GB') : 'Recently'}
+                        </p>
+                      </div>
+                      <span className={`shrink-0 rounded-full px-2.5 py-1 text-[11px] font-semibold ${requestStatusTone(activeInboxRequest.status)}`}>
+                        {requestStatusLabel(activeInboxRequest.status)}
+                      </span>
                     </div>
-                  ) : null}
-                  <div className="flex items-end gap-3">
-                    <textarea
-                      className="input min-h-[52px] flex-1 resize-none"
-                      value={inboxDraft}
-                      onChange={(event) => setInboxDraft(event.target.value)}
-                      placeholder="Write a reply..."
-                    />
-                    <button
-                      type="button"
-                      onClick={sendInboxReply}
-                      disabled={inboxSending || !inboxDraft.trim()}
-                      className="btn-primary shrink-0"
-                    >
-                      <Send size={15} /> {inboxSending ? 'Sending...' : 'Send'}
-                    </button>
                   </div>
+
+                  <div className="flex-1 space-y-3 overflow-y-auto bg-slate-50 px-5 py-4">
+                    {normalizeSupportMessages(activeInboxRequest).map((message) => {
+                      const isDesk = supportMessageSide(message) === 'desk'
+                      return (
+                        <div key={message.id} className={`flex ${isDesk ? 'justify-end' : 'justify-start'}`}>
+                          <div className={`max-w-[78%] rounded-2xl px-4 py-3 shadow-sm ${
+                            isDesk
+                              ? 'rounded-br-md bg-emerald-700 text-white'
+                              : 'rounded-bl-md border border-slate-200 bg-white text-slate-800'
+                          }`}>
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <p className={`text-[11px] font-semibold uppercase tracking-[0.16em] ${isDesk ? 'text-emerald-100' : 'text-slate-500'}`}>
+                                  {supportSenderName(message)}
+                                </p>
+                                {supportSenderMeta(message) ? (
+                                  <p className={`mt-0.5 text-[11px] ${isDesk ? 'text-emerald-100/75' : 'text-slate-400'}`}>
+                                    {supportSenderMeta(message)}
+                                  </p>
+                                ) : null}
+                              </div>
+                              <span className={`shrink-0 text-[11px] ${isDesk ? 'text-emerald-100/75' : 'text-slate-400'}`}>
+                                {message.created_at ? new Date(message.created_at).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : 'Now'}
+                              </span>
+                            </div>
+                            <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed">{message.body}</p>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+
+                  <div className="border-t border-slate-200 bg-white px-5 py-4">
+                    {inboxError ? (
+                      <div className="mb-3 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+                        {inboxError}
+                      </div>
+                    ) : null}
+                    <div className="flex items-end gap-3">
+                      <textarea
+                        className="input min-h-[52px] flex-1 resize-none"
+                        value={inboxDraft}
+                        onChange={(event) => setInboxDraft(event.target.value)}
+                        placeholder="Write a reply..."
+                      />
+                      <button
+                        type="button"
+                        onClick={sendInboxReply}
+                        disabled={inboxSending || !inboxDraft.trim()}
+                        className="btn-primary shrink-0"
+                      >
+                        <Send size={15} /> {inboxSending ? 'Sending...' : 'Send'}
+                      </button>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
+                  <MessageCircle size={34} className="text-slate-300" />
+                  <p className="mt-3 text-sm font-semibold text-slate-900">Select a chat</p>
+                  <p className="mt-1 text-sm text-slate-500">Manager mobile conversations will open here.</p>
                 </div>
-              </>
-            ) : (
-              <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
-                <MessageCircle size={34} className="text-slate-300" />
-                <p className="mt-3 text-sm font-semibold text-slate-900">Select a chat</p>
-                <p className="mt-1 text-sm text-slate-500">Manager mobile conversations will open here.</p>
-              </div>
-            )}
+              )}
+            </div>
           </div>
-        </div>
-      </section>
+        </section>
+      )}
 
       <section className="bb-card p-5">
         <div className="mb-4 flex items-center justify-between gap-4">

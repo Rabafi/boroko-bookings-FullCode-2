@@ -17,7 +17,7 @@ export const FEATURE_LABELS = {
   reports: 'Reports & analytics',
   expenses: 'Expenses',
   staff: 'Staff management',
-  pwa: 'Manager PWA',
+  pwa: 'Manager Mobile App',
   audit: 'Night audit',
   conference: 'Conference bookings',
   pool: 'Day use / pool',

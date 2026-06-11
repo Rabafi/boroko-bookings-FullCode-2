@@ -32,7 +32,7 @@ const BIZ_EMOJI = { lodge: '🏕️', restaurant: '🍽️', retail: '🛒', ser
 const BIZ_LABEL = { lodge: 'Lodge', restaurant: 'Restaurant', retail: 'Retail', service_provider: 'Service Provider' }
 const ALL_FEATURES = ['reports', 'expenses', 'staff', 'pwa', 'audit', 'conference', 'pool', 'import', 'pos', 'inventory', 'supplies']
 const FEAT_LABEL = {
-  reports: 'Reports', expenses: 'Expenses', staff: 'Staff Management', pwa: 'Manager mobile app',
+  reports: 'Reports', expenses: 'Expenses', staff: 'Staff Management',   pwa: 'Manager Mobile App',
   audit: 'Night Audit', import: 'Data Import',
   pos: 'POS / Bar', inventory: 'Inventory', supplies: 'Room Supplies',
   conference: 'Conference', pool: 'Day Use'
@@ -232,7 +232,7 @@ function getTrialInfo(company, licenses) {
   if (hasLicense) return { label: 'Licensed', color: 'bg-green-500/20 text-green-300' }
   if (!company.trial_started_at) return { label: 'In Trial', color: 'bg-blue-500/20 text-blue-300' }
   const trialEnd = new Date(company.trial_started_at)
-  trialEnd.setDate(trialEnd.getDate() + 3)
+  trialEnd.setDate(trialEnd.getDate() + 30)
   const daysLeft = Math.ceil((trialEnd - new Date()) / 864e5)
   if (daysLeft > 0) return { label: `Trial: ${daysLeft}d left`, color: daysLeft === 1 ? 'bg-red-500/20 text-red-300' : 'bg-amber-500/20 text-amber-300' }
   return { label: 'Trial Expired', color: 'bg-red-500/20 text-red-400' }
@@ -3097,6 +3097,7 @@ const NAV_ITEMS = [
   { id: 'tickets', label: 'Support Tickets', icon: LifeBuoy },
   { id: 'activity', label: 'Activity Log', icon: Activity },
   { id: 'notifications', label: 'Email Alerts', icon: Mail },
+  { id: 'leads', label: 'Marketing Leads', icon: Users },
 ]
 
 function TestResetMaintenance({ companies }) {
@@ -3419,6 +3420,135 @@ function TestResetMaintenance({ companies }) {
   )
 }
 
+// ════════════════════════════════════════════════════════════════════
+// Leads panel
+// ════════════════════════════════════════════════════════════════════
+function Leads() {
+  const [leads, setLeads] = useState([])
+  const [loading, setLoading] = useState(false)
+  const [filterStatus, setFilterStatus] = useState('')
+  const [filterInterest, setFilterInterest] = useState('')
+  const [updating, setUpdating] = useState(null)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    const filters = {}
+    if (filterStatus) filters.status = filterStatus
+    if (filterInterest) filters.interest = filterInterest
+    const result = await window.api.admin.getMarketingLeads(filters).catch(() => ({ leads: [] }))
+    setLeads(Array.isArray(result) ? result : (result?.leads || []))
+    setLoading(false)
+  }, [filterStatus, filterInterest])
+
+  useEffect(() => { load() }, [load])
+
+  const updateStatus = async (id, status) => {
+    setUpdating(id)
+    try {
+      await window.api.admin.updateMarketingLeadStatus(id, status)
+      await load()
+    } finally {
+      setUpdating(null)
+    }
+  }
+
+  const statusColor = (s) => {
+    if (s === 'new') return 'bg-blue-100 text-blue-700'
+    if (s === 'contacted') return 'bg-yellow-100 text-yellow-700'
+    if (s === 'converted') return 'bg-green-100 text-green-700'
+    if (s === 'dropped') return 'bg-red-100 text-red-700'
+    return 'bg-gray-100 text-gray-700'
+  }
+
+  return (
+    <div>
+      <h2 className="text-2xl font-bold text-white mb-4">Marketing Leads</h2>
+      <div className="flex flex-wrap gap-3 mb-4">
+        <select
+          className="bg-gray-800 border border-gray-700 text-white text-sm rounded-lg px-3 py-2"
+          value={filterStatus}
+          onChange={(e) => setFilterStatus(e.target.value)}
+        >
+          <option value="">All statuses</option>
+          <option value="new">New</option>
+          <option value="contacted">Contacted</option>
+          <option value="converted">Converted</option>
+          <option value="dropped">Dropped</option>
+        </select>
+        <select
+          className="bg-gray-800 border border-gray-700 text-white text-sm rounded-lg px-3 py-2"
+          value={filterInterest}
+          onChange={(e) => setFilterInterest(e.target.value)}
+        >
+          <option value="">All interests</option>
+          <option value="Starter">Starter</option>
+          <option value="Standard">Standard</option>
+          <option value="Pro">Pro</option>
+          <option value="Not sure yet">Not sure yet</option>
+        </select>
+        <button
+          className="bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-lg px-3 py-2"
+          onClick={load}
+        >
+          Refresh
+        </button>
+      </div>
+      {loading && <p className="text-gray-400">Loading leads...</p>}
+      {!loading && leads.length === 0 && (
+        <p className="text-gray-400">No leads found. Submissions from the website will appear here.</p>
+      )}
+      {!loading && leads.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-sm text-left">
+            <thead className="bg-gray-800 text-gray-300 uppercase text-xs">
+              <tr>
+                <th className="px-4 py-3 rounded-tl-lg">Lodge</th>
+                <th className="px-4 py-3">Contact</th>
+                <th className="px-4 py-3">Email</th>
+                <th className="px-4 py-3">Phone</th>
+                <th className="px-4 py-3">Interest</th>
+                <th className="px-4 py-3">Status</th>
+                <th className="px-4 py-3">Date</th>
+                <th className="px-4 py-3 rounded-tr-lg">Notes</th>
+              </tr>
+            </thead>
+            <tbody>
+              {leads.map((lead) => (
+                <tr key={lead.id} className="border-b border-gray-700 hover:bg-gray-800/50">
+                  <td className="px-4 py-3 font-medium text-white">{lead.lodge_name}</td>
+                  <td className="px-4 py-3 text-gray-300">{lead.contact_name}</td>
+                  <td className="px-4 py-3 text-gray-300">
+                    <a href={`mailto:${lead.email}`} className="text-blue-400 hover:underline">{lead.email}</a>
+                  </td>
+                  <td className="px-4 py-3 text-gray-300">{lead.phone || '—'}</td>
+                  <td className="px-4 py-3 text-gray-300">{lead.interest || '—'}</td>
+                  <td className="px-4 py-3">
+                    <select
+                      className={`text-xs font-semibold px-2 py-1 rounded-full border-0 cursor-pointer ${statusColor(lead.status)} ${updating === lead.id ? 'opacity-50' : ''}`}
+                      value={lead.status}
+                      disabled={updating === lead.id}
+                      onChange={(e) => updateStatus(lead.id, e.target.value)}
+                    >
+                      <option value="new">New</option>
+                      <option value="contacted">Contacted</option>
+                      <option value="converted">Converted</option>
+                      <option value="dropped">Dropped</option>
+                    </select>
+                  </td>
+                  <td className="px-4 py-3 text-gray-400 whitespace-nowrap">
+                    {new Date(lead.created_at).toLocaleDateString()}
+                  </td>
+                  <td className="px-4 py-3 text-gray-400 max-w-xs truncate" title={lead.notes}>{lead.notes || '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function AdminCentral() {
   const { logout } = useAuth()
   const [section, setSection] = useState('dashboard')
@@ -3508,6 +3638,7 @@ export default function AdminCentral() {
           {section === 'tickets' && <SupportTickets companies={companies} />}
           {section === 'activity' && <ActivityLog companies={companies} />}
           {section === 'notifications' && <EmailSettings />}
+          {section === 'leads' && <Leads />}
         </div>
       </div>
     </div>

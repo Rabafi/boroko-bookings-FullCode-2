@@ -938,10 +938,11 @@ export async function getTodayActivity() {
     // Previously fetched all bookings. Now filters to only today/tomorrow rows.
     const { data } = await state.supabase.
     from('bookings').
-    select('*').
+    select('id, customer_id, room_id, check_in, check_out, adults, children, total_amount, status, payment_status, amount_paid, charges_total, notes, is_exclusive_event, invoice_number, created_at, updated_at, created_by, payment_method').
     eq('lodge_id', state.lodgeId).
     neq('status', 'cancelled').
-    or(`check_in.in.(${today},${tomorrow}),check_out.eq.${today}`);
+    or(`check_in.in.(${today},${tomorrow}),check_out.eq.${today}`).
+    limit(100);
     const all = data || [];
     return {
       checkins_today: all.filter((b) => b.check_in === today),
@@ -986,20 +987,23 @@ export async function getUpcomingCheckins() {
     const [{ data: roomData }, { data: confData }, { data: poolData }] = await Promise.all([
     state.supabase.
     from('bookings').
-    select('*, customers(name, phone, email), rooms(room_number, room_type)').
+    select('id, customer_id, room_id, check_in, check_out, adults, children, total_amount, status, payment_status, amount_paid, charges_total, notes, is_exclusive_event, invoice_number, created_at, updated_at, created_by, payment_method, customers(name, phone, email), rooms(room_number, room_type)').
     eq('lodge_id', state.lodgeId).
     in('check_in', upcomingDates).
-    neq('status', 'cancelled'),
+    neq('status', 'cancelled').
+    limit(100),
     state.supabase.
     from('conference_bookings').
-    select('*').
+    select('id, booking_date, start_time, end_time, client_name, company, attendees, setup_type, room_name, includes_catering, catering_notes, total_amount, deposit_paid, payment_status, payment_method, notes, created_at, updated_at, lodge_id').
     eq('lodge_id', state.lodgeId).
-    in('booking_date', upcomingDates),
+    in('booking_date', upcomingDates).
+    limit(50),
     state.supabase.
     from('pool_day_use').
-    select('*').
+    select('id, date, resource_key, resource_name, start_time, end_time, status, total_amount, amount_paid, payment_status, adults, children, notes, created_at, updated_at, deposit_amount, fee_per_adult, fee_per_child, flat_fee, hourly_rate, package_fee, pricing_mode, created_by').
     eq('lodge_id', state.lodgeId).
-    in('date', upcomingDates)]
+    in('date', upcomingDates).
+    limit(50)]
     );
 
     roomBookings = (roomData || []).map((b) => ({

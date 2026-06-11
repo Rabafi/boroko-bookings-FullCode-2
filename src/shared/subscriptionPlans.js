@@ -75,20 +75,20 @@ const PLANS = {
       'Close the day with night audit',
       'Handle conference and day-use business'
     ],
-    upgradeNudge: 'Upgrade to Pro when you want the exclusive manager PWA, public booking site, POS, inventory, and stronger revenue operations.'
+    upgradeNudge: 'Upgrade to Pro when you want the exclusive Manager Mobile App, public booking site, POS, inventory, and stronger revenue operations.'
   },
   Pro: {
     name: 'Pro',
     badge: 'Premium Suite',
-    spotlight: 'PWA + Booking Site',
+    spotlight: 'Mobile App + Booking Site',
     priceLabel: 'Full Suite',
-    headline: 'The premium suite with exclusive manager PWA and public booking site',
-    pitch: 'Adds the manager PWA, a branded public booking site, and the high-grade commercial tools for a stronger lodge operation',
+    headline: 'The premium suite with exclusive Manager Mobile App and public booking site',
+    pitch: 'Adds the Manager Mobile App, a branded public booking site, and the high-grade commercial tools for a stronger lodge operation',
     audience: 'Best for lodges that want mobile owner oversight, their own branded booking URL, direct guest enquiries, POS, stock control, and full commercial visibility.',
-    summary: 'Unlocks the exclusive manager PWA, branded booking site, direct guest enquiries, POS revenue, inventory, room supplies, and wider revenue control.',
+    summary: 'Unlocks the exclusive Manager Mobile App, branded booking site, direct guest enquiries, POS revenue, inventory, room supplies, and wider revenue control.',
     modules: [
       'Everything in Standard',
-      'Exclusive manager PWA for owner oversight',
+      'Exclusive Manager Mobile App for owner oversight',
       'Public booking site with a branded lodge URL',
       'Direct guest enquiries and WhatsApp contact',
       'POS, outlet revenue, and stock control',
@@ -133,12 +133,12 @@ const PLAN_UPSELL_BENEFITS = {
   Standard: {
     nextPlan: 'Pro',
     capacities: ['Unlimited bookings', 'Unlimited rooms', 'Unlimited users'],
-    features: ['POS', 'Inventory', 'Room Supplies', 'Manager PWA', 'Public Booking Site']
+    features: ['POS', 'Inventory', 'Room Supplies', 'Manager Mobile App', 'Public Booking Site']
   },
   Pro: {
     nextPlan: 'Pro',
     capacities: ['Unlimited bookings', 'Unlimited rooms', 'Unlimited users'],
-    features: ['POS', 'Inventory', 'Room Supplies', 'Manager PWA', 'Public Booking Site']
+    features: ['POS', 'Inventory', 'Room Supplies', 'Manager Mobile App', 'Public Booking Site']
   }
 }
 
@@ -820,7 +820,7 @@ export function buildUpgradeRequestDescription({
   lines.push(`Requested package outcome: ${requestedPlanMeta.summary}`)
 
   if (normalizedRequestedPlan === 'Pro') {
-    lines.push('Commercial value: Exclusive manager PWA access, a branded lodge URL, direct booking requests, WhatsApp contact, property policies, room amenities, POS, inventory, and a stronger online sales presence.')
+    lines.push('Commercial value: Exclusive Manager Mobile App access, a branded lodge URL, direct booking requests, WhatsApp contact, property policies, room amenities, POS, inventory, and a stronger online sales presence.')
   }
 
   if (notes?.trim()) {

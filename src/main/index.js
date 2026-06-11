@@ -1,5 +1,6 @@
 import { app, shell, BrowserWindow, ipcMain, Notification, dialog, Menu, nativeImage } from 'electron'
 import { join, dirname, basename } from 'path'
+import { fileURLToPath } from 'url'
 import fs from 'fs'
 import crypto from 'crypto'
 import * as XLSX from '@e965/xlsx'
@@ -242,13 +243,32 @@ function createAppLogoNativeImage() {
   try {
     const icoPath = join(process.resourcesPath, 'assets', 'boroko-bookings-icon.ico')
     const devIcoPath = join(app.getAppPath(), 'src', 'main', 'assets', 'boroko-bookings-icon.ico')
-    const logoPath = (app.isPackaged && fs.existsSync(icoPath))
-      ? icoPath
-      : fs.existsSync(devIcoPath)
-        ? devIcoPath
-        : getAppLogoPath()
-    if (!logoPath) return null
-    return nativeImage.createFromPath(logoPath)
+    const cwdIcoPath = join(process.cwd(), 'src', 'main', 'assets', 'boroko-bookings-icon.ico')
+    const moduleIcoPath = join(fileURLToPath(import.meta.url), '..', 'assets', 'boroko-bookings-icon.ico')
+
+    let logoPath = null
+    if (app.isPackaged && fs.existsSync(icoPath)) {
+      logoPath = icoPath
+    } else if (fs.existsSync(devIcoPath)) {
+      logoPath = devIcoPath
+    } else if (fs.existsSync(cwdIcoPath)) {
+      logoPath = cwdIcoPath
+    } else if (fs.existsSync(moduleIcoPath)) {
+      logoPath = moduleIcoPath
+    } else {
+      logoPath = getAppLogoPath()
+    }
+
+    if (!logoPath) {
+      console.warn('App logo not found in any expected location')
+      return null
+    }
+    const image = nativeImage.createFromPath(logoPath)
+    if (image.isEmpty()) {
+      console.warn('App logo image loaded but is empty:', logoPath)
+      return null
+    }
+    return image
   } catch (error) {
     console.warn('App logo image load failed:', error?.message || error)
     return null
@@ -2720,6 +2740,14 @@ app.whenReady().then(async () => {
     try { requireRole('super_admin'); return await sendInvoiceEmail(payload) }
     catch (e) { return { success: false, error: e.message } }
   })
+  ipcMain.handle('admin:getMarketingLeads', async (_, filters) => {
+    try { requireRole('super_admin'); return await db.getMarketingLeads(filters || {}) }
+    catch (e) { return { success: false, error: e.message, leads: [] } }
+  })
+  ipcMain.handle('admin:updateMarketingLeadStatus', async (_, id, status) => {
+    try { requireRole('super_admin'); return await db.updateMarketingLeadStatus(id, status) }
+    catch (e) { return { success: false, error: e.message } }
+  })
   ipcMain.handle('trial:getInvoices', async (_, lodgeId) => {
     try {
       requireCurrentLodgeOrSuperAdmin(lodgeId)
@@ -3028,6 +3056,10 @@ app.whenReady().then(async () => {
   ipcMain.handle('bookings:getAll', async () => {
     try { await requireCapability('bookings.view'); return await db.getAllBookings() }
     catch { return [] }
+  })
+  ipcMain.handle('bookings:getCollectionsSummary', async () => {
+    try { await requireCapability('bookings.view'); return await db.getCollectionsSummary() }
+    catch { return { count: 0, amount: 0 } }
   })
   ipcMain.handle('bookings:getCachedByDateRange', async (_, start, end) => {
     try {

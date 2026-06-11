@@ -2,19 +2,21 @@ import { state } from '../state.js'
 import { recordCriticalError } from './operationalLog.js'
 import {
   readCache,
-  writeCache
+  writeCache,
+  dedupePromise
 } from './infrastructure.js'
 
 // ─── ROOM SUPPLIES ────────────────────────────────────────────────────────────
 
-export async function getSupplyItems() {
+async function _getSupplyItems() {
   try {
     const { data, error } = await state.supabase.
     from('supply_items').
-    select('*').
+    select('id, name, category, unit, current_stock, reorder_level, latest_unit_cost, lodge_id, created_at, updated_at, is_active').
     eq('lodge_id', state.lodgeId).
     order('category').
-    order('name');
+    order('name').
+    limit(500);
     if (error) throw error;
     const cached = readCache('supply-items');
     if ((data || []).length === 0 && cached.length > 0) {
@@ -32,6 +34,10 @@ export async function getSupplyItems() {
     if (!state.isOnline) return [];
     throw new Error(error?.message || 'Failed to load supply items');
   }
+}
+
+export function getSupplyItems() {
+  return dedupePromise('getSupplyItems', _getSupplyItems);
 }
 
 export async function getSupplyItemById(id) {
@@ -291,9 +297,10 @@ export async function getSupplyAllocationsForWeek(weekStart) {
   if (!state.isOnline) return [];
   const { data } = await state.supabase.
   from('room_supply_allocations').
-  select('*').
+  select('id, room_id, item_id, quantity, week_start, lodge_id, created_at, updated_at').
   eq('lodge_id', state.lodgeId).
-  eq('week_start', weekStart);
+  eq('week_start', weekStart).
+  limit(500);
   return data || [];
 }
 

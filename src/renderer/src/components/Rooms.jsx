@@ -56,12 +56,22 @@ export default function Rooms() {
 
   const processRoomPhotos = (files) => {
     const fileArr = Array.from(files)
+    let rejected = 0
     fileArr.forEach((file) => {
       if (!file.type.startsWith('image/')) return
       const reader = new FileReader()
       reader.onload = (e) => {
         const img = new window.Image()
         img.onload = () => {
+          const MIN_W = 400
+          const MIN_H = 300
+          if (img.width < MIN_W || img.height < MIN_H) {
+            rejected += 1
+            if (rejected === 1) {
+              window.alert(`Photo is too small. Minimum size is ${MIN_W}x${MIN_H}px. Your image is ${img.width}x${img.height}px.`)
+            }
+            return
+          }
           const MAX = 800
           const canvas = document.createElement('canvas')
           const ratio = Math.min(MAX / img.width, MAX / img.height, 1)

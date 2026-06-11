@@ -1,27 +1,43 @@
-import { useEffect, useState } from 'react'
-import { useParams, useNavigate, useLocation, Link } from 'react-router-dom'
+import { useEffect, useState, useRef, useCallback, useMemo } from 'react'
+import { useParams, useNavigate, useLocation, useSearchParams, Link } from 'react-router-dom'
 import { format } from 'date-fns'
 import {
   AlertCircle,
   ArrowLeft,
+  CalendarPlus,
   ChevronLeft,
   ChevronRight,
+  Loader2,
   Mail,
   MessageCircle,
   Moon,
   Phone,
   Users
 } from 'lucide-react'
-import { isMissingRpcError, readSessionCache, rpc, writeSessionCache } from '../lib/publicApi.js'
+import { isMissingRpcError, rpc, queueConfirmationEmail } from '../lib/publicApi.js'
+import { captureException } from '../lib/errorTracker.js'
+import { trackBeginCheckout, trackBookingRequest } from '../lib/analytics.js'
+import SeoMeta from '../components/SeoMeta.jsx'
 import LodgeHeader from '../components/LodgeHeader.jsx'
+import { Lightbox, optimizeImageUrl } from '../components/RoomCard.jsx'
+import {
+  buildWhatsAppUrl,
+  buildCalendarUrl,
+  isValidSlug
+} from '../lib/utils.js'
+import {
+  useSwipe,
+  useKeyboardVisibility,
+  useFocusTrap,
+  useSessionForm,
+  useSessionState,
+  readSessionState,
+  clearSessionState
+} from '../lib/hooks.js'
 
-const EMAIL_FUNCTION_URL = import.meta.env.VITE_CONFIRMATION_EMAIL_FUNCTION_URL
 const ROOM_MEDIA_TTL_MS = 30 * 60 * 1000
-
-function buildWhatsAppUrl(number) {
-  const digits = String(number || '').replace(/[^\d]/g, '')
-  return digits ? `https://wa.me/${digits}` : null
-}
+const BOOKING_FORM_KEY = 'booking-form-data'
+const BOOKING_STATE_KEY = 'booking-state'
 
 function clampGuestCount(value, max) {
   const numeric = Number(value || 0)
@@ -41,32 +57,124 @@ function toGuestBookingError(message) {
   return 'We could not send your booking request right now. Please try again or contact the lodge directly.'
 }
 
+function validateEmail(email) {
+  const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+  return re.test(email)
+}
+
+function validatePhone(phone) {
+  const re = /^[+\d()\s-]{7,32}$/
+  return re.test(phone)
+}
+
+/**
+ * Build booking state to persist so the page survives a refresh.
+ */
+function buildBookingState({ lodge, room, checkIn, checkOut, nights }) {
+  return {
+    lodge: {
+      id: lodge?.id,
+      slug: lodge?.slug,
+      lodge_name: lodge?.lodge_name,
+      currency: lodge?.currency,
+      phone: lodge?.phone,
+      email: lodge?.email,
+      whatsapp_number: lodge?.whatsapp_number,
+      website: lodge?.website,
+      logo: lodge?.logo,
+      hero_image: lodge?.hero_image,
+      booking_payment_terms: lodge?.booking_payment_terms,
+      booking_cancellation_policy: lodge?.booking_cancellation_policy,
+      booking_house_rules: lodge?.booking_house_rules
+    },
+    room: {
+      id: room?.id,
+      room_number: room?.room_number,
+      room_type: room?.room_type,
+      total_price: room?.total_price,
+      rate_per_night: room?.rate_per_night,
+      max_occupancy: room?.max_occupancy,
+      photo: room?.photo,
+      photos: room?.photos,
+      photo_count: room?.photo_count,
+      amenities: room?.amenities,
+      description: room?.description
+    },
+    checkIn,
+    checkOut,
+    nights
+  }
+}
+
 export default function BookingPage() {
   const { slug } = useParams()
   const navigate = useNavigate()
   const { state } = useLocation()
+  const [searchParams] = useSearchParams()
+  const formRef = useRef(null)
+  const headingRef = useRef(null)
 
-  if (!state?.lodge || !state?.room) {
+  if (!isValidSlug(slug)) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-[var(--bg)] px-4">
         <div className="surface-card max-w-sm rounded-[30px] p-8 text-center">
-          <p className="text-sm text-[var(--muted)]">No room selected.</p>
-          <Link to={`/${slug}`} className="mt-4 inline-block text-sm font-bold text-[var(--brand)] hover:underline">
-            Back to rooms
-          </Link>
+          <p className="text-sm text-[var(--muted)]">Invalid property link.</p>
         </div>
       </div>
     )
   }
 
-  const { lodge, room, checkIn, checkOut, nights } = state
-  const initialRoomPhotos = Array.isArray(room.photos) && room.photos.length > 0
-    ? room.photos
-    : (room.photo ? [room.photo] : [])
+  // ── Reconstruct state from multiple sources ───────────────────────────────
+  const rawState = useMemo(() => {
+    // 1. Prefer React Router state
+    if (state?.lodge && state?.room) {
+      return state
+    }
+    // 2. Fallback to sessionStorage
+    const cached = readSessionState(BOOKING_STATE_KEY)
+    if (cached?.lodge && cached?.room) {
+      return cached
+    }
+    // 3. Fallback to URL params (minimal)
+    return null
+  }, [state])
+
+  // Persist incoming state to sessionStorage so it survives refreshes
+  useSessionState(BOOKING_STATE_KEY, rawState)
+
+  const [lodge, setLodge] = useState(rawState?.lodge || null)
+  const [room, setRoom] = useState(rawState?.room || null)
+  const [checkIn, setCheckIn] = useState(rawState?.checkIn || '')
+  const [checkOut, setCheckOut] = useState(rawState?.checkOut || '')
+  const [nights, setNights] = useState(rawState?.nights || 1)
+
+  // If we have a room ID in URL but no state, we can't fully reconstruct.
+  // Show a graceful fallback with a link back to search.
+  const roomIdFromUrl = searchParams.get('roomId')
+  const hasState = Boolean(lodge && room)
+  const hasUrlHint = Boolean(roomIdFromUrl)
+
+  // Restore photos from URL hint or cached room
+  const initialRoomPhotos = useMemo(() => {
+    if (!room) return []
+    return Array.isArray(room.photos) && room.photos.length > 0
+      ? room.photos
+      : (room.photo ? [room.photo] : [])
+  }, [room])
 
   const [roomPhotos, setRoomPhotos] = useState(initialRoomPhotos)
   const [photoIdx, setPhotoIdx] = useState(0)
-  const [form, setForm] = useState({
+  const [lightboxOpen, setLightboxOpen] = useState(false)
+  const lightboxRef = useFocusTrap(lightboxOpen)
+
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState(null)
+  const [lastSubmitTime, setLastSubmitTime] = useState(0)
+  const SUBMIT_COOLDOWN_MS = 2000
+  const keyboardOpen = useKeyboardVisibility()
+
+  // Form fields with sessionStorage persistence
+  const [form, setForm] = useSessionForm(BOOKING_FORM_KEY, {
     guest_first_name: '',
     guest_last_name: '',
     guest_email: '',
@@ -75,17 +183,41 @@ export default function BookingPage() {
     children: 0,
     notes: ''
   })
-  const [submitting, setSubmitting] = useState(false)
-  const [error, setError] = useState(null)
-  const [lastSubmitTime, setLastSubmitTime] = useState(0)
-  const SUBMIT_COOLDOWN_MS = 2000 // Prevent rapid resubmission
+
+  // Inline validation state
+  const [touched, setTouched] = useState({})
+  const [fieldErrors, setFieldErrors] = useState({})
+
+  const photoPrev = useCallback(() => setPhotoIdx((i) => (i - 1 + roomPhotos.length) % roomPhotos.length), [roomPhotos.length])
+  const photoNext = useCallback(() => setPhotoIdx((i) => (i + 1) % roomPhotos.length), [roomPhotos.length])
+  const photoSwipe = useSwipe({ onLeft: photoNext, onRight: photoPrev })
+
+  // Reconstruct state when URL hints or sessionStorage are available
+  useEffect(() => {
+    // If we already have state, do nothing
+    if (hasState) return
+
+    if (!hasUrlHint) return
+
+    // We can't reconstruct full lodge/room from just URL params alone
+    // without fetching. But we should at least show a "back to search" fallback.
+    // The component below handles the empty state.
+  }, [hasState, hasUrlHint])
+
+  useEffect(() => {
+    if (hasState) {
+      trackBeginCheckout(slug, room.id, room.total_price)
+    }
+  }, [slug, hasState, room?.id, room?.total_price])
 
   useEffect(() => {
     setRoomPhotos(initialRoomPhotos)
     setPhotoIdx(0)
-  }, [room.id, room.photo, room.photo_count])
+  }, [room?.id, room?.photo, room?.photo_count, initialRoomPhotos.length])
 
+  // Auto-clamp guest counts when max_occupancy changes
   useEffect(() => {
+    if (!hasState) return
     const maxOccupancy = Number(room?.max_occupancy || 0)
     const adults = clampGuestCount(form.adults, Math.max(1, maxOccupancy))
     const maxChildren = Math.max(0, maxOccupancy - adults)
@@ -98,24 +230,25 @@ export default function BookingPage() {
         children
       }))
     }
-  }, [form.adults, form.children, room?.max_occupancy])
+  }, [form.adults, form.children, room?.max_occupancy, hasState, setForm])
 
+  // Fetch room media if missing
   useEffect(() => {
-    if (!room?.id) return undefined
+    if (!hasState || !room?.id) return
 
     const mediaCacheKey = `room-media:${slug}:${room.id}`
-    const cachedMedia = readSessionCache(mediaCacheKey, ROOM_MEDIA_TTL_MS)
+    const cachedMedia = readSessionState(mediaCacheKey)
     const cachedPhotos = Array.isArray(cachedMedia?.photos) ? cachedMedia.photos.filter(Boolean) : []
 
     if (cachedPhotos.length > 0) {
       setRoomPhotos(cachedPhotos)
       if (!room.photo_count || cachedPhotos.length >= room.photo_count) {
-        return undefined
+        return
       }
     }
 
     if (!room.photo_count || room.photo_count <= Math.max(initialRoomPhotos.length, cachedPhotos.length)) {
-      return undefined
+      return
     }
 
     const controller = new AbortController()
@@ -135,7 +268,11 @@ export default function BookingPage() {
       const photos = Array.isArray(data.photos) ? data.photos.filter(Boolean) : []
       if (photos.length === 0) return
 
-      writeSessionCache(mediaCacheKey, { photos })
+      try {
+        window.sessionStorage.setItem(mediaCacheKey, JSON.stringify({ photos }))
+      } catch {
+        // ignore
+      }
       setRoomPhotos(photos)
     }
 
@@ -145,18 +282,72 @@ export default function BookingPage() {
       active = false
       controller.abort()
     }
-  }, [initialRoomPhotos.length, room.id, room.photo_count, slug])
+  }, [hasState, initialRoomPhotos.length, room?.id, room?.photo_count, room?.photo, slug])
+
+  // Validate a single field
+  function validateField(name, value) {
+    switch (name) {
+      case 'guest_email':
+        return value.trim() ? (validateEmail(value) ? '' : 'Please enter a valid email address.') : 'Email is required.'
+      case 'guest_phone':
+        return value.trim() ? (validatePhone(value) ? '' : 'Please enter a valid phone number.') : 'Phone number is required.'
+      case 'guest_first_name':
+        return value.trim() ? '' : 'First name is required.'
+      case 'guest_last_name':
+        return value.trim() ? '' : 'Last name is required.'
+      default:
+        return ''
+    }
+  }
+
+  // Validate entire form
+  function validateForm() {
+    const errors = {}
+    const fields = ['guest_first_name', 'guest_last_name', 'guest_email', 'guest_phone']
+    for (const name of fields) {
+      const err = validateField(name, form[name])
+      if (err) errors[name] = err
+    }
+    return errors
+  }
 
   function handleChange(event) {
     const { name, value } = event.target
     setForm((current) => ({ ...current, [name]: value }))
+    if (touched[name]) {
+      setFieldErrors((prev) => ({ ...prev, [name]: validateField(name, value) }))
+    }
+  }
+
+  function handleBlur(event) {
+    const { name, value } = event.target
+    setTouched((prev) => ({ ...prev, [name]: true }))
+    setFieldErrors((prev) => ({ ...prev, [name]: validateField(name, value) }))
   }
 
   async function handleSubmit(event) {
     event.preventDefault()
     setError(null)
 
-    // Rate limit: prevent rapid resubmission
+    // Validate all fields
+    setTouched({
+      guest_first_name: true,
+      guest_last_name: true,
+      guest_email: true,
+      guest_phone: true
+    })
+    const errors = validateForm()
+    setFieldErrors(errors)
+
+    if (Object.keys(errors).length > 0) {
+      const firstErrorField = document.querySelector('[aria-invalid="true"]')
+      if (firstErrorField) {
+        firstErrorField.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        firstErrorField.focus()
+      }
+      return
+    }
+
     const now = Date.now()
     if (now - lastSubmitTime < SUBMIT_COOLDOWN_MS) {
       setError('Please wait a moment before sending another request.')
@@ -195,26 +386,54 @@ export default function BookingPage() {
 
     if (rpcError || !data?.success) {
       setSubmitting(false)
-      setError(toGuestBookingError(data?.error || rpcError?.message))
+      const errMsg = data?.error || rpcError?.message
+      captureException(new Error(errMsg || 'Booking RPC failed'), { slug, roomId: room.id })
+      setError(toGuestBookingError(errMsg))
       return
     }
 
-    if (EMAIL_FUNCTION_URL && data.confirmation_token) {
-      fetch(EMAIL_FUNCTION_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          booking_id: data.booking_id,
-          guest_email: data.guest_email,
-          confirmation_token: data.confirmation_token
-        })
-      }).catch(() => {})
+    if (data.confirmation_token) {
+      queueConfirmationEmail({
+        booking_id: data.booking_id,
+        guest_email: data.guest_email,
+        confirmation_token: data.confirmation_token
+      })
     }
 
+    // Clear form persistence after successful submission
+    clearSessionState(BOOKING_FORM_KEY)
+    clearSessionState(BOOKING_STATE_KEY)
+
+    trackBookingRequest(slug, room.id, data.booking_id, data.total_amount)
     navigate(`/${slug}/success`, { state: { booking: data }, replace: true })
   }
 
-  const totalAmount = Number(room.rate_per_night) * nights
+  // Focus heading on mount for screen reader users
+  useEffect(() => {
+    if (headingRef.current) {
+      headingRef.current.setAttribute('tabIndex', '-1')
+      headingRef.current.focus()
+    }
+  }, [])
+
+  if (!hasState) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-[var(--bg)] px-4">
+        <div className="surface-card max-w-sm rounded-[30px] p-8 text-center">
+          <p className="text-sm text-[var(--muted)]">
+            {hasUrlHint
+              ? 'Your booking session may have expired. Please return to the room list and select your dates again.'
+              : 'No room selected.'}
+          </p>
+          <Link to={`/${slug}`} className="mt-4 inline-block text-sm font-bold text-[var(--brand)] hover:underline">
+            Back to rooms
+          </Link>
+        </div>
+      </div>
+    )
+  }
+
+  const totalAmount = Number(room.total_price || 0)
   const hasContact = lodge?.phone || lodge?.email || lodge?.whatsapp_number
   const whatsappUrl = buildWhatsAppUrl(lodge?.whatsapp_number)
   const maxOccupancy = Math.max(1, Number(room?.max_occupancy || 1))
@@ -222,10 +441,19 @@ export default function BookingPage() {
   const maxChildren = Math.max(0, maxOccupancy - selectedAdults)
 
   return (
-    <div className="min-h-screen bg-transparent">
+    <div className="min-h-screen overflow-x-hidden bg-transparent">
+      <SeoMeta
+        title={`Book ${room.room_number} — ${lodge.lodge_name}`}
+        description={`Request a reservation for ${room.room_number} at ${lodge.lodge_name}. ${nights} night${nights !== 1 ? 's' : ''} from ${format(new Date(checkIn), 'd MMM yyyy')}.`}
+        ogImage={roomPhotos[0] || lodge.hero_image}
+        canonicalPath={`/${slug}/book`}
+      />
+      <a href="#booking-form" className="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:rounded-lg focus:bg-[var(--brand)] focus:px-4 focus:py-2 focus:text-white">
+        Skip to booking form
+      </a>
       <LodgeHeader lodge={lodge} />
 
-      <main className="mx-auto max-w-6xl px-4 py-6 pb-32 sm:px-6 sm:py-8 lg:pb-8">
+      <main className="mx-auto max-w-6xl px-4 py-6 pb-24 sm:px-6 sm:py-8 lg:pb-8">
         <Link
           to={`/${slug}`}
           className="mb-6 inline-flex items-center gap-2 text-sm font-semibold text-[var(--muted)] transition-colors hover:text-[var(--text)]"
@@ -238,14 +466,18 @@ export default function BookingPage() {
           <aside className="space-y-5">
             <div className="surface-card overflow-hidden rounded-[32px]">
               {roomPhotos.length > 0 && (
-                <div className="group relative">
+                <div className="group relative select-none" {...photoSwipe}>
                   <img
-                    src={roomPhotos[photoIdx]}
+                    src={optimizeImageUrl(roomPhotos[photoIdx], 800)}
+                    srcSet={`${optimizeImageUrl(roomPhotos[photoIdx], 400)} 400w, ${optimizeImageUrl(roomPhotos[photoIdx], 800)} 800w`}
+                    sizes="100vw"
                     alt={`${room.room_number} — photo ${photoIdx + 1}`}
-                    className="h-64 w-full object-cover"
+                    className="h-64 w-full max-w-full cursor-zoom-in object-cover"
                     loading="eager"
                     decoding="async"
                     fetchPriority="high"
+                    draggable={false}
+                    onClick={() => setLightboxOpen(true)}
                   />
                   <div className="absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-black/10" />
 
@@ -253,30 +485,46 @@ export default function BookingPage() {
                     <>
                       <button
                         type="button"
-                        onClick={() => setPhotoIdx((index) => (index - 1 + roomPhotos.length) % roomPhotos.length)}
-                        className="absolute left-3 top-1/2 -translate-y-1/2 rounded-full bg-black/35 p-2 text-white opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100"
+                        onClick={photoPrev}
+                        className="absolute left-2 top-1/2 z-10 -translate-y-1/2 rounded-full bg-black/40 p-2.5 text-white opacity-100 transition-opacity active:bg-black/60 sm:opacity-0 sm:group-hover:opacity-100"
+                        aria-label="Previous photo"
                       >
-                        <ChevronLeft size={16} />
+                        <ChevronLeft size={18} />
                       </button>
                       <button
                         type="button"
-                        onClick={() => setPhotoIdx((index) => (index + 1) % roomPhotos.length)}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 rounded-full bg-black/35 p-2 text-white opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100"
+                        onClick={photoNext}
+                        className="absolute right-2 top-1/2 z-10 -translate-y-1/2 rounded-full bg-black/40 p-2.5 text-white opacity-100 transition-opacity active:bg-black/60 sm:opacity-0 sm:group-hover:opacity-100"
+                        aria-label="Next photo"
                       >
-                        <ChevronRight size={16} />
+                        <ChevronRight size={18} />
                       </button>
-                      <div className="absolute bottom-3 left-1/2 flex -translate-x-1/2 gap-1.5">
+                      <div className="absolute bottom-3 left-1/2 z-10 flex -translate-x-1/2 gap-1.5">
                         {roomPhotos.map((_, index) => (
                           <button
                             key={index}
                             type="button"
                             onClick={() => setPhotoIdx(index)}
-                            className={`h-1.5 rounded-full transition-all ${index === photoIdx ? 'w-5 bg-white' : 'w-1.5 bg-white/55 hover:bg-white/80'}`}
-                          />
+                            className={`flex h-6 w-6 items-center justify-center rounded-full transition-all ${index === photoIdx ? 'bg-white/90' : 'bg-black/30 hover:bg-black/50'}`}
+                            aria-label={`Photo ${index + 1}`}
+                          >
+                            <span className={`block rounded-full ${index === photoIdx ? 'h-2 w-2 bg-[var(--brand)]' : 'h-1.5 w-1.5 bg-white/70'}`} />
+                          </button>
                         ))}
                       </div>
                     </>
                   )}
+                </div>
+              )}
+
+              {lightboxOpen && (
+                <div ref={lightboxRef}>
+                  <Lightbox
+                    photos={roomPhotos}
+                    startIdx={photoIdx}
+                    roomName={room.room_number}
+                    onClose={() => setLightboxOpen(false)}
+                  />
                 </div>
               )}
 
@@ -286,7 +534,7 @@ export default function BookingPage() {
                     <span className="inline-flex rounded-full border border-[var(--line-strong)] bg-[var(--brand-soft)] px-2.5 py-1 text-[11px] font-bold uppercase tracking-[0.2em] text-[var(--brand)]">
                       {room.room_type}
                     </span>
-                    <h2 className="font-display mt-3 text-[1.9rem] text-[var(--text)] sm:text-3xl">{room.room_number}</h2>
+                    <h2 className="font-display mt-3 break-words text-[1.9rem] text-[var(--text)] sm:text-3xl">{room.room_number}</h2>
                   </div>
                   <div className="rounded-2xl bg-[var(--surface-strong)] px-3.5 py-3 text-right sm:px-4">
                     <div className="text-xl font-extrabold text-[var(--text)] sm:text-2xl">
@@ -379,11 +627,13 @@ export default function BookingPage() {
             )}
           </aside>
 
-          <section className="booking-sticky-summary p-5 sm:p-8">
+          <section id="booking-form" className="booking-sticky-summary p-5 sm:p-8" ref={formRef}>
             <div className="flex flex-col items-start justify-between gap-3 sm:flex-row sm:items-center">
               <div>
                 <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-[var(--muted)]">Guest Details</p>
-                <h3 className="font-display mt-2 text-[2rem] text-[var(--text)] sm:text-3xl">Complete your request</h3>
+                <h3 ref={headingRef} className="font-display mt-2 text-[2rem] text-[var(--text)] sm:text-3xl" tabIndex={-1}>
+                  Complete your request
+                </h3>
               </div>
             </div>
 
@@ -396,111 +646,198 @@ export default function BookingPage() {
               </p>
             </div>
 
-            {error && (
-              <div className="mt-5 flex items-start gap-2 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                <AlertCircle size={16} className="mt-0.5 shrink-0" />
-                {error}
-              </div>
-            )}
+            <div aria-live="polite" aria-atomic="true">
+              {error && (
+                <div className="mt-5 flex items-start gap-2 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                  <AlertCircle size={16} className="mt-0.5 shrink-0" />
+                  {error}
+                </div>
+              )}
+            </div>
 
-            <form onSubmit={handleSubmit} className="mt-6 space-y-5">
+            <form onSubmit={handleSubmit} className="mt-6 space-y-5" noValidate>
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div>
-                  <label className="mb-1.5 block text-sm font-semibold text-[var(--text)]">First name</label>
+                  <label className="mb-1.5 block text-sm font-semibold text-[var(--text)]" htmlFor="guest_first_name">
+                    First name
+                  </label>
                   <input
+                    id="guest_first_name"
                     type="text"
                     name="guest_first_name"
                     value={form.guest_first_name}
                     onChange={handleChange}
+                    onBlur={handleBlur}
                     required
                     autoComplete="given-name"
                     maxLength={100}
                     placeholder="Thabo"
+                    aria-invalid={!!fieldErrors.guest_first_name}
+                    aria-describedby={fieldErrors.guest_first_name ? 'fn-error' : undefined}
                     className="w-full rounded-2xl border border-[var(--line)] bg-[var(--surface-soft)] px-4 py-3 text-sm text-[var(--text)] outline-none transition focus:border-[var(--line-strong)] focus:shadow-[0_0_0_4px_rgba(154,91,31,0.10)]"
                   />
+                  {fieldErrors.guest_first_name && (
+                    <p id="fn-error" className="mt-1 text-xs text-red-600">{fieldErrors.guest_first_name}</p>
+                  )}
                 </div>
                 <div>
-                  <label className="mb-1.5 block text-sm font-semibold text-[var(--text)]">Last name</label>
+                  <label className="mb-1.5 block text-sm font-semibold text-[var(--text)]" htmlFor="guest_last_name">
+                    Last name
+                  </label>
                   <input
+                    id="guest_last_name"
                     type="text"
                     name="guest_last_name"
                     value={form.guest_last_name}
                     onChange={handleChange}
+                    onBlur={handleBlur}
                     required
                     autoComplete="family-name"
                     maxLength={100}
                     placeholder="Modise"
+                    aria-invalid={!!fieldErrors.guest_last_name}
+                    aria-describedby={fieldErrors.guest_last_name ? 'ln-error' : undefined}
                     className="w-full rounded-2xl border border-[var(--line)] bg-[var(--surface-soft)] px-4 py-3 text-sm text-[var(--text)] outline-none transition focus:border-[var(--line-strong)] focus:shadow-[0_0_0_4px_rgba(154,91,31,0.10)]"
                   />
+                  {fieldErrors.guest_last_name && (
+                    <p id="ln-error" className="mt-1 text-xs text-red-600">{fieldErrors.guest_last_name}</p>
+                  )}
                 </div>
               </div>
 
               <div>
-                <label className="mb-1.5 block text-sm font-semibold text-[var(--text)]">Email address</label>
+                <label className="mb-1.5 block text-sm font-semibold text-[var(--text)]" htmlFor="guest_email">
+                  Email address
+                </label>
                 <input
+                  id="guest_email"
                   type="email"
                   name="guest_email"
                   value={form.guest_email}
                   onChange={handleChange}
+                  onBlur={handleBlur}
                   required
                   autoComplete="email"
                   maxLength={160}
                   placeholder="thabo@example.com"
+                  aria-invalid={!!fieldErrors.guest_email}
+                  aria-describedby={fieldErrors.guest_email ? 'email-error' : undefined}
                   className="w-full rounded-2xl border border-[var(--line)] bg-[var(--surface-soft)] px-4 py-3 text-sm text-[var(--text)] outline-none transition focus:border-[var(--line-strong)] focus:shadow-[0_0_0_4px_rgba(154,91,31,0.10)]"
                 />
+                {fieldErrors.guest_email && (
+                  <p id="email-error" className="mt-1 text-xs text-red-600">{fieldErrors.guest_email}</p>
+                )}
               </div>
 
               <div>
-                <label className="mb-1.5 block text-sm font-semibold text-[var(--text)]">Phone number</label>
+                <label className="mb-1.5 block text-sm font-semibold text-[var(--text)]" htmlFor="guest_phone">
+                  Phone number
+                </label>
                 <input
+                  id="guest_phone"
                   type="tel"
                   name="guest_phone"
                   value={form.guest_phone}
                   onChange={handleChange}
+                  onBlur={handleBlur}
                   required
                   autoComplete="tel"
                   inputMode="tel"
                   minLength={7}
                   maxLength={32}
-                  pattern="^[+0-9()\\-\\s]{7,32}$"
+                  pattern="[+0-9()\\s-]{7,32}"
                   title="Enter a valid phone number using digits, spaces, +, parentheses, or hyphens."
                   placeholder="+267 71 234 567"
+                  aria-invalid={!!fieldErrors.guest_phone}
+                  aria-describedby={fieldErrors.guest_phone ? 'phone-error' : undefined}
                   className="w-full rounded-2xl border border-[var(--line)] bg-[var(--surface-soft)] px-4 py-3 text-sm text-[var(--text)] outline-none transition focus:border-[var(--line-strong)] focus:shadow-[0_0_0_4px_rgba(154,91,31,0.10)]"
                 />
+                {fieldErrors.guest_phone && (
+                  <p id="phone-error" className="mt-1 text-xs text-red-600">{fieldErrors.guest_phone}</p>
+                )}
               </div>
 
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="mb-1.5 block text-sm font-semibold text-[var(--text)]">Adults</label>
-                  <select
-                    name="adults"
-                    value={form.adults}
-                    onChange={handleChange}
-                    className="w-full rounded-2xl border border-[var(--line)] bg-[var(--surface-soft)] px-4 py-3 text-sm text-[var(--text)] outline-none transition focus:border-[var(--line-strong)] focus:shadow-[0_0_0_4px_rgba(154,91,31,0.10)]"
-                  >
-                    {Array.from({ length: maxOccupancy }, (_, index) => index + 1).map((count) => (
-                      <option key={count} value={count}>{count}</option>
-                    ))}
-                  </select>
+                  <label className="mb-1.5 block text-sm font-semibold text-[var(--text)]" htmlFor="adults">
+                    Adults
+                  </label>
+                  <div className="flex items-center rounded-2xl border border-[var(--line)] bg-[var(--surface-soft)]">
+                    <button
+                      type="button"
+                      onClick={() => setForm((c) => ({ ...c, adults: Math.max(1, Number(c.adults) - 1) }))}
+                      disabled={Number(form.adults) <= 1}
+                      className="flex h-11 w-11 items-center justify-center rounded-l-2xl text-lg font-bold text-[var(--text)] transition hover:bg-[var(--surface-strong)] disabled:opacity-40"
+                      aria-label="Decrease adults"
+                    >
+                      −
+                    </button>
+                    <input
+                      id="adults"
+                      name="adults"
+                      type="number"
+                      min={1}
+                      max={maxOccupancy}
+                      value={form.adults}
+                      onChange={handleChange}
+                      className="h-11 w-full bg-transparent text-center text-sm font-semibold text-[var(--text)] outline-none"
+                      readOnly
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setForm((c) => ({ ...c, adults: Math.min(maxOccupancy, Number(c.adults) + 1) }))}
+                      disabled={Number(form.adults) >= maxOccupancy}
+                      className="flex h-11 w-11 items-center justify-center rounded-r-2xl text-lg font-bold text-[var(--text)] transition hover:bg-[var(--surface-strong)] disabled:opacity-40"
+                      aria-label="Increase adults"
+                    >
+                      +
+                    </button>
+                  </div>
                 </div>
                 <div>
-                  <label className="mb-1.5 block text-sm font-semibold text-[var(--text)]">Children</label>
-                  <select
-                    name="children"
-                    value={form.children}
-                    onChange={handleChange}
-                    className="w-full rounded-2xl border border-[var(--line)] bg-[var(--surface-soft)] px-4 py-3 text-sm text-[var(--text)] outline-none transition focus:border-[var(--line-strong)] focus:shadow-[0_0_0_4px_rgba(154,91,31,0.10)]"
-                  >
-                    {Array.from({ length: maxChildren + 1 }, (_, index) => index).map((count) => (
-                      <option key={count} value={count}>{count}</option>
-                    ))}
-                  </select>
+                  <label className="mb-1.5 block text-sm font-semibold text-[var(--text)]" htmlFor="children">
+                    Children
+                  </label>
+                  <div className="flex items-center rounded-2xl border border-[var(--line)] bg-[var(--surface-soft)]">
+                    <button
+                      type="button"
+                      onClick={() => setForm((c) => ({ ...c, children: Math.max(0, Number(c.children) - 1) }))}
+                      disabled={Number(form.children) <= 0}
+                      className="flex h-11 w-11 items-center justify-center rounded-l-2xl text-lg font-bold text-[var(--text)] transition hover:bg-[var(--surface-strong)] disabled:opacity-40"
+                      aria-label="Decrease children"
+                    >
+                      −
+                    </button>
+                    <input
+                      id="children"
+                      name="children"
+                      type="number"
+                      min={0}
+                      max={maxChildren}
+                      value={form.children}
+                      onChange={handleChange}
+                      className="h-11 w-full bg-transparent text-center text-sm font-semibold text-[var(--text)] outline-none"
+                      readOnly
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setForm((c) => ({ ...c, children: Math.min(maxChildren, Number(c.children) + 1) }))}
+                      disabled={Number(form.children) >= maxChildren}
+                      className="flex h-11 w-11 items-center justify-center rounded-r-2xl text-lg font-bold text-[var(--text)] transition hover:bg-[var(--surface-strong)] disabled:opacity-40"
+                      aria-label="Increase children"
+                    >
+                      +
+                    </button>
+                  </div>
                 </div>
               </div>
 
               <div>
-                <label className="mb-1.5 block text-sm font-semibold text-[var(--text)]">Special requests</label>
+                <label className="mb-1.5 block text-sm font-semibold text-[var(--text)]" htmlFor="notes">
+                  Special requests
+                </label>
                 <textarea
+                  id="notes"
                   name="notes"
                   value={form.notes}
                   onChange={handleChange}
@@ -521,27 +858,36 @@ export default function BookingPage() {
               <button
                 type="submit"
                 disabled={submitting}
-                className="brand-button w-full rounded-2xl px-5 py-4 text-base font-extrabold transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-65"
+                className="brand-button w-full rounded-2xl px-5 py-4 text-base font-extrabold transition-transform hover:-translate-y-0.5 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-65"
               >
-                {submitting ? 'Sending request…' : 'Send booking request'}
+                <span className="inline-flex items-center gap-2">
+                  {submitting ? (
+                    <>
+                      <Loader2 size={18} className="animate-spin" />
+                      Sending request…
+                    </>
+                  ) : (
+                    'Send booking request'
+                  )}
+                </span>
               </button>
             </form>
           </section>
         </div>
       </main>
 
-      <div className="safe-bottom fixed inset-x-0 bottom-0 z-20 border-t border-[var(--line)] bg-[rgba(255,253,249,0.97)] px-4 py-3 backdrop-blur lg:hidden">
-        <div className="mx-auto flex max-w-6xl items-center justify-between gap-4">
+      <div className={`safe-bottom fixed inset-x-0 bottom-0 z-20 border-t border-[var(--line)] bg-[rgba(255,253,249,0.97)] px-4 py-2.5 backdrop-blur transition-transform duration-300 lg:hidden ${keyboardOpen ? 'translate-y-full' : 'translate-y-0'}`}>
+        <div className="mx-auto flex max-w-6xl items-center justify-between gap-3">
           <div className="min-w-0">
             <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-[var(--muted)]">Estimated total</p>
-            <p className="truncate text-lg font-extrabold text-[var(--text)]">
+            <p className="truncate text-base font-extrabold text-[var(--text)]">
               {lodge.currency}{totalAmount.toLocaleString()}
             </p>
           </div>
           <button
             type="button"
-            onClick={() => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' })}
-            className="brand-button rounded-2xl px-5 py-3 text-sm font-extrabold"
+            onClick={() => document.getElementById('booking-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+            className="brand-button rounded-xl px-4 py-2.5 text-sm font-extrabold active:scale-[0.98] transition-transform"
           >
             Complete request
           </button>

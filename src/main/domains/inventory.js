@@ -6,7 +6,8 @@ import {
   applyQueuedPosInventoryReservations,
   queueOperation,
   readCache,
-  writeCache
+  writeCache,
+  dedupePromise
 } from './infrastructure.js'
 import { mergeRemoteInventoryWithLocalState } from './inventoryMerge.js'
 import {
@@ -23,6 +24,22 @@ import {
 // ─── INVENTORY ────────────────────────────────────────────────────────────────
 
 const INVENTORY_MOVEMENTS_CACHE = 'inventory-movements';
+const INVENTORY_ITEM_SELECT = 'id, name, category, unit, current_stock, reorder_level, selling_price, outlet_id, latest_unit_cost, lodge_id, created_at, updated_at, sku, barcode, is_active';
+const INVENTORY_ITEM_LEGACY_SELECT = 'id, name, category, unit, current_stock, reorder_level, selling_price, outlet_id, latest_unit_cost, lodge_id, created_at';
+
+function isMissingInventoryCompatibilityColumnError(error) {
+  return /column\s+inventory_items\.(barcode|is_active|sku|updated_at)\s+does\s+not\s+exist/i.test(String(error?.message || ''));
+}
+
+async function selectInventoryItems(selectColumns = INVENTORY_ITEM_SELECT) {
+  return state.supabase.
+  from('inventory_items').
+  select(selectColumns).
+  eq('lodge_id', state.lodgeId).
+  order('category').
+  order('name').
+  limit(500);
+}
 
 function normalizeStockNumber(value, fallback = 0) {
   const numeric = Number(value);
@@ -86,14 +103,21 @@ function upsertLocalInventoryMovement(entry = {}) {
   return row;
 }
 
-export async function getInventoryItems() {
+async function _getInventoryItems() {
   if (state.isOnline) {
-    const { data, error } = await state.supabase.
-    from('inventory_items').
-    select('*').
-    eq('lodge_id', state.lodgeId).
-    order('category').
-    order('name');
+    let { data, error } = await selectInventoryItems();
+    if (error && isMissingInventoryCompatibilityColumnError(error)) {
+      console.warn('inventory_items compatibility columns are missing in the remote schema; loading inventory with defaults until the migration is applied');
+      const legacyResult = await selectInventoryItems(INVENTORY_ITEM_LEGACY_SELECT);
+      data = (legacyResult.data || []).map((row) => ({
+        ...row,
+        updated_at: row.updated_at || row.created_at || null,
+        sku: null,
+        barcode: null,
+        is_active: true
+      }));
+      error = legacyResult.error;
+    }
     if (!error) {
       if (!data || data.length === 0) {
         const cached = readCache('inventory-items');
@@ -116,6 +140,10 @@ export async function getInventoryItems() {
     throw new Error(error.message);
   }
   return readCache('inventory-items');
+}
+
+export function getInventoryItems() {
+  return dedupePromise('getInventoryItems', _getInventoryItems);
 }
 
 export async function getDayUseInventoryItems() {
@@ -312,10 +340,11 @@ export async function getInventoryPurchases(itemId) {
   try {
     const { data, error } = await state.supabase.
     from('inventory_purchases').
-    select('*').
+    select('id, item_id, quantity, unit_cost, total_cost, supplier, date, notes, lodge_id, created_at, updated_at').
     eq('lodge_id', state.lodgeId).
     eq('item_id', itemId).
-    order('date', { ascending: false });
+    order('date', { ascending: false }).
+    limit(200);
     if (error) throw error;
 
     const liveRows = Array.isArray(data) ? data : [];
@@ -345,9 +374,10 @@ export async function getAllInventoryPurchases() {
   try {
     const { data, error } = await state.supabase.
     from('inventory_purchases').
-    select('*').
+    select('id, item_id, quantity, unit_cost, total_cost, supplier, date, notes, lodge_id, created_at, updated_at').
     eq('lodge_id', state.lodgeId).
-    order('date', { ascending: false });
+    order('date', { ascending: false }).
+    limit(500);
     if (error) throw error;
     const liveRows = Array.isArray(data) ? data : [];
     if (liveRows.length === 0 && cached.length > 0) {

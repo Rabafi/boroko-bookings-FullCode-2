@@ -404,7 +404,9 @@ const api = {
     getExpenses: () => ipcRenderer.invoke('admin:getExpenses'),
     createExpense: (data) => ipcRenderer.invoke('admin:createExpense', data),
     updateExpense: (id, data) => ipcRenderer.invoke('admin:updateExpense', id, data),
-    deleteExpense: (id) => ipcRenderer.invoke('admin:deleteExpense', id)
+    deleteExpense: (id) => ipcRenderer.invoke('admin:deleteExpense', id),
+    getMarketingLeads: (filters) => ipcRenderer.invoke('admin:getMarketingLeads', filters),
+    updateMarketingLeadStatus: (id, status) => ipcRenderer.invoke('admin:updateMarketingLeadStatus', id, status)
   },
   conference: {
     getAll: (start, end) => ipcRenderer.invoke('conference:getAll', start, end),

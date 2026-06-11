@@ -62,15 +62,13 @@ async function loadLodgeMeshSecret() {
  * Initializes and starts all local P2P mesh network operations for the active lodge.
  */
 export async function initializeMesh() {
-  if (!state.lodgeId) {
-    console.log('[MeshLifecycle] Cannot initialize mesh: No active lodgeId.');
-    return;
-  }
+  if (!state.lodgeId) return;
 
-  if (meshState.running) {
-    console.log('[MeshLifecycle] Mesh services are already running.');
-    return;
-  }
+  if (meshState.running) return;
+
+  const RETRY_INTERVAL_MS = 120_000;
+  const lastFailureAt = meshState._failedLodgeId === state.lodgeId ? (meshState._lastFailureAt || 0) : 0;
+  if (lastFailureAt && Date.now() - lastFailureAt < RETRY_INTERVAL_MS) return;
 
   try {
     // 1. Initialize node identity
@@ -84,8 +82,13 @@ export async function initializeMesh() {
     if (!secret) {
       meshState.enabled = false;
       meshState.lodgeId = null;
+      meshState._failedLodgeId = state.lodgeId;
+      meshState._lastFailureAt = Date.now();
       meshState.lastError = 'Mesh disabled: missing lodge_mesh_secret in cached settings.';
-      console.warn('[MeshLifecycle] Mesh disabled: missing lodge_mesh_secret in cached settings.');
+      if (!meshState._failureLogged) {
+        meshState._failureLogged = true;
+        console.warn('[MeshLifecycle] Mesh disabled: missing lodge_mesh_secret in cached settings.');
+      }
       return;
     }
 
@@ -114,7 +117,12 @@ export async function initializeMesh() {
     }, 15000);
 
   } catch (err) {
-    console.error('[MeshLifecycle] Failed to initialize P2P mesh services:', err);
+    meshState._failedLodgeId = state.lodgeId;
+    meshState._lastFailureAt = Date.now();
+    if (!meshState._failureLogged) {
+      meshState._failureLogged = true;
+      console.error('[MeshLifecycle] Failed to initialize P2P mesh services:', err);
+    }
     meshState.lastError = err.message;
   }
 }

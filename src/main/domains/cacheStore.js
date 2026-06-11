@@ -71,3 +71,19 @@ export function writeCache(name, data, { source = 'local' } = {}) {
 export function clearCache(name, fallback = []) {
   writeCache(name, fallback);
 }
+
+// ─── Request deduplication ───────────────────────────────────────────────────
+// If two callers request the same key while a promise is already in-flight,
+// the second caller waits for the first result instead of firing a duplicate.
+
+const inFlightPromises = new Map();
+
+export function dedupePromise(key, factory) {
+  const existing = inFlightPromises.get(key);
+  if (existing) return existing;
+  const promise = factory().finally(() => {
+    inFlightPromises.delete(key);
+  });
+  inFlightPromises.set(key, promise);
+  return promise;
+}

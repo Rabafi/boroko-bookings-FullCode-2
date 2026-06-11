@@ -34,7 +34,7 @@ export function supportSenderName(message, fallback = 'Boroko user') {
   const type = normalizeSupportSenderType(message?.sender_type)
   const name = clean(message?.sender_name || message?.author_name || message?.name)
   if (name) return name
-  if (MANAGER_SENDER_TYPES.has(type)) return 'Manager PWA'
+  if (MANAGER_SENDER_TYPES.has(type)) return 'Manager Mobile App'
   if (type === 'command_central') return 'Command Central'
   if (type === 'support') return 'Boroko Support'
   return fallback
@@ -74,7 +74,7 @@ function normalizeMessage(message, ticket, index) {
 
 function fallbackMessages(ticket) {
   const messages = []
-  const requesterName = clean(ticket?.requester_name || ticket?.sender_name || ticket?.created_by_name) || 'Manager PWA'
+  const requesterName = clean(ticket?.requester_name || ticket?.sender_name || ticket?.created_by_name) || 'Manager Mobile App'
   const requesterRole = clean(ticket?.requester_role || ticket?.sender_role) || 'manager'
   const requesterId = clean(ticket?.requester_user_id || ticket?.sender_user_id)
   if (clean(ticket?.description)) {
@@ -151,7 +151,7 @@ export function buildSupportAuthorFromUser(user, surface = 'manager_pwa') {
   const normalizedSurface = normalizeSupportSenderType(surface)
   return {
     sender_type: normalizedSurface === 'desktop' ? 'desktop' : normalizedSurface,
-    sender_name: clean(user?.name || user?.email) || (normalizedSurface === 'desktop' ? 'Front desk' : 'Manager PWA'),
+    sender_name: clean(user?.name || user?.email) || (normalizedSurface === 'desktop' ? 'Front desk' : 'Manager Mobile App'),
     sender_role: clean(user?.role) || (normalizedSurface === 'desktop' ? 'front desk' : 'manager'),
     sender_user_id: clean(user?.id),
     sender_surface: normalizedSurface

@@ -922,16 +922,16 @@ const APP_WORKFLOWS = [
     category: 'Admin',
     screen: 'Staff',
     route: '/staff',
-    summary: 'Use staff access and the manager PWA for mobile workflows like alerts, reports, bookings, invoices, and control tasks.',
+    summary: 'Use staff access and the Manager Mobile App for mobile workflows like alerts, reports, bookings, invoices, and control tasks.',
     steps: [
       'Open Staff.',
       'Select the user who needs mobile access.',
-      'Enable the appropriate PWA access for their role.',
+      'Enable the appropriate Mobile App access for their role.',
       'Ask the user to sign into the manager app.',
-      'Review Control or Alerts on the PWA for device-local warnings.'
+      'Review Control or Alerts on the Mobile App for device-local warnings.'
     ],
     tips: [
-      'PWA queue health can be device-local, so compare with desktop System Health when investigating sync.',
+      'Mobile App queue health can be device-local, so compare with desktop System Health when investigating sync.',
       'Use roles carefully because mobile access can expose sensitive operations.'
     ],
     keywords: ['mobile', 'pwa', 'manager app', 'phone app', 'alerts', 'control', 'remote access', 'front desk request']

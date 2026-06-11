@@ -557,13 +557,17 @@ export default function Settings() {
 
   // ── Logo handling ──────────────────────────────────────────────────────────
 
-  const processImageFile = (file, onDone, max = 400) => {
+  const processImageFile = (file, onDone, { max = 400, minWidth = 1, minHeight = 1, label = 'Image' } = {}) => {
     if (!file || !file.type.startsWith('image/')) return
 
     const reader = new FileReader()
     reader.onload = (e) => {
       const img = new window.Image()
       img.onload = () => {
+        if (img.width < minWidth || img.height < minHeight) {
+          window.alert(`${label} is too small. Minimum size is ${minWidth}x${minHeight}px. Your image is ${img.width}x${img.height}px.`)
+          return
+        }
         const canvas = document.createElement('canvas')
         const ratio = Math.min(max / img.width, max / img.height, 1)
         canvas.width = img.width * ratio
@@ -582,14 +586,14 @@ export default function Settings() {
     processImageFile(e.target.files[0], (base64) => {
       setLogoPreview(base64)
       setForm((f) => ({ ...f, logo: base64 }))
-    })
+    }, { max: 400, minWidth: 128, minHeight: 128, label: 'Logo' })
   }
 
   const handleHeroFileChange = (e) => {
     processImageFile(e.target.files[0], (base64) => {
       setHeroPreview(base64)
       setForm((f) => ({ ...f, hero_image: base64 }))
-    }, 1400)
+    }, { max: 1400, minWidth: 800, minHeight: 400, label: 'Hero image' })
   }
 
   const handleDrop = (e) => {
@@ -598,7 +602,7 @@ export default function Settings() {
     processImageFile(e.dataTransfer.files[0], (base64) => {
       setLogoPreview(base64)
       setForm((f) => ({ ...f, logo: base64 }))
-    })
+    }, { max: 400, minWidth: 128, minHeight: 128, label: 'Logo' })
   }
 
   const removeLogo = () => {

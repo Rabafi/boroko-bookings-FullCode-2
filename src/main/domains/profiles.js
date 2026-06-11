@@ -361,6 +361,33 @@ export function getActiveProfile() {
   return active || null;
 }
 
+export function ensureReadyProfileForLodge(lodgeId, { label = 'Existing Lodge' } = {}) {
+  const normalizedId = normalizeLodgeId(lodgeId);
+  if (!isUuid(normalizedId)) throw new Error('The server returned an invalid lodge ID.');
+
+  const registry = readProfilesRegistry();
+  const nextLabel = typeof label === 'string' && label.trim() ? label.trim() : 'Existing Lodge';
+  const existing = registry.profiles.find((profile) => profile.lodge_id === normalizedId);
+  const nextProfile = sanitizeProfile({
+    ...(existing || {}),
+    lodge_id: normalizedId,
+    label: existing?.label && existing.label !== 'Untitled Lodge' ? existing.label : nextLabel,
+    status: PROFILE_STATUS.READY,
+    created_at: existing?.created_at || new Date().toISOString(),
+    last_used_at: new Date().toISOString()
+  });
+  const remainingProfiles = registry.profiles.filter((profile) => profile.lodge_id !== normalizedId);
+
+  writeProfilesRegistry({
+    active_lodge_id: normalizedId,
+    profiles: [nextProfile, ...remainingProfiles]
+  });
+  persistLegacyLodgeId(normalizedId);
+  ensureProfileCacheFiles(normalizedId);
+  setRuntimeActiveProfile(normalizedId, { persistActive: false, touch: false });
+  return getActiveProfile();
+}
+
 function getCachedSettingsSnapshot() {
   if (!state.cacheDir) {
     return {

@@ -29,32 +29,21 @@ export async function checkOnline() {
   }
   const wasOnline = state.isOnline;
   const base = SUPABASE_URL.replace(/\/$/, '');
-  const headers = {
-    apikey: SUPABASE_ANON_KEY,
-    Authorization: `Bearer ${SUPABASE_ANON_KEY}`
-  };
-  const fetchWithTimeout = async (url, init = {}) => {
+  const reachable = (res) => res && res.status > 0 && res.status < 500;
+
+  const probeNoAuth = async (url) => {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), CONNECTIVITY_PROBE_TIMEOUT_MS);
     try {
-      return await fetch(url, { ...init, headers, signal: ctrl.signal });
+      return reachable(await fetch(url, { method: 'GET', signal: ctrl.signal }));
+    } catch {
+      return false;
     } finally {
       clearTimeout(t);
     }
   };
-  const reachable = (res) => res && res.status > 0 && res.status < 500;
-  const probe = async (url) => {
-    try {
-      return reachable(await fetchWithTimeout(url, { method: 'GET' }));
-    } catch {
-      return false;
-    }
-  };
 
-  const rawOnline = (await Promise.all([
-    probe(`${base}/auth/v1/health`),
-    probe(`${base}/rest/v1/`)
-  ])).some(Boolean);
+  const rawOnline = await probeNoAuth(`${base}/auth/v1/health`);
 
   if (rawOnline) {
     state.consecutiveConnectivityFailures = 0;

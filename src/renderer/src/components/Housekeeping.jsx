@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { CheckCircle, AlertCircle, Clock, RefreshCw, Package2, BarChart3, ClipboardList } from 'lucide-react'
-import { useSettings } from '../app-context'
+import { useFeatures, useSettings } from '../app-context'
 import { formatLocalDate, localDateStringFromOffset, localToday } from '../utils/localDate'
 
 const STATUS_CONFIG = {
@@ -29,6 +29,7 @@ export default function Housekeeping() {
   const navigate = useNavigate()
   const { settings } = useSettings()
   const currency = settings?.currency || 'P'
+  const features = useFeatures()
   const [rooms, setRooms] = useState([])
   const [todayBookings, setTodayBookings] = useState([])
   const [supplyItems, setSupplyItems] = useState([])
@@ -55,11 +56,12 @@ export default function Housekeeping() {
     setLoading(true)
     setError('')
     try {
+      const suppliesEnabled = Object.keys(features).length > 0 && features.supplies
       const [roomData, bookingData, itemData, allocationData] = await Promise.all([
         window.api.rooms.getAll().catch(() => []),
         window.api.bookings.getByDateRange(today, tomorrow).catch(() => []),
-        window.api.supplies?.getItems?.().catch(() => []),
-        window.api.supplies?.getWeekAllocations?.(weekStart).catch(() => [])
+        suppliesEnabled ? window.api.supplies?.getItems?.().catch(() => []) : Promise.resolve([]),
+        suppliesEnabled ? window.api.supplies?.getWeekAllocations?.(weekStart).catch(() => []) : Promise.resolve([])
       ])
       setRooms(roomData || [])
       setTodayBookings(bookingData || [])
@@ -212,12 +214,14 @@ export default function Housekeeping() {
           </p>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2">
-          <button
-            onClick={() => navigate('/supplies')}
-            className="btn-secondary"
-          >
-            <BarChart3 size={14} /> Open Supply Report
-          </button>
+          {Object.keys(features).length > 0 && features.supplies && (
+            <button
+              onClick={() => navigate('/supplies')}
+              className="btn-secondary"
+            >
+              <BarChart3 size={14} /> Open Supply Report
+            </button>
+          )}
           <button
             onClick={loadRooms}
             className="btn-secondary"
@@ -246,24 +250,28 @@ export default function Housekeeping() {
       </div>
 
       <div className="bb-compact-stat-grid">
-        <div className="bb-compact-stat flex items-center gap-2.5">
-          <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-emerald-100 text-emerald-700">
-            <Package2 size={16} />
-          </div>
-          <div>
-            <p className="bb-compact-stat__value">{currency} {Number(supplySummary.totalCost || 0).toFixed(2)}</p>
-            <p className="bb-compact-stat__label text-slate-500">Supply cost</p>
-          </div>
-        </div>
-        <div className="bb-compact-stat flex items-center gap-2.5">
-          <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-blue-100 text-blue-700">
-            <ClipboardList size={16} />
-          </div>
-          <div>
-            <p className="bb-compact-stat__value">{supplySummary.roomsTracked}</p>
-            <p className="bb-compact-stat__label text-slate-500">Captured rooms</p>
-          </div>
-        </div>
+        {Object.keys(features).length > 0 && features.supplies && (
+          <>
+            <div className="bb-compact-stat flex items-center gap-2.5">
+              <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-emerald-100 text-emerald-700">
+                <Package2 size={16} />
+              </div>
+              <div>
+                <p className="bb-compact-stat__value">{currency} {Number(supplySummary.totalCost || 0).toFixed(2)}</p>
+                <p className="bb-compact-stat__label text-slate-500">Supply cost</p>
+              </div>
+            </div>
+            <div className="bb-compact-stat flex items-center gap-2.5">
+              <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-blue-100 text-blue-700">
+                <ClipboardList size={16} />
+              </div>
+              <div>
+                <p className="bb-compact-stat__value">{supplySummary.roomsTracked}</p>
+                <p className="bb-compact-stat__label text-slate-500">Captured rooms</p>
+              </div>
+            </div>
+          </>
+        )}
         <div className="bb-compact-stat flex items-center gap-2.5">
           <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-amber-100 text-amber-700">
             <AlertCircle size={16} />
@@ -293,83 +301,85 @@ export default function Housekeeping() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
-        <div className="bb-card p-5 xl:col-span-1">
-          <div className="mb-4 flex items-start justify-between gap-4">
-            <div>
-              <p className="text-sm font-semibold text-slate-900">Weekly housekeeping report</p>
-              <p className="mt-1 text-xs text-slate-500">
-                Based on room-supply capture for the week starting {weekStart}.
-              </p>
+      {Object.keys(features).length > 0 && features.supplies && (
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
+          <div className="bb-card p-5 xl:col-span-1">
+            <div className="mb-4 flex items-start justify-between gap-4">
+              <div>
+                <p className="text-sm font-semibold text-slate-900">Weekly housekeeping report</p>
+                <p className="mt-1 text-xs text-slate-500">
+                  Based on room-supply capture for the week starting {weekStart}.
+                </p>
+              </div>
+              <button onClick={() => navigate('/supplies')} className="btn-secondary text-xs">
+                Detailed Report
+              </button>
             </div>
-            <button onClick={() => navigate('/supplies')} className="btn-secondary text-xs">
-              Detailed Report
-            </button>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="bb-card-muted p-4">
+                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Units Used</p>
+                <p className="mt-2 text-2xl font-bold text-slate-900">{Math.round(supplySummary.totalUnits || 0)}</p>
+                <p className="mt-1 text-xs text-slate-500">Consumables recorded across all captured rooms this week.</p>
+              </div>
+              <div className="bb-card-muted p-4">
+                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Top Cost Driver</p>
+                <p className="mt-2 text-lg font-bold text-slate-900">{supplySummary.topItems[0]?.name || 'No data yet'}</p>
+                <p className="mt-1 text-xs text-slate-500">
+                  {supplySummary.topItems[0]
+                    ? `${currency} ${Number(supplySummary.topItems[0].total_cost || 0).toFixed(2)} this week`
+                    : 'Start weekly capture to see which supplies cost the most.'}
+                </p>
+              </div>
+            </div>
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="bb-card-muted p-4">
-              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Units Used</p>
-              <p className="mt-2 text-2xl font-bold text-slate-900">{Math.round(supplySummary.totalUnits || 0)}</p>
-              <p className="mt-1 text-xs text-slate-500">Consumables recorded across all captured rooms this week.</p>
-            </div>
-            <div className="bb-card-muted p-4">
-              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Top Cost Driver</p>
-              <p className="mt-2 text-lg font-bold text-slate-900">{supplySummary.topItems[0]?.name || 'No data yet'}</p>
-              <p className="mt-1 text-xs text-slate-500">
-                {supplySummary.topItems[0]
-                  ? `${currency} ${Number(supplySummary.topItems[0].total_cost || 0).toFixed(2)} this week`
-                  : 'Start weekly capture to see which supplies cost the most.'}
-              </p>
-            </div>
-          </div>
-        </div>
 
-        <div className="bb-card p-5 xl:col-span-1">
-          <p className="text-sm font-semibold text-slate-900">Highest supply cost rooms</p>
-          <p className="mt-1 text-xs text-slate-500">Use this to spot rooms that are consuming more stock than expected.</p>
-          <div className="mt-4 space-y-3">
-            {supplySummary.topRooms.length > 0 ? supplySummary.topRooms.map((room) => (
-              <div key={room.room_id} className="bb-card-muted flex items-center justify-between gap-3 p-3">
-                <div>
-                  <p className="text-sm font-semibold text-slate-900">Room {room.room_number}</p>
-                  <p className="text-xs text-slate-500">{room.room_type || 'Room'} · {Math.round(room.total_units)} units across {room.item_count} logged items</p>
+          <div className="bb-card p-5 xl:col-span-1">
+            <p className="text-sm font-semibold text-slate-900">Highest supply cost rooms</p>
+            <p className="mt-1 text-xs text-slate-500">Use this to spot rooms that are consuming more stock than expected.</p>
+            <div className="mt-4 space-y-3">
+              {supplySummary.topRooms.length > 0 ? supplySummary.topRooms.map((room) => (
+                <div key={room.room_id} className="bb-card-muted flex items-center justify-between gap-3 p-3">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-900">Room {room.room_number}</p>
+                    <p className="text-xs text-slate-500">{room.room_type || 'Room'} · {Math.round(room.total_units)} units across {room.item_count} logged items</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-sm font-semibold text-slate-900">{currency} {Number(room.total_cost || 0).toFixed(2)}</p>
+                  </div>
                 </div>
-                <div className="text-right">
-                  <p className="text-sm font-semibold text-slate-900">{currency} {Number(room.total_cost || 0).toFixed(2)}</p>
+              )) : (
+                <div className="bb-empty-state min-h-[160px] px-4 py-6">
+                  <p className="text-base font-semibold text-slate-800">No weekly supply capture yet</p>
+                  <p className="text-sm text-slate-500">Capture items like toilet paper, soap, and linen use to compare room cost this week.</p>
                 </div>
-              </div>
-            )) : (
-              <div className="bb-empty-state min-h-[160px] px-4 py-6">
-                <p className="text-base font-semibold text-slate-800">No weekly supply capture yet</p>
-                <p className="text-sm text-slate-500">Capture items like toilet paper, soap, and linen use to compare room cost this week.</p>
-              </div>
-            )}
+              )}
+            </div>
           </div>
-        </div>
 
-        <div className="bb-card p-5 xl:col-span-1">
-          <p className="text-sm font-semibold text-slate-900">Most used housekeeping supplies</p>
-          <p className="mt-1 text-xs text-slate-500">Track consumables that drive recurring housekeeping cost.</p>
-          <div className="mt-4 space-y-3">
-            {supplySummary.topItems.length > 0 ? supplySummary.topItems.map((item) => (
-              <div key={item.supply_item_id} className="bb-card-muted flex items-center justify-between gap-3 p-3">
-                <div>
-                  <p className="text-sm font-semibold text-slate-900">{item.name}</p>
-                  <p className="text-xs text-slate-500">{Math.round(item.total_units)} {item.unit || 'units'} used across {item.room_count} room entries</p>
+          <div className="bb-card p-5 xl:col-span-1">
+            <p className="text-sm font-semibold text-slate-900">Most used housekeeping supplies</p>
+            <p className="mt-1 text-xs text-slate-500">Track consumables that drive recurring housekeeping cost.</p>
+            <div className="mt-4 space-y-3">
+              {supplySummary.topItems.length > 0 ? supplySummary.topItems.map((item) => (
+                <div key={item.supply_item_id} className="bb-card-muted flex items-center justify-between gap-3 p-3">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-900">{item.name}</p>
+                    <p className="text-xs text-slate-500">{Math.round(item.total_units)} {item.unit || 'units'} used across {item.room_count} room entries</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-sm font-semibold text-slate-900">{currency} {Number(item.total_cost || 0).toFixed(2)}</p>
+                  </div>
                 </div>
-                <div className="text-right">
-                  <p className="text-sm font-semibold text-slate-900">{currency} {Number(item.total_cost || 0).toFixed(2)}</p>
+              )) : (
+                <div className="bb-empty-state min-h-[160px] px-4 py-6">
+                  <p className="text-base font-semibold text-slate-800">No supply cost data yet</p>
+                  <p className="text-sm text-slate-500">Room Supplies can track toilet paper, amenities, linen, and other consumables by room.</p>
                 </div>
-              </div>
-            )) : (
-              <div className="bb-empty-state min-h-[160px] px-4 py-6">
-                <p className="text-base font-semibold text-slate-800">No supply cost data yet</p>
-                <p className="text-sm text-slate-500">Room Supplies can track toilet paper, amenities, linen, and other consumables by room.</p>
-              </div>
-            )}
+              )}
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
       {/* Error banner */}
       {error && (
@@ -424,7 +434,7 @@ export default function Housekeeping() {
           <div className="col-span-3">
             <div className="bb-empty-state min-h-[220px]">
               <p className="text-base font-semibold text-slate-800">Loading housekeeping board</p>
-              <p className="text-sm text-slate-500">Bringing in room status, notes, and this week&apos;s supply capture.</p>
+              <p className="text-sm text-slate-500">Bringing in room status, notes{Object.keys(features).length > 0 && features.supplies ? ', and this week\'s supply capture' : ''}.</p>
             </div>
           </div>
         )}
@@ -462,20 +472,22 @@ export default function Housekeeping() {
                   </span>
                 </div>
 
-                <div className="mb-3 grid grid-cols-2 gap-2">
-                  <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">Weekly Supply Cost</p>
-                    <p className="mt-1 text-sm font-semibold text-slate-900">
-                      {roomSupplyCost > 0 ? `${currency} ${roomSupplyCost.toFixed(2)}` : 'Not captured yet'}
-                    </p>
+                {Object.keys(features).length > 0 && features.supplies && (
+                  <div className="mb-3 grid grid-cols-2 gap-2">
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">Weekly Supply Cost</p>
+                      <p className="mt-1 text-sm font-semibold text-slate-900">
+                        {roomSupplyCost > 0 ? `${currency} ${roomSupplyCost.toFixed(2)}` : 'Not captured yet'}
+                      </p>
+                    </div>
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">Usage Logged</p>
+                      <p className="mt-1 text-sm font-semibold text-slate-900">
+                        {roomSupplyRows.length > 0 ? `${Math.round(roomUnitsUsed)} units` : 'No room-supply entries'}
+                      </p>
+                    </div>
                   </div>
-                  <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">Usage Logged</p>
-                    <p className="mt-1 text-sm font-semibold text-slate-900">
-                      {roomSupplyRows.length > 0 ? `${Math.round(roomUnitsUsed)} units` : 'No room-supply entries'}
-                    </p>
-                  </div>
-                </div>
+                )}
 
                 {/* Notes */}
                 <textarea

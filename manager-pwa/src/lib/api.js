@@ -133,6 +133,35 @@ async function safeSelect(queryBuilder, fallback = []) {
   return data || fallback
 }
 
+const INVENTORY_ITEM_SELECT = 'id, name, category, unit, current_stock, reorder_level, selling_price, outlet_id, latest_unit_cost, lodge_id, created_at, updated_at, sku, barcode, is_active'
+const INVENTORY_ITEM_LEGACY_SELECT = 'id, name, category, unit, current_stock, reorder_level, selling_price, outlet_id, latest_unit_cost, lodge_id, created_at'
+
+function isMissingInventoryCompatibilityColumnError(error) {
+  return /column\s+inventory_items\.(barcode|is_active|sku|updated_at)\s+does\s+not\s+exist/i.test(String(error?.message || ''))
+}
+
+async function safeInventorySelect(lodgeId, { orderByCategory = false } = {}) {
+  const buildQuery = (columns) => {
+    let query = supabase.from('inventory_items').select(columns).eq('lodge_id', lodgeId)
+    if (orderByCategory) query = query.order('category')
+    return query.order('name').limit(500)
+  }
+  const primary = await buildQuery(INVENTORY_ITEM_SELECT)
+  if (!primary.error) return primary.data || []
+  if (!isMissingInventoryCompatibilityColumnError(primary.error)) {
+    throw new Error(friendlyErrorMessage(primary.error, 'Could not load inventory.'))
+  }
+  const legacy = await buildQuery(INVENTORY_ITEM_LEGACY_SELECT)
+  if (legacy.error) throw new Error(friendlyErrorMessage(legacy.error, 'Could not load inventory.'))
+  return (legacy.data || []).map((row) => ({
+    ...row,
+    updated_at: row.updated_at || row.created_at || null,
+    sku: null,
+    barcode: null,
+    is_active: true
+  }))
+}
+
 function getErrorMessage(error, fallback = 'Unexpected issue') {
   return friendlyErrorMessage(error, fallback)
 }
@@ -200,15 +229,15 @@ async function buildDashboardSnapshotLegacy(lodgeId, today = formatDate(new Date
   const previousWeek = Array.from({ length: 7 }, (_, index) => formatDate(addDays(today, index - 6)))
 
   const [rooms, bookings, payments, expenses, maintenance, inventory, quotations, conference, dayUse] = await Promise.all([
-    safeSelect(supabase.from('rooms').select('*').eq('lodge_id', lodgeId).order('room_number')),
-    safeSelect(supabase.from('bookings').select('*').eq('lodge_id', lodgeId).order('check_in', { ascending: false })),
+    safeSelect(supabase.from('rooms').select('id, room_number, room_type, rate_per_night, max_occupancy, status, amenities, description, photo, photos, lodge_id, created_at, updated_at, housekeeping_status, housekeeping_notes').eq('lodge_id', lodgeId).order('room_number').limit(200)),
+    safeSelect(supabase.from('bookings').select('id, customer_id, room_id, check_in, check_out, adults, children, total_amount, status, payment_status, amount_paid, charges_total, deposit_amount, notes, is_exclusive_event, invoice_number, created_at, updated_at, created_by, payment_method, source, quotation_id, event_daily_rate').eq('lodge_id', lodgeId).order('check_in', { ascending: false }).limit(500)),
     safeSelect(supabase.from('payments').select('amount, paid_at').eq('lodge_id', lodgeId).gte('paid_at', monthStart).lt('paid_at', monthEndExclusive), []),
-    safeSelect(supabase.from('expenses').select('id, amount, date, category, description').eq('lodge_id', lodgeId).gte('date', monthStart)),
-    safeSelect(supabase.from('maintenance_tickets').select('*').eq('lodge_id', lodgeId).order('created_at', { ascending: false })),
-    safeSelect(supabase.from('inventory_items').select('*').eq('lodge_id', lodgeId).order('name')),
-    safeSelect(supabase.from('quotations').select('*').eq('lodge_id', lodgeId).order('created_at', { ascending: false })),
-    safeSelect(supabase.from('conference_bookings').select('*').eq('lodge_id', lodgeId).gte('booking_date', today).lte('booking_date', nextWeek).order('booking_date')),
-    safeSelect(supabase.from('pool_day_use').select('*').eq('lodge_id', lodgeId).gte('date', monthStart))
+    safeSelect(supabase.from('expenses').select('id, amount, date, category, description').eq('lodge_id', lodgeId).gte('date', monthStart).limit(200)),
+    safeSelect(supabase.from('maintenance_tickets').select('id, room_id, title, issue, description, status, priority, reported_date, labour_cost, parts_cost, total_cost, vendor_name, cost_notes, completed_at, created_at, updated_at').eq('lodge_id', lodgeId).order('created_at', { ascending: false }).limit(100)),
+    safeInventorySelect(lodgeId),
+    safeSelect(supabase.from('quotations').select('id, customer_id, customer_name, customer_phone, room_id, room_name, check_in, check_out, adults, children, subtotal, tax_amount, total_amount, currency, notes, status, valid_until, quotation_number, created_at, updated_at, created_by, lodge_id, parent_quotation_id, converted_booking_id').eq('lodge_id', lodgeId).order('created_at', { ascending: false }).limit(200)),
+    safeSelect(supabase.from('conference_bookings').select('id, booking_date, start_time, end_time, client_name, company, attendees, setup_type, room_name, includes_catering, catering_notes, total_amount, deposit_paid, payment_status, payment_method, notes, created_at, updated_at, lodge_id').eq('lodge_id', lodgeId).gte('booking_date', today).lte('booking_date', nextWeek).order('booking_date').limit(50)),
+    safeSelect(supabase.from('pool_day_use').select('id, date, resource_key, resource_name, start_time, end_time, status, total_amount, amount_paid, payment_status, adults, children, notes, created_at, updated_at, deposit_amount, fee_per_adult, fee_per_child, flat_fee, hourly_rate, package_fee, pricing_mode, created_by').eq('lodge_id', lodgeId).gte('date', monthStart).limit(200))
   ])
 
   const occupied = bookings.filter((booking) => booking.status === 'checked_in').length
@@ -678,7 +707,7 @@ async function executeSupportMessage(payload) {
     p_lodge_id: payload.lodge_id,
     p_body: payload.body,
     p_sender_type: payload.sender_type || 'manager_pwa',
-    p_sender_name: payload.sender_name || 'Manager PWA',
+    p_sender_name: payload.sender_name || 'Manager Mobile App',
     p_sender_role: payload.sender_role || 'manager',
     p_sender_user_id: payload.sender_user_id || '',
     p_sender_surface: payload.sender_surface || 'manager_pwa',
@@ -831,7 +860,7 @@ export async function listRooms(lodgeId) {
     lodgeId,
     key: 'rooms',
     fallback: [],
-    fetcher: () => safeSelect(supabase.from('rooms').select('*').eq('lodge_id', lodgeId).order('room_number'), [])
+    fetcher: () => safeSelect(supabase.from('rooms').select('id, room_number, room_type, rate_per_night, max_occupancy, status, amenities, description, photo, photos, lodge_id, created_at, updated_at, housekeeping_status, housekeeping_notes').eq('lodge_id', lodgeId).order('room_number').limit(200), [])
   })
 }
 
@@ -841,7 +870,7 @@ export async function listBookings(lodgeId, options = {}) {
     key: 'bookings',
     fallback: [],
     forceFresh: options.forceFresh === true,
-    fetcher: () => safeSelect(supabase.from('bookings').select('*').eq('lodge_id', lodgeId).order('check_in', { ascending: false }), [])
+    fetcher: () => safeSelect(supabase.from('bookings').select('id, customer_id, room_id, check_in, check_out, adults, children, total_amount, status, payment_status, amount_paid, charges_total, deposit_amount, notes, is_exclusive_event, invoice_number, created_at, updated_at, created_by, payment_method, source, quotation_id, event_daily_rate').eq('lodge_id', lodgeId).order('check_in', { ascending: false }).limit(500), [])
   })
 }
 
@@ -850,7 +879,7 @@ async function listCustomers(lodgeId) {
     lodgeId,
     key: 'customers',
     fallback: [],
-    fetcher: () => safeSelect(supabase.from('customers').select('*').eq('lodge_id', lodgeId).order('name'), [])
+    fetcher: () => safeSelect(supabase.from('customers').select('id, name, email, phone, id_number, nationality, created_at, updated_at, is_blacklisted, blacklist_reason, lodge_id').eq('lodge_id', lodgeId).order('name').limit(500), [])
   })
 }
 
@@ -870,7 +899,7 @@ export async function listMaintenanceTickets(lodgeId, options = {}) {
     key: 'maintenance',
     fallback: [],
     forceFresh: options.forceFresh === true,
-    fetcher: () => safeSelect(supabase.from('maintenance_tickets').select('*').eq('lodge_id', lodgeId).order('created_at', { ascending: false }), [])
+    fetcher: () => safeSelect(supabase.from('maintenance_tickets').select('id, room_id, title, issue, description, status, priority, reported_date, labour_cost, parts_cost, total_cost, vendor_name, cost_notes, completed_at, created_at, updated_at').eq('lodge_id', lodgeId).order('created_at', { ascending: false }).limit(200), [])
   })
 }
 
@@ -917,7 +946,7 @@ export async function listQuotations(lodgeId) {
     lodgeId,
     key: 'quotations',
     fallback: [],
-    fetcher: () => safeSelect(supabase.from('quotations').select('*').eq('lodge_id', lodgeId).order('created_at', { ascending: false }), [])
+    fetcher: () => safeSelect(supabase.from('quotations').select('id, customer_id, customer_name, customer_phone, room_id, room_name, check_in, check_out, adults, children, subtotal, tax_amount, total_amount, currency, notes, status, valid_until, quotation_number, created_at, updated_at, created_by, lodge_id, parent_quotation_id, converted_booking_id').eq('lodge_id', lodgeId).order('created_at', { ascending: false }).limit(200), [])
   })
 }
 
@@ -929,10 +958,10 @@ export async function listExpenses(lodgeId, start, end, options = {}) {
     fallback: [],
     forceFresh: options.forceFresh === true,
     fetcher: async () => {
-      let query = supabase.from('expenses').select('*').eq('lodge_id', lodgeId)
+      let query = supabase.from('expenses').select('id, date, category, description, amount, outlet_id, created_at, updated_at').eq('lodge_id', lodgeId)
       if (start) query = query.gte('date', start)
       if (end) query = query.lte('date', end)
-      return safeSelect(query.order('date', { ascending: false }), [])
+      return safeSelect(query.order('date', { ascending: false }).limit(500), [])
     }
   })
 }
@@ -945,7 +974,7 @@ export async function listGuests(lodgeId) {
 export async function getGuestHistory(lodgeId, customerId) {
   assertCapability('guests.view')
   return safeSelect(
-    supabase.from('bookings').select('*').eq('lodge_id', lodgeId).eq('customer_id', customerId).order('check_in', { ascending: false }),
+    supabase.from('bookings').select('id, customer_id, room_id, check_in, check_out, adults, children, total_amount, status, payment_status, amount_paid, charges_total, deposit_amount, notes, is_exclusive_event, invoice_number, created_at, updated_at, created_by, payment_method, source, quotation_id, event_daily_rate').eq('lodge_id', lodgeId).eq('customer_id', customerId).order('check_in', { ascending: false }).limit(200),
     []
   )
 }
@@ -956,7 +985,7 @@ export async function listStaff(lodgeId) {
     lodgeId,
     key: 'staff',
     fallback: [],
-    fetcher: () => safeSelect(supabase.from('users').select('id, name, email, role, status, created_at, lodge_id, last_sign_in_at, last_desktop_sign_in_at, last_pwa_sign_in_at, last_activity_at, invite_sent_at, password_updated_at, pwa_enabled, pwa_password_set_at, pwa_disabled_reason, allowed_outlet_ids, capability_overrides').eq('lodge_id', lodgeId).order('name'), [])
+    fetcher: () => safeSelect(supabase.from('users').select('id, name, email, role, status, created_at, lodge_id, last_sign_in_at, last_desktop_sign_in_at, last_pwa_sign_in_at, last_activity_at, invite_sent_at, password_updated_at, pwa_enabled, pwa_password_set_at, pwa_disabled_reason, allowed_outlet_ids, capability_overrides').eq('lodge_id', lodgeId).order('name').limit(200), [])
   })
 }
 
@@ -967,10 +996,10 @@ export async function listConferenceBookings(lodgeId, start, end) {
     key: 'conference',
     fallback: [],
     fetcher: async () => {
-      let query = supabase.from('conference_bookings').select('*').eq('lodge_id', lodgeId)
+      let query = supabase.from('conference_bookings').select('id, booking_date, start_time, end_time, client_name, company, attendees, setup_type, room_name, includes_catering, catering_notes, total_amount, deposit_paid, payment_status, payment_method, notes, created_at, updated_at, lodge_id').eq('lodge_id', lodgeId)
       if (start) query = query.gte('booking_date', start)
       if (end) query = query.lte('booking_date', end)
-      return safeSelect(query.order('booking_date', { ascending: false }).order('start_time'), [])
+      return safeSelect(query.order('booking_date', { ascending: false }).order('start_time').limit(200), [])
     }
   })
 }
@@ -982,10 +1011,10 @@ export async function listDayUseEntries(lodgeId, start, end) {
     key: 'dayuse',
     fallback: [],
     fetcher: async () => {
-      let query = supabase.from('pool_day_use').select('*').eq('lodge_id', lodgeId)
+      let query = supabase.from('pool_day_use').select('id, date, resource_key, resource_name, start_time, end_time, status, total_amount, amount_paid, payment_status, adults, children, notes, created_at, updated_at, deposit_amount, fee_per_adult, fee_per_child, flat_fee, hourly_rate, package_fee, pricing_mode, created_by').eq('lodge_id', lodgeId)
       if (start) query = query.gte('date', start)
       if (end) query = query.lte('date', end)
-      return safeSelect(query.order('date', { ascending: false }).order('created_at', { ascending: false }), [])
+      return safeSelect(query.order('date', { ascending: false }).order('created_at', { ascending: false }).limit(500), [])
     }
   })
 }
@@ -996,7 +1025,7 @@ export async function listInventory(lodgeId) {
     lodgeId,
     key: 'inventory',
     fallback: [],
-    fetcher: () => safeSelect(supabase.from('inventory_items').select('*').eq('lodge_id', lodgeId).order('name'), [])
+    fetcher: () => safeInventorySelect(lodgeId)
   })
 }
 
@@ -1435,6 +1464,15 @@ export async function authenticateManager(identifier, password, lodgeId = null) 
   let data
   let error
 
+  async function tryLegacy() {
+    const legacy = await supabase.rpc('authenticate_manager', {
+      p_email: email,
+      p_password: password,
+      p_lodge_id: lodgeId
+    })
+    return legacy
+  }
+
   try {
     await signInWithSupabaseAuth(email, password)
     const result = await supabase.rpc('authenticate_manager_from_supabase', {
@@ -1444,20 +1482,18 @@ export async function authenticateManager(identifier, password, lodgeId = null) 
     error = result.error
 
     if (error && /could not find the function|schema cache|authenticate_manager_from_supabase/i.test(error.message || '')) {
-      const legacy = await supabase.rpc('authenticate_manager', {
-        p_email: email,
-        p_password: password,
-        p_lodge_id: lodgeId
-      })
+      const legacy = await tryLegacy()
       data = legacy.data
       error = legacy.error
+    } else if (!error && (!data || (Array.isArray(data) && data.length === 0))) {
+      const legacy = await tryLegacy()
+      if (!legacy.error && legacy.data && legacy.data.length > 0) {
+        data = legacy.data
+        error = legacy.error
+      }
     }
   } catch (authError) {
-    const legacy = await supabase.rpc('authenticate_manager', {
-      p_email: email,
-      p_password: password,
-      p_lodge_id: lodgeId
-    })
+    const legacy = await tryLegacy()
     data = legacy.data
     error = legacy.error || authError
   }
@@ -1471,14 +1507,9 @@ export async function authenticateManager(identifier, password, lodgeId = null) 
     throw new Error('That email or mobile app password is incorrect.')
   }
 
-  const authedRows = rows.filter((row) => row.authenticated === true)
-  if (authedRows.length === 0) {
-    throw new Error('That email or mobile app password is incorrect.')
-  }
-
-  const enabledRows = authedRows.filter((row) => row.pwa_enabled === true)
+  const enabledRows = rows.filter((row) => row.pwa_enabled === true)
   if (enabledRows.length === 0) {
-    throw new Error(authedRows[0]?.pwa_disabled_reason || 'Manager mobile app access is disabled for this account.')
+    throw new Error(rows[0]?.pwa_disabled_reason || 'Manager mobile app access is disabled for this account.')
   }
 
   const entitledRows = enabledRows.filter((row) => row.pwa_feature_enabled !== false)
@@ -1492,9 +1523,14 @@ export async function authenticateManager(identifier, password, lodgeId = null) 
     return { lodges: entitledRows }
   }
 
+  const authedRows = rows.filter((row) => row.authenticated === true)
+  if (authedRows.length === 0) {
+    throw new Error('That email or mobile app password is incorrect.')
+  }
+
   const selected = lodgeId
-    ? entitledRows.find((row) => row.lodge_id === String(lodgeId).trim().toLowerCase())
-    : entitledRows[0]
+    ? authedRows.find((row) => row.lodge_id === String(lodgeId).trim().toLowerCase())
+    : authedRows[0]
 
   if (!selected) {
     throw new Error('That lodge is no longer available for this account.')

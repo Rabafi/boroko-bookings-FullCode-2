@@ -3,21 +3,21 @@
 @tailwind utilities;
 
 :root {
-  --bb-bg: #f8faf9;
-  --bb-bg-muted: #f1f5f3;
-  --bb-surface: rgba(255, 255, 255, 0.75);
-  --bb-surface-strong: rgba(255, 255, 255, 0.95);
-  --bb-surface-subtle: rgba(255, 255, 255, 0.4);
-  --bb-border: rgba(15, 23, 42, 0.06);
-  --bb-border-strong: rgba(15, 23, 42, 0.12);
-  --bb-text: #0f172a;
-  --bb-text-soft: #334155;
-  --bb-text-muted: #64748b;
-  --bb-accent: #10b981;
-  --bb-accent-soft: #d1fae5;
+  --bb-bg: #f4efe7;
+  --bb-bg-muted: #efe8dd;
+  --bb-surface: rgba(255, 255, 255, 0.86);
+  --bb-surface-strong: #faf7f2;
+  --bb-surface-subtle: rgba(255, 255, 255, 0.5);
+  --bb-border: rgba(22, 50, 41, 0.08);
+  --bb-border-strong: rgba(22, 50, 41, 0.14);
+  --bb-text: #163229;
+  --bb-text-soft: #476158;
+  --bb-text-muted: #6e857d;
+  --bb-accent: #174c3a;
+  --bb-accent-soft: #e6f0ec;
   --bb-danger: #ef4444;
-  --bb-warning: #f59e0b;
-  --bb-success: #10b981;
+  --bb-warning: #cb7e30;
+  --bb-success: #174c3a;
   --bb-info: #3b82f6;
 
   --bb-radius-sm: 12px;
@@ -38,9 +38,9 @@
   --bb-shadow-md: 0 12px 32px -8px rgba(15, 23, 42, 0.08);
   --bb-shadow-lg: 0 24px 64px -12px rgba(15, 23, 42, 0.12);
 
-  --bb-focus-ring: 0 0 0 4px rgba(16, 185, 129, 0.2);
+  --bb-focus-ring: 0 0 0 4px rgba(23, 76, 58, 0.2);
   --bb-content-max: 1500px;
-  --bb-row-hover: rgba(16, 185, 129, 0.045);
+  --bb-row-hover: rgba(23, 76, 58, 0.045);
 }
 
 * {
@@ -55,10 +55,9 @@ body {
   margin: 0;
   font-family: 'Outfit', 'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
   background:
-    radial-gradient(circle at 15% 50%, rgba(167, 243, 208, 0.15), transparent 50%),
-    radial-gradient(circle at 85% 30%, rgba(187, 247, 208, 0.12), transparent 50%),
-    radial-gradient(circle at 50% 80%, rgba(209, 250, 229, 0.10), transparent 50%),
-    var(--bb-bg);
+    radial-gradient(circle at top left, rgba(244, 181, 111, 0.22), transparent 26%),
+    radial-gradient(circle at 85% 12%, rgba(23, 76, 58, 0.10), transparent 24%),
+    linear-gradient(180deg, #f6f2eb 0%, #f4efe7 58%, #efe8dd 100%);
   background-attachment: fixed;
   color: var(--bb-text);
   -webkit-font-smoothing: antialiased;
@@ -83,16 +82,16 @@ textarea {
 }
 
 ::-webkit-scrollbar-track {
-  background: rgba(15, 23, 42, 0.04);
+  background: rgba(22, 50, 41, 0.04);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(100, 116, 139, 0.4);
+  background: rgba(110, 133, 125, 0.4);
   border-radius: 999px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(71, 85, 105, 0.55);
+  background: rgba(90, 117, 104, 0.55);
 }
 
 input[type='date']::-webkit-calendar-picker-indicator {
@@ -197,50 +196,89 @@ input[type='date']::-webkit-calendar-picker-indicator {
   display: none;
 }
 
+/* Light mode: soften translucent white cards against the cream background */
+.bg-white\/80 { background-color: rgba(250, 247, 242, 0.92) !important; }
+.bg-white\/90 { background-color: rgba(250, 247, 242, 0.96) !important; }
+.bg-white\/95 { background-color: rgba(250, 247, 242, 0.98) !important; }
+.bg-white\/96 { background-color: rgba(250, 247, 242, 0.98) !important; }
+.bg-white\/60 { background-color: rgba(250, 247, 242, 0.72) !important; }
+.bg-white\/70 { background-color: rgba(250, 247, 242, 0.82) !important; }
+.bg-white\/72 { background-color: rgba(250, 247, 242, 0.84) !important; }
+.bg-white\/75 { background-color: rgba(250, 247, 242, 0.88) !important; }
+.bg-white\/50 { background-color: rgba(250, 247, 242, 0.62) !important; }
+/* .bg-white/10, .bg-white/20 intentionally NOT overridden — used on dark backgrounds in both modes */
+.hover\:bg-white:hover { background-color: #ffffff !important; }
+
+/* Light mode: soften cards that use bg-white but NOT buttons
+   IMPORTANT: must NOT match bg-white/6, bg-white/8 etc. (sidebar highlights) */
+.rounded-2xl.bg-white,
+.rounded-xl.bg-white,
+.rounded-lg.bg-white,
+.rounded-md.bg-white,
+.bg-white:not([class*="bg-white/"]) {
+  background-color: var(--bb-surface-strong) !important;
+}
+
+/* Light mode: keep buttons pure white */
+[class*="px-4 py-2"].bg-white,
+[class*="px-3 py-2"].bg-white,
+[class*="px-4 py-3"].bg-white,
+[class*="px-3 py-1.5"].bg-white {
+  background-color: #ffffff !important;
+}
+
+/* Light mode: tables inside bb-card should stay soft */
+.bb-card .bg-white,
+.bb-card.bg-white,
+.bb-table-shell .bg-white,
+[class*="shadow-"].bg-white,
+[class*="overflow-hidden"].bg-white {
+  background-color: var(--bb-surface-strong) !important;
+}
+
 /* ── Premium Native Dark Mode ─────────────────────────────────────────────── */
 /* Remaps all design tokens — no filter hacks, no color inversions */
 html.dark-mode {
   color-scheme: dark;
-  --bb-bg:             #090f16;
-  --bb-bg-muted:       #0f1722;
-  --bb-surface:        rgba(18, 27, 40, 0.88);
-  --bb-surface-strong: rgba(20, 30, 44, 0.98);
-  --bb-surface-subtle: rgba(20, 30, 44, 0.58);
-  --bb-border:         rgba(203, 213, 225, 0.10);
-  --bb-border-strong:  rgba(203, 213, 225, 0.18);
-  --bb-text:           #f8fafc;
-  --bb-text-soft:      #cbd5e1;
-  --bb-text-muted:     #94a3b8;
-  --bb-accent:         #34d399;
-  --bb-accent-soft:    rgba(52, 211, 153, 0.16);
-  --bb-row-hover:      rgba(52, 211, 153, 0.08);
+  --bb-bg:             #060f0b;
+  --bb-bg-muted:       #0a1813;
+  --bb-surface:        #0d1a15;
+  --bb-surface-strong: #111f1a;
+  --bb-surface-subtle: #0a1511;
+  --bb-border:         rgba(247, 239, 225, 0.08);
+  --bb-border-strong:  rgba(247, 239, 225, 0.14);
+  --bb-text:           #f7efe1;
+  --bb-text-soft:      #d5c9b8;
+  --bb-text-muted:     #a89a88;
+  --bb-accent:         #6ad29d;
+  --bb-accent-soft:    rgba(106, 210, 157, 0.16);
+  --bb-row-hover:      rgba(106, 210, 157, 0.06);
 
-  --bb-shadow-sm:  0 2px 8px  rgba(0, 0, 0, 0.45);
-  --bb-shadow-md:  0 12px 32px -8px rgba(0, 0, 0, 0.65);
-  --bb-shadow-lg:  0 24px 64px -12px rgba(0, 0, 0, 0.85);
+  --bb-shadow-sm:  0 2px 8px  rgba(0, 0, 0, 0.55);
+  --bb-shadow-md:  0 12px 32px -8px rgba(0, 0, 0, 0.75);
+  --bb-shadow-lg:  0 24px 64px -12px rgba(0, 0, 0, 0.95);
 
-  --bb-focus-ring: 0 0 0 4px rgba(16, 185, 129, 0.25);
+  --bb-focus-ring: 0 0 0 4px rgba(23, 76, 58, 0.25);
 }
 
 /* Dark ambient mesh — same geometry, much darker palette */
 html.dark-mode body {
   background:
-    linear-gradient(180deg, rgba(15, 23, 34, 0.96) 0%, rgba(9, 15, 22, 1) 48%, rgba(7, 12, 18, 1) 100%),
-    var(--bb-bg);
+    linear-gradient(180deg, #0a1813 0%, #060f0b 48%, #050c09 100%);
   background-attachment: fixed;
 }
 
 /* ── Tailwind utility overrides ────────────────────────────────────────────── */
 /* Backgrounds */
 html.dark-mode .bg-white           { background-color: var(--bb-surface-strong) !important; }
-html.dark-mode .bg-white\/80       { background-color: rgba(20, 30, 44, 0.82)  !important; }
-html.dark-mode .bg-white\/90       { background-color: rgba(20, 30, 44, 0.92)  !important; }
-html.dark-mode .bg-slate-50        { background-color: rgba(30, 41, 59,  0.62) !important; }
-html.dark-mode .bg-slate-100       { background-color: rgba(35, 48, 68,  0.82) !important; }
-html.dark-mode .bg-slate-200       { background-color: rgba(51, 65, 85,  0.78) !important; }
-html.dark-mode .bg-gray-50         { background-color: rgba(30, 41, 59,  0.62) !important; }
-html.dark-mode .bg-gray-100        { background-color: rgba(35, 48, 68,  0.82) !important; }
-html.dark-mode .bg-black           { background-color: #030712 !important; }
+html.dark-mode .bg-white\/80       { background-color: #0d1a15 !important; }
+html.dark-mode .bg-white\/90       { background-color: #111f1a !important; }
+html.dark-mode .bg-slate-50        { background-color: #0d1a15 !important; }
+html.dark-mode .bg-slate-100       { background-color: #111f1a !important; }
+html.dark-mode .bg-slate-200       { background-color: #162b22 !important; }
+html.dark-mode .bg-gray-50         { background-color: #0d1a15 !important; }
+html.dark-mode .bg-gray-100        { background-color: #111f1a !important; }
+html.dark-mode .bg-black           { background-color: #060f0b !important; }
 
 /* Text */
 html.dark-mode .text-slate-900     { color: #f1f5f9 !important; }
@@ -277,122 +315,119 @@ html.dark-mode .shadow-xl  { box-shadow: 0 32px 64px -12px rgba(0, 0, 0, 0.9) !i
 /* ── Component overrides ───────────────────────────────────────────────────── */
 /* Inputs */
 html.dark-mode .input {
-  background: rgba(8, 14, 23, 0.72) !important;
+  background: #0a1511 !important;
   border-color: var(--bb-border-strong) !important;
-  color: #f1f5f9 !important;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03) !important;
+  color: #f7efe1 !important;
+  box-shadow: inset 0 1px 0 rgba(247, 239, 225, 0.03) !important;
 }
 html.dark-mode .input::placeholder {
-  color: #7f8da3 !important;
+  color: #a89a88 !important;
 }
 html.dark-mode .input:focus {
-  background: rgba(8, 14, 23, 0.92) !important;
-  border-color: rgba(52, 211, 153, 0.62) !important;
+  background: #0d1a15 !important;
+  border-color: rgba(106, 210, 157, 0.62) !important;
 }
 
 /* Secondary button */
 html.dark-mode .btn-secondary {
-  background: rgba(30, 41, 59, 0.8) !important;
-  border-color: rgba(255, 255, 255, 0.12) !important;
-  color: #f1f5f9 !important;
+  background: #162b22 !important;
+  border-color: rgba(247, 239, 225, 0.12) !important;
+  color: #f7efe1 !important;
 }
 html.dark-mode .btn-secondary:hover:not(:disabled) {
-  background: rgba(30, 41, 59, 0.95) !important;
-  border-color: rgba(255, 255, 255, 0.2) !important;
+  background: #1a3028 !important;
+  border-color: rgba(247, 239, 225, 0.2) !important;
 }
 
 /* Cards */
 html.dark-mode .bb-card {
-  background: rgba(22, 30, 46, 0.80) !important;
-  border-color: rgba(255, 255, 255, 0.07) !important;
+  background: #111f1a !important;
+  border-color: rgba(247, 239, 225, 0.07) !important;
 }
 html.dark-mode .bb-card:hover {
-  border-color: rgba(255, 255, 255, 0.14) !important;
+  border-color: rgba(247, 239, 225, 0.14) !important;
   box-shadow: 0 20px 40px -10px rgba(0, 0, 0, 0.6), 0 0 3px rgba(0, 0, 0, 0.4) !important;
 }
 html.dark-mode .bb-card-muted {
-  background: rgba(22, 30, 46, 0.45) !important;
-  border-color: rgba(255, 255, 255, 0.05) !important;
+  background: #0a1511 !important;
+  border-color: rgba(247, 239, 225, 0.05) !important;
 }
 
 /* Page header */
 html.dark-mode .bb-page-header {
-  background: linear-gradient(135deg, rgba(20, 30, 44, 0.96) 0%, rgba(10, 17, 27, 0.78) 100%) !important;
-  border-color: rgba(255, 255, 255, 0.07) !important;
+  background: linear-gradient(135deg, #111f1a 0%, #0a1813 100%) !important;
+  border-color: rgba(247, 239, 225, 0.07) !important;
 }
 
 /* Filter bar */
 html.dark-mode .bb-filter-bar {
-  background: rgba(22, 30, 46, 0.7) !important;
-  border-color: rgba(255, 255, 255, 0.07) !important;
+  background: #0d1a15 !important;
+  border-color: rgba(247, 239, 225, 0.07) !important;
 }
 
 /* Table shell */
 html.dark-mode .bb-table-shell {
-  background: rgba(20, 30, 44, 0.98) !important;
-  border-color: rgba(255, 255, 255, 0.07) !important;
+  background: #111f1a !important;
+  border-color: rgba(247, 239, 225, 0.07) !important;
 }
 
 /* Scroll area edges */
 html.dark-mode .bb-scroll-area__edge--left {
-  background: linear-gradient(90deg,  rgba(22, 30, 46, 0.97), transparent) !important;
+  background: linear-gradient(90deg, #060f0b, transparent) !important;
 }
 html.dark-mode .bb-scroll-area__edge--right {
-  background: linear-gradient(270deg, rgba(22, 30, 46, 0.97), transparent) !important;
+  background: linear-gradient(270deg, #060f0b, transparent) !important;
 }
 html.dark-mode .bb-scroll-area__button {
-  background: rgba(30, 41, 59, 0.92) !important;
-  border-color: rgba(255, 255, 255, 0.12) !important;
-  color: #f1f5f9 !important;
+  background: #162b22 !important;
+  border-color: rgba(247, 239, 225, 0.12) !important;
+  color: #f7efe1 !important;
 }
 
 /* Empty state */
 html.dark-mode .bb-empty-state {
-  background: linear-gradient(180deg, rgba(22, 30, 46, 0.6), rgba(15, 23, 42, 0.8)) !important;
-  border-color: rgba(255, 255, 255, 0.08) !important;
+  background: linear-gradient(180deg, #0d1a15, #0a1813) !important;
+  border-color: rgba(247, 239, 225, 0.08) !important;
 }
 
 /* Hover row tint */
-html.dark-mode .hover\:bg-emerald-50\/30:hover { background-color: rgba(16, 185, 129, 0.05) !important; }
-html.dark-mode .hover\:bg-slate-50:hover        { background-color: rgba(30, 41, 59, 0.5)    !important; }
-html.dark-mode .hover\:bg-white:hover           { background-color: rgba(30, 41, 59, 0.97)   !important; }
+html.dark-mode .hover\:bg-emerald-50\/30:hover { background-color: rgba(23, 76, 58, 0.05) !important; }
+html.dark-mode .hover\:bg-slate-50:hover        { background-color: #162b22 !important; }
+html.dark-mode .hover\:bg-white:hover           { background-color: #111f1a !important; }
 html.dark-mode .hover\:bg-amber-100\/50:hover   { background-color: rgba(245, 158, 11, 0.08) !important; }
 
 /* ── Sidebar / Nav panel ───────────────────────────────────────────────────── */
-/* The sidebar already uses a dark emerald gradient — darken it further so
-   the active-link green pill and white text stay legible. */
+/* Dark mode: darken the sidebar to near-black for better contrast with white text */
 html.dark-mode [class*="bg-[linear-gradient(180deg,#0f3d2c"] {
   background: linear-gradient(180deg, #071a14 0%, #050f0b 100%) !important;
 }
-/* Radial glow overlay inside the sidebar */
-html.dark-mode [class*="bg-[radial-gradient(circle_at_top_left,rgba(74,222,128"] {
-  opacity: 0.5;
-}
+/* Light mode: keep the sidebar dark emerald gradient as-is */
+/* The sidebar is a permanent dark panel and does NOT need light-mode overrides. */
 
 /* ── Top header bar (breadcrumb / search / sync) ───────────────────────────── */
 html.dark-mode .bg-white\/72 {
-  background-color: rgba(15, 23, 42, 0.72) !important;
-  border-color: rgba(255, 255, 255, 0.06) !important;
+  background-color: #0d1a15 !important;
+  border-color: rgba(247, 239, 225, 0.06) !important;
 }
 html.dark-mode .border-slate-200\/70 {
-  border-color: rgba(255, 255, 255, 0.06) !important;
+  border-color: rgba(247, 239, 225, 0.06) !important;
 }
 
 /* ── Outer shell background ────────────────────────────────────────────────── */
 html.dark-mode [class*="bg-[radial-gradient(circle_at_top_left,rgba(187,247,208"] {
-  background: #0c1117 !important;
+  background: #060f0b !important;
 }
 
 /* ── Modals / Dialogs ──────────────────────────────────────────────────────── */
-html.dark-mode .bg-white\/95         { background-color: rgba(22, 30, 46, 0.97)  !important; }
+html.dark-mode .bg-white\/95         { background-color: #111f1a  !important; }
 html.dark-mode .bg-slate-950\/35     { background-color: rgba(0, 0, 0, 0.55)     !important; }
 html.dark-mode .bg-slate-950\/45     { background-color: rgba(0, 0, 0, 0.65)     !important; }
 html.dark-mode .bg-slate-950\/80     { background-color: rgba(0, 0, 0, 0.85)     !important; }
 html.dark-mode .bg-black\/20         { background-color: rgba(0, 0, 0, 0.42)     !important; }
 html.dark-mode .bg-black\/40         { background-color: rgba(0, 0, 0, 0.64)     !important; }
 html.dark-mode .bg-black\/50         { background-color: rgba(0, 0, 0, 0.72)     !important; }
-html.dark-mode .border-white\/70     { border-color: rgba(255, 255, 255, 0.08)   !important; }
-html.dark-mode .border-white\/20     { border-color: rgba(255, 255, 255, 0.06)   !important; }
+html.dark-mode .border-white\/70     { border-color: rgba(247, 239, 225, 0.08)   !important; }
+html.dark-mode .border-white\/20     { border-color: rgba(247, 239, 225, 0.06)   !important; }
 
 /* ── Alert / status banners ────────────────────────────────────────────────── */
 html.dark-mode .bg-amber-50    { background-color: rgba(245, 158, 11, 0.10) !important; }
@@ -401,10 +436,10 @@ html.dark-mode .bg-amber-200   { background-color: rgba(245, 158, 11, 0.20) !imp
 html.dark-mode .bg-rose-50     { background-color: rgba(239, 68,  68, 0.10) !important; }
 html.dark-mode .bg-rose-100    { background-color: rgba(239, 68,  68, 0.15) !important; }
 html.dark-mode .bg-red-50      { background-color: rgba(239, 68,  68, 0.10) !important; }
-html.dark-mode .bg-emerald-50  { background-color: rgba(16, 185, 129, 0.10) !important; }
-html.dark-mode .bg-emerald-100 { background-color: rgba(16, 185, 129, 0.15) !important; }
-html.dark-mode .bg-green-50    { background-color: rgba(16, 185, 129, 0.10) !important; }
-html.dark-mode .bg-green-100   { background-color: rgba(16, 185, 129, 0.15) !important; }
+html.dark-mode .bg-emerald-50  { background-color: rgba(23, 76, 58, 0.12) !important; }
+html.dark-mode .bg-emerald-100 { background-color: rgba(23, 76, 58, 0.18) !important; }
+html.dark-mode .bg-green-50    { background-color: rgba(23, 76, 58, 0.12) !important; }
+html.dark-mode .bg-green-100   { background-color: rgba(23, 76, 58, 0.18) !important; }
 html.dark-mode .bg-teal-50     { background-color: rgba(20, 184, 166, 0.10) !important; }
 html.dark-mode .bg-blue-50     { background-color: rgba(59, 130, 246, 0.10) !important; }
 html.dark-mode .bg-blue-100    { background-color: rgba(59, 130, 246, 0.15) !important; }
@@ -423,7 +458,7 @@ html.dark-mode .border-amber-200  { border-color: rgba(245, 158, 11, 0.20) !impo
 html.dark-mode .border-amber-100  { border-color: rgba(245, 158, 11, 0.12) !important; }
 html.dark-mode .border-rose-200   { border-color: rgba(239, 68,  68, 0.20) !important; }
 html.dark-mode .border-red-200    { border-color: rgba(239, 68,  68, 0.20) !important; }
-html.dark-mode .border-emerald-200 { border-color: rgba(16, 185, 129, 0.20) !important; }
+html.dark-mode .border-emerald-200 { border-color: rgba(23, 76, 58, 0.22) !important; }
 html.dark-mode .border-blue-200   { border-color: rgba(59, 130, 246, 0.20) !important; }
 html.dark-mode .border-sky-200    { border-color: rgba(14, 165, 233, 0.20) !important; }
 html.dark-mode .border-indigo-200 { border-color: rgba(99, 102, 241, 0.20) !important; }
@@ -436,8 +471,8 @@ html.dark-mode .text-rose-900   { color: #fda4af !important; }
 html.dark-mode .text-rose-800   { color: #fda4af !important; }
 html.dark-mode .text-rose-700   { color: #fb7185 !important; }
 html.dark-mode .text-red-700    { color: #fb7185 !important; }
-html.dark-mode .text-emerald-900 { color: #6ee7b7 !important; }
-html.dark-mode .text-emerald-800 { color: #6ee7b7 !important; }
+html.dark-mode .text-emerald-900 { color: #6ad29d !important; }
+html.dark-mode .text-emerald-800 { color: #6ad29d !important; }
 html.dark-mode .text-emerald-700 { color: #34d399 !important; }
 html.dark-mode .text-emerald-950 { color: #a7f3d0 !important; }
 html.dark-mode .text-blue-700   { color: #93c5fd !important; }
@@ -447,47 +482,47 @@ html.dark-mode .text-sky-700    { color: #38bdf8 !important; }
 html.dark-mode .text-indigo-700 { color: #a5b4fc !important; }
 html.dark-mode .text-purple-700 { color: #d8b4fe !important; }
 html.dark-mode .text-orange-700 { color: #fdba74 !important; }
-html.dark-mode .text-green-700  { color: #34d399 !important; }
+html.dark-mode .text-green-700  { color: #6ad29d !important; }
 
 /* ── Select / textarea inputs ──────────────────────────────────────────────── */
 html.dark-mode select,
 html.dark-mode textarea {
-  background-color: rgba(8, 14, 23, 0.72) !important;
+  background-color: #0a1511 !important;
   border-color: var(--bb-border-strong) !important;
-  color: #f1f5f9 !important;
+  color: #f7efe1 !important;
 }
 html.dark-mode select option {
-  background-color: #1e293b !important;
-  color: #f1f5f9 !important;
+  background-color: #0d1a15 !important;
+  color: #f7efe1 !important;
 }
 
 /* ── Scrollbar in dark mode ────────────────────────────────────────────────── */
 html.dark-mode ::-webkit-scrollbar-track {
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(247, 239, 225, 0.03);
 }
 html.dark-mode ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.15);
+  background: rgba(247, 239, 225, 0.15);
 }
 html.dark-mode ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.25);
+  background: rgba(247, 239, 225, 0.25);
 }
 
 /* ── Divide colors ─────────────────────────────────────────────────────────── */
 html.dark-mode .divide-amber-100 > * + * { border-color: rgba(245, 158, 11, 0.12) !important; }
-html.dark-mode .divide-slate-200 > * + * { border-color: rgba(255, 255, 255, 0.06) !important; }
-html.dark-mode .border-b.border-slate-200\/80 { border-color: rgba(255, 255, 255, 0.06) !important; }
+html.dark-mode .divide-slate-200 > * + * { border-color: rgba(247, 239, 225, 0.06) !important; }
+html.dark-mode .border-b.border-slate-200\/80 { border-color: rgba(247, 239, 225, 0.06) !important; }
 
 /* ── Misc surfaces used inline ─────────────────────────────────────────────── */
-html.dark-mode .bg-white\/60 { background-color: rgba(22, 30, 46, 0.6) !important; }
-html.dark-mode .bg-white\/70 { background-color: rgba(22, 30, 46, 0.7) !important; }
-html.dark-mode .bg-white\/10 { background-color: rgba(255, 255, 255, 0.06) !important; }
+html.dark-mode .bg-white\/60 { background-color: #0d1a15 !important; }
+html.dark-mode .bg-white\/70 { background-color: #111f1a !important; }
+html.dark-mode .bg-white\/10 { background-color: rgba(247, 239, 225, 0.06) !important; }
 html.dark-mode .disabled\:opacity-50:disabled,
 html.dark-mode button:disabled {
   opacity: 0.52;
 }
-html.dark-mode .hover\:bg-slate-100:hover { background-color: rgba(30, 41, 59, 0.75) !important; }
-html.dark-mode .hover\:bg-emerald-50:hover { background-color: rgba(16, 185, 129, 0.08) !important; }
-html.dark-mode .hover\:bg-emerald-100:hover { background-color: rgba(16, 185, 129, 0.12) !important; }
+html.dark-mode .hover\:bg-slate-100:hover { background-color: #162b22 !important; }
+html.dark-mode .hover\:bg-emerald-50:hover { background-color: rgba(23, 76, 58, 0.08) !important; }
+html.dark-mode .hover\:bg-emerald-100:hover { background-color: rgba(23, 76, 58, 0.12) !important; }
 html.dark-mode .hover\:bg-amber-50:hover { background-color: rgba(245, 158, 11, 0.08) !important; }
 html.dark-mode .hover\:bg-red-50:hover { background-color: rgba(239, 68, 68, 0.08) !important; }
 html.dark-mode .hover\:bg-rose-100:hover { background-color: rgba(239, 68, 68, 0.12) !important; }
@@ -518,20 +553,20 @@ html.dark-mode .ring-amber-50\/50 { --tw-ring-color: rgba(245, 158, 11, 0.08) !i
   .btn-primary {
     @apply inline-flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-semibold transition-all duration-200 disabled:opacity-50;
     border-radius: var(--bb-radius-md);
-    background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+    background: linear-gradient(135deg, #174c3a 0%, #275746 100%);
     color: white;
-    box-shadow: 0 2px 8px rgba(16, 185, 129, 0.25);
+    box-shadow: 0 2px 8px rgba(23, 76, 58, 0.25);
     border: 1px solid rgba(255, 255, 255, 0.15);
   }
 
   .btn-primary:hover:not(:disabled) {
     filter: brightness(1.1);
-    box-shadow: 0 4px 14px rgba(16, 185, 129, 0.35);
+    box-shadow: 0 4px 14px rgba(23, 76, 58, 0.35);
   }
 
   .btn-primary:active:not(:disabled) {
     filter: brightness(0.95);
-    box-shadow: 0 2px 6px rgba(16, 185, 129, 0.2);
+    box-shadow: 0 2px 6px rgba(23, 76, 58, 0.2);
   }
 
   .btn-secondary {
@@ -584,7 +619,7 @@ html.dark-mode .ring-amber-50\/50 { --tw-ring-color: rgba(245, 158, 11, 0.08) !i
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.18em;
-    color: rgba(4, 120, 87, 0.72);
+    color: rgba(23, 76, 58, 0.72);
   }
 
   .bb-chip {
@@ -606,11 +641,11 @@ html.dark-mode .ring-amber-50\/50 { --tw-ring-color: rgba(245, 158, 11, 0.08) !i
     gap: var(--bb-space-3);
     align-items: stretch;
     padding: var(--bb-space-3);
-    border: 1px solid rgba(16, 185, 129, 0.14);
+    border: 1px solid rgba(23, 76, 58, 0.14);
     border-radius: 24px;
     background:
-      radial-gradient(circle at 8% 20%, rgba(16, 185, 129, 0.11), transparent 32%),
-      linear-gradient(135deg, rgba(255, 255, 255, 0.96), rgba(240, 253, 244, 0.8));
+      radial-gradient(circle at 8% 20%, rgba(23, 76, 58, 0.11), transparent 32%),
+      linear-gradient(135deg, rgba(255, 255, 255, 0.96), rgba(246, 242, 235, 0.8));
     box-shadow: var(--bb-shadow-sm);
   }
 
@@ -620,7 +655,7 @@ html.dark-mode .ring-amber-50\/50 { --tw-ring-color: rgba(245, 158, 11, 0.08) !i
     flex-direction: column;
     justify-content: center;
     border-radius: 18px;
-    border: 1px solid rgba(16, 185, 129, 0.1);
+    border: 1px solid rgba(23, 76, 58, 0.1);
     background: rgba(255, 255, 255, 0.72);
     padding: var(--bb-space-4);
   }
@@ -661,7 +696,7 @@ html.dark-mode .ring-amber-50\/50 { --tw-ring-color: rgba(245, 158, 11, 0.08) !i
 
   .bb-ops-queue-card:hover {
     transform: translateY(-2px);
-    border-color: rgba(16, 185, 129, 0.3);
+    border-color: rgba(23, 76, 58, 0.3);
     box-shadow: var(--bb-shadow-md);
   }
 
@@ -720,11 +755,11 @@ html.dark-mode .ring-amber-50\/50 { --tw-ring-color: rgba(245, 158, 11, 0.08) !i
   }
 
   .bb-ops-queue-card--emerald {
-    color: #047857;
-    background: linear-gradient(145deg, rgba(236, 253, 245, 0.98), rgba(255, 255, 255, 0.92));
+    color: #174c3a;
+    background: linear-gradient(145deg, rgba(230, 240, 236, 0.98), rgba(255, 255, 255, 0.92));
   }
 
-  .bb-ops-queue-card--emerald::after { background: #10b981; }
+  .bb-ops-queue-card--emerald::after { background: #174c3a; }
 
   .bb-ops-queue-card--amber {
     color: #b45309;
@@ -800,11 +835,11 @@ html.dark-mode .ring-amber-50\/50 { --tw-ring-color: rgba(245, 158, 11, 0.08) !i
     justify-content: space-between;
     gap: var(--bb-space-3);
     padding: var(--bb-space-4);
-    border: 1px solid rgba(16, 185, 129, 0.12);
+    border: 1px solid rgba(23, 76, 58, 0.12);
     border-radius: 20px;
     background:
-      radial-gradient(circle at top right, rgba(187, 247, 208, 0.38), transparent 34%),
-      linear-gradient(135deg, rgba(255,255,255,0.98), rgba(248,250,249,0.92));
+      radial-gradient(circle at top right, rgba(244, 181, 111, 0.22), transparent 34%),
+      linear-gradient(135deg, rgba(255,255,255,0.98), rgba(246,242,235,0.92));
     box-shadow: var(--bb-shadow-sm);
   }
 
@@ -888,7 +923,7 @@ html.dark-mode .ring-amber-50\/50 { --tw-ring-color: rgba(245, 158, 11, 0.08) !i
 
   .bb-toolbar-button:hover {
     transform: translateY(-1px);
-    border-color: rgba(16, 185, 129, 0.26);
+    border-color: rgba(23, 76, 58, 0.26);
     background: white;
   }
 
@@ -1037,7 +1072,7 @@ html.dark-mode .ring-amber-50\/50 { --tw-ring-color: rgba(245, 158, 11, 0.08) !i
     overflow-x: auto;
     scroll-behavior: smooth;
     scrollbar-width: thin;
-    scrollbar-color: rgba(15, 23, 42, 0.22) transparent;
+    scrollbar-color: rgba(22, 50, 41, 0.22) transparent;
   }
 
   .bb-scroll-area__viewport::-webkit-scrollbar {
@@ -1045,7 +1080,7 @@ html.dark-mode .ring-amber-50\/50 { --tw-ring-color: rgba(245, 158, 11, 0.08) !i
   }
 
   .bb-scroll-area__viewport::-webkit-scrollbar-thumb {
-    background: rgba(15, 23, 42, 0.22);
+    background: rgba(22, 50, 41, 0.22);
     border-radius: 999px;
   }
 
@@ -1159,56 +1194,56 @@ html.dark-mode .bb-modal-footer {
 }
 
 html.dark-mode .bb-ops-queue-card--emerald {
-  background: linear-gradient(145deg, rgba(6, 95, 70, 0.34), rgba(20, 30, 44, 0.98)) !important;
+  background: linear-gradient(145deg, #174c3a, #111f1a) !important;
 }
 
 html.dark-mode .bb-ops-queue-card--amber {
-  background: linear-gradient(145deg, rgba(146, 64, 14, 0.30), rgba(20, 30, 44, 0.98)) !important;
+  background: linear-gradient(145deg, #92400e, #111f1a) !important;
 }
 
 html.dark-mode .bb-ops-queue-card--sky {
-  background: linear-gradient(145deg, rgba(3, 105, 161, 0.30), rgba(20, 30, 44, 0.98)) !important;
+  background: linear-gradient(145deg, #0369a1, #111f1a) !important;
 }
 
 html.dark-mode .bb-ops-queue-card--rose {
-  background: linear-gradient(145deg, rgba(159, 18, 57, 0.28), rgba(20, 30, 44, 0.98)) !important;
+  background: linear-gradient(145deg, #9f123c, #111f1a) !important;
 }
 
 html.dark-mode .bb-ops-queue-card--orange {
-  background: linear-gradient(145deg, rgba(154, 52, 18, 0.28), rgba(20, 30, 44, 0.98)) !important;
+  background: linear-gradient(145deg, #9a3412, #111f1a) !important;
 }
 
 html.dark-mode .bb-ops-queue-card__icon,
 html.dark-mode .bb-workflow-lane__count {
-  background: rgba(255, 255, 255, 0.08) !important;
+  background: rgba(247, 239, 225, 0.08) !important;
   color: var(--bb-text) !important;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
+  box-shadow: inset 0 1px 0 rgba(247, 239, 225, 0.04) !important;
 }
 
 html.dark-mode .bb-workflow-lane {
-  background: rgba(15, 23, 42, 0.62) !important;
+  background: #0d1a15 !important;
   border-color: var(--bb-border) !important;
 }
 
 html.dark-mode .bb-table thead,
 html.dark-mode .bb-table-shell thead {
-  background: rgba(10, 17, 27, 0.94) !important;
+  background: #0a1511 !important;
 }
 
 html.dark-mode .bb-table td {
-  border-bottom-color: rgba(203, 213, 225, 0.09) !important;
+  border-bottom-color: rgba(213, 201, 184, 0.09) !important;
 }
 
 html.dark-mode .bb-action-menu-item:not(:disabled):hover {
-  background: rgba(52, 211, 153, 0.08) !important;
+  background: rgba(106, 210, 157, 0.08) !important;
   color: var(--bb-text) !important;
 }
 
 html.dark-mode [class*="bg-white/"]:not([class*="print:bg-white"]),
-html.dark-mode [class*="bg-white\\/"]:not([class*="print:bg-white"]),
+html.dark-mode [class*="bg-white\/"]:not([class*="print:bg-white"]),
 html.dark-mode [class*="bg-gray-50/"]:not([class*="print:bg-white"]),
 html.dark-mode [class*="bg-slate-50/"]:not([class*="print:bg-white"]) {
-  background-color: rgba(20, 30, 44, 0.86) !important;
+  background-color: #111f1a !important;
 }
 
 html.dark-mode [class*="bg-[rgba(255"],
@@ -1226,22 +1261,163 @@ html.dark-mode [class*="ring-black/5"] {
 }
 
 html.dark-mode .focus\:bg-white:focus {
-  background-color: rgba(8, 14, 23, 0.94) !important;
+  background-color: #0a1511 !important;
 }
 
 html.dark-mode .hover\:bg-gray-50:hover,
 html.dark-mode .hover\:bg-gray-100:hover,
 html.dark-mode .hover\:bg-slate-50:hover,
 html.dark-mode .hover\:bg-slate-100:hover {
-  background-color: rgba(52, 211, 153, 0.07) !important;
+  background-color: rgba(106, 210, 157, 0.07) !important;
 }
 
 html.dark-mode .odd\:bg-white:nth-child(odd),
 html.dark-mode .even\:bg-white:nth-child(even),
 html.dark-mode tr.bg-white,
 html.dark-mode tr.bg-gray-50\/50 {
-  background-color: rgba(20, 30, 44, 0.78) !important;
+  background-color: #111f1a !important;
 }
+
+/* ── Dark Mode Global Catch-All ──────────────────────────────────────────────
+   Aggressive overrides for common light-mode colors that leak through.
+   Keep at the very end so it wins specificity battles. */
+
+/* All bg-white opacity variants — EXCEPT sidebar (already dark green) */
+html.dark-mode [class*="bg-white/"] {
+  background-color: rgba(17, 31, 26, 0.92) !important;
+}
+
+/* All bg-gray-50/100 variants */
+html.dark-mode [class*="bg-gray-50/"],
+html.dark-mode [class*="bg-gray-100/"] {
+  background-color: rgba(13, 26, 21, 0.88) !important;
+}
+
+/* All bg-slate-50/100 variants */
+html.dark-mode [class*="bg-slate-50/"],
+html.dark-mode [class*="bg-slate-100/"] {
+  background-color: rgba(13, 26, 21, 0.88) !important;
+}
+
+/* Solid bg-gray-50 and bg-slate-50 (no opacity) */
+html.dark-mode [class="bg-gray-50"],
+html.dark-mode [class="bg-slate-50"],
+html.dark-mode [class="bg-gray-100"],
+html.dark-mode [class="bg-slate-100"] {
+  background-color: #0d1a15 !important;
+}
+
+/* Text colors — dark variants */
+html.dark-mode [class*="text-slate-800"],
+html.dark-mode [class*="text-slate-900"] {
+  color: #f7efe1 !important;
+}
+
+html.dark-mode [class*="text-gray-700"],
+html.dark-mode [class*="text-gray-800"],
+html.dark-mode [class*="text-gray-900"] {
+  color: #f7efe1 !important;
+}
+
+html.dark-mode [class*="text-gray-500"],
+html.dark-mode [class*="text-gray-600"] {
+  color: #a89a88 !important;
+}
+
+html.dark-mode [class*="text-slate-500"],
+html.dark-mode [class*="text-slate-600"] {
+  color: #a89a88 !important;
+}
+
+html.dark-mode [class*="text-slate-400"],
+html.dark-mode [class*="text-gray-400"] {
+  color: #8a7d6e !important;
+}
+
+/* Borders — common light borders */
+html.dark-mode [class*="border-slate-200"],
+html.dark-mode [class*="border-gray-200"] {
+  border-color: rgba(247, 239, 225, 0.08) !important;
+}
+
+html.dark-mode [class*="border-gray-300"] {
+  border-color: rgba(247, 239, 225, 0.12) !important;
+}
+
+html.dark-mode [class*="border-slate-300"] {
+  border-color: rgba(247, 239, 225, 0.12) !important;
+}
+
+/* Divide borders */
+html.dark-mode [class*="divide-slate-200"] > * + *,
+html.dark-mode [class*="divide-gray-200"] > * + * {
+  border-color: rgba(247, 239, 225, 0.08) !important;
+}
+
+/* Hover backgrounds */
+html.dark-mode [class*="hover:bg-slate-50"]:hover,
+html.dark-mode [class*="hover:bg-gray-50"]:hover,
+html.dark-mode [class*="hover:bg-slate-100"]:hover,
+html.dark-mode [class*="hover:bg-gray-100"]:hover {
+  background-color: #162b22 !important;
+}
+
+html.dark-mode [class*="hover:bg-white"]:hover {
+  background-color: #111f1a !important;
+}
+
+/* Table rows */
+html.dark-mode [class*="bg-white"]:nth-child(odd),
+html.dark-mode [class*="bg-gray-50"]:nth-child(even),
+html.dark-mode [class*="bg-slate-50"]:nth-child(even) {
+  background-color: #111f1a !important;
+}
+
+/* Inputs and selects */
+html.dark-mode input,
+html.dark-mode select,
+html.dark-mode textarea {
+  background-color: #0a1511 !important;
+  border-color: rgba(247, 239, 225, 0.14) !important;
+  color: #f7efe1 !important;
+}
+
+html.dark-mode input::placeholder,
+html.dark-mode textarea::placeholder {
+  color: #a89a88 !important;
+}
+
+/* Labels */
+html.dark-mode label,
+html.dark-mode [class*="text-gray-700"],
+html.dark-mode [class*="text-slate-700"] {
+  color: #d5c9b8 !important;
+}
+
+/* Ring and shadow utilities */
+html.dark-mode [class*="ring-slate-200"],
+html.dark-mode [class*="ring-gray-200"] {
+  --tw-ring-color: rgba(247, 239, 225, 0.08) !important;
+}
+
+/* Any remaining bg-white/95 bg-white/80 etc */
+html.dark-mode .bg-white\/95 { background-color: #111f1a !important; }
+html.dark-mode .bg-white\/96 { background-color: #111f1a !important; }
+html.dark-mode .bg-white\/90 { background-color: #111f1a !important; }
+html.dark-mode .bg-white\/80 { background-color: #111f1a !important; }
+html.dark-mode .bg-white\/75 { background-color: #111f1a !important; }
+html.dark-mode .bg-white\/72 { background-color: #111f1a !important; }
+html.dark-mode .bg-white\/70 { background-color: #111f1a !important; }
+html.dark-mode .bg-white\/60 { background-color: #111f1a !important; }
+html.dark-mode .bg-white\/50 { background-color: rgba(17, 31, 26, 0.72) !important; }
+html.dark-mode .bg-white\/40 { background-color: rgba(17, 31, 26, 0.64) !important; }
+html.dark-mode .bg-white\/30 { background-color: rgba(17, 31, 26, 0.55) !important; }
+/* bg-white/20 and bg-white/10 kept as subtle highlights — see line 491 */
+
+html.dark-mode .bg-gray-50\/50 { background-color: #0d1a15 !important; }
+html.dark-mode .bg-gray-50\/90 { background-color: #0d1a15 !important; }
+html.dark-mode .bg-slate-50\/50 { background-color: #0d1a15 !important; }
+html.dark-mode .bg-slate-50\/90 { background-color: #0d1a15 !important; }
 
 html.dark-mode img[data-no-invert],
 html.dark-mode video,

@@ -12,7 +12,8 @@ import {
   refreshCache,
   queueOperation,
   logActivity,
-  createBackup
+  createBackup,
+  dedupePromise
 } from './infrastructure.js';
 import { assertCreationWithinUsageLimit } from './usage.js';
 import {
@@ -97,13 +98,16 @@ export async function checkExclusiveEventConflict(checkIn, checkOut, excludeGrou
   }
 }
 
-export async function getAllBookings() {
+const BOOKING_LIST_SELECT = 'id, customer_id, room_id, check_in, check_out, adults, children, total_amount, status, payment_status, amount_paid, charges_total, deposit_amount, notes, is_exclusive_event, invoice_number, created_at, updated_at, created_by, payment_method, source, quotation_id, event_daily_rate';
+
+async function _getAllBookings() {
   try {
     const { data, error } = await state.supabase.
     from('bookings').
-    select(`*, customers(name, phone, email), rooms(room_number, room_type, rate_per_night)`).
+    select(`${BOOKING_LIST_SELECT}, customers(name, phone, email), rooms(room_number, room_type, rate_per_night)`).
     eq('lodge_id', state.lodgeId).
-    order('check_in', { ascending: false });
+    order('check_in', { ascending: false }).
+    limit(500);
     if (error) throw error;
 
     const cached = readCache('bookings');
@@ -157,6 +161,126 @@ export async function getAllBookings() {
     };
   }).
   sort((a, b) => new Date(b.check_in) - new Date(a.check_in));
+}
+
+export function getAllBookings() {
+  return dedupePromise('getAllBookings', _getAllBookings);
+}
+
+export async function getCollectionsSummary() {
+  if (!state.lodgeId) return { count: 0, amount: 0 };
+  try {
+    if (!state.isOnline) {
+      const all = readCache('bookings') || [];
+      const allConf = readCache('conference-bookings') || [];
+      const eventGroupMap = {};
+      const deduped = [];
+      for (const b of all) {
+        if (!b) continue;
+        if (b.is_exclusive_event) {
+          const match = String(b.notes || '').match(/\[GROUP:([^\]]+)\]/);
+          const gid = match?.[1] || b.check_in;
+          if (!eventGroupMap[gid]) {
+            eventGroupMap[gid] = {
+              total_amount: Number(b.total_amount || 0),
+              charges_total: Number(b.charges_total || 0),
+              amount_paid: Number(b.amount_paid || 0)
+            };
+            deduped.push(eventGroupMap[gid]);
+          } else {
+            const g = eventGroupMap[gid];
+            g.total_amount += Number(b.total_amount || 0);
+            g.charges_total += Number(b.charges_total || 0);
+            g.amount_paid += Number(b.amount_paid || 0);
+          }
+        } else {
+          deduped.push({
+            total_amount: Number(b.total_amount || 0),
+            charges_total: Number(b.charges_total || 0),
+            amount_paid: Number(b.amount_paid || 0),
+            status: b.status
+          });
+        }
+      }
+      const openBalances = deduped.filter((booking) => {
+        if (String(booking.status || '').toLowerCase() === 'cancelled') return false;
+        return Math.max(0, Number(booking.total_amount || 0) + Number(booking.charges_total || 0) - Number(booking.amount_paid || 0)) > 0;
+      });
+      const confOpen = allConf
+        .filter((cb) => String(cb.payment_status || '').toLowerCase() !== 'cancelled')
+        .filter((cb) => Number(cb.total_amount || 0) - Number(cb.deposit_paid || 0) > 0);
+      const totalOpen = openBalances.length + confOpen.length;
+      const amount = openBalances.reduce((sum, booking) => (
+        sum + Math.max(0, Number(booking.total_amount || 0) + Number(booking.charges_total || 0) - Number(booking.amount_paid || 0))
+      ), 0) + confOpen.reduce((sum, cb) => (
+        sum + Math.max(0, Number(cb.total_amount || 0) - Number(cb.deposit_paid || 0))
+      ), 0);
+      return { count: totalOpen, amount };
+    }
+    const [bookingsResult, confResult] = await Promise.all([
+      state.supabase
+        .from('bookings')
+        .select('id, total_amount, charges_total, amount_paid, status, notes, is_exclusive_event, check_in')
+        .eq('lodge_id', state.lodgeId)
+        .neq('status', 'cancelled')
+        .limit(500),
+      state.supabase
+        .from('conference_bookings')
+        .select('id, total_amount, deposit_paid, payment_status')
+        .eq('lodge_id', state.lodgeId)
+        .neq('payment_status', 'cancelled')
+        .limit(500)
+    ]);
+    if (bookingsResult.error) throw bookingsResult.error;
+    if (confResult.error) throw confResult.error;
+    const all = bookingsResult.data || [];
+    const allConf = confResult.data || [];
+    const eventGroupMap = {};
+    const deduped = [];
+    for (const b of all) {
+      if (!b) continue;
+      if (b.is_exclusive_event) {
+        const match = String(b.notes || '').match(/\[GROUP:([^\]]+)\]/);
+        const gid = match?.[1] || b.check_in;
+        if (!eventGroupMap[gid]) {
+          eventGroupMap[gid] = {
+            total_amount: Number(b.total_amount || 0),
+            charges_total: Number(b.charges_total || 0),
+            amount_paid: Number(b.amount_paid || 0)
+          };
+          deduped.push(eventGroupMap[gid]);
+        } else {
+          const g = eventGroupMap[gid];
+          g.total_amount += Number(b.total_amount || 0);
+          g.charges_total += Number(b.charges_total || 0);
+          g.amount_paid += Number(b.amount_paid || 0);
+        }
+      } else {
+        deduped.push({
+          total_amount: Number(b.total_amount || 0),
+          charges_total: Number(b.charges_total || 0),
+          amount_paid: Number(b.amount_paid || 0),
+          status: b.status
+        });
+      }
+    }
+    const openBalances = deduped.filter((booking) => {
+      if (String(booking.status || '').toLowerCase() === 'cancelled') return false;
+      return Math.max(0, Number(booking.total_amount || 0) + Number(booking.charges_total || 0) - Number(booking.amount_paid || 0)) > 0;
+    });
+    const confOpen = allConf
+      .filter((cb) => String(cb.payment_status || '').toLowerCase() !== 'cancelled')
+      .filter((cb) => Number(cb.total_amount || 0) - Number(cb.deposit_paid || 0) > 0);
+    const totalOpen = openBalances.length + confOpen.length;
+    const amount = openBalances.reduce((sum, booking) => (
+      sum + Math.max(0, Number(booking.total_amount || 0) + Number(booking.charges_total || 0) - Number(booking.amount_paid || 0))
+    ), 0) + confOpen.reduce((sum, cb) => (
+      sum + Math.max(0, Number(cb.total_amount || 0) - Number(cb.deposit_paid || 0))
+    ), 0);
+    return { count: totalOpen, amount };
+  } catch {
+    return { count: 0, amount: 0 };
+  }
 }
 
 export async function getBookingById(id) {

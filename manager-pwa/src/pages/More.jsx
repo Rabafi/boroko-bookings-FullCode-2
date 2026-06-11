@@ -17,7 +17,8 @@ function SectionCard({ to, title, sub, icon: Icon }) {
 }
 
 export default function More() {
-  const { can, isEnabled } = useFeatures()
+  const { can, isEnabled, features } = useFeatures()
+  const pwaEnabled = Object.keys(features).length > 0 && features.pwa === true
 
   const sections = [
     can('guests.view') && { to: '/guests', title: 'Guests', sub: 'Guest history and stay profile', icon: Users },
@@ -28,7 +29,7 @@ export default function More() {
     can('pool.view') && isEnabled('pool') && { to: '/day-use', title: 'Day Use', sub: 'Walk-in activity visibility', icon: Briefcase },
     can('inventory.view') && isEnabled('inventory') && { to: '/inventory', title: 'Inventory', sub: 'Low stock and replenishment watch', icon: Package },
     can('maintenance.view') && { to: '/rooms', title: 'Rooms & Maintenance', sub: 'Room status and ticket watch', icon: Wrench },
-    { to: '/control', title: 'Inbox', sub: 'Chat with front desk', icon: MessageCircle }
+    pwaEnabled && { to: '/control', title: 'Inbox', sub: 'Chat with front desk', icon: MessageCircle }
   ].filter(Boolean)
 
   return (

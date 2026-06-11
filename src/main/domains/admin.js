@@ -36,11 +36,23 @@ export async function checkMasterAdmin(email, password) {
   if (!state.adminDb) {
     return null;
   }
-  const { data, error } = await requireAdmin().
-  from('master_admins').
-  select('*').
-  eq('email', email.toLowerCase().trim()).
-  limit(1);
+  let data, error;
+  try {
+    const queryPromise = requireAdmin().
+      from('master_admins').
+      select('*').
+      eq('email', email.toLowerCase().trim()).
+      limit(1);
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('master admin query timed out')), 5000)
+    );
+    const result = await Promise.race([queryPromise, timeoutPromise]);
+    data = result.data;
+    error = result.error;
+  } catch (e) {
+    console.warn('[MASTER] Admin lookup timed out:', e.message);
+    return null;
+  }
   if (error) console.error('[MASTER] DB error during admin lookup:', error.message);
   const admin = data?.[0];
   const passwordMatch = admin ? bcrypt.compareSync(password, admin.password_hash) : false;
@@ -415,8 +427,9 @@ export async function getLicenses() {
   if (!state.isOnline) return [];
   const { data } = await requireAdmin().
   from('licenses').
-  select('*').
-  order('issued_at', { ascending: false });
+  select('id, lodge_id, lodge_name, business_type, subscription_plan, payment_status, monthly_fee, currency, issued_at, expires_at, next_due_date, last_payment_date, notes, is_active, created_at, updated_at').
+  order('issued_at', { ascending: false }).
+  limit(500);
   return (data || []).map((license) => ({
     ...license,
     subscription_plan: normalizePlanName(license.subscription_plan)
@@ -575,10 +588,11 @@ export async function getOverdueLicenses() {
   const today = new Date().toISOString().split('T')[0];
   const { data } = await requireAdmin().
   from('licenses').
-  select('*').
+  select('id, lodge_id, lodge_name, subscription_plan, payment_status, next_due_date, is_active, monthly_fee, currency').
   lt('next_due_date', today).
   neq('payment_status', 'free').
-  eq('is_active', true);
+  eq('is_active', true).
+  limit(200);
   return data || [];
 }
 
@@ -624,11 +638,11 @@ async function attachSupportMessages(tickets = []) {
 
 export async function getSupportTickets(filters = {}) {
   if (!state.isOnline) return [];
-  let q = requireAdmin().from('support_tickets').select('*');
+  let q = requireAdmin().from('support_tickets').select('id, lodge_id, lodge_name, title, description, status, priority, category, created_at, updated_at, messages');
   if (filters.status) q = q.eq('status', filters.status);
   if (filters.priority) q = q.eq('priority', filters.priority);
   if (filters.lodge_id) q = q.eq('lodge_id', filters.lodge_id);
-  const { data } = await q.order('created_at', { ascending: false });
+  const { data } = await q.order('created_at', { ascending: false }).limit(200);
   return attachSupportMessages(data || []);
 }
 
@@ -850,7 +864,7 @@ export async function deleteSupportTicket(id) {
 
 export async function getBroadcasts() {
   if (!state.isOnline) return [];
-  const { data } = await requireAdmin().from('broadcasts').select('*').order('created_at', { ascending: false });
+  const { data } = await requireAdmin().from('broadcasts').select('id, title, message, is_active, expires_at, created_at, updated_at').order('created_at', { ascending: false }).limit(100);
   return data || [];
 }
 
@@ -859,10 +873,11 @@ export async function getActiveBroadcasts() {
   const now = new Date().toISOString();
   const { data } = await state.supabase.
   from('broadcasts').
-  select('*').
+  select('id, title, message, is_active, expires_at, created_at, updated_at').
   eq('is_active', true).
   or(`expires_at.is.null,expires_at.gt.${now}`).
-  order('created_at', { ascending: false });
+  order('created_at', { ascending: false }).
+  limit(100);
   return data || [];
 }
 
@@ -989,8 +1004,9 @@ export async function clearLodgeFeature(targetLodgeId, featureName) {
 export async function getAllLodgeFeatures() {
   if (!state.isOnline) return [];
   const { data } = await requireAdmin().  from('lodge_features').
-  select('*').
-  order('lodge_id');
+  select('id, lodge_id, feature_key, enabled, created_at, updated_at').
+  order('lodge_id').
+  limit(500);
   return data || [];
 }
 
@@ -1057,4 +1073,36 @@ export async function getTestDataResetAudit(targetLodgeId, limit = 20) {
   });
   if (error) throw new Error(error.message);
   return Array.isArray(data) ? data : [];
+}
+
+// ─── ADMIN: MARKETING LEADS ──────────────────────────────────────────────────
+
+export async function getMarketingLeads(filters = {}) {
+  if (!state.isOnline) return [];
+  const db = requireAdmin();
+  let query = db.from('marketing_leads').select('*').order('created_at', { ascending: false });
+  if (filters.status) {
+    query = query.eq('status', filters.status);
+  }
+  if (filters.interest) {
+    query = query.eq('interest', filters.interest);
+  }
+  if (filters.limit) {
+    query = query.limit(Number(filters.limit));
+  }
+  const { data, error } = await query;
+  if (error) throw new Error(error.message);
+  return Array.isArray(data) ? data : [];
+}
+
+export async function updateMarketingLeadStatus(id, status) {
+  if (!state.isOnline) throw new Error('Requires internet connection');
+  const { data, error } = await requireAdmin()
+    .from('marketing_leads')
+    .update({ status })
+    .eq('id', id)
+    .select()
+    .single();
+  if (error) throw new Error(error.message);
+  return data;
 }

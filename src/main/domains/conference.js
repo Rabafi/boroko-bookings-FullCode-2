@@ -19,10 +19,10 @@ export async function getConferenceBookings(start, end) {
     filter((row) => (!start || String(row.booking_date || '') >= start) && (!end || String(row.booking_date || '') <= end)).
     sort((a, b) => String(b.booking_date || '').localeCompare(String(a.booking_date || '')) || String(a.start_time || '').localeCompare(String(b.start_time || '')));
   }
-  let q = state.supabase.from('conference_bookings').select('*').eq('lodge_id', state.lodgeId);
+  let q = state.supabase.from('conference_bookings').select('id, booking_date, start_time, end_time, client_name, company, attendees, setup_type, room_name, includes_catering, catering_notes, total_amount, deposit_paid, payment_status, payment_method, notes, created_at, updated_at, lodge_id').eq('lodge_id', state.lodgeId);
   if (start) q = q.gte('booking_date', start);
   if (end) q = q.lte('booking_date', end);
-  const { data } = await q.order('booking_date', { ascending: false }).order('start_time', { ascending: true });
+  const { data } = await q.order('booking_date', { ascending: false }).order('start_time', { ascending: true }).limit(200);
   if (data) writeCache('conference-bookings', data, { source: 'remote' });
   return data || [];
 }

@@ -15,10 +15,21 @@ import {
   toPositiveInt
 } from './subscriptionState.js';
 
+const _entitlementCache = new Map()
+const ENTITLEMENT_CACHE_TTL_MS = 10_000
+
 export function isMissingEntitlementRpcError(error) {
   const message = String(error?.message || '');
   return error?.code === 'PGRST202' ||
   /get_lodge_entitlement|activate_license_key|issue_subscription_contract|update_subscription_contract|set_subscription_feature_override|clear_subscription_feature_override|schema cache|operator does not exist: text = uuid/i.test(message);
+}
+
+function supabaseRpcWithTimeout(client, rpcName, params, timeoutMs) {
+  const rpcPromise = client.rpc(rpcName, params);
+  const timeoutPromise = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error(`${rpcName} timed out after ${timeoutMs}ms`)), timeoutMs)
+  );
+  return Promise.race([rpcPromise, timeoutPromise]);
 }
 
 async function getActiveProfileLodgeId() {
@@ -76,7 +87,7 @@ function buildTrialEntitlement(trialStartedAt = null, lodgeId = null) {
     return {
       lodge_id: lodgeId,
       status: 'trial',
-      daysLeft: 3,
+      daysLeft: 30,
       expired: false,
       plan: 'Trial',
       payment_status: 'trial',
@@ -87,16 +98,16 @@ function buildTrialEntitlement(trialStartedAt = null, lodgeId = null) {
       next_due_date: null,
       grace_period_days: 0,
       grace_period_ends_at: null,
-      offline_lease_days: 3,
+      offline_lease_days: 30,
       offline_valid_until: computeOfflineValidUntil({
         subscription_state: 'trial',
-        offline_lease_days: 3
+        offline_lease_days: 30
       })
     };
   }
 
   const trialEnd = new Date(trialStartedAt);
-  trialEnd.setDate(trialEnd.getDate() + 3);
+  trialEnd.setDate(trialEnd.getDate() + 30);
   const msLeft = trialEnd - new Date();
   const daysLeft = Math.max(0, Math.ceil(msLeft / (1000 * 60 * 60 * 24)));
   const expired = daysLeft <= 0;
@@ -115,10 +126,10 @@ function buildTrialEntitlement(trialStartedAt = null, lodgeId = null) {
     next_due_date: null,
     grace_period_days: 0,
     grace_period_ends_at: null,
-    offline_lease_days: 3,
+    offline_lease_days: 30,
     offline_valid_until: computeOfflineValidUntil({
       subscription_state: expired ? 'expired' : 'trial',
-      offline_lease_days: 3,
+      offline_lease_days: 30,
       trial_end: trialEnd.toISOString()
     })
   };
@@ -243,8 +254,15 @@ export async function getTrialStatus(lodgeId) {
     return buildTrialEntitlement(null);
   }
 
-  await checkOnline();
-  if (!state.isOnline) {
+  const cached = _entitlementCache.get(targetLodgeId)
+  if (cached && Date.now() - cached.cachedAt < ENTITLEMENT_CACHE_TTL_MS) {
+    return cached.result
+  }
+
+  const onlineCheck = checkOnline();
+  const checkTimeout = new Promise((r) => setTimeout(() => r('timeout'), 3000));
+  const checkResult = await Promise.race([onlineCheck, checkTimeout]);
+  if (checkResult === 'timeout' || !state.isOnline) {
     const cached = getCachedEntitlement(targetLodgeId);
     if (cached) return cached;
     const staleCached = readCache('trial_status');
@@ -256,30 +274,39 @@ export async function getTrialStatus(lodgeId) {
   }
 
   try {
-    const { data, error } = await state.supabase.rpc('get_lodge_entitlement', {
+    const { data, error } = await supabaseRpcWithTimeout(state.supabase, 'get_lodge_entitlement', {
       p_lodge_id: targetLodgeId
-    });
+    }, 5000);
     if (error) throw error;
     const normalized = coerceEntitlementResponse(data);
-    if (normalized) return cacheEntitlement(targetLodgeId, normalized);
+    if (normalized) {
+      _entitlementCache.set(targetLodgeId, { result: normalized, cachedAt: Date.now() })
+      return cacheEntitlement(targetLodgeId, normalized);
+    }
   } catch (error) {
-    if (!isMissingEntitlementRpcError(error)) {
+    if (!isMissingEntitlementRpcError(error) && !getCachedEntitlement(targetLodgeId)) {
       console.warn('[ENTITLEMENT] RPC failed, trying legacy fallback:', error.message);
     }
   }
 
   try {
-    return cacheEntitlement(targetLodgeId, await getLegacyEntitlement(targetLodgeId));
+    const legacyResult = await getLegacyEntitlement(targetLodgeId)
+    _entitlementCache.set(targetLodgeId, { result: legacyResult, cachedAt: Date.now() })
+    return cacheEntitlement(targetLodgeId, legacyResult);
   } catch (error) {
-    console.warn('[ENTITLEMENT] legacy fallback failed:', error.message);
+    if (!getCachedEntitlement(targetLodgeId)) {
+      console.warn('[ENTITLEMENT] legacy fallback failed:', error.message);
+    }
     const cached = getCachedEntitlement(targetLodgeId);
     if (cached) return cached;
     const staleCached = readCache('trial_status');
     if (staleCached && typeof staleCached === 'object') {
-      return buildOfflineLeaseExpiredEntitlement(staleCached, targetLodgeId);
+      const result = buildOfflineLeaseExpiredEntitlement(staleCached, targetLodgeId);
+      return cacheEntitlement(targetLodgeId, result);
     }
     const cachedSettings = readCache('settings')[0] || null;
-    return buildTrialEntitlement(cachedSettings?.trial_started_at || null, targetLodgeId);
+    const result = buildTrialEntitlement(cachedSettings?.trial_started_at || null, targetLodgeId);
+    return cacheEntitlement(targetLodgeId, result);
   }
 }
 
@@ -297,6 +324,7 @@ export async function activateLicenseKey(lodgeId, licenseKey) {
     const normalized = coerceEntitlementResponse(data);
     if (normalized?.success === false) throw new Error(normalized.error || 'Activation failed');
     if (normalized) {
+      _entitlementCache.delete(lodgeId);
       cacheEntitlement(lodgeId, normalized);
       return {
         success: true,
@@ -339,6 +367,7 @@ export async function activateLicenseKey(lodgeId, licenseKey) {
 
   const overrides = await getLegacyFeatureOverrides(lodgeId).catch(() => []);
   const entitlement = buildLicensedEntitlement({ ...license, lodge_id: lodgeId }, overrides);
+  _entitlementCache.delete(lodgeId);
   cacheEntitlement(lodgeId, entitlement);
   return {
     success: true,

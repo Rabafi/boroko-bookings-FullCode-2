@@ -59,6 +59,12 @@ export default function Guests() {
     reader.onload = (e) => {
       const img = new window.Image()
       img.onload = () => {
+        const MIN_W = 200
+        const MIN_H = 200
+        if (img.width < MIN_W || img.height < MIN_H) {
+          window.alert(`ID photo is too small. Minimum size is ${MIN_W}x${MIN_H}px. Your image is ${img.width}x${img.height}px.`)
+          return
+        }
         const MAX = 600
         const canvas = document.createElement('canvas')
         const ratio = Math.min(MAX / img.width, MAX / img.height, 1)

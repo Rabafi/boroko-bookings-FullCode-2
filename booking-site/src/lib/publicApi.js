@@ -2,28 +2,96 @@ const supabaseUrl = String(import.meta.env.VITE_SUPABASE_URL || '').replace(/\/+
 const anonKey = String(import.meta.env.VITE_SUPABASE_ANON_KEY || '')
 const rpcBaseUrl = supabaseUrl ? `${supabaseUrl}/rest/v1/rpc` : ''
 const cachePrefix = 'boroko-booking-public:'
-
-// P0-3: Rate limiting for public booking submissions
-// Tracks submission attempts per session to prevent abuse/DoS
-const BOOKING_SUBMISSION_LIMIT = 10 // max requests per 1-hour window
-const BOOKING_SUBMISSION_WINDOW_MS = 60 * 60 * 1000 // 1 hour
-let bookingSubmissionTimestamps = [] // timestamps of booking submissions this session
+const EMAIL_FUNCTION_URL = import.meta.env.VITE_CONFIRMATION_EMAIL_FUNCTION_URL
 
 if (!supabaseUrl || !anonKey) {
   console.error('Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY in environment')
 }
 
+// ── Rate limiting ────────────────────────────────────────────────────────────
+// Uses localStorage so the limit survives page reloads and incognito sessions.
+const BOOKING_SUBMISSION_LIMIT = 6
+const BOOKING_SUBMISSION_WINDOW_MS = 60 * 60 * 1000
+const RATE_LIMIT_KEY = 'boroko:booking_submissions'
+
+function readRateLimitTimestamps() {
+  try {
+    const raw = localStorage.getItem(RATE_LIMIT_KEY)
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+function writeRateLimitTimestamps(timestamps) {
+  try {
+    localStorage.setItem(RATE_LIMIT_KEY, JSON.stringify(timestamps))
+  } catch {
+    // Ignore storage failures in private mode
+  }
+}
+
 function checkBookingSubmissionRateLimit() {
   const now = Date.now()
-  // Remove timestamps older than the window
-  bookingSubmissionTimestamps = bookingSubmissionTimestamps.filter(ts => now - ts < BOOKING_SUBMISSION_WINDOW_MS)
+  const timestamps = readRateLimitTimestamps().filter(ts => now - ts < BOOKING_SUBMISSION_WINDOW_MS)
 
-  if (bookingSubmissionTimestamps.length >= BOOKING_SUBMISSION_LIMIT) {
-    throw new Error(`Too many booking requests. Please wait an hour before trying again. (${bookingSubmissionTimestamps.length}/${BOOKING_SUBMISSION_LIMIT})`)
+  if (timestamps.length >= BOOKING_SUBMISSION_LIMIT) {
+    throw new Error(`Too many booking requests. Please wait an hour before trying again.`)
   }
 
-  // Record this submission attempt
-  bookingSubmissionTimestamps.push(now)
+  timestamps.push(now)
+  writeRateLimitTimestamps(timestamps)
+}
+
+// ── Email retry queue ───────────────────────────────────────────────────────
+// Pending confirmation emails are stored in localStorage and retried on page load.
+const EMAIL_QUEUE_KEY = 'boroko:pending_emails'
+
+export function queueConfirmationEmail(payload) {
+  if (!EMAIL_FUNCTION_URL) return
+  try {
+    const queue = JSON.parse(localStorage.getItem(EMAIL_QUEUE_KEY) || '[]')
+    queue.push({ payload, attempts: 0, lastAttempt: Date.now() })
+    localStorage.setItem(EMAIL_QUEUE_KEY, JSON.stringify(queue))
+  } catch {
+    // ignore
+  }
+}
+
+export async function flushPendingEmails() {
+  if (!EMAIL_FUNCTION_URL) return
+  try {
+    const raw = localStorage.getItem(EMAIL_QUEUE_KEY)
+    if (!raw) return
+    const queue = JSON.parse(raw)
+    if (!Array.isArray(queue) || queue.length === 0) return
+
+    const remaining = []
+    for (const item of queue) {
+      if (item.attempts >= 3) continue
+      try {
+        const response = await fetch(EMAIL_FUNCTION_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(item.payload)
+        })
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      } catch {
+        item.attempts += 1
+        item.lastAttempt = Date.now()
+        remaining.push(item)
+      }
+    }
+
+    if (remaining.length === 0) {
+      localStorage.removeItem(EMAIL_QUEUE_KEY)
+    } else {
+      localStorage.setItem(EMAIL_QUEUE_KEY, JSON.stringify(remaining))
+    }
+  } catch {
+    // ignore
+  }
 }
 
 function cacheKey(key) {

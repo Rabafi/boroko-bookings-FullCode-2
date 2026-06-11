@@ -57,10 +57,10 @@ function PageLoader() {
   return (
     <div className="flex min-h-[400px] h-full items-center justify-center p-6">
       <div className="bb-card flex min-w-[220px] flex-col items-center gap-4 px-8 py-7 text-center">
-        <div className="h-9 w-9 animate-spin rounded-full border-2 border-emerald-500 border-t-transparent" />
+        <div className="h-9 w-9 animate-spin rounded-full border-2 border-[#174c3a] border-t-transparent" />
         <div>
-          <p className="text-sm font-semibold text-slate-800">Loading workspace</p>
-          <p className="mt-1 text-xs text-slate-500">Preparing Boroko Bookings for this screen.</p>
+          <p className="text-sm font-semibold text-[#163229]">Loading workspace</p>
+          <p className="mt-1 text-xs text-[#6e857d]">Preparing Boroko Bookings for this screen.</p>
         </div>
       </div>
     </div>
@@ -74,7 +74,7 @@ function Lazy({ children }) {
 
 // { pos: true, inventory: true, ... }
 const INPUT_FOCUS_DEBUG = false
-const DEFAULT_TRIAL_STATUS = { status: 'trial', daysLeft: 3, expired: false }
+const DEFAULT_TRIAL_STATUS = { status: 'trial', daysLeft: 30, expired: false }
 const USER_SCOPE_KEY = 'bb_user_scope'
 
 function isEditableFieldTarget(target) {
@@ -422,14 +422,14 @@ function BroadcastBanner() {
     if (!window.api?.admin?.getActiveBroadcasts) return
     window.api.admin.getActiveBroadcasts().then((data) => {
       if (!Array.isArray(data)) return
-      const dismissed = JSON.parse(sessionStorage.getItem('bb_dismissed_broadcasts') || '[]')
+      const dismissed = JSON.parse(localStorage.getItem('bb_dismissed_broadcasts') || '[]')
       setBroadcasts(data.filter(b => !dismissed.includes(b.id)))
     }).catch(() => {})
   }, [])
 
   const dismiss = (id) => {
-    const dismissed = JSON.parse(sessionStorage.getItem('bb_dismissed_broadcasts') || '[]')
-    sessionStorage.setItem('bb_dismissed_broadcasts', JSON.stringify([...dismissed, id]))
+    const dismissed = JSON.parse(localStorage.getItem('bb_dismissed_broadcasts') || '[]')
+    localStorage.setItem('bb_dismissed_broadcasts', JSON.stringify([...dismissed, id]))
     setBroadcasts(prev => prev.filter(b => b.id !== id))
   }
 
@@ -810,6 +810,7 @@ export default function App() {
   const [settings, setSettings] = useState(null)
   const [features, setFeatures] = useState({}) // feature flags keyed by feature name
   const [trialStatus, setTrialStatus] = useState(DEFAULT_TRIAL_STATUS)
+  const [profileContextVersion, setProfileContextVersion] = useState(0)
   const [onlineRequests, setOnlineRequests] = useState([])
   const focusRecoveryQueuedRef = useRef(false)
   const lastEditablePointerRef = useRef(null)
@@ -954,6 +955,7 @@ export default function App() {
       setSettingsLoading(Boolean(nextActive))
       setProfiles(nextProfiles)
       setActiveProfile(nextActive)
+      setProfileContextVersion((value) => value + 1)
       return { profiles: nextProfiles, activeProfile: nextActive }
     } finally {
       setProfilesLoading(false)
@@ -1058,7 +1060,7 @@ export default function App() {
       cancelled = true
       clearInterval(interval)
     }
-  }, [activeProfile?.lodge_id, activeProfile?.status, applyEntitlement, isBrowserPreview, profilesLoading])
+  }, [activeProfile?.lodge_id, activeProfile?.status, applyEntitlement, isBrowserPreview, profileContextVersion, profilesLoading])
 
   const [isLoggingIn, setIsLoggingIn] = useState(false)
 

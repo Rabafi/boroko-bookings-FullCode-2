@@ -6,10 +6,11 @@ import {
   queueOperation,
   readCache,
   refreshCache,
-  writeCache
+  writeCache,
+  dedupePromise
 } from './infrastructure.js';
 
-export async function getAllRooms() {
+async function _getAllRooms() {
   if (!state.isOnline) {
     return readCache('rooms');
   }
@@ -17,9 +18,10 @@ export async function getAllRooms() {
   try {
     const { data, error } = await state.supabase.
     from('rooms').
-    select('*').
+    select('id, room_number, room_type, rate_per_night, max_occupancy, status, amenities, description, photo, photos, lodge_id, created_at, updated_at, housekeeping_status, housekeeping_notes').
     eq('lodge_id', state.lodgeId).
-    order('room_number');
+    order('room_number').
+    limit(200);
     if (error) throw error;
     const cached = readCache('rooms');
     if ((data || []).length === 0 && cached.length > 0) {
@@ -37,6 +39,10 @@ export async function getAllRooms() {
     if (!state.isOnline) return [];
     throw new Error(error?.message || 'Failed to load rooms');
   }
+}
+
+export function getAllRooms() {
+  return dedupePromise('getAllRooms', _getAllRooms);
 }
 
 export async function getRoomById(id) {

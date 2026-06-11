@@ -2,43 +2,81 @@ import { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { format, addDays } from 'date-fns'
 import {
+  ArrowDown,
   Calendar,
   Globe,
+  Loader2,
   Mail,
   MapPin,
   MessageCircle,
   Phone,
   Search,
   ShieldCheck,
-  Sparkles
+  Sparkles,
+  Users
 } from 'lucide-react'
 import { isMissingRpcError, readSessionCache, rpc, writeSessionCache } from '../lib/publicApi.js'
+import { trackSearch, trackSelectRoom } from '../lib/analytics.js'
+import { captureException } from '../lib/errorTracker.js'
+import { buildWhatsAppUrl, sanitizeWebsiteUrl, isValidSlug } from '../lib/utils.js'
+import { useFocusOnMount } from '../lib/hooks.js'
+import SeoMeta, { setLodgeSchema } from '../components/SeoMeta.jsx'
 import LodgeHeader from '../components/LodgeHeader.jsx'
 import RoomCard from '../components/RoomCard.jsx'
+import FaqSection from '../components/FaqSection.jsx'
+
+function SkeletonCard() {
+  return (
+    <article className="surface-card flex h-full flex-col overflow-hidden rounded-[28px]">
+      <div className="skeleton h-56 w-full" />
+      <div className="flex flex-1 flex-col p-5 sm:p-6">
+        <div className="flex items-start justify-between gap-3">
+          <div className="space-y-2">
+            <div className="skeleton h-4 w-24" />
+            <div className="skeleton h-8 w-32" />
+          </div>
+          <div className="skeleton h-10 w-20" />
+        </div>
+        <div className="mt-4 flex gap-2">
+          <div className="skeleton h-6 w-28" />
+          <div className="skeleton h-6 w-20" />
+        </div>
+        <div className="mt-4 space-y-2">
+          <div className="skeleton h-4 w-full" />
+          <div className="skeleton h-4 w-3/4" />
+        </div>
+        <div className="mt-auto flex items-end justify-between gap-3 border-t border-[var(--line)] pt-5">
+          <div className="skeleton h-8 w-28" />
+          <div className="skeleton h-10 w-32" />
+        </div>
+      </div>
+    </article>
+  )
+}
 
 const LODGE_SHELL_TTL_MS = 10 * 60 * 1000
 const LODGE_MEDIA_TTL_MS = 30 * 60 * 1000
 const ROOM_RESULTS_TTL_MS = 2 * 60 * 1000
 
-function buildWhatsAppUrl(number) {
-  const digits = String(number || '').replace(/[^\d]/g, '')
-  return digits ? `https://wa.me/${digits}` : null
-}
-
-function sanitizeWebsiteUrl(value) {
-  if (!value) return null
-  try {
-    const parsed = new URL(value)
-    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.toString() : null
-  } catch {
-    return null
-  }
-}
-
 export default function LodgePage() {
   const { slug } = useParams()
   const navigate = useNavigate()
   const resultsRef = useRef(null)
+  const headingRef = useRef(null)
+
+  useFocusOnMount(headingRef, [slug])
+
+  if (!isValidSlug(slug)) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-[var(--bg)] px-4">
+        <div className="surface-card max-w-md rounded-[32px] p-8 text-center">
+          <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-full bg-[var(--brand-soft)] text-3xl">🏕️</div>
+          <h1 className="font-display text-3xl text-[var(--text)]">Property not found</h1>
+          <p className="mt-3 text-sm leading-7 text-[var(--muted)]">The link you followed is invalid.</p>
+        </div>
+      </div>
+    )
+  }
 
   const [lodge, setLodge] = useState(null)
   const [lodgeError, setLodgeError] = useState(null)
@@ -53,6 +91,19 @@ export default function LodgePage() {
   const [loadingRooms, setLoadingRooms] = useState(false)
   const [roomError, setRoomError] = useState(null)
   const [searched, setSearched] = useState(false)
+  const [sortBy, setSortBy] = useState('recommended')
+  const [online, setOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true)
+
+  useEffect(() => {
+    const onOnline = () => setOnline(true)
+    const onOffline = () => setOnline(false)
+    window.addEventListener('online', onOnline)
+    window.addEventListener('offline', onOffline)
+    return () => {
+      window.removeEventListener('online', onOnline)
+      window.removeEventListener('offline', onOffline)
+    }
+  }, [])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -138,6 +189,7 @@ export default function LodgePage() {
           setLoadingLodge(false)
           setLodgeError(data?.error || error?.message || 'This lodge could not be found.')
         }
+        captureException(error || new Error('Lodge shell not found'), { slug })
         return
       }
 
@@ -152,6 +204,7 @@ export default function LodgePage() {
       setLodgeError(null)
       setLoadingLodge(false)
       document.title = `Reservations — ${data.lodge_name}`
+      setLodgeSchema(data)
       scheduleMediaFetch(data)
     }
 
@@ -213,6 +266,7 @@ export default function LodgePage() {
       if (!hasCachedRooms) {
         setRoomError(data?.error || error?.message || 'Could not load available rooms. Please try again.')
       }
+      captureException(error || new Error('Room search failed'), { slug, checkIn, checkOut })
       return
     }
 
@@ -220,18 +274,25 @@ export default function LodgePage() {
     writeSessionCache(roomCacheKey, roomList)
     setRooms(roomList)
     setLoadingRooms(false)
+    trackSearch(slug, checkIn, checkOut, roomList.length)
   }
 
   function handleBook(room) {
-    navigate(`/${slug}/book`, {
-      state: {
-        lodge,
-        room,
-        checkIn,
-        checkOut,
-        nights: rooms ? Number(room.nights) : 1
+    trackSelectRoom(slug, room.id, room.room_type, Number(room.nights || 1), Number(room.total_price || 0))
+    const nights = rooms ? Number(room.nights) : 1
+    const bookingState = {
+      lodge,
+      room,
+      checkIn,
+      checkOut,
+      nights
+    }
+    navigate(
+      `/${slug}/book?roomId=${encodeURIComponent(room.id)}&checkIn=${encodeURIComponent(checkIn)}&checkOut=${encodeURIComponent(checkOut)}`,
+      {
+        state: bookingState
       }
-    })
+    )
   }
 
   const nights = checkIn && checkOut
@@ -266,13 +327,27 @@ export default function LodgePage() {
   const whatsappUrl = buildWhatsAppUrl(lodge?.whatsapp_number)
 
   return (
-    <div className="min-h-screen bg-transparent">
+    <div className="min-h-screen overflow-x-hidden bg-transparent">
+      {!online && (
+        <div className="fixed inset-x-0 top-0 z-50 border-b border-amber-200 bg-amber-50 px-4 py-2 text-center text-xs font-semibold text-amber-800">
+          You appear to be offline. Some features may not work until your connection is restored.
+        </div>
+      )}
+      <SeoMeta
+        title={lodge?.lodge_name}
+        description={lodge?.booking_description || `Book your stay at ${lodge?.lodge_name}. Browse available rooms and send a reservation request.`}
+        ogImage={lodge?.hero_image || lodge?.logo}
+        canonicalPath={`/${slug}`}
+      />
+      <a href="#search-results" className="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:rounded-lg focus:bg-[var(--brand)] focus:px-4 focus:py-2 focus:text-white">
+        Skip to search results
+      </a>
       <LodgeHeader lodge={lodge} />
 
-      <main className="mx-auto max-w-6xl px-4 py-6 pb-28 sm:px-6 sm:py-10 sm:pb-10">
+      <main className="mx-auto max-w-6xl px-4 py-6 pb-24 sm:px-6 sm:py-10 sm:pb-10">
         <section className="surface-card overflow-hidden rounded-[32px]">
             {lodge?.hero_image ? (
-              <div className="relative h-[210px] sm:h-[280px]">
+              <div className="relative overflow-hidden h-[240px] sm:h-[300px] md:h-[360px]">
                 <img
                   src={lodge.hero_image}
                   alt={lodge.lodge_name}
@@ -281,24 +356,24 @@ export default function LodgePage() {
                   decoding="async"
                   fetchPriority="high"
                 />
-                <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(12,7,3,0.10)_0%,rgba(12,7,3,0.72)_100%)]" />
-                <div className="absolute inset-x-0 bottom-0 p-5 sm:p-9">
+                <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(12,7,3,0.15)_0%,rgba(12,7,3,0.55)_100%)]" />
+                <div className="absolute inset-x-0 bottom-0 p-5 sm:p-8">
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/10 px-3 py-1 text-[11px] font-bold uppercase tracking-[0.24em] text-white">
+                    <span className="inline-flex items-center gap-2 rounded-full border border-white/25 bg-white/15 px-3 py-1 text-[11px] font-bold uppercase tracking-[0.24em] text-white backdrop-blur-sm">
                       <Sparkles size={12} />
                       {lodge?.booking_tagline || 'Reserve your stay'}
                     </span>
-                    <span className="inline-flex items-center gap-2 rounded-full bg-white/12 px-3 py-1 text-xs font-semibold text-white/85">
+                    <span className="inline-flex items-center gap-2 rounded-full bg-white/15 px-3 py-1 text-xs font-semibold text-white/90 backdrop-blur-sm">
                       <ShieldCheck size={13} />
                       Reservations available online
                     </span>
                   </div>
 
-                  <h2 className="font-display mt-4 max-w-2xl text-[2rem] leading-tight text-white sm:mt-5 sm:text-5xl">
+                  <h2 ref={headingRef} className="font-display mt-4 max-w-2xl break-words text-[1.75rem] leading-tight text-white sm:mt-5 sm:text-[2.5rem] md:text-5xl" tabIndex={-1}>
                     Stay at {lodge?.lodge_name}
                   </h2>
 
-                  <p className="mt-3 max-w-2xl text-sm leading-6 text-white/82 sm:mt-4 sm:text-base sm:leading-8">
+                  <p className="mt-3 max-w-2xl break-words text-sm leading-6 text-white/90 sm:mt-4 sm:text-base sm:leading-8">
                     {lodge?.booking_description || 'Choose your dates and see available rooms.'}
                   </p>
                 </div>
@@ -316,46 +391,46 @@ export default function LodgePage() {
                   </span>
                 </div>
 
-                <h2 className="font-display mt-5 max-w-2xl text-[2rem] leading-tight text-[var(--text)] sm:mt-6 sm:text-5xl">
+                <h2 className="font-display mt-5 max-w-2xl break-words text-[1.75rem] leading-tight text-[var(--text)] sm:mt-6 sm:text-[2.5rem] md:text-5xl">
                   Stay at {lodge?.lodge_name}.
                 </h2>
 
-                <p className="mt-4 max-w-2xl text-sm leading-7 text-[var(--muted)] sm:mt-5 sm:text-base sm:leading-8">
+                <p className="mt-4 max-w-2xl break-words text-sm leading-7 text-[var(--muted)] sm:mt-5 sm:text-base sm:leading-8">
                   {lodge?.booking_description || 'Choose your dates and see available rooms.'}
                 </p>
               </div>
             )}
 
-            <div className="border-t border-[var(--line)] px-5 py-5 sm:px-9">
-              <div className="flex flex-wrap gap-3 text-sm text-[var(--muted)]">
+            <div className="border-t border-[var(--line)] px-5 py-4 sm:px-9 sm:py-5">
+              <div className="flex flex-wrap gap-2 text-xs text-[var(--muted)] sm:gap-3 sm:text-sm">
                 {location && (
-                  <span className="inline-flex items-center gap-2 rounded-full bg-white px-4 py-2">
-                    <MapPin size={14} />
+                  <span className="inline-flex items-center gap-1.5 break-words rounded-full bg-white px-3 py-1.5 sm:px-4 sm:py-2">
+                    <MapPin size={13} />
                     {location}
                   </span>
                 )}
                 {lodge?.phone && (
-                  <a href={`tel:${lodge.phone}`} className="inline-flex items-center gap-2 rounded-full bg-white px-4 py-2 font-semibold text-[var(--text)] transition-colors hover:bg-[var(--surface-strong)]">
-                    <Phone size={14} />
+                  <a href={`tel:${lodge.phone}`} className="inline-flex items-center gap-1.5 break-words rounded-full bg-white px-3 py-1.5 font-semibold text-[var(--text)] transition-colors hover:bg-[var(--surface-strong)] sm:px-4 sm:py-2">
+                    <Phone size={13} />
                     {lodge.phone}
                   </a>
                 )}
                 {whatsappUrl && (
-                  <a href={whatsappUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 rounded-full bg-emerald-50 px-4 py-2 font-semibold text-emerald-800 transition-colors hover:bg-emerald-100">
-                    <MessageCircle size={14} />
+                  <a href={whatsappUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 break-words rounded-full bg-emerald-50 px-3 py-1.5 font-semibold text-emerald-800 transition-colors hover:bg-emerald-100 sm:px-4 sm:py-2">
+                    <MessageCircle size={13} />
                     WhatsApp
                   </a>
                 )}
                 {lodge?.email && (
-                  <a href={`mailto:${lodge.email}`} className="inline-flex items-center gap-2 rounded-full bg-white px-4 py-2 font-semibold text-[var(--text)] transition-colors hover:bg-[var(--surface-strong)]">
-                    <Mail size={14} />
-                    Email lodge
+                  <a href={`mailto:${lodge.email}`} className="inline-flex items-center gap-1.5 break-words rounded-full bg-white px-3 py-1.5 font-semibold text-[var(--text)] transition-colors hover:bg-[var(--surface-strong)] sm:px-4 sm:py-2">
+                    <Mail size={13} />
+                    Email
                   </a>
                 )}
                 {websiteUrl && (
-                  <a href={websiteUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 rounded-full bg-white px-4 py-2 font-semibold text-[var(--text)] transition-colors hover:bg-[var(--surface-strong)]">
-                    <Globe size={14} />
-                    Visit website
+                  <a href={websiteUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 break-words rounded-full bg-white px-3 py-1.5 font-semibold text-[var(--text)] transition-colors hover:bg-[var(--surface-strong)] sm:px-4 sm:py-2">
+                    <Globe size={13} />
+                    Website
                   </a>
                 )}
               </div>
@@ -416,18 +491,27 @@ export default function LodgePage() {
               <button
                 type="submit"
                 disabled={loadingRooms}
-                className="brand-button w-full rounded-2xl px-6 py-3 text-sm font-extrabold transition-transform hover:-translate-y-0.5 lg:min-w-[180px] lg:w-auto"
+                className="brand-button w-full rounded-2xl px-6 py-3 text-sm font-extrabold transition-transform hover:-translate-y-0.5 active:scale-[0.98] lg:min-w-[180px] lg:w-auto"
               >
                 <span className="inline-flex items-center gap-2">
-                  <Search size={15} />
-                  {loadingRooms ? 'Checking…' : 'Search rooms'}
+                  {loadingRooms ? (
+                    <>
+                      <Loader2 size={15} className="animate-spin" />
+                      Checking…
+                    </>
+                  ) : (
+                    <>
+                      <Search size={15} />
+                      Search rooms
+                    </>
+                  )}
                 </span>
               </button>
             </div>
           </form>
         </section>
 
-        <div ref={resultsRef}>
+        <div ref={resultsRef} id="search-results" aria-live="polite" aria-atomic="false">
           {roomError && (
             <div className="mt-6 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">
               {roomError}
@@ -435,10 +519,9 @@ export default function LodgePage() {
           )}
 
           {loadingRooms && (
-            <div className="mt-8 text-center">
-              <div className="inline-flex rounded-full border border-[var(--line)] bg-white px-5 py-3 text-sm font-semibold text-[var(--muted)] shadow-sm">
-                Checking availability…
-              </div>
+            <div className="mt-8 grid grid-cols-1 gap-6 xl:grid-cols-2">
+              <SkeletonCard />
+              <SkeletonCard />
             </div>
           )}
 
@@ -464,7 +547,7 @@ export default function LodgePage() {
           )}
 
           {!loadingRooms && rooms && rooms.length > 0 && (
-            <section className="mt-8">
+            <section className="mt-8" aria-label="Available rooms">
             <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
               <div>
                 <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-[var(--muted)]">Available Rooms</p>
@@ -477,8 +560,35 @@ export default function LodgePage() {
               </p>
             </div>
 
+            {rooms.length > 1 && (
+              <div className="mb-5 flex flex-wrap gap-2">
+                {[
+                  { key: 'recommended', label: 'Recommended', icon: Sparkles },
+                  { key: 'price', label: 'Lowest price', icon: ArrowDown },
+                  { key: 'guests', label: 'Most guests', icon: Users },
+                ].map(({ key, label, icon: Icon }) => (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setSortBy(key)}
+                    className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${sortBy === key ? 'border-[var(--brand)] bg-[var(--brand-soft)] text-[var(--brand)]' : 'border-[var(--line)] bg-white text-[var(--muted)] hover:bg-[var(--surface-soft)]'}`}
+                    aria-pressed={sortBy === key}
+                  >
+                    <Icon size={12} />
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
+
             <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
-              {rooms.map((room) => (
+              {[...rooms]
+                .sort((a, b) => {
+                  if (sortBy === 'price') return Number(a.rate_per_night || 0) - Number(b.rate_per_night || 0)
+                  if (sortBy === 'guests') return Number(b.max_occupancy || 0) - Number(a.max_occupancy || 0)
+                  return 0
+                })
+                .map((room) => (
                 <RoomCard
                   key={room.id}
                   room={room}
@@ -503,31 +613,75 @@ export default function LodgePage() {
             </p>
           </div>
         )}
+
+        {(lodge?.booking_check_in_from || lodge?.booking_check_out_until || lodge?.booking_cancellation_policy || lodge?.booking_payment_terms || lodge?.booking_house_rules) && (
+          <section className="surface-card mt-8 rounded-[32px] p-5 sm:p-8">
+            <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-[var(--muted)]">Policies & Information</p>
+            <div className="mt-5 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
+              {(lodge?.booking_check_in_from || lodge?.booking_check_out_until) && (
+                <div className="rounded-2xl bg-[var(--surface-soft)] p-4">
+                  <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-[var(--muted)]">Check-in & Check-out</p>
+                  <div className="mt-2 space-y-1 text-sm text-[var(--text)]">
+                    {lodge?.booking_check_in_from && (
+                      <p><span className="font-semibold">Check-in:</span> {lodge.booking_check_in_from}</p>
+                    )}
+                    {lodge?.booking_check_out_until && (
+                      <p><span className="font-semibold">Check-out:</span> {lodge.booking_check_out_until}</p>
+                    )}
+                  </div>
+                </div>
+              )}
+              {lodge?.booking_cancellation_policy && (
+                <div className="rounded-2xl bg-[var(--surface-soft)] p-4">
+                  <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-[var(--muted)]">Cancellation Policy</p>
+                  <p className="mt-2 text-sm leading-7 text-[var(--text)]">{lodge.booking_cancellation_policy}</p>
+                </div>
+              )}
+              {lodge?.booking_payment_terms && (
+                <div className="rounded-2xl bg-[var(--surface-soft)] p-4">
+                  <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-[var(--muted)]">Payment Terms</p>
+                  <p className="mt-2 text-sm leading-7 text-[var(--text)]">{lodge.booking_payment_terms}</p>
+                </div>
+              )}
+              {lodge?.booking_house_rules && (
+                <div className="rounded-2xl bg-[var(--surface-soft)] p-4 sm:col-span-2 lg:col-span-3">
+                  <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-[var(--muted)]">House Rules / Guest Notes</p>
+                  <p className="mt-2 text-sm leading-7 text-[var(--text)]">{lodge.booking_house_rules}</p>
+                </div>
+              )}
+            </div>
+          </section>
+        )}
+
+        <FaqSection lodge={lodge} />
       </main>
 
       {hasContact && (
-        <div className="safe-bottom fixed inset-x-0 bottom-0 z-20 border-t border-[var(--line)] bg-[rgba(255,253,249,0.96)] px-4 py-3 backdrop-blur md:hidden">
-          <div className="mx-auto grid max-w-6xl gap-3 sm:flex sm:items-center">
+        <div className="safe-bottom fixed inset-x-0 bottom-0 z-20 border-t border-[var(--line)] bg-[rgba(255,253,249,0.96)] px-4 py-2.5 backdrop-blur md:hidden">
+          <div className="mx-auto flex max-w-6xl items-center gap-2">
             {whatsappUrl && (
-              <a href={whatsappUrl} target="_blank" rel="noreferrer" className="rounded-2xl bg-emerald-600 px-4 py-3 text-center text-sm font-extrabold text-white sm:flex-1">
-                WhatsApp
+              <a href={whatsappUrl} target="_blank" rel="noreferrer" className="flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-emerald-600 px-2 py-2.5 text-xs font-extrabold text-white active:scale-[0.98] transition-transform">
+                <MessageCircle size={16} />
+                <span className="truncate">WhatsApp</span>
               </a>
             )}
             {lodge?.phone && (
-              <a href={`tel:${lodge.phone}`} className="brand-button rounded-2xl px-4 py-3 text-center text-sm font-extrabold sm:flex-1">
-                Call lodge
+              <a href={`tel:${lodge.phone}`} className="brand-button flex flex-1 items-center justify-center gap-1.5 rounded-xl px-2 py-2.5 text-xs font-extrabold active:scale-[0.98] transition-transform">
+                <Phone size={16} />
+                <span className="truncate">Call</span>
               </a>
             )}
             {lodge?.email && (
-              <a href={`mailto:${lodge.email}`} className="rounded-2xl border border-[var(--line)] bg-white px-4 py-3 text-center text-sm font-extrabold text-[var(--text)] sm:flex-1">
-                Email
+              <a href={`mailto:${lodge.email}`} className="flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-[var(--line)] bg-white px-2 py-2.5 text-xs font-extrabold text-[var(--text)] active:scale-[0.98] transition-transform">
+                <Mail size={16} />
+                <span className="truncate">Email</span>
               </a>
             )}
           </div>
         </div>
       )}
 
-      <footer className={`px-4 py-10 text-center text-xs font-semibold uppercase tracking-[0.18em] text-[var(--muted)] ${hasContact ? 'pb-28 md:pb-10' : ''}`}>
+      <footer className={`px-4 py-10 text-center text-xs font-semibold uppercase tracking-[0.18em] text-[var(--muted)] ${hasContact ? 'pb-24 md:pb-10' : ''}`}>
         Online reservations
       </footer>
     </div>

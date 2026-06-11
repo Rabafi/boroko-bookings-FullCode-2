@@ -66,6 +66,12 @@ export default function Setup({ onComplete }) {
     reader.onload = (e) => {
       const img = new window.Image()
       img.onload = () => {
+        const MIN_W = 128
+        const MIN_H = 128
+        if (img.width < MIN_W || img.height < MIN_H) {
+          window.alert(`Logo is too small. Minimum size is ${MIN_W}x${MIN_H}px. Your image is ${img.width}x${img.height}px.`)
+          return
+        }
         const MAX = 400
         const canvas = document.createElement('canvas')
         const ratio = Math.min(MAX / img.width, MAX / img.height, 1)

@@ -5,7 +5,10 @@ import { performPeerHandshake } from './meshClient.js';
 
 const DISCOVERY_PORT = 53535;
 const MULTICAST_ADDR = '239.255.0.1';
+const BEACON_INTERVAL_MS = 30000;
+const HANDSHAKE_COOLDOWN_MS = 60000;
 let beaconIntervalId = null;
+const handshakeCooldowns = new Map();
 
 /**
  * Initializes and starts the UDP discovery socket for local LAN mesh peers.
@@ -47,10 +50,15 @@ export function startMeshDiscovery() {
 
       // 4. Record/Update peer in local registry
       const peerAddress = rinfo.address;
-      
+
+      // Cooldown check: prevent handshake retry storms for the same peer
+      const lastAttempt = handshakeCooldowns.get(nodeId);
+      if (lastAttempt && (Date.now() - lastAttempt) < HANDSHAKE_COOLDOWN_MS) return;
+
       // Check if we already have this peer, if not, perform dynamic HTTP handshake to verify HMAC and compute clock drift
       const existing = meshState.peers.get(nodeId);
       if (!existing || existing.address !== peerAddress || existing.httpPort !== httpPort) {
+        handshakeCooldowns.set(nodeId, Date.now());
         console.log(`[MeshDiscovery] Discovered peer candidate: ${nodeId} at ${peerAddress}:${httpPort}. Initiating HTTP handshake...`);
         // Trigger non-blocking handshake
         performPeerHandshake(nodeId, peerAddress, httpPort).catch((err) => {
@@ -76,8 +84,8 @@ export function startMeshDiscovery() {
       meshState.discoverySocket = socket;
       console.log(`[MeshDiscovery] UDP discovery listening on port ${DISCOVERY_PORT}, joined multicast group ${MULTICAST_ADDR}`);
 
-      // Start broadcasting periodic hello beacons (every 5 seconds)
-      beaconIntervalId = setInterval(broadcastHelloBeacon, 5000);
+      // Start broadcasting periodic hello beacons
+      beaconIntervalId = setInterval(broadcastHelloBeacon, BEACON_INTERVAL_MS);
       // Broadcast immediately on startup
       broadcastHelloBeacon();
     } catch (err) {

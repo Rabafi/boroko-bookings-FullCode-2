@@ -95,6 +95,7 @@ export {
 } from './domains/inventory.js'
 export {
   getAllBookings,
+  getCollectionsSummary,
   getBookingById,
   getPendingOnlineBookings,
   getBookingsByDateRange,
@@ -326,7 +327,9 @@ export {
   getActivityLogs,
   getCompanyStats,
   updateLicenseBilling,
-  getOverdueLicenses
+  getOverdueLicenses,
+  getMarketingLeads,
+  updateMarketingLeadStatus
 } from './domains/admin.js'
 export {
   getFinancialAuditLog,

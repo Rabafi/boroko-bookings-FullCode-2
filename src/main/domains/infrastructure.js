@@ -35,7 +35,8 @@ import {
   DEBUG_CACHE_FALLBACKS,
   clearCache,
   readCache,
-  writeCache
+  writeCache,
+  dedupePromise
 } from './cacheStore.js';
 import {
   buildSupabaseClient
@@ -130,7 +131,8 @@ export {
   DEBUG_CACHE_FALLBACKS,
   clearCache,
   readCache,
-  writeCache
+  writeCache,
+  dedupePromise
 } from './cacheStore.js';
 export {
   getAllUsers,
@@ -1277,14 +1279,14 @@ export async function initDatabase() {
   // Startup sync is intentionally skipped — we must not replay queued financial
   // operations before the correct Supabase client is authenticated.
   let online = false;
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt < 2; attempt++) {
     online = await checkOnline();
     if (online) break;
-    if (attempt < 2) await new Promise((r) => setTimeout(r, 2000));
+    if (attempt < 1) await new Promise((r) => setTimeout(r, 2000));
   }
   if (online && state.lodgeId) {
-    // Only refresh caches at startup (safe read-only — does not replay writes)
-    await refreshAllCaches();
+    // Fire-and-forget cache refresh — don't block startup on exhausted IO
+    refreshAllCaches().catch(() => {});
     console.log('Connected to Supabase ✓ (replay deferred until user authenticates)');
   } else {
     console.log('Running in offline mode — using cached data');

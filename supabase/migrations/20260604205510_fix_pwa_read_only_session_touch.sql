@@ -135,9 +135,9 @@ begin
     );
   end if;
 
-  v_trial_end := coalesce(v_settings.trial_started_at, now()) + interval '3 days';
+  v_trial_end := coalesce(v_settings.trial_started_at, now()) + interval '30 days';
   if v_settings.trial_started_at is null then
-    v_days_left := 3;
+    v_days_left := 30;
     v_expired := false;
   else
     v_days_left := greatest(0, ceil(extract(epoch from (v_trial_end - now())) / 86400.0))::int;
@@ -158,8 +158,8 @@ begin
     'expires_at', case when v_expired then v_trial_end else null end,
     'grace_period_days', 0,
     'grace_period_ends_at', null,
-    'offline_lease_days', 3,
-    'offline_valid_until', least(v_trial_end, now() + interval '3 days'),
+    'offline_lease_days', 30,
+    'offline_valid_until', least(v_trial_end, now() + interval '30 days'),
     'source_license_id', null,
     'lodge_name', coalesce(v_settings.lodge_name, v_settings.company_name),
     'effective_features', public._license_plan_features('Pro', true, v_expired)

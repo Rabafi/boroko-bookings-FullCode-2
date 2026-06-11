@@ -75,7 +75,8 @@ function latestDeskMessage(request) {
 
 export default function Dashboard() {
   const { user, logout } = useAuth()
-  const { can } = useFeatures()
+  const { can, features } = useFeatures()
+  const pwaEnabled = Object.keys(features).length > 0 && features.pwa === true
   const { showToast } = useToast()
   const [loading, setLoading] = useState(true)
   const [data, setData] = useState(null)
@@ -201,18 +202,20 @@ export default function Dashboard() {
       })
     })
 
-    deskResponses.slice(0, 1).forEach((request) => {
-      const deskMessage = latestDeskMessage(request)
-      items.push({
-        id: `desk-${request.id}`,
-        icon: BellRing,
-        tone: 'blue',
-        label: 'Desk',
-        title: request.title,
-        sub: deskMessage?.body || request.admin_notes || `Status changed to ${request.status || 'open'}.`,
-        to: '/control'
+    if (pwaEnabled) {
+      deskResponses.slice(0, 1).forEach((request) => {
+        const deskMessage = latestDeskMessage(request)
+        items.push({
+          id: `desk-${request.id}`,
+          icon: BellRing,
+          tone: 'blue',
+          label: 'Desk',
+          title: request.title,
+          sub: deskMessage?.body || request.admin_notes || `Status changed to ${request.status || 'open'}.`,
+          to: '/control'
+        })
       })
-    })
+    }
 
     return items.slice(0, 5)
   }, [data, deskResponses, overdueCheckouts, pendingOnline])
@@ -354,35 +357,37 @@ export default function Dashboard() {
           </div>
         </div>
 
-        <div className="bg-gray-800 rounded-2xl p-4">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <p className="text-sm font-semibold text-white flex items-center gap-2"><MessageSquare size={16} className="text-green-300" /> Message front desk</p>
-              <p className="mt-1 text-xs text-gray-500">Send a simple request without changing records from mobile.</p>
+        {pwaEnabled && (
+          <div className="bg-gray-800 rounded-2xl p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold text-white flex items-center gap-2"><MessageSquare size={16} className="text-green-300" /> Message front desk</p>
+                <p className="mt-1 text-xs text-gray-500">Send a simple request without changing records from mobile.</p>
+              </div>
+              <Link to="/control" className="text-xs text-green-400">Inbox</Link>
             </div>
-            <Link to="/control" className="text-xs text-green-400">Inbox</Link>
+            <textarea
+              className="mt-3 w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-3 text-white text-sm h-24 resize-none"
+              placeholder="Ask front desk to follow up..."
+              value={deskNote}
+              onChange={(event) => setDeskNote(event.target.value)}
+              maxLength={500}
+            />
+            <button
+              type="button"
+              onClick={sendDeskRequest}
+              disabled={sendingDeskRequest || !deskNote.trim()}
+              className="mt-3 w-full rounded-xl bg-green-700 py-3 text-sm font-semibold text-white disabled:opacity-60"
+            >
+              {sendingDeskRequest ? 'Sending...' : 'Send to front desk'}
+            </button>
           </div>
-          <textarea
-            className="mt-3 w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-3 text-white text-sm h-24 resize-none"
-            placeholder="Ask front desk to follow up..."
-            value={deskNote}
-            onChange={(event) => setDeskNote(event.target.value)}
-            maxLength={500}
-          />
-          <button
-            type="button"
-            onClick={sendDeskRequest}
-            disabled={sendingDeskRequest || !deskNote.trim()}
-            className="mt-3 w-full rounded-xl bg-green-700 py-3 text-sm font-semibold text-white disabled:opacity-60"
-          >
-            {sendingDeskRequest ? 'Sending...' : 'Send to front desk'}
-          </button>
-        </div>
+        )}
 
         <div className="grid grid-cols-2 gap-3">
           <QuickLink to="/alerts?filter=all" icon={AlertTriangle} label="Alerts" sub={`${openAlertCount} open`} />
           <QuickLink to="/money?focus=outstanding" icon={TrendingUp} label="Money" sub="Balances and audit" />
-          <QuickLink to="/control" icon={MessageSquare} label="Inbox" sub="Front desk chat" />
+          {pwaEnabled && <QuickLink to="/control" icon={MessageSquare} label="Inbox" sub="Front desk chat" />}
           {can('reports.view') ? (
             <QuickLink to="/reports" icon={FileText} label="Reports" sub="Full snapshot" />
           ) : (

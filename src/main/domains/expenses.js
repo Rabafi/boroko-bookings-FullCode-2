@@ -2,14 +2,15 @@ import { state } from '../state.js';
 import { MAX_FINANCIAL_AMOUNT } from './shared.js';
 import {
   readCache,
-  writeCache
+  writeCache,
+  dedupePromise
 } from './infrastructure.js';
 
 function payloadHasAmount(payload) {
   return !!payload && Object.prototype.hasOwnProperty.call(payload, 'amount');
 }
 
-export async function getExpenses(startDate, endDate, outletId = 'all') {
+async function _getExpenses(startDate, endDate, outletId = 'all') {
   const canonicalExpenses = readCache('expenses');
   const cachedExpenses = canonicalExpenses.
   filter((row) =>
@@ -29,7 +30,7 @@ export async function getExpenses(startDate, endDate, outletId = 'all') {
   if (state.isOnline) {
     let query = state.supabase.
     from('expenses').
-    select('*, outlets(name)').
+    select('id, date, category, description, amount, outlet_id, created_at, updated_at, outlets(name)').
     eq('lodge_id', state.lodgeId);
     if (startDate) query = query.gte('date', startDate);
     if (endDate) query = query.lte('date', endDate);
@@ -37,7 +38,7 @@ export async function getExpenses(startDate, endDate, outletId = 'all') {
       if (outletId === 'unassigned') query = query.is('outlet_id', null);else
       query = query.eq('outlet_id', outletId);
     }
-    const { data, error } = await query.order('date', { ascending: false });
+    const { data, error } = await query.order('date', { ascending: false }).limit(500);
     if (!error) {
       if ((data || []).length === 0 && cachedExpenses.length > 0) {
         console.warn('getExpenses received empty live result; using cached expenses instead');
@@ -55,6 +56,10 @@ export async function getExpenses(startDate, endDate, outletId = 'all') {
     throw new Error(error.message);
   }
   return cachedExpenses;
+}
+
+export function getExpenses(startDate, endDate, outletId = 'all') {
+  return dedupePromise(`getExpenses:${startDate}:${endDate}:${outletId}`, () => _getExpenses(startDate, endDate, outletId));
 }
 
 export async function getExpenseById(id) {

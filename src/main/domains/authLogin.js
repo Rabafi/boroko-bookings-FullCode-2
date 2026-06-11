@@ -8,9 +8,11 @@ import {
   clearBackendSession
 } from './authClients.js';
 import { readCache } from './cacheStore.js';
+import { refreshAllCaches } from './cacheRefresh.js';
 import { checkOnline } from './connectivity.js';
 import { restoreSavedTrustedSession } from './authSession.js';
 import { touchUserPresence } from './users.js';
+import { ensureReadyProfileForLodge } from './profiles.js';
 import {
   isBackendAuthSchemaError,
   normalizeEmail,
@@ -246,6 +248,10 @@ async function findRemoteUsersByEmailForCurrentLodge(emailLower) {
 }
 
 async function authenticateOnline(emailLower, password) {
+  if (!state.lodgeId) {
+    return authenticateOnlineForDeviceBootstrap(emailLower, password);
+  }
+
   const supabaseAuth = await authenticateWithSupabaseAuth(emailLower, password);
   if (
     supabaseAuth.user ||
@@ -451,6 +457,89 @@ async function authenticateOnline(emailLower, password) {
   };
 }
 
+async function authenticateOnlineForDeviceBootstrap(emailLower, password) {
+  if (!password) {
+    return { user: null, code: 'wrong_password', error: 'Enter your password to sign in.' };
+  }
+
+  try {
+    const authClient = buildSupabaseClient(SUPABASE_ANON_KEY);
+    const { data, error } = await authClient.rpc('authenticate_user_for_device', {
+      p_email: emailLower,
+      p_password: password,
+      p_session_type: 'desktop'
+    });
+    const row = Array.isArray(data) ? data[0] : data;
+
+    if (error) {
+      const message = error.message || 'authenticate_user_for_device failed.';
+      if (/could not find the function|schema cache|authenticate_user_for_device/i.test(message)) {
+        return {
+          user: null,
+          code: 'device_bootstrap_unavailable',
+          error: 'This database does not support first sign-in on a new computer yet. Run the latest Supabase migrations, then try again.'
+        };
+      }
+      return {
+        user: null,
+        code: 'auth_failed_real',
+        error: message,
+        details: { source: 'authenticate_user_for_device' }
+      };
+    }
+
+    if (row?.reason === 'ambiguous_lodge') {
+      return {
+        user: null,
+        code: 'ambiguous_lodge',
+        error: 'This email is linked to more than one lodge. Sign in through Command Central or choose the lodge profile first.'
+      };
+    }
+
+    if (row?.reason === 'not_found_or_wrong_password' || row?.reason === 'missing_credentials' || row?.found === false) {
+      return {
+        user: null,
+        code: row?.reason === 'missing_credentials' ? 'wrong_password' : 'account_not_found',
+        error: row?.reason === 'missing_credentials'
+          ? 'Enter your email and password to sign in.'
+          : 'No active staff account matched that email and password.'
+      };
+    }
+
+    const contract = normalizeAuthContractRow(row);
+
+    if (!contract.ok) {
+      return {
+        user: null,
+        code: 'auth_failed_real',
+        error: contract.reason || 'Invalid authenticate_user_for_device contract response.',
+        details: { source: 'authenticate_user_for_device', payload: row || null }
+      };
+    }
+
+    if (!contract.row.authenticated || !contract.row.session_token) {
+      return {
+        user: null,
+        code: 'wrong_password',
+        error: 'That password is incorrect. Please try again or ask a manager to reset it.'
+      };
+    }
+
+    return {
+      user: toSafeUser(contract.row),
+      source: 'device_bootstrap',
+      session_token: contract.row.session_token,
+      session_expires_at: contract.row.session_expires_at
+    };
+  } catch (error) {
+    return {
+      user: null,
+      code: 'server_unreachable',
+      error: error?.message || 'The server could not verify this sign-in.'
+    };
+  }
+}
+
 async function authenticateWithSupabaseAuth(emailLower, password) {
   if (!password) {
     return { user: null, code: 'wrong_password', error: 'Enter your password to sign in.' };
@@ -630,16 +719,16 @@ export async function loginUser(email, password) {
   console.log('[DB LOGIN] lodgeId:', state.lodgeId);
   console.log('[DB LOGIN] email:', normalizeEmail(email));
   clearBackendSession();
-  if (!state.lodgeId) {
+  await checkOnline();
+  if (!state.lodgeId && !state.isOnline) {
     const result = {
       user: null,
       code: 'no_profile_selected',
-      error: 'Choose a lodge on this computer before staff sign-in.'
+      error: 'Connect to the internet and sign in once so this computer can download your lodge profile.'
     };
     authTrace('db.loginUser final return', result);
     return result;
   }
-  await checkOnline();
   const emailLower = normalizeEmail(email);
 
   if (state.isOnline) {
@@ -652,7 +741,24 @@ export async function loginUser(email, password) {
           expires_at: online.session_expires_at,
           session_type: 'desktop'
         });
-        authContext = await getLodgeAuthContext();
+        const authenticatedLodgeId = normalizeLodgeId(online.user?.lodge_id);
+        if (!authenticatedLodgeId) {
+          throw new Error('The server authenticated this user but did not return a lodge ID.');
+        }
+        if (state.lodgeId && authenticatedLodgeId !== normalizeLodgeId(state.lodgeId)) {
+          return {
+            user: null,
+            code: 'wrong_lodge',
+            error: 'This staff account belongs to a different lodge. Switch lodge profiles, then sign in again.'
+          };
+        }
+
+        authContext = await getLodgeAuthContext(authenticatedLodgeId);
+        if (!state.lodgeId) {
+          ensureReadyProfileForLodge(authenticatedLodgeId, {
+            label: authContext?.lodge_display_name || online.user?.name || 'Existing Lodge'
+          });
+        }
       } catch (e) {
         clearBackendSession();
         console.error('[AUTH REAL ERROR]', {
@@ -721,6 +827,7 @@ export async function loginUser(email, password) {
       if (online.source !== 'supabase_auth') {
         await createSupabaseAuthUserForStaff(emailLower, password);
       }
+      await refreshAllCaches();
       await cacheSuccessfulLogin(online.user, emailLower, password);
       const result = {
         user: online.user,

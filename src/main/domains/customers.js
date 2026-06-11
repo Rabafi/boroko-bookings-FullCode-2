@@ -4,16 +4,21 @@ import {
   queueOperation,
   readCache,
   refreshCache,
-  writeCache
+  writeCache,
+  dedupePromise
 } from './infrastructure.js';
 
-export async function getAllCustomers() {
+async function _getAllCustomers() {
   if (state.isOnline) {
-    const { data } = await state.supabase.from('customers').select('*').eq('lodge_id', state.lodgeId).order('name');
+    const { data } = await state.supabase.from('customers').select('id, name, email, phone, id_number, nationality, created_at, updated_at, is_blacklisted, blacklist_reason, lodge_id').eq('lodge_id', state.lodgeId).order('name').limit(500);
     if (data) writeCache('customers', data);
     return data || [];
   }
   return readCache('customers');
+}
+
+export function getAllCustomers() {
+  return dedupePromise('getAllCustomers', _getAllCustomers);
 }
 
 export async function createCustomer(data) {

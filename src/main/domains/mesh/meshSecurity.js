@@ -57,7 +57,7 @@ export function generateMeshSignature(method, path, timestamp, nonce, body, secr
 
 /**
  * Validates a incoming request's HMAC signature.
- * Enforces timing-safe comparisons, nonce validation, and a strict 10s timestamp drift.
+ * Enforces timing-safe comparisons, nonce validation, and a strict 30s timestamp drift.
  */
 export function validateIncomingRequest(method, path, headers, body, secret) {
   const nodeId = headers['x-boroko-mesh-node-id'];
@@ -75,7 +75,7 @@ export function validateIncomingRequest(method, path, headers, body, secret) {
     return { isValid: false, error: 'Lodge ID mismatch' };
   }
 
-  // 2. Validate timestamp tolerance window (10 seconds)
+  // 2. Validate timestamp tolerance window (30 seconds)
   const requestTime = new Date(timestamp).getTime();
   if (isNaN(requestTime)) {
     return { isValid: false, error: 'Invalid timestamp format' };
@@ -83,7 +83,7 @@ export function validateIncomingRequest(method, path, headers, body, secret) {
 
   const now = Date.now();
   const drift = Math.abs(now - requestTime);
-  if (drift > 10000) { // 10 seconds tolerance
+  if (drift > 30000) { // 30 seconds tolerance (accommodates LAN clock drift)
     return { isValid: false, error: `Timestamp drift exceeds tolerance. Drift: ${drift}ms` };
   }
 
@@ -119,7 +119,7 @@ export function validateIncomingRequest(method, path, headers, body, secret) {
   if (!meshState.nonceExpiries) {
     meshState.nonceExpiries = new Map();
   }
-  meshState.nonceExpiries.set(nonce, requestTime + 10000);
+  meshState.nonceExpiries.set(nonce, requestTime + 30000);
 
   return { isValid: true };
 }

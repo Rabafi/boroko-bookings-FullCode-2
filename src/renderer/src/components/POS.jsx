@@ -15,7 +15,7 @@ const BAR_PACK_TEMPLATES = [
   { size: 24, label: 'Case (24)' }
 ]
 const CASHUP_CORE_METHODS = ['cash', 'card', 'bank_transfer', 'orange_money', 'myzaka', 'smega', 'other']
-const POS_LIVE_REFRESH_MS = 5000
+const POS_LIVE_REFRESH_MS = 15000
 const POS_TOUCH_MODE_STORAGE_KEY = 'bb_pos_touch_mode'
 
 const toLocalDateInput = (value = new Date()) => formatLocalDate(value)

@@ -39,7 +39,7 @@ const ToastContext = createContext({ showToast: () => {} })
 function PageLoader() {
   return (
     <div className="flex items-center justify-center min-h-[300px]">
-      <div className="w-8 h-8 border-2 border-green-500 border-t-transparent rounded-full animate-spin" />
+      <div className="w-8 h-8 border-2 border-[#174c3a] border-t-transparent rounded-full animate-spin" />
     </div>
   )
 }
@@ -559,6 +559,7 @@ function NotificationCenter({ notificationCount, setNotificationCount }) {
   const { showToast } = useToast()
   const [notifications, setNotifications] = useState([])
   const lastAnnouncedRef = useRef(null)
+  const initialBatchRef = useRef(true)
   const [activeNotification, setActiveNotification] = useState(null)
   const [inboxOpen, setInboxOpen] = useState(false)
 
@@ -574,7 +575,8 @@ function NotificationCenter({ notificationCount, setNotificationCount }) {
         latest &&
         (detail?.isNew || detail?.frontDeskUpdated) &&
         announcementId !== lastAnnouncedRef.current &&
-        !latest.readAt
+        !latest.readAt &&
+        !initialBatchRef.current
       ) {
         lastAnnouncedRef.current = announcementId
         showToast({
@@ -639,11 +641,13 @@ function NotificationCenter({ notificationCount, setNotificationCount }) {
         ;(Array.isArray(rows) ? rows : []).forEach(upsertFrontDeskReply)
       } catch {
         // Best-effort notification watcher.
+      } finally {
+        initialBatchRef.current = false
       }
     }
 
     loadFrontDeskReplies()
-    const interval = window.setInterval(loadFrontDeskReplies, 20_000)
+    const interval = window.setInterval(loadFrontDeskReplies, 60_000)
     return () => {
       cancelled = true
       window.clearInterval(interval)
@@ -1034,7 +1038,7 @@ function AuthenticatedShell({ alertCount, dark, setDark, setAlertCount, notifica
         </Routes>
       </div>
       <GlobalStatusFooter />
-      <BottomNav alertCount={alertCount} notificationCount={notificationCount} />
+      <BottomNav alertCount={alertCount} notificationCount={notificationCount} inboxEnabled={Object.keys(features).length > 0 && features.pwa === true} />
     </div>
   )
 }

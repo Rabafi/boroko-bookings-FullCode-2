@@ -9,14 +9,15 @@ const NAV = [
   { to: '/control', label: 'Inbox', icon: MessageCircle }
 ]
 
-export default function BottomNav({ notificationCount = 0 }) {
+export default function BottomNav({ notificationCount = 0, inboxEnabled = true }) {
+  const navItems = NAV.filter((item) => item.to !== '/control' || inboxEnabled)
   return (
     <nav
       className="pwa-bottom-nav fixed bottom-0 left-0 right-0 z-40 mx-auto flex max-w-xl items-center justify-around border-t border-white/10 bg-gray-900/92 px-2"
       style={{ paddingBottom: 'max(env(safe-area-inset-bottom), 8px)' }}
       aria-label="Manager navigation"
     >
-      {NAV.map(({ to, label, icon: Icon, end }) => (
+      {navItems.map(({ to, label, icon: Icon, end }) => (
         <NavLink
           key={to}
           to={to}

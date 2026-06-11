@@ -442,15 +442,22 @@ export async function validateCurrentSession() {
     }
   }
 
-  await checkOnline();
-  if (!state.isOnline) {
+  // Don't block loading screen if IO is exhausted
+  const onlineCheck = checkOnline();
+  const timeout = new Promise((r) => setTimeout(() => r('timeout'), 3000));
+  const result = await Promise.race([onlineCheck, timeout]);
+  if (result === 'timeout' || !state.isOnline) {
     return state.currentUser;
   }
 
   try {
-    const { data, error } = await state.supabase.rpc('validate_app_session', {
+    const rpcPromise = state.supabase.rpc('validate_app_session', {
       p_session_token: session.token
     });
+    const rpcTimeout = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('validate_app_session timed out')), 5000)
+    );
+    const { data, error } = await Promise.race([rpcPromise, rpcTimeout]);
     if (error) throw error;
 
     const row = Array.isArray(data) ? data[0] : data;

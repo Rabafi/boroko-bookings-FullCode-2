@@ -358,65 +358,8 @@ export default function Layout() {
     let mounted = true
     const loadCollections = async () => {
       try {
-        // Guard: don't fetch while offline — avoids crash and spurious navigation
-        const syncStatus = await window.api.sync.getStatus().catch(() => null)
-        if (syncStatus?.isOnline === false) {
-          if (mounted) setCollectionSummary({ count: 0, amount: 0 })
-          return
-        }
-
-        const bookings = await window.api.bookings.getAll()
-        const confBookings = await window.api.conference.getAll().catch(() => [])
-        if (!mounted) return
-
-        const all = Array.isArray(bookings) ? bookings : []
-        const allConf = Array.isArray(confBookings) ? confBookings : []
-
-        // Collapse exclusive-event room-rows into one group so a 6-room lodge event
-        // shows as ONE collection reminder, not six.
-        const eventGroupMap = {}
-        const deduped = []
-        for (const b of all) {
-          if (!b) continue
-          if (b.is_exclusive_event) {
-            const match = b.notes?.match(/\[GROUP:([^\]]+)\]/)
-            const gid = match?.[1] || b.check_in
-            if (!eventGroupMap[gid]) {
-              eventGroupMap[gid] = {
-                ...b,
-                _event_group: true,
-                total_amount: Number(b.total_amount || 0),
-                charges_total: Number(b.charges_total || 0),
-                amount_paid: Number(b.amount_paid || 0)
-              }
-              deduped.push(eventGroupMap[gid])
-            } else {
-              const g = eventGroupMap[gid]
-              g.total_amount += Number(b.total_amount || 0)
-              g.charges_total += Number(b.charges_total || 0)
-              g.amount_paid += Number(b.amount_paid || 0)
-            }
-          } else {
-            deduped.push(b)
-          }
-        }
-
-        const openBalances = deduped.filter((booking) => {
-          if ((booking.status || '') === 'cancelled') return false
-          return Math.max(0, Number(booking.total_amount || 0) + Number(booking.charges_total || 0) - Number(booking.amount_paid || 0)) > 0
-        })
-
-        const confOpen = allConf
-          .filter((cb) => cb.payment_status !== 'cancelled')
-          .filter((cb) => Number(cb.total_amount || 0) - Number(cb.deposit_paid || 0) > 0)
-
-        const totalOpen = openBalances.length + confOpen.length
-        const amount = openBalances.reduce((sum, booking) => (
-          sum + Math.max(0, Number(booking.total_amount || 0) + Number(booking.charges_total || 0) - Number(booking.amount_paid || 0))
-        ), 0) + confOpen.reduce((sum, cb) => (
-          sum + Math.max(0, Number(cb.total_amount || 0) - Number(cb.deposit_paid || 0))
-        ), 0)
-        setCollectionSummary({ count: totalOpen, amount })
+        const summary = await window.api.bookings.getCollectionsSummary()
+        if (mounted) setCollectionSummary(summary || { count: 0, amount: 0 })
       } catch {
         if (mounted) setCollectionSummary({ count: 0, amount: 0 })
       }
@@ -427,7 +370,7 @@ export default function Layout() {
       mounted = false
       clearInterval(interval)
     }
-  }, [location.pathname])
+  }, [])
 
   useEffect(() => {
     let mounted = true
@@ -565,7 +508,7 @@ export default function Layout() {
     }
 
     loadSupportRequests()
-    const interval = setInterval(loadSupportRequests, 15_000)
+    const interval = setInterval(loadSupportRequests, 60_000)
     return () => {
       cancelled = true
       clearInterval(interval)
@@ -1019,7 +962,7 @@ export default function Layout() {
       {/* Main */}
       <div className="flex flex-1 flex-col overflow-auto">
         {!isPosRoute && (
-          <div className="shrink-0 border-b border-slate-200/70 bg-white/78 px-4 py-2.5 backdrop-blur-xl md:px-5">
+          <div className="shrink-0 border-b border-slate-200/70 bg-white/80 px-4 py-2.5 backdrop-blur-xl md:px-5">
             <div className="flex items-center justify-between gap-3">
               <div className="min-w-0">
                 <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.2em] text-slate-500">
@@ -1127,7 +1070,7 @@ export default function Layout() {
           </div>
         )}
         {!isPosRoute && attentionItems.length > 0 && (
-          <div className="border-b border-slate-200/70 bg-white/82 px-4 py-2.5 backdrop-blur-xl md:px-5">
+          <div className="border-b border-slate-200/70 bg-white/80 px-4 py-2.5 backdrop-blur-xl md:px-5">
             <div className="mx-auto flex max-w-[1500px] items-center gap-2 overflow-x-auto">
               <div className="sticky left-0 z-10 flex shrink-0 items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-bold uppercase tracking-[0.16em] text-emerald-800 shadow-sm">
                 <Sparkles size={14} />

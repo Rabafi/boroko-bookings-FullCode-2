@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Check, Clock, Monitor, RefreshCw, Utensils } from 'lucide-react'
 import { useSettings } from '../app-context'
 
-const DISPLAY_REFRESH_MS = 2500
+const DISPLAY_REFRESH_MS = 5000
 const currencyFallback = 'P'
 
 const fmt = (value) => Number(value || 0).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })

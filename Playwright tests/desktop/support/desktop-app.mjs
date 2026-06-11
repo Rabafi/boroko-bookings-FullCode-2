@@ -319,7 +319,8 @@ export function createDesktopSeed(overrides = {}) {
     session_type: 'desktop',
     allowed_outlet_ids: user.allowed_outlet_ids,
     nonce: sessionNonce,
-    createdAt: createdAt
+    createdAt: createdAt,
+    offline_password_hash: bcrypt.hashSync(password, 10)
   }
 
   return {
@@ -576,9 +577,33 @@ export async function launchDesktopApp({ userDataDir, extraEnv = {} } = {}) {
     }
   })
 
-  const window = await app.firstWindow()
+  await app.firstWindow()
+  const window = await waitForMainDesktopWindow(app)
   await window.waitForLoadState('domcontentloaded')
   return { app, window }
+}
+
+async function isStartupSplashWindow(page) {
+  if (!page || page.isClosed()) return false
+  const url = page.url()
+  const title = await page.title().catch(() => '')
+  return title === 'Boroko Bookings Starting' || url.startsWith('data:text/html')
+}
+
+async function waitForMainDesktopWindow(app, timeout = 30000) {
+  const deadline = Date.now() + timeout
+
+  while (Date.now() < deadline) {
+    for (const page of app.windows()) {
+      if (page.isClosed()) continue
+      if (!(await isStartupSplashWindow(page))) return page
+    }
+
+    const remaining = Math.max(1, deadline - Date.now())
+    await app.waitForEvent('window', { timeout: Math.min(1000, remaining) }).catch(() => null)
+  }
+
+  throw new Error('Main Boroko desktop window did not open before the startup timeout.')
 }
 
 export async function setTestOfflineMode(page, forceOffline) {

@@ -107,7 +107,7 @@ export async function createInvoice(data) {
 
 export async function getInvoices(filters = {}) {
   if (!state.isOnline) return [];
-  let q = requireAdmin().from('invoices').select('*').order('created_at', { ascending: false });
+  let q = requireAdmin().from('invoices').select('id, booking_id, lodge_id, invoice_number, issued_at, due_date, notes, status, amount, currency, package_name, created_at').order('created_at', { ascending: false }).limit(500);
   if (filters.lodge_id) q = q.eq('lodge_id', filters.lodge_id);
   if (filters.status) q = q.eq('status', filters.status);
   const { data } = await q;
@@ -118,9 +118,10 @@ export async function getInvoicesByLodge(lodgeId) {
   if (!state.isOnline) return [];
   const { data } = await state.supabase.
   from('invoices').
-  select('*').
+  select('id, booking_id, lodge_id, invoice_number, issued_at, due_date, notes, status, amount, currency, package_name, created_at').
   eq('lodge_id', lodgeId).
-  order('issued_at', { ascending: false });
+  order('issued_at', { ascending: false }).
+  limit(500);
   return data || [];
 }
 
@@ -210,11 +211,11 @@ export async function getFinancialReconciliation() {
     invoicesResult,
     posOrdersResult] =
     await Promise.all([
-    state.supabase.from('bookings').select('id, invoice_number, total_amount, charges_total, amount_paid, status, payment_status, check_in, check_out, updated_at').eq('lodge_id', state.lodgeId),
-    state.supabase.from('payments').select('booking_id, amount, type, paid_at').eq('lodge_id', state.lodgeId),
-    state.supabase.from('booking_charges').select('id, booking_id, amount, description, voided_at, void_reason, created_at').eq('lodge_id', state.lodgeId),
-    state.supabase.from('invoices').select('id, booking_id, invoice_number, issued_at, created_at').eq('lodge_id', state.lodgeId),
-    state.supabase.from('pos_orders').select('id, booking_id, total, payment_method, status, folio_charge_id, created_at').eq('lodge_id', state.lodgeId)]
+    state.supabase.from('bookings').select('id, invoice_number, total_amount, charges_total, amount_paid, status, payment_status, check_in, check_out, updated_at').eq('lodge_id', state.lodgeId).limit(1000),
+    state.supabase.from('payments').select('booking_id, amount, type, paid_at').eq('lodge_id', state.lodgeId).limit(2000),
+    state.supabase.from('booking_charges').select('id, booking_id, amount, description, voided_at, void_reason, created_at').eq('lodge_id', state.lodgeId).limit(2000),
+    state.supabase.from('invoices').select('id, booking_id, invoice_number, issued_at, created_at').eq('lodge_id', state.lodgeId).limit(1000),
+    state.supabase.from('pos_orders').select('id, booking_id, total, payment_method, status, folio_charge_id, created_at').eq('lodge_id', state.lodgeId).limit(1000)]
     );
 
     if (bookingsResult.error) throw new Error(bookingsResult.error.message);

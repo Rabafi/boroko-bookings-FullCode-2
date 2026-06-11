@@ -16,12 +16,12 @@ test('desktop login signs in with cached offline credentials', async () => {
   try {
     await expect(page.getByRole('button', { name: 'Use Lodge' })).toBeVisible({ timeout: 30000 })
     await page.getByRole('button', { name: 'Use Lodge' }).click()
-    await page.evaluate(() => { window.location.hash = '#/login' })
+    await expect(page.getByTestId('login-email-input')).toBeVisible({ timeout: 30000 })
     await page.getByTestId('login-email-input').fill(seed.user.email)
     await page.getByTestId('login-password-input').fill(seed.password)
     await page.getByTestId('login-submit-button').click()
 
-    await expect(page.getByTestId('sidebar-sync-panel')).toBeVisible({ timeout: 30000 })
+    await expect(page.getByRole('heading', { name: 'Dashboard' }).first()).toBeVisible({ timeout: 30000 })
     await expect(page.getByText(seed.user.name)).toBeVisible()
   } finally {
     await app.close()

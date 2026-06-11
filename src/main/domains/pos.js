@@ -17,7 +17,8 @@ import {
   refreshCache,
   restoreOfflinePosInventoryReservation,
   upsertLocalPosVoidHistory,
-  writeCache
+  writeCache,
+  dedupePromise
 } from './infrastructure.js'
 
 function isReadOnlySessionTouchError(error) {
@@ -255,20 +256,25 @@ function writeCustomerDisplaySnapshot(snapshot = {}) {
 }
 
 // outletFilter: null = all outlets, [] = no access, [uuid1,...] = restrict to these outlet IDs
-export async function getPosMenuItems(outletFilter = null) {
+async function _getPosMenuItems(outletFilter = null) {
   if (state.isOnline) {
     let query = state.supabase.
     from('pos_menu_items').
-    select('*').
+    select('id, name, category, price, is_available, barcode, inventory_item_id, depletion_qty, outlet_id, template_kind, lodge_id, created_at, updated_at').
     eq('lodge_id', state.lodgeId).
     order('category').
-    order('name');
+    order('name').
+    limit(500);
     const { data, error } = await query;
     if (error) throw new Error(error.message);
     writeCache('pos-menu-items', data || []);
     return applyPosMenuOutletFilter(data || [], outletFilter);
   }
   return applyPosMenuOutletFilter(readCache('pos-menu-items'), outletFilter);
+}
+
+export function getPosMenuItems(outletFilter = null) {
+  return dedupePromise(`getPosMenuItems:${JSON.stringify(outletFilter)}`, () => _getPosMenuItems(outletFilter));
 }
 
 export async function getPosMenuItemById(id) {
@@ -358,18 +364,18 @@ export async function setBarPosPackTemplate(data) {
 }
 
 // outletFilter: null = all, [] = no access, [uuid1,...] = restrict to these outlet IDs
-export async function getPosOrders(startDate, endDate, outletFilter = null) {
+async function _getPosOrders(startDate, endDate, outletFilter = null) {
   if (state.isOnline) {
     const cachedOrders = readCache('pos-orders');
     let query = state.supabase.
     from('pos_orders').
-    select('*, pos_order_items(*), outlets(name)').
+    select('id, room_id, booking_id, walk_in_name, total, gross_total, discount_total, tax_rate, tax_total, tip_total, notes, payment_method, payment_breakdown, outlet_id, service_mode, table_name, tab_name, waiter_name, cashier_id, cashier_name, shift_id, ticket_status, status, created_at, updated_at, pos_order_items(*), outlets(name)').
     eq('lodge_id', state.lodgeId);
     if (startDate) query = query.gte('created_at', startDate);
     if (endDate) query = query.lte('created_at', normalizeInclusiveDateEnd(endDate));
     let data = null;
     let error = null;
-    ({ data, error } = await query.order('created_at', { ascending: false }));
+    ({ data, error } = await query.order('created_at', { ascending: false }).limit(500));
 
     if (error) {
       if (isReadOnlySessionTouchError(error)) {
@@ -383,11 +389,11 @@ export async function getPosOrders(startDate, endDate, outletFilter = null) {
 
       let fallbackQuery = state.supabase.
       from('pos_orders').
-      select('*, pos_order_items(*)').
+      select('id, room_id, booking_id, walk_in_name, total, gross_total, discount_total, tax_rate, tax_total, tip_total, notes, payment_method, payment_breakdown, outlet_id, service_mode, table_name, tab_name, waiter_name, cashier_id, cashier_name, shift_id, ticket_status, status, created_at, updated_at, pos_order_items(*)').
       eq('lodge_id', state.lodgeId);
       if (startDate) fallbackQuery = fallbackQuery.gte('created_at', startDate);
       if (endDate) fallbackQuery = fallbackQuery.lte('created_at', normalizeInclusiveDateEnd(endDate));
-      const fallback = await fallbackQuery.order('created_at', { ascending: false });
+      const fallback = await fallbackQuery.order('created_at', { ascending: false }).limit(500);
       data = fallback.data || [];
       error = fallback.error || null;
       if (error && isReadOnlySessionTouchError(error)) {
@@ -413,6 +419,10 @@ export async function getPosOrders(startDate, endDate, outletFilter = null) {
     return applyPosOrderFilters(mergedLiveRows, startDate, endDate, outletFilter);
   }
   return applyPosOrderFilters(readCache('pos-orders'), startDate, endDate, outletFilter);
+}
+
+export function getPosOrders(startDate, endDate, outletFilter = null) {
+  return dedupePromise(`getPosOrders:${startDate}:${endDate}:${JSON.stringify(outletFilter)}`, () => _getPosOrders(startDate, endDate, outletFilter));
 }
 
 export async function getPosVoidHistory(startDate, endDate, outletFilter = null) {
@@ -471,7 +481,7 @@ export async function getPosVoidHistory(startDate, endDate, outletFilter = null)
   return applyVoidFilters([...pendingLocalRows.filter((row) => !remoteIds.has(row?.id)), ...remoteRows]);
 }
 
-export async function getOutlets() {
+async function _getOutlets() {
   const normalizeOutletRows = (rows = []) =>
   (rows || []).
   filter(Boolean).
@@ -533,6 +543,10 @@ export async function getOutlets() {
     writeCache('outlets', virtual);
     return virtual;
   }
+}
+
+export function getOutlets() {
+  return dedupePromise('getOutlets', _getOutlets);
 }
 
 export async function getPosOrderById(id) {

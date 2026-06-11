@@ -1,5 +1,5 @@
 import { state } from '../state.js'
-import { readCache, refreshCache, writeCache } from './infrastructure.js'
+import { readCache, refreshCache, writeCache, dedupePromise } from './infrastructure.js'
 
 // ─── MAINTENANCE TICKETS ──────────────────────────────────────────────────────
 
@@ -17,18 +17,23 @@ function normalizeMaintenanceTicketRow(ticket = {}) {
   };
 }
 
-export async function getMaintenanceTickets() {
+async function _getMaintenanceTickets() {
   if (state.isOnline) {
     const { data } = await state.supabase.
     from('maintenance_tickets').
-    select('*, rooms(room_number, room_type)').
+    select('id, room_id, title, issue, description, status, priority, reported_date, labour_cost, parts_cost, total_cost, vendor_name, cost_notes, completed_at, created_at, updated_at, rooms(room_number, room_type)').
     eq('lodge_id', state.lodgeId).
-    order('created_at', { ascending: false });
+    order('created_at', { ascending: false }).
+    limit(200);
     const rows = (data || []).map(normalizeMaintenanceTicketRow);
     writeCache('maintenance', data || [], { source: 'remote' });
     return rows;
   }
   return readCache('maintenance').map(normalizeMaintenanceTicketRow);
+}
+
+export function getMaintenanceTickets() {
+  return dedupePromise('getMaintenanceTickets', _getMaintenanceTickets);
 }
 
 export async function getMaintenanceTicketById(id) {

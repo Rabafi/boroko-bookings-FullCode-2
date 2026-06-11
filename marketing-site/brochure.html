@@ -4,7 +4,29 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Boroko Bookings Brochure</title>
+    <meta name="description" content="Download or share the Boroko Bookings brochure: lodge software for bookings, rooms, billing, reports, and online reservations." />
+    <meta property="og:title" content="Boroko Bookings Brochure" />
+    <meta property="og:description" content="A practical lodge system for bookings, rooms, invoices, reports, stock, bar or kitchen sales, and online reservations." />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="https://borokobookings.com/assets/og-image.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:site" content="@borokobookings" />
+    <meta name="twitter:title" content="Boroko Bookings Brochure" />
+    <meta name="twitter:description" content="A practical lodge system for bookings, rooms, invoices, reports, stock, bar or kitchen sales, and online reservations." />
+    <meta name="twitter:image" content="https://borokobookings.com/assets/og-image.png" />
+    <meta name="theme-color" content="#18352b" />
+    <link rel="canonical" href="https://borokobookings.com/brochure" />
+    <link rel="icon" type="image/svg+xml" href="./assets/boroko-bookings-logo.svg" />
+    <link rel="alternate icon" type="image/png" href="./assets/boroko-bookings-logo-light.png" />
     <link rel="stylesheet" href="./styles.css" />
+    <!-- Google Analytics 4 — Google Analytics 4 -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-37DYXS6K47"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'G-37DYXS6K47');
+    </script>
     <style>
       body { background: #f6f1e8; }
       .brochure-shell {
@@ -20,10 +42,12 @@
         display: grid;
         gap: 18px;
         grid-template-columns: repeat(2, minmax(0, 1fr));
+        align-items: start;
       }
       @media print {
         body { background: white; }
         .brochure-shell { box-shadow: none; margin: 0; width: 100%; border: 0; }
+        .topbar, .site-footer { display: none !important; }
       }
       @media (max-width: 720px) {
         .brochure-grid { grid-template-columns: 1fr; }
@@ -31,75 +55,188 @@
       }
     </style>
   </head>
-  <body>
-    <div class="brochure-shell">
-      <div class="eyebrow">
-        <span class="eyebrow-dot"></span>
-        Built by Batswana for Batswana lodges
+  <body data-page="brochure">
+    <div class="scroll-progress" id="scroll-progress"></div>
+    <div class="site-shell">
+      <header class="topbar" id="topbar">
+        <div class="topbar-pill">
+          <a class="brand" href="./index.html" aria-label="Boroko Bookings home">
+            <span class="brand-mark">
+              <img src="./assets/boroko-bookings-logo-light.png" alt="" aria-hidden="true" width="150" height="54" />
+            </span>
+            <span class="brand-copy">
+              <strong>Boroko Bookings</strong>
+            </span>
+          </a>
+
+          <nav id="site-nav" class="site-nav" aria-label="Main navigation">
+            <a href="./index.html" data-nav="home">Home</a>
+            <a href="./features.html" data-nav="features">Features</a>
+            <a href="./packages.html" data-nav="packages">Packages</a>
+            <a href="./why-switch.html" data-nav="why-switch">Why Switch</a>
+            <a href="./blog.html" data-nav="blog">Blog</a>
+            <a href="./contact.html" data-nav="contact">Contact</a>
+          </nav>
+
+          <div class="topbar-actions">
+            <a class="nav-cta-pill" href="./packages.html">See packages</a>
+          </div>
+
+          <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Open navigation menu">
+            <span class="sr-only">Menu</span>
+            <span class="menu-bar"></span>
+            <span class="menu-bar"></span>
+            <span class="menu-bar"></span>
+          </button>
+        </div>
+      </header>
+
+      <div class="mobile-overlay" id="mobile-overlay" aria-hidden="true">
+        <div class="mobile-overlay-bg"></div>
+        <div class="mobile-overlay-content">
+          <nav class="mobile-nav" aria-label="Mobile navigation">
+            <a href="./index.html" data-nav="home" data-stagger="0">Home</a>
+            <a href="./features.html" data-nav="features" data-stagger="1">Features</a>
+            <a href="./packages.html" data-nav="packages" data-stagger="2">Packages</a>
+            <a href="./why-switch.html" data-nav="why-switch" data-stagger="3">Why Switch</a>
+            <a href="./blog.html" data-nav="blog" data-stagger="4">Blog</a>
+            <a href="./contact.html" data-nav="contact" data-stagger="5">Contact</a>
+            <a href="./brochure.html" data-nav="brochure" data-stagger="6">Brochure</a>
+          </nav>
+          <div class="mobile-overlay-footer">
+            <a class="mobile-cta" href="./packages.html">See packages</a>
+            <a class="mobile-cta-secondary" href="#" data-action="download">Download app</a>
+            <div class="mobile-contact">
+              <a href="https://wa.me/26772789415" target="_blank" rel="noreferrer">WhatsApp: +267 72 789 415</a>
+              <a href="mailto:hello@borokobookings.com">hello@borokobookings.com</a>
+            </div>
+          </div>
+        </div>
       </div>
-      <h1>Boroko Bookings</h1>
-      <p class="hero-lead">
-        A practical lodge system for bookings, rooms, invoices, reports, stock, bar or kitchen sales, and online reservations.
-      </p>
-      <p class="demo-note">
-        Simple enough for everyday lodge teams. Strong enough to help owners see the business better.
-      </p>
-      <div class="brochure-grid">
-        <article class="content-card">
-          <h3>What it helps with</h3>
-          <ul>
-            <li>Bookings and guest records</li>
-            <li>Room board and planning</li>
-            <li>Invoices and payment follow-up</li>
-            <li>Reports and expenses</li>
-          </ul>
-        </article>
-        <article class="content-card">
-          <h3>Good for lodges that want</h3>
-          <ul>
-            <li>Less manual admin</li>
-            <li>Better owner visibility</li>
-            <li>Stock and supply control</li>
-            <li>Online reservations</li>
-          </ul>
-        </article>
-        <article class="content-card">
-          <h3>Packages</h3>
-          <ul>
-            <li>Starter: daily lodge operations</li>
-            <li>Standard: owner control and visibility</li>
-            <li>Pro: growth, sales, and online reservations</li>
-          </ul>
-        </article>
-        <article class="content-card">
-          <h3>Why lodges switch</h3>
-          <ul>
-            <li>Too many notebooks and spreadsheets</li>
-            <li>Owner cannot see the real business clearly</li>
-            <li>Bookings, billing, and stock are scattered</li>
-            <li>The lodge wants to grow into online reservations</li>
-          </ul>
-        </article>
-        <article class="content-card">
-          <h3>Why people trust Boroko</h3>
-          <ul>
-            <li>Built by Batswana for Batswana</li>
-            <li>Good fit for owner-managed lodges</li>
-            <li>Practical workflows, not complicated software jargon</li>
-            <li>Free 7-day demo to test it first</li>
-          </ul>
-        </article>
-        <article class="content-card">
-          <h3>Start simple</h3>
-          <p>Every customer can start with a free 7-day demo.</p>
-          <p>WhatsApp: +267 72 789 415</p>
-          <p>Email: hello@borokobookings.com</p>
-        </article>
-      </div>
-      <div class="contact-strip" style="margin-top:24px;">
-        <a class="btn btn-primary" href="https://wa.me/26772789415?text=Hello%20Boroko%20Bookings%2C%20I%20want%20to%20start%20the%20free%207-day%20demo." target="_blank" rel="noreferrer">Chat on WhatsApp</a>
-        <a class="btn btn-secondary" href="mailto:hello@borokobookings.com?subject=Boroko%20Bookings%20brochure%20enquiry">Email directly</a>
+
+      <main>
+        <div class="brochure-shell">
+          <div class="eyebrow">
+            <span class="eyebrow-dot"></span>
+            Built by Batswana for Batswana lodges
+          </div>
+          <h1>Boroko Bookings</h1>
+          <p class="hero-lead">
+            A practical lodge system for bookings, rooms, invoices, reports, stock, bar or kitchen sales, and online reservations.
+          </p>
+          <p class="demo-note">
+            Simple enough for everyday lodge teams. Strong enough to help owners see the business better.
+          </p>
+          <div class="brochure-grid">
+            <article class="content-card">
+              <h3>What it helps with</h3>
+              <ul>
+                <li>Bookings and guest records</li>
+                <li>Room board and planning</li>
+                <li>Invoices and payment follow-up</li>
+                <li>Reports and expenses</li>
+                <li>Works offline — syncs when connected</li>
+                <li>POS, inventory, and room supplies (Pro)</li>
+              </ul>
+            </article>
+            <article class="content-card">
+              <h3>Good for lodges that want</h3>
+              <ul>
+                <li>Less manual admin</li>
+                <li>Better owner visibility</li>
+                <li>Stock and supply control</li>
+                <li>Online reservations</li>
+                <li>Manager mobile app for oversight</li>
+                <li>Branded online booking page</li>
+              </ul>
+            </article>
+            <article class="content-card">
+              <h3>Packages</h3>
+              <ul>
+                <li>Starter: daily lodge operations</li>
+                <li>Standard: owner control and visibility</li>
+                <li>Pro: growth, sales, and online reservations</li>
+              </ul>
+            </article>
+            <article class="content-card">
+              <h3>Why lodges switch</h3>
+              <ul>
+                <li>Too many notebooks and spreadsheets</li>
+                <li>Owner cannot see the real business clearly</li>
+                <li>Bookings, billing, and stock are scattered</li>
+                <li>The lodge wants to grow into online reservations</li>
+              </ul>
+            </article>
+            <article class="content-card">
+              <h3>Why people trust Boroko</h3>
+              <ul>
+                <li>Built by Batswana for Batswana</li>
+                <li>Good fit for owner-managed lodges</li>
+                <li>Practical workflows, not complicated software jargon</li>
+                <li>free 1-month trial to test it first</li>
+                <li>Works without internet — never loses data</li>
+                <li>Manager app + online booking site included</li>
+              </ul>
+            </article>
+            <article class="content-card">
+              <h3>Start simple</h3>
+              <p>Every customer can start with a free 1-month trial.</p>
+              <p>WhatsApp: +267 72 789 415</p>
+              <p>Email: hello@borokobookings.com</p>
+            </article>
+          </div>
+          <div class="contact-strip" style="margin-top:24px;">
+            <a class="btn btn-primary" href="https://wa.me/26772789415?text=Hello%20Boroko%20Bookings%2C%20I%20want%20to%20start%20the%20free%201-month%20trial." target="_blank" rel="noreferrer">Chat on WhatsApp</a>
+            <a class="btn btn-secondary" href="mailto:hello@borokobookings.com?subject=Boroko%20Bookings%20brochure%20enquiry">Email directly</a>
+          </div>
+        </div>
+      </main>
+
+      <footer class="site-footer">
+        <div class="container footer-grid">
+          <div>
+            <div class="brand footer-brand">
+              <span class="brand-mark">
+                <img src="./assets/boroko-bookings-logo-light.png" alt="" aria-hidden="true" width="150" height="54" />
+              </span>
+              <span class="brand-copy">
+                <strong>Boroko Bookings</strong>
+                <span>Built by Batswana for Batswana hospitality businesses</span>
+              </span>
+            </div>
+            <p class="footer-copy">Built to help lodges operate smoothly, make better decisions, and grow into stronger hospitality businesses.</p>
+            <div class="social-links">
+              <a class="social-link" href="https://www.facebook.com/borokobookings" target="_blank" rel="noreferrer" aria-label="Follow us on Facebook"><span class="sr-only">Facebook</span>fb</a>
+              <a class="social-link" href="https://www.instagram.com/borokobookings" target="_blank" rel="noreferrer" aria-label="Follow us on Instagram"><span class="sr-only">Instagram</span>ig</a>
+              <a class="social-link" href="https://www.linkedin.com/company/borokobookings" target="_blank" rel="noreferrer" aria-label="Follow us on LinkedIn"><span class="sr-only">LinkedIn</span>in</a>
+            </div>
+          </div>
+          <div class="footer-links">
+            <a href="./index.html">Home</a>
+            <a href="./features.html">Features</a>
+            <a href="./packages.html">Packages</a>
+            <a href="./why-switch.html">Why Switch</a>
+            <a href="./download.html">Download</a>
+            <a href="./blog.html">Blog</a>
+            <a href="./contact.html">Contact</a>
+            <a href="https://wa.me/26772789415" target="_blank" rel="noreferrer">WhatsApp: +267 72 789 415</a>
+            <a href="mailto:hello@borokobookings.com">hello@borokobookings.com</a>
+            <a href="./privacy.html">Privacy Policy</a>
+            <a href="./terms.html">Terms of Service</a>
+          </div>
+        </div>
+      </footer>
+
+      <div class="cookie-banner" role="dialog" aria-modal="true" aria-label="Cookie consent">
+        <div class="container cookie-inner">
+          <p>We use minimal cookies for analytics. By continuing, you accept our <a href="./privacy.html">Privacy Policy</a>.</p>
+          <div class="cookie-actions">
+            <button class="btn btn-primary cookie-accept" type="button">Accept</button>
+            <button class="btn btn-cookie-decline" type="button">Decline</button>
+          </div>
+        </div>
       </div>
     </div>
+    <script src="./script.js" defer></script>
   </body>
 </html>

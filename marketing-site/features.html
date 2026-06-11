@@ -11,36 +11,78 @@
     <meta property="og:title" content="Boroko Bookings Features" />
     <meta property="og:description" content="See how Boroko Bookings supports front desk operations, property control, management visibility, and direct growth." />
     <meta property="og:type" content="website" />
+    <meta property="og:image" content="https://borokobookings.com/assets/og-image.png" />
     <meta name="theme-color" content="#18352b" />
+    <link rel="canonical" href="https://borokobookings.com/features" />
+    <link rel="icon" type="image/svg+xml" href="./assets/boroko-bookings-logo.svg" />
+    <link rel="alternate icon" type="image/png" href="./assets/boroko-bookings-logo-light.png" />
     <link rel="stylesheet" href="./styles.css" />
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-37DYXS6K47"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'G-37DYXS6K47');
+    </script>
   </head>
   <body data-page="features">
+    <div class="scroll-progress" id="scroll-progress"></div>
     <div class="site-shell">
-      <header class="topbar">
-        <div class="container topbar-inner">
+      <header class="topbar" id="topbar">
+        <div class="topbar-pill">
           <a class="brand" href="./index.html" aria-label="Boroko Bookings home">
             <span class="brand-mark">
-              <img src="./assets/boroko-bookings-logo-light.png" alt="" aria-hidden="true" />
+              <img src="./assets/boroko-bookings-logo-light.png" alt="" aria-hidden="true" width="150" height="54" />
             </span>
             <span class="brand-copy">
               <strong>Boroko Bookings</strong>
-              <span>Built by Batswana for Batswana hospitality businesses</span>
             </span>
           </a>
-          <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="site-nav">
-            <span></span><span></span><span></span>
-          </button>
+
           <nav id="site-nav" class="site-nav" aria-label="Main navigation">
             <a href="./index.html" data-nav="home">Home</a>
             <a href="./features.html" data-nav="features">Features</a>
             <a href="./packages.html" data-nav="packages">Packages</a>
             <a href="./why-switch.html" data-nav="why-switch">Why Switch</a>
+            <a href="./blog.html" data-nav="blog">Blog</a>
             <a href="./contact.html" data-nav="contact">Contact</a>
-            <a class="nav-ghost" href="./contact.html">Free 7-day demo</a>
-            <a class="nav-cta" href="./packages.html">See packages</a>
           </nav>
+
+          <div class="topbar-actions">
+            <a class="nav-cta-pill" href="./packages.html">See packages</a>
+          </div>
+
+          <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Open navigation menu">
+            <span class="sr-only">Menu</span>
+            <span class="menu-bar"></span>
+            <span class="menu-bar"></span>
+            <span class="menu-bar"></span>
+          </button>
         </div>
       </header>
+
+      <div class="mobile-overlay" id="mobile-overlay" aria-hidden="true">
+        <div class="mobile-overlay-bg"></div>
+        <div class="mobile-overlay-content">
+          <nav class="mobile-nav" aria-label="Mobile navigation">
+            <a href="./index.html" data-nav="home" data-stagger="0">Home</a>
+            <a href="./features.html" data-nav="features" data-stagger="1">Features</a>
+            <a href="./packages.html" data-nav="packages" data-stagger="2">Packages</a>
+            <a href="./why-switch.html" data-nav="why-switch" data-stagger="3">Why Switch</a>
+            <a href="./blog.html" data-nav="blog" data-stagger="4">Blog</a>
+            <a href="./contact.html" data-nav="contact" data-stagger="5">Contact</a>
+            <a href="./brochure.html" data-nav="brochure" data-stagger="6">Brochure</a>
+          </nav>
+          <div class="mobile-overlay-footer">
+            <a class="mobile-cta" href="./packages.html">See packages</a>
+            <a class="mobile-cta-secondary" href="#" data-action="download">Download app</a>
+            <div class="mobile-contact">
+              <a href="https://wa.me/26772789415" target="_blank" rel="noreferrer">WhatsApp: +267 72 789 415</a>
+              <a href="mailto:hello@borokobookings.com">hello@borokobookings.com</a>
+            </div>
+          </div>
+        </div>
+      </div>
 
       <main>
         <section class="page-hero">
@@ -49,11 +91,11 @@
               <div class="section-tag">Features</div>
               <h1>Software capabilities arranged around the whole lodge, not just reservations.</h1>
               <p class="hero-lead">
-                Boroko Bookings is strongest when the front desk, operations, owner visibility, and commercial tools all work together. Every customer can start with a free 7-day demo.
+                Boroko Bookings is strongest when the front desk, operations, owner visibility, and commercial tools all work together. Every customer can start with a free 1-month trial.
                 These are the major product areas that make that possible.
               </p>
               <div class="hero-actions">
-                <a class="btn btn-primary" href="./contact.html">Start free 7-day demo</a>
+                <a class="btn btn-primary" href="#" data-action="download">Start free 1-month trial</a>
                 <a class="btn btn-secondary" href="./packages.html">See package fit</a>
                 <a class="btn btn-secondary" href="https://wa.me/26772789415?text=Hello%20Boroko%20Bookings%2C%20I%20want%20to%20learn%20more%20about%20the%20product." target="_blank" rel="noreferrer">Chat on WhatsApp</a>
               </div>
@@ -144,6 +186,104 @@
         <section class="section section-contrast">
           <div class="container">
             <div class="section-head compact">
+              <span class="section-tag">Unique to Boroko</span>
+              <h2>Features that competing lodge systems do not have.</h2>
+            </div>
+            <div class="stack-grid">
+              <article class="content-card">
+                <h3>Built-in AI assistant</h3>
+                <ul>
+                  <li>Ask questions in plain language — "show me unpaid bookings", "check in Room 5"</li>
+                  <li>Understands lodge vocabulary: chalet, rondavel, banda, folio, tab</li>
+                  <li>Corrects common misspellings automatically</li>
+                  <li>Flags unusual activity — suspicious voids, revenue leakage, payment anomalies</li>
+                  <li>Full investigation view with audit trail for flagged transactions</li>
+                </ul>
+              </article>
+
+              <article class="content-card">
+                <h3>Multi-desk LAN sync</h3>
+                <ul>
+                  <li>Multiple front-desk computers discover each other automatically on the local network</li>
+                  <li>Sync bookings, room status, and payments peer-to-peer — no internet required</li>
+                  <li>Conflict detection prevents two receptionists booking the same room for overlapping dates</li>
+                  <li>Advisory room locks broadcast across all desks so screens show who is editing what</li>
+                  <li>Offline sync queues merge intelligently with dependency resolution</li>
+                </ul>
+              </article>
+
+              <article class="content-card">
+                <h3>Offline-first architecture</h3>
+                <ul>
+                  <li>Every operation works without internet — bookings, payments, POS, inventory</li>
+                  <li>Changes queue locally and replay via Supabase RPCs when connectivity returns</li>
+                  <li>Financial operations are prioritized in the sync queue</li>
+                  <li>Failed items go to a dead-letter queue with auto-retry</li>
+                  <li>Cache freshness tracking knows which data may be stale</li>
+                </ul>
+              </article>
+
+              <article class="content-card">
+                <h3>Manager mobile app (PWA)</h3>
+                <ul>
+                  <li>Install on any phone — no app store needed</li>
+                  <li>Real-time dashboard: occupancy, revenue, booking summary</li>
+                  <li>Alerts: overdue checkouts, low stock, maintenance, outstanding balances</li>
+                  <li>Money sheet: invoices, expenses, night audit, refunds at a glance</li>
+                  <li>Staff view: roles, last sign-in, PWA access status</li>
+                </ul>
+              </article>
+
+              <article class="content-card">
+                <h3>Conference and event bookings</h3>
+                <ul>
+                  <li>Multiple setup types: Theatre, Boardroom, Classroom, U-Shape, Banquet, Cocktail</li>
+                  <li>Catering toggle with notes</li>
+                  <li>Deposit tracking with payment status</li>
+                  <li>Date conflict detection prevents double-booking</li>
+                  <li>Visible in the manager mobile app</li>
+                </ul>
+              </article>
+
+              <article class="content-card">
+                <h3>Pool and day-use management</h3>
+                <ul>
+                  <li>Configurable templates: Pool Access, Facility Chill, Braai/Barbecue</li>
+                  <li>Multiple pricing modes: per person, flat fee, hourly, or package</li>
+                  <li>Resource allocation with conflict detection</li>
+                  <li>Extras linked to inventory — firewood, braai setup, food items auto-deplete</li>
+                  <li>Walk-in workflow for day visitors</li>
+                </ul>
+              </article>
+
+              <article class="content-card">
+                <h3>In-app support and messaging</h3>
+                <ul>
+                  <li>Managers send requests to front desk from the mobile app</li>
+                  <li>Front desk escalates issues to management</li>
+                  <li>Threaded conversations with sender identification</li>
+                  <li>Push notifications on responses</li>
+                  <li>Keeps operational conversations out of scattered WhatsApp chats</li>
+                </ul>
+              </article>
+
+              <article class="content-card">
+                <h3>Role-based access control</h3>
+                <ul>
+                  <li>80+ granular permissions — who can manage bookings, void sales, issue refunds</li>
+                  <li>Predefined roles: owner, manager, receptionist, housekeeper, accountant</li>
+                  <li>Custom overrides per staff member</li>
+                  <li>POS outlet scoping — restrict staff to specific outlets</li>
+                  <li>Staff lifecycle: active, suspended, archived with audit trail</li>
+                </ul>
+              </article>
+            </div>
+          </div>
+        </section>
+
+        <section class="section section-contrast">
+          <div class="container">
+            <div class="section-head compact">
               <span class="section-tag">Who it helps</span>
               <h2>Why this matters to real lodge teams.</h2>
             </div>
@@ -174,7 +314,7 @@
               </div>
               <div class="cta-actions">
                 <a class="btn btn-primary" href="./packages.html">Open packages</a>
-                <a class="btn btn-secondary" href="./contact.html">Start free 7-day demo</a>
+                <a class="btn btn-secondary" href="./contact.html">Start free 1-month trial</a>
                 <a class="btn btn-secondary" href="https://wa.me/26772789415?text=Hello%20Boroko%20Bookings%2C%20I%20want%20to%20learn%20more%20about%20the%20features." target="_blank" rel="noreferrer">Chat on WhatsApp</a>
               </div>
             </div>
@@ -187,7 +327,7 @@
           <div>
             <div class="brand footer-brand">
               <span class="brand-mark">
-                <img src="./assets/boroko-bookings-logo-light.png" alt="" aria-hidden="true" />
+                <img src="./assets/boroko-bookings-logo-light.png" alt="" aria-hidden="true" width="150" height="54" />
               </span>
               <span class="brand-copy">
                 <strong>Boroko Bookings</strong>
@@ -195,18 +335,37 @@
               </span>
             </div>
             <p class="footer-copy">Built to help lodges operate smoothly, make better decisions, and grow into stronger hospitality businesses.</p>
+            <div class="social-links">
+              <a class="social-link" href="https://www.facebook.com/borokobookings" target="_blank" rel="noreferrer" aria-label="Follow us on Facebook"><span class="sr-only">Facebook</span>fb</a>
+              <a class="social-link" href="https://www.instagram.com/borokobookings" target="_blank" rel="noreferrer" aria-label="Follow us on Instagram"><span class="sr-only">Instagram</span>ig</a>
+              <a class="social-link" href="https://www.linkedin.com/company/borokobookings" target="_blank" rel="noreferrer" aria-label="Follow us on LinkedIn"><span class="sr-only">LinkedIn</span>in</a>
+            </div>
           </div>
           <div class="footer-links">
             <a href="./index.html">Home</a>
             <a href="./packages.html">Packages</a>
             <a href="./why-switch.html">Why Switch</a>
-            <a href="./contact.html">Free 7-day demo</a>
+            <a href="./download.html">Download</a>
+            <a href="./blog.html">Blog</a>
+            <a href="./contact.html">Contact</a>
             <a href="https://wa.me/26772789415" target="_blank" rel="noreferrer">WhatsApp: +267 72 789 415</a>
             <a href="mailto:hello@borokobookings.com">hello@borokobookings.com</a>
+            <a href="./privacy.html">Privacy Policy</a>
+            <a href="./terms.html">Terms of Service</a>
           </div>
         </div>
       </footer>
+
+      <div class="cookie-banner" role="dialog" aria-modal="true" aria-label="Cookie consent">
+        <div class="container cookie-inner">
+          <p>We use minimal cookies for analytics. By continuing, you accept our <a href="./privacy.html">Privacy Policy</a>.</p>
+          <div class="cookie-actions">
+            <button class="btn btn-primary cookie-accept" type="button">Accept</button>
+            <button class="btn btn-cookie-decline" type="button">Decline</button>
+          </div>
+        </div>
+      </div>
     </div>
-    <script src="./script.js"></script>
+    <script src="./script.js" defer></script>
   </body>
 </html>

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { MessageCircle, Plus, RefreshCw, Send, Wifi, WifiOff, X } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
+import { useFeatures } from '../contexts/FeaturesContext'
 import { addSupportTicketMessage, createSupportTicket, flushOfflineQueue, getControlSnapshot, getSupportRequests } from '../lib/api'
 import { supabase } from '../lib/supabase'
 import { buildPwaNotificationSourceKey, getNotificationSettings, getPwaQueueHealth, publishPwaHealth, subscribeRuntimeEvent, upsertPwaNotification } from '../lib/runtime'
@@ -139,6 +140,7 @@ function ChatBubble({ message }) {
 
 export default function Control() {
   const { user } = useAuth()
+  const { features } = useFeatures()
   const { showToast } = useToast()
   const [loading, setLoading] = useState(true)
   const [snapshot, setSnapshot] = useState(null)
@@ -151,6 +153,7 @@ export default function Control() {
   const [sending, setSending] = useState(false)
   const [notifications, setNotifications] = useState(() => getNotificationSettings())
   const [queueHealth, setQueueHealth] = useState(() => null)
+  const pwaDisabled = Object.keys(features).length > 0 && features.pwa !== true
 
   const conversations = useMemo(() => (
     requests
@@ -162,6 +165,10 @@ export default function Control() {
   const activeMessages = activeRequest ? normalizeSupportMessages(activeRequest) : []
 
   const load = useCallback(async () => {
+    if (pwaDisabled || !user?.lodge_id) {
+      setLoading(false)
+      return
+    }
     setLoading(true)
     setLoadError('')
     try {
@@ -192,11 +199,12 @@ export default function Control() {
       setLoadError(error?.message || 'Inbox could not load.')
     }
     setLoading(false)
-  }, [notifications.frontDeskRequests, user.lodge_id])
+  }, [notifications.frontDeskRequests, pwaDisabled, user?.lodge_id])
 
   useEffect(() => {
+    if (pwaDisabled) return undefined
     load()
-    const interval = window.setInterval(load, 30_000)
+    const interval = window.setInterval(load, 60_000)
     const unsubscribe = subscribeRuntimeEvent('boroko:pwa-queue', load)
     const unsubscribeNotif = subscribeRuntimeEvent('boroko:pwa-notification-settings', setNotifications)
     const unsubscribeIssues = subscribeRuntimeEvent('boroko:pwa-issues', load)
@@ -206,7 +214,19 @@ export default function Control() {
       unsubscribeNotif?.()
       unsubscribeIssues?.()
     }
-  }, [load])
+  }, [load, pwaDisabled])
+
+  if (pwaDisabled) {
+    return (
+      <div className="min-h-screen bg-gray-950 flex items-center justify-center px-6">
+        <div className="w-full max-w-md text-center">
+          <div className="text-5xl mb-4">🔒</div>
+          <h1 className="text-xl font-bold text-white">Pro Plan Required</h1>
+          <p className="text-sm text-gray-400 mt-2">Inbox is part of the Manager Mobile App, which requires the Pro plan.</p>
+        </div>
+      </div>
+    )
+  }
 
   function buildRequestAuthorPayload(source = 'manager_pwa') {
     const author = buildSupportAuthorFromUser(user, 'manager_pwa')

@@ -1,42 +1,41 @@
-import { lazy, Suspense } from 'react'
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { useEffect, useRef } from 'react'
+import { BrowserRouter, useLocation } from 'react-router-dom'
+import AppRoutes from './AppRoutes.jsx'
 
-const LodgePage = lazy(() => import('./pages/LodgePage.jsx'))
-const BookingPage = lazy(() => import('./pages/BookingPage.jsx'))
-const SuccessPage = lazy(() => import('./pages/SuccessPage.jsx'))
-const NotFoundPage = lazy(() => import('./pages/NotFoundPage.jsx'))
+/**
+ * Reset focus to the top of the document on route change.
+ * This improves accessibility for screen reader users.
+ */
+function FocusManager() {
+  const { pathname } = useLocation()
 
-function RouteLoader() {
-  return (
-    <div className="flex min-h-screen items-center justify-center bg-[var(--bg)] px-4">
-      <div className="rounded-full border border-[var(--line)] bg-white px-5 py-3 text-sm font-semibold text-[var(--muted)] shadow-sm">
-        Loading page...
-      </div>
-    </div>
-  )
+  useEffect(() => {
+    // Small delay to ensure DOM has updated after navigation
+    const timeout = setTimeout(() => {
+      const main = document.querySelector('main') || document.body
+      if (main && main.scrollTo) {
+        main.scrollTo(0, 0)
+      } else {
+        window.scrollTo(0, 0)
+      }
+      // Focus the first heading or skip link if available
+      const target = document.querySelector('h1, h2, h3, [tabindex="-1"]') || document.body
+      if (target && target.focus) {
+        target.setAttribute('tabIndex', '-1')
+        target.focus({ preventScroll: true })
+      }
+    }, 0)
+    return () => clearTimeout(timeout)
+  }, [pathname])
+
+  return null
 }
 
 export default function App() {
   return (
     <BrowserRouter>
-      <Suspense fallback={<RouteLoader />}>
-        <Routes>
-          {/* Lodge home: browse rooms and pick dates */}
-          <Route path="/:slug" element={<LodgePage />} />
-
-          {/* Booking form: guest details for a specific room */}
-          <Route path="/:slug/book" element={<BookingPage />} />
-
-          {/* Success: booking reference confirmation */}
-          <Route path="/:slug/success" element={<SuccessPage />} />
-
-          {/* Root — nothing to show without a slug */}
-          <Route path="/" element={<NotFoundPage />} />
-
-          {/* Catch-all */}
-          <Route path="*" element={<NotFoundPage />} />
-        </Routes>
-      </Suspense>
+      <FocusManager />
+      <AppRoutes />
     </BrowserRouter>
   )
 }
