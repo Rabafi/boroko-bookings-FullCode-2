@@ -8,29 +8,33 @@ import {
   Printer,
   RefreshCw,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  FileDown,
+  Table
 } from 'lucide-react'
-import { useSettings } from '../App'
+import { useSettings } from '../app-context'
+import { localToday } from '../utils/localDate'
 
-const todayStr = () => new Date().toISOString().split('T')[0]
+const todayStr = () => localToday()
 
 function fmt(amount, currency) {
   return `${currency} ${Number(amount || 0).toFixed(2)}`
 }
 
 function groupEventBookings(list) {
-  const regular   = list.filter(b => !b.is_exclusive_event)
-  const eventRows = list.filter(b => b.is_exclusive_event)
+  const isEvent = (b) => b.is_exclusive_event || b.notes?.includes('[GROUP:')
+  const regular   = list.filter(b => !isEvent(b))
+  const eventRows = list.filter(b => isEvent(b))
   const groupMap  = {}
   eventRows.forEach(b => {
     const match   = b.notes?.match(/\[GROUP:([^\]]+)\]/)
     const groupId = match?.[1] || b.check_in
     if (!groupMap[groupId]) {
-      const n = Math.ceil((new Date(b.check_out) - new Date(b.check_in)) / 86400000)
-      groupMap[groupId] = { ...b, room_count: 0, total_amount: (b.event_daily_rate || 0) * n, amount_paid: 0, _event_group: true }
+      groupMap[groupId] = { ...b, room_count: 0, total_amount: 0, amount_paid: 0, _event_group: true }
     }
     groupMap[groupId].room_count++
-    groupMap[groupId].amount_paid += (b.amount_paid || 0)
+    groupMap[groupId].total_amount += Number(b.total_amount || 0)
+    groupMap[groupId].amount_paid  += Number(b.amount_paid  || 0)
   })
   return [...regular, ...Object.values(groupMap)]
 }
@@ -80,10 +84,14 @@ export default function NightAudit() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [ran, setRan] = useState(false)
+  const [savingPDF, setSavingPDF] = useState(false)
+  const [savingExcel, setSavingExcel] = useState(false)
+  const [success, setSuccess] = useState('')
 
   const runAudit = async () => {
     setLoading(true)
     setError(null)
+    setSuccess('')
     try {
       const result = await window.api.reports.nightAudit(date)
       if (!result) throw new Error('No data returned — check your connection.')
@@ -96,7 +104,52 @@ export default function NightAudit() {
     }
   }
 
-  const handlePrint = () => window.print()
+  const handlePrint = () => {
+    setSuccess('Print dialog opened.')
+    setTimeout(() => setSuccess(''), 3000)
+    window.print()
+  }
+
+  const handleSavePDF = async () => {
+    setSavingPDF(true); setError(null); setSuccess('')
+    try {
+      const res = await window.api.reports.savePDF({
+        reportType: 'night-audit',
+        reportTitle: 'Night Audit',
+        date,
+        lodgeName: settings?.lodge_name || '',
+        companyName: settings?.company_name || '',
+        generatedAt: new Date().toLocaleString()
+      })
+      if (res.success) setSuccess(`PDF saved: ${res.filePath}`)
+      else if (res.error) setError(res.error)
+    } catch (e) { setError(e.message) }
+    finally { setSavingPDF(false); setTimeout(() => setSuccess(''), 5000) }
+  }
+
+  const handleSaveExcel = async () => {
+    setSavingExcel(true); setError(null); setSuccess('')
+    try {
+      const res = await window.api.reports.saveNightAuditExcel({
+        data: {
+          ...data,
+          check_ins: groupedCheckIns,
+          check_outs: groupedCheckOuts,
+          new_bookings: groupedNewBooks,
+          outstanding: groupedOutstanding
+        },
+        date,
+        currency,
+        lodgeName: settings?.lodge_name || '',
+        companyName: settings?.company_name || '',
+        generatedAt: new Date().toLocaleString(),
+        reportTitle: 'Night Audit'
+      })
+      if (res.success) setSuccess(`Excel saved: ${res.filePath}`)
+      else if (res.error) setError(res.error)
+    } catch (e) { setError(e.message) }
+    finally { setSavingExcel(false); setTimeout(() => setSuccess(''), 5000) }
+  }
 
   const groupedCheckIns  = groupEventBookings(data?.check_ins  || [])
   const groupedCheckOuts = groupEventBookings(data?.check_outs || [])
@@ -107,14 +160,14 @@ export default function NightAudit() {
   const totalCheckinPaid    = groupedCheckIns.reduce((s, b) => s + Number(b.amount_paid  || 0), 0)
 
   return (
-    <div className="p-6 max-w-5xl print:p-2 print:max-w-full">
+    <div className="p-6 max-w-5xl print:p-0 print:max-w-full" id="printable-report">
       {/* Header */}
-      <div className="mb-6 flex items-start justify-between gap-4 flex-wrap print:mb-3">
+      <div className="mb-6 flex items-start justify-between gap-4 flex-wrap print:hidden">
         <div>
           <h1 className="text-2xl font-bold text-gray-800">Night Audit</h1>
           <p className="text-gray-500 text-sm mt-0.5">End-of-day summary for a selected date</p>
         </div>
-        <div className="flex items-center gap-3 print:hidden">
+        <div className="flex items-center gap-3">
           <input
             type="date"
             value={date}
@@ -134,14 +187,33 @@ export default function NightAudit() {
             )}
             {loading ? 'Running…' : 'Run Audit'}
           </button>
+          
           {ran && (
-            <button
-              onClick={handlePrint}
-              className="flex items-center gap-2 border border-gray-200 text-gray-600 px-4 py-2 rounded-lg hover:bg-gray-50 text-sm font-medium transition-colors"
-            >
-              <Printer size={14} />
-              Print
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleSaveExcel}
+                disabled={savingExcel}
+                className="flex items-center gap-2 border border-emerald-200 bg-emerald-50 text-emerald-700 px-3 py-2 rounded-lg hover:bg-emerald-100 text-xs font-semibold transition-colors disabled:opacity-50"
+              >
+                <Table size={14} />
+                {savingExcel ? 'Saving...' : 'Excel'}
+              </button>
+              <button
+                onClick={handleSavePDF}
+                disabled={savingPDF}
+                className="flex items-center gap-2 border border-gray-200 text-gray-600 px-3 py-2 rounded-lg hover:bg-gray-50 text-xs font-semibold transition-colors disabled:opacity-50"
+              >
+                <FileDown size={14} />
+                {savingPDF ? 'Saving...' : 'PDF'}
+              </button>
+              <button
+                onClick={handlePrint}
+                className="flex items-center gap-2 border border-gray-200 text-gray-600 px-3 py-2 rounded-lg hover:bg-gray-50 text-xs font-semibold transition-colors"
+              >
+                <Printer size={14} />
+                Print
+              </button>
+            </div>
           )}
         </div>
       </div>
@@ -151,23 +223,32 @@ export default function NightAudit() {
         <div className="flex justify-between items-start">
           <div>
             <h1 className="text-xl font-bold">{settings?.lodge_name || 'Boroko Lodge'} — Night Audit</h1>
+            {settings?.company_name && settings.company_name !== settings?.lodge_name && (
+              <p className="text-sm text-gray-500">{settings.company_name}</p>
+            )}
             <p className="text-sm text-gray-500">Date: {date}</p>
           </div>
           <p className="text-xs text-gray-400">Printed: {new Date().toLocaleString()}</p>
         </div>
       </div>
 
-      {/* Error */}
+      {/* Messages */}
       {error && (
-        <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-6 flex items-center gap-3 text-red-700">
+        <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-6 flex items-center gap-3 text-red-700 no-print">
           <AlertCircle size={18} className="shrink-0" />
           <p className="text-sm">{error}</p>
         </div>
       )}
 
+      {success && (
+        <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3 mb-6 text-sm text-emerald-700 no-print">
+          ✓ {success}
+        </div>
+      )}
+
       {/* Empty state */}
       {!ran && !loading && !error && (
-        <div className="bg-white rounded-xl shadow-sm p-16 text-center text-gray-400">
+        <div className="bg-white rounded-xl shadow-sm p-16 text-center text-gray-400 no-print">
           <p className="text-4xl mb-3">📋</p>
           <p className="font-medium text-gray-500">Select a date and click Run Audit</p>
           <p className="text-sm mt-1">Get a full end-of-day summary of activity</p>
@@ -182,19 +263,19 @@ export default function NightAudit() {
             <SummaryCard
               icon={CalendarCheck}
               label="Check-ins"
-              value={data.check_ins.length}
+              value={groupedCheckIns.length}
               color="bg-teal-50 text-teal-600"
             />
             <SummaryCard
               icon={CalendarX}
               label="Check-outs"
-              value={data.check_outs.length}
+              value={groupedCheckOuts.length}
               color="bg-orange-50 text-orange-600"
             />
             <SummaryCard
               icon={BookOpen}
               label="New Bookings"
-              value={data.new_bookings.length}
+              value={groupedNewBooks.length}
               color="bg-blue-50 text-blue-600"
             />
             <SummaryCard
@@ -208,13 +289,13 @@ export default function NightAudit() {
               icon={AlertCircle}
               label="Outstanding"
               value={fmt(data.outstanding_total, currency)}
-              sub={`${data.outstanding.length} booking${data.outstanding.length !== 1 ? 's' : ''}`}
+              sub={`${groupedOutstanding.length} booking${groupedOutstanding.length !== 1 ? 's' : ''}`}
               color="bg-rose-50 text-rose-600"
             />
           </div>
 
           {/* Check-ins */}
-          <Section title="Check-ins Today" count={data.check_ins.length}>
+          <Section title="Check-ins Today" count={groupedCheckIns.length}>
             {data.check_ins.length === 0 ? (
               <p className="px-5 py-6 text-center text-sm text-gray-400">No check-ins for this date.</p>
             ) : (
@@ -234,7 +315,7 @@ export default function NightAudit() {
                   </thead>
                   <tbody className="divide-y divide-gray-50">
                     {groupedCheckIns.map((b) => {
-                      const balance = Math.max(0, Number(b.total_amount || 0) - Number(b.amount_paid || 0))
+                      const balance = Math.max(0, Number(b.total_amount || 0) + Number(b.charges_total || 0) - Number(b.amount_paid || 0))
                       return (
                         <tr key={b.id} className="hover:bg-gray-50">
                           <td className="px-5 py-3 font-mono text-xs text-gray-400">{b._event_group ? '—' : (b.booking_number || '—')}</td>
@@ -285,7 +366,7 @@ export default function NightAudit() {
           </Section>
 
           {/* Check-outs */}
-          <Section title="Check-outs Today" count={data.check_outs.length}>
+          <Section title="Check-outs Today" count={groupedCheckOuts.length}>
             {data.check_outs.length === 0 ? (
               <p className="px-5 py-6 text-center text-sm text-gray-400">No check-outs for this date.</p>
             ) : (
@@ -305,7 +386,7 @@ export default function NightAudit() {
                   </thead>
                   <tbody className="divide-y divide-gray-50">
                     {groupedCheckOuts.map((b) => {
-                      const balance = Math.max(0, Number(b.total_amount || 0) - Number(b.amount_paid || 0))
+                      const balance = Math.max(0, Number(b.total_amount || 0) + Number(b.charges_total || 0) - Number(b.amount_paid || 0))
                       return (
                         <tr key={b.id} className="hover:bg-gray-50">
                           <td className="px-5 py-3 font-mono text-xs text-gray-400">{b._event_group ? '—' : (b.booking_number || '—')}</td>
@@ -348,7 +429,7 @@ export default function NightAudit() {
           </Section>
 
           {/* New Bookings */}
-          <Section title="New Bookings Created" count={data.new_bookings.length} defaultOpen={false}>
+          <Section title="New Bookings Created" count={groupedNewBooks.length} defaultOpen={false}>
             {data.new_bookings.length === 0 ? (
               <p className="px-5 py-6 text-center text-sm text-gray-400">No new bookings created on this date.</p>
             ) : (
@@ -449,7 +530,7 @@ export default function NightAudit() {
           </Section>
 
           {/* Outstanding Balances */}
-          <Section title="Outstanding Balances" count={data.outstanding.length} defaultOpen={false}>
+          <Section title="Outstanding Balances" count={groupedOutstanding.length} defaultOpen={false}>
             {data.outstanding.length === 0 ? (
               <p className="px-5 py-6 text-center text-sm text-gray-400">No outstanding balances. 🎉</p>
             ) : (
@@ -469,7 +550,7 @@ export default function NightAudit() {
                   </thead>
                   <tbody className="divide-y divide-gray-50">
                     {groupedOutstanding.map((b) => {
-                      const balance = Math.max(0, Number(b.total_amount || 0) - Number(b.amount_paid || 0))
+                      const balance = Math.max(0, Number(b.total_amount || 0) + Number(b.charges_total || 0) - Number(b.amount_paid || 0))
                       return (
                         <tr key={b.id} className="hover:bg-gray-50">
                           <td className="px-5 py-3 font-mono text-xs text-gray-400">{b._event_group ? '—' : (b.booking_number || '—')}</td>

@@ -1,0 +1,60 @@
+name: Offline Queue Critical
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: offline-queue-critical-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            manager-pwa/package-lock.json
+            booking-site/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Install manager PWA dependencies
+        run: npm run manager:install
+
+      - name: Install booking site dependencies
+        run: npm run booking:install
+
+      - name: Run production guardrails
+        run: npm test
+
+      - name: Run critical offline queue regression suite
+        run: npm run test:offline-queue-critical
+
+      - name: Run critical offline POS regression suite
+        run: npm run test:offline-pos-critical
+
+      - name: Run production dependency audit
+        run: npm run audit:prod
+
+      - name: Build desktop app
+        run: npm run build
+
+      - name: Lint manager PWA
+        run: npm run manager:lint
+
+      - name: Build manager PWA
+        run: npm run manager:build
+
+      - name: Build public booking site
+        run: npm run booking:build

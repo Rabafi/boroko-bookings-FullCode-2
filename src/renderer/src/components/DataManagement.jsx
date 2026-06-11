@@ -1,26 +1,54 @@
-import { useState } from 'react'
-import { Database, Upload, Download, FileSpreadsheet, Users, BedDouble, Receipt, ShoppingCart, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { useLocation } from 'react-router-dom'
+import { Database, Upload, Download, FileSpreadsheet, Users, BedDouble, Receipt, ShoppingCart, CheckCircle2, AlertCircle, Loader2, HardDrive, ShieldCheck } from 'lucide-react'
 import DataImport from './DataImport'
 
-const TABS = ['Import Data', 'Export Data']
+const TABS = ['Import Bookings', 'Export Data', 'Backups']
+
+const EXPORT_PRESETS = [
+  { key: 'full', label: 'Full Backup Export', desc: 'Everything needed for archiving and support-led recovery.' },
+  { key: 'finance', label: 'Finance Export', desc: 'Invoices, expenses, POS, purchases, conference, and day-use income.' },
+  { key: 'bookingGuest', label: 'Bookings & Guests', desc: 'Bookings, guests, invoices, and quotations.' },
+  { key: 'operations', label: 'Operations Export', desc: 'Rooms, maintenance, stock, supplies, conference, and day-use records.' },
+  { key: 'inventory', label: 'Inventory & Supplies', desc: 'Stock items and purchase history only.' },
+]
 
 const EXPORT_SECTIONS = [
   { icon: FileSpreadsheet, label: 'Bookings',   desc: 'All booking records — guest, room, dates, status, payments' },
+  { icon: ShieldCheck,     label: 'Invoices',   desc: 'Booking invoice register with balances and guest contacts' },
   { icon: Users,           label: 'Guests',     desc: 'Full guest directory with contact and ID details' },
   { icon: BedDouble,       label: 'Rooms',      desc: 'Room list with types, rates and configurations' },
+  { icon: FileSpreadsheet, label: 'Quotations', desc: 'Quotation history and conversion pipeline data' },
   { icon: Receipt,         label: 'Expenses',   desc: 'All expense records by category' },
   { icon: ShoppingCart,    label: 'POS Orders', desc: 'Point-of-sale transaction history with line items' },
+  { icon: Database,        label: 'Operations', desc: 'Maintenance, inventory, supplies, conference, and day-use data' },
 ]
 
 function ExportTab() {
   const [loading, setLoading] = useState(false)
   const [result, setResult]   = useState(null) // { success, filePath, error, canceled }
+  const [preset, setPreset] = useState('full')
+  const [startDate, setStartDate] = useState('')
+  const [endDate, setEndDate] = useState('')
+  const [privacyMode, setPrivacyMode] = useState(false)
+  const [progress, setProgress] = useState(null)
+
+  useEffect(() => {
+    if (!window.api.data.onExportProgress) return undefined
+    return window.api.data.onExportProgress((next) => setProgress(next))
+  }, [])
 
   const handleExport = async () => {
     setLoading(true)
     setResult(null)
+    setProgress(null)
     try {
-      const res = await window.api.data.exportAll()
+      const res = await window.api.data.exportAll({
+        preset,
+        startDate: startDate || undefined,
+        endDate: endDate || undefined,
+        privacyMode
+      })
       setResult(res)
     } catch (e) {
       setResult({ success: false, error: e.message })
@@ -30,13 +58,71 @@ function ExportTab() {
   }
 
   return (
-    <div className="p-6 max-w-2xl">
+    <div className="p-6 max-w-3xl">
       <p className="text-gray-500 text-sm mb-6">
-        Export a complete snapshot of your lodge data into a single Excel workbook. Each category
-        becomes its own sheet — ready for archiving, migration, or offline analysis.
+        Export lodge data into a multi-sheet Excel workbook. Choose a focused export when you do
+        not need the full backup snapshot.
       </p>
 
-      {/* Sections list */}
+      <div className="mb-6 grid gap-3 md:grid-cols-2">
+        {EXPORT_PRESETS.map((option) => (
+          <label
+            key={option.key}
+            className={`rounded-xl border px-4 py-3 transition ${
+              preset === option.key ? 'border-green-300 bg-green-50' : 'border-gray-200 bg-white hover:bg-gray-50'
+            }`}
+          >
+            <div className="flex items-start gap-3">
+              <input
+                type="radio"
+                name="exportPreset"
+                value={option.key}
+                checked={preset === option.key}
+                onChange={(e) => setPreset(e.target.value)}
+                className="mt-1"
+              />
+              <div>
+                <p className="text-sm font-semibold text-gray-800">{option.label}</p>
+                <p className="mt-1 text-xs text-gray-500">{option.desc}</p>
+              </div>
+            </div>
+          </label>
+        ))}
+      </div>
+
+      <div className="mb-6 rounded-xl border border-gray-200 bg-gray-50 px-4 py-4">
+        <p className="text-sm font-semibold text-gray-800">Optional export controls</p>
+        <div className="mt-3 grid gap-3 md:grid-cols-2">
+          <label className="text-xs font-medium text-gray-600">
+            Start date
+            <input
+              type="date"
+              value={startDate}
+              onChange={(e) => setStartDate(e.target.value)}
+              className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-800"
+            />
+          </label>
+          <label className="text-xs font-medium text-gray-600">
+            End date
+            <input
+              type="date"
+              value={endDate}
+              onChange={(e) => setEndDate(e.target.value)}
+              className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-800"
+            />
+          </label>
+        </div>
+        <label className="mt-3 flex items-start gap-2 text-sm text-gray-700">
+          <input
+            type="checkbox"
+            checked={privacyMode}
+            onChange={(e) => setPrivacyMode(e.target.checked)}
+            className="mt-1"
+          />
+          <span>Privacy mode: hide guest email, phone, and ID/passport fields in the export.</span>
+        </label>
+      </div>
+
       <div className="space-y-2 mb-8">
         {EXPORT_SECTIONS.map(({ icon: Icon, label, desc }) => (
           <div key={label} className="flex items-start gap-3 bg-gray-50 rounded-lg px-4 py-3">
@@ -58,6 +144,9 @@ function ExportTab() {
           <div>
             <p className="text-sm font-medium text-green-800">Export complete</p>
             <p className="text-xs text-green-600 mt-0.5 break-all">{result.filePath}</p>
+            {Array.isArray(result.sections) && (
+              <p className="mt-1 text-xs text-green-700">{result.sections.length} workbook section{result.sections.length === 1 ? '' : 's'} exported.</p>
+            )}
           </div>
         </div>
       )}
@@ -65,6 +154,11 @@ function ExportTab() {
         <div className="flex items-start gap-3 bg-red-50 border border-red-200 rounded-lg px-4 py-3 mb-4">
           <AlertCircle size={18} className="text-red-600 shrink-0 mt-0.5" />
           <p className="text-sm text-red-700">{result.error}</p>
+        </div>
+      )}
+      {loading && progress?.stage && (
+        <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-700">
+          Export progress: {progress.stage}
         </div>
       )}
 
@@ -75,15 +169,267 @@ function ExportTab() {
       >
         {loading
           ? <><Loader2 size={16} className="animate-spin" /> Exporting…</>
-          : <><Download size={16} /> Export All Data</>
+          : <><Download size={16} /> Export Workbook</>
         }
       </button>
     </div>
   )
 }
 
+function BackupsTab() {
+  const [info, setInfo] = useState({ backups: [], backupDir: '', policy: null })
+  const [policySaving, setPolicySaving] = useState(false)
+  const [policyRunning, setPolicyRunning] = useState(false)
+  const [policyResult, setPolicyResult] = useState(null)
+  const [policy, setPolicy] = useState({
+    enabled: false,
+    target_dir: '',
+    export_json: true,
+    export_excel: true,
+    enforcement_level: 'reminder'
+  })
+
+  const loadInfo = async () => {
+    const data = await window.api.backup.getInfo().catch(() => ({ backups: [], backupDir: '', policy: null }))
+    setInfo(data || { backups: [], backupDir: '', policy: null })
+    if (data?.policy) {
+      setPolicy({
+        enabled: data.policy.enabled === true,
+        target_dir: data.policy.target_dir || '',
+        export_excel: true, // Always true now
+        enforcement_level: data.policy.enforcement_level || 'reminder'
+      })
+    }
+  }
+
+  useEffect(() => {
+    loadInfo()
+  }, [])
+
+  const savePolicy = async (updates) => {
+    setPolicySaving(true)
+    setPolicyResult(null)
+    try {
+      const nextPolicy = { ...policy, ...updates }
+      const res = await window.api.backup.savePolicy(nextPolicy)
+      if (!res?.success) throw new Error(res?.error || 'Could not save backup policy.')
+      setPolicy({
+        enabled: res.policy.enabled === true,
+        target_dir: res.policy.target_dir || '',
+        export_excel: true,
+        enforcement_level: res.policy.enforcement_level || 'reminder'
+      })
+      setPolicyResult({ success: true, message: 'Managed weekly export policy updated.' })
+      await loadInfo()
+    } catch (e) {
+      setPolicyResult({ success: false, error: e.message || 'Could not save backup policy.' })
+    } finally {
+      setPolicySaving(false)
+    }
+  }
+
+  const chooseTargetFolder = async () => {
+    setPolicyResult(null)
+    const res = await window.api.backup.chooseTargetFolder().catch((e) => ({ success: false, error: e.message }))
+    if (res?.canceled) return
+    if (!res?.success) {
+      setPolicyResult({ success: false, error: res?.error || 'Could not choose backup folder.' })
+      return
+    }
+    await savePolicy({ target_dir: res.path })
+  }
+
+  const runManagedNow = async () => {
+    setPolicyRunning(true)
+    setPolicyResult(null)
+    try {
+      const res = await window.api.backup.runManagedNow()
+      if (!res?.success) throw new Error(res?.error || 'Managed weekly export failed.')
+      setPolicyResult({
+        success: true,
+        message: res.excelPath
+          ? `Managed export created: ${res.excelPath}`
+          : 'Managed export completed.'
+      })
+      await loadInfo()
+    } catch (e) {
+      setPolicyResult({ success: false, error: e.message || 'Managed weekly export failed.' })
+    } finally {
+      setPolicyRunning(false)
+    }
+  }
+
+  const policyStatus = info.policy || {}
+  const statusTone =
+    policyStatus.compliance_state === 'healthy' ? 'green' :
+    policyStatus.compliance_state === 'disabled' ? 'slate' :
+    policyStatus.compliance_state === 'pending_first_run' ? 'blue' :
+    'amber'
+  const statusClass =
+    statusTone === 'green' ? 'border-green-200 bg-green-50 text-green-700' :
+    statusTone === 'blue' ? 'border-blue-200 bg-blue-50 text-blue-700' :
+    statusTone === 'amber' ? 'border-amber-200 bg-amber-50 text-amber-700' :
+    'border-slate-200 bg-slate-50 text-slate-700'
+  const statusLabel =
+    policyStatus.compliance_state === 'healthy' ? 'Healthy' :
+    policyStatus.compliance_state === 'disabled' ? 'Disabled' :
+    policyStatus.compliance_state === 'pending_first_run' ? 'Waiting for first run' :
+    policyStatus.compliance_state === 'setup_required' ? 'Setup required' :
+    'Needs attention'
+
+  return (
+    <div className="p-6 max-w-3xl space-y-6">
+      <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-gray-200">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-bold text-gray-900">Weekly Data Archiving</h2>
+            <p className="mt-1 text-sm text-gray-500">
+              Create a complete Excel snapshot of all lodge transactions, guests, and operational history. Keep this enabled so System Health can warn you when a fresh off-device backup is overdue.
+            </p>
+          </div>
+          <span className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-semibold ${statusClass}`}>
+            {statusLabel}
+          </span>
+        </div>
+
+        <div className="mt-5 grid gap-4 md:grid-cols-2">
+          <label className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold text-gray-900">Enable weekly managed exports</p>
+                <p className="mt-1 text-xs text-gray-500">Runs automatically in the desktop app and writes to the selected sync folder.</p>
+              </div>
+              <input
+                type="checkbox"
+                className="h-4 w-4"
+                checked={policy.enabled}
+                onChange={(e) => savePolicy({ enabled: e.target.checked })}
+                disabled={policySaving}
+              />
+            </div>
+          </label>
+
+          <div className="rounded-xl border border-blue-100 bg-blue-50 px-4 py-3">
+            <p className="text-sm font-semibold text-blue-900">Export Format</p>
+            <div className="mt-2 flex items-center gap-2 text-sm text-blue-700">
+              <ShieldCheck size={16} />
+              <span>Full Multi-Sheet Excel Workbook</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-4 rounded-xl border border-gray-200 bg-gray-50 px-4 py-3">
+          <label className="text-xs font-semibold uppercase tracking-[0.16em] text-gray-500">
+            Reminder enforcement
+          </label>
+          <select
+            value={policy.enforcement_level || 'reminder'}
+            onChange={(e) => savePolicy({ enforcement_level: e.target.value })}
+            disabled={policySaving}
+            className="mt-2 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-800"
+          >
+            <option value="reminder">Reminder only</option>
+            <option value="warning">Warning banner</option>
+            <option value="strict">Strict launch warning</option>
+          </select>
+          <p className="mt-2 text-xs text-gray-500">
+            Strict mode keeps the dashboard warning visible until a managed export completes.
+          </p>
+        </div>
+
+        <div className="mt-4 rounded-xl border border-dashed border-gray-200 px-4 py-4">
+          <p className="text-sm font-semibold text-gray-900">Managed backup folder</p>
+          <p className="mt-1 break-all text-xs text-gray-500">
+            {policy.target_dir || 'No synced folder selected yet.'}
+          </p>
+          <p className="mt-2 text-xs text-gray-500">
+            Choose a folder inside OneDrive, Google Drive, Dropbox, or another synced location so weekly Boroko exports are copied off the device automatically.
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              onClick={chooseTargetFolder}
+              disabled={policySaving}
+              className="inline-flex items-center gap-2 rounded-xl border border-gray-200 px-4 py-2 text-sm font-semibold text-gray-700 transition hover:bg-gray-50"
+            >
+              <HardDrive size={15} />
+              Choose Synced Folder
+            </button>
+            <button
+              onClick={() => window.api.backup.openManagedFolder()}
+              disabled={!policy.target_dir}
+              className="inline-flex items-center gap-2 rounded-xl border border-gray-200 px-4 py-2 text-sm font-semibold text-gray-700 transition hover:bg-gray-50 disabled:opacity-50"
+            >
+              <Download size={15} />
+              Open Managed Folder
+            </button>
+            <button
+              onClick={runManagedNow}
+              disabled={policyRunning || !policy.target_dir}
+              className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:opacity-60"
+            >
+              {policyRunning ? <Loader2 size={15} className="animate-spin" /> : <ShieldCheck size={15} />}
+              {policyRunning ? 'Running…' : 'Run Weekly Export Now'}
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-4 grid gap-3 md:grid-cols-3">
+          <div className="rounded-xl bg-gray-50 px-4 py-3">
+            <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Last successful export</p>
+            <p className="mt-2 text-sm font-semibold text-gray-900">
+              {policyStatus.last_success_at ? new Date(policyStatus.last_success_at).toLocaleString('en-GB') : 'Not yet completed'}
+            </p>
+          </div>
+          <div className="rounded-xl bg-gray-50 px-4 py-3">
+            <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Next due</p>
+            <p className="mt-2 text-sm font-semibold text-gray-900">
+              {policyStatus.next_due_at ? new Date(policyStatus.next_due_at).toLocaleString('en-GB') : 'Runs after first success'}
+            </p>
+          </div>
+          <div className="rounded-xl bg-gray-50 px-4 py-3">
+            <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Policy guidance</p>
+            <p className="mt-2 text-sm font-semibold text-gray-900">
+              {policyStatus.requires_setup
+                ? 'Choose a synced folder to activate the policy.'
+                : policyStatus.overdue
+                  ? 'This device needs a fresh managed export.'
+                  : 'Local backup, Supabase, and synced export can work together.'}
+            </p>
+          </div>
+        </div>
+
+        {policyStatus.last_error && (
+          <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+            Last managed export issue: {policyStatus.last_error}
+          </div>
+        )}
+
+        {policyResult?.success && (
+          <div className="mt-4 rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
+            {policyResult.message}
+          </div>
+        )}
+        {policyResult?.error && (
+          <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            {policyResult.error}
+          </div>
+        )}
+      </div>
+
+    </div>
+  )
+}
+
 export default function DataManagement() {
+  const location = useLocation()
   const [tab, setTab] = useState(0)
+
+  useEffect(() => {
+    const requestedTab = location.state?.activeTab
+    if (requestedTab === 'export') setTab(1)
+    if (requestedTab === 'backups') setTab(2)
+    if (requestedTab === 'import') setTab(0)
+  }, [location.state?.activeTab])
 
   return (
     <div className="p-6 max-w-5xl">
@@ -110,14 +456,14 @@ export default function DataManagement() {
                 : 'text-gray-500 hover:text-gray-700'
             }`}
           >
-            {i === 0 ? <Upload size={14} /> : <Download size={14} />}
+            {i === 0 ? <Upload size={14} /> : i === 1 ? <Download size={14} /> : <HardDrive size={14} />}
             {t}
           </button>
         ))}
       </div>
 
       {/* Tab content */}
-      {tab === 0 ? <DataImport /> : <ExportTab />}
+      {tab === 0 ? <DataImport /> : tab === 1 ? <ExportTab /> : <BackupsTab />}
     </div>
   )
 }

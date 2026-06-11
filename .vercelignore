@@ -1,0 +1,22 @@
+.git
+.claude
+.cursor
+.netlify
+node_modules
+dist
+out
+test-results
+scratch
+Playwright tests
+New folder
+*.pdf
+*.xlsx
+*.log
+*.tmp
+
+booking-site/node_modules
+booking-site/dist
+marketing-site/node_modules
+manager-pwa/node_modules
+manager-pwa/dist
+supabase/.temp

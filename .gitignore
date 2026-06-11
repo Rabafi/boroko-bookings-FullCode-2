@@ -3,5 +3,24 @@ dist
 out
 .env
 .env.local
+.env.release
+.env.db
+.release/
 *.log
 .DS_Store
+.claude/
+test-results/
+supabase/.temp/
+electron.vite.config.*.mjs
+scratch/
+todo.txt
+npm
+Boroko_Bookings_Technical_Document.pdf
+generate_pdf.py
+run-pw-tests.bat
+
+# Local Netlify folder
+.netlify
+
+.vercel
+.env*.local

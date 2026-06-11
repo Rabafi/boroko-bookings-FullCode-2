@@ -1,0 +1,92 @@
+name: Publish Desktop Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_channel:
+        description: Release channel to publish to
+        required: true
+        default: latest
+        type: choice
+        options:
+          - latest
+          - beta
+      draft:
+        description: Keep the GitHub release as draft
+        required: true
+        default: false
+        type: boolean
+
+concurrency:
+  group: publish-desktop-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: windows-2022
+    env:
+      GH_TOKEN: ${{ secrets.BOROKO_RELEASES_TOKEN }}
+      CSC_IDENTITY_AUTO_DISCOVERY: false
+      EP_DRAFT: ${{ inputs.draft && 'true' || 'false' }}
+      EP_PRE_RELEASE: ${{ inputs.release_channel != 'latest' && 'true' || 'false' }}
+      EP_CHANNEL: ${{ inputs.release_channel }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            manager-pwa/package-lock.json
+            booking-site/package-lock.json
+
+      - name: Ensure release token exists
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:GH_TOKEN)) {
+            throw "Missing BOROKO_RELEASES_TOKEN secret. Add a GitHub token with repo access to Rabafi/boroko-bookings-releases."
+          }
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install manager PWA dependencies
+        run: npm run manager:install
+
+      - name: Install booking site dependencies
+        run: npm run booking:install
+
+      - name: Run production guardrails
+        run: npm test
+
+      - name: Verify critical offline queue path
+        run: npm run test:offline-queue-critical
+
+      - name: Verify critical offline POS path
+        run: npm run test:offline-pos-critical
+
+      - name: Run production dependency audit
+        run: npm run audit:prod
+
+      - name: Lint manager PWA
+        run: npm run manager:lint
+
+      - name: Build manager PWA
+        run: npm run manager:build
+
+      - name: Build public booking site
+        run: npm run booking:build
+
+      - name: Build desktop app
+        run: npm run build
+
+      - name: Publish desktop release artifacts
+        run: npm run dist:publish

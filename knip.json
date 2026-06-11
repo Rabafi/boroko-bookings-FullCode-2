@@ -1,0 +1,48 @@
+{
+  "workspaces": {
+    ".": {
+      "entry": [
+        "src/main/index.js",
+        "src/preload/index.js",
+        "src/renderer/src/main.jsx",
+        "electron.vite.config.js"
+      ],
+      "project": [
+        "src/**/*.{js,jsx}",
+        "shared/**/*.{js,jsx}"
+      ]
+    },
+    "manager-pwa": {
+      "entry": [
+        "src/main.jsx",
+        "vite.config.js"
+      ],
+      "project": [
+        "src/**/*.{js,jsx}"
+      ]
+    },
+    "booking-site": {
+      "entry": [
+        "src/main.jsx",
+        "vite.config.js"
+      ],
+      "project": [
+        "src/**/*.{js,jsx}"
+      ]
+    }
+  },
+  "ignore": [
+    "**/node_modules/**",
+    "**/dist/**",
+    "**/out/**",
+    "**/*.test.*",
+    "tests/**"
+  ],
+  "ignoreDependencies": [
+    "electron-builder",
+    "electron-vite",
+    "autoprefixer",
+    "postcss",
+    "tailwindcss"
+  ]
+}

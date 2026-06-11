@@ -1,6 +1,7 @@
 {
   "name": "boroko-bookings",
-  "version": "1.0.6",
+  "version": "1.3.15",
+  "type": "module",
   "description": "Boroko Lodge Booking Management System",
   "author": {
     "name": "Botswapelo Studios Pty Ltd"
@@ -8,45 +9,82 @@
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
+    "dev:desk-a": "node .\\scripts\\run-local-desk.mjs A",
+    "dev:desk-b": "node .\\scripts\\run-local-desk.mjs B",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
-    "dist": "electron-builder",
-    "postinstall": "electron-builder install-app-deps"
+    "test": "node .\\tests\\production-guardrails.test.mjs",
+    "test:offline-pos-critical": "node .\\tests\\offline-pos-regression.test.mjs",
+    "test:offline-queue-critical": "node .\\tests\\offline-queue-regression.test.mjs",
+    "test:inventory-offline-sync": "node .\\tests\\inventory-offline-sync-regression.test.mjs",
+    "test:import-critical": "node .\\tests\\import-system-regression.test.mjs",
+    "audit:prod": "npm audit --omit=dev && npm --prefix manager-pwa audit --omit=dev && npm --prefix booking-site audit --omit=dev",
+    "manager:install": "npm --prefix manager-pwa ci",
+    "manager:lint": "npm --prefix manager-pwa run lint",
+    "manager:build": "npm --prefix manager-pwa run build",
+    "booking:install": "npm --prefix booking-site ci",
+    "booking:build": "npm --prefix booking-site run build",
+    "test:e2e": "playwright test --config \"Playwright tests/playwright.config.cjs\"",
+    "test:e2e:pwa": "playwright test --config \"Playwright tests/playwright.config.cjs\" \"Playwright tests/pwa\"",
+    "pwa:deploy": "npx vercel --prod",
+    "version:patch": "npm version patch --no-git-tag-version",
+    "version:minor": "npm version minor --no-git-tag-version",
+    "version:major": "npm version major --no-git-tag-version",
+    "release:patch": "node ./scripts/release.mjs patch",
+    "release:minor": "node ./scripts/release.mjs minor",
+    "release:major": "node ./scripts/release.mjs major",
+    "release:all": "node ./scripts/release.mjs patch --remind-pwa",
+    "release:build": "npm run build && electron-builder --win nsis --publish never",
+    "release:publish": "node ./scripts/release.mjs publish",
+    "dist": "npm run build && electron-builder",
+    "dist:publish": "npm run build && electron-builder --publish always",
+    "icons:build": "node ./scripts/build-icons.mjs",
+    "postinstall": "electron-builder install-app-deps",
+    "db:push": "node ./scripts/db-push.mjs"
   },
   "dependencies": {
-    "@electron-toolkit/preload": "^3.0.0",
+    "@e965/xlsx": "^0.20.3",
     "@electron-toolkit/utils": "^3.0.0",
     "@supabase/supabase-js": "^2.39.0",
     "bcryptjs": "^2.4.3",
+    "better-sqlite3": "^12.10.0",
     "date-fns": "^3.3.1",
     "electron-updater": "^6.8.3",
     "lucide-react": "^0.344.0",
-    "nodemailer": "^6.10.1",
+    "nodemailer": "^8.0.8",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "react-router-dom": "^6.22.0",
-    "xlsx": "^0.18.5"
+    "react-router-dom": "^6.22.0"
   },
   "devDependencies": {
-    "@vitejs/plugin-react": "^4.2.1",
+    "@playwright/test": "^1.59.1",
+    "@vitejs/plugin-react": "^5.2.0",
     "autoprefixer": "^10.4.18",
-    "electron": "^29.1.0",
-    "electron-builder": "^24.13.1",
-    "electron-vite": "^2.0.0",
+    "electron": "^42.2.0",
+    "electron-builder": "^26.8.1",
+    "electron-vite": "^5.0.0",
+    "madge": "^8.0.0",
+    "pg": "^8.21.0",
+    "png-to-ico": "^3.0.1",
     "postcss": "^8.4.35",
+    "sharp": "^0.34.5",
+    "supabase": "^2.96.0",
     "tailwindcss": "^3.4.1",
-    "vite": "^5.1.4"
+    "vite": "^7.3.3"
   },
   "build": {
     "appId": "com.boroko.bookings",
     "productName": "Boroko Bookings",
     "asar": true,
+    "artifactName": "Boroko-Bookings-${version}-${arch}.${ext}",
+    "icon": "src/main/assets/boroko-bookings-icon.ico",
     "publish": {
       "provider": "github",
       "owner": "Rabafi",
       "repo": "boroko-bookings-releases"
     },
     "win": {
+      "icon": "src/main/assets/boroko-bookings-icon.ico",
       "target": [
         {
           "target": "nsis",
@@ -60,15 +98,25 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "deleteAppDataOnUninstall": false
+      "deleteAppDataOnUninstall": false,
+      "installerIcon": "src/main/assets/boroko-bookings-icon.ico",
+      "uninstallerIcon": "src/main/assets/boroko-bookings-icon.ico",
+      "include": "src/main/installer.nsh"
     },
     "files": [
       "out/**/*",
+      "src/main/assets/**/*",
       "!out/**/*.map",
       "!**/*.{iml,hprof,orig,pyc,pyo,rbc,swp,csproj,sln,xproj}",
       "!**/{.DS_Store,.git,.hg,.svn,CVS,RCS,SCCS,__pycache__,thumbs.db,.gitignore,.gitattributes}",
       "!**/{__tests__,test,tests,powered-test}",
       "!**/node_modules/.cache"
+    ],
+    "extraResources": [
+      {
+        "from": "src/main/assets",
+        "to": "assets"
+      }
     ],
     "directories": {
       "output": "dist"

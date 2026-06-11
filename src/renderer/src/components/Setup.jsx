@@ -1,7 +1,12 @@
+import { useNavigate } from 'react-router-dom'
 import { useState, useRef } from 'react'
 import { Building2, Phone, Mail, MapPin, Globe, Hash, CheckCircle, Upload, Image, X, User, Lock, Eye, EyeOff } from 'lucide-react'
+import { useProfiles } from '../app-context'
+import borokoLogoDark from '../assets/boroko-bookings-logo-dark.png'
 
-export default function Setup({ onComplete, onCancel }) {
+export default function Setup({ onComplete }) {
+  const navigate = useNavigate()
+  const { activeProfile, profiles } = useProfiles()
   const [step, setStep] = useState(1)
   const [saving, setSaving] = useState(false)
   const [logoPreview, setLogoPreview] = useState(null)
@@ -27,12 +32,46 @@ export default function Setup({ onComplete, onCancel }) {
 
   const set = (field, value) => setForm((f) => ({ ...f, [field]: value }))
 
+  const getSetupErrorMessage = (res) => {
+    const code = res?.code || res?.data?.auth_health?.code
+    const fallback = res?.error || res?.data?.auth_health?.error || 'Could not complete setup.'
+
+    if (code === 'profile_already_ready') {
+      return 'This lodge profile on this computer is already set up. Go back to the lodge chooser and sign in instead.'
+    }
+    if (code === 'remote_lodge_already_exists') {
+      return 'This draft lodge ID already exists in Supabase. Go back to the lodge chooser and create a fresh lodge draft.'
+    }
+    if (code === 'draft_profile_blocked_by_unsynced_changes') {
+      return 'This draft lodge has unsynced offline changes. Clear or sync them before retrying setup.'
+    }
+    if (code === 'no_draft_profile_selected') {
+      return 'Choose or create a draft lodge on this computer before running setup.'
+    }
+    if (code === 'user_create_failed') {
+      return res?.error || 'The admin account could not be created for this lodge. Please check the database error and try again.'
+    }
+    if (code === 'backend_auth_schema_outdated') {
+      return res?.error || 'This database is missing the latest Boroko auth schema. Run the checked-in Supabase migrations, then try setup again.'
+    }
+    if (code === 'target_user_missing') {
+      return 'The new admin account was not found for this lodge after setup.'
+    }
+    return fallback
+  }
+
   const processImageFile = (file) => {
     if (!file || !file.type.startsWith('image/')) return
     const reader = new FileReader()
     reader.onload = (e) => {
       const img = new window.Image()
       img.onload = () => {
+        const MIN_W = 128
+        const MIN_H = 128
+        if (img.width < MIN_W || img.height < MIN_H) {
+          window.alert(`Logo is too small. Minimum size is ${MIN_W}x${MIN_H}px. Your image is ${img.width}x${img.height}px.`)
+          return
+        }
         const MAX = 400
         const canvas = document.createElement('canvas')
         const ratio = Math.min(MAX / img.width, MAX / img.height, 1)
@@ -49,37 +88,66 @@ export default function Setup({ onComplete, onCancel }) {
   }
 
   const handleFinish = async () => {
+    console.log('\n[SETUP] ===== START =====')
+
     setAdminError('')
+
     if (!admin.name.trim() || !admin.email.trim() || !admin.password) {
+      console.warn('[SETUP] Validation failed: missing fields')
       setAdminError('All fields are required.')
       return
     }
+
     if (admin.password.length < 6) {
+      console.warn('[SETUP] Validation failed: password too short')
       setAdminError('Password must be at least 6 characters.')
       return
     }
+
     if (admin.password !== admin.confirm) {
+      console.warn('[SETUP] Validation failed: passwords mismatch')
       setAdminError('Passwords do not match.')
       return
     }
+
+    const status = await window.api.auth.getStatus('').catch(() => ({ online: false }))
+    console.log('[SETUP] Online status:', status)
+
+    if (!status?.online) {
+      console.warn('[SETUP] Blocked: offline')
+      setAdminError('An internet connection is required to complete setup.')
+      return
+    }
+
     setSaving(true)
+
     try {
-      const res = await window.api.settings.save(form)
-      if (res.success) {
-        await window.api.users.create({
+      console.log('[SETUP] Before API')
+      const res = await window.api.setup.initializeCompany({
+        settings: form,
+        admin: {
           name: admin.name.trim(),
           email: admin.email.trim().toLowerCase(),
           password: admin.password,
-          role: 'admin',
-          lodge_id: res.data?.lodge_id
-        })
-        onComplete(res.data)
+          role: 'admin'
+        }
+      })
+      console.log('[SETUP] initializeCompany result:', res)
+
+      if (!res?.success || !res.data?.auth_health?.ok) {
+        console.error('[SETUP] Initialization failed:', res)
+        setAdminError(getSetupErrorMessage(res))
+        return
       }
+
+      await onComplete(res.data.settings)
+      navigate('/login')
     } catch (e) {
-      console.error(e)
+      console.error('[SETUP] CRASH:', e)
       setAdminError('Setup failed. Please try again.')
+    } finally {
+      setSaving(false)
     }
-    setSaving(false)
   }
 
   const STEP_LABELS = ['Property Info', 'Contact Details', 'Admin Account']
@@ -95,9 +163,18 @@ export default function Setup({ onComplete, onCancel }) {
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden">
         {/* Header */}
         <div className="bg-green-700 px-8 py-6 text-white">
-          <div className="text-3xl mb-2">🏕️</div>
+          <div className="mb-4 flex h-24 w-80 max-w-full items-center">
+            <img src={borokoLogoDark} alt="Boroko Bookings" className="max-h-full max-w-full object-contain" draggable="false" />
+          </div>
           <h1 className="text-2xl font-bold">Welcome to Boroko Bookings</h1>
           <p className="text-green-200 text-sm mt-1">{stepSubtitle[step]}</p>
+          {activeProfile && (
+            <div className="mt-4 rounded-xl border border-white/20 bg-white/10 px-4 py-3">
+              <p className="text-[11px] uppercase tracking-wide text-green-100">Draft Lodge Profile</p>
+              <p className="text-sm font-semibold text-white mt-1">{activeProfile.label || 'New Lodge'}</p>
+              <p className="text-[11px] text-green-100 break-all mt-1">{activeProfile.lodge_id}</p>
+            </div>
+          )}
         </div>
 
         {/* Progress Steps */}
@@ -397,13 +474,14 @@ export default function Setup({ onComplete, onCancel }) {
         <p className="text-center text-xs text-gray-400 pb-4">
           You can change these details anytime in Settings
         </p>
-        {onCancel && (
-          <div className="text-center pb-4">
-            <button onClick={onCancel} className="text-xs text-gray-400 hover:text-gray-600 underline">
-              ← Back to Sign In
-            </button>
-          </div>
-        )}
+        <div className="text-center pb-4">
+          <button
+            onClick={() => navigate(profiles.length > 0 ? '/choose-lodge' : '/welcome')}
+            className="text-xs text-gray-400 hover:text-gray-600 underline"
+          >
+            ← Back to Lodge Chooser
+          </button>
+        </div>
       </div>
     </div>
   )

@@ -1,10 +1,13 @@
 import { useState, useEffect } from 'react'
-import { Presentation, Plus, Pencil, Trash2, X, Users, Clock, Calendar, ChevronDown, ChevronUp } from 'lucide-react'
-import { useSettings } from '../App'
+import { useLocation, useNavigate } from 'react-router-dom'
+import { Presentation, Plus, Pencil, Trash2, X, Users, Clock, Calendar, ChevronDown, ChevronUp, CreditCard } from 'lucide-react'
+import { PAYMENT_METHOD_PLAIN_OPTIONS } from '../constants/paymentMethods'
+import { useSettings } from '../app-context'
+import { localToday } from '../utils/localDate'
 
 const SETUP_TYPES = ['Theatre', 'Boardroom', 'Classroom', 'U-Shape', 'Banquet', 'Cocktail']
 const PAYMENT_STATUSES = ['pending', 'deposit_paid', 'paid', 'cancelled']
-const PAYMENT_METHODS = ['Cash', 'Card', 'EFT / Bank Transfer', 'Mobile Money']
+const PAYMENT_METHODS = PAYMENT_METHOD_PLAIN_OPTIONS
 
 const STATUS_COLORS = {
   pending: 'bg-yellow-100 text-yellow-800',
@@ -20,7 +23,7 @@ const STATUS_LABELS = {
 }
 
 const empty = () => ({
-  booking_date: new Date().toISOString().split('T')[0],
+  booking_date: localToday(),
   start_time: '08:00',
   end_time: '17:00',
   client_name: '',
@@ -51,6 +54,8 @@ function duration(start, end) {
 export default function Conference() {
   const { settings } = useSettings()
   const currency = settings?.currency || 'P'
+  const navigate = useNavigate()
+  const location = useLocation()
 
   const [bookings, setBookings] = useState([])
   const [loading, setLoading] = useState(true)
@@ -62,6 +67,10 @@ export default function Conference() {
   const [expandedId, setExpandedId] = useState(null)
   const [filterDate, setFilterDate] = useState('')
   const [deleting, setDeleting] = useState(null)
+  const [payBooking, setPayBooking] = useState(null)
+  const [payForm, setPayForm] = useState({ amount: '', method: 'cash' })
+  const [paySaving, setPaySaving] = useState(false)
+  const [payError, setPayError] = useState('')
 
   const load = async () => {
     setLoading(true)
@@ -73,6 +82,17 @@ export default function Conference() {
   }
 
   useEffect(() => { load() }, [filterDate])
+
+  useEffect(() => {
+    const targetId = location.state?.collectPaymentBookingId
+    if (!targetId || !bookings.length) return
+    const booking = bookings.find((b) => b.id === targetId)
+    if (booking) {
+      const outstanding = Math.max(0, (booking.total_amount || 0) - (booking.deposit_paid || 0))
+      if (outstanding > 0) openPayment(booking)
+      navigate(location.pathname, { replace: true, state: {} })
+    }
+  }, [bookings, location.state])
 
   const set = (f, v) => setForm((prev) => ({ ...prev, [f]: v }))
 
@@ -139,6 +159,39 @@ export default function Conference() {
     await window.api.conference.delete(id).catch(() => {})
     setDeleting(null)
     load()
+  }
+
+  const openPayment = (booking) => {
+    const outstanding = Math.max(0, (booking.total_amount || 0) - (booking.deposit_paid || 0))
+    setPayBooking(booking)
+    setPayForm({ amount: String(outstanding), method: booking.payment_method || 'cash' })
+    setPayError('')
+  }
+
+  const closePaymentModal = () => {
+    setPayBooking(null)
+    setPayForm({ amount: '', method: 'cash' })
+    setPayError('')
+  }
+
+  const handlePaymentSave = async (e) => {
+    e.preventDefault()
+    const amount = parseFloat(payForm.amount) || 0
+    if (amount <= 0) { setPayError('Enter a valid amount'); return }
+    const outstanding = Math.max(0, (payBooking.total_amount || 0) - (payBooking.deposit_paid || 0))
+    if (amount > outstanding) { setPayError(`Maximum payment is ${currency} ${outstanding.toFixed(2)}`); return }
+    setPaySaving(true)
+    setPayError('')
+    try {
+      const intentKey = `conf-${payBooking.id}-${amount}-${Date.now()}`
+      const result = await window.api.conference.updatePayment(payBooking.id, amount, payForm.method, intentKey)
+      if (result?.success === false) throw new Error(result.error || 'Payment failed')
+      closePaymentModal()
+      load()
+    } catch (err) {
+      setPayError(err.message || 'Payment failed')
+    }
+    setPaySaving(false)
   }
 
   const grouped = bookings.reduce((acc, b) => {
@@ -258,11 +311,25 @@ export default function Conference() {
                         >
                           <Trash2 size={15} />
                         </button>
+                        {b.payment_status !== 'paid' && (b.total_amount || 0) > 0 && (
+                          <button
+                            onClick={() => openPayment(b)}
+                            className="p-1.5 text-gray-400 hover:text-blue-600 rounded"
+                            title={`Collect payment — ${currency} ${Math.max(0, (b.total_amount || 0) - (b.deposit_paid || 0)).toFixed(2)} outstanding`}
+                          >
+                            <CreditCard size={15} />
+                          </button>
+                        )}
                       </div>
                     </div>
                     {expandedId === b.id && (
                       <div className="px-4 pb-3 bg-gray-50 text-xs text-gray-600 space-y-1 border-t border-gray-100 pt-2">
                         {b.payment_method && <p>Payment Method: <span className="font-medium">{b.payment_method}</span></p>}
+                        {(b.total_amount || 0) > 0 && (
+                          <p>Outstanding: <span className={`font-medium ${(b.deposit_paid || 0) < (b.total_amount || 0) ? 'text-amber-700' : 'text-green-700'}`}>
+                            {currency} {Math.max(0, (b.total_amount || 0) - (b.deposit_paid || 0)).toFixed(2)}
+                          </span></p>
+                        )}
                         {b.catering_notes && <p>Catering Notes: <span className="font-medium">{b.catering_notes}</span></p>}
                         {b.notes && <p>Notes: <span className="font-medium">{b.notes}</span></p>}
                       </div>
@@ -484,6 +551,82 @@ export default function Conference() {
                   className="px-5 py-2.5 text-sm font-medium bg-green-700 hover:bg-green-800 disabled:opacity-60 text-white rounded-lg transition-colors"
                 >
                   {saving ? 'Saving...' : editing ? 'Update Booking' : 'Create Booking'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Payment Modal */}
+      {payBooking && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+              <h2 className="text-lg font-bold text-gray-900">Collect Payment</h2>
+              <button onClick={closePaymentModal} className="text-gray-400 hover:text-gray-600">
+                <X size={20} />
+              </button>
+            </div>
+            <form onSubmit={handlePaymentSave} className="px-6 py-5 space-y-4">
+              {payError && (
+                <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 text-sm">{payError}</div>
+              )}
+              <div>
+                <p className="text-sm font-medium text-gray-900">{payBooking.client_name}</p>
+                {payBooking.company && <p className="text-xs text-gray-500">{payBooking.company}</p>}
+                <p className="text-xs text-gray-500 mt-1">{payBooking.booking_date} · {payBooking.room_name}</p>
+              </div>
+              <div className="grid grid-cols-2 gap-3 text-sm">
+                <div className="bg-slate-50 rounded-lg p-3">
+                  <p className="text-xs text-gray-500">Total</p>
+                  <p className="font-semibold">{currency} {(payBooking.total_amount || 0).toFixed(2)}</p>
+                </div>
+                <div className="bg-slate-50 rounded-lg p-3">
+                  <p className="text-xs text-gray-500">Already Deposited</p>
+                  <p className="font-semibold">{currency} {(payBooking.deposit_paid || 0).toFixed(2)}</p>
+                </div>
+              </div>
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm">
+                <span className="font-semibold text-amber-800">Outstanding: {currency} {Math.max(0, (payBooking.total_amount || 0) - (payBooking.deposit_paid || 0)).toFixed(2)}</span>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Amount</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  max={Math.max(0, (payBooking.total_amount || 0) - (payBooking.deposit_paid || 0))}
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                  value={payForm.amount}
+                  onChange={(e) => setPayForm({ ...payForm, amount: e.target.value })}
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Payment Method</label>
+                <select
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 bg-white"
+                  value={payForm.method}
+                  onChange={(e) => setPayForm({ ...payForm, method: e.target.value })}
+                >
+                  {PAYMENT_METHODS.map((m) => <option key={m}>{m}</option>)}
+                </select>
+              </div>
+              <div className="flex justify-end gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={closePaymentModal}
+                  className="px-4 py-2.5 text-sm font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={paySaving}
+                  className="px-5 py-2.5 text-sm font-medium bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-lg transition-colors"
+                >
+                  {paySaving ? 'Saving...' : 'Record Payment'}
                 </button>
               </div>
             </form>

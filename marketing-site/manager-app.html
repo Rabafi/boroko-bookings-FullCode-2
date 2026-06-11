@@ -1,0 +1,417 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Boroko Manager App | Lodge Management on Your Phone</title>
+    <meta name="description" content="Manage your lodge from anywhere with the Boroko Manager mobile app. View bookings, rooms, finances, and communicate with front desk — all from your phone." />
+    <meta property="og:title" content="Boroko Manager App" />
+    <meta property="og:description" content="See your lodge from anywhere. View bookings, rooms, finances, and send requests to front desk — all from your phone." />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="https://borokobookings.com/assets/og-image.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:site" content="@borokobookings" />
+    <meta name="twitter:title" content="Boroko Manager App" />
+    <meta name="twitter:description" content="See your lodge from anywhere. View bookings, rooms, finances, and send requests to front desk — all from your phone." />
+    <meta name="twitter:image" content="https://borokobookings.com/assets/og-image.png" />
+    <meta name="theme-color" content="#18352b" />
+    <link rel="canonical" href="https://borokobookings.com/manager-app" />
+    <link rel="icon" type="image/svg+xml" href="./assets/boroko-bookings-logo.svg" />
+    <link rel="alternate icon" type="image/png" href="./assets/boroko-bookings-logo-light.png" />
+    <link rel="stylesheet" href="./styles.css" />
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-37DYXS6K47"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'G-37DYXS6K47');
+    </script>
+  </head>
+  <body data-page="manager-app">
+    <div class="scroll-progress" id="scroll-progress"></div>
+    <div class="site-shell">
+      <header class="topbar" id="topbar">
+        <div class="topbar-pill">
+          <a class="brand" href="./index.html" aria-label="Boroko Bookings home">
+            <span class="brand-mark">
+              <img src="./assets/boroko-bookings-logo-light.png" alt="" aria-hidden="true" width="150" height="54" />
+            </span>
+            <span class="brand-copy">
+              <strong>Boroko Bookings</strong>
+            </span>
+          </a>
+          <nav id="site-nav" class="site-nav" aria-label="Main navigation">
+            <a href="./index.html" data-nav="home">Home</a>
+            <a href="./features.html" data-nav="features">Features</a>
+            <a href="./packages.html" data-nav="packages">Packages</a>
+            <a href="./why-switch.html" data-nav="why-switch">Why Switch</a>
+            <a href="./blog.html" data-nav="blog">Blog</a>
+            <a href="./contact.html" data-nav="contact">Contact</a>
+          </nav>
+          <div class="topbar-actions">
+            <a class="nav-cta-pill" href="./packages.html">See packages</a>
+          </div>
+          <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Open navigation menu">
+            <span class="sr-only">Menu</span>
+            <span class="menu-bar"></span>
+            <span class="menu-bar"></span>
+            <span class="menu-bar"></span>
+          </button>
+        </div>
+      </header>
+
+      <div class="mobile-overlay" id="mobile-overlay" aria-hidden="true">
+        <div class="mobile-overlay-bg"></div>
+        <div class="mobile-overlay-content">
+          <nav class="mobile-nav" aria-label="Mobile navigation">
+            <a href="./index.html" data-nav="home" data-stagger="0">Home</a>
+            <a href="./features.html" data-nav="features" data-stagger="1">Features</a>
+            <a href="./packages.html" data-nav="packages" data-stagger="2">Packages</a>
+            <a href="./why-switch.html" data-nav="why-switch" data-stagger="3">Why Switch</a>
+            <a href="./blog.html" data-nav="blog" data-stagger="4">Blog</a>
+            <a href="./contact.html" data-nav="contact" data-stagger="5">Contact</a>
+            <a href="./brochure.html" data-nav="brochure" data-stagger="6">Brochure</a>
+          </nav>
+          <div class="mobile-overlay-footer">
+            <a class="mobile-cta" href="./packages.html">See packages</a>
+            <a class="mobile-cta-secondary" href="#" data-action="download">Download app</a>
+            <div class="mobile-contact">
+              <a href="https://wa.me/26772789415" target="_blank" rel="noreferrer">WhatsApp: +267 72 789 415</a>
+              <a href="mailto:hello@borokobookings.com">hello@borokobookings.com</a>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <main>
+        <section class="page-hero">
+          <div class="container page-hero-grid">
+            <div>
+              <div class="section-tag">Manager Mobile App</div>
+              <h1>Your lodge in your pocket. See everything, from anywhere.</h1>
+              <p class="hero-lead">The Boroko Manager app lets lodge owners and managers monitor operations, check finances, and communicate with front desk staff — all from a phone. No install needed. Works in any browser.</p>
+              <div class="hero-actions">
+                <a class="btn btn-primary" href="./packages.html">Get started with Pro</a>
+                <a class="btn btn-secondary" href="./contact.html">Ask us a question</a>
+              </div>
+            </div>
+            <div class="hero-surface" style="min-height:360px;">
+              <div style="background:linear-gradient(180deg,rgba(23,76,58,0.06),rgba(23,76,58,0.02));border-radius:32px;padding:14px 10px;border:1px solid var(--line);box-shadow:var(--shadow);width:280px;">
+                <div style="display:flex;align-items:center;justify-content:center;padding:4px 0 10px;">
+                  <div style="width:52px;height:5px;border-radius:3px;background:var(--line);"></div>
+                </div>
+                <div style="border-radius:22px;overflow:hidden;">
+                  <img src="./assets/screenshots/pwa-dashboard.png" alt="Boroko Manager mobile app dashboard showing arrivals, occupancy, outstanding balance, and alerts" width="400" height="720" style="width:100%;display:block;object-fit:cover;" />
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="section">
+          <div class="container">
+            <div class="section-head">
+              <div class="section-tag">What you can do</div>
+              <h2>Everything a manager needs. Nothing they don't.</h2>
+              <p>The Manager app is designed for owners and managers who need to stay informed without being tied to the front desk.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="band-section">
+          <div class="container">
+            <h3 style="margin-bottom:20px;">Dashboard &amp; Overview</h3>
+            <div class="feature-grid">
+              <div class="feature-card">
+                <div class="feature-icon" style="background:rgba(23,76,58,0.08);">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+                </div>
+                <h3>KPI Dashboard</h3>
+                <p>Today's arrivals, departures, occupancy percentage, outstanding balances, open alerts, and pending online booking requests — all at a glance.</p>
+              </div>
+              <div class="feature-card">
+                <div class="feature-icon" style="background:rgba(203,126,48,0.08);">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                </div>
+                <h3>Needs Attention</h3>
+                <p>A prioritised list of what needs action now — overdue checkouts, pending online requests, urgent maintenance, low stock, and top outstanding balances.</p>
+              </div>
+              <div class="feature-card">
+                <div class="feature-icon" style="background:rgba(23,76,58,0.08);">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                </div>
+                <h3>Today Timeline</h3>
+                <p>See arrivals, departures, and activity that happened since you opened the app. Know what changed while you were away.</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="section">
+          <div class="container">
+            <h3 style="margin-bottom:20px;">Bookings &amp; Rooms</h3>
+            <div class="feature-grid" style="margin-bottom:28px;">
+              <div class="feature-card">
+                <div class="feature-icon" style="background:rgba(23,76,58,0.08);">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                </div>
+                <h3>Booking List &amp; Calendar</h3>
+                <p>Switch between list and calendar views. Filter by today, in-house, arrivals, departures, online requests, overdue, or upcoming. Search by guest name.</p>
+              </div>
+              <div class="feature-card">
+                <div class="feature-icon" style="background:rgba(203,126,48,0.08);">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+                </div>
+                <h3>Room Grid</h3>
+                <p>Visual room status at a glance — colour-coded for clean, dirty, cleaning, out-of-service, occupied, and maintenance. Filter by status.</p>
+              </div>
+              <div class="feature-card">
+                <div class="feature-icon" style="background:rgba(23,76,58,0.08);">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                </div>
+                <h3>Booking Details</h3>
+                <p>Guest name, dates, status, source, total, paid amount, balance, and payment status — all in a bottom sheet on your phone.</p>
+              </div>
+            </div>
+            <div style="display:flex;gap:24px;justify-content:center;flex-wrap:wrap;">
+              <div style="background:linear-gradient(180deg,rgba(23,76,58,0.06),rgba(23,76,58,0.02));border-radius:28px;padding:12px 10px;border:1px solid var(--line);box-shadow:var(--shadow);width:220px;">
+                <div style="display:flex;align-items:center;justify-content:center;padding:3px 0 8px;"><div style="width:40px;height:4px;border-radius:2px;background:var(--line);"></div></div>
+                <div style="border-radius:20px;overflow:hidden;"><img src="./assets/screenshots/pwa-bookings.png" alt="Boroko Manager app booking list showing filters for arrivals, departures, and in-house guests" width="400" height="720" style="width:100%;display:block;object-fit:cover;" /></div>
+              </div>
+              <div style="background:linear-gradient(180deg,rgba(23,76,58,0.06),rgba(23,76,58,0.02));border-radius:28px;padding:12px 10px;border:1px solid var(--line);box-shadow:var(--shadow);width:220px;">
+                <div style="display:flex;align-items:center;justify-content:center;padding:3px 0 8px;"><div style="width:40px;height:4px;border-radius:2px;background:var(--line);"></div></div>
+                <div style="border-radius:20px;overflow:hidden;"><img src="./assets/screenshots/pwa-rooms.png" alt="Boroko Manager app room grid showing colour-coded room status" width="400" height="720" style="width:100%;display:block;object-fit:cover;" /></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="band-section">
+          <div class="container">
+            <h3 style="margin-bottom:20px;">Money &amp; Reports</h3>
+            <div class="feature-grid" style="margin-bottom:28px;">
+              <div class="feature-card">
+                <div class="feature-icon" style="background:rgba(23,76,58,0.08);">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+                </div>
+                <h3>Shift Snapshot</h3>
+                <p>Gross collected, refunds today, expenses today, and outstanding balance. Know the financial position without asking front desk.</p>
+              </div>
+              <div class="feature-card">
+                <div class="feature-icon" style="background:rgba(203,126,48,0.08);">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.21 15.89A10 10 0 1 1 8 2.83"/><path d="M22 12A10 10 0 0 0 12 2v10z"/></svg>
+                </div>
+                <h3>Reports</h3>
+                <p>Live occupancy, cash collected (today/week/month), refunds, retained revenue, expenses, outstanding payments, POS revenue, and more.</p>
+              </div>
+              <div class="feature-card">
+                <div class="feature-icon" style="background:rgba(23,76,58,0.08);">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                </div>
+                <h3>Night Audit</h3>
+                <p>Run end-of-day audit for any date. See check-ins, check-outs, new bookings, gross collected, refunds, net cash, expenses, and outstanding.</p>
+              </div>
+            </div>
+            <div style="display:flex;justify-content:center;">
+              <div style="background:linear-gradient(180deg,rgba(23,76,58,0.06),rgba(23,76,58,0.02));border-radius:28px;padding:12px 10px;border:1px solid var(--line);box-shadow:var(--shadow);width:240px;">
+                <div style="display:flex;align-items:center;justify-content:center;padding:3px 0 8px;"><div style="width:42px;height:4px;border-radius:2px;background:var(--line);"></div></div>
+                <div style="border-radius:20px;overflow:hidden;"><img src="./assets/screenshots/pwa-money.png" alt="Boroko Manager app money view showing invoices, expenses, and night audit reports" width="400" height="720" style="width:100%;display:block;object-fit:cover;" /></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="section">
+          <div class="container">
+            <h3 style="margin-bottom:20px;">Communication &amp; Alerts</h3>
+            <div class="feature-grid" style="margin-bottom:28px;">
+              <div class="feature-card">
+                <div class="feature-icon" style="background:rgba(23,76,58,0.08);">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                </div>
+                <h3>Inbox — Chat with Front Desk</h3>
+                <p>Start conversations or reply to existing threads. Send requests, ask for updates, and get responses — like a private chat between you and your team.</p>
+              </div>
+              <div class="feature-card">
+                <div class="feature-icon" style="background:rgba(203,126,48,0.08);">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+                </div>
+                <h3>Push Notifications</h3>
+                <p>Get notified about urgent alerts, overdue checkouts, maintenance updates, outstanding balances, and front desk replies — even when the app is closed.</p>
+              </div>
+              <div class="feature-card">
+                <div class="feature-icon" style="background:rgba(23,76,58,0.08);">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                </div>
+                <h3>Alerts Board</h3>
+                <p>Overdue checkouts, open maintenance (urgent/high), unpaid bookings, low stock, and online bookings blocked by maintenance — all filterable by category.</p>
+              </div>
+            </div>
+            <div style="display:flex;justify-content:center;">
+              <div style="background:linear-gradient(180deg,rgba(23,76,58,0.06),rgba(23,76,58,0.02));border-radius:28px;padding:12px 10px;border:1px solid var(--line);box-shadow:var(--shadow);width:240px;">
+                <div style="display:flex;align-items:center;justify-content:center;padding:3px 0 8px;"><div style="width:42px;height:4px;border-radius:2px;background:var(--line);"></div></div>
+                <div style="border-radius:20px;overflow:hidden;"><img src="./assets/screenshots/pwa-alerts.png" alt="Boroko Manager app alerts board showing overdue checkouts, maintenance issues, and low stock warnings" width="400" height="720" style="width:100%;display:block;object-fit:cover;" /></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="band-section">
+          <div class="container">
+            <div class="section-head">
+              <div class="section-tag">How it works</div>
+              <h2>Managers see and ask. Front desk does.</h2>
+              <p>The Manager app is built around a simple principle: managers monitor the business and send requests. Front desk staff execute the actual changes on the desktop app. This keeps financial operations controlled while giving managers full visibility.</p>
+            </div>
+            <div class="steps-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:20px;margin-top:32px;">
+              <div class="step-card" style="text-align:center;">
+                <span style="display:inline-flex;align-items:center;justify-content:center;width:48px;height:48px;border-radius:14px;background:var(--brand);color:#fff;font-weight:800;font-size:1.1rem;margin-bottom:12px;">1</span>
+                <h3>Open the app</h3>
+                <p style="font-size:0.9rem;color:var(--ink-soft);">Works in any mobile browser. No install needed. Add to home screen for app-like experience.</p>
+              </div>
+              <div class="step-card" style="text-align:center;">
+                <span style="display:inline-flex;align-items:center;justify-content:center;width:48px;height:48px;border-radius:14px;background:var(--brand);color:#fff;font-weight:800;font-size:1.1rem;margin-bottom:12px;">2</span>
+                <h3>See what's happening</h3>
+                <p style="font-size:0.9rem;color:var(--ink-soft);">Dashboard shows today's numbers. Alerts show what needs attention. Reports show trends.</p>
+              </div>
+              <div class="step-card" style="text-align:center;">
+                <span style="display:inline-flex;align-items:center;justify-content:center;width:48px;height:48px;border-radius:14px;background:var(--brand);color:#fff;font-weight:800;font-size:1.1rem;margin-bottom:12px;">3</span>
+                <h3>Send a request</h3>
+                <p style="font-size:0.9rem;color:var(--ink-soft);">Tap "Ask front desk to..." on any alert. A request goes straight to the team via the inbox.</p>
+              </div>
+              <div class="step-card" style="text-align:center;">
+                <span style="display:inline-flex;align-items:center;justify-content:center;width:48px;height:48px;border-radius:14px;background:var(--brand);color:#fff;font-weight:800;font-size:1.1rem;margin-bottom:12px;">4</span>
+                <h3>Get notified</h3>
+                <p style="font-size:0.9rem;color:var(--ink-soft);">Push notifications tell you when the team responds or when something needs your attention.</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="section">
+          <div class="container">
+            <div class="section-head">
+              <div class="section-tag">Desktop vs Mobile</div>
+              <h2>What managers can and can't do on mobile</h2>
+              <p>The Manager app is designed for visibility and communication. Financial changes and record edits happen on the desktop app where front desk staff have full control.</p>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:32px;">
+              <div class="feature-card" style="border-color:rgba(23,76,58,0.2);">
+                <h3 style="color:var(--brand);margin-bottom:16px;">Managers CAN</h3>
+                <ul style="list-style:none;padding:0;margin:0;display:grid;gap:10px;">
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand);font-weight:800;">&#10003;</span> View all bookings, rooms, guests, and invoices</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand);font-weight:800;">&#10003;</span> View finances, expenses, and reports</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand);font-weight:800;">&#10003;</span> Run night audit for any date</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand);font-weight:800;">&#10003;</span> Raise maintenance tickets</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand);font-weight:800;">&#10003;</span> Send requests to front desk</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand);font-weight:800;">&#10003;</span> Chat with front desk via inbox</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand);font-weight:800;">&#10003;</span> View inventory and low-stock alerts</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand);font-weight:800;">&#10003;</span> View staff roster and roles</li>
+                </ul>
+              </div>
+              <div class="feature-card" style="border-color:rgba(203,126,48,0.2);">
+                <h3 style="color:var(--brand-2);margin-bottom:16px;">Front desk DOES on desktop</h3>
+                <ul style="list-style:none;padding:0;margin:0;display:grid;gap:10px;">
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand-2);font-weight:800;">&#9881;</span> Create, edit, or cancel bookings</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand-2);font-weight:800;">&#9881;</span> Process payments and refunds</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand-2);font-weight:800;">&#9881;</span> Create and send quotations</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand-2);font-weight:800;">&#9881;</span> Update room housekeeping status</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand-2);font-weight:800;">&#9881;</span> Manage POS orders and inventory</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand-2);font-weight:800;">&#9881;</span> Add or adjust expenses</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand-2);font-weight:800;">&#9881;</span> Enter day-use and conference bookings</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand-2);font-weight:800;">&#9881;</span> Full data import and export</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="band-section">
+          <div class="container">
+            <div class="section-head">
+              <div class="section-tag">Works everywhere</div>
+              <h2>No install. No app store. Just open your browser.</h2>
+              <p>The Manager app is a Progressive Web App (PWA). It works in Chrome, Safari, or any modern browser on Android or iPhone. Add it to your home screen and it feels like a native app.</p>
+            </div>
+            <div class="feature-grid" style="margin-top:32px;">
+              <div class="feature-card">
+                <h3>Push Notifications</h3>
+                <p>Get real-time alerts about urgent issues, overdue checkouts, maintenance updates, and front desk replies — even when the browser is closed.</p>
+              </div>
+              <div class="feature-card">
+                <h3>Offline Caching</h3>
+                <p>View cached dashboard data, bookings, rooms, and reports even without internet. Changes are queued and synced when you're back online.</p>
+              </div>
+              <div class="feature-card">
+                <h3>Install to Home Screen</h3>
+                <p>Add the app to your phone's home screen for one-tap access. It opens in standalone mode without the browser address bar.</p>
+              </div>
+              <div class="feature-card">
+                <h3>Dark Mode</h3>
+                <p>Toggle dark mode for comfortable viewing at night or in low-light environments. Your preference is saved.</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="cta-banner">
+          <div class="container cta-inner">
+            <div>
+              <h2>Ready to see your lodge from anywhere?</h2>
+              <p>The Manager app is included with the Pro package. Start with a free 1-month trial.</p>
+            </div>
+            <div class="demo-actions">
+              <a class="btn btn-primary" href="./packages.html">See packages</a>
+              <a class="btn btn-secondary" href="https://wa.me/26772789415" target="_blank" rel="noreferrer">WhatsApp us</a>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <footer class="site-footer">
+        <div class="container footer-grid">
+          <div>
+            <div class="brand footer-brand">
+              <span class="brand-mark">
+                <img src="./assets/boroko-bookings-logo-light.png" alt="" aria-hidden="true" width="150" height="54" />
+              </span>
+              <span class="brand-copy">
+                <strong>Boroko Bookings</strong>
+                <span>Built by Batswana for Batswana hospitality businesses</span>
+              </span>
+            </div>
+            <p class="footer-copy">Built to help lodges operate smoothly, make better decisions, and grow into stronger hospitality businesses.</p>
+            <div class="social-links">
+              <a class="social-link" href="https://www.facebook.com/borokobookings" target="_blank" rel="noreferrer" aria-label="Follow us on Facebook"><span class="sr-only">Facebook</span>fb</a>
+              <a class="social-link" href="https://www.instagram.com/borokobookings" target="_blank" rel="noreferrer" aria-label="Follow us on Instagram"><span class="sr-only">Instagram</span>ig</a>
+              <a class="social-link" href="https://www.linkedin.com/company/borokobookings" target="_blank" rel="noreferrer" aria-label="Follow us on LinkedIn"><span class="sr-only">LinkedIn</span>in</a>
+            </div>
+          </div>
+          <div class="footer-links">
+            <a href="./index.html">Home</a>
+            <a href="./packages.html">Packages</a>
+            <a href="./why-switch.html">Why Switch</a>
+            <a href="./download.html">Download</a>
+            <a href="./blog.html">Blog</a>
+            <a href="./contact.html">free 1-month trial</a>
+            <a href="https://wa.me/26772789415" target="_blank" rel="noreferrer">WhatsApp: +267 72 789 415</a>
+            <a href="mailto:hello@borokobookings.com">hello@borokobookings.com</a>
+            <a href="./privacy.html">Privacy Policy</a>
+            <a href="./terms.html">Terms of Service</a>
+          </div>
+        </div>
+      </footer>
+
+      <div class="cookie-banner" role="dialog" aria-modal="true" aria-label="Cookie consent">
+        <div class="container cookie-inner">
+          <p>We use minimal cookies for analytics. By continuing, you accept our <a href="./privacy.html">Privacy Policy</a>.</p>
+          <div class="cookie-actions">
+            <button class="btn btn-primary cookie-accept" type="button">Accept</button>
+            <button class="btn btn-cookie-decline" type="button">Decline</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <script src="./script.js" defer></script>
+  </body>
+</html>
