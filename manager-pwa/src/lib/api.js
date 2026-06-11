@@ -135,6 +135,7 @@ async function safeSelect(queryBuilder, fallback = []) {
 
 const INVENTORY_ITEM_SELECT = 'id, name, category, unit, current_stock, reorder_level, selling_price, outlet_id, latest_unit_cost, lodge_id, created_at, updated_at, sku, barcode, is_active'
 const INVENTORY_ITEM_LEGACY_SELECT = 'id, name, category, unit, current_stock, reorder_level, selling_price, outlet_id, latest_unit_cost, lodge_id, created_at'
+const DAY_USE_LIST_SELECT = 'id, date, resource_key, resource_name, start_time, end_time, status, total, adults, children, notes, created_at, updated_at, deposit_amount, balance_due, fee_per_adult, fee_per_child, flat_fee, hourly_rate, package_fee, pricing_mode, created_by'
 
 function isMissingInventoryCompatibilityColumnError(error) {
   return /column\s+inventory_items\.(barcode|is_active|sku|updated_at)\s+does\s+not\s+exist/i.test(String(error?.message || ''))
@@ -237,7 +238,7 @@ async function buildDashboardSnapshotLegacy(lodgeId, today = formatDate(new Date
     safeInventorySelect(lodgeId),
     safeSelect(supabase.from('quotations').select('id, customer_id, customer_name, customer_phone, room_id, room_name, check_in, check_out, adults, children, subtotal, tax_amount, total_amount, currency, notes, status, valid_until, quotation_number, created_at, updated_at, created_by, lodge_id, parent_quotation_id, converted_booking_id').eq('lodge_id', lodgeId).order('created_at', { ascending: false }).limit(200)),
     safeSelect(supabase.from('conference_bookings').select('id, booking_date, start_time, end_time, client_name, company, attendees, setup_type, room_name, includes_catering, catering_notes, total_amount, deposit_paid, payment_status, payment_method, notes, created_at, updated_at, lodge_id').eq('lodge_id', lodgeId).gte('booking_date', today).lte('booking_date', nextWeek).order('booking_date').limit(50)),
-    safeSelect(supabase.from('pool_day_use').select('id, date, resource_key, resource_name, start_time, end_time, status, total_amount, amount_paid, payment_status, adults, children, notes, created_at, updated_at, deposit_amount, fee_per_adult, fee_per_child, flat_fee, hourly_rate, package_fee, pricing_mode, created_by').eq('lodge_id', lodgeId).gte('date', monthStart).limit(200))
+    safeSelect(supabase.from('pool_day_use').select(DAY_USE_LIST_SELECT).eq('lodge_id', lodgeId).gte('date', monthStart).limit(200))
   ])
 
   const occupied = bookings.filter((booking) => booking.status === 'checked_in').length
@@ -1011,7 +1012,7 @@ export async function listDayUseEntries(lodgeId, start, end) {
     key: 'dayuse',
     fallback: [],
     fetcher: async () => {
-      let query = supabase.from('pool_day_use').select('id, date, resource_key, resource_name, start_time, end_time, status, total_amount, amount_paid, payment_status, adults, children, notes, created_at, updated_at, deposit_amount, fee_per_adult, fee_per_child, flat_fee, hourly_rate, package_fee, pricing_mode, created_by').eq('lodge_id', lodgeId)
+      let query = supabase.from('pool_day_use').select(DAY_USE_LIST_SELECT).eq('lodge_id', lodgeId)
       if (start) query = query.gte('date', start)
       if (end) query = query.lte('date', end)
       return safeSelect(query.order('date', { ascending: false }).order('created_at', { ascending: false }).limit(500), [])

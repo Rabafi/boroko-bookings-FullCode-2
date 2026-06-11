@@ -26,6 +26,7 @@ import {
 const INVENTORY_MOVEMENTS_CACHE = 'inventory-movements';
 const INVENTORY_ITEM_SELECT = 'id, name, category, unit, current_stock, reorder_level, selling_price, outlet_id, latest_unit_cost, lodge_id, created_at, updated_at, sku, barcode, is_active';
 const INVENTORY_ITEM_LEGACY_SELECT = 'id, name, category, unit, current_stock, reorder_level, selling_price, outlet_id, latest_unit_cost, lodge_id, created_at';
+const INVENTORY_PURCHASE_SELECT = 'id, item_id, quantity_purchased, unit_cost, total_cost, supplier, date, notes, lodge_id, created_at, updated_at';
 
 function isMissingInventoryCompatibilityColumnError(error) {
   return /column\s+inventory_items\.(barcode|is_active|sku|updated_at)\s+does\s+not\s+exist/i.test(String(error?.message || ''));
@@ -340,7 +341,7 @@ export async function getInventoryPurchases(itemId) {
   try {
     const { data, error } = await state.supabase.
     from('inventory_purchases').
-    select('id, item_id, quantity, unit_cost, total_cost, supplier, date, notes, lodge_id, created_at, updated_at').
+    select(INVENTORY_PURCHASE_SELECT).
     eq('lodge_id', state.lodgeId).
     eq('item_id', itemId).
     order('date', { ascending: false }).
@@ -374,7 +375,7 @@ export async function getAllInventoryPurchases() {
   try {
     const { data, error } = await state.supabase.
     from('inventory_purchases').
-    select('id, item_id, quantity, unit_cost, total_cost, supplier, date, notes, lodge_id, created_at, updated_at').
+    select(INVENTORY_PURCHASE_SELECT).
     eq('lodge_id', state.lodgeId).
     order('date', { ascending: false }).
     limit(500);

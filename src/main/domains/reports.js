@@ -1000,7 +1000,7 @@ export async function getUpcomingCheckins() {
     limit(50),
     state.supabase.
     from('pool_day_use').
-    select('id, date, resource_key, resource_name, start_time, end_time, status, total_amount, amount_paid, payment_status, adults, children, notes, created_at, updated_at, deposit_amount, fee_per_adult, fee_per_child, flat_fee, hourly_rate, package_fee, pricing_mode, created_by').
+    select('id, date, resource_key, resource_name, start_time, end_time, status, total, adults, children, notes, created_at, updated_at, deposit_amount, balance_due, fee_per_adult, fee_per_child, flat_fee, hourly_rate, package_fee, pricing_mode, created_by').
     eq('lodge_id', state.lodgeId).
     in('date', upcomingDates).
     limit(50)]

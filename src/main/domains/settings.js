@@ -59,6 +59,7 @@ const DEFAULT_SETTINGS = {
   assistant_enabled: false,
   setup_complete: false
 };
+const SETTINGS_QUERY_TIMEOUT_MS = 15000;
 
 function getDefaultSettings() {
   return {
@@ -69,7 +70,7 @@ function getDefaultSettings() {
 
 async function getRemoteSettingsRecord(targetLodgeId = state.lodgeId) {
   const queryPromise = state.supabase.from('settings').select('*').eq('lodge_id', targetLodgeId).maybeSingle();
-  const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('settings query timeout')), 5000));
+  const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('settings query timeout')), SETTINGS_QUERY_TIMEOUT_MS));
   let result = await Promise.race([queryPromise, timeoutPromise]);
   if (!result.error) {
     return { data: result.data, mode: 'lodge' };

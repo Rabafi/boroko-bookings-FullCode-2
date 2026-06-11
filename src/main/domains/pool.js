@@ -20,6 +20,8 @@ import {
   normalizeDayUseStatus
 } from '../../shared/dayUseConfig.js'
 
+const POOL_DAY_USE_LIST_SELECT = 'id, date, resource_key, resource_name, start_time, end_time, status, total, adults, children, notes, created_at, updated_at, deposit_amount, balance_due, fee_per_adult, fee_per_child, flat_fee, hourly_rate, package_fee, pricing_mode, created_by';
+
 function adjustLocalInventoryExtras(extras = [], direction = -1) {
   const usage = new Map();
   for (const entry of extras || []) {
@@ -44,7 +46,7 @@ async function getComparableDayUseEntriesForDate(date) {
   if (!state.isOnline) return readCache('pool-day-use').filter((row) => row?.date === date)
   const { data, error } = await state.supabase
     .from('pool_day_use')
-    .select('id, date, resource_key, resource_name, start_time, end_time, status, total_amount, amount_paid, payment_status, adults, children, notes, created_at, updated_at')
+    .select('id, date, resource_key, resource_name, start_time, end_time, status, total, adults, children, notes, created_at, updated_at')
     .eq('lodge_id', state.lodgeId)
     .eq('date', date)
     .limit(200);
@@ -142,7 +144,7 @@ export async function getPoolDayUse(start, end) {
     filter((row) => (!start || String(row.date || '') >= start) && (!end || String(row.date || '') <= end)).
     sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')) || String(b.created_at || '').localeCompare(String(a.created_at || '')));
   }
-  let q = state.supabase.from('pool_day_use').select('id, date, resource_key, resource_name, start_time, end_time, status, total_amount, amount_paid, payment_status, adults, children, notes, created_at, updated_at, deposit_amount, fee_per_adult, fee_per_child, flat_fee, hourly_rate, package_fee, pricing_mode, created_by').eq('lodge_id', state.lodgeId);
+  let q = state.supabase.from('pool_day_use').select(POOL_DAY_USE_LIST_SELECT).eq('lodge_id', state.lodgeId);
   if (start) q = q.gte('date', start);
   if (end) q = q.lte('date', end);
   const { data } = await q.order('date', { ascending: false }).order('created_at', { ascending: false }).limit(500);

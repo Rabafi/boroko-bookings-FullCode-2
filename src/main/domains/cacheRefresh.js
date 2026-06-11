@@ -1,6 +1,6 @@
 import { state } from '../state.js';
 import { normalizeUserRecord } from './shared.js';
-import { writeCache } from './cacheStore.js';
+import { readCache, writeCache } from './cacheStore.js';
 import { broadcastSyncStatus } from './connectivity.js';
 import { mergeSessionUserScope } from './authCache.js';
 import { mergeRemoteBookingsWithLocalState } from './bookingMerge.js';
@@ -15,6 +15,8 @@ const LEGACY_USER_SELECT = 'id, auth_user_id, name, email, role, lodge_id, creat
 const BOOKING_LIST_SELECT = 'id, customer_id, room_id, check_in, check_out, adults, children, total_amount, status, payment_status, amount_paid, charges_total, deposit_amount, notes, is_exclusive_event, invoice_number, created_at, updated_at, created_by, payment_method, source, quotation_id, event_daily_rate';
 const INVENTORY_ITEM_SELECT = 'id, name, category, unit, current_stock, reorder_level, selling_price, outlet_id, latest_unit_cost, lodge_id, created_at, updated_at, sku, barcode, is_active';
 const INVENTORY_ITEM_LEGACY_SELECT = 'id, name, category, unit, current_stock, reorder_level, selling_price, outlet_id, latest_unit_cost, lodge_id, created_at';
+const INVENTORY_PURCHASE_SELECT = 'id, item_id, quantity_purchased, unit_cost, total_cost, supplier, date, notes, lodge_id, created_at, updated_at';
+const POOL_DAY_USE_SELECT = 'id, date, resource_key, resource_name, start_time, end_time, status, total, adults, children, notes, created_at, updated_at, deposit_amount, balance_due, fee_per_adult, fee_per_child, flat_fee, hourly_rate, package_fee, pricing_mode, created_by';
 
 function uniqueSyncNames(names = []) {
   return [...new Set((names || []).filter(Boolean))];
@@ -101,6 +103,10 @@ async function fetchInventoryItemsForRefresh() {
 
 async function refreshCacheStrict(...names) {
   if (!state.lodgeId) return;
+  if (!state.replayAuthReady && !state.backendSession?.token && !state.currentUser?.isMasterAdmin) {
+    markSyncRefreshStale(names, 'Waiting for sign-in before refreshing live data.');
+    return;
+  }
   const fetchers = {
     users: () => fetchUsersForRefresh(),
     rooms: () => state.supabase.from('rooms').select('id, room_number, room_type, rate_per_night, max_occupancy, status, amenities, description, photo, photos, lodge_id, created_at, updated_at, housekeeping_status, housekeeping_notes').eq('lodge_id', state.lodgeId).order('room_number').limit(200),
@@ -113,10 +119,10 @@ async function refreshCacheStrict(...names) {
     order('created_at', { ascending: false }).
     limit(200),
     'inventory-items': () => fetchInventoryItemsForRefresh(),
-    'inventory-purchases': () => state.supabase.from('inventory_purchases').select('id, item_id, quantity, unit_cost, total_cost, supplier, date, notes, lodge_id, created_at, updated_at').eq('lodge_id', state.lodgeId).order('date', { ascending: false }).limit(500),
+    'inventory-purchases': () => state.supabase.from('inventory_purchases').select(INVENTORY_PURCHASE_SELECT).eq('lodge_id', state.lodgeId).order('date', { ascending: false }).limit(500),
     quotations: () => state.supabase.from('quotations').select('id, customer_id, customer_name, customer_phone, room_id, room_name, check_in, check_out, adults, children, subtotal, tax_amount, total_amount, currency, notes, status, valid_until, quotation_number, created_at, updated_at, created_by, lodge_id, parent_quotation_id, converted_booking_id').eq('lodge_id', state.lodgeId).order('created_at', { ascending: false }).limit(200),
     'conference-bookings': () => state.supabase.from('conference_bookings').select('id, booking_date, start_time, end_time, client_name, company, attendees, setup_type, room_name, includes_catering, catering_notes, total_amount, deposit_paid, payment_status, payment_method, notes, created_at, updated_at, lodge_id').eq('lodge_id', state.lodgeId).order('booking_date', { ascending: false }).order('start_time', { ascending: true }).limit(200),
-    'pool-day-use': () => state.supabase.from('pool_day_use').select('id, date, resource_key, resource_name, start_time, end_time, status, total_amount, amount_paid, payment_status, adults, children, notes, created_at, updated_at, deposit_amount, fee_per_adult, fee_per_child, flat_fee, hourly_rate, package_fee, pricing_mode, created_by').eq('lodge_id', state.lodgeId).order('date', { ascending: false }).limit(500),
+    'pool-day-use': () => state.supabase.from('pool_day_use').select(POOL_DAY_USE_SELECT).eq('lodge_id', state.lodgeId).order('date', { ascending: false }).limit(500),
     expenses: () => state.supabase.from('expenses').select('id, date, category, description, amount, outlet_id, created_at, updated_at, outlets(name)').eq('lodge_id', state.lodgeId).order('date', { ascending: false }).limit(500),
     'pos-orders': () => state.supabase.
     from('pos_orders').
@@ -133,6 +139,13 @@ async function refreshCacheStrict(...names) {
     const { data, error } = await fetchers[name]();
     if (error) throw error;
     if (!data) return;
+    if (Array.isArray(data) && data.length === 0) {
+      const cachedRows = readCache(name);
+      if (Array.isArray(cachedRows) && cachedRows.length > 0) {
+        markSyncRefreshStale([name], 'Live refresh returned no rows; keeping cached data.');
+        return;
+      }
+    }
     if (name === 'users') {
       const normalizedUsers = data.map(normalizeUserRecord).filter(Boolean);
       writeCache(name, normalizedUsers, { source: 'remote' });
