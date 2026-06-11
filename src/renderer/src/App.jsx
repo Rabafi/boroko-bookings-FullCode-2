@@ -480,7 +480,9 @@ function SyncFailBanner() {
   const hasStaleCache = syncStatus?.cacheStale?.active === true && staleNames.length > 0
   const mesh = syncStatus?.mesh || {}
   const meshPeerCount = Number(mesh.peerCount || 0)
-  const hasMeshSignal = Boolean(mesh.lastError)
+  const meshLastError = String(mesh.lastError || '').trim()
+  const meshAutoStandby = /missing lodge_mesh_secret/i.test(meshLastError)
+  const hasMeshSignal = Boolean(meshLastError) && !meshAutoStandby
   const isGlobalOffline = syncStatus?.isOnline === false
 
   if (failedCount === 0 && !hasStaleCache && !hasMeshSignal) return null
@@ -492,7 +494,7 @@ function SyncFailBanner() {
       ? `${failedCount} sync issue${failedCount === 1 ? '' : 's'} need attention`
       : isGlobalOffline && meshPeerCount > 0
         ? `Global Offline • Local Mesh: ${meshPeerCount} Peer${meshPeerCount === 1 ? '' : 's'} Connected`
-        : mesh.lastError
+        : meshLastError
           ? 'Local Mesh needs setup'
           : hasStaleCache
             ? `Fresh ${staleLabel} data is loading...`
@@ -500,8 +502,8 @@ function SyncFailBanner() {
   const subtitle =
     failedCount > 0
       ? 'Tap to open System Health and resolve issues'
-      : mesh.lastError
-        ? mesh.lastError
+      : meshLastError
+        ? meshLastError
         : isGlobalOffline && meshPeerCount > 0
           ? 'Nearby front-desk computers can share locks and offline work'
           : hasMeshSignal

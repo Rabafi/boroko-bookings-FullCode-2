@@ -5,7 +5,7 @@ export const THEME_MODES = ['light', 'dark', 'system']
 export function getStoredThemeMode() {
   const stored = localStorage.getItem(THEME_MODE_KEY)
   if (THEME_MODES.includes(stored)) return stored
-  return localStorage.getItem(LEGACY_DARK_MODE_KEY) === 'true' ? 'dark' : 'system'
+  return localStorage.getItem(LEGACY_DARK_MODE_KEY) === 'true' ? 'dark' : 'light'
 }
 
 export function resolveThemeMode(mode = getStoredThemeMode()) {

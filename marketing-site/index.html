@@ -48,16 +48,16 @@
           </a>
 
           <nav id="site-nav" class="site-nav" aria-label="Main navigation">
-            <a href="./index.html" data-nav="home">Home</a>
-            <a href="./features.html" data-nav="features">Features</a>
+            <a href="./features.html" data-nav="features">Product</a>
+            <a href="./booking-site.html" data-nav="booking-site">Booking Site</a>
+            <a href="./manager-app.html" data-nav="manager-app">Manager App</a>
             <a href="./packages.html" data-nav="packages">Packages</a>
             <a href="./why-switch.html" data-nav="why-switch">Why Switch</a>
-            <a href="./blog.html" data-nav="blog">Blog</a>
             <a href="./contact.html" data-nav="contact">Contact</a>
           </nav>
 
           <div class="topbar-actions">
-            <a class="nav-cta-pill" href="./packages.html">See packages</a>
+            <a class="nav-cta-pill" href="#" data-action="download">Start trial</a>
           </div>
 
           <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Open navigation menu">
@@ -74,16 +74,16 @@
         <div class="mobile-overlay-content">
           <nav class="mobile-nav" aria-label="Mobile navigation">
             <a href="./index.html" data-nav="home" data-stagger="0">Home</a>
-            <a href="./features.html" data-nav="features" data-stagger="1">Features</a>
-            <a href="./packages.html" data-nav="packages" data-stagger="2">Packages</a>
-            <a href="./why-switch.html" data-nav="why-switch" data-stagger="3">Why Switch</a>
-            <a href="./blog.html" data-nav="blog" data-stagger="4">Blog</a>
-            <a href="./contact.html" data-nav="contact" data-stagger="5">Contact</a>
-            <a href="./brochure.html" data-nav="brochure" data-stagger="6">Brochure</a>
+            <a href="./features.html" data-nav="features" data-stagger="1">Product</a>
+            <a href="./booking-site.html" data-nav="booking-site" data-stagger="2">Booking Site</a>
+            <a href="./manager-app.html" data-nav="manager-app" data-stagger="3">Manager App</a>
+            <a href="./packages.html" data-nav="packages" data-stagger="4">Packages</a>
+            <a href="./why-switch.html" data-nav="why-switch" data-stagger="5">Why Switch</a>
+            <a href="./contact.html" data-nav="contact" data-stagger="6">Contact</a>
           </nav>
           <div class="mobile-overlay-footer">
-            <a class="mobile-cta" href="./packages.html">See packages</a>
-            <a class="mobile-cta-secondary" href="#" data-action="download">Download app</a>
+            <a class="mobile-cta" href="#" data-action="download">Start free trial</a>
+            <a class="mobile-cta-secondary" href="./packages.html">See packages</a>
             <div class="mobile-contact">
               <a href="https://wa.me/26772789415" target="_blank" rel="noreferrer">WhatsApp: +267 72 789 415</a>
               <a href="mailto:hello@borokobookings.com">hello@borokobookings.com</a>
@@ -101,22 +101,21 @@
                 <span class="eyebrow-dot"></span>
                 Built by Batswana for Batswana lodges
               </div>
-              <h1><span id="hero-typing">One system to run bookings, rooms, billing, staff, stock, and online reservations.</span><span class="hero-typing-cursor"></span></h1>
+              <h1>Run your lodge without losing bookings, money, or stock.</h1>
               <p class="hero-lead">
-                Boroko Bookings gives small and growing lodges a practical, beautiful operations platform. Reception runs faster,
-                owners get control, and your property can accept online reservations through its own branded booking page. Every customer can start with a free 1-month trial.
+                Boroko Bookings connects front desk, rooms, invoices, POS, inventory, reports, manager mobile oversight, and
+                direct online bookings. It keeps working offline, syncs when internet returns, and gives owners a clearer view of the business.
               </p>
 
               <div class="hero-actions">
                 <a class="btn btn-primary" href="#" data-action="download">Start free 1-month trial</a>
-                <a class="btn btn-secondary" href="#pricing">Explore packages</a>
-                <a class="btn btn-secondary" href="https://wa.me/26772789415?text=Hello%20Boroko%20Bookings%2C%20I%20want%20to%20learn%20more%20about%20the%20free%201-month%20trial." target="_blank" rel="noreferrer">Chat on WhatsApp</a>
+                <a class="btn btn-secondary" href="#ecosystem">See how Boroko works</a>
               </div>
 
               <ul class="hero-highlights">
-                <li>Bookings, room board, invoices, and guest records in one place</li>
-                <li>Bar or kitchen sales, inventory, room supplies, and reports when the business grows</li>
-                <li>Your own branded online reservations page for Pro lodges</li>
+                <li>Works offline at front desk when internet is unreliable</li>
+                <li>Direct booking page for Pro lodges, with no commission</li>
+                <li>Manager app, POS, inventory, reports, and room operations connected</li>
               </ul>
             </div>
 
@@ -127,7 +126,6 @@
                 <div class="blob blob-3"></div>
               </div>
               <div id="hero-particles" aria-hidden="true" style="position:absolute;inset:0;overflow:hidden;pointer-events:none;"></div>
-
               <div class="laptop-mockup" id="laptop-mockup">
                 <div class="laptop-screen">
                   <img src="./assets/screenshots/desktop-dashboard.png" alt="Boroko Bookings desktop dashboard showing bookings, room board, and owner visibility" width="760" height="480" />
@@ -151,11 +149,11 @@
               </div>
               <div class="hero-float-tag hero-float-tag-3">
                 <span class="float-tag-dot" style="background:#25D366;"></span>
-                Online reservations active
+                Direct booking page active
               </div>
               <div class="hero-float-tag hero-float-tag-4">
                 <span class="float-tag-dot" style="background:var(--brand-3);"></span>
-                Room 11 — low stock alert
+                Low stock alert before it costs you
               </div>
             </div>
           </div>
@@ -164,15 +162,53 @@
         <section class="trust-strip">
           <div class="container trust-grid">
             <div>
-              <span class="trust-kicker">Built for the real work of running a lodge in Botswana</span>
-              <p>Less switching between notebooks, spreadsheets, WhatsApp chats, and different systems.</p>
+              <span class="trust-kicker">Built for Botswana lodge realities</span>
+              <p>Less switching between notebooks, spreadsheets, WhatsApp chats, disconnected POS slips, and manual owner updates.</p>
             </div>
             <ul>
-              <li>Front desk control</li>
-              <li>Owner reporting</li>
-              <li>Stock and room supplies</li>
-              <li>Bar and kitchen sales</li>
+              <li>Offline front desk</li>
+              <li>No-commission direct bookings</li>
+              <li>Owner phone visibility</li>
+              <li>POS and inventory control</li>
             </ul>
+          </div>
+        </section>
+
+        <section class="section section-tight">
+          <div class="container">
+            <div class="section-head compact">
+              <span class="section-tag">What Boroko fixes first</span>
+              <h2>The problems that quietly cost lodges money.</h2>
+              <p>Before a lodge buys software, it needs to believe the system will protect the things already slipping through the cracks.</p>
+            </div>
+
+            <div class="problem-grid">
+              <article class="problem-card">
+                <span>01</span>
+                <h3>Double-bookings and room confusion</h3>
+                <p>Room board, booking list, planning, housekeeping, and availability stay connected so reception can make faster decisions.</p>
+              </article>
+              <article class="problem-card">
+                <span>02</span>
+                <h3>Missed payments and unclear balances</h3>
+                <p>Bookings, invoices, receipts, refunds, and end-of-day checks sit in the same workflow, so unpaid balances are harder to miss.</p>
+              </article>
+              <article class="problem-card">
+                <span>03</span>
+                <h3>Stock disappearing quietly</h3>
+                <p>POS, inventory, room supplies, stocktakes, and low-stock alerts help management see leakage before it becomes expensive.</p>
+              </article>
+              <article class="problem-card">
+                <span>04</span>
+                <h3>Owners waiting for manual updates</h3>
+                <p>The Manager App shows rooms, bookings, money, alerts, reports, staff, and operational requests from the owner’s phone.</p>
+              </article>
+              <article class="problem-card">
+                <span>05</span>
+                <h3>Online enquiries outside the front desk</h3>
+                <p>The booking site gives Pro lodges a branded guest page that feeds direct booking demand back into the Boroko workflow.</p>
+              </article>
+            </div>
           </div>
         </section>
 
@@ -212,22 +248,22 @@
 
             <div class="feature-grid" style="grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: 18px;">
               <article class="feature-card">
-                <div class="feature-icon" style="background:rgba(203,126,48,0.1);color:var(--brand-2);">AI</div>
+                <div class="feature-icon">AI</div>
                 <h3>Built-in AI assistant</h3>
                 <p>Ask questions in plain language. The AI understands lodge vocabulary — "chalet", "rondavel", "folio" — and flags unusual activity before it becomes a problem.</p>
               </article>
               <article class="feature-card">
-                <div class="feature-icon" style="background:rgba(203,126,48,0.1);color:var(--brand-2);">LAN</div>
+                <div class="feature-icon">LAN</div>
                 <h3>Multi-desk sync</h3>
                 <p>Multiple front-desk computers stay in sync automatically over your local network — even if the internet goes down. No double-bookings, no data loss.</p>
               </article>
               <article class="feature-card">
-                <div class="feature-icon" style="background:rgba(203,126,48,0.1);color:var(--brand-2);">OFF</div>
+                <div class="feature-icon">OFF</div>
                 <h3>Works offline</h3>
                 <p>Take bookings, process payments, and run POS sales without internet. Everything syncs automatically when the connection returns.</p>
               </article>
               <article class="feature-card">
-                <div class="feature-icon" style="background:rgba(203,126,48,0.1);color:var(--brand-2);">APP</div>
+                <div class="feature-icon">APP</div>
                 <h3>Manager mobile app</h3>
                 <p>Install on your phone. Check occupancy, revenue, alerts, and staff activity from anywhere — no computer needed.</p>
               </article>
@@ -320,15 +356,15 @@
           </div>
         </section>
 
-        <section class="section">
+        <section id="ecosystem" class="section">
           <div class="container">
             <div class="section-head compact">
-              <span class="section-tag">What it looks like</span>
-              <h2>The desktop app, the manager mobile app, and the guest booking page.</h2>
-              <p>Three surfaces that cover the full lodge workflow — from front desk to owner phone to guest screen.</p>
+              <span class="section-tag">One connected ecosystem</span>
+              <h2>Desktop for reception, Manager App for owners, Booking Site for guests.</h2>
+              <p>The strongest selling point is not one feature. It is the way the three surfaces keep operations, money, stock, and direct demand connected.</p>
             </div>
 
-            <div style="display:grid;grid-template-columns:1.4fr 0.7fr 1fr;gap:20px;align-items:start;margin-top:32px;">
+            <div class="ecosystem-grid">
 
               <article class="showcase-card">
                 <div class="showcase-frame" style="aspect-ratio:16/10;">
@@ -337,11 +373,12 @@
                     <img src="./assets/screenshots/desktop-dashboard.png" alt="Boroko desktop dashboard showing today's arrivals, room board, and financial snapshot" />
                   </div>
                 </div>
-                <h3>Dashboard</h3>
-                <p>Today's arrivals, departures, occupancy, outstanding balance, and alerts — all in one view.</p>
+                <h3>Desktop app</h3>
+                <p>Reception runs bookings, guests, rooms, invoices, payments, POS, inventory, reports, and end-of-day checks from the front desk.</p>
+                <a class="text-link" href="./features.html">See product features</a>
               </article>
 
-              <article class="showcase-card" style="max-width:240px;margin:0 auto;">
+              <article class="showcase-card ecosystem-phone">
                 <div style="background:linear-gradient(180deg,rgba(23,76,58,0.06),rgba(23,76,58,0.02));border-radius:28px;padding:12px 8px;border:1px solid var(--line);box-shadow:var(--shadow);">
                   <div style="display:flex;align-items:center;justify-content:center;padding:4px 0 8px;">
                     <div style="width:48px;height:4px;border-radius:2px;background:var(--line);"></div>
@@ -350,8 +387,9 @@
                     <img src="./assets/screenshots/pwa-dashboard.png" alt="Boroko Manager mobile app showing KPIs, alerts, and today timeline" width="400" height="720" style="width:100%;display:block;object-fit:cover;" />
                   </div>
                 </div>
-                <h3 style="text-align:center;margin-top:14px;">Manager app</h3>
-                <p style="text-align:center;">Occupancy, revenue, alerts, and front desk communication — on any phone.</p>
+                <h3>Manager app</h3>
+                <p>Owners and managers see occupancy, money, alerts, reports, staff, requests, and operational follow-up from any phone.</p>
+                <a class="text-link" href="./manager-app.html">Explore Manager App</a>
               </article>
 
               <article class="showcase-card">
@@ -361,13 +399,14 @@
                     <img src="./assets/screenshots/booking-site-lodge.png" alt="Boroko online booking site with room listings, photo galleries, and availability search" />
                   </div>
                 </div>
-                <h3>Booking page</h3>
-                <p>Your own branded page. Guests search dates, browse rooms, and send requests — no commission.</p>
+                <h3>Booking site</h3>
+                <p>Your own branded page lets guests search dates, browse rooms, send booking requests, and contact the lodge directly.</p>
+                <a class="text-link" href="./booking-site.html">Explore Booking Site</a>
               </article>
 
             </div>
 
-            <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:20px;margin-top:20px;">
+            <div class="showcase-strip">
               <article class="showcase-card">
                 <div class="showcase-frame" style="aspect-ratio:16/10;">
                   <div class="showcase-topline"><span>Bookings</span><span>Front desk</span></div>
@@ -506,8 +545,8 @@
               </div>
             </div>
             <p class="comparison-note">
-              The package ladder is designed to be commercially clear: `Starter` gets a lodge running, `Standard` becomes the serious
-              management package, and `Pro` becomes the branded growth package.
+              The package ladder is designed to be commercially clear: Starter gets a lodge running, Standard becomes the serious
+              management package, and Pro becomes the branded growth package.
             </p>
           </div>
         </section>
@@ -574,9 +613,9 @@
           <div class="container">
             <div class="section-head compact">
               <span class="section-tag">Why people trust it</span>
-              <h2>Strong trust signals even before formal testimonials.</h2>
+              <h2>Built for local hospitality work, not generic admin.</h2>
               <p>
-                If you are still early, the best social proof is clear fit, honest positioning, and a product story that sounds real.
+                Boroko is practical for owner-managed lodges that need better control without heavy enterprise software.
               </p>
             </div>
             <div class="story-grid">

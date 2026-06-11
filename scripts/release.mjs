@@ -184,7 +184,8 @@ if (mode === 'publish') {
     GH_TOKEN: ghToken,
     EP_DRAFT: 'false',
     EP_PRE_RELEASE: 'false',
-    EP_CHANNEL: 'latest'
+    EP_CHANNEL: 'latest',
+    CSC_IDENTITY_AUTO_DISCOVERY: 'false'
   })
 } else {
   run('npm.cmd', ['version', mode, '--no-git-tag-version'], { GH_TOKEN: ghToken })

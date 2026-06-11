@@ -591,7 +591,9 @@ export default function SystemHealthPanel() {
   const localStateAcknowledged = unresolvedLocal?.total === 0 && health?.online === true && replayAuthReady && pendingCount === 0
   const meshPeerCount          = Number(meshStatus?.peerCount || 0)
   const meshLockCount          = Number(meshStatus?.activeLockCount || meshStatus?.activeLocks?.length || 0)
-  const meshStateLabel         = meshStatus?.running ? 'Running' : meshStatus?.enabled ? 'Starting' : meshStatus?.lastError ? 'Needs setup' : 'Off'
+  const meshLastError          = String(meshStatus?.lastError || '').trim()
+  const meshAutoStandby        = /missing lodge_mesh_secret/i.test(meshLastError)
+  const meshStateLabel         = meshStatus?.running ? 'Running' : meshStatus?.enabled ? 'Starting' : meshAutoStandby ? 'Standby' : meshLastError ? 'Needs setup' : 'Off'
 
   const getFailedItemBookingId = (item) => (
     item?.data?.p_booking_id || item?.data?.payload?.id || item?.data?.payload?.booking_id || item?.data?.p_id || null
@@ -1076,8 +1078,8 @@ export default function SystemHealthPanel() {
             <p className="mt-1 text-xs text-gray-500">Nearby front-desk computers on this lodge network.</p>
           </div>
           <StatusPill
-            ok={meshStatus?.running && !meshStatus?.lastError}
-            warn={Boolean(meshStatus?.lastError)}
+            ok={meshStatus?.running && !meshLastError}
+            warn={Boolean(meshLastError) && !meshAutoStandby}
             label={meshStateLabel}
           />
         </div>
@@ -1095,9 +1097,11 @@ export default function SystemHealthPanel() {
             <p className="mt-1 text-sm font-semibold text-gray-900">{meshStatus?.lastQueueMergeAt ? formatTs(meshStatus.lastQueueMergeAt) : 'Not yet'}</p>
           </div>
         </div>
-        {meshStatus?.lastError && (
+        {meshLastError && (
           <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-            {meshStatus.lastError}
+            {meshAutoStandby
+              ? 'Local Mesh will start automatically when this lodge has mesh credentials available.'
+              : meshLastError}
           </div>
         )}
         {Array.isArray(meshStatus?.peers) && meshStatus.peers.length > 0 && (
