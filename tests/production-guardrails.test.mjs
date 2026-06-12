@@ -125,6 +125,7 @@ async function run() {
   )
 
   assert.match(database, /'pos-orders':\s*\(\)\s*=>\s*(state\.)?supabase[\s\S]*?from\('pos_orders'\)/)
+  assert.doesNotMatch(database, /from\('pos_orders'\)\.\s*select\('[^']*updated_at[^']*pos_order_items/)
   assert.match(database, /function markClearedSyncItemForManualReview\(/)
   assert.match(database, /_sync_state:\s*'manual_review_required'/)
   assert.match(database, /type:\s*isFinancial\s*\?\s*'financial_dead_letter_cleared'\s*:\s*'dead_letter_cleared'/)

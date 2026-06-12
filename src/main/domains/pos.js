@@ -382,7 +382,7 @@ async function _getPosOrders(startDate, endDate, outletFilter = null) {
     const cachedOrders = readCache('pos-orders');
     let query = state.supabase.
     from('pos_orders').
-    select('id, room_id, booking_id, walk_in_name, total, gross_total, discount_total, tax_rate, tax_total, tip_total, notes, payment_method, payment_breakdown, outlet_id, service_mode, table_name, tab_name, waiter_name, cashier_id, cashier_name, shift_id, ticket_status, status, created_at, updated_at, pos_order_items(*), outlets(name)').
+    select('id, room_id, booking_id, walk_in_name, total, gross_total, discount_total, tax_rate, tax_total, tip_total, notes, payment_method, payment_breakdown, outlet_id, service_mode, table_name, tab_name, waiter_name, cashier_id, cashier_name, shift_id, ticket_status, status, created_at, pos_order_items(*), outlets(name)').
     eq('lodge_id', state.lodgeId);
     if (startDate) query = query.gte('created_at', startDate);
     if (endDate) query = query.lte('created_at', normalizeInclusiveDateEnd(endDate));
@@ -402,7 +402,7 @@ async function _getPosOrders(startDate, endDate, outletFilter = null) {
 
       let fallbackQuery = state.supabase.
       from('pos_orders').
-      select('id, room_id, booking_id, walk_in_name, total, gross_total, discount_total, tax_rate, tax_total, tip_total, notes, payment_method, payment_breakdown, outlet_id, service_mode, table_name, tab_name, waiter_name, cashier_id, cashier_name, shift_id, ticket_status, status, created_at, updated_at, pos_order_items(*)').
+      select('id, room_id, booking_id, walk_in_name, total, gross_total, discount_total, tax_rate, tax_total, tip_total, notes, payment_method, payment_breakdown, outlet_id, service_mode, table_name, tab_name, waiter_name, cashier_id, cashier_name, shift_id, ticket_status, status, created_at, pos_order_items(*)').
       eq('lodge_id', state.lodgeId);
       if (startDate) fallbackQuery = fallbackQuery.gte('created_at', startDate);
       if (endDate) fallbackQuery = fallbackQuery.lte('created_at', normalizeInclusiveDateEnd(endDate));

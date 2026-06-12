@@ -126,7 +126,7 @@ async function refreshCacheStrict(...names) {
     expenses: () => state.supabase.from('expenses').select('id, date, category, description, amount, outlet_id, created_at, updated_at, outlets(name)').eq('lodge_id', state.lodgeId).order('date', { ascending: false }).limit(500),
     'pos-orders': () => state.supabase.
     from('pos_orders').
-    select('id, room_id, booking_id, walk_in_name, total, gross_total, discount_total, tax_rate, tax_total, tip_total, notes, payment_method, payment_breakdown, outlet_id, service_mode, table_name, tab_name, waiter_name, cashier_id, cashier_name, shift_id, ticket_status, status, created_at, updated_at, pos_order_items(*), outlets(name)').
+    select('id, room_id, booking_id, walk_in_name, total, gross_total, discount_total, tax_rate, tax_total, tip_total, notes, payment_method, payment_breakdown, outlet_id, service_mode, table_name, tab_name, waiter_name, cashier_id, cashier_name, shift_id, ticket_status, status, created_at, pos_order_items(*), outlets(name)').
     eq('lodge_id', state.lodgeId).
     order('created_at', { ascending: false }).
     limit(500),
