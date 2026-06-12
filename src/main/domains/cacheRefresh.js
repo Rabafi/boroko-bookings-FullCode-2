@@ -142,6 +142,10 @@ async function refreshCacheStrict(...names) {
     if (Array.isArray(data) && data.length === 0) {
       const cachedRows = readCache(name);
       if (Array.isArray(cachedRows) && cachedRows.length > 0) {
+        if (name === 'outlets') {
+          writeCache(name, cachedRows, { source: 'cache' });
+          return;
+        }
         markSyncRefreshStale([name], 'Live refresh returned no rows; keeping cached data.');
         return;
       }

@@ -584,7 +584,8 @@ export default function SystemHealthPanel() {
   const staleCaches        = Object.entries(cacheFreshness).filter(([, m]) => m.stale).map(([k]) => k)
   const needsAttention     = failedCount > 0 || pendingCount > 0 || cacheStale || blockingFaults.length > 0 || integrityRiskFaults.length > 0 || lastSyncOutcome === 'partial' || lastSyncOutcome === 'failed'
   const reconciliationSummary   = reconciliation?.summary || {}
-  const reconciliationLocalOnly = reconciliation?.local_only === true || reconciliation?.valid === false
+  const reconciliationLocalOnly = reconciliation?.local_only === true
+  const reconciliationDegraded  = reconciliation?.degraded === true || reconciliation?.timeout === true
   const reconciliationValid     = reconciliation?.valid === true
   const validationTotals        = validation?.totals || {}
   const financeMismatchCount    = Number(reconciliationSummary.paymentMismatches || 0) + Number(reconciliationSummary.chargeMismatches || 0)
@@ -1459,6 +1460,10 @@ export default function SystemHealthPanel() {
                 <span className="inline-flex items-center rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-800">
                   Cannot verify financial agreement — offline
                 </span>
+              ) : reconciliationDegraded ? (
+                <span className="inline-flex items-center rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-800">
+                  Could not verify right now
+                </span>
               ) : !reconciliationValid ? (
                 <span className="inline-flex items-center rounded-full bg-gray-100 px-2.5 py-1 text-xs font-semibold text-gray-600">
                   Not run yet
@@ -1471,7 +1476,19 @@ export default function SystemHealthPanel() {
               )}
             </div>
 
-            {reconciliationLocalOnly ? (
+            {reconciliationDegraded ? (
+              <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-4">
+                <div className="flex items-start gap-3">
+                  <Info size={16} className="mt-0.5 shrink-0 text-amber-600" />
+                  <div>
+                    <p className="text-sm font-semibold text-amber-900">Money totals could not be verified right now</p>
+                    <p className="mt-1 text-xs text-amber-800/80">
+                      {reconciliation?.message || 'The database took too long to answer. The app will remain usable; refresh this page and run the check again shortly.'}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            ) : reconciliationLocalOnly ? (
               <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-4">
                 <div className="flex items-start gap-3">
                   <Info size={16} className="mt-0.5 shrink-0 text-amber-600" />
@@ -1551,6 +1568,12 @@ export default function SystemHealthPanel() {
             </div>
 
             <div className="mt-4 space-y-3">
+              {validation?.degraded && validation?.message && (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+                  <p className="text-sm font-semibold text-amber-900">Recent money activity is delayed</p>
+                  <p className="mt-1 text-xs text-amber-800/80">{validation.message}</p>
+                </div>
+              )}
               {(validation?.recentRefunds || []).map((item, index) => (
                 <div key={`refund-${item.booking_id || index}`} className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3">
                   <p className="text-sm font-semibold text-gray-900">Refund recorded</p>

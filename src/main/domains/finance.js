@@ -185,6 +185,31 @@ function moneyMismatch(left, right, tolerance = 0.01) {
   return Math.abs(roundMoneyValue(left) - roundMoneyValue(right)) > tolerance;
 }
 
+function isStatementTimeoutError(error) {
+  const message = String(error?.message || error || '');
+  return /canceling statement due to statement timeout|statement timeout|timed out/i.test(message);
+}
+
+function buildFinancialVerificationUnavailable(error, source = 'money_check') {
+  return {
+    valid: false,
+    degraded: true,
+    timeout: isStatementTimeoutError(error),
+    local_only: false,
+    checked_at: new Date().toISOString(),
+    source,
+    summary: { paymentMismatches: 0, chargeMismatches: 0, invoiceGaps: 0, orphanInvoices: 0, folioPosMismatches: 0 },
+    paymentMismatches: [],
+    chargeMismatches: [],
+    invoiceGaps: [],
+    orphanInvoices: [],
+    folioPosMismatches: [],
+    message: isStatementTimeoutError(error) ?
+    'The online money check took too long to finish. The app did not find a money difference; it simply could not verify totals right now. Try Refresh again after the database catches up.' :
+    (error?.message || 'The online money check could not be verified right now.')
+  };
+}
+
 export async function getFinancialReconciliation() {
   if (!state.lodgeId) {
     return {
@@ -204,31 +229,39 @@ export async function getFinancialReconciliation() {
   let posOrders = [];
 
   if (state.isOnline) {
-    const [
-    bookingsResult,
-    paymentsResult,
-    chargesResult,
-    invoicesResult,
-    posOrdersResult] =
-    await Promise.all([
-    state.supabase.from('bookings').select('id, invoice_number, total_amount, charges_total, amount_paid, status, payment_status, check_in, check_out, updated_at').eq('lodge_id', state.lodgeId).limit(1000),
-    state.supabase.from('payments').select('booking_id, amount, type, paid_at').eq('lodge_id', state.lodgeId).limit(2000),
-    state.supabase.from('booking_charges').select('id, booking_id, amount, description, voided_at, void_reason, created_at').eq('lodge_id', state.lodgeId).limit(2000),
-    state.supabase.from('invoices').select('id, booking_id, invoice_number, issued_at, created_at').eq('lodge_id', state.lodgeId).limit(1000),
-    state.supabase.from('pos_orders').select('id, booking_id, total, payment_method, status, folio_charge_id, created_at').eq('lodge_id', state.lodgeId).limit(1000)]
-    );
+    try {
+      const [
+      bookingsResult,
+      paymentsResult,
+      chargesResult,
+      invoicesResult,
+      posOrdersResult] =
+      await Promise.all([
+      state.supabase.from('bookings').select('id, invoice_number, total_amount, charges_total, amount_paid, status, payment_status, check_in, check_out, updated_at').eq('lodge_id', state.lodgeId).limit(1000),
+      state.supabase.from('payments').select('booking_id, amount, type, paid_at').eq('lodge_id', state.lodgeId).limit(2000),
+      state.supabase.from('booking_charges').select('id, booking_id, amount, description, voided_at, void_reason, created_at').eq('lodge_id', state.lodgeId).limit(2000),
+      state.supabase.from('invoices').select('id, booking_id, invoice_number, issued_at, created_at').eq('lodge_id', state.lodgeId).limit(1000),
+      state.supabase.from('pos_orders').select('id, booking_id, total, payment_method, status, folio_charge_id, created_at').eq('lodge_id', state.lodgeId).limit(1000)]
+      );
 
-    if (bookingsResult.error) throw new Error(bookingsResult.error.message);
-    if (paymentsResult.error) throw new Error(paymentsResult.error.message);
-    if (chargesResult.error) throw new Error(chargesResult.error.message);
-    if (invoicesResult.error) throw new Error(invoicesResult.error.message);
-    if (posOrdersResult.error) throw new Error(posOrdersResult.error.message);
+      if (bookingsResult.error) throw new Error(bookingsResult.error.message);
+      if (paymentsResult.error) throw new Error(paymentsResult.error.message);
+      if (chargesResult.error) throw new Error(chargesResult.error.message);
+      if (invoicesResult.error) throw new Error(invoicesResult.error.message);
+      if (posOrdersResult.error) throw new Error(posOrdersResult.error.message);
 
-    bookings = bookingsResult.data || [];
-    payments = paymentsResult.data || [];
-    charges = chargesResult.data || [];
-    invoices = invoicesResult.data || [];
-    posOrders = posOrdersResult.data || [];
+      bookings = bookingsResult.data || [];
+      payments = paymentsResult.data || [];
+      charges = chargesResult.data || [];
+      invoices = invoicesResult.data || [];
+      posOrders = posOrdersResult.data || [];
+    } catch (error) {
+      if (isStatementTimeoutError(error)) {
+        recordCriticalError('financial.reconciliation.timeout', error, { lodge_id: state.lodgeId }, { level: 'warn', limit: 120 });
+        return buildFinancialVerificationUnavailable(error, 'reconciliation');
+      }
+      throw error;
+    }
   } else {
     // P0-3: offline reconciliation is INVALID — payment/charge/invoice tables cannot
     // be queried. Return an explicitly invalid result so the UI cannot show "clear".
@@ -380,7 +413,17 @@ export async function getFinancialReconciliation() {
 
 export async function getFinancialValidationSummary() {
   const reconciliation = await getFinancialReconciliation();
-  const auditRows = state.isOnline ? await getFinancialAuditLog({ limit: 200 }) : [];
+  let auditRows = [];
+  let auditWarning = null;
+  if (state.isOnline) {
+    try {
+      auditRows = await getFinancialAuditLog({ limit: 200 });
+    } catch (error) {
+      if (!isStatementTimeoutError(error)) throw error;
+      recordCriticalError('financial.validation.audit_timeout', error, { lodge_id: state.lodgeId, limit: 200 }, { level: 'warn', limit: 120 });
+      auditWarning = 'Recent money activity took too long to load. Totals are shown without the latest audit sample.';
+    }
+  }
 
   const recentRefunds = auditRows.
   filter((row) => row.action === 'refund_recorded').
@@ -418,7 +461,9 @@ export async function getFinancialValidationSummary() {
     },
     recentRefunds,
     recentChargeVoids,
-    reconciliation
+    reconciliation,
+    degraded: reconciliation?.degraded === true || !!auditWarning,
+    message: auditWarning || reconciliation?.message || null
   };
 }
 
