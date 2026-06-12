@@ -441,14 +441,19 @@ export default function Reports() {
     setSavingPDF(false)
   }
 
-  const handlePrint = () => {
+  const handlePrint = async () => {
     if (revenue?.source !== 'server') {
       setError('Cannot print reports while using local fallback data. Please restore internet connection and refresh the report.')
       return
     }
-    setExportSuccess(`Print dialog opened for the ${reportTitle}. Review the preview before confirming.`)
-    setTimeout(() => setExportSuccess(''), 3500)
-    window.print()
+    setError('')
+    const result = await window.api.reports.printCurrent?.().catch((err) => ({ success: false, error: err?.message }))
+    if (result?.success) {
+      setExportSuccess(`Print dialog opened for the ${reportTitle}. Review the preview before confirming.`)
+      setTimeout(() => setExportSuccess(''), 3500)
+    } else {
+      setError(`Print could not be started: ${result?.error || 'Unknown printer error.'}`)
+    }
   }
 
   const totalNights = Math.max(1, Math.ceil((new Date(end) - new Date(start)) / 86400000))

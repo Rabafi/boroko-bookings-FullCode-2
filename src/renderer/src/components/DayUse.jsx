@@ -1332,7 +1332,10 @@ export default function DayUse() {
                   <button onClick={handleSaveSlipPDF} disabled={slipSaving} className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-60">
                     <Download size={14} /> {slipSaving ? 'Saving...' : 'Save PDF'}
                   </button>
-                  <button onClick={() => window.print()} className="inline-flex items-center gap-2 rounded-lg bg-cyan-600 px-4 py-2 text-sm font-semibold text-white hover:bg-cyan-700">
+                  <button onClick={async () => {
+                    const result = await window.api.receipts.printCurrent?.({ silent: false }).catch((err) => ({ success: false, error: err?.message }))
+                    if (!result?.success) alert(result?.error || 'Print could not be started.')
+                  }} className="inline-flex items-center gap-2 rounded-lg bg-cyan-600 px-4 py-2 text-sm font-semibold text-white hover:bg-cyan-700">
                     <Printer size={14} /> Print
                   </button>
                   <button onClick={handleSlipWhatsApp} className="inline-flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-700 hover:bg-emerald-100">

@@ -595,6 +595,266 @@ function formatReportMoney(currency, value) {
   return `${currency} ${Number(value || 0).toFixed(2)}`
 }
 
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function waitForPrintableWebContents(webContents, { timeoutMs = 5000, minTextLength = 1 } = {}) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    try {
+      const state = await webContents.executeJavaScript(`
+        new Promise((resolve) => {
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              const body = document.body
+              const text = body ? body.innerText.replace(/\\s+/g, ' ').trim() : ''
+              resolve({
+                readyState: document.readyState,
+                textLength: text.length,
+                scrollHeight: body ? body.scrollHeight : 0,
+                childCount: body ? body.children.length : 0
+              })
+            })
+          })
+        })
+      `, true)
+      if (
+        state?.readyState !== 'loading' &&
+        state?.scrollHeight > 0 &&
+        (state?.textLength >= minTextLength || state?.childCount > 0)
+      ) {
+        return true
+      }
+    } catch {}
+    await delay(150)
+  }
+  return false
+}
+
+async function printWebContentsSafely(webContents, printOptions = {}, waitOptions = {}) {
+  await waitForPrintableWebContents(webContents, waitOptions)
+  await delay(120)
+  return await new Promise((resolve) => {
+    webContents.print(printOptions, (success, failureReason) => {
+      resolve(success ? { success: true } : { success: false, error: failureReason || 'Print failed.' })
+    })
+  })
+}
+
+async function printWebContentsToPdfSafely(webContents, pdfOptions = {}, waitOptions = {}) {
+  await waitForPrintableWebContents(webContents, waitOptions)
+  await delay(120)
+  return await webContents.printToPDF(pdfOptions)
+}
+
+async function renderHtmlToPdfBuffer(html, pdfOptions = {}, waitOptions = {}) {
+  const pdfWindow = new BrowserWindow({
+    show: false,
+    width: 1280,
+    height: 1600,
+    autoHideMenuBar: true,
+    webPreferences: {
+      sandbox: false,
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  })
+  try {
+    await pdfWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
+    return await printWebContentsToPdfSafely(pdfWindow.webContents, pdfOptions, waitOptions)
+  } finally {
+    if (!pdfWindow.isDestroyed()) pdfWindow.destroy()
+  }
+}
+
+function parseMaybeJsonArray(value) {
+  if (Array.isArray(value)) return value
+  if (typeof value === 'string' && value.trim()) {
+    try {
+      const parsed = JSON.parse(value)
+      return Array.isArray(parsed) ? parsed : []
+    } catch {
+      return []
+    }
+  }
+  return []
+}
+
+function getPosOrderItems(order = {}) {
+  return Array.isArray(order.pos_order_items)
+    ? order.pos_order_items
+    : Array.isArray(order.items)
+      ? order.items
+      : []
+}
+
+function getPosOrderPayments(order = {}) {
+  const payments = parseMaybeJsonArray(order.payment_breakdown)
+  if (payments.length) return payments
+  return order.payment_method ? [{ method: order.payment_method, amount: Number(order.total || 0), reference: '' }] : []
+}
+
+function getPosOrderCustomer(order = {}) {
+  if (order.walk_in_name) return order.walk_in_name
+  if (order.room_id) return 'Room Guest'
+  return ''
+}
+
+function getPosOrderOutletName(order = {}) {
+  return order.outlets?.name || order.outlet_name || ''
+}
+
+function getPosOrderSyncState(order = {}) {
+  if (order?._sync_state === 'failed') return 'failed'
+  if (order?._sync_state === 'pending') return 'pending'
+  if (order?._sync_state === 'manual_review_required') return 'needs_attention'
+  if (order?._pending_sync === true) return 'pending'
+  return 'synced'
+}
+
+function getPosHistorySummary(orders = []) {
+  const activeOrders = orders.filter((order) => order.status !== 'voided')
+  const voidedOrders = orders.filter((order) => order.status === 'voided')
+  const paymentTotals = {}
+  for (const order of activeOrders) {
+    for (const payment of getPosOrderPayments(order)) {
+      const method = payment.method || order.payment_method || 'unknown'
+      paymentTotals[method] = (paymentTotals[method] || 0) + Number(payment.amount || 0)
+    }
+  }
+  return {
+    orderCount: orders.length,
+    activeCount: activeOrders.length,
+    voidedCount: voidedOrders.length,
+    grossTotal: activeOrders.reduce((sum, order) => sum + Number(order.gross_total || order.total || 0), 0),
+    discountTotal: activeOrders.reduce((sum, order) => sum + Number(order.discount_total || 0), 0),
+    taxTotal: activeOrders.reduce((sum, order) => sum + Number(order.tax_total || 0), 0),
+    tipTotal: activeOrders.reduce((sum, order) => sum + Number(order.tip_total || 0), 0),
+    netTotal: activeOrders.reduce((sum, order) => sum + Number(order.total || 0), 0),
+    paymentTotals
+  }
+}
+
+function buildPosHistoryPdfHtml({
+  reportTitle = 'POS History',
+  lodgeName = '',
+  companyName = '',
+  periodLabel = '',
+  generatedAt = new Date().toLocaleString(),
+  currency = 'P',
+  orders = [],
+  voidHistory = []
+} = {}) {
+  const resolvedLodge = lodgeName || companyName || 'Boroko Lodge'
+  const summary = getPosHistorySummary(orders)
+  const fmt = (value) => formatReportMoney(currency, value)
+  const orderRows = orders.length
+    ? orders.map((order) => `
+      <tr>
+        <td>${escapeHtml(order.created_at ? new Date(order.created_at).toLocaleString() : '')}</td>
+        <td>${escapeHtml(getPosOrderCustomer(order))}</td>
+        <td>${escapeHtml(getPosOrderOutletName(order))}</td>
+        <td>${escapeHtml(order.payment_method || '')}</td>
+        <td>${escapeHtml(order.status || '')}</td>
+        <td class="num">${escapeHtml(fmt(order.total || 0))}</td>
+        <td class="num">${escapeHtml(getPosOrderItems(order).length)}</td>
+      </tr>
+    `).join('')
+    : '<tr><td colspan="7" class="empty">No POS orders in this period.</td></tr>'
+  const itemRows = orders.flatMap((order) => getPosOrderItems(order).map((item) => ({ order, item }))).slice(0, 250)
+  const itemTableRows = itemRows.length
+    ? itemRows.map(({ order, item }) => `
+      <tr>
+        <td>${escapeHtml(order.created_at ? new Date(order.created_at).toLocaleString() : '')}</td>
+        <td>${escapeHtml(getPosOrderOutletName(order))}</td>
+        <td>${escapeHtml(item.item_name || item.name || '')}</td>
+        <td class="num">${escapeHtml(Number(item.quantity || 0))}</td>
+        <td class="num">${escapeHtml(fmt(item.unit_price || item.price || 0))}</td>
+        <td class="num">${escapeHtml(fmt(item.subtotal || (Number(item.quantity || 0) * Number(item.unit_price || item.price || 0))))}</td>
+      </tr>
+    `).join('')
+    : '<tr><td colspan="6" class="empty">No item lines.</td></tr>'
+  const voidRows = voidHistory.length
+    ? voidHistory.map((row) => `
+      <tr>
+        <td>${escapeHtml(row.created_at ? new Date(row.created_at).toLocaleString() : '')}</td>
+        <td>${escapeHtml(row.order_id || '')}</td>
+        <td>${escapeHtml(row.approver_name || row.approved_by || '')}</td>
+        <td>${escapeHtml(row.reason || '')}</td>
+      </tr>
+    `).join('')
+    : '<tr><td colspan="4" class="empty">No voids in this period.</td></tr>'
+  const paymentCards = Object.entries(summary.paymentTotals).map(([method, amount]) => `
+    <div class="card"><div class="label">${escapeHtml(method)}</div><div class="value">${escapeHtml(fmt(amount))}</div></div>
+  `).join('')
+  return `<!doctype html>
+  <html>
+    <head>
+      <meta charset="utf-8" />
+      <title>${escapeHtml(reportTitle)}</title>
+      <style>
+        @page { size: A4; margin: 14mm; }
+        * { box-sizing: border-box; }
+        body { color: #0f172a; font-family: Arial, sans-serif; font-size: 11px; margin: 0; }
+        header { border-bottom: 2px solid #0f172a; margin-bottom: 16px; padding-bottom: 12px; }
+        h1 { font-size: 22px; margin: 0 0 4px; }
+        h2 { font-size: 14px; margin: 18px 0 8px; }
+        .meta { color: #475569; display: flex; flex-wrap: wrap; gap: 8px 18px; }
+        .cards { display: grid; gap: 8px; grid-template-columns: repeat(4, 1fr); margin: 12px 0; }
+        .card { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 9px; }
+        .label { color: #64748b; font-size: 9px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+        .value { font-size: 15px; font-weight: 800; margin-top: 4px; }
+        table { border-collapse: collapse; page-break-inside: auto; width: 100%; }
+        tr { page-break-inside: avoid; }
+        th { background: #f1f5f9; color: #475569; font-size: 9px; letter-spacing: .08em; text-align: left; text-transform: uppercase; }
+        th, td { border-bottom: 1px solid #e2e8f0; padding: 6px; vertical-align: top; }
+        .num { text-align: right; white-space: nowrap; }
+        .empty { color: #64748b; padding: 16px; text-align: center; }
+        .section { break-inside: avoid; margin-top: 14px; }
+      </style>
+    </head>
+    <body>
+      <header>
+        <h1>${escapeHtml(resolvedLodge)} - ${escapeHtml(reportTitle)}</h1>
+        <div class="meta">
+          ${companyName && companyName !== resolvedLodge ? `<div>${escapeHtml(companyName)}</div>` : ''}
+          <div>Period: ${escapeHtml(periodLabel)}</div>
+          <div>Generated: ${escapeHtml(generatedAt)}</div>
+        </div>
+      </header>
+      <div class="cards">
+        <div class="card"><div class="label">Orders</div><div class="value">${escapeHtml(summary.orderCount)}</div></div>
+        <div class="card"><div class="label">Active</div><div class="value">${escapeHtml(summary.activeCount)}</div></div>
+        <div class="card"><div class="label">Voids</div><div class="value">${escapeHtml(summary.voidedCount)}</div></div>
+        <div class="card"><div class="label">Net Total</div><div class="value">${escapeHtml(fmt(summary.netTotal))}</div></div>
+      </div>
+      ${paymentCards ? `<div class="cards">${paymentCards}</div>` : ''}
+      <section class="section">
+        <h2>Orders</h2>
+        <table>
+          <thead><tr><th>Time</th><th>Customer</th><th>Outlet</th><th>Payment</th><th>Status</th><th class="num">Total</th><th class="num">Items</th></tr></thead>
+          <tbody>${orderRows}</tbody>
+        </table>
+      </section>
+      <section class="section">
+        <h2>Item Lines</h2>
+        <table>
+          <thead><tr><th>Time</th><th>Outlet</th><th>Item</th><th class="num">Qty</th><th class="num">Unit</th><th class="num">Subtotal</th></tr></thead>
+          <tbody>${itemTableRows}</tbody>
+        </table>
+      </section>
+      <section class="section">
+        <h2>Voids</h2>
+        <table>
+          <thead><tr><th>Time</th><th>Order</th><th>Approver</th><th>Reason</th></tr></thead>
+          <tbody>${voidRows}</tbody>
+        </table>
+      </section>
+    </body>
+  </html>`
+}
+
 function buildRoomSuppliesPdfHtml({
   reportTitle,
   lodgeName,
@@ -3514,15 +3774,28 @@ app.whenReady().then(async () => {
     })
     if (result.canceled || !result.filePath) return { success: false }
     try {
-      const pdfBuffer = await win.webContents.printToPDF({
+      const pdfBuffer = await printWebContentsToPdfSafely(win.webContents, {
         pageSize: 'A4',
         printBackground: false,
         margins: { marginType: 'default' }
-      })
+      }, { minTextLength: 20 })
       fs.writeFileSync(result.filePath, pdfBuffer)
       return { success: true, filePath: result.filePath }
     } catch (e) {
       return { success: false, error: e.message }
+    }
+  })
+  ipcMain.handle('reports:printCurrent', async (event) => {
+    try {
+      await requireCapability('reports.view')
+      const win = BrowserWindow.fromWebContents(event.sender)
+      return await printWebContentsSafely(win.webContents, {
+        silent: false,
+        printBackground: true,
+        margins: { marginType: 'default' }
+      }, { minTextLength: 20 })
+    } catch (e) {
+      return { success: false, error: e?.message || 'Print failed.' }
     }
   })
 
@@ -4046,7 +4319,7 @@ app.whenReady().then(async () => {
     })
     if (result.canceled || !result.filePath) return { success: false }
     try {
-      const pdfBuffer = await win.webContents.printToPDF({ pageSize: 'A4', printBackground: true })
+      const pdfBuffer = await printWebContentsToPdfSafely(win.webContents, { pageSize: 'A4', printBackground: true }, { minTextLength: 20 })
       fs.writeFileSync(result.filePath, pdfBuffer)
       db.recordInvoiceDelivery({
         booking_id: receiptPayload?.bookingId || null,
@@ -4109,14 +4382,12 @@ app.whenReady().then(async () => {
     const deviceName = String(options?.deviceName || hardware.receipt_printer_name || '').trim()
     const silent = options?.silent === true && !!deviceName
     return await new Promise((resolve) => {
-      win.webContents.print({
+      printWebContentsSafely(win.webContents, {
         silent,
         deviceName: deviceName || undefined,
         printBackground: true,
         margins: { marginType: 'none' }
-      }, (success, failureReason) => {
-        resolve(success ? { success: true } : { success: false, error: failureReason || 'Print failed.' })
-      })
+      }, { minTextLength: 20 }).then(resolve)
     })
   })
 
@@ -4137,7 +4408,7 @@ app.whenReady().then(async () => {
       if (quotationId) {
         await assertResourceBelongsToCurrentLodge('Quotation', quotationId, db.getQuotationById)
       }
-      const pdfBuffer = await win.webContents.printToPDF({ pageSize: 'A4', printBackground: true })
+      const pdfBuffer = await printWebContentsToPdfSafely(win.webContents, { pageSize: 'A4', printBackground: true }, { minTextLength: 20 })
       fs.writeFileSync(result.filePath, pdfBuffer)
       // Auto-mark as 'sent' in backend — more reliable than relying on frontend
       if (quotationId) {
@@ -4215,6 +4486,161 @@ app.whenReady().then(async () => {
       return await db.getPosVoidHistory(start, end, outletFilter)
     } catch (e) {
       throw new Error(e?.message || 'Failed to load POS void history')
+    }
+  })
+  ipcMain.handle('pos:exportHistoryExcel', async (event, payload = {}) => {
+    try {
+      await requireCapability('pos.view')
+      const parentWin = BrowserWindow.fromWebContents(event.sender)
+      const start = payload.start || ''
+      const end = payload.end || ''
+      const period = start && end ? `${start}-to-${end}` : ''
+      const { filePath, canceled } = await dialog.showSaveDialog(parentWin, {
+        title: 'Export POS History to Excel',
+        defaultPath: buildReportExportFilename({ prefix: 'boroko', reportTitle: 'pos-history', period, extension: 'xlsx' }),
+        filters: [{ name: 'Excel Files', extensions: ['xlsx'] }]
+      })
+      if (canceled || !filePath) return { success: false }
+
+      const outletFilter = db.getUserPosOutletFilter()
+      const [orders, voidHistory, settings] = await Promise.all([
+        db.getPosOrders(start, end, outletFilter),
+        db.getPosVoidHistory(start, end, outletFilter).catch(() => []),
+        db.getSettings().catch(() => ({}))
+      ])
+      const currency = settings?.currency || 'P'
+      const resolvedLodge = settings?.lodge_name || settings?.company_name || 'Boroko Lodge'
+      const periodLabel = start && end ? `${start} to ${end}` : 'All dates'
+      const generatedAt = new Date().toLocaleString()
+      const summary = getPosHistorySummary(orders || [])
+
+      const wb = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
+        [`${resolvedLodge} - POS History`],
+        ...buildWorkbookMetaRows({
+          lodgeName: settings?.lodge_name || resolvedLodge,
+          companyName: settings?.company_name || '',
+          periodLabel,
+          generatedAt
+        }),
+        ['Metric', 'Value'],
+        ['Orders', summary.orderCount],
+        ['Active Orders', summary.activeCount],
+        ['Voided Orders', summary.voidedCount],
+        [`Gross Total (${currency})`, Number(summary.grossTotal).toFixed(2)],
+        [`Discounts (${currency})`, Number(summary.discountTotal).toFixed(2)],
+        [`Tax/VAT (${currency})`, Number(summary.taxTotal).toFixed(2)],
+        [`Tips (${currency})`, Number(summary.tipTotal).toFixed(2)],
+        [`Net Total (${currency})`, Number(summary.netTotal).toFixed(2)],
+        [],
+        ['Payment Method', `Amount (${currency})`],
+        ...Object.entries(summary.paymentTotals).map(([method, amount]) => [method, Number(amount).toFixed(2)])
+      ]), 'Summary')
+
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet((orders || []).map((order) => ({
+        'Order ID': order.id || '',
+        'Receipt Number': order.receipt_number || '',
+        'Created At': order.created_at || '',
+        'Customer': getPosOrderCustomer(order),
+        'Room ID': order.room_id || '',
+        'Booking ID': order.booking_id || '',
+        'Outlet': getPosOrderOutletName(order),
+        'Service Mode': order.service_mode || '',
+        'Table': order.table_name || order.tab_name || '',
+        'Cashier': order.cashier_name || '',
+        'Waiter': order.waiter_name || '',
+        'Payment Method': order.payment_method || '',
+        'Status': order.status || '',
+        'Sync State': getPosOrderSyncState(order),
+        [`Gross (${currency})`]: Number(order.gross_total || order.total || 0),
+        [`Discount (${currency})`]: Number(order.discount_total || 0),
+        [`Tax/VAT (${currency})`]: Number(order.tax_total || 0),
+        [`Tip (${currency})`]: Number(order.tip_total || 0),
+        [`Total (${currency})`]: Number(order.total || 0),
+        'Notes': order.notes || ''
+      }))), 'Orders')
+
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet((orders || []).flatMap((order) => (
+        getPosOrderItems(order).map((item) => ({
+          'Order ID': order.id || '',
+          'Created At': order.created_at || '',
+          'Outlet': getPosOrderOutletName(order),
+          'Customer': getPosOrderCustomer(order),
+          'Item': item.item_name || item.name || '',
+          'Quantity': Number(item.quantity || 0),
+          [`Unit Price (${currency})`]: Number(item.unit_price || item.price || 0),
+          [`Subtotal (${currency})`]: Number(item.subtotal || (Number(item.quantity || 0) * Number(item.unit_price || item.price || 0))),
+          'Notes': item.item_notes || ''
+        }))
+      ))), 'Item Lines')
+
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet((orders || []).flatMap((order) => (
+        getPosOrderPayments(order).map((payment) => ({
+          'Order ID': order.id || '',
+          'Created At': order.created_at || '',
+          'Outlet': getPosOrderOutletName(order),
+          'Customer': getPosOrderCustomer(order),
+          'Method': payment.method || order.payment_method || '',
+          [`Amount (${currency})`]: Number(payment.amount || 0),
+          'Reference': payment.reference || payment.approval_code || ''
+        }))
+      ))), 'Payments')
+
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet((voidHistory || []).map((row) => ({
+        'Void ID': row.id || '',
+        'Order ID': row.order_id || '',
+        'Created At': row.created_at || '',
+        'Outlet ID': row.outlet_id || '',
+        'Requested By': row.requested_by || '',
+        'Approved By': row.approver_name || row.approved_by || '',
+        'Reason': row.reason || ''
+      }))), 'Voids')
+
+      XLSX.writeFile(wb, filePath)
+      return { success: true, filePath, rows: (orders || []).length }
+    } catch (e) {
+      return { success: false, error: e?.message || 'Could not export POS history.' }
+    }
+  })
+  ipcMain.handle('pos:exportHistoryPdf', async (event, payload = {}) => {
+    try {
+      await requireCapability('pos.view')
+      const parentWin = BrowserWindow.fromWebContents(event.sender)
+      const start = payload.start || ''
+      const end = payload.end || ''
+      const period = start && end ? `${start}-to-${end}` : ''
+      const { filePath, canceled } = await dialog.showSaveDialog(parentWin, {
+        title: 'Export POS History as PDF',
+        defaultPath: buildReportExportFilename({ prefix: 'boroko', reportTitle: 'pos-history', period, extension: 'pdf' }),
+        filters: [{ name: 'PDF Files', extensions: ['pdf'] }]
+      })
+      if (canceled || !filePath) return { success: false }
+
+      const outletFilter = db.getUserPosOutletFilter()
+      const [orders, voidHistory, settings] = await Promise.all([
+        db.getPosOrders(start, end, outletFilter),
+        db.getPosVoidHistory(start, end, outletFilter).catch(() => []),
+        db.getSettings().catch(() => ({}))
+      ])
+      const html = buildPosHistoryPdfHtml({
+        reportTitle: 'POS History',
+        lodgeName: settings?.lodge_name || '',
+        companyName: settings?.company_name || '',
+        periodLabel: start && end ? `${start} to ${end}` : 'All dates',
+        generatedAt: new Date().toLocaleString(),
+        currency: settings?.currency || 'P',
+        orders: orders || [],
+        voidHistory: voidHistory || []
+      })
+      const pdfBuffer = await renderHtmlToPdfBuffer(html, {
+        pageSize: 'A4',
+        printBackground: true,
+        margins: { marginType: 'default' }
+      }, { minTextLength: 20 })
+      fs.writeFileSync(filePath, pdfBuffer)
+      return { success: true, filePath, rows: (orders || []).length }
+    } catch (e) {
+      return { success: false, error: e?.message || 'Could not export POS history PDF.' }
     }
   })
   ipcMain.handle('pos:createOrder', async (_, data) => {
@@ -4807,42 +5233,25 @@ app.whenReady().then(async () => {
       })
       if (canceled || !filePath) return { success: false }
 
-      const pdfWindow = new BrowserWindow({
-        show: false,
-        width: 1280,
-        height: 1600,
-        autoHideMenuBar: true,
-        webPreferences: {
-          sandbox: false,
-          contextIsolation: true,
-          nodeIntegration: false
-        }
+      const html = buildRoomSuppliesPdfHtml({
+        reportTitle,
+        lodgeName: payload.lodgeName || '',
+        companyName: payload.companyName || '',
+        periodLabel: `${payload.start || ''} to ${payload.end || ''}`,
+        generatedAt: payload.generatedAt || new Date().toLocaleString(),
+        currency: payload.currency || 'P',
+        grandTotal: Number(payload.grandTotal || 0),
+        allocations: Array.isArray(payload.allocations) ? payload.allocations : [],
+        byRoom: Array.isArray(payload.byRoom) ? payload.byRoom : [],
+        byItem: Array.isArray(payload.byItem) ? payload.byItem : []
       })
-
-      try {
-        const html = buildRoomSuppliesPdfHtml({
-          reportTitle,
-          lodgeName: payload.lodgeName || '',
-          companyName: payload.companyName || '',
-          periodLabel: `${payload.start || ''} to ${payload.end || ''}`,
-          generatedAt: payload.generatedAt || new Date().toLocaleString(),
-          currency: payload.currency || 'P',
-          grandTotal: Number(payload.grandTotal || 0),
-          allocations: Array.isArray(payload.allocations) ? payload.allocations : [],
-          byRoom: Array.isArray(payload.byRoom) ? payload.byRoom : [],
-          byItem: Array.isArray(payload.byItem) ? payload.byItem : []
-        })
-        await pdfWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
-        const pdfBuffer = await pdfWindow.webContents.printToPDF({
-          pageSize: 'A4',
-          printBackground: true,
-          margins: { marginType: 'default' }
-        })
-        fs.writeFileSync(filePath, pdfBuffer)
-        return { success: true, filePath }
-      } finally {
-        if (!pdfWindow.isDestroyed()) pdfWindow.destroy()
-      }
+      const pdfBuffer = await renderHtmlToPdfBuffer(html, {
+        pageSize: 'A4',
+        printBackground: true,
+        margins: { marginType: 'default' }
+      }, { minTextLength: 20 })
+      fs.writeFileSync(filePath, pdfBuffer)
+      return { success: true, filePath }
     } catch (e) {
       return { success: false, error: e.message }
     }

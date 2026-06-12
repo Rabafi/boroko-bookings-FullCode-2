@@ -52,7 +52,7 @@ export function POSReceipt({ order, onClose, autoPrint = false }) {
       silent: Boolean(printerName),
       openDrawer: order?._open_drawer_on_print === true
     }).catch(() => null)
-    if (!result?.success) window.print()
+    if (!result?.success) window.alert?.(result?.error || 'Print could not be started.')
   }
 
   const handleSavePDF = async () => {

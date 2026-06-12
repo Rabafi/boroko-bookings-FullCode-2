@@ -97,7 +97,8 @@ export function Receipt({ booking, onClose, onCollectPayment = null }) {
         customer_name: booking.customer_name || null
       }
     }).catch(() => {})
-    window.print()
+    const result = await window.api.receipts.printCurrent?.({ silent: false }).catch((err) => ({ success: false, error: err?.message }))
+    if (!result?.success) window.alert?.(result?.error || 'Print could not be started.')
   }
 
   const handleSavePDF = async () => {

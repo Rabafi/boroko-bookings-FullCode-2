@@ -104,10 +104,14 @@ export default function NightAudit() {
     }
   }
 
-  const handlePrint = () => {
-    setSuccess('Print dialog opened.')
-    setTimeout(() => setSuccess(''), 3000)
-    window.print()
+  const handlePrint = async () => {
+    const result = await window.api.reports.printCurrent?.().catch((err) => ({ success: false, error: err?.message }))
+    if (result?.success) {
+      setSuccess('Print dialog opened.')
+      setTimeout(() => setSuccess(''), 3000)
+    } else {
+      setError(result?.error || 'Print could not be started.')
+    }
   }
 
   const handleSavePDF = async () => {

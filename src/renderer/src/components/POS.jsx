@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Plus, Pencil, Trash2, ShoppingCart, X, ChevronDown, ChevronUp, Scan, Eye, EyeOff, Keyboard, Printer, BadgePercent, ReceiptText, Calculator, RefreshCw, Monitor, Utensils } from 'lucide-react'
+import { Plus, Pencil, Trash2, ShoppingCart, X, ChevronDown, ChevronUp, Scan, Eye, EyeOff, Keyboard, Printer, BadgePercent, ReceiptText, Calculator, RefreshCw, Monitor, Utensils, FileSpreadsheet, FileDown } from 'lucide-react'
 import { Modal } from './shared/Modal'
 import { POSReceipt } from './shared/POSReceipt'
 import HorizontalScrollArea from './shared/HorizontalScrollArea'
@@ -329,6 +329,8 @@ export default function POS() {
   const [ordersError, setOrdersError] = useState(null)
   const [histStart, setHistStart] = useState(() => toLocalDateInput(new Date(Date.now() - 48 * 60 * 60 * 1000)))
   const [histEnd, setHistEnd] = useState(() => toLocalDateInput(new Date()))
+  const [historyExporting, setHistoryExporting] = useState('')
+  const [historyExportMsg, setHistoryExportMsg] = useState('')
   const [expandedOrder, setExpandedOrder] = useState(null)
   const [voidModal, setVoidModal] = useState(false)
   const [voidTarget, setVoidTarget] = useState(null)
@@ -507,6 +509,31 @@ export default function POS() {
       setOrders([])
       setVoidHistory([])
       setOrdersError(err?.message || 'Failed to load orders')
+    }
+  }, [histEnd, histStart])
+
+  const exportPosHistory = useCallback(async (format) => {
+    setHistoryExporting(format)
+    setHistoryExportMsg('')
+    try {
+      const exporter = format === 'pdf'
+        ? window.api.pos.exportHistoryPdf
+        : window.api.pos.exportHistoryExcel
+      if (!exporter) {
+        setHistoryExportMsg('POS history export is not available in this app build. Please restart after updating.')
+        return
+      }
+      const result = await exporter?.({ start: histStart, end: histEnd })
+      if (result?.success) {
+        setHistoryExportMsg(`${format === 'pdf' ? 'PDF' : 'Excel'} exported${result.filePath ? `: ${result.filePath}` : '.'}`)
+      } else if (result?.error) {
+        setHistoryExportMsg(result.error)
+      }
+    } catch (err) {
+      setHistoryExportMsg(err?.message || `Could not export POS history as ${format}.`)
+    } finally {
+      setHistoryExporting('')
+      window.setTimeout(() => setHistoryExportMsg(''), 7000)
     }
   }, [histEnd, histStart])
 
@@ -2974,14 +3001,37 @@ export default function POS() {
       {/* ── History ── */}
       {tab === 'history' && (
         <div className="flex flex-col gap-5">
-      <div className="bb-filter-bar mb-5 flex-wrap">
+      <div className="bb-filter-bar mb-5 flex-wrap justify-between">
             <div className="flex flex-wrap items-center gap-2 text-sm">
               <label className="text-slate-500">From</label>
               <input type="date" className="input text-sm" value={histStart} onChange={(e) => setHistStart(e.target.value)} />
               <label className="text-slate-500">To</label>
               <input type="date" className="input text-sm" value={histEnd} onChange={(e) => setHistEnd(e.target.value)} />
             </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => exportPosHistory('excel')}
+                disabled={historyExporting !== ''}
+                className="btn-secondary text-sm disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <FileSpreadsheet size={14} /> {historyExporting === 'excel' ? 'Exporting...' : 'Excel'}
+              </button>
+              <button
+                type="button"
+                onClick={() => exportPosHistory('pdf')}
+                disabled={historyExporting !== ''}
+                className="btn-secondary text-sm disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <FileDown size={14} /> {historyExporting === 'pdf' ? 'Saving...' : 'PDF'}
+              </button>
+            </div>
           </div>
+          {historyExportMsg && (
+            <div className={`rounded-xl px-4 py-3 text-sm ${/could not|failed|error/i.test(historyExportMsg) ? 'border border-red-200 bg-red-50 text-red-700' : 'border border-emerald-200 bg-emerald-50 text-emerald-700'}`}>
+              {historyExportMsg}
+            </div>
+          )}
           {voidHistory.length > 0 && (
             <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-900 shadow-sm">
               <div className="flex flex-wrap items-center justify-between gap-3">
