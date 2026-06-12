@@ -240,6 +240,15 @@ function plainOutcomeLabel(value) {
   return labels[raw] || plainLabel(value)
 }
 
+function issueLevel(entry) {
+  return String(entry?.severity || entry?.level || '').trim().toLowerCase()
+}
+
+function isImportantIssueCritical(entry) {
+  const scope = String(entry?.scope || entry?.operation || '').toLowerCase()
+  return scope.includes('financial') || scope.includes('db_init') || issueLevel(entry) === 'error'
+}
+
 // ─── Main component ────────────────────────────────────────────────────────────
 
 export default function SystemHealthPanel() {
@@ -594,6 +603,8 @@ export default function SystemHealthPanel() {
   const meshLastError          = String(meshStatus?.lastError || '').trim()
   const meshAutoStandby        = /missing lodge_mesh_secret/i.test(meshLastError)
   const meshStateLabel         = meshStatus?.running ? 'Running' : meshStatus?.enabled ? 'Starting' : meshAutoStandby ? 'Standby' : meshLastError ? 'Needs setup' : 'Off'
+  const criticalIssueCount     = criticalErrors.filter(isImportantIssueCritical).length
+  const warningIssueCount      = Math.max(0, criticalErrors.length - criticalIssueCount)
 
   const getFailedItemBookingId = (item) => (
     item?.data?.p_booking_id || item?.data?.payload?.id || item?.data?.payload?.booking_id || item?.data?.p_id || null
@@ -696,6 +707,30 @@ export default function SystemHealthPanel() {
       {flash && (
         <div className={`rounded-2xl px-4 py-3 text-sm font-medium ${flash.type === 'success' ? 'border border-green-200 bg-green-50 text-green-700' : 'border border-red-200 bg-red-50 text-red-700'}`}>
           {flash.text}
+        </div>
+      )}
+
+      {criticalErrors.length > 0 && (
+        <div className={`rounded-2xl px-5 py-4 shadow-sm ${criticalIssueCount > 0 ? 'border border-rose-200 bg-rose-50' : 'border border-amber-200 bg-amber-50'}`}>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="flex items-start gap-3">
+              <AlertTriangle size={18} className={`mt-0.5 shrink-0 ${criticalIssueCount > 0 ? 'text-rose-700' : 'text-amber-700'}`} />
+              <div>
+                <p className={`text-sm font-bold ${criticalIssueCount > 0 ? 'text-rose-900' : 'text-amber-900'}`}>
+                  {criticalIssueCount > 0
+                    ? `${criticalIssueCount} important app issue${criticalIssueCount === 1 ? '' : 's'} need review`
+                    : `${warningIssueCount} system warning${warningIssueCount === 1 ? '' : 's'} saved`}
+                </p>
+                <p className={`mt-1 text-sm ${criticalIssueCount > 0 ? 'text-rose-800/80' : 'text-amber-800/80'}`}>
+                  These are the same warnings shown by the floating System Health badge. Latest: {criticalErrors[0]?.message || 'No message recorded.'}
+                </p>
+              </div>
+            </div>
+            <button type="button" onClick={clearErrorHistory} disabled={actionBusy === 'clear-errors'}
+              className={`rounded-xl border bg-white px-3 py-2 text-xs font-semibold transition disabled:opacity-60 ${criticalIssueCount > 0 ? 'border-rose-300 text-rose-800 hover:bg-rose-50' : 'border-amber-300 text-amber-800 hover:bg-amber-50'}`}>
+              {actionBusy === 'clear-errors' ? 'Clearing...' : 'Clear warning history'}
+            </button>
+          </div>
         </div>
       )}
 
@@ -1613,8 +1648,7 @@ export default function SystemHealthPanel() {
                 </div>
               ) : (
                 criticalErrors.map((entry, index) => {
-                  const isFinancial = entry.scope?.toLowerCase().includes('financial') || entry.operation?.toLowerCase().includes('financial')
-                  const isCritical = isFinancial || entry.severity === 'error' || entry.scope?.includes('db_init')
+                  const isCritical = isImportantIssueCritical(entry)
                   const tone = isCritical ? 'rose' : 'amber'
                   return (
                     <div key={`${entry.at || entry.operation || 'critical'}-${index}`} className={`rounded-xl border border-${tone}-200 bg-${tone}-50 px-4 py-3`}>

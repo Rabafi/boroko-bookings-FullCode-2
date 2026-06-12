@@ -555,6 +555,10 @@ function WifiIcon() {
   )
 }
 
+function importantIssueMessage(entry) {
+  return String(entry?.message || entry?.error || entry?.scope || entry?.operation || 'System warning').trim()
+}
+
 // ── Financial Health Banner ───────────────────────────────────────────────────
 function FinancialHealthBanner() {
   const navigate = useNavigate()
@@ -582,7 +586,7 @@ function FinancialHealthBanner() {
   if (errors.length === 0) return null
 
   const hasFinancial = errors.some(e => e.scope?.toLowerCase().includes('financial') || e.operation?.toLowerCase().includes('financial'))
-  const hasHighSeverity = errors.some(e => e.severity === 'error' || e.scope?.toLowerCase().includes('db_init'))
+  const hasHighSeverity = errors.some(e => e.severity === 'error' || e.level === 'error' || e.scope?.toLowerCase().includes('db_init'))
   const isTrulyCritical = hasFinancial || hasHighSeverity
 
   const tone = isTrulyCritical
@@ -591,6 +595,7 @@ function FinancialHealthBanner() {
   const count = errors.length
   const label = isTrulyCritical ? 'critical error' : 'system warning'
   const dotTone = isTrulyCritical ? 'bg-rose-500' : 'bg-amber-500 animate-pulse'
+  const firstMessage = importantIssueMessage(errors[0])
 
   return (
     <div className="fixed top-[72px] right-4 z-[9995] pointer-events-none">
@@ -601,7 +606,8 @@ function FinancialHealthBanner() {
       >
         <div className={`h-2.5 w-2.5 rounded-full ${dotTone}`} />
         <span className="font-semibold">{count} {label}{count === 1 ? '' : 's'}</span>
-        <span className="text-[11px] font-medium opacity-75">System Health</span>
+        <span className="hidden max-w-[260px] truncate text-[11px] font-medium opacity-80 sm:inline">{firstMessage}</span>
+        <span className="text-[11px] font-medium opacity-75">Open Health</span>
       </button>
     </div>
   )
