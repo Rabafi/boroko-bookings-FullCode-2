@@ -60,6 +60,8 @@ const DEFAULT_SETTINGS = {
   setup_complete: false
 };
 const SETTINGS_QUERY_TIMEOUT_MS = 15000;
+const SETTINGS_BACKGROUND_REFRESH_TIMEOUT_MS = 5000;
+let settingsRefreshInFlight = null;
 
 function getDefaultSettings() {
   return {
@@ -81,6 +83,42 @@ async function getRemoteSettingsRecord(targetLodgeId = state.lodgeId) {
   const err = new Error('The Supabase settings table is missing the required lodge_id UUID contract. Apply the current settings migration, then try again.');
   err.code = 'backend_auth_schema_outdated';
   throw err;
+}
+
+function normalizeSettingsRow(row = {}) {
+  return {
+    ...row,
+    lodge_id: row.lodge_id || state.lodgeId || null
+  };
+}
+
+function getCachedSettings() {
+  const cached = readCache('settings');
+  return cached[0] ? normalizeSettingsRow(cached[0]) : null;
+}
+
+function refreshSettingsCacheInBackground() {
+  if (!state.isOnline || !state.lodgeId || settingsRefreshInFlight) return;
+  settingsRefreshInFlight = (async () => {
+    try {
+      const queryPromise = getRemoteSettingsRecord();
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('settings background refresh timeout')), SETTINGS_BACKGROUND_REFRESH_TIMEOUT_MS)
+      );
+      const { data } = await Promise.race([queryPromise, timeoutPromise]);
+      if (!data) return;
+      const normalized = normalizeSettingsRow(data);
+      writeCache('settings', [normalized]);
+      const activeProfile = getActiveProfile();
+      if (activeProfile?.status === PROFILE_STATUS.READY) {
+        updateProfileMetadata(state.lodgeId, { label: profileLabelFromSettings(normalized, activeProfile.label) });
+      }
+    } catch (error) {
+      console.warn('[SETTINGS] background refresh delayed:', error?.message || error);
+    } finally {
+      settingsRefreshInFlight = null;
+    }
+  })();
 }
 
 async function saveRemoteSettingsRecord(settings) {
@@ -131,26 +169,24 @@ export async function getSettings() {
   if (!state.lodgeId) {
     return getDefaultSettings();
   }
+  const cachedSettings = getCachedSettings();
+  if (cachedSettings) {
+    refreshSettingsCacheInBackground();
+    return cachedSettings;
+  }
   if (state.isOnline) {
     try {
       const { data } = await getRemoteSettingsRecord();
       if (data) {
-        const normalized = {
-          ...data,
-          ...data
-        };
+        const normalized = normalizeSettingsRow(data);
         writeCache('settings', [normalized]);
         return normalized;
       }
     } catch (e) {
-      console.error('[SETTINGS] load failed:', e.message);
+      console.warn('[SETTINGS] load delayed; using defaults until cache is available:', e.message);
     }
   }
-  const cached = readCache('settings');
-  return cached[0] ? {
-    ...cached[0],
-    ...cached[0]
-  } : getDefaultSettings();
+  return getDefaultSettings();
 }
 
 export async function getLodgeDiagnostics(expectedLodgeId = '') {

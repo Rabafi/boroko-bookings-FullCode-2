@@ -54,6 +54,8 @@ async function run() {
   assert.match(database, /function isStatementTimeoutError\(error\)/)
   assert.match(database, /financial\.reconciliation\.timeout/)
   assert.match(database, /buildFinancialVerificationUnavailable\(error, 'reconciliation'\)/)
+  assert.match(database, /function refreshSettingsCacheInBackground\(/)
+  assert.match(database, /const cachedSettings = getCachedSettings\(\)[\s\S]{0,120}return cachedSettings/)
   assert.match(database, /recordCriticalError\('reports\.revenue'/)
   assert.match(database, /recordCriticalError\('reports\.profit_loss'/)
   assert.match(database, /recordCriticalError\('reports\.outlet_profit_loss'/)
