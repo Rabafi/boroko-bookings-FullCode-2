@@ -1,0 +1,76 @@
+{
+  "name": "boroko-pos-legacy",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Boroko POS Legacy for Windows Embedded POSReady 7",
+  "author": {
+    "name": "Botswapelo Studios Pty Ltd"
+  },
+  "main": "out/main/index.cjs",
+  "scripts": {
+    "prepare:config": "node ./scripts/prepare-runtime-config.mjs",
+    "dev": "npm run prepare:config && electron-vite dev",
+    "build": "npm run prepare:config && electron-vite build",
+    "preview": "electron-vite preview",
+    "dist": "npm run build && electron-builder --win nsis --publish never",
+    "dist:dir": "npm run build && electron-builder --win dir --publish never",
+    "test": "node ./tests/legacy-pos-regression.test.mjs",
+    "db:probe": "node ./scripts/probe-database-contract.mjs"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "2.39.0",
+    "bcryptjs": "^2.4.3",
+    "cross-fetch": "^3.2.0",
+    "dotenv": "^17.4.2",
+    "lucide-react": "^0.344.0",
+    "react": "18.2.0",
+    "react-dom": "18.2.0",
+    "react-router-dom": "^6.22.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.2.0",
+    "autoprefixer": "^10.4.18",
+    "electron": "^22.3.27",
+    "electron-builder": "^23.6.0",
+    "electron-vite": "^2.3.0",
+    "postcss": "^8.4.35",
+    "tailwindcss": "^3.4.1",
+    "vite": "^5.4.0"
+  },
+  "build": {
+    "appId": "com.boroko.poslegacy",
+    "productName": "Boroko POS Legacy",
+    "asar": true,
+    "artifactName": "Boroko-POS-Legacy-${version}-${arch}.${ext}",
+    "icon": "src/main/assets/icon.ico",
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false
+    },
+    "files": [
+      "out/**/*",
+      "!out/**/*.map"
+    ],
+    "extraResources": [
+      {
+        "from": "build/generated/legacy-pos-runtime-config.json",
+        "to": "legacy-pos-runtime-config.json"
+      }
+    ],
+    "directories": {
+      "output": "dist"
+    }
+  }
+}

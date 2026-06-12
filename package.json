@@ -45,7 +45,14 @@
     "marketing:capture": "node ./scripts/capture-marketing-real-screenshots.mjs",
     "marketing:images": "node ./scripts/build-marketing-images.mjs",
     "postinstall": "electron-builder install-app-deps",
-    "db:push": "node ./scripts/db-push.mjs"
+    "db:push": "node ./scripts/db-push.mjs",
+    "legacy-pos:install": "npm --prefix legacy-pos ci",
+    "legacy-pos:dev": "npm --prefix legacy-pos run dev",
+    "legacy-pos:build": "npm --prefix legacy-pos run build",
+    "legacy-pos:dist": "npm --prefix legacy-pos run dist",
+    "legacy-pos:dist:dir": "npm --prefix legacy-pos run dist:dir",
+    "legacy-pos:test": "npm --prefix legacy-pos run test",
+    "legacy-pos:db:probe": "npm --prefix legacy-pos run db:probe"
   },
   "dependencies": {
     "@e965/xlsx": "^0.20.3",
