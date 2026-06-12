@@ -87,6 +87,12 @@ function normalizeOrderSyncState(order) {
   return 'synced'
 }
 
+function paymentBreakdownHasCash(payments = []) {
+  return Array.isArray(payments) && payments.some((payment) => (
+    String(payment.method || '').toLowerCase() === 'cash' && Number(payment.amount || 0) > 0
+  ))
+}
+
 function isSyncOffline(status) {
   if (!status) return false
   if (status.isOnline === false) return true
@@ -1014,7 +1020,23 @@ export default function POS() {
         setActiveTabId('')
         await loadPosOperations()
         await refreshLivePosState({ includeOrders: true })
-        if (receiptOrder._auto_print) setShowReceiptOrder(receiptOrder)
+        const shouldOpenDrawer = hardwareSettings?.cash_drawer_enabled === true
+          && hardwareSettings?.cash_drawer_open_on_cash === true
+          && (receiptOrder.payment_method === 'cash' || paymentBreakdownHasCash(receiptOrder.payment_breakdown))
+        const shouldKickDrawerWithReceipt = shouldOpenDrawer
+          && receiptOrder._auto_print === true
+          && hardwareSettings?.receipt_print_mode === 'escpos'
+        if (shouldOpenDrawer && !shouldKickDrawerWithReceipt) {
+          const drawerResult = await window.api.pos.openCashDrawer?.({
+            reason: 'cash_payment',
+            order_id: receiptOrder.id,
+            amount: orderTotal
+          }).catch((error) => ({ success: false, error: error?.message }))
+          if (!drawerResult?.success) {
+            setHardwareMsg(drawerResult?.error || 'Cash drawer did not open. Check ESC/POS hardware settings.')
+          }
+        }
+        if (receiptOrder._auto_print) setShowReceiptOrder({ ...receiptOrder, _open_drawer_on_print: shouldKickDrawerWithReceipt })
         setOrderSuccess(true)
         setTimeout(() => setOrderSuccess(false), 3000)
       } else {
@@ -1769,6 +1791,38 @@ export default function POS() {
     </select>
   )
 
+  const escposTargetConfigured = Boolean(
+    hardwareSettings?.escpos_connection_type === 'network'
+      ? hardwareSettings?.escpos_network_host || hardwareSettings?.escpos_printer_path
+      : hardwareSettings?.escpos_printer_path
+  )
+  const hardwareReadiness = [
+    {
+      label: 'Receipts',
+      value: hardwareSettings?.receipt_print_mode === 'escpos'
+        ? escposTargetConfigured ? 'ESC/POS ready' : 'Needs ESC/POS target'
+        : hardwareSettings?.receipt_printer_name ? 'Windows printer ready' : 'System default printer'
+    },
+    {
+      label: 'Cash Drawer',
+      value: hardwareSettings?.cash_drawer_enabled
+        ? escposTargetConfigured ? 'Drawer pulse ready' : 'Needs ESC/POS target'
+        : 'Disabled'
+    },
+    {
+      label: 'Card Terminal',
+      value: hardwareSettings?.payment_terminal_mode === 'manual'
+        ? 'Manual mode'
+        : hardwareSettings?.payment_terminal_provider && hardwareSettings?.payment_terminal_bridge_url
+          ? 'Bridge ready'
+          : 'Needs provider + bridge URL'
+    },
+    {
+      label: 'Displays',
+      value: systemDisplays.length ? `${systemDisplays.length} monitor${systemDisplays.length === 1 ? '' : 's'} detected` : 'System default'
+    }
+  ]
+
   const terminalShellClass = touchMode
     ? 'grid min-h-0 flex-1 grid-cols-1 gap-2 overflow-hidden lg:grid-cols-[minmax(0,1fr)_minmax(29rem,0.58fr)] 2xl:grid-cols-[minmax(0,1fr)_minmax(31rem,0.53fr)]'
     : 'grid min-h-0 flex-1 grid-cols-1 gap-2 overflow-hidden lg:grid-cols-[minmax(0,1fr)_minmax(25rem,0.47fr)] 2xl:grid-cols-[minmax(0,1fr)_minmax(28rem,0.44fr)]'
@@ -2222,6 +2276,10 @@ export default function POS() {
                           className="mt-1.5 w-full rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-700"
                           onClick={async () => {
                             const res = await window.api.pos.sendPaymentTerminalTotal?.({ amount: orderTotal, reference: activeTabId || tableName || null })
+                            if (res?.success) {
+                              const nextReference = res.approval_code || res.reference || ''
+                              if (nextReference) setPaymentReference(nextReference)
+                            }
                             alert(res?.message || res?.error || 'Payment terminal request finished.')
                           }}
                         >
@@ -3508,74 +3566,229 @@ export default function POS() {
           </div>
 
           <div className={`${setupSection === 'hardware' ? '' : 'hidden'} bb-card p-5`}>
-            <h2 className="text-base font-semibold text-slate-900">Receipt Printer & Cash Drawer</h2>
-            <p className="mt-1 text-sm text-slate-500">Save preferred printer settings and run basic tests.</p>
-            <div className="mt-4 grid gap-3">
-              <select
-                className="input"
-                value={hardwareSettings?.receipt_printer_name || ''}
-                onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), receipt_printer_name: e.target.value }))}
-              >
-                <option value="">System default printer</option>
-                {receiptPrinters.map((printer) => (
-                  <option key={printer.name} value={printer.name}>{printer.displayName || printer.name}</option>
-                ))}
-              </select>
-              <select
-                className="input"
-                value={hardwareSettings?.receipt_paper_width || '80mm'}
-                onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), receipt_paper_width: e.target.value }))}
-              >
-                <option value="58mm">58mm</option>
-                <option value="80mm">80mm</option>
-                <option value="A4">A4</option>
-              </select>
-              <label className="flex items-center gap-2 text-sm font-semibold text-slate-700">
-                <input type="checkbox" checked={hardwareSettings?.auto_print_receipts === true} onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), auto_print_receipts: e.target.checked }))} />
-                Auto print receipts
-              </label>
-              <label className="flex items-center gap-2 text-sm font-semibold text-slate-700">
-                <input type="checkbox" checked={hardwareSettings?.cash_drawer_enabled === true} onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), cash_drawer_enabled: e.target.checked }))} />
-                Cash drawer connected
-              </label>
-              <label className="flex items-center gap-2 text-sm font-semibold text-slate-700">
-                <input type="checkbox" checked={hardwareSettings?.escpos_enabled === true} onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), escpos_enabled: e.target.checked }))} />
-                ESC/POS direct mode
-              </label>
-              <input
-                className="input"
-                value={hardwareSettings?.escpos_printer_path || ''}
-                onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), escpos_printer_path: e.target.value }))}
-                placeholder="ESC/POS device path or Windows printer share"
-              />
-              <div className="grid gap-2 sm:grid-cols-2">
-                <input
-                  className="input"
-                  value={hardwareSettings?.payment_terminal_provider || ''}
-                  onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), payment_terminal_provider: e.target.value }))}
-                  placeholder="Card terminal provider"
-                />
-                <input
-                  className="input"
-                  value={hardwareSettings?.payment_terminal_name || ''}
-                  onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), payment_terminal_name: e.target.value }))}
-                  placeholder="Terminal model/name"
-                />
+            <h2 className="text-base font-semibold text-slate-900">POS Hardware Setup</h2>
+            <p className="mt-1 text-sm text-slate-500">Configure this device once, then test each connected printer, drawer, display, or terminal.</p>
+            <div className="mt-4 grid gap-2 md:grid-cols-4">
+              {hardwareReadiness.map((item) => (
+                <div key={item.label} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">{item.label}</p>
+                  <p className="mt-1 text-sm font-semibold text-slate-800">{item.value}</p>
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-4 grid gap-4">
+              <div className="grid gap-3 lg:grid-cols-3">
+                <div>
+                  <p className="mb-1 text-xs font-bold uppercase tracking-widest text-slate-400">Windows printer</p>
+                  <select
+                    className="input"
+                    value={hardwareSettings?.receipt_printer_name || ''}
+                    onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), receipt_printer_name: e.target.value }))}
+                  >
+                    <option value="">System default printer</option>
+                    {receiptPrinters.map((printer) => (
+                      <option key={printer.name} value={printer.name}>{printer.displayName || printer.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <p className="mb-1 text-xs font-bold uppercase tracking-widest text-slate-400">Receipt mode</p>
+                  <select
+                    className="input"
+                    value={hardwareSettings?.receipt_print_mode || 'windows'}
+                    onChange={(e) => {
+                      const mode = e.target.value
+                      setHardwareSettings((prev) => ({ ...(prev || {}), receipt_print_mode: mode, escpos_enabled: mode === 'escpos' || prev?.escpos_enabled === true }))
+                    }}
+                  >
+                    <option value="windows">Windows print driver</option>
+                    <option value="escpos">Direct ESC/POS</option>
+                  </select>
+                </div>
+                <div>
+                  <p className="mb-1 text-xs font-bold uppercase tracking-widest text-slate-400">Paper width</p>
+                  <select
+                    className="input"
+                    value={hardwareSettings?.receipt_paper_width || '80mm'}
+                    onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), receipt_paper_width: e.target.value }))}
+                  >
+                    <option value="58mm">58mm thermal</option>
+                    <option value="80mm">80mm thermal</option>
+                    <option value="A4">A4 fallback</option>
+                  </select>
+                </div>
               </div>
-              <select
-                className="input"
-                value={hardwareSettings?.payment_terminal_mode || 'manual'}
-                onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), payment_terminal_mode: e.target.value }))}
-              >
-                <option value="manual">Manual card terminal</option>
-                <option value="provider_api">Provider API</option>
-                <option value="local_bridge">Local device bridge</option>
-              </select>
+
+              <div className="grid gap-3 md:grid-cols-3">
+                <label className="flex items-center gap-2 text-sm font-semibold text-slate-700">
+                  <input type="checkbox" checked={hardwareSettings?.auto_print_receipts === true} onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), auto_print_receipts: e.target.checked }))} />
+                  Auto print receipts
+                </label>
+                <label className="flex items-center gap-2 text-sm font-semibold text-slate-700">
+                  <input type="checkbox" checked={hardwareSettings?.receipt_cut_enabled !== false} onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), receipt_cut_enabled: e.target.checked }))} />
+                  Cut receipt paper
+                </label>
+                <label className="flex items-center gap-2 text-sm font-semibold text-slate-700">
+                  <input type="checkbox" checked={hardwareSettings?.escpos_enabled === true} onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), escpos_enabled: e.target.checked, receipt_print_mode: e.target.checked ? 'escpos' : prev?.receipt_print_mode || 'windows' }))} />
+                  ESC/POS commands enabled
+                </label>
+              </div>
+
+              <div className="rounded-xl border border-slate-200 bg-white p-3">
+                <p className="text-xs font-bold uppercase tracking-widest text-slate-400">Direct ESC/POS target</p>
+                <div className="mt-2 grid gap-2 lg:grid-cols-[11rem_1fr_8rem]">
+                  <select
+                    className="input"
+                    value={hardwareSettings?.escpos_connection_type || 'network'}
+                    onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), escpos_connection_type: e.target.value }))}
+                  >
+                    <option value="network">Network/IP</option>
+                    <option value="share">Windows share</option>
+                    <option value="serial">COM/LPT device</option>
+                    <option value="path">Raw device path</option>
+                  </select>
+                  <input
+                    className="input"
+                    value={hardwareSettings?.escpos_network_host || ''}
+                    onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), escpos_network_host: e.target.value }))}
+                    placeholder="Printer IP, e.g. 192.168.1.50"
+                  />
+                  <input
+                    className="input"
+                    type="number"
+                    min="1"
+                    max="65535"
+                    value={hardwareSettings?.escpos_network_port || 9100}
+                    onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), escpos_network_port: e.target.value }))}
+                    placeholder="9100"
+                  />
+                </div>
+                <div className="mt-2 grid gap-2 lg:grid-cols-[1fr_9rem_9rem]">
+                  <input
+                    className="input"
+                    value={hardwareSettings?.escpos_printer_path || ''}
+                    onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), escpos_printer_path: e.target.value }))}
+                    placeholder="Optional: tcp://192.168.1.50:9100, COM3, LPT1, or \\\\DESK\\ReceiptPrinter"
+                  />
+                  <select
+                    className="input"
+                    value={hardwareSettings?.escpos_codepage || 'cp437'}
+                    onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), escpos_codepage: e.target.value }))}
+                  >
+                    <option value="cp437">CP437</option>
+                    <option value="cp850">CP850</option>
+                    <option value="cp858">CP858</option>
+                  </select>
+                  <input
+                    className="input"
+                    type="number"
+                    min="1500"
+                    value={hardwareSettings?.escpos_timeout_ms || 8000}
+                    onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), escpos_timeout_ms: e.target.value }))}
+                    placeholder="Timeout ms"
+                  />
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-slate-200 bg-white p-3">
+                <p className="text-xs font-bold uppercase tracking-widest text-slate-400">Cash drawer</p>
+                <div className="mt-2 grid gap-3 md:grid-cols-3">
+                  <label className="flex items-center gap-2 text-sm font-semibold text-slate-700">
+                    <input type="checkbox" checked={hardwareSettings?.cash_drawer_enabled === true} onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), cash_drawer_enabled: e.target.checked }))} />
+                    Drawer connected
+                  </label>
+                  <label className="flex items-center gap-2 text-sm font-semibold text-slate-700">
+                    <input type="checkbox" checked={hardwareSettings?.cash_drawer_open_on_cash === true} onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), cash_drawer_open_on_cash: e.target.checked }))} />
+                    Open on cash sale
+                  </label>
+                  <select
+                    className="input"
+                    value={hardwareSettings?.cash_drawer_open_timing || 'after_payment'}
+                    onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), cash_drawer_open_timing: e.target.value }))}
+                  >
+                    <option value="after_payment">After payment</option>
+                    <option value="before_receipt">Before receipt</option>
+                  </select>
+                </div>
+                <div className="mt-2 grid gap-2 md:grid-cols-3">
+                  <select
+                    className="input"
+                    value={hardwareSettings?.cash_drawer_pin || '0'}
+                    onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), cash_drawer_pin: e.target.value }))}
+                  >
+                    <option value="0">Drawer pin 0</option>
+                    <option value="1">Drawer pin 1</option>
+                  </select>
+                  <input
+                    className="input"
+                    type="number"
+                    min="10"
+                    value={hardwareSettings?.cash_drawer_pulse_on_ms || 50}
+                    onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), cash_drawer_pulse_on_ms: e.target.value }))}
+                    placeholder="Pulse on ms"
+                  />
+                  <input
+                    className="input"
+                    type="number"
+                    min="10"
+                    value={hardwareSettings?.cash_drawer_pulse_off_ms || 250}
+                    onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), cash_drawer_pulse_off_ms: e.target.value }))}
+                    placeholder="Pulse off ms"
+                  />
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-slate-200 bg-white p-3">
+                <p className="text-xs font-bold uppercase tracking-widest text-slate-400">Card terminal</p>
+                <div className="mt-2 grid gap-2 lg:grid-cols-3">
+                  <input
+                    className="input"
+                    value={hardwareSettings?.payment_terminal_provider || ''}
+                    onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), payment_terminal_provider: e.target.value }))}
+                    placeholder="Provider, e.g. Yoco, Stripe, local bank"
+                  />
+                  <input
+                    className="input"
+                    value={hardwareSettings?.payment_terminal_name || ''}
+                    onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), payment_terminal_name: e.target.value }))}
+                    placeholder="Terminal model/name"
+                  />
+                  <select
+                    className="input"
+                    value={hardwareSettings?.payment_terminal_mode || 'manual'}
+                    onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), payment_terminal_mode: e.target.value }))}
+                  >
+                    <option value="manual">Manual card terminal</option>
+                    <option value="local_bridge">Local device bridge</option>
+                    <option value="provider_api">Provider API URL</option>
+                  </select>
+                </div>
+                <div className="mt-2 grid gap-2 lg:grid-cols-[1fr_9rem]">
+                  <input
+                    className="input"
+                    value={hardwareSettings?.payment_terminal_bridge_url || ''}
+                    onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), payment_terminal_bridge_url: e.target.value }))}
+                    placeholder="Bridge/API URL, e.g. http://127.0.0.1:8787/charge"
+                  />
+                  <input
+                    className="input"
+                    type="number"
+                    min="1500"
+                    value={hardwareSettings?.payment_terminal_timeout_ms || 8000}
+                    onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), payment_terminal_timeout_ms: e.target.value }))}
+                    placeholder="Timeout ms"
+                  />
+                </div>
+              </div>
               {hardwareMsg && <p className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-600">{hardwareMsg}</p>}
               <div className="flex flex-wrap gap-2">
                 <button className="btn-primary" onClick={() => saveHardware()}>Save Settings</button>
                 <button className="btn-secondary" onClick={() => testHardware('receipt')}><Printer size={14} /> Test Receipt</button>
-                <button className="btn-secondary" onClick={() => testHardware('drawer')}>Test Drawer</button>
+                <button className="btn-secondary" onClick={async () => {
+                  const res = await window.api.pos.openCashDrawer?.({ reason: 'manual_test' })
+                  setHardwareMsg(res?.message || res?.error || 'Cash drawer test finished.')
+                }}>Open Drawer</button>
                 <button className="btn-secondary" onClick={() => testHardware('escpos')}>Test ESC/POS</button>
                 <button className="btn-secondary" onClick={() => testHardware('payment-terminal')}>Test Card Terminal</button>
               </div>

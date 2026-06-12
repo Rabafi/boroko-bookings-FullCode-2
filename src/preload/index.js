@@ -283,6 +283,7 @@ const api = {
     getHardwareSettings: () => ipcRenderer.invoke('pos:getHardwareSettings'),
     saveHardwareSettings: (data) => ipcRenderer.invoke('pos:saveHardwareSettings', data),
     testHardware: (kind) => ipcRenderer.invoke('pos:testHardware', kind),
+    openCashDrawer: (data) => ipcRenderer.invoke('pos:openCashDrawer', data),
     getStaff: () => ipcRenderer.invoke('pos:getStaff'),
     selectStaffWithPin: (data) => ipcRenderer.invoke('pos:selectStaffWithPin', data),
     getModifierGroups: () => ipcRenderer.invoke('pos:getModifierGroups'),

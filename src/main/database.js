@@ -182,6 +182,7 @@ export {
   getPosHardwareSettings,
   savePosHardwareSettings,
   testPosHardware,
+  recordPosHardwareEvent,
   getPosStaff,
   selectPosStaffWithPin,
   getPosModifierGroups,

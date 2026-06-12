@@ -27,6 +27,13 @@ import {
   buildUpgradeRequestEmail
 } from './emailNotifications.js'
 import { createLocalLock, releaseLocalLock } from './domains/mesh/meshLocks.js'
+import {
+  normalizePosHardwareSettings,
+  openCashDrawer,
+  printEscPosReceipt,
+  sendPaymentTerminalTotal as sendPaymentTerminalToDevice,
+  testPosHardwareDevice
+} from './hardware/posHardwareAdapter.js'
 
 const INPUT_FOCUS_DEBUG = false
 const APP_LOGO_FILENAME = 'boroko-bookings-logo.svg'
@@ -1460,6 +1467,15 @@ function listPosSystemDisplays() {
     workArea: display.workArea,
     scaleFactor: display.scaleFactor
   }))
+}
+
+async function getReceiptBusinessSettings(fallback = {}) {
+  try {
+    const settings = await db.getSettings()
+    return { ...(settings || {}), ...(fallback || {}) }
+  } catch {
+    return fallback || {}
+  }
 }
 
 function openPosDisplayWindow(kind = 'customer', options = {}) {
@@ -4071,7 +4087,26 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('receipts:printCurrent', async (event, options = {}) => {
     const win = BrowserWindow.fromWebContents(event.sender)
-    const deviceName = String(options?.deviceName || '').trim()
+    const hardware = normalizePosHardwareSettings(await db.getPosHardwareSettings().catch(() => ({})))
+    const business = await getReceiptBusinessSettings(options?.business || {})
+    if ((options?.mode === 'escpos' || hardware.receipt_print_mode === 'escpos') && options?.order) {
+      const directResult = await printEscPosReceipt({
+        order: options.order,
+        business,
+        settings: hardware,
+        openDrawer: options?.openDrawer === true
+      })
+      await db.recordPosHardwareEvent?.('receipt_print_escpos', {
+        success: directResult.success === true,
+        transport: directResult.transport || null,
+        target: directResult.target || null,
+        error: directResult.error || null,
+        order_id: options.order?.id || null,
+        entity_id: options.order?.id || null
+      }).catch(() => {})
+      if (directResult.success || options?.fallbackToBrowser === false) return directResult
+    }
+    const deviceName = String(options?.deviceName || hardware.receipt_printer_name || '').trim()
     const silent = options?.silent === true && !!deviceName
     return await new Promise((resolve) => {
       win.webContents.print({
@@ -4347,8 +4382,23 @@ app.whenReady().then(async () => {
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('pos:testHardware', async (_, kind) => {
-    try { await requireCapability('pos.view'); return await db.testPosHardware(kind || 'receipt') }
-    catch (e) { return { success: false, error: e.message } }
+    try {
+      await requireCapability('pos.view')
+      const settings = await db.getPosHardwareSettings()
+      const business = await getReceiptBusinessSettings()
+      const result = await testPosHardwareDevice(kind || 'receipt', settings, business)
+      await db.recordPosHardwareEvent?.('hardware_test', {
+        kind: kind || 'receipt',
+        success: result.success === true,
+        error: result.error || null,
+        message: result.message || null,
+        transport: result.transport || null,
+        target: result.target || null
+      }).catch(() => {})
+      return result
+    } catch (e) {
+      return { success: false, error: e.message }
+    }
   })
   ipcMain.handle('pos:getStaff', async () => {
     try { await requireCapability('pos.view'); return await db.getPosStaff() }
@@ -4398,6 +4448,26 @@ app.whenReady().then(async () => {
       return { success: false, error: e?.message || 'Could not open POS display.' }
     }
   })
+  ipcMain.handle('pos:openCashDrawer', async (_, data = {}) => {
+    try {
+      await requireCapability('pos.view')
+      const settings = await db.getPosHardwareSettings()
+      const result = await openCashDrawer(settings)
+      await db.recordPosHardwareEvent?.('cash_drawer_open', {
+        success: result.success === true,
+        error: result.error || null,
+        reason: data.reason || null,
+        order_id: data.order_id || null,
+        amount: data.amount || null,
+        transport: result.transport || null,
+        target: result.target || null,
+        entity_id: data.order_id || null
+      }).catch(() => {})
+      return result
+    } catch (e) {
+      return { success: false, error: e?.message || 'Could not open cash drawer.' }
+    }
+  })
   ipcMain.handle('pos:listDisplays', async () => {
     try {
       await requireCapability('pos.view')
@@ -4407,8 +4477,30 @@ app.whenReady().then(async () => {
     }
   })
   ipcMain.handle('pos:sendPaymentTerminalTotal', async (_, data) => {
-    try { await requireCapability('pos.view'); return await db.sendPaymentTerminalTotal(data || {}) }
-    catch (e) { return { success: false, error: e.message } }
+    try {
+      await requireCapability('pos.view')
+      const settings = await db.getPosHardwareSettings()
+      const business = await getReceiptBusinessSettings()
+      const result = await sendPaymentTerminalToDevice(settings, {
+        ...(data || {}),
+        currency: data?.currency || business?.currency || 'BWP'
+      })
+      await db.recordPosHardwareEvent?.('payment_terminal_send_total', {
+        success: result.success === true,
+        approved: result.approved === true,
+        declined: result.declined === true,
+        manual: result.manual === true,
+        amount: data?.amount || 0,
+        reference: result.reference || data?.reference || null,
+        approval_code: result.approval_code || null,
+        provider: settings?.payment_terminal_provider || null,
+        mode: settings?.payment_terminal_mode || 'manual',
+        error: result.error || null
+      }).catch(() => {})
+      return result
+    } catch (e) {
+      return { success: false, error: e.message }
+    }
   })
   ipcMain.handle('pos:getAuditLog', async (_, limit) => {
     try { await requireCapability('pos.view'); return await db.getPosAuditLog(limit || 100) }

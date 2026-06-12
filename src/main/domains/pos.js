@@ -135,15 +135,28 @@ function readPosHardwareSettings() {
   return {
     receipt_printer_name: current.receipt_printer_name || '',
     receipt_paper_width: current.receipt_paper_width || '80mm',
+    receipt_print_mode: current.receipt_print_mode || (current.escpos_enabled === true ? 'escpos' : 'windows'),
     auto_print_receipts: current.auto_print_receipts === true,
+    receipt_cut_enabled: current.receipt_cut_enabled !== false,
     cash_drawer_enabled: current.cash_drawer_enabled === true,
     cash_drawer_command: current.cash_drawer_command || 'ESC/POS kick',
+    cash_drawer_open_on_cash: current.cash_drawer_open_on_cash === true,
+    cash_drawer_open_timing: current.cash_drawer_open_timing || 'after_payment',
+    cash_drawer_pin: current.cash_drawer_pin || '0',
+    cash_drawer_pulse_on_ms: current.cash_drawer_pulse_on_ms || 50,
+    cash_drawer_pulse_off_ms: current.cash_drawer_pulse_off_ms || 250,
     escpos_enabled: current.escpos_enabled === true,
+    escpos_connection_type: current.escpos_connection_type || 'network',
+    escpos_network_host: current.escpos_network_host || '',
+    escpos_network_port: current.escpos_network_port || 9100,
     escpos_printer_path: current.escpos_printer_path || '',
     escpos_codepage: current.escpos_codepage || 'cp437',
+    escpos_timeout_ms: current.escpos_timeout_ms || 8000,
     payment_terminal_provider: current.payment_terminal_provider || '',
     payment_terminal_name: current.payment_terminal_name || '',
     payment_terminal_mode: current.payment_terminal_mode || 'manual',
+    payment_terminal_bridge_url: current.payment_terminal_bridge_url || '',
+    payment_terminal_timeout_ms: current.payment_terminal_timeout_ms || 8000,
     customer_display_enabled: current.customer_display_enabled === true,
     updated_at: current.updated_at || null
   };
@@ -1830,6 +1843,14 @@ export async function testPosHardware(kind = 'receipt') {
         ? 'ESC/POS test command prepared. Install a supported direct-print bridge before live drawer kicks.'
         : 'Receipt printer test is ready. Use the test receipt print button.'
   };
+}
+
+export async function recordPosHardwareEvent(action = 'hardware_event', details = {}) {
+  return appendPosAudit(action, {
+    entity_type: details.entity_type || 'pos_hardware',
+    entity_id: details.entity_id || null,
+    details
+  });
 }
 
 export async function getPosStaff() {

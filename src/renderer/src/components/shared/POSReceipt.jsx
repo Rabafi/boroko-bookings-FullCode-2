@@ -45,8 +45,12 @@ export function POSReceipt({ order, onClose, autoPrint = false }) {
     const hardware = await window.api?.pos?.getHardwareSettings?.().catch(() => null)
     const printerName = hardware?.receipt_printer_name || ''
     const result = await window.api?.receipts?.printCurrent?.({
+      mode: hardware?.receipt_print_mode || 'windows',
+      order,
+      business: settings || {},
       deviceName: printerName,
-      silent: Boolean(printerName)
+      silent: Boolean(printerName),
+      openDrawer: order?._open_drawer_on_print === true
     }).catch(() => null)
     if (!result?.success) window.print()
   }
