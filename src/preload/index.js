@@ -294,6 +294,7 @@ const api = {
     updateCustomerDisplay: (data) => ipcRenderer.invoke('pos:updateCustomerDisplay', data),
     getCustomerDisplay: () => ipcRenderer.invoke('pos:getCustomerDisplay'),
     openDisplay: (kind, options) => ipcRenderer.invoke('pos:openDisplay', kind, options),
+    listDisplays: () => ipcRenderer.invoke('pos:listDisplays'),
     sendPaymentTerminalTotal: (data) => ipcRenderer.invoke('pos:sendPaymentTerminalTotal', data),
     getAuditLog: (limit) => ipcRenderer.invoke('pos:getAuditLog', limit),
     getActiveBookingForRoom: (roomId) => ipcRenderer.invoke('pos:getActiveBookingForRoom', roomId)

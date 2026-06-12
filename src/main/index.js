@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, ipcMain, Notification, dialog, Menu, nativeImage } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, Notification, dialog, Menu, nativeImage, screen } from 'electron'
 import { join, dirname, basename } from 'path'
 import { fileURLToPath } from 'url'
 import fs from 'fs'
@@ -1300,13 +1300,177 @@ const POS_DISPLAY_TITLES = {
   bar: 'Bar Tickets'
 }
 
+const POS_DISPLAY_LAYOUTS_FILENAME = 'pos-display-layouts.json'
+
+function getDefaultPosDisplaySize(kind) {
+  return kind === 'customer'
+    ? { width: 1024, height: 720 }
+    : { width: 1280, height: 800 }
+}
+
+function getPosDisplayLayoutsPath() {
+  return join(app.getPath('userData'), POS_DISPLAY_LAYOUTS_FILENAME)
+}
+
+function readPosDisplayLayouts() {
+  const layouts = readStartupJson(getPosDisplayLayoutsPath(), {})
+  return layouts && typeof layouts === 'object' && !Array.isArray(layouts) ? layouts : {}
+}
+
+function writePosDisplayLayouts(layouts) {
+  writeStartupJson(getPosDisplayLayoutsPath(), layouts && typeof layouts === 'object' ? layouts : {})
+}
+
+function normalizeDisplayBounds(bounds) {
+  if (!bounds || typeof bounds !== 'object') return null
+  const x = Number(bounds.x)
+  const y = Number(bounds.y)
+  const width = Number(bounds.width)
+  const height = Number(bounds.height)
+  if (![x, y, width, height].every(Number.isFinite)) return null
+  if (width < 480 || height < 320) return null
+  return {
+    x: Math.round(x),
+    y: Math.round(y),
+    width: Math.round(width),
+    height: Math.round(height)
+  }
+}
+
+function getDisplayById(displayId) {
+  if (displayId === null || displayId === undefined || displayId === '') return null
+  return screen.getAllDisplays().find((display) => String(display.id) === String(displayId)) || null
+}
+
+function boundsIntersect(a, b) {
+  if (!a || !b) return false
+  return a.x < b.x + b.width
+    && a.x + a.width > b.x
+    && a.y < b.y + b.height
+    && a.y + a.height > b.y
+}
+
+function centerBoundsOnDisplay(kind, display, fullScreen) {
+  const area = fullScreen ? display.bounds : display.workArea
+  if (fullScreen) {
+    return {
+      x: area.x,
+      y: area.y,
+      width: area.width,
+      height: area.height
+    }
+  }
+
+  const defaultSize = getDefaultPosDisplaySize(kind)
+  const width = Math.min(defaultSize.width, area.width)
+  const height = Math.min(defaultSize.height, area.height)
+  return {
+    x: area.x + Math.max(0, Math.round((area.width - width) / 2)),
+    y: area.y + Math.max(0, Math.round((area.height - height) / 2)),
+    width,
+    height
+  }
+}
+
+function getSavedDisplayWindowState(kind, options = {}) {
+  const saved = readPosDisplayLayouts()[kind] || {}
+  const requestedDisplay = getDisplayById(options?.displayId)
+  const savedFullScreen = saved.fullScreen === true
+  const fullScreen = options?.fullScreen === true || (options?.fullScreen === undefined && savedFullScreen)
+
+  if (requestedDisplay) {
+    return {
+      bounds: centerBoundsOnDisplay(kind, requestedDisplay, fullScreen),
+      fullScreen,
+      restored: false,
+      displayId: requestedDisplay.id
+    }
+  }
+
+  const savedBounds = normalizeDisplayBounds(saved.bounds)
+  const displays = screen.getAllDisplays()
+  const savedDisplay = getDisplayById(saved.displayId)
+  const boundsStillVisible = savedBounds && displays.some((display) => boundsIntersect(display.bounds, savedBounds))
+  if (savedBounds && boundsStillVisible) {
+    return {
+      bounds: fullScreen && savedDisplay ? centerBoundsOnDisplay(kind, savedDisplay, true) : savedBounds,
+      fullScreen,
+      restored: true,
+      displayId: savedDisplay?.id || screen.getDisplayMatching(savedBounds)?.id || null
+    }
+  }
+
+  if (savedDisplay) {
+    return {
+      bounds: centerBoundsOnDisplay(kind, savedDisplay, fullScreen),
+      fullScreen,
+      restored: true,
+      displayId: savedDisplay.id
+    }
+  }
+
+  return {
+    bounds: null,
+    fullScreen: options?.fullScreen === true,
+    restored: false,
+    displayId: null
+  }
+}
+
+function savePosDisplayWindowLayout(kind, displayWindow) {
+  if (!displayWindow || displayWindow.isDestroyed()) return
+  const bounds = normalizeDisplayBounds(displayWindow.getBounds())
+  if (!bounds) return
+  const display = screen.getDisplayMatching(bounds)
+  const layouts = readPosDisplayLayouts()
+  layouts[kind] = {
+    kind,
+    displayId: display?.id || null,
+    displayLabel: display?.label || '',
+    bounds,
+    fullScreen: displayWindow.isFullScreen(),
+    updated_at: new Date().toISOString()
+  }
+  writePosDisplayLayouts(layouts)
+}
+
+function rememberPosDisplayWindow(kind, displayWindow) {
+  let saveTimer = null
+  const scheduleSave = () => {
+    if (saveTimer) clearTimeout(saveTimer)
+    saveTimer = setTimeout(() => savePosDisplayWindowLayout(kind, displayWindow), 350)
+  }
+
+  for (const eventName of ['move', 'resize', 'enter-full-screen', 'leave-full-screen', 'maximize', 'unmaximize', 'restore']) {
+    displayWindow.on(eventName, scheduleSave)
+  }
+  displayWindow.on('close', () => {
+    if (saveTimer) clearTimeout(saveTimer)
+    savePosDisplayWindowLayout(kind, displayWindow)
+  })
+}
+
+function listPosSystemDisplays() {
+  const primaryId = screen.getPrimaryDisplay()?.id
+  return screen.getAllDisplays().map((display, index) => ({
+    id: String(display.id),
+    label: display.label || `Display ${index + 1}`,
+    isPrimary: display.id === primaryId,
+    bounds: display.bounds,
+    workArea: display.workArea,
+    scaleFactor: display.scaleFactor
+  }))
+}
+
 function openPosDisplayWindow(kind = 'customer', options = {}) {
   const displayKind = Object.hasOwn(POS_DISPLAY_ROUTES, kind) ? kind : 'customer'
-  const openFullScreen = options?.fullScreen === true
+  const windowState = getSavedDisplayWindowState(displayKind, options || {})
+  const defaultSize = getDefaultPosDisplaySize(displayKind)
+  const windowBounds = windowState.bounds || defaultSize
+  const openFullScreen = windowState.fullScreen === true
   const appIcon = createAppLogoNativeImage() || undefined
   const displayWindow = new BrowserWindow({
-    width: displayKind === 'customer' ? 1024 : 1280,
-    height: displayKind === 'customer' ? 720 : 800,
+    ...windowBounds,
     minWidth: 800,
     minHeight: 560,
     autoHideMenuBar: true,
@@ -1321,6 +1485,7 @@ function openPosDisplayWindow(kind = 'customer', options = {}) {
       backgroundThrottling: false
     }
   })
+  rememberPosDisplayWindow(displayKind, displayWindow)
 
   displayWindow.webContents.setWindowOpenHandler((details) => {
     if (isSafeExternalUrl(details.url)) shell.openExternal(details.url)
@@ -1340,7 +1505,14 @@ function openPosDisplayWindow(kind = 'customer', options = {}) {
   }
   if (openFullScreen) displayWindow.setFullScreen(true)
   displayWindow.show()
-  return { success: true, kind: displayKind, fullScreen: openFullScreen }
+  savePosDisplayWindowLayout(displayKind, displayWindow)
+  return {
+    success: true,
+    kind: displayKind,
+    fullScreen: openFullScreen,
+    restored: windowState.restored,
+    displayId: windowState.displayId || null
+  }
 }
 
 const EXPORT_SECTION_LABELS = {
@@ -4224,6 +4396,14 @@ app.whenReady().then(async () => {
       return openPosDisplayWindow(kind || 'customer', options || {})
     } catch (e) {
       return { success: false, error: e?.message || 'Could not open POS display.' }
+    }
+  })
+  ipcMain.handle('pos:listDisplays', async () => {
+    try {
+      await requireCapability('pos.view')
+      return listPosSystemDisplays()
+    } catch {
+      return []
     }
   })
   ipcMain.handle('pos:sendPaymentTerminalTotal', async (_, data) => {

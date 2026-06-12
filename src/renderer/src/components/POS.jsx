@@ -266,6 +266,8 @@ export default function POS() {
   const [hardwareSettings, setHardwareSettings] = useState(null)
   const [hardwareMsg, setHardwareMsg] = useState('')
   const [receiptPrinters, setReceiptPrinters] = useState([])
+  const [systemDisplays, setSystemDisplays] = useState([])
+  const [displayTargets, setDisplayTargets] = useState({ customer: '', kitchen: '', bar: '' })
   const [posStaff, setPosStaff] = useState([])
   const [selectedPosStaff, setSelectedPosStaff] = useState(null)
   const [pendingPosStaffId, setPendingPosStaffId] = useState('')
@@ -541,9 +543,10 @@ export default function POS() {
       window.api.pos.getFloorLayout?.().catch(() => ({ areas: [] })),
       window.api.pos.getAuditLog?.(25).catch(() => [])
     ])
-    const [tables, printers] = await Promise.all([
+    const [tables, printers, displays] = await Promise.all([
       (window.api.pos.getTablesWithStatus?.(selectedOutlet?.id || null) || window.api.pos.getTables?.()).catch(() => []),
-      window.api.receipts.listPrinters?.().catch(() => [])
+      window.api.receipts.listPrinters?.().catch(() => []),
+      window.api.pos.listDisplays?.().catch(() => [])
     ])
     setOpenTabs((tabs || []).filter((row) => ACTIVE_TABLE_STATUSES.has(String(row.status || 'open').toLowerCase())))
     setTickets(ticketRows || [])
@@ -556,6 +559,7 @@ export default function POS() {
     setAuditLog(auditRows || [])
     setPosTables(tables || [])
     setReceiptPrinters(printers || [])
+    setSystemDisplays(displays || [])
   }, [currentUser?.id, selectedOutlet?.id, selectedPosStaff?.id])
 
   useEffect(() => {
@@ -1733,13 +1737,37 @@ export default function POS() {
   }
 
   const openDisplay = async (kind, options = {}) => {
-    const res = await window.api.pos.openDisplay?.(kind, options)
+    const targetDisplayId = displayTargets[kind] || ''
+    const requestOptions = targetDisplayId ? { ...options, displayId: targetDisplayId } : options
+    const res = await window.api.pos.openDisplay?.(kind, requestOptions)
     if (!res?.success) {
       setHardwareMsg(res?.error || 'Could not open POS display.')
       return
     }
-    setHardwareMsg(`${kind === 'customer' ? 'Customer display' : kind === 'bar' ? 'Bar tickets' : 'Kitchen tickets'} opened${options.fullScreen ? ' in full screen' : ' in a separate window'}.`)
+    const target = systemDisplays.find((display) => display.id === targetDisplayId)
+    const placement = target
+      ? ` on ${target.label}${target.isPrimary ? ' (primary)' : ''}`
+      : res.restored
+        ? ' on the saved screen'
+        : ''
+    setHardwareMsg(`${kind === 'customer' ? 'Customer display' : kind === 'bar' ? 'Bar tickets' : 'Kitchen tickets'} opened${res.fullScreen ? ' in full screen' : ' in a separate window'}${placement}.`)
   }
+
+  const renderDisplayTargetSelect = (kind) => (
+    <select
+      className="input mt-3"
+      value={displayTargets[kind] || ''}
+      onChange={(e) => setDisplayTargets((prev) => ({ ...prev, [kind]: e.target.value }))}
+      aria-label={`Monitor for ${kind} POS display`}
+    >
+      <option value="">Remembered screen / system default</option>
+      {systemDisplays.map((display) => (
+        <option key={`${kind}-${display.id}`} value={display.id}>
+          {display.label}{display.isPrimary ? ' (Primary)' : ''}
+        </option>
+      ))}
+    </select>
+  )
 
   const terminalShellClass = touchMode
     ? 'grid min-h-0 flex-1 grid-cols-1 gap-2 overflow-hidden lg:grid-cols-[minmax(0,1fr)_minmax(29rem,0.58fr)] 2xl:grid-cols-[minmax(0,1fr)_minmax(31rem,0.53fr)]'
@@ -3556,7 +3584,7 @@ export default function POS() {
 
           <div className={`${setupSection === 'displays' ? '' : 'hidden'} bb-card p-5`}>
             <h2 className="text-base font-semibold text-slate-900">Customer, Kitchen & Bar Displays</h2>
-            <p className="mt-1 text-sm text-slate-500">Open dedicated full-screen displays, then move each window to the guest monitor, kitchen screen, or bar screen.</p>
+            <p className="mt-1 text-sm text-slate-500">Open dedicated displays on selected monitors. Moved or full-screen windows reopen on the same screen next time.</p>
             <div className="mt-4 grid gap-3">
               <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-4">
                 <div className="flex items-start gap-3">
@@ -3565,6 +3593,7 @@ export default function POS() {
                     <p className="font-semibold text-emerald-950">Customer-facing display</p>
                     <p className="mt-1 text-sm text-emerald-800">Shows the guest their current basket and total as the cashier adds items.</p>
                     <p className="mt-3 rounded-xl bg-white/70 px-3 py-2 text-sm font-semibold text-emerald-900">Updates automatically from the active POS cart.</p>
+                    {renderDisplayTargetSelect('customer')}
                   </div>
                 </div>
                 <div className="mt-4 flex flex-wrap gap-2">
@@ -3584,6 +3613,7 @@ export default function POS() {
                     <div>
                       <p className="font-semibold text-orange-950">Kitchen ticket screen</p>
                       <p className="mt-1 text-sm text-orange-800">Food tickets with New, Preparing, and Ready lanes.</p>
+                      {renderDisplayTargetSelect('kitchen')}
                     </div>
                   </div>
                   <div className="mt-4 flex flex-wrap gap-2">
@@ -3602,6 +3632,7 @@ export default function POS() {
                     <div>
                       <p className="font-semibold text-blue-950">Bar ticket screen</p>
                       <p className="mt-1 text-sm text-blue-800">Drink tickets with the same simple prep workflow.</p>
+                      {renderDisplayTargetSelect('bar')}
                     </div>
                   </div>
                   <div className="mt-4 flex flex-wrap gap-2">
@@ -3616,7 +3647,7 @@ export default function POS() {
               </div>
 
               <div className="rounded-xl bg-slate-50 px-4 py-3 text-sm text-slate-600">
-                Keep the main POS on the cashier terminal. Put the customer display on the guest-facing monitor, and put the kitchen or bar display on a tablet, TV, or second workstation.
+                Keep the main POS on the cashier terminal. Put the customer display on the guest-facing monitor, and put the kitchen or bar display on a tablet, TV, or second workstation. This device remembers each display placement after restart.
               </div>
             </div>
           </div>
