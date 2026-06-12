@@ -38,7 +38,7 @@ Deno.serve(async (req) => {
     const authError = requireFunctionSecret(req)
     if (authError) return authError
 
-    const { lodge_id, title, body, url = '/#/alerts' } = await req.json()
+    const { lodge_id, title, body, url = '/#/alerts', tag, dedupeKey, version } = await req.json()
     if (!lodge_id || !title) return jsonResponse({ error: 'lodge_id and title required' }, 400)
 
     const supabase = createClient(SUPABASE_URL, SUPABASE_KEY)
@@ -49,7 +49,7 @@ Deno.serve(async (req) => {
 
     if (!subs?.length) return jsonResponse({ sent: 0, pruned: 0 })
 
-    const payload = JSON.stringify({ title, body, url })
+    const payload = JSON.stringify({ title, body, url, tag, dedupeKey, version })
     const results = await Promise.allSettled(
       subs.map(s => webpush.sendNotification({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } }, payload))
     )

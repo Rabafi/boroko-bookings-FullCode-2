@@ -3,8 +3,18 @@ import path from 'node:path'
 import sharp from 'sharp'
 
 const root = process.cwd()
-const sourceDir = path.join(root, 'marketing-site', 'assets', 'screenshots')
-const outputDir = path.join(root, 'marketing-site', 'assets', 'generated', 'screenshots')
+const sources = [
+  {
+    name: 'screenshots',
+    sourceDir: path.join(root, 'marketing-site', 'assets', 'screenshots'),
+    outputDir: path.join(root, 'marketing-site', 'assets', 'generated', 'screenshots')
+  },
+  {
+    name: 'photos',
+    sourceDir: path.join(root, 'marketing-site', 'assets', 'photos'),
+    outputDir: path.join(root, 'marketing-site', 'assets', 'generated', 'photos')
+  }
+]
 
 const widthTargets = {
   landscape: [640, 960, 1280, 1600],
@@ -15,7 +25,7 @@ async function ensureDir(dir) {
   await fs.mkdir(dir, { recursive: true })
 }
 
-async function buildImageVariants(fileName) {
+async function buildImageVariants(sourceDir, outputDir, fileName) {
   const inputPath = path.join(sourceDir, fileName)
   const image = sharp(inputPath)
   const metadata = await image.metadata()
@@ -42,22 +52,24 @@ async function buildImageVariants(fileName) {
 }
 
 async function main() {
-  await ensureDir(outputDir)
-  const entries = await fs.readdir(sourceDir)
-  const pngs = entries.filter((file) => file.toLowerCase().endsWith('.png'))
-  const manifest = {}
+  for (const source of sources) {
+    await ensureDir(source.outputDir)
+    const entries = await fs.readdir(source.sourceDir).catch(() => [])
+    const images = entries.filter((file) => /\.(png|jpe?g)$/i.test(file))
+    const manifest = {}
 
-  for (const fileName of pngs) {
-    const result = await buildImageVariants(fileName)
-    manifest[fileName] = result
-    console.log(`built ${fileName}`)
+    for (const fileName of images) {
+      const result = await buildImageVariants(source.sourceDir, source.outputDir, fileName)
+      manifest[fileName] = result
+      console.log(`built ${source.name}/${fileName}`)
+    }
+
+    await fs.writeFile(
+      path.join(source.outputDir, 'manifest.json'),
+      JSON.stringify(manifest, null, 2) + '\n',
+      'utf8'
+    )
   }
-
-  await fs.writeFile(
-    path.join(outputDir, 'manifest.json'),
-    JSON.stringify(manifest, null, 2) + '\n',
-    'utf8'
-  )
 }
 
 main().catch((error) => {

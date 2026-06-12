@@ -95,7 +95,14 @@
             <li><span class="breadcrumbs-current">Blog</span></li>
           </ol>
         </nav>
-        <section class="page-hero">
+        <section class="page-hero page-hero-with-image">
+            <div class="page-hero-bg" aria-hidden="true">
+              <picture class="responsive-picture">
+                <source type="image/avif" srcset="./assets/generated/photos/reports-screen-640.avif 640w, ./assets/generated/photos/reports-screen-960.avif 960w, ./assets/generated/photos/reports-screen-1280.avif 1280w, ./assets/generated/photos/reports-screen-1600.avif 1600w" sizes="(max-width: 900px) 92vw, 1180px" />
+                <source type="image/webp" srcset="./assets/generated/photos/reports-screen-640.webp 640w, ./assets/generated/photos/reports-screen-960.webp 960w, ./assets/generated/photos/reports-screen-1280.webp 1280w, ./assets/generated/photos/reports-screen-1600.webp 1600w" sizes="(max-width: 900px) 92vw, 1180px" />
+                <img src="./assets/photos/reports-screen.jpg" alt="" width="1600" height="1152" decoding="async" />
+              </picture>
+            </div>
           <div class="container page-hero-grid">
             <div>
               <div class="section-tag">Blog</div>
@@ -106,41 +113,70 @@
             </div>
           </div>
         </section>
-
-        <section class="section">
+<section class="section">
           <div class="container">
             <div class="stack-grid">
               <article class="content-card">
+                <picture class="blog-card-photo">
+                  <source type="image/avif" srcset="./assets/generated/photos/reception-640.avif 640w, ./assets/generated/photos/reception-960.avif 960w" sizes="(max-width: 900px) 92vw, 520px" />
+                  <source type="image/webp" srcset="./assets/generated/photos/reception-640.webp 640w, ./assets/generated/photos/reception-960.webp 960w" sizes="(max-width: 900px) 92vw, 520px" />
+                  <img src="./assets/photos/reception.jpg" alt="Reception desk used to choose the right lodge management workflow" width="1600" height="1201" loading="lazy" decoding="async" />
+                </picture>
                 <div style="font-size:0.78rem;font-weight:800;letter-spacing:0.12em;text-transform:uppercase;color:var(--brand);margin-bottom:8px;">Operations</div>
                 <h3><a href="./blog-choose-lodge-management-system.html">How to choose the right lodge management system</a></h3>
                 <p>Not every lodge needs enterprise software. Here is how to match the system to the size of your property, the size of your team, and the complexity of your operations.</p>
                 <p style="color:var(--ink-soft);font-size:0.85rem;margin-top:12px;">5 min read</p>
               </article>
               <article class="content-card">
+                <picture class="blog-card-photo">
+                  <source type="image/avif" srcset="./assets/generated/photos/financial-dashboard-640.avif 640w, ./assets/generated/photos/financial-dashboard-960.avif 960w" sizes="(max-width: 900px) 92vw, 520px" />
+                  <source type="image/webp" srcset="./assets/generated/photos/financial-dashboard-640.webp 640w, ./assets/generated/photos/financial-dashboard-960.webp 960w" sizes="(max-width: 900px) 92vw, 520px" />
+                  <img src="./assets/photos/financial-dashboard.jpg" alt="Financial dashboard imagery representing billing, deposits, and payment follow-up" width="1600" height="900" loading="lazy" decoding="async" />
+                </picture>
                 <div style="font-size:0.78rem;font-weight:800;letter-spacing:0.12em;text-transform:uppercase;color:var(--brand);margin-bottom:8px;">Financial</div>
                 <h3><a href="./blog-payment-tracking-for-lodges.html">Why your lodge needs proper billing and payment tracking</a></h3>
                 <p>Scattered invoices and manual payment follow-up create revenue leakage. A connected billing system protects your income without extra admin time.</p>
                 <p style="color:var(--ink-soft);font-size:0.85rem;margin-top:12px;">4 min read</p>
               </article>
               <article class="content-card">
+                <picture class="blog-card-photo">
+                  <source type="image/avif" srcset="./assets/generated/photos/guest-room-640.avif 640w, ./assets/generated/photos/guest-room-960.avif 960w" sizes="(max-width: 900px) 92vw, 520px" />
+                  <source type="image/webp" srcset="./assets/generated/photos/guest-room-640.webp 640w, ./assets/generated/photos/guest-room-960.webp 960w" sizes="(max-width: 900px) 92vw, 520px" />
+                  <img src="./assets/photos/guest-room.jpg" alt="Guest room representing direct online reservations" width="1600" height="1067" loading="lazy" decoding="async" />
+                </picture>
                 <div style="font-size:0.78rem;font-weight:800;letter-spacing:0.12em;text-transform:uppercase;color:var(--brand);margin-bottom:8px;">Growth</div>
                 <h3><a href="./blog-when-to-add-online-reservations.html">When is the right time for a lodge to add online reservations?</a></h3>
                 <p>Direct online bookings reduce commission costs and give you control over your availability. Here is what to consider before launching your own booking page.</p>
                 <p style="color:var(--ink-soft);font-size:0.85rem;margin-top:12px;">6 min read</p>
               </article>
               <article class="content-card">
+                <picture class="blog-card-photo">
+                  <source type="image/avif" srcset="./assets/generated/photos/lodge-exterior-640.avif 640w, ./assets/generated/photos/lodge-exterior-960.avif 960w" sizes="(max-width: 900px) 92vw, 520px" />
+                  <source type="image/webp" srcset="./assets/generated/photos/lodge-exterior-640.webp 640w, ./assets/generated/photos/lodge-exterior-960.webp 960w" sizes="(max-width: 900px) 92vw, 520px" />
+                  <img src="./assets/photos/lodge-exterior.jpg" alt="Lodge property representing growth beyond manual administration" width="1600" height="1067" loading="lazy" decoding="async" />
+                </picture>
                 <div style="font-size:0.78rem;font-weight:800;letter-spacing:0.12em;text-transform:uppercase;color:var(--brand);margin-bottom:8px;">Management</div>
                 <h3><a href="./blog-signs-youve-outgrown-manual-admin.html">Five signs your lodge has outgrown manual admin</a></h3>
                 <p>If you are still using notebooks, spreadsheets, and WhatsApp to run your bookings, here are the clearest signals that it is time for a dedicated system.</p>
                 <p style="color:var(--ink-soft);font-size:0.85rem;margin-top:12px;">5 min read</p>
               </article>
               <article class="content-card">
+                <picture class="blog-card-photo">
+                  <source type="image/avif" srcset="./assets/generated/photos/inventory-tablet-640.avif 640w, ./assets/generated/photos/inventory-tablet-960.avif 960w" sizes="(max-width: 900px) 92vw, 520px" />
+                  <source type="image/webp" srcset="./assets/generated/photos/inventory-tablet-640.webp 640w, ./assets/generated/photos/inventory-tablet-960.webp 960w" sizes="(max-width: 900px) 92vw, 520px" />
+                  <img src="./assets/photos/inventory-tablet.jpg" alt="Inventory shelf with tablet representing bar and kitchen stock control" width="1600" height="900" loading="lazy" decoding="async" />
+                </picture>
                 <div style="font-size:0.78rem;font-weight:800;letter-spacing:0.12em;text-transform:uppercase;color:var(--brand);margin-bottom:8px;">Stock Control</div>
                 <h3><a href="./blog-reduce-waste-in-bar-and-kitchen.html">How to reduce waste in your lodge bar and kitchen</a></h3>
                 <p>Without stock tracking, supplies disappear quietly. A simple inventory process can save significant cost every month.</p>
                 <p style="color:var(--ink-soft);font-size:0.85rem;margin-top:12px;">4 min read</p>
               </article>
               <article class="content-card">
+                <picture class="blog-card-photo">
+                  <source type="image/avif" srcset="./assets/generated/photos/reports-screen-640.avif 640w, ./assets/generated/photos/reports-screen-960.avif 960w" sizes="(max-width: 900px) 92vw, 520px" />
+                  <source type="image/webp" srcset="./assets/generated/photos/reports-screen-640.webp 640w, ./assets/generated/photos/reports-screen-960.webp 960w" sizes="(max-width: 900px) 92vw, 520px" />
+                  <img src="./assets/photos/reports-screen.jpg" alt="Reporting screen representing owner visibility from anywhere" width="1600" height="1152" loading="lazy" decoding="async" />
+                </picture>
                 <div style="font-size:0.78rem;font-weight:800;letter-spacing:0.12em;text-transform:uppercase;color:var(--brand);margin-bottom:8px;">Ownership</div>
                 <h3><a href="./blog-what-owners-should-expect.html">What lodge owners should expect from their management software</a></h3>
                 <p>Good software does more than handle bookings. It should give owners real visibility into revenue, costs, and daily operations without needing to be behind the front desk.</p>

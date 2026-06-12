@@ -1,0 +1,124 @@
+{
+  "bar-stock.jpg": {
+    "fileName": "bar-stock.jpg",
+    "width": 1600,
+    "height": 2400,
+    "orientation": "portrait",
+    "widths": [
+      240,
+      320,
+      400,
+      480,
+      1600
+    ]
+  },
+  "financial-dashboard.jpg": {
+    "fileName": "financial-dashboard.jpg",
+    "width": 1600,
+    "height": 900,
+    "orientation": "landscape",
+    "widths": [
+      640,
+      960,
+      1280,
+      1600
+    ]
+  },
+  "guest-room.jpg": {
+    "fileName": "guest-room.jpg",
+    "width": 1600,
+    "height": 1067,
+    "orientation": "landscape",
+    "widths": [
+      640,
+      960,
+      1280,
+      1600
+    ]
+  },
+  "inventory-tablet.jpg": {
+    "fileName": "inventory-tablet.jpg",
+    "width": 1600,
+    "height": 900,
+    "orientation": "landscape",
+    "widths": [
+      640,
+      960,
+      1280,
+      1600
+    ]
+  },
+  "lodge-exterior.jpg": {
+    "fileName": "lodge-exterior.jpg",
+    "width": 1600,
+    "height": 1067,
+    "orientation": "landscape",
+    "widths": [
+      640,
+      960,
+      1280,
+      1600
+    ]
+  },
+  "lodge-lounge.jpg": {
+    "fileName": "lodge-lounge.jpg",
+    "width": 1600,
+    "height": 1600,
+    "orientation": "landscape",
+    "widths": [
+      640,
+      960,
+      1280,
+      1600
+    ]
+  },
+  "reception.jpg": {
+    "fileName": "reception.jpg",
+    "width": 1600,
+    "height": 1201,
+    "orientation": "landscape",
+    "widths": [
+      640,
+      960,
+      1280,
+      1600
+    ]
+  },
+  "reports-screen.jpg": {
+    "fileName": "reports-screen.jpg",
+    "width": 1600,
+    "height": 1152,
+    "orientation": "landscape",
+    "widths": [
+      640,
+      960,
+      1280,
+      1600
+    ]
+  },
+  "restaurant.jpg": {
+    "fileName": "restaurant.jpg",
+    "width": 1600,
+    "height": 1067,
+    "orientation": "landscape",
+    "widths": [
+      640,
+      960,
+      1280,
+      1600
+    ]
+  },
+  "safari-landscape.jpg": {
+    "fileName": "safari-landscape.jpg",
+    "width": 1600,
+    "height": 2400,
+    "orientation": "portrait",
+    "widths": [
+      240,
+      320,
+      400,
+      480,
+      1600
+    ]
+  }
+}

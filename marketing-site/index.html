@@ -200,7 +200,14 @@
       </div>
 
       <main id="main">
-        <section id="home" class="hero-section">
+        <section id="home" class="hero-section hero-section-with-photo">
+          <div class="home-hero-photo" aria-hidden="true">
+            <picture class="responsive-picture">
+                            <source type="image/avif" srcset="./assets/generated/photos/lodge-exterior-640.avif 640w, ./assets/generated/photos/lodge-exterior-960.avif 960w, ./assets/generated/photos/lodge-exterior-1280.avif 1280w, ./assets/generated/photos/lodge-exterior-1600.avif 1600w" sizes="(max-width: 900px) 92vw, 1180px" />
+                            <source type="image/webp" srcset="./assets/generated/photos/lodge-exterior-640.webp 640w, ./assets/generated/photos/lodge-exterior-960.webp 960w, ./assets/generated/photos/lodge-exterior-1280.webp 1280w, ./assets/generated/photos/lodge-exterior-1600.webp 1600w" sizes="(max-width: 900px) 92vw, 1180px" />
+                            <img src="./assets/photos/lodge-exterior.jpg" alt="" width="1600" height="1067" decoding="async" />
+                          </picture>
+          </div>
           <div class="hero-backdrop" aria-hidden="true"></div>
           <div class="container hero-grid">
             <div class="hero-copy">
@@ -275,8 +282,7 @@
             </div>
           </div>
         </section>
-
-        <section class="trust-strip">
+<section class="trust-strip">
           <div class="container trust-grid">
             <div>
               <span class="trust-kicker">Built for Botswana lodge realities</span>
@@ -301,26 +307,51 @@
 
             <div class="problem-grid">
               <article class="problem-card">
+                <picture class="card-media compact">
+                  <source type="image/avif" srcset="./assets/generated/photos/reception-640.avif 640w, ./assets/generated/photos/reception-960.avif 960w" sizes="(max-width: 900px) 92vw, 220px" />
+                  <source type="image/webp" srcset="./assets/generated/photos/reception-640.webp 640w, ./assets/generated/photos/reception-960.webp 960w" sizes="(max-width: 900px) 92vw, 220px" />
+                  <img src="./assets/photos/reception.jpg" alt="A lodge reception desk where room and guest operations are coordinated" width="1600" height="1201" loading="lazy" decoding="async" />
+                </picture>
                 <span>01</span>
                 <h3>Double-bookings and room confusion</h3>
                 <p>Room board, booking list, planning, housekeeping, and availability stay connected so reception can make faster decisions.</p>
               </article>
               <article class="problem-card">
+                <picture class="card-media compact">
+                  <source type="image/avif" srcset="./assets/generated/photos/financial-dashboard-640.avif 640w, ./assets/generated/photos/financial-dashboard-960.avif 960w" sizes="(max-width: 900px) 92vw, 220px" />
+                  <source type="image/webp" srcset="./assets/generated/photos/financial-dashboard-640.webp 640w, ./assets/generated/photos/financial-dashboard-960.webp 960w" sizes="(max-width: 900px) 92vw, 220px" />
+                  <img src="./assets/photos/financial-dashboard.jpg" alt="Financial dashboard imagery representing invoices, payments, and balances" width="1600" height="900" loading="lazy" decoding="async" />
+                </picture>
                 <span>02</span>
                 <h3>Missed payments and unclear balances</h3>
                 <p>Bookings, invoices, receipts, refunds, and end-of-day checks sit in the same workflow, so unpaid balances are harder to miss.</p>
               </article>
               <article class="problem-card">
+                <picture class="card-media compact">
+                  <source type="image/avif" srcset="./assets/generated/photos/inventory-tablet-640.avif 640w, ./assets/generated/photos/inventory-tablet-960.avif 960w" sizes="(max-width: 900px) 92vw, 220px" />
+                  <source type="image/webp" srcset="./assets/generated/photos/inventory-tablet-640.webp 640w, ./assets/generated/photos/inventory-tablet-960.webp 960w" sizes="(max-width: 900px) 92vw, 220px" />
+                  <img src="./assets/photos/inventory-tablet.jpg" alt="Inventory shelves and a tablet representing stock control and stocktake visibility" width="1600" height="900" loading="lazy" decoding="async" />
+                </picture>
                 <span>03</span>
                 <h3>Stock disappearing quietly</h3>
                 <p>POS, inventory, room supplies, stocktakes, and low-stock alerts help management see leakage before it becomes expensive.</p>
               </article>
               <article class="problem-card">
+                <picture class="card-media compact">
+                  <source type="image/avif" srcset="./assets/generated/photos/reports-screen-640.avif 640w, ./assets/generated/photos/reports-screen-960.avif 960w" sizes="(max-width: 900px) 92vw, 220px" />
+                  <source type="image/webp" srcset="./assets/generated/photos/reports-screen-640.webp 640w, ./assets/generated/photos/reports-screen-960.webp 960w" sizes="(max-width: 900px) 92vw, 220px" />
+                  <img src="./assets/photos/reports-screen.jpg" alt="A reporting screen representing owner visibility away from the front desk" width="1600" height="1152" loading="lazy" decoding="async" />
+                </picture>
                 <span>04</span>
                 <h3>Owners waiting for manual updates</h3>
                 <p>The Manager App shows rooms, bookings, money, alerts, reports, staff, and operational requests from the owner’s phone.</p>
               </article>
               <article class="problem-card">
+                <picture class="card-media compact">
+                  <source type="image/avif" srcset="./assets/generated/photos/guest-room-640.avif 640w, ./assets/generated/photos/guest-room-960.avif 960w" sizes="(max-width: 900px) 92vw, 220px" />
+                  <source type="image/webp" srcset="./assets/generated/photos/guest-room-640.webp 640w, ./assets/generated/photos/guest-room-960.webp 960w" sizes="(max-width: 900px) 92vw, 220px" />
+                  <img src="./assets/photos/guest-room.jpg" alt="A guest room representing direct online reservations and guest enquiries" width="1600" height="1067" loading="lazy" decoding="async" />
+                </picture>
                 <span>05</span>
                 <h3>Online enquiries outside the front desk</h3>
                 <p>The booking site gives Pro lodges a branded guest page that feeds direct booking demand back into the Boroko workflow.</p>
@@ -342,21 +373,41 @@
 
             <div class="feature-grid" style="grid-template-columns: repeat(4, minmax(0, 1fr));">
               <article class="feature-card">
+                <picture class="card-media compact">
+                  <source type="image/avif" srcset="./assets/generated/photos/reception-640.avif 640w, ./assets/generated/photos/reception-960.avif 960w" sizes="(max-width: 900px) 92vw, 250px" />
+                  <source type="image/webp" srcset="./assets/generated/photos/reception-640.webp 640w, ./assets/generated/photos/reception-960.webp 960w" sizes="(max-width: 900px) 92vw, 250px" />
+                  <img src="./assets/photos/reception.jpg" alt="Reception workspace for front desk operations" width="1600" height="1201" loading="lazy" decoding="async" />
+                </picture>
                 <div class="feature-icon">01</div>
                 <h3>Front desk operations</h3>
                 <p>Bookings, quotations, invoices, guest records, room board, planning calendar, and stay management.</p>
               </article>
               <article class="feature-card">
+                <picture class="card-media compact">
+                  <source type="image/avif" srcset="./assets/generated/photos/guest-room-640.avif 640w, ./assets/generated/photos/guest-room-960.avif 960w" sizes="(max-width: 900px) 92vw, 250px" />
+                  <source type="image/webp" srcset="./assets/generated/photos/guest-room-640.webp 640w, ./assets/generated/photos/guest-room-960.webp 960w" sizes="(max-width: 900px) 92vw, 250px" />
+                  <img src="./assets/photos/guest-room.jpg" alt="Guest room representing property control and room readiness" width="1600" height="1067" loading="lazy" decoding="async" />
+                </picture>
                 <div class="feature-icon">02</div>
                 <h3>Property control</h3>
                 <p>Housekeeping, maintenance, room supplies, room-level cost visibility, and cleaner day-to-day workflows.</p>
               </article>
               <article class="feature-card">
+                <picture class="card-media compact">
+                  <source type="image/avif" srcset="./assets/generated/photos/reports-screen-640.avif 640w, ./assets/generated/photos/reports-screen-960.avif 960w" sizes="(max-width: 900px) 92vw, 250px" />
+                  <source type="image/webp" srcset="./assets/generated/photos/reports-screen-640.webp 640w, ./assets/generated/photos/reports-screen-960.webp 960w" sizes="(max-width: 900px) 92vw, 250px" />
+                  <img src="./assets/photos/reports-screen.jpg" alt="Reporting screen imagery representing management and business visibility" width="1600" height="1152" loading="lazy" decoding="async" />
+                </picture>
                 <div class="feature-icon">03</div>
                 <h3>Business visibility</h3>
                 <p>Reports, expenses, staff controls, and a clear end-of-day check so management can see what happened and what still needs attention.</p>
               </article>
               <article class="feature-card">
+                <picture class="card-media compact">
+                  <source type="image/avif" srcset="./assets/generated/photos/bar-stock-400.avif 400w, ./assets/generated/photos/bar-stock-480.avif 480w, ./assets/generated/photos/bar-stock-1600.avif 1600w" sizes="(max-width: 900px) 92vw, 250px" />
+                  <source type="image/webp" srcset="./assets/generated/photos/bar-stock-400.webp 400w, ./assets/generated/photos/bar-stock-480.webp 480w, ./assets/generated/photos/bar-stock-1600.webp 1600w" sizes="(max-width: 900px) 92vw, 250px" />
+                  <img src="./assets/photos/bar-stock.jpg" alt="Bar stock shelves representing POS, inventory, and commercial growth" width="1600" height="2400" loading="lazy" decoding="async" />
+                </picture>
                 <div class="feature-icon">04</div>
                 <h3>Commercial growth</h3>
                 <p>Bar or kitchen sales, inventory, online reservations pages, and a manager overview app for ambitious properties.</p>

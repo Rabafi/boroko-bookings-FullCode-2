@@ -21,19 +21,6 @@
       1280
     ]
   },
-  "debug-desktop-state.png": {
-    "fileName": "debug-desktop-state.png",
-    "width": 1920,
-    "height": 993,
-    "orientation": "landscape",
-    "widths": [
-      640,
-      960,
-      1280,
-      1600,
-      1920
-    ]
-  },
   "desktop-bookings.png": {
     "fileName": "desktop-bookings.png",
     "width": 1920,
@@ -127,57 +114,67 @@
   },
   "pwa-alerts.png": {
     "fileName": "pwa-alerts.png",
-    "width": 390,
-    "height": 844,
+    "width": 780,
+    "height": 1688,
     "orientation": "portrait",
     "widths": [
       240,
       320,
-      390
+      400,
+      480,
+      780
     ]
   },
   "pwa-bookings.png": {
     "fileName": "pwa-bookings.png",
-    "width": 390,
-    "height": 844,
+    "width": 780,
+    "height": 1688,
     "orientation": "portrait",
     "widths": [
       240,
       320,
-      390
+      400,
+      480,
+      780
     ]
   },
   "pwa-dashboard.png": {
     "fileName": "pwa-dashboard.png",
-    "width": 390,
-    "height": 844,
+    "width": 780,
+    "height": 1688,
     "orientation": "portrait",
     "widths": [
       240,
       320,
-      390
+      400,
+      480,
+      780
     ]
   },
   "pwa-money.png": {
     "fileName": "pwa-money.png",
-    "width": 390,
-    "height": 844,
+    "width": 780,
+    "height": 1688,
     "orientation": "portrait",
     "widths": [
       240,
       320,
-      390
+      400,
+      480,
+      780
     ]
   },
   "pwa-rooms.png": {
     "fileName": "pwa-rooms.png",
-    "width": 390,
-    "height": 844,
+    "width": 780,
+    "height": 1688,
     "orientation": "portrait",
     "widths": [
       240,
       320,
-      390
+      400,
+      480,
+      780
     ]
   }
 }

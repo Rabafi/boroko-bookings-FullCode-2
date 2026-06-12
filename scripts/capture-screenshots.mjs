@@ -250,7 +250,9 @@ async function captureDesktopScreenshots() {
       { name: 'desktop-bookings', label: 'Bookings' },
       { name: 'desktop-room-grid', label: 'Room Board' },
       { name: 'desktop-invoices', label: 'Invoices' },
-      { name: 'desktop-guests', label: 'Guests' }
+      { name: 'desktop-guests', label: 'Guests' },
+      { name: 'desktop-reports', label: 'Reports' },
+      { name: 'desktop-pos', label: 'POS' }
     ]
 
     for (const shot of shots) {

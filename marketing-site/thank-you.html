@@ -96,8 +96,15 @@
             <li><span class="breadcrumbs-current">Thank You</span></li>
           </ol>
         </nav>
-        <section class="page-hero thank-you-hero">
-          <div class="container" style="text-align:center;max-width:640px;">
+        <section class="page-hero thank-you-hero page-hero-with-image">
+            <div class="page-hero-bg" aria-hidden="true">
+              <picture class="responsive-picture">
+                <source type="image/avif" srcset="./assets/generated/photos/lodge-lounge-640.avif 640w, ./assets/generated/photos/lodge-lounge-960.avif 960w, ./assets/generated/photos/lodge-lounge-1280.avif 1280w, ./assets/generated/photos/lodge-lounge-1600.avif 1600w" sizes="(max-width: 900px) 92vw, 1180px" />
+                <source type="image/webp" srcset="./assets/generated/photos/lodge-lounge-640.webp 640w, ./assets/generated/photos/lodge-lounge-960.webp 960w, ./assets/generated/photos/lodge-lounge-1280.webp 1280w, ./assets/generated/photos/lodge-lounge-1600.webp 1600w" sizes="(max-width: 900px) 92vw, 1180px" />
+                <img src="./assets/photos/lodge-lounge.jpg" alt="" width="1600" height="1600" decoding="async" />
+              </picture>
+            </div>
+<div class="container" style="text-align:center;max-width:640px;">
             <div class="thank-you-icon" style="margin:0 auto;">
               <div class="thank-you-icon-ring"></div>
               <span class="thank-you-icon-check">&#10003;</span>

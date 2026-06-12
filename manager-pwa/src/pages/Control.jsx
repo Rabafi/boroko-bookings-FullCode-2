@@ -4,52 +4,11 @@ import { useAuth } from '../contexts/AuthContext'
 import { useFeatures } from '../contexts/FeaturesContext'
 import { addSupportTicketMessage, createSupportTicket, flushOfflineQueue, getControlSnapshot, getSupportRequests } from '../lib/api'
 import { supabase } from '../lib/supabase'
-import { buildPwaNotificationSourceKey, getNotificationSettings, getPwaQueueHealth, publishPwaHealth, subscribeRuntimeEvent, upsertPwaNotification } from '../lib/runtime'
+import { getNotificationSettings, getPwaQueueHealth, publishPwaHealth, subscribeRuntimeEvent } from '../lib/runtime'
 import { shortDateTime, titleCase } from '../lib/format'
 import { buildSupportAuthorFromUser, normalizeSupportMessages, supportMessageSide, supportSenderMeta, supportSenderName } from '@shared/supportThreads'
+import { isFrontDeskConversation, upsertFrontDeskNotification } from '../lib/frontDeskNotifications'
 import { useToast } from '../App'
-
-function getFrontDeskNotificationSourceKey(request) {
-  return buildPwaNotificationSourceKey(
-    'frontdesk-request',
-    request?.title || '',
-    request?.description || '',
-    request?.category || 'Front Desk Request',
-    request?.priority || 'Normal'
-  )
-}
-
-function upsertFrontDeskNotification(lodgeId, request) {
-  if (!lodgeId || !isFrontDeskConversation(request)) return
-  const messages = normalizeSupportMessages(request)
-  const latestDeskMessage = [...messages].reverse().find((message) => supportMessageSide(message) === 'desk')
-  const hasDeskResponse = String(request.status || 'open') !== 'open' || latestDeskMessage || String(request.admin_notes || '').trim()
-  if (!hasDeskResponse) return
-  upsertPwaNotification(lodgeId, {
-    sourceKey: getFrontDeskNotificationSourceKey(request),
-    title: `Front desk updated: ${request.title}`,
-    message: latestDeskMessage?.body || request.admin_notes || `Status changed to ${titleCase(request.status || 'open')}.`,
-    tone: request.status === 'resolved' || request.status === 'closed' ? 'info' : 'warn',
-    category: 'frontDeskRequest',
-    href: '/control',
-    meta: {
-      requestId: request.id || null,
-      requestTitle: request.title || '',
-      requestBody: request.description || '',
-      deskResponse: latestDeskMessage?.body || request.admin_notes || '',
-      requestStatus: request.status || 'open',
-      requestCategory: request.category || 'Front Desk Request',
-      requestPriority: request.priority || 'Normal',
-      messages,
-      sentAt: request.created_at || null,
-      updatedAt: request.updated_at || null
-    }
-  })
-}
-
-function isFrontDeskConversation(request) {
-  return String(request?.category || '').trim().toLowerCase() === 'front desk request'
-}
 
 function latestMessage(request) {
   const messages = normalizeSupportMessages(request)
@@ -193,7 +152,7 @@ export default function Control() {
       }
       nextRows.forEach((request) => {
         if (notifications.frontDeskRequests === false) return
-        upsertFrontDeskNotification(user.lodge_id, request)
+        upsertFrontDeskNotification(user.lodge_id, request, { quiet: true })
       })
     } catch (error) {
       setLoadError(error?.message || 'Inbox could not load.')

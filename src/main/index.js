@@ -839,7 +839,7 @@ const EDGE_FN_URL = process.env.SUPABASE_URL
   : null
 const PUSH_FUNCTION_SECRET = process.env.PUSH_FUNCTION_SECRET || process.env.BOROKO_PUSH_FUNCTION_SECRET || ''
 
-function notifyLodge(lodgeId, title, body) {
+function notifyLodge(lodgeId, title, body, options = {}) {
   showDesktopNotification({ title, body, sound: true, flash: true })
   if (!EDGE_FN_URL || !lodgeId || !PUSH_FUNCTION_SECRET) return
   fetch(`${EDGE_FN_URL}/send-push`, {
@@ -849,7 +849,15 @@ function notifyLodge(lodgeId, title, body) {
       'Authorization': `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY || ''}`,
       'x-boroko-function-secret': PUSH_FUNCTION_SECRET
     },
-    body: JSON.stringify({ lodge_id: lodgeId, title, body })
+    body: JSON.stringify({
+      lodge_id: lodgeId,
+      title,
+      body,
+      url: options.url,
+      tag: options.tag,
+      dedupeKey: options.dedupeKey,
+      version: options.version
+    })
   }).catch(() => {})
 }
 
@@ -3105,11 +3113,21 @@ app.whenReady().then(async () => {
     try {
       await requireCapability('bookings.manage')
       const id = await db.createBooking(data)
-      notifyLodge(data.lodge_id, '📋 New booking created', `Guest arriving ${data.check_in || ''}`)
+      notifyLodge(data.lodge_id, '📋 New booking created', `Guest arriving ${data.check_in || ''}`, {
+        tag: `booking-created:${id}`,
+        dedupeKey: `booking-created:${id}`,
+        version: id,
+        url: '/#/bookings'
+      })
       return { success: true, id }
     } catch (e) {
       if (e.code === 'DEPOSIT_FAILED') {
-        notifyLodge(data.lodge_id, '📋 New booking created', `Guest arriving ${data.check_in || ''}`)
+        notifyLodge(data.lodge_id, '📋 New booking created', `Guest arriving ${data.check_in || ''}`, {
+          tag: `booking-created:${e.booking_id}`,
+          dedupeKey: `booking-created:${e.booking_id}`,
+          version: e.booking_id,
+          url: '/#/bookings'
+        })
         return { success: true, id: e.booking_id, depositWarning: e.message }
       }
       return { success: false, error: e.message }
@@ -3169,7 +3187,13 @@ app.whenReady().then(async () => {
       if (e.code === 'DEPOSIT_FAILED') {
         // Room bookings were created — only deposit recording failed.
         // Return success so the operator knows the event exists; depositWarning signals action needed.
-        notifyLodge(data.lodge_id, '📋 Event booking created', `${data.event_name || ''} — deposit not recorded`)
+        const eventDedupeId = e.booking_id || `${data.event_name || 'event'}:${data.check_in || ''}:${data.check_out || ''}`
+        notifyLodge(data.lodge_id, '📋 Event booking created', `${data.event_name || ''} — deposit not recorded`, {
+          tag: `event-booking-deposit-warning:${eventDedupeId}`,
+          dedupeKey: `event-booking-deposit-warning:${eventDedupeId}`,
+          version: eventDedupeId,
+          url: '/#/bookings'
+        })
         return { success: true, depositWarning: e.message }
       }
       return { success: false, error: e.message }
@@ -3779,7 +3803,12 @@ app.whenReady().then(async () => {
     try {
       await requireCapability('maintenance.manage')
       const result = await db.createMaintenanceTicket(data)
-      notifyLodge(data.lodge_id, '🔧 New maintenance request', data.issue || data.description || 'A maintenance ticket was raised')
+      notifyLodge(data.lodge_id, '🔧 New maintenance request', data.issue || data.description || 'A maintenance ticket was raised', {
+        tag: `maintenance-created:${result?.id || data.id || data.issue || data.description || 'unknown'}`,
+        dedupeKey: `maintenance-created:${result?.id || data.id || data.issue || data.description || 'unknown'}`,
+        version: result?.id || data.id || `${data.issue || ''}:${data.description || ''}`,
+        url: '/#/alerts'
+      })
       return result
     }
     catch (e) { return { success: false, error: e.message } }

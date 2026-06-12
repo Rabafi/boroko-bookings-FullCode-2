@@ -7,9 +7,10 @@ import { getSubscriptionPlan, normalizeSubscriptionPlan } from '@shared/subscrip
 import { supabase } from './lib/supabase'
 import BottomNav from './components/BottomNav'
 import { flushOfflineQueue, getQueueStatus, getSupportRequests } from './lib/api'
-import { buildPwaNotificationSourceKey, dismissPwaNotification, getNotificationSettings, getRuntimeMeta, getUnreadPwaNotificationCount, listPwaNotifications, markPwaNotificationRead, subscribeRuntimeEvent, upsertPwaNotification } from './lib/runtime'
+import { dismissPwaNotification, getNotificationSettings, getRuntimeMeta, getUnreadPwaNotificationCount, listPwaNotifications, markPwaNotificationRead, setRuntimeMeta, subscribeRuntimeEvent } from './lib/runtime'
 import { shortDateTime } from './lib/format'
 import { normalizeSupportMessages, supportMessageSide, supportSenderMeta, supportSenderName } from '@shared/supportThreads'
+import { upsertFrontDeskNotification } from './lib/frontDeskNotifications'
 
 import Login from './pages/Login'
 import ResetPassword from './pages/ResetPassword'
@@ -600,38 +601,11 @@ function NotificationCenter({ notificationCount, setNotificationCount }) {
     let cancelled = false
 
     const upsertFrontDeskReply = (request) => {
-      if (String(request?.category || '').trim().toLowerCase() !== 'front desk request') return
       if (getNotificationSettings().frontDeskRequests === false) return
-      const messages = normalizeSupportMessages(request)
-      const latestDeskMessage = [...messages].reverse().find((message) => supportMessageSide(message) === 'desk')
-      const hasDeskResponse = String(request.status || 'open') !== 'open' || latestDeskMessage || String(request.admin_notes || '').trim()
-      if (!hasDeskResponse) return
-      upsertPwaNotification(user.lodge_id, {
-        sourceKey: buildPwaNotificationSourceKey(
-          'frontdesk-request',
-          request?.title || '',
-          request?.description || '',
-          request?.category || 'Front Desk Request',
-          request?.priority || 'Normal'
-        ),
-        title: `Front desk updated: ${request.title}`,
-        message: latestDeskMessage?.body || request.admin_notes || `Status changed to ${request.status || 'open'}.`,
-        tone: request.status === 'resolved' || request.status === 'closed' ? 'info' : 'warn',
-        category: 'frontDeskRequest',
-        href: '/control',
-        meta: {
-          requestId: request.id || null,
-          requestTitle: request.title || '',
-          requestBody: request.description || '',
-          deskResponse: latestDeskMessage?.body || request.admin_notes || '',
-          requestStatus: request.status || 'open',
-          requestCategory: request.category || 'Front Desk Request',
-          requestPriority: request.priority || 'Normal',
-          messages,
-          sentAt: request.created_at || null,
-          updatedAt: request.updated_at || null
-        }
-      })
+      const lastScan = getRuntimeMeta(user.lodge_id, 'frontdesk-last-scan-at', null)
+      const updatedAt = request?.updated_at || request?.created_at || null
+      const isNewSinceLastScan = lastScan && updatedAt && new Date(updatedAt).getTime() > new Date(lastScan).getTime()
+      upsertFrontDeskNotification(user.lodge_id, request, { quiet: initialBatchRef.current && !isNewSinceLastScan })
     }
 
     const loadFrontDeskReplies = async () => {
@@ -639,6 +613,7 @@ function NotificationCenter({ notificationCount, setNotificationCount }) {
         const rows = await getSupportRequests(user.lodge_id, 12)
         if (cancelled) return
         ;(Array.isArray(rows) ? rows : []).forEach(upsertFrontDeskReply)
+        setRuntimeMeta(user.lodge_id, 'frontdesk-last-scan-at', new Date().toISOString())
       } catch {
         // Best-effort notification watcher.
       } finally {

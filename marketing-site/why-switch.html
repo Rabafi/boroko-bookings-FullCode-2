@@ -98,7 +98,14 @@
             <li><span class="breadcrumbs-current">Why Switch</span></li>
           </ol>
         </nav>
-        <section class="page-hero">
+        <section class="page-hero page-hero-with-image">
+            <div class="page-hero-bg" aria-hidden="true">
+              <picture class="responsive-picture">
+                              <source type="image/avif" srcset="./assets/generated/photos/reports-screen-640.avif 640w, ./assets/generated/photos/reports-screen-960.avif 960w, ./assets/generated/photos/reports-screen-1280.avif 1280w, ./assets/generated/photos/reports-screen-1600.avif 1600w" sizes="(max-width: 900px) 92vw, 1180px" />
+                              <source type="image/webp" srcset="./assets/generated/photos/reports-screen-640.webp 640w, ./assets/generated/photos/reports-screen-960.webp 960w, ./assets/generated/photos/reports-screen-1280.webp 1280w, ./assets/generated/photos/reports-screen-1600.webp 1600w" sizes="(max-width: 900px) 92vw, 1180px" />
+                              <img src="./assets/photos/reports-screen.jpg" alt="" width="1600" height="1152" decoding="async" />
+                            </picture>
+            </div>
           <div class="container page-hero-grid">
             <div>
               <div class="section-tag">Why Switch</div>
@@ -123,8 +130,7 @@
             </div>
           </div>
         </section>
-
-        <section class="section">
+<section class="section">
           <div class="container">
             <div class="section-head compact">
               <span class="section-tag">Problems Boroko solves</span>

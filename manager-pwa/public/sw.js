@@ -10,6 +10,48 @@ const STATIC = [
   '/favicon.svg'
 ]
 const DEFAULT_NOTIFICATION_URL = '/#/alerts'
+const PUSH_DEDUPE_CACHE = 'boroko-manager-push-dedupe-v1'
+
+function stablePart(value) {
+  return String(value ?? '').trim().replace(/\s+/g, ' ')
+}
+
+function hashText(value) {
+  let hash = 0
+  const text = String(value || '')
+  for (let index = 0; index < text.length; index += 1) {
+    hash = ((hash << 5) - hash + text.charCodeAt(index)) | 0
+  }
+  return Math.abs(hash).toString(36)
+}
+
+function pushDedupeKey(data = {}) {
+  const explicitKey = stablePart(data.dedupeKey || data.tag)
+  const version = stablePart(data.version || data.updatedAt || data.createdAt)
+  if (explicitKey && explicitKey !== 'boroko') {
+    return `${explicitKey}:${version || hashText(`${data.title}|${data.body}|${data.url}`)}`
+  }
+  if (!data.dedupeKey && !data.version) return ''
+  return hashText([
+    stablePart(data.title),
+    stablePart(data.body),
+    stablePart(data.url),
+    version
+  ].join('|'))
+}
+
+async function hasSeenPush(data) {
+  const key = pushDedupeKey(data)
+  if (!key) return false
+  const cache = await caches.open(PUSH_DEDUPE_CACHE)
+  const request = new Request(`/__boroko_push_seen__/${encodeURIComponent(key)}`)
+  const seen = await cache.match(request)
+  if (seen) return true
+  await cache.put(request, new Response('', {
+    headers: { 'x-seen-at': new Date().toISOString() }
+  }))
+  return false
+}
 
 function sanitizeNotificationUrl(value) {
   if (typeof value !== 'string' || !value.trim()) return DEFAULT_NOTIFICATION_URL
@@ -59,18 +101,22 @@ self.addEventListener('fetch', (event) => {
 
 self.addEventListener('push', (event) => {
   const data = event.data?.json() || { title: 'Boroko Manager', body: 'You have a new notification' }
-  event.waitUntil(self.registration.showNotification(data.title, {
-    body: data.body,
-    icon: '/icons/icon-192.png',
-    badge: '/icons/icon-192.png',
-    tag: data.tag || 'boroko',
-    data: sanitizeNotificationUrl(data.url)
-  }))
+  event.waitUntil((async () => {
+    if (await hasSeenPush(data)) return
+    await self.registration.showNotification(data.title, {
+      body: data.body,
+      icon: '/icons/icon-192.png',
+      badge: '/icons/icon-192.png',
+      tag: data.tag || data.dedupeKey || 'boroko',
+      renotify: false,
+      data: { url: sanitizeNotificationUrl(data.url) }
+    })
+  })())
 })
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close()
-  event.waitUntil(clients.openWindow(sanitizeNotificationUrl(event.notification.data)))
+  event.waitUntil(clients.openWindow(sanitizeNotificationUrl(event.notification.data?.url || event.notification.data)))
 })
 
 self.addEventListener('message', (event) => {

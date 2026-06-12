@@ -52,6 +52,42 @@ function supportAlertId(request, latest) {
   return `${request?.id || 'request'}:${latest?.id || latest?.created_at || latest?.body || request?.updated_at || request?.created_at || 'latest'}`
 }
 
+const DESKTOP_INBOX_SEEN_LIMIT = 250
+
+function readJsonStorage(key, fallback) {
+  if (typeof window === 'undefined') return fallback
+  try {
+    const raw = window.localStorage.getItem(key)
+    return raw ? JSON.parse(raw) : fallback
+  } catch {
+    return fallback
+  }
+}
+
+function writeJsonStorage(key, value) {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value))
+  } catch {
+    // Best effort only.
+  }
+}
+
+function desktopInboxSeenKey(lodgeId, userId) {
+  return `boroko_desktop_seen_inbox:${String(lodgeId || 'global').toLowerCase()}:${String(userId || 'user').toLowerCase()}`
+}
+
+function desktopInboxScanKey(lodgeId, userId) {
+  return `boroko_desktop_inbox_last_scan:${String(lodgeId || 'global').toLowerCase()}:${String(userId || 'user').toLowerCase()}`
+}
+
+function isAfterStoredScan(value, lastScanAt) {
+  if (!value || !lastScanAt) return Boolean(value && !lastScanAt)
+  const time = new Date(value).getTime()
+  const scanTime = new Date(lastScanAt).getTime()
+  return Number.isFinite(time) && Number.isFinite(scanTime) && time > scanTime
+}
+
 // ── Support Ticket Modal ──────────────────────────────────────────────────────
 function SupportModal({ onClose, settings }) {
   const [form, setForm] = useState({ title: '', description: '', category: 'General', priority: 'Normal' })
@@ -440,6 +476,26 @@ export default function Layout() {
     if (isBrowserPreview || !user || !window.api?.requests?.getAll || !window.api?.app?.notify) return undefined
 
     let cancelled = false
+    const lodgeId = settings?.lodge_id || settings?.id || 'global'
+    const userId = user?.id || user?.email || 'user'
+    const seenKey = desktopInboxSeenKey(lodgeId, userId)
+    const scanKey = desktopInboxScanKey(lodgeId, userId)
+
+    const getSeenVersions = () => {
+      const value = readJsonStorage(seenKey, [])
+      return Array.isArray(value) ? value : []
+    }
+
+    const rememberSeenVersions = (versions) => {
+      const current = getSeenVersions()
+      const next = [...new Set([...versions.filter(Boolean), ...current])]
+        .slice(0, DESKTOP_INBOX_SEEN_LIMIT)
+      writeJsonStorage(seenKey, next)
+      return next
+    }
+
+    const isSeenVersion = (version) => getSeenVersions().includes(version)
+
     const loadSupportRequests = async () => {
       try {
         const rows = await window.api.requests.getAll(12)
@@ -447,13 +503,28 @@ export default function Layout() {
         const nextRows = Array.isArray(rows) ? rows : []
         if (!supportRequestsPrimedRef.current) {
           supportRequestIdsRef.current = new Map(nextRows.map((row) => [row.id, row]))
+          rememberSeenVersions(
+            nextRows
+              .filter((row) => String(row.category || '').trim().toLowerCase() === 'front desk request')
+              .map((row) => {
+                const latest = latestSupportMessage(row)
+                return latest && supportMessageSide(latest) === 'manager' ? supportAlertId(row, latest) : null
+              })
+          )
+          writeJsonStorage(scanKey, new Date().toISOString())
           supportRequestsPrimedRef.current = true
           return
         }
 
+        const lastScanAt = readJsonStorage(scanKey, null)
         const newFrontDeskRequests = nextRows.filter((row) => {
           if (String(row.category || '').trim().toLowerCase() !== 'front desk request') return false
-          return !supportRequestIdsRef.current.has(row.id)
+          const latest = latestSupportMessage(row)
+          if (!latest || supportMessageSide(latest) !== 'manager') return false
+          const version = supportAlertId(row, latest)
+          return !supportRequestIdsRef.current.has(row.id) &&
+            !isSeenVersion(version) &&
+            isAfterStoredScan(latest.created_at || row.created_at, lastScanAt)
         })
 
         const updatedFrontDeskRequests = nextRows.filter((row) => {
@@ -463,7 +534,10 @@ export default function Layout() {
           const latest = latestSupportMessage(row)
           const previousLatest = latestSupportMessage(previous)
           if (!latest || supportMessageSide(latest) !== 'manager') return false
-          return String(latest.id || latest.created_at || latest.body) !== String(previousLatest?.id || previousLatest?.created_at || previousLatest?.body || '')
+          const version = supportAlertId(row, latest)
+          return String(latest.id || latest.created_at || latest.body) !== String(previousLatest?.id || previousLatest?.created_at || previousLatest?.body || '') &&
+            !isSeenVersion(version) &&
+            isAfterStoredScan(latest.created_at || row.updated_at, lastScanAt)
         })
 
         if (newFrontDeskRequests.length > 0) {
@@ -477,6 +551,7 @@ export default function Layout() {
               sound: true,
               flash: true
             }).catch(() => {})
+            rememberSeenVersions([supportAlertId(request, latest)])
           })
         }
 
@@ -490,6 +565,7 @@ export default function Layout() {
               sound: true,
               flash: true
             }).catch(() => {})
+            rememberSeenVersions([supportAlertId(request, latest)])
           })
         }
 
@@ -502,6 +578,7 @@ export default function Layout() {
         }
 
         supportRequestIdsRef.current = new Map(nextRows.map((row) => [row.id, row]))
+        writeJsonStorage(scanKey, new Date().toISOString())
       } catch {
         // Best-effort only.
       }
@@ -513,7 +590,7 @@ export default function Layout() {
       cancelled = true
       clearInterval(interval)
     }
-  }, [isBrowserPreview, user?.id])
+  }, [isBrowserPreview, settings?.id, settings?.lodge_id, user?.email, user?.id])
 
   const bizType = settings?.business_type || 'lodge'
   const assistantEnabled = settings?.assistant_enabled === true
