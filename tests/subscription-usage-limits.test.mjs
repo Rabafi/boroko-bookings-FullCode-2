@@ -17,6 +17,7 @@ import {
   getUsageStateKey,
   isCountableBookingForUsage
 } from '../src/shared/subscriptionPlans.js'
+import { normalizePlanName as normalizeEntitlementPlan } from '../src/main/domains/subscriptionState.js'
 
 test('Starter booking grace allows #51 and #52, blocks #53', () => {
   assert.equal(getPlanUsageLimits('Starter').monthlyBookings, 50)
@@ -39,6 +40,14 @@ test('Pro plan is unlimited', () => {
   const status = canCreateBooking({ plan: 'Pro', used: 999999 })
   assert.equal(status.state, 'unlimited')
   assert.equal(status.isBlocked, false)
+})
+
+test('active trial resolves to Pro unlimited usage limits at the entitlement boundary', () => {
+  assert.equal(normalizeEntitlementPlan('Trial'), 'Pro')
+  assert.equal(getPlanUsageLimits('Trial').rooms, null)
+  assert.equal(canCreateBooking({ plan: 'Trial', used: 999999 }).isBlocked, false)
+  assert.equal(canCreateRoom({ plan: 'Trial', used: 999999 }).isBlocked, false)
+  assert.equal(canCreateUser({ plan: 'Trial', used: 999999 }).isBlocked, false)
 })
 
 test('room and user limits enforce starter thresholds', () => {

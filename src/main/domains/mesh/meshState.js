@@ -74,9 +74,10 @@ export function getMeshHealthSnapshot() {
   const peersArray = [];
   const now = Date.now();
   
-  // Clean up any stale peers in-memory before building snapshot (15s timeout)
+  // Beacons are sent every 30 seconds. Keep peers long enough to survive one
+  // missed beacon without making the UI and queue exchange flap.
   for (const [peerId, peer] of meshState.peers.entries()) {
-    if (now - new Date(peer.lastSeenAt).getTime() > 15000) {
+    if (now - new Date(peer.lastSeenAt).getTime() > 75000) {
       meshState.peers.delete(peerId);
       console.log(`[MeshState] Expired inactive peer: ${peerId}`);
     } else {

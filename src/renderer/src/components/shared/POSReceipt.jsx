@@ -114,6 +114,11 @@ export function POSReceipt({ order, onClose, autoPrint = false }) {
         {/* Receipt Content */}
         <div className="flex-1 overflow-y-auto p-8 print:p-0 print:overflow-visible">
           <div id="receipt-content" className="max-w-md mx-auto space-y-8">
+            {order?._pending_sync === true && (
+              <div className="border-2 border-dashed border-amber-500 bg-amber-50 px-4 py-3 text-center text-xs font-black uppercase tracking-widest text-amber-800">
+                Provisional receipt — pending server confirmation
+              </div>
+            )}
             
             {/* Lodge Identity */}
             <div className="text-center space-y-2">

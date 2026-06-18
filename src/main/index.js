@@ -2020,9 +2020,12 @@ function buildFullExportWorkbook(data) {
       'Guest': q.customer_name || '',
       'Email': hidePrivate ? '' : (q.customer_email || ''),
       'Phone': hidePrivate ? '' : (q.customer_phone || ''),
-      'Room': q.room_number || '',
+      'Booking Type': q.quotation_type === 'exclusive_event' ? 'Event / Full Lodge' : 'Room Stay',
+      'Event / Group': q.event_name || '',
+      'Room': q.quotation_type === 'exclusive_event' ? 'Full Lodge' : (q.room_name || q.room_number || ''),
       'Check-in': q.check_in || '',
       'Check-out': q.check_out || '',
+      'Daily Rate': q.quotation_type === 'exclusive_event' ? Number(q.event_daily_rate || 0) : '',
       'Status': q.status || '',
       'Total': Number(q.total_amount || 0),
       'Created': q.created_at || ''
@@ -3972,6 +3975,15 @@ app.whenReady().then(async () => {
       return { success: false, error: e.message }
     }
   })
+  ipcMain.handle('requests:markRead', async (_, id, audience, messageId) => {
+    try {
+      requireRole('receptionist', 'manager', 'admin', 'super_admin')
+      await assertResourceBelongsToCurrentLodge('Support request', id, db.getLodgeSupportTicketById)
+      return await db.markLodgeSupportTicketRead(id, audience || 'front_desk', messageId || null)
+    } catch (e) {
+      return { success: false, error: e.message }
+    }
+  })
   ipcMain.handle('requests:addMessage', async (_, id, payload) => {
     try {
       requireRole('receptionist', 'manager', 'admin', 'super_admin')
@@ -4491,7 +4503,7 @@ app.whenReady().then(async () => {
   // ── Maintenance ───────────────────────────────────────────────────────────
   ipcMain.handle('maintenance:getAll', async () => {
     try { await requireCapability('maintenance.view'); return await db.getMaintenanceTickets() }
-    catch { return [] }
+    catch (error) { throw new Error(error?.message || 'Failed to load maintenance tickets') }
   })
   ipcMain.handle('maintenance:create', async (_, data) => {
     try {

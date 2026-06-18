@@ -33,6 +33,7 @@ export default function Maintenance() {
   const [saving, setSaving] = useState(false)
   const [resolving, setResolving] = useState(null)
   const [error, setError] = useState('')
+  const [loadError, setLoadError] = useState('')
 
   const [form, setForm] = useState({
     room_id: '',
@@ -53,13 +54,19 @@ export default function Maintenance() {
 
   const loadData = async () => {
     setLoading(true)
-    const [t, r] = await Promise.all([
-      window.api.maintenance.getAll().catch(() => []),
-      window.api.rooms.getAll().catch(() => [])
-    ])
-    setTickets(t || [])
-    setRooms(r || [])
-    setLoading(false)
+    setLoadError('')
+    try {
+      const [t, r] = await Promise.all([
+        window.api.maintenance.getAll(),
+        window.api.rooms.getAll()
+      ])
+      setTickets(t || [])
+      setRooms(r || [])
+    } catch (err) {
+      setLoadError(err?.message || 'Maintenance records could not be loaded.')
+    } finally {
+      setLoading(false)
+    }
   }
 
   const openCreate = () => {
@@ -154,6 +161,11 @@ export default function Maintenance() {
 
       {error && (
         <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>
+      )}
+      {loadError && (
+        <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+          {loadError}
+        </div>
       )}
 
       {/* Ticket Grid */}

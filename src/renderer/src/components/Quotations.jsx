@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from 'react'
-import { Plus, Search, MoreVertical, FileText } from 'lucide-react'
+import { Plus, Search, MoreVertical, FileText, Building2, BedDouble } from 'lucide-react'
 import { Modal } from './shared/Modal'
 import HorizontalScrollArea from './shared/HorizontalScrollArea'
 import { DESKTOP_PAYMENT_METHODS } from '../constants/paymentMethods'
@@ -13,9 +13,12 @@ const PAYMENT_METHODS = DESKTOP_PAYMENT_METHODS
 const STATUS_OPTIONS = ['all', 'draft', 'sent', 'accepted', 'expired', 'cancelled', 'converted']
 
 const emptyForm = {
+  quotation_type:'room',
   customer_id:    '',
   customer_name:  '',
   customer_phone: '',
+  event_name:     '',
+  event_daily_rate:'',
   room_id:        '',
   room_name:      '',
   check_in:       '',
@@ -43,6 +46,7 @@ function formatWaPhone(phone) {
 function buildQuotationWhatsAppMessage(q, settings) {
   const lodge    = settings?.lodge_name || 'the Lodge'
   const currency = q.currency || settings?.currency || 'BWP'
+  const isEvent  = q.quotation_type === 'exclusive_event'
   const nights   = q.check_in && q.check_out
     ? Math.max(0, Math.ceil((new Date(q.check_out) - new Date(q.check_in)) / 86400000))
     : null
@@ -52,10 +56,12 @@ function buildQuotationWhatsAppMessage(q, settings) {
     `📋 *Quotation — ${lodge}*`,
     `No: ${q.quotation_number}`,
     '',
-    q.room_name  ? `🛏️  ${q.room_name}` : null,
+    isEvent && q.event_name ? `🏢  Event: ${q.event_name}` : null,
+    q.room_name  ? `${isEvent ? '🏢' : '🛏️'}  ${q.room_name}` : null,
     q.check_in   ? `📅  Check-in:  ${q.check_in}` : null,
     q.check_out  ? `📅  Check-out: ${q.check_out}${nights !== null ? ` (${nights} night${nights !== 1 ? 's' : ''})` : ''}` : null,
-    `👥  Guests: ${q.adults} adult${q.adults !== 1 ? 's' : ''}${q.children > 0 ? `, ${q.children} child${q.children !== 1 ? 'ren' : ''}` : ''}`,
+    !isEvent ? `👥  Guests: ${q.adults} adult${q.adults !== 1 ? 's' : ''}${q.children > 0 ? `, ${q.children} child${q.children !== 1 ? 'ren' : ''}` : ''}` : null,
+    isEvent && Number(q.event_daily_rate) > 0 ? `💵  Daily rate: ${currency} ${Number(q.event_daily_rate).toFixed(2)}` : null,
     `💰  Total: ${currency} ${Number(q.total_amount || 0).toFixed(2)}`,
     q.valid_until ? `📆  Valid until: ${q.valid_until}` : null,
     q.notes       ? `\n📝 ${q.notes}` : null,
@@ -84,6 +90,8 @@ function normalizeQuotationRow(q) {
   const convertedBookingId = q.converted_booking_id || (q.status === 'converted' ? '__converted__' : null)
   return {
     ...q,
+    quotation_type: q.quotation_type === 'exclusive_event' ? 'exclusive_event' : 'room',
+    event_name: q.quotation_type === 'exclusive_event' ? (q.event_name || q.customer_name || 'Exclusive event') : null,
     converted_booking_id: convertedBookingId,
     status: convertedBookingId ? 'converted' : (q.status || 'draft')
   }
@@ -104,6 +112,14 @@ function isFinanciallyLocked(q) {
 
 function fmt(amount, currency) {
   return `${currency || 'BWP'} ${Number(amount || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+}
+
+function quotationNights(checkIn, checkOut) {
+  if (!checkIn || !checkOut) return 0
+  const start = new Date(checkIn).getTime()
+  const end = new Date(checkOut).getTime()
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return 0
+  return Math.ceil((end - start) / 86400000)
 }
 
 // ─── Status Badge ─────────────────────────────────────────────────────────────
@@ -212,7 +228,7 @@ function QuotationMenu({ q, isOpen, onToggle, onClose, onEdit, onStatusChange, o
                   title={expired ? 'Quotation has expired — edit valid_until to re-enable' : undefined}
                   onClick={() => { onConvert(); onClose() }}
                 >
-                  🔄 Convert to Booking
+                  🔄 {q.quotation_type === 'exclusive_event' ? 'Reserve Full Lodge' : 'Convert to Booking'}
                 </QMenuItem>
               </>
             )}
@@ -262,6 +278,7 @@ function QDivider() {
 function QuotationPreview({ quotation: q, settings, onClose, onConvert, canConvertQ, onStatusSent, onAccept }) {
   const [pdfError, setPdfError] = useState('')
   const currency = q.currency || settings?.currency || 'BWP'
+  const isEvent  = q.quotation_type === 'exclusive_event'
   const nights   = q.check_in && q.check_out
     ? Math.max(0, Math.ceil((new Date(q.check_out) - new Date(q.check_in)) / 86400000))
     : null
@@ -404,9 +421,15 @@ function QuotationPreview({ quotation: q, settings, onClose, onConvert, canConve
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {q.room_name && (
+                {isEvent && q.event_name && (
                   <tr className="bg-white">
-                    <td className="px-4 py-2 text-gray-500 font-medium">Room</td>
+                    <td className="px-4 py-2 text-gray-500 font-medium">Event / Group</td>
+                    <td className="px-4 py-2 text-gray-800">{q.event_name}</td>
+                  </tr>
+                )}
+                {q.room_name && (
+                  <tr className={isEvent ? 'bg-gray-50' : 'bg-white'}>
+                    <td className="px-4 py-2 text-gray-500 font-medium">{isEvent ? 'Reservation' : 'Room'}</td>
                     <td className="px-4 py-2 text-gray-800">{q.room_name}</td>
                   </tr>
                 )}
@@ -425,13 +448,20 @@ function QuotationPreview({ quotation: q, settings, onClose, onConvert, canConve
                     </td>
                   </tr>
                 )}
-                <tr className="bg-gray-50">
-                  <td className="px-4 py-2 text-gray-500 font-medium">Guests</td>
-                  <td className="px-4 py-2 text-gray-800">
-                    {q.adults} adult{q.adults !== 1 ? 's' : ''}
-                    {q.children > 0 ? `, ${q.children} child${q.children !== 1 ? 'ren' : ''}` : ''}
-                  </td>
-                </tr>
+                {isEvent ? (
+                  <tr className="bg-gray-50">
+                    <td className="px-4 py-2 text-gray-500 font-medium">Whole-lodge daily rate</td>
+                    <td className="px-4 py-2 text-gray-800">{fmt(q.event_daily_rate, currency)}</td>
+                  </tr>
+                ) : (
+                  <tr className="bg-gray-50">
+                    <td className="px-4 py-2 text-gray-500 font-medium">Guests</td>
+                    <td className="px-4 py-2 text-gray-800">
+                      {q.adults} adult{q.adults !== 1 ? 's' : ''}
+                      {q.children > 0 ? `, ${q.children} child${q.children !== 1 ? 'ren' : ''}` : ''}
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
 
@@ -456,7 +486,7 @@ function QuotationPreview({ quotation: q, settings, onClose, onConvert, canConve
             {/* Footer */}
             <div className="border-t border-gray-200 pt-4 mt-4 text-center">
               <p className="text-xs text-gray-400">
-                Thank you for considering {settings?.lodge_name || 'us'} — we look forward to welcoming you!
+                Thank you for considering {settings?.lodge_name || 'us'} — we look forward to {isEvent ? 'hosting your event' : 'welcoming you'}!
               </p>
               {(settings?.phone || settings?.email) && (
                 <p className="text-xs text-gray-400 mt-1">
@@ -551,7 +581,8 @@ export default function Quotations() {
     const matchSearch =
       !search ||
       (q.quotation_number || '').toLowerCase().includes(search.toLowerCase()) ||
-      (q.customer_name   || '').toLowerCase().includes(search.toLowerCase())
+      (q.customer_name   || '').toLowerCase().includes(search.toLowerCase()) ||
+      (q.event_name      || '').toLowerCase().includes(search.toLowerCase())
     const matchStatus =
       filterStatus === 'all' ||
       (filterStatus === 'expired' ? isExpired(q) : q.status === filterStatus)
@@ -583,9 +614,12 @@ export default function Quotations() {
     setEditingId(q.id)
     setUseNewCustomer(false)
     setForm({
+      quotation_type:q.quotation_type === 'exclusive_event' ? 'exclusive_event' : 'room',
       customer_id:    q.customer_id    || '',
       customer_name:  q.customer_name  || '',
       customer_phone: q.customer_phone || '',
+      event_name:     q.event_name     || '',
+      event_daily_rate:q.event_daily_rate ?? '',
       room_id:        q.room_id        || '',
       room_name:      q.room_name      || '',
       check_in:       q.check_in       || '',
@@ -613,10 +647,16 @@ export default function Quotations() {
     } else {
       if (!form.customer_id) { setFormError('Please select a customer.'); return }
     }
-    if (!form.total_amount || Number(form.total_amount) <= 0) { setFormError('Enter a valid amount.'); return }
+    const isEvent = form.quotation_type === 'exclusive_event'
+    if (!isEvent && (!form.total_amount || Number(form.total_amount) <= 0)) { setFormError('Enter a valid amount.'); return }
     if (form.check_in && form.check_out && form.check_out <= form.check_in) {
       setFormError('Check-out must be after check-in.')
       return
+    }
+    if (isEvent) {
+      if (!form.event_name.trim()) { setFormError('Event / group name is required.'); return }
+      if (!form.check_in || !form.check_out) { setFormError('Event check-in and check-out dates are required.'); return }
+      if (Number(form.event_daily_rate || 0) <= 0) { setFormError('Enter a valid whole-lodge daily rate.'); return }
     }
 
     setSaving(true)
@@ -639,15 +679,24 @@ export default function Quotations() {
     }
 
     const customer = customers.find(c => c.id === customerId)
-    const room     = rooms.find(r => r.id === form.room_id)
-    const subtotal    = Number(form.subtotal || form.total_amount || 0)
-    const tax_amount  = Number(form.tax_amount || 0)
+    const room     = !isEvent ? rooms.find(r => r.id === form.room_id) : null
+    const eventTotal = isEvent
+      ? Number(form.event_daily_rate || 0) * quotationNights(form.check_in, form.check_out)
+      : 0
+    const subtotal    = isEvent ? eventTotal : Number(form.subtotal || form.total_amount || 0)
+    const tax_amount  = isEvent ? 0 : Number(form.tax_amount || 0)
     const data = {
       ...form,
       customer_id:    customerId,
       customer_name:  customer?.name  || newCustomer.name.trim() || form.customer_name,
       customer_phone: customer?.phone || newCustomer.phone.trim() || form.customer_phone || '',
-      room_name:      room?.room_number ? `Room ${room.room_number}` : form.room_name,
+      quotation_type: isEvent ? 'exclusive_event' : 'room',
+      event_name:     isEvent ? form.event_name.trim() : null,
+      event_daily_rate:isEvent ? Number(form.event_daily_rate || 0) : null,
+      room_id:        isEvent ? '' : form.room_id,
+      room_name:      isEvent ? 'Full Lodge' : room?.room_number ? `Room ${room.room_number}` : form.room_name,
+      adults:         isEvent ? 1 : form.adults,
+      children:       isEvent ? 0 : form.children,
       subtotal,
       tax_amount,
       total_amount:   subtotal + tax_amount
@@ -775,8 +824,8 @@ export default function Quotations() {
     setConverting(false)
     if (res.success) {
       setConvertSuccess(res.pendingSync
-        ? `Booking queued offline. Local reference: ${res.invoice_number || 'PENDING'}`
-        : `Booking created! Invoice: ${res.invoice_number || '—'}`)
+        ? `Booking queued offline. ${convertTarget.quotation_type === 'exclusive_event' ? 'The full-lodge reservation will be finalized during sync. ' : ''}Local reference: ${res.invoice_number || 'PENDING'}`
+        : `${convertTarget.quotation_type === 'exclusive_event' ? 'Event / lodge booking' : 'Booking'} created! Invoice: ${res.invoice_number || '—'}`)
       setQuotations((prev) => prev.map((row) => row.id === convertTarget.id
         ? normalizeQuotationRow({ ...row, status: 'converted', converted_booking_id: res.booking_id || true, updated_at: new Date().toISOString() })
         : row
@@ -855,7 +904,7 @@ export default function Quotations() {
               <tr>
                 <th className="px-5 py-3 text-left">#</th>
                 <th className="px-5 py-3 text-left">Customer</th>
-                <th className="px-5 py-3 text-left">Room</th>
+                <th className="px-5 py-3 text-left">Booking</th>
                 <th className="px-5 py-3 text-left">Dates</th>
                 <th className="px-5 py-3 text-right">Amount</th>
                 <th className="px-5 py-3 text-left">Valid Until</th>
@@ -897,7 +946,18 @@ export default function Quotations() {
 
                     {/* Room */}
                     <td className="px-5 py-3 text-gray-600">
-                      {q.room_name || <span className="text-gray-300">—</span>}
+                      {q.quotation_type === 'exclusive_event' ? (
+                        <div>
+                          <span className="inline-flex items-center gap-1 rounded-full bg-indigo-50 px-2 py-0.5 text-[11px] font-semibold text-indigo-700">
+                            <Building2 size={11} /> Full Lodge
+                          </span>
+                          {q.event_name && <p className="mt-1 text-xs text-gray-500">{q.event_name}</p>}
+                        </div>
+                      ) : (
+                        <span className="inline-flex items-center gap-1">
+                          {q.room_name ? <><BedDouble size={13} className="text-gray-400" /> {q.room_name}</> : <span className="text-gray-300">—</span>}
+                        </span>
+                      )}
                     </td>
 
                     {/* Dates */}
@@ -1005,6 +1065,55 @@ export default function Quotations() {
               </div>
             )}
 
+            {/* Quotation type */}
+            <div>
+              <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
+                Booking Type
+              </label>
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  disabled={financialLocked}
+                  onClick={() => setForm(f => ({
+                    ...f,
+                    quotation_type: 'room',
+                    event_name: '',
+                    event_daily_rate: '',
+                    room_name: ''
+                  }))}
+                  className={`rounded-xl border px-4 py-3 text-left transition-colors ${
+                    form.quotation_type === 'room'
+                      ? 'border-green-500 bg-green-50 text-green-800'
+                      : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300'
+                  } ${financialLocked ? 'cursor-not-allowed opacity-50' : ''}`}
+                >
+                  <span className="flex items-center gap-2 text-sm font-semibold"><BedDouble size={16} /> Room Stay</span>
+                  <span className="mt-1 block text-xs opacity-75">One room or an accommodation offer.</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={financialLocked}
+                  onClick={() => setForm(f => ({
+                    ...f,
+                    quotation_type: 'exclusive_event',
+                    room_id: '',
+                    room_name: 'Full Lodge',
+                    adults: 1,
+                    children: 0,
+                    tax_amount: 0
+                  }))}
+                  className={`rounded-xl border px-4 py-3 text-left transition-colors ${
+                    form.quotation_type === 'exclusive_event'
+                      ? 'border-indigo-500 bg-indigo-50 text-indigo-800'
+                      : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300'
+                  } ${financialLocked ? 'cursor-not-allowed opacity-50' : ''}`}
+                >
+                  <span className="flex items-center gap-2 text-sm font-semibold"><Building2 size={16} /> Event / Full Lodge</span>
+                  <span className="mt-1 block text-xs opacity-75">Reserve the entire property for one group.</span>
+                </button>
+              </div>
+            </div>
+
             {/* Customer */}
             <div>
               <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">
@@ -1070,29 +1179,49 @@ export default function Quotations() {
               )}
             </div>
 
-            {/* Room (optional) */}
-            <div>
-              <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">
-                Room (optional)
-              </label>
-              <select
-                disabled={financialLocked}
-                className={`input ${financialLocked ? 'opacity-50 cursor-not-allowed' : ''}`}
-                value={form.room_id}
-                onChange={e => setForm(f => ({ ...f, room_id: e.target.value }))}
-              >
-                <option value="">No specific room</option>
-                {rooms.filter(r => r.status !== 'inactive').map(r => (
-                  <option key={r.id} value={r.id}>Room {r.room_number} — {r.room_type}</option>
-                ))}
-              </select>
-            </div>
+            {form.quotation_type === 'exclusive_event' ? (
+              <div className="grid grid-cols-2 gap-3 rounded-xl border border-indigo-100 bg-indigo-50/60 p-3">
+                <div className="col-span-2">
+                  <label className="block text-xs font-semibold text-indigo-700 uppercase tracking-wider mb-1">
+                    Event / Group Name *
+                  </label>
+                  <input
+                    className={`input ${financialLocked ? 'opacity-50 cursor-not-allowed' : ''}`}
+                    disabled={financialLocked}
+                    value={form.event_name}
+                    onChange={e => setForm(f => ({ ...f, event_name: e.target.value }))}
+                    placeholder="e.g. Smith Wedding or ABC Retreat"
+                  />
+                </div>
+                <div className="col-span-2 text-xs text-indigo-700">
+                  Conversion will reserve every bookable room and block other lodge bookings for these dates.
+                </div>
+              </div>
+            ) : (
+              /* Room (optional) */
+              <div>
+                <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">
+                  Room (optional)
+                </label>
+                <select
+                  disabled={financialLocked}
+                  className={`input ${financialLocked ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  value={form.room_id}
+                  onChange={e => setForm(f => ({ ...f, room_id: e.target.value }))}
+                >
+                  <option value="">No specific room</option>
+                  {rooms.filter(r => r.status !== 'inactive').map(r => (
+                    <option key={r.id} value={r.id}>Room {r.room_number} — {r.room_type}</option>
+                  ))}
+                </select>
+              </div>
+            )}
 
             {/* Dates */}
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">
-                  Check-in
+                  {form.quotation_type === 'exclusive_event' ? 'Event Start *' : 'Check-in'}
                 </label>
                 <input
                   type="date"
@@ -1104,7 +1233,7 @@ export default function Quotations() {
               </div>
               <div>
                 <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">
-                  Check-out
+                  {form.quotation_type === 'exclusive_event' ? 'Event End *' : 'Check-out'}
                 </label>
                 <input
                   type="date"
@@ -1118,7 +1247,7 @@ export default function Quotations() {
             </div>
 
             {/* Guests */}
-            <div className="grid grid-cols-2 gap-3">
+            {form.quotation_type !== 'exclusive_event' && <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">
                   Adults
@@ -1143,13 +1272,15 @@ export default function Quotations() {
                   onChange={e => setForm(f => ({ ...f, children: Number(e.target.value) }))}
                 />
               </div>
-            </div>
+            </div>}
 
             {/* Amount + Currency */}
             <div className="grid grid-cols-3 gap-3">
               <div className="col-span-2">
                 <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">
-                  {financialLocked ? 'Total Amount (locked)' : 'Total Amount *'}
+                  {form.quotation_type === 'exclusive_event'
+                    ? `Whole-Lodge Daily Rate *`
+                    : financialLocked ? 'Total Amount (locked)' : 'Total Amount *'}
                 </label>
                 <input
                   type="number" min={0} step="0.01"
@@ -1157,9 +1288,17 @@ export default function Quotations() {
                   disabled={financialLocked}
                   className={`input ${financialLocked ? 'opacity-50 cursor-not-allowed' : ''}`}
                   placeholder="0.00"
-                  value={form.total_amount}
-                  onChange={e => setForm(f => ({ ...f, total_amount: e.target.value, subtotal: e.target.value }))}
+                  value={form.quotation_type === 'exclusive_event' ? form.event_daily_rate : form.total_amount}
+                  onChange={e => setForm(f => form.quotation_type === 'exclusive_event'
+                    ? ({ ...f, event_daily_rate: e.target.value })
+                    : ({ ...f, total_amount: e.target.value, subtotal: e.target.value }))}
                 />
+                {form.quotation_type === 'exclusive_event' && Number(form.event_daily_rate) > 0 && quotationNights(form.check_in, form.check_out) > 0 && (
+                  <p className="mt-1.5 text-xs font-medium text-indigo-700">
+                    Quoted total: {form.currency || currency} {(Number(form.event_daily_rate) * quotationNights(form.check_in, form.check_out)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    {' '}({quotationNights(form.check_in, form.check_out)} night{quotationNights(form.check_in, form.check_out) !== 1 ? 's' : ''})
+                  </p>
+                )}
               </div>
               <div>
                 <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">
@@ -1239,7 +1378,7 @@ export default function Quotations() {
       {/* ── Convert to Booking Modal ──────────────────────────────────────── */}
       {convertTarget && (
         <Modal
-          title="Convert to Booking"
+          title={convertTarget.quotation_type === 'exclusive_event' ? 'Reserve Event / Full Lodge' : 'Convert to Booking'}
           onClose={() => setConvertTarget(null)}
           size="sm"
         >
@@ -1266,7 +1405,10 @@ export default function Quotations() {
               <div className="bg-gray-50 rounded-lg p-3 text-sm space-y-1">
                 <p className="font-semibold text-gray-800">{convertTarget.customer_name}</p>
                 <p className="text-gray-500">{convertTarget.quotation_number}</p>
-                {convertTarget.room_name && <p className="text-gray-500">{convertTarget.room_name}</p>}
+                {convertTarget.quotation_type === 'exclusive_event' && (
+                  <p className="font-medium text-indigo-700">Full Lodge · {convertTarget.event_name}</p>
+                )}
+                {convertTarget.quotation_type !== 'exclusive_event' && convertTarget.room_name && <p className="text-gray-500">{convertTarget.room_name}</p>}
                 <p className="font-medium text-gray-800">{fmt(convertTarget.total_amount, convertTarget.currency || currency)}</p>
               </div>
 
@@ -1308,7 +1450,7 @@ export default function Quotations() {
 
               <div className="flex gap-3 pt-1">
                 <button type="submit" disabled={converting} className="btn-primary flex-1">
-                  {converting ? 'Converting…' : 'Convert to Booking'}
+                  {converting ? 'Converting…' : convertTarget.quotation_type === 'exclusive_event' ? 'Reserve Full Lodge' : 'Convert to Booking'}
                 </button>
                 <button type="button" onClick={() => setConvertTarget(null)} className="btn-secondary flex-1">
                   Cancel

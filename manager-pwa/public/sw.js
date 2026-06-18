@@ -1,6 +1,6 @@
 /* global self, clients */
 
-const CACHE = 'boroko-manager-v3'
+const CACHE = 'boroko-manager-v4'
 const STATIC = [
   '/',
   '/index.html',
@@ -11,6 +11,7 @@ const STATIC = [
 ]
 const DEFAULT_NOTIFICATION_URL = '/#/alerts'
 const PUSH_DEDUPE_CACHE = 'boroko-manager-push-dedupe-v1'
+const PERSISTENT_CACHES = new Set([CACHE, PUSH_DEDUPE_CACHE])
 
 function stablePart(value) {
   return String(value ?? '').trim().replace(/\s+/g, ' ')
@@ -71,7 +72,7 @@ self.addEventListener('install', (event) => {
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(caches.keys().then((keys) =>
-    Promise.all(keys.filter((key) => key !== CACHE).map((key) => caches.delete(key)))
+    Promise.all(keys.filter((key) => !PERSISTENT_CACHES.has(key)).map((key) => caches.delete(key)))
   ))
   self.clients.claim()
 })
@@ -85,7 +86,11 @@ self.addEventListener('fetch', (event) => {
   }
 
   if (event.request.url.includes('supabase.co')) {
-    event.respondWith(fetch(event.request).catch(() => new Response('{"error":"offline"}', { headers: { 'Content-Type': 'application/json' } })))
+    event.respondWith(fetch(event.request).catch(() => new Response('{"error":"offline"}', {
+      status: 503,
+      statusText: 'Offline',
+      headers: { 'Content-Type': 'application/json' }
+    })))
   } else {
     event.respondWith(
       fetch(event.request)

@@ -592,12 +592,17 @@ export async function sendQuotationEmail({ to, quotation, lodgeName, settings = 
   const safeLodgeName = escapeHtml(lodgeName || settings?.lodge_name || 'Your lodge')
   const safeGuestName = escapeHtml(quotation?.customer_name || 'Guest')
   const safeQuotationNumber = escapeHtml(quotation?.quotation_number || 'Quotation')
-  const safeRoomName = escapeHtml(quotation?.room_name || 'Room details will be confirmed')
+  const isEventQuotation = quotation?.quotation_type === 'exclusive_event'
+  const safeEventName = escapeHtml(quotation?.event_name || 'Exclusive event')
+  const safeRoomName = escapeHtml(isEventQuotation ? 'Full Lodge' : quotation?.room_name || 'Room details will be confirmed')
+  const safeBookingLabel = isEventQuotation ? safeEventName : safeRoomName
+  const safeBookingLabelTitle = isEventQuotation ? 'Event / group' : 'Room'
   const safeCurrency = escapeHtml(quotation?.currency || settings?.currency || 'BWP')
   const safeCheckIn = escapeHtml(quotation?.check_in ? new Date(quotation.check_in).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }) : 'To be confirmed')
   const safeCheckOut = escapeHtml(quotation?.check_out ? new Date(quotation.check_out).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }) : 'To be confirmed')
   const safeValidUntil = escapeHtml(quotation?.valid_until ? new Date(quotation.valid_until).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }) : 'Not specified')
   const safeTotal = Number(quotation?.total_amount || 0).toFixed(2)
+  const safeDailyRate = Number(quotation?.event_daily_rate || 0).toFixed(2)
   const safeNotes = quotation?.notes ? escapeHtml(quotation.notes) : ''
   const safePhone = settings?.phone ? escapeHtml(settings.phone) : ''
   const safeEmail = settings?.email ? escapeHtml(settings.email) : ''
@@ -620,7 +625,7 @@ export async function sendQuotationEmail({ to, quotation, lodgeName, settings = 
           <td style="padding:32px 40px 24px;">
             <p style="margin:0;font-size:15px;color:#111827;">Hello ${safeGuestName},</p>
             <p style="margin:14px 0 0;font-size:14px;line-height:1.7;color:#4b5563;">
-              We have prepared a quotation for your stay. The summary below shows the room, dates, and amount currently offered.
+              We have prepared a quotation for your ${isEventQuotation ? 'exclusive event and full-lodge reservation' : 'stay'}. The summary below shows the ${isEventQuotation ? 'event, dates' : 'room, dates'}, and amount currently offered.
             </p>
           </td>
         </tr>
@@ -632,9 +637,11 @@ export async function sendQuotationEmail({ to, quotation, lodgeName, settings = 
                 <td style="padding:10px 16px;font-size:12px;font-weight:600;color:#6b7280;text-transform:uppercase;">Value</td>
               </tr>
               <tr><td style="padding:12px 16px;font-size:14px;color:#6b7280;">Quotation number</td><td style="padding:12px 16px;font-size:14px;color:#111827;font-weight:700;">${safeQuotationNumber}</td></tr>
-              <tr style="background:#fafafa;"><td style="padding:12px 16px;font-size:14px;color:#6b7280;">Room</td><td style="padding:12px 16px;font-size:14px;color:#111827;">${safeRoomName}</td></tr>
+              <tr style="background:#fafafa;"><td style="padding:12px 16px;font-size:14px;color:#6b7280;">${safeBookingLabelTitle}</td><td style="padding:12px 16px;font-size:14px;color:#111827;">${safeBookingLabel}</td></tr>
+              ${isEventQuotation ? `<tr><td style="padding:12px 16px;font-size:14px;color:#6b7280;">Reservation</td><td style="padding:12px 16px;font-size:14px;color:#111827;">Full Lodge</td></tr>` : ''}
               <tr><td style="padding:12px 16px;font-size:14px;color:#6b7280;">Check-in</td><td style="padding:12px 16px;font-size:14px;color:#111827;">${safeCheckIn}</td></tr>
               <tr style="background:#fafafa;"><td style="padding:12px 16px;font-size:14px;color:#6b7280;">Check-out</td><td style="padding:12px 16px;font-size:14px;color:#111827;">${safeCheckOut}</td></tr>
+              ${isEventQuotation ? `<tr><td style="padding:12px 16px;font-size:14px;color:#6b7280;">Whole-lodge daily rate</td><td style="padding:12px 16px;font-size:14px;color:#111827;">${safeCurrency} ${safeDailyRate}</td></tr>` : ''}
               <tr><td style="padding:12px 16px;font-size:14px;color:#6b7280;">Valid until</td><td style="padding:12px 16px;font-size:14px;color:#111827;">${safeValidUntil}</td></tr>
               <tr style="background:#f0fdf4;"><td style="padding:12px 16px;font-size:14px;font-weight:700;color:#14532d;">Quoted total</td><td style="padding:12px 16px;font-size:16px;font-weight:800;color:#14532d;">${safeCurrency} ${safeTotal}</td></tr>
             </table>
@@ -660,7 +667,7 @@ export async function sendQuotationEmail({ to, quotation, lodgeName, settings = 
     from: config.from || `"${lodgeName || settings?.lodge_name || 'Boroko Bookings'}" <${config.user}>`,
     subject: `Quotation ${quotation?.quotation_number || ''} — ${lodgeName || settings?.lodge_name || 'Your lodge'}`.trim(),
     html,
-    text: `Quotation ${quotation?.quotation_number || ''}\nGuest: ${quotation?.customer_name || 'Guest'}\nRoom: ${quotation?.room_name || 'To be confirmed'}\nCheck-in: ${safeCheckIn}\nCheck-out: ${safeCheckOut}\nValid until: ${safeValidUntil}\nQuoted total: ${safeCurrency} ${safeTotal}`
+    text: `Quotation ${quotation?.quotation_number || ''}\nGuest: ${quotation?.customer_name || 'Guest'}\n${isEventQuotation ? `Event: ${quotation?.event_name || 'Exclusive event'}\nReservation: Full Lodge\nDaily rate: ${safeCurrency} ${safeDailyRate}` : `Room: ${quotation?.room_name || 'To be confirmed'}`}\nCheck-in: ${safeCheckIn}\nCheck-out: ${safeCheckOut}\nValid until: ${safeValidUntil}\nQuoted total: ${safeCurrency} ${safeTotal}`
   })
 }
 

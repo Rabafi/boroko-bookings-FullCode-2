@@ -1,11 +1,8 @@
-import { randomUUID } from 'crypto'
-import bcrypt from 'bcryptjs'
+import { createHash, randomUUID } from 'crypto'
 import { state } from '../state.js'
-import { getRoleCapabilities, isPosFullAccessRole, normalizeAppRole } from '../../shared/accessControl.js'
 import { getActiveBookingForRoom } from './bookings.js'
 import { recordCriticalError } from './operationalLog.js'
 import { mergeRemotePosOrdersWithLocalState } from './posMerge.js'
-import { normalizeUserRecord } from './shared.js'
 import { patchCachedPosOrderSyncState } from './syncCache.js'
 import {
   applyOfflinePosInventoryReservation,
@@ -15,11 +12,15 @@ import {
   readCache,
   readLocalPosVoidHistory,
   refreshCache,
-  restoreOfflinePosInventoryReservation,
   upsertLocalPosVoidHistory,
   writeCache,
   dedupePromise
 } from './infrastructure.js'
+
+function getDesktopPosDeviceId() {
+  const source = state.cacheDir || state.lodgeId || 'boroko-desktop-pos';
+  return `desktop-${createHash('sha256').update(String(source)).digest('hex').slice(0, 24)}`;
+}
 
 function isReadOnlySessionTouchError(error) {
   const message = String(error?.message || error || '').toLowerCase();
@@ -296,6 +297,68 @@ export function getPosMenuItems(outletFilter = null) {
   return dedupePromise(`getPosMenuItems:${JSON.stringify(outletFilter)}`, () => _getPosMenuItems(outletFilter));
 }
 
+async function _getActivePosCatalogSnapshot(outletId = null) {
+  const readCachedSnapshot = () => {
+    const cached = readCache('pos-catalog-snapshots');
+    const rows = Array.isArray(cached) ? cached : [];
+    return rows.find((entry) =>
+      entry?.success === true &&
+      entry?.snapshot_id &&
+      (entry?.outlet_id || null) === (outletId || null)
+    ) || null;
+  };
+
+  if (state.isOnline && state.supabase) {
+    const { data, error } = await state.supabase.rpc('get_active_pos_catalog_snapshot', {
+      p_lodge_id: state.lodgeId,
+      p_outlet_id: outletId || null
+    });
+    if (error) throw new Error(error.message);
+    if (!data?.success) throw new Error(data?.error || 'No active catalog snapshot. Publish a catalog before trading.');
+    const rows = readCache('pos-catalog-snapshots');
+    const next = [
+      data,
+      ...(Array.isArray(rows) ? rows : []).filter((entry) =>
+        (entry?.outlet_id || null) !== (outletId || null)
+      )
+    ];
+    writeCache('pos-catalog-snapshots', next);
+    return data;
+  }
+  const cached = readCachedSnapshot();
+  if (cached) return cached;
+  throw new Error('No catalog snapshot available. Connect to the internet and publish a catalog.');
+}
+
+export function getActivePosCatalogSnapshot(outletId = null) {
+  return dedupePromise(`getActivePosCatalogSnapshot:${outletId || 'all'}`, () => _getActivePosCatalogSnapshot(outletId));
+}
+
+export async function publishPosCatalogSnapshot(outletId = null) {
+  if (!state.isOnline) throw new Error('Catalog publishing requires an internet connection.');
+  const { data, error } = await state.supabase.rpc('publish_pos_catalog_snapshot', {
+    p_lodge_id: state.lodgeId,
+    p_outlet_id: outletId || null
+  });
+  if (error) throw new Error(error.message);
+  if (!data?.success) throw new Error(data?.error || 'Could not publish catalog snapshot');
+  return _getActivePosCatalogSnapshot(outletId);
+}
+
+async function publishPosCatalogSnapshotsForChange(outletIds = []) {
+  const requested = [...new Set(outletIds.map((value) => value || null))];
+  const targets = new Set(requested);
+  if (requested.includes(null)) {
+    const outlets = await getOutlets();
+    for (const outlet of outlets || []) {
+      if (outlet?.id) targets.add(outlet.id);
+    }
+  }
+  for (const outletId of targets) {
+    await publishPosCatalogSnapshot(outletId);
+  }
+}
+
 export async function getPosMenuItemById(id) {
   if (!id) return null;
   try {
@@ -324,16 +387,20 @@ export async function createPosMenuItem(data) {
     depletion_qty: data.inventory_item_id ? Number(data.depletion_qty) || 1 : null,
     outlet_id: data.outlet_id || null
   };
-  if (state.isOnline) {
+    if (state.isOnline) {
     const { data: result, error } = await state.supabase.rpc('create_pos_menu_item', { payload: item });
     if (error) throw new Error(error.message);
     if (!result?.success) throw new Error(result?.error || 'Could not create POS menu item');
+    await publishPosCatalogSnapshotsForChange([item.outlet_id]).catch((error) => {
+      throw new Error(`Menu item was saved, but catalog publication failed: ${error.message}`);
+    });
     return { success: true, id: result?.id };
   }
   throw new Error('No internet connection. Please check your connection and try again.');
 }
 
 export async function updatePosMenuItem(id, data) {
+  const existing = await getPosMenuItemById(id).catch(() => null);
   const update = {
     name: data.name,
     category: data.category,
@@ -352,6 +419,12 @@ export async function updatePosMenuItem(id, data) {
     });
     if (error) throw new Error(error.message);
     if (!result?.success) throw new Error(result?.error || 'Could not update POS menu item');
+    await publishPosCatalogSnapshotsForChange([
+      existing?.outlet_id || null,
+      update.outlet_id ?? existing?.outlet_id ?? null
+    ]).catch((publishError) => {
+      throw new Error(`Menu item was saved, but catalog publication failed: ${publishError.message}`);
+    });
     return { success: true };
   }
   throw new Error('No internet connection. Please check your connection and try again.');
@@ -359,12 +432,16 @@ export async function updatePosMenuItem(id, data) {
 
 export async function deletePosMenuItem(id) {
   if (!state.isOnline) throw new Error('No internet connection. Please check your connection and try again.');
+  const existing = await getPosMenuItemById(id).catch(() => null);
   const { data: result, error } = await state.supabase.rpc('delete_pos_menu_item', {
     p_id: id,
     p_lodge_id: state.lodgeId
   });
   if (error) throw new Error(error.message);
   if (!result?.success) throw new Error(result?.error || 'Could not delete POS menu item');
+  await publishPosCatalogSnapshotsForChange([existing?.outlet_id || null]).catch((publishError) => {
+    throw new Error(`Menu item was deleted, but catalog publication failed: ${publishError.message}`);
+  });
   return { success: true };
 }
 
@@ -637,7 +714,7 @@ export async function createPosOrder(data) {
       throw new Error('Room folio charge requires an active booking for the selected room.');
     }
 
-    // Offline path: validate booking exists in cache before queuing the operation
+    // Offline path: queue v3 payload (server resolves prices from catalog on replay)
     if (!state.isOnline) {
       // If a booking_id was explicitly provided, verify it exists in cache
       if (data.booking_id && !cachedBooking) {
@@ -647,65 +724,68 @@ export async function createPosOrder(data) {
       if ((data.payment_method || 'cash') === 'folio' && !bookingId) {
         throw new Error('Room folio charge requires an active booking for the selected room.');
       }
+      if (!data.shift_id) {
+        throw new Error('shift_id is mandatory. Open a shift before creating orders.');
+      }
+      // Resolve catalog snapshot for offline (from cache)
+      let offlineCatalogSnapshotId = data.catalog_snapshot_id || null;
+      if (!offlineCatalogSnapshotId) {
+        const cachedSnapshots = readCache('pos-catalog-snapshots');
+        const cachedSnapshot = (Array.isArray(cachedSnapshots) ? cachedSnapshots : []).find((entry) =>
+          entry?.success === true &&
+          (entry?.outlet_id || null) === (data.outlet_id || null)
+        );
+        offlineCatalogSnapshotId = cachedSnapshot?.snapshot_id || null;
+      }
+      if (!offlineCatalogSnapshotId) {
+        throw new Error('No catalog snapshot available offline. Connect to the internet, publish a catalog, then retry.');
+      }
+
       const id = orderId;
       const createdAt = data.created_at_client || new Date().toISOString();
       const idempotencyKey = submitIdempotencyKey;
       const inventoryReservations = getOfflinePosInventoryReservation(items);
-      const lineItems = items.map((item) => ({
-        id: randomUUID(),
-        order_id: id,
-        lodge_id: state.lodgeId,
+
+      // v3 offline payload: only item selections, no client-computed prices
+      const v3OfflineItems = items.map((item) => ({
         menu_item_id: item.menu_item_id || null,
-        inventory_item_id: item.inventory_item_id || null,
-        depletion_qty: normalizePositiveQty(item.depletion_qty, 1),
-        item_name: item.item_name,
-        category: item.category || null,
-        modifiers: Array.isArray(item.modifiers) ? item.modifiers : [],
-        item_notes: item.item_notes || null,
-        quantity: Number(item.quantity || 0),
-        unit_price: Number(item.unit_price || 0),
-        subtotal: Number(item.quantity || 0) * Number(item.unit_price || 0)
+        quantity: normalizePositiveQty(item.quantity, 1),
+        modifier_option_ids: Array.isArray(item.modifier_option_ids)
+          ? item.modifier_option_ids
+          : (Array.isArray(item.modifiers) ? item.modifiers : [])
+            .map((modifier) => typeof modifier === 'string' ? modifier : modifier?.id)
+            .filter(Boolean),
+        item_notes: item.item_notes || null
       }));
 
-      queueOperation('rpc', 'create_pos_order', {
-        payload: {
-          lodge_id: state.lodgeId,
-          id,
-          room_id: data.room_id || null,
-          booking_id: bookingId,
-          walk_in_name: data.walk_in_name || null,
-          total,
-          gross_total: totals.gross_total,
-          discount_total: totals.discount_total,
-          tax_rate: totals.tax_rate,
-          tax_total: totals.tax_total,
-          tip_total: totals.tip_total,
-          notes: data.notes || null,
-          payment_method: paymentMethod,
-          payment_breakdown: paymentBreakdown,
-          outlet_id: data.outlet_id || null,
-          service_mode: data.service_mode || (data.table_name ? 'table' : data.room_id ? 'room' : 'takeaway'),
-          table_name: data.table_name || null,
-          tab_name: data.tab_name || null,
-          waiter_name: data.waiter_name || null,
-          cashier_id: data.cashier_id || state.currentUser?.id || null,
-          cashier_name: data.cashier_name || state.currentUser?.name || state.currentUser?.email || null,
-          shift_id: data.shift_id || null,
-          ticket_status: data.ticket_status || 'new',
-          create_idempotency_key: idempotencyKey,
-          created_at_client: createdAt,
-          items: lineItems.map((item) => ({
-            menu_item_id: item.menu_item_id,
-            inventory_item_id: item.inventory_item_id || null,
-            depletion_qty: normalizePositiveQty(item.depletion_qty, 1),
-            item_name: item.item_name,
-            category: item.category || null,
-            modifiers: Array.isArray(item.modifiers) ? item.modifiers : [],
-            item_notes: item.item_notes || null,
-            quantity: item.quantity,
-            unit_price: item.unit_price
-          }))
-        }
+      const v3OfflinePayload = {
+        id,
+        lodge_id: state.lodgeId,
+        catalog_snapshot_id: offlineCatalogSnapshotId,
+        shift_id: data.shift_id,
+        source_device_id: getDesktopPosDeviceId(),
+        outlet_id: data.outlet_id || null,
+        walk_in_name: data.walk_in_name || null,
+        room_id: data.room_id || null,
+        booking_id: bookingId || null,
+        notes: data.notes || null,
+        payment_method: paymentMethod,
+        payment_breakdown: paymentBreakdown,
+        service_mode: data.service_mode || (data.table_name ? 'table' : data.room_id ? 'room' : 'takeaway'),
+        table_name: data.table_name || null,
+        tab_name: data.tab_name || null,
+        waiter_name: data.waiter_name || null,
+        ticket_status: data.ticket_status || 'new',
+        create_idempotency_key: idempotencyKey,
+        client_created_at: createdAt,
+        tip_total: totals.tip_total,
+        promotion_id: data.promotion_id || null,
+        manual_discount: data.manual_discount || null,
+        items: v3OfflineItems
+      };
+
+      queueOperation('rpc', 'create_pos_order_v3', {
+        payload: v3OfflinePayload
       }, null, {
         _queue_id: `pos-order-${id}`,
         ...(cachedBooking?._pending_sync ? { _depends_on: `booking-${cachedBooking.id}` } : {})
@@ -727,22 +807,37 @@ export async function createPosOrder(data) {
         tax_rate: totals.tax_rate,
         tax_total: totals.tax_total,
         tip_total: totals.tip_total,
-        status: 'completed',
+        status: 'pending',
         service_mode: data.service_mode || (data.table_name ? 'table' : data.room_id ? 'room' : 'takeaway'),
         table_name: data.table_name || null,
         tab_name: data.tab_name || null,
         waiter_name: data.waiter_name || null,
-        cashier_id: data.cashier_id || state.currentUser?.id || null,
-        cashier_name: data.cashier_name || state.currentUser?.name || state.currentUser?.email || null,
+        cashier_id: state.currentUser?.id || null,
+        cashier_name: state.currentUser?.name || state.currentUser?.email || null,
         shift_id: data.shift_id || null,
         ticket_status: data.ticket_status || 'new',
+        catalog_snapshot_id: offlineCatalogSnapshotId,
         created_at: createdAt,
         _pending_sync: true,
         _sync_state: 'pending',
         _sync_error: null,
         _idempotency_key: idempotencyKey,
         _sync_created_offline: true,
-        pos_order_items: lineItems
+        pos_order_items: items.map((item) => ({
+          id: randomUUID(),
+          order_id: id,
+          lodge_id: state.lodgeId,
+          menu_item_id: item.menu_item_id || null,
+          inventory_item_id: item.inventory_item_id || null,
+          depletion_qty: normalizePositiveQty(item.depletion_qty, 1),
+          item_name: item.item_name,
+          category: item.category || null,
+          modifiers: Array.isArray(item.modifiers) ? item.modifiers : [],
+          item_notes: item.item_notes || null,
+          quantity: normalizePositiveQty(item.quantity, 1),
+          unit_price: Number(item.unit_price || 0),
+          subtotal: normalizePositiveQty(item.quantity, 1) * Number(item.unit_price || 0)
+        }))
       };
 
       const cachedOrders = readCache('pos-orders');
@@ -750,13 +845,13 @@ export async function createPosOrder(data) {
       writeCache('pos-orders', cachedOrders);
 
       const cachedLineItems = readCache('pos-order-items');
-      writeCache('pos-order-items', [...lineItems, ...cachedLineItems]);
+      writeCache('pos-order-items', [...orderRow.pos_order_items, ...cachedLineItems]);
       applyOfflinePosInventoryReservation(inventoryReservations);
-      appendPrepTickets(orderRow, lineItems);
-      appendPosAudit('order_completed_offline', { entity_type: 'pos_order', entity_id: id, details: { total, outlet_id: data.outlet_id || null, table_name: data.table_name || null } });
+      appendPrepTickets(orderRow, orderRow.pos_order_items);
+      appendPosAudit('order_completed_offline', { entity_type: 'pos_order', entity_id: id, details: { total, outlet_id: data.outlet_id || null, table_name: data.table_name || null, catalog_snapshot_id: offlineCatalogSnapshotId, v3: true } });
       if (data.tab_id) await closePosTab(data.tab_id).catch(() => {});
 
-      return { success: true, id, offline: true };
+      return { success: true, id, offline: true, provisional: true };
     }
 
     // Resolve booking ID before entering the transaction (read-only, safe outside)
@@ -766,51 +861,70 @@ export async function createPosOrder(data) {
       bookingIdForRpc = booking?.id || null;
     }
 
+    // Resolve catalog snapshot (mandatory for v3)
+    let catalogSnapshotId = data.catalog_snapshot_id || null;
+    if (!catalogSnapshotId) {
+      try {
+        const snapshot = await getActivePosCatalogSnapshot(data.outlet_id || null);
+        catalogSnapshotId = snapshot?.snapshot_id || null;
+      } catch (snapErr) {
+        throw new Error(`Catalog snapshot required: ${snapErr.message}`);
+      }
+    }
+    if (!catalogSnapshotId) {
+      throw new Error('catalog_snapshot_id is mandatory. Publish a catalog before trading.');
+    }
+    if (!data.shift_id) {
+      throw new Error('shift_id is mandatory. Open a shift before creating orders.');
+    }
+
+    // v3 RPC: server resolves all prices from catalog snapshot.
+    // Client sends only item selections (menu_item_id, quantity, item_name, category, modifiers).
+    // Server ignores any client-supplied unit_price.
+    const v3Payload = {
+      id: orderId,
+      lodge_id: state.lodgeId,
+      catalog_snapshot_id: catalogSnapshotId,
+      shift_id: data.shift_id,
+      source_device_id: getDesktopPosDeviceId(),
+      outlet_id: data.outlet_id || null,
+      walk_in_name: data.walk_in_name || null,
+      room_id: data.room_id || null,
+      booking_id: bookingIdForRpc || null,
+      notes: data.notes || null,
+      payment_method: paymentMethod,
+      payment_breakdown: paymentBreakdown,
+      service_mode: data.service_mode || (data.table_name ? 'table' : data.room_id ? 'room' : 'takeaway'),
+      table_name: data.table_name || null,
+      tab_name: data.tab_name || null,
+      waiter_name: data.waiter_name || null,
+      ticket_status: data.ticket_status || 'new',
+      create_idempotency_key: submitIdempotencyKey,
+      client_created_at: data.created_at_client || new Date().toISOString(),
+      tip_total: totals.tip_total,
+      promotion_id: data.promotion_id || null,
+      manual_discount: data.manual_discount || null,
+      items: items.map((i) => ({
+        menu_item_id: i.menu_item_id || null,
+        quantity: i.quantity,
+        modifier_option_ids: Array.isArray(i.modifier_option_ids)
+          ? i.modifier_option_ids
+          : (Array.isArray(i.modifiers) ? i.modifiers : [])
+            .map((modifier) => typeof modifier === 'string' ? modifier : modifier?.id)
+            .filter(Boolean),
+        item_notes: i.item_notes || null
+      }))
+    };
+
     // All DB writes are delegated to a single Postgres transaction via RPC.
     // If any step fails, Postgres rolls back the entire operation automatically.
-    const { data: result, error } = await state.supabase.rpc('create_pos_order', {
-      payload: {
-        id: orderId,
-        lodge_id: state.lodgeId,
-        room_id: data.room_id || null,
-        booking_id: bookingIdForRpc,
-        walk_in_name: data.walk_in_name || null,
-        total,
-        gross_total: totals.gross_total,
-        discount_total: totals.discount_total,
-        tax_rate: totals.tax_rate,
-        tax_total: totals.tax_total,
-        tip_total: totals.tip_total,
-        notes: data.notes || null,
-        payment_method: paymentMethod,
-        payment_breakdown: paymentBreakdown,
-        outlet_id: data.outlet_id || null,
-        service_mode: data.service_mode || (data.table_name ? 'table' : data.room_id ? 'room' : 'takeaway'),
-        table_name: data.table_name || null,
-        tab_name: data.tab_name || null,
-        waiter_name: data.waiter_name || null,
-        cashier_id: data.cashier_id || state.currentUser?.id || null,
-        cashier_name: data.cashier_name || state.currentUser?.name || state.currentUser?.email || null,
-        shift_id: data.shift_id || null,
-        ticket_status: data.ticket_status || 'new',
-        create_idempotency_key: submitIdempotencyKey,
-        created_at_client: data.created_at_client || null,
-        items: items.map((i) => ({
-          menu_item_id: i.menu_item_id || null,
-          inventory_item_id: i.inventory_item_id || null,
-          depletion_qty: normalizePositiveQty(i.depletion_qty, 1),
-          item_name: i.item_name,
-          category: i.category || null,
-          modifiers: Array.isArray(i.modifiers) ? i.modifiers : [],
-          item_notes: i.item_notes || null,
-          quantity: i.quantity,
-          unit_price: i.unit_price
-        }))
-      }
+    const { data: result, error } = await state.supabase.rpc('create_pos_order_v3', {
+      payload: v3Payload
     });
 
     if (error) throw new Error(error.message);
     if (result?.success) {
+      const serverTotal = normalizeMoney(result.total || 0);
       appendPrepTickets({
         id: result.id || orderId,
         outlet_id: data.outlet_id || null,
@@ -821,10 +935,10 @@ export async function createPosOrder(data) {
         room_id: data.room_id || null,
         notes: data.notes || null
       }, items);
-      appendPosAudit('order_completed', { entity_type: 'pos_order', entity_id: result.id || orderId, details: { total, outlet_id: data.outlet_id || null, table_name: data.table_name || null } });
+      appendPosAudit('order_completed', { entity_type: 'pos_order', entity_id: result.id || orderId, details: { total: serverTotal, outlet_id: data.outlet_id || null, table_name: data.table_name || null, catalog_snapshot_id: catalogSnapshotId, v3: true } });
       if (data.tab_id) closePosTab(data.tab_id).catch(() => {});
     }
-    return result; // { id: '...', success: true }
+    return result;
   } catch (error) {
     recordCriticalError('pos.order.create', error, {
       room_id: data?.room_id || null,
@@ -843,66 +957,14 @@ export async function voidPosOrder(id) {
   };
 }
 
-async function _getApproverCandidates() {
-  const cachedCandidates = () => readCache('users').
-  map(normalizeUserRecord).
-  filter(Boolean).
-  filter((user) => user?.pin_hash).
-  filter((user) => ['supervisor', 'manager', 'admin', 'super_admin'].includes(normalizeAppRole(user.role)));
-
-  if (!state.isOnline) return cachedCandidates();
-
-  const { data, error } = await state.supabase.
-  from('users').
-  select('id, name, role, pin_hash, allowed_outlet_ids').
-  eq('lodge_id', state.lodgeId).
-  not('pin_hash', 'is', null).
-  in('role', ['supervisor', 'manager', 'admin', 'super_admin']);
-
-  if (error) {
-    const fallback = cachedCandidates();
-    if (fallback.length > 0) return fallback;
-    throw new Error(error.message);
-  }
-  return (data || []).map(normalizeUserRecord).filter(Boolean);
-}
-
-function approverCanApproveOutlet(approver, outletId = null) {
-  const role = normalizeAppRole(approver?.role);
-  if (isPosFullAccessRole(role)) return true;
-  if (role !== 'supervisor') return false;
-  if (!outletId) return true;
-  return Array.isArray(approver?.allowed_outlet_ids) && approver.allowed_outlet_ids.includes(outletId);
-}
-
 export async function approvePosVoidWithPin(payload) {
   const { order_id, pin, reason, cashier_user_id, outlet_id } = payload || {};
 
   if (!order_id || !pin) {
     return { success: false, error: 'Order and PIN are required' };
   }
-
-  const candidates = await _getApproverCandidates();
-
-  let approver = null;
-  for (const candidate of candidates) {
-    if (candidate?.pin_hash && bcrypt.compareSync(String(pin).trim(), candidate.pin_hash)) {
-      approver = candidate;
-      break;
-    }
-  }
-
-  if (!approver) {
-    return { success: false, error: 'Invalid PIN or unauthorized approver' };
-  }
-
-  const approverRole = normalizeAppRole(approver.role);
-  const approverCaps = getRoleCapabilities(approverRole, { pos: true });
-  if (!approverCaps?.['pos.void']) {
-    return { success: false, error: 'Invalid PIN or unauthorized approver' };
-  }
-  if (!approverCanApproveOutlet(approver, outlet_id || null)) {
-    return { success: false, error: 'Invalid PIN or unauthorized approver for this outlet' };
+  if (!String(reason || '').trim()) {
+    return { success: false, error: 'A void reason is required' };
   }
 
   const cachedOrders = readCache('pos-orders');
@@ -911,15 +973,22 @@ export async function approvePosVoidWithPin(payload) {
     return { success: false, error: 'Order not found on this computer' };
   }
 
-  const orderItems = Array.isArray(cachedOrder?.pos_order_items) ?
-  cachedOrder.pos_order_items :
-  Array.isArray(cachedOrder?.items) ?
-  cachedOrder.items :
-  [];
   const logId = payload?.override_log_id || randomUUID();
   const createdAt = payload?.created_at || new Date().toISOString();
+  const rpcPayload = {
+    order_id,
+    lodge_id: state.lodgeId,
+    requested_by: cashier_user_id || null,
+    approved_by: payload?.approver_id || null,
+    pin: String(pin).trim(),
+    device_id: getDesktopPosDeviceId(),
+    reason: String(reason).trim(),
+    outlet_id: outlet_id || cachedOrder?.outlet_id || null,
+    override_log_id: logId,
+    created_at: createdAt
+  };
 
-  if (!state.isOnline) {
+  const queuePendingVoid = () => {
     if (cachedOrder?.status === 'voided') {
       return { success: false, error: 'Order is already voided' };
     }
@@ -929,46 +998,24 @@ export async function approvePosVoidWithPin(payload) {
       ...(cachedOrder?._pending_sync || cachedOrder?._sync_created_offline ? { _depends_on: `pos-order-${order_id}` } : {})
     };
     queueOperation('rpc', 'approve_pos_void_with_pin', {
-      payload: {
-        order_id,
-        lodge_id: state.lodgeId,
-        requested_by: cashier_user_id || null,
-        approved_by: approver.id,
-        pin: String(pin).trim(),
-        reason: reason || null,
-        outlet_id: outlet_id || cachedOrder?.outlet_id || null,
-        override_log_id: logId,
-        created_at: createdAt,
-        items: orderItems.map((item) => ({
-          menu_item_id: item.menu_item_id || null,
-          inventory_item_id: item.inventory_item_id || null,
-          depletion_qty: normalizePositiveQty(item.depletion_qty, 1),
-          item_name: item.item_name,
-          quantity: Number(item.quantity || 0),
-          unit_price: Number(item.unit_price || 0)
-        }))
-      }
+      payload: rpcPayload
     }, null, queueMeta);
 
     patchCachedPosOrderSyncState(order_id, {
-      status: 'voided',
       _pending_sync: true,
       _sync_state: 'pending',
       _sync_error: null,
       _pending_void: true,
-      _void_reason: reason || null,
-      _void_approved_by: approver.id,
-      _void_approver_name: approver.name || null
+      _void_reason: String(reason).trim()
     });
-    restoreOfflinePosInventoryReservation(orderItems, { outletId: outlet_id || cachedOrder?.outlet_id || null });
     upsertLocalPosVoidHistory({
       id: logId,
       order_id,
       action: 'void',
       requested_by: cashier_user_id || null,
-      approved_by: approver.id,
-      approver_name: approver.name || null,
-      reason: reason || null,
+      approved_by: null,
+      approver_name: 'Pending server validation',
+      reason: String(reason).trim(),
       outlet_id: outlet_id || cachedOrder?.outlet_id || null,
       created_at: createdAt,
       _pending_sync: true,
@@ -977,50 +1024,44 @@ export async function approvePosVoidWithPin(payload) {
     return {
       success: true,
       offline: true,
+      provisional: true,
       override_log_id: logId,
-      approved_by: approver.id,
-      approver_name: approver.name || null,
-      reason: reason || null
+      reason: String(reason).trim()
     };
+  };
+
+  if (!state.isOnline) {
+    return queuePendingVoid();
   }
 
-  const { data: result, error } = await state.supabase.rpc('approve_pos_void_with_pin', {
-    payload: {
-      order_id,
-      lodge_id: state.lodgeId,
-      requested_by: cashier_user_id || null,
-      approved_by: approver.id,
-      pin: String(pin).trim(),
-      reason: reason || null,
-      outlet_id: outlet_id || null,
-      override_log_id: logId,
-      created_at: createdAt
-    }
-  });
+  try {
+    const { data: result, error } = await state.supabase.rpc('approve_pos_void_with_pin', {
+      payload: rpcPayload
+    });
 
-  if (error) throw new Error(error.message);
-  if (!result?.success) return { success: false, error: result?.error || 'Could not void order' };
-  upsertLocalPosVoidHistory({
-    id: logId,
-    order_id,
-    action: 'void',
-    requested_by: cashier_user_id || null,
-    approved_by: approver.id,
-    approver_name: approver.name || null,
-    reason: reason || null,
-    outlet_id: outlet_id || cachedOrder?.outlet_id || null,
-    created_at: createdAt,
-    _pending_sync: false,
-    _sync_state: 'synced'
-  });
-  await refreshCache('pos-orders', 'inventory-items', 'inventory-purchases').catch(() => {});
-  return {
-    success: true,
-    override_log_id: logId,
-    approved_by: approver.id,
-    approver_name: approver.name || null,
-    reason: reason || null
-  };
+    if (error) throw new Error(error.message);
+    if (!result?.success) return { success: false, error: result?.error || 'Could not void order' };
+    upsertLocalPosVoidHistory({
+      id: result.override_log_id || logId,
+      order_id,
+      action: 'void',
+      requested_by: cashier_user_id || null,
+      approved_by: result.approved_by || null,
+      approver_name: result.approver_name || null,
+      reason: String(reason).trim(),
+      outlet_id: outlet_id || cachedOrder?.outlet_id || null,
+      created_at: createdAt,
+      _pending_sync: false,
+      _sync_state: 'synced'
+    });
+    await refreshCache('pos-orders', 'inventory-items', 'inventory-purchases').catch(() => {});
+    return result;
+  } catch (error) {
+    if (isNetworkError(error) && cachedOrder) {
+      return queuePendingVoid();
+    }
+    throw error;
+  }
 }
 
 export async function createPosPartialReturnWithPin(payload = {}) {
@@ -1031,7 +1072,8 @@ export async function createPosPartialReturnWithPin(payload = {}) {
     lines = [],
     cashier_user_id,
     outlet_id,
-    payment_method
+    payment_method,
+    shift_id
   } = payload || {};
 
   if (!order_id || !pin) {
@@ -1040,27 +1082,13 @@ export async function createPosPartialReturnWithPin(payload = {}) {
   if (!String(reason || '').trim()) {
     return { success: false, error: 'Reason is required' };
   }
+  if (!shift_id) {
+    return { success: false, error: 'Open shift is required for returns' };
+  }
 
   const originalOrder = await getPosOrderWithItemsById(order_id);
   if (!originalOrder) return { success: false, error: 'Original order not found' };
   if (originalOrder.status === 'voided') return { success: false, error: 'Cannot return items from a voided order' };
-
-  const candidates = await _getApproverCandidates();
-  let approver = null;
-  for (const candidate of candidates) {
-    if (candidate?.pin_hash && bcrypt.compareSync(String(pin).trim(), candidate.pin_hash)) {
-      approver = candidate;
-      break;
-    }
-  }
-  if (!approver) return { success: false, error: 'Invalid PIN or unauthorized approver' };
-
-  const approverRole = normalizeAppRole(approver.role);
-  const approverCaps = getRoleCapabilities(approverRole, { pos: true });
-  if (!approverCaps?.['pos.void']) return { success: false, error: 'Invalid PIN or unauthorized approver' };
-  if (!approverCanApproveOutlet(approver, outlet_id || originalOrder.outlet_id || null)) {
-    return { success: false, error: 'Invalid PIN or unauthorized approver for this outlet' };
-  }
 
   const originalLines = Array.isArray(originalOrder.pos_order_items) ?
   originalOrder.pos_order_items :
@@ -1079,8 +1107,15 @@ export async function createPosPartialReturnWithPin(payload = {}) {
     const originalQty = Number(line.quantity || 0);
     const unitPrice = Number(line.unit_price || 0);
     if (!(originalQty > 0) || unitPrice < 0) continue;
-    const returnQty = Math.min(requestedQty, originalQty);
+    if (!Number.isInteger(requestedQty)) {
+      return { success: false, error: 'Return quantities must be whole numbers.' };
+    }
+    if (requestedQty > originalQty) {
+      return { success: false, error: `Return quantity exceeds the sold quantity for ${line.item_name || 'an item'}.` };
+    }
+    const returnQty = requestedQty;
     returnLines.push({
+      original_order_item_id: lineId,
       menu_item_id: line.menu_item_id || null,
       inventory_item_id: line.inventory_item_id || null,
       depletion_qty: normalizePositiveQty(line.depletion_qty, 1),
@@ -1109,74 +1144,23 @@ export async function createPosPartialReturnWithPin(payload = {}) {
     lodge_id: state.lodgeId,
     return_order_id: returnId,
     return_idempotency_key: `pos-return:${returnId}`,
-    pin: String(pin).trim(),
-    reason: notes,
+    shift_id,
+    approval_pin: String(pin).trim(),
+    approver_id: payload?.approver_id || null,
+    device_id: getDesktopPosDeviceId(),
+    reason: String(reason).trim(),
     requested_by: cashier_user_id || null,
-    cashier_id: cashier_user_id || null,
-    cashier_name: null,
     outlet_id: outlet_id || originalOrder.outlet_id || null,
-    override_log_id: randomUUID(),
+    override_log_id: payload.override_log_id || randomUUID(),
     created_at: createdAt,
-    lines: lines.map((line) => ({
-      line_id: line.line_id || line.id || null,
+    lines: returnLines.map((line) => ({
+      line_id: line.original_order_item_id,
       quantity: Math.abs(Number(line.quantity) || 0)
     }))
   };
 
-  let result;
-  if (state.isOnline && state.supabase) {
-    try {
-      const { data: rpcResult, error } = await state.supabase.rpc('create_pos_partial_return_with_pin', { payload: rpcPayload });
-      if (error) throw new Error(error.message);
-      if (!rpcResult?.success) return { success: false, error: rpcResult?.error || 'Return failed' };
-      result = { success: true, id: rpcResult.id || returnId, offline: false };
-    } catch (rpcError) {
-      if (isNetworkError(rpcError)) {
-        // P0-3: Queue the same RPC for offline replay, not createPosOrder
-        queueOperation('rpc', 'create_pos_partial_return_with_pin', { payload: rpcPayload }, returnId, {
-          _queue_id: `pos-return-${returnId}`,
-          ...(originalOrder._pending_sync ? { _depends_on: `pos-order-${order_id}` } : {})
-        });
-        const orderRow = {
-          id: returnId,
-          lodge_id: state.lodgeId,
-          order_id,
-          items: returnLines,
-          total,
-          gross_total: total,
-          payment_method: payment_method || originalOrder.payment_method || 'cash',
-          outlet_id: outlet_id || originalOrder.outlet_id || null,
-          walk_in_name: `Return: ${originalOrder.walk_in_name || 'Guest'}`,
-          notes,
-          status: 'completed',
-          created_at: createdAt,
-          _pending_sync: true,
-          _sync_state: 'pending',
-          _sync_created_offline: true,
-          pos_order_items: returnLines.map((line) => ({
-            id: randomUUID(),
-            order_id: returnId,
-            lodge_id: state.lodgeId,
-            ...line,
-            subtotal: Number(line.quantity || 0) * Number(line.unit_price || 0)
-          }))
-        };
-        const cachedOrders = readCache('pos-orders');
-        cachedOrders.unshift(orderRow);
-        writeCache('pos-orders', cachedOrders);
-        restoreOfflinePosInventoryReservation(returnLines.map((line) => ({
-          ...line,
-          quantity: Math.abs(line.quantity),
-          item_name: (line.item_name || '').replace(/^Return: /, '')
-        })));
-        result = { success: true, id: returnId, offline: true };
-      } else {
-        throw rpcError;
-      }
-    }
-  } else {
-    // P0-3: Queue the same RPC for offline replay, not createPosOrder
-    queueOperation('rpc', 'create_pos_partial_return_with_pin', { payload: rpcPayload }, returnId, {
+  const queuePendingReturn = () => {
+    queueOperation('rpc', 'create_pos_return_v3', { payload: rpcPayload }, returnId, {
       _queue_id: `pos-return-${returnId}`,
       ...(originalOrder._pending_sync ? { _depends_on: `pos-order-${order_id}` } : {})
     });
@@ -1191,10 +1175,11 @@ export async function createPosPartialReturnWithPin(payload = {}) {
       outlet_id: outlet_id || originalOrder.outlet_id || null,
       walk_in_name: `Return: ${originalOrder.walk_in_name || 'Guest'}`,
       notes,
-      status: 'completed',
+      status: 'pending',
       created_at: createdAt,
       _pending_sync: true,
       _sync_state: 'pending',
+      _pending_return: true,
       _sync_created_offline: true,
       pos_order_items: returnLines.map((line) => ({
         id: randomUUID(),
@@ -1207,40 +1192,51 @@ export async function createPosPartialReturnWithPin(payload = {}) {
     const cachedOrders = readCache('pos-orders');
     cachedOrders.unshift(orderRow);
     writeCache('pos-orders', cachedOrders);
-    restoreOfflinePosInventoryReservation(returnLines.map((line) => ({
-      ...line,
-      quantity: Math.abs(line.quantity),
-      item_name: (line.item_name || '').replace(/^Return: /, '')
-    })));
-    result = { success: true, id: returnId, offline: true };
-  }
-
-  if (!result?.success) return result;
-
-  upsertLocalPosVoidHistory({
-    id: payload.override_log_id || randomUUID(),
-    order_id,
-    action: 'partial_return',
-    requested_by: cashier_user_id || null,
-    approved_by: approver.id,
-    approver_name: approver.name || null,
-    reason: reason || null,
-    outlet_id: outlet_id || originalOrder.outlet_id || null,
-    created_at: createdAt,
-    return_order_id: returnId,
-    return_total: total,
-    _pending_sync: result?.offline === true,
-    _sync_state: result?.offline === true ? 'pending' : 'synced'
-  });
-
-  return {
-    success: true,
-    id: returnId,
-    total,
-    offline: result?.offline === true,
-    approved_by: approver.id,
-    approver_name: approver.name || null
+    upsertLocalPosVoidHistory({
+      id: rpcPayload.override_log_id,
+      order_id,
+      action: 'partial_return',
+      requested_by: cashier_user_id || null,
+      approved_by: null,
+      approver_name: 'Pending server validation',
+      reason: String(reason).trim(),
+      outlet_id: outlet_id || originalOrder.outlet_id || null,
+      created_at: createdAt,
+      return_order_id: returnId,
+      return_total: total,
+      _pending_sync: true,
+      _sync_state: 'pending'
+    });
+    return { success: true, id: returnId, total, offline: true, provisional: true };
   };
+
+  if (!state.isOnline || !state.supabase) return queuePendingReturn();
+
+  try {
+    const { data: result, error } = await state.supabase.rpc('create_pos_return_v3', { payload: rpcPayload });
+    if (error) throw new Error(error.message);
+    if (!result?.success) return { success: false, error: result?.error || 'Return failed' };
+    upsertLocalPosVoidHistory({
+      id: rpcPayload.override_log_id,
+      order_id,
+      action: 'partial_return',
+      requested_by: cashier_user_id || null,
+      approved_by: result.approved_by || null,
+      approver_name: result.approver_name || null,
+      reason: String(reason).trim(),
+      outlet_id: outlet_id || originalOrder.outlet_id || null,
+      created_at: createdAt,
+      return_order_id: result.id || returnId,
+      return_total: result.total,
+      _pending_sync: false,
+      _sync_state: 'synced'
+    });
+    await refreshCache('pos-orders', 'inventory-items', 'inventory-purchases').catch(() => {});
+    return result;
+  } catch (error) {
+    if (isNetworkError(error)) return queuePendingReturn();
+    throw error;
+  }
 }
 
 function summarizeCashupOrders(orders = [], { openingFloat = 0 } = {}) {
@@ -1280,6 +1276,25 @@ function summarizeCashupOrders(orders = [], { openingFloat = 0 } = {}) {
 }
 
 export async function getPosCashupSummary(filters = {}) {
+  if (state.isOnline && state.supabase && filters.shift_id) {
+    const { data, error } = await state.supabase.rpc('get_pos_shift_cashup_preview_v2', {
+      p_shift_id: filters.shift_id,
+      p_lodge_id: state.lodgeId
+    });
+    if (error) throw new Error(error.message);
+    if (!data?.success) throw new Error(data?.error || 'Could not load the shift cash-up preview');
+    return {
+      ...data,
+      date: data.business_date,
+      outlet_id: filters.outlet_id || null,
+      orders_count: data.order_count || 0,
+      returns_total: data.returns || 0,
+      by_method: data.expected_by_method || {},
+      pending_count: 0,
+      closed_cashups: readPosCashups().filter((row) => row.shift_id === filters.shift_id)
+    };
+  }
+
   const date = filters.date || new Date().toISOString().slice(0, 10);
   const outletId = filters.outlet_id && filters.outlet_id !== 'all' ? filters.outlet_id : null;
   const outletFilter = outletId ? [outletId] : Array.isArray(filters.outlet_filter) ? filters.outlet_filter : null;
@@ -1340,10 +1355,15 @@ export async function getPosCashups(limit = 30, outletFilter = null, filters = {
 
 export async function createPosCashupSession(payload = {}) {
   const id = payload.id || randomUUID();
+  if (!payload.shift_id) {
+    return { success: false, error: 'An open shift is required before cash-up can be finalized.' };
+  }
+
   const openingFloat = normalizeMoney(payload.opening_float || 0);
   const operatorId = payload.cashier_id || payload.created_by || state.currentUser?.id || null;
   const operatorName = payload.cashier_name || payload.created_by_name || state.currentUser?.name || state.currentUser?.email || null;
   const summary = await getPosCashupSummary({
+    shift_id: payload.shift_id,
     date: payload.date,
     outlet_id: payload.outlet_id || null,
     outlet_filter: payload.outlet_filter || null,
@@ -1366,6 +1386,15 @@ export async function createPosCashupSession(payload = {}) {
       : normalizeMoney(summary.by_method?.[method] || 0);
     return [method, normalizeMoney(amount - expected)];
   }));
+  const idempotencyKey = payload.idempotency_key || `pos-cashup:${id}`;
+  const rpcPayload = {
+    lodge_id: state.lodgeId,
+    shift_id: payload.shift_id,
+    cashup_id: id,
+    idempotency_key: idempotencyKey,
+    counted_by_method: counted,
+    notes: payload.notes || null
+  };
   const row = {
     id,
     lodge_id: state.lodgeId,
@@ -1388,29 +1417,36 @@ export async function createPosCashupSession(payload = {}) {
     created_by_name: operatorName,
     cashier_id: operatorId,
     cashier_name: operatorName,
+    shift_id: payload.shift_id,
+    idempotency_key: idempotencyKey,
     created_at: new Date().toISOString(),
     _pending_sync: !state.isOnline,
     _sync_state: state.isOnline ? 'synced' : 'pending'
   };
 
   if (state.isOnline) {
-    try {
-      const { data, error } = await state.supabase.rpc('upsert_pos_cashup', { payload: row });
-      if (error) throw error;
-      if (data?.success === false) throw new Error(data.error || 'Could not save cash-up');
-      const saved = upsertLocalPosCashup({ ...row, id: data?.id || id, _pending_sync: false, _sync_state: 'synced' });
-      return { success: true, id: saved.id, row: saved };
-    } catch (error) {
-      console.warn('[POS CASHUP] Server save unavailable; saving cash-up locally:', error?.message || error);
-    }
-  } else {
-    queueOperation('rpc', 'upsert_pos_cashup', { payload: row }, null, {
-      _queue_id: `pos-cashup-${id}`
+    const { data, error } = await state.supabase.rpc('finalize_pos_shift_cashup_v2', { payload: rpcPayload });
+    if (error) throw new Error(error.message);
+    if (!data?.success) return { success: false, error: data?.error || 'Could not finalize cash-up' };
+    const saved = upsertLocalPosCashup({
+      ...row,
+      id: data.cashup_id || id,
+      expected_cash_drawer: Number(data.expected_cash_drawer || 0),
+      expected_by_method: data.expected_by_method || {},
+      counted_by_method: data.counted_by_method || counted,
+      variance_by_method: data.variance_by_method || {},
+      _pending_sync: false,
+      _sync_state: 'synced'
     });
+    await refreshCache('pos-orders').catch(() => {});
+    return { success: true, id: saved.id, row: saved };
   }
 
+  queueOperation('rpc', 'finalize_pos_shift_cashup_v2', { payload: rpcPayload }, null, {
+    _queue_id: `pos-cashup-${id}`
+  });
   const saved = upsertLocalPosCashup({ ...row, _pending_sync: true, _sync_state: 'pending' });
-  return { success: true, id: saved.id, row: saved, offline: true };
+  return { success: true, id: saved.id, row: saved, offline: true, provisional: true };
 }
 
 function readPosTabs() {
@@ -1962,38 +1998,57 @@ export async function recordPosHardwareEvent(action = 'hardware_event', details 
 }
 
 export async function getPosStaff() {
-  const users = readCache('users');
-  return (Array.isArray(users) ? users : [])
-    .filter((user) => String(user.status || 'active') === 'active')
-    .map((user) => ({
-      id: user.id,
-      name: user.name || user.email || 'Staff',
-      email: user.email || null,
-      role: user.role || 'staff',
-      has_pin: !!user.pin_hash
-    }));
+  if (state.isOnline && state.supabase) {
+    const { data, error } = await state.supabase.rpc('pos_get_safe_staff', {
+      p_lodge_id: state.lodgeId
+    });
+    if (error) throw new Error(error.message);
+    const rows = Array.isArray(data) ? data : [];
+    writeCache('pos-staff', rows);
+    return rows;
+  }
+  const cached = readCache('pos-staff');
+  return Array.isArray(cached) ? cached : [];
 }
 
 export async function selectPosStaffWithPin(data = {}) {
   const pin = String(data.pin || '').trim();
-  const users = readCache('users');
-  const staff = (Array.isArray(users) ? users : []).find((user) => user.id === data.staff_id);
+  const staffRows = await getPosStaff();
+  const staff = staffRows.find((user) => user.id === data.staff_id);
   if (!staff) return { success: false, error: 'Staff member not found.' };
-  if (!staff.pin_hash) return { success: false, error: 'This staff member does not have an approval PIN set.' };
-  if (!bcrypt.compareSync(pin, staff.pin_hash)) return { success: false, error: 'Incorrect staff PIN.' };
-  appendPosAudit('staff_selected', { staff_id: staff.id, staff_name: staff.name || staff.email, entity_type: 'pos_staff' });
-  return {
-    success: true,
-    staff: {
-      id: staff.id,
-      name: staff.name || staff.email || 'Staff',
-      email: staff.email || null,
-      role: staff.role || 'staff'
-    }
-  };
+  if (!staff.has_pin) return { success: false, error: 'This staff member does not have a POS PIN set.' };
+  if (!pin) return { success: false, error: 'Staff PIN is required.' };
+  if (!state.isOnline || !state.supabase) {
+    return { success: false, error: 'Staff PIN selection requires an internet connection.' };
+  }
+  const { data: result, error } = await state.supabase.rpc('pos_validate_pin', {
+    p_lodge_id: state.lodgeId,
+    p_staff_id: staff.id,
+    p_pin: pin,
+    p_required_capability: 'pos.manage',
+    p_device_id: getDesktopPosDeviceId()
+  });
+  if (error) throw new Error(error.message);
+  if (!result?.success) return { success: false, error: result?.error || 'Incorrect staff PIN.' };
+  appendPosAudit('staff_selected', {
+    staff_id: result.staff?.id,
+    staff_name: result.staff?.name,
+    entity_type: 'pos_staff'
+  });
+  return result;
 }
 
 export async function getPosModifierGroups() {
+  if (state.isOnline && state.supabase) {
+    const { data, error } = await state.supabase
+      .from('pos_modifier_groups')
+      .select('id, lodge_id, name, applies_to_categories, options, active, updated_at')
+      .eq('lodge_id', state.lodgeId)
+      .order('name');
+    if (error) throw new Error(error.message);
+    writePosModifierGroups(data || []);
+    return data || [];
+  }
   return readPosModifierGroups();
 }
 
@@ -2012,12 +2067,32 @@ export async function savePosModifierGroup(data = {}) {
     updated_at: new Date().toISOString()
   };
   if (!row.name) return { success: false, error: 'Modifier group name is required.' };
-  writePosModifierGroups([row, ...readPosModifierGroups().filter((entry) => entry.id !== row.id)]);
+  if (!state.isOnline || !state.supabase) {
+    return { success: false, error: 'Modifier catalog changes require an internet connection.' };
+  }
+  const rows = [row, ...readPosModifierGroups().filter((entry) => entry.id !== row.id)];
+  const { data: result, error } = await state.supabase.rpc('upsert_pos_modifier_groups', {
+    payload: { lodge_id: state.lodgeId, groups: rows }
+  });
+  if (error) throw new Error(error.message);
+  if (!result?.success) return { success: false, error: result?.error || 'Could not save modifier group.' };
+  writePosModifierGroups(rows);
+  await publishPosCatalogSnapshotsForChange([null]);
   appendPosAudit('modifier_group_saved', { entity_type: 'pos_modifier_group', entity_id: row.id, details: row });
   return { success: true, group: row };
 }
 
 export async function getPosPromotions() {
+  if (state.isOnline && state.supabase) {
+    const { data, error } = await state.supabase
+      .from('pos_promotions')
+      .select('id, lodge_id, name, discount_type, discount_value, applies_to_category, active, updated_at')
+      .eq('lodge_id', state.lodgeId)
+      .order('name');
+    if (error) throw new Error(error.message);
+    writePosPromotions(data || []);
+    return data || [];
+  }
   return readPosPromotions();
 }
 
@@ -2034,7 +2109,17 @@ export async function savePosPromotion(data = {}) {
   };
   if (!row.name) return { success: false, error: 'Promotion name is required.' };
   if (!(row.discount_value > 0)) return { success: false, error: 'Promotion discount must be above zero.' };
-  writePosPromotions([row, ...readPosPromotions().filter((entry) => entry.id !== row.id)]);
+  if (!state.isOnline || !state.supabase) {
+    return { success: false, error: 'Promotion changes require an internet connection.' };
+  }
+  const rows = [row, ...readPosPromotions().filter((entry) => entry.id !== row.id)];
+  const { data: result, error } = await state.supabase.rpc('upsert_pos_promotions', {
+    payload: { lodge_id: state.lodgeId, promotions: rows }
+  });
+  if (error) throw new Error(error.message);
+  if (!result?.success) return { success: false, error: result?.error || 'Could not save promotion.' };
+  writePosPromotions(rows);
+  await publishPosCatalogSnapshotsForChange([null]);
   appendPosAudit('promotion_saved', { entity_type: 'pos_promotion', entity_id: row.id, details: row });
   return { success: true, promotion: row };
 }

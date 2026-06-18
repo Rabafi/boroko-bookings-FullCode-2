@@ -128,6 +128,10 @@ const posAPI = {
     getState: () => ipcRenderer.invoke('pos:update-get-state'),
     getInstallSafety: () => ipcRenderer.invoke('pos:update-get-install-safety')
   },
+  mesh: {
+    getStatus: () => ipcRenderer.invoke('pos:get-mesh-status'),
+    syncNow: () => ipcRenderer.invoke('pos:mesh-sync-now')
+  },
 
   // Bootstrap & Window
   bootstrapReferenceData: () => ipcRenderer.invoke('pos:bootstrap-reference-data'),

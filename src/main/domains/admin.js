@@ -964,6 +964,19 @@ export async function getLodgeSupportTicketById(id) {
   return tickets.find((ticket) => ticket.id === id) || null;
 }
 
+export async function markLodgeSupportTicketRead(id, audience = 'front_desk', messageId = null) {
+  if (!state.isOnline) throw new Error('Requires internet connection');
+  const { data, error } = await state.supabase.rpc('mark_lodge_support_ticket_read', {
+    p_ticket_id: id,
+    p_lodge_id: state.lodgeId,
+    p_audience: audience,
+    p_message_id: messageId || null
+  });
+  if (error) throw new Error(error.message);
+  if (data?.success === false) throw new Error(data.error || 'Could not update inbox read state');
+  return data || { success: true };
+}
+
 export async function updateLodgeSupportTicket(id, updates = {}) {
   if (!state.isOnline) throw new Error('Requires internet connection');
   const { data, error } = await state.supabase.rpc('update_lodge_support_ticket', {

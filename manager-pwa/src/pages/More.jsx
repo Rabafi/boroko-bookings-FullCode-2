@@ -1,5 +1,19 @@
 import { Link } from 'react-router-dom'
-import { Bell, Briefcase, Building2, FileText, MessageCircle, Package, Shield, Users, Wrench } from 'lucide-react'
+import {
+  Bell,
+  Briefcase,
+  Building2,
+  ClipboardCheck,
+  FileText,
+  MessageCircle,
+  Package,
+  ReceiptText,
+  Shield,
+  ShoppingCart,
+  Users,
+  WalletCards,
+  Wrench
+} from 'lucide-react'
 import { useFeatures } from '../contexts/FeaturesContext'
 
 function SectionCard({ to, title, sub, icon: Icon }) {
@@ -21,10 +35,15 @@ export default function More() {
   const pwaEnabled = Object.keys(features).length > 0 && features.pwa === true
 
   const sections = [
+    can('pos.reports') && isEnabled('pos') && { to: '/pos', title: 'POS Sales', sub: 'Live sales snapshot and transaction history', icon: ShoppingCart },
     can('guests.view') && { to: '/guests', title: 'Guests', sub: 'Guest history and stay profile', icon: Users },
     can('staff.view') && isEnabled('staff') && { to: '/staff', title: 'Staff', sub: 'Team visibility and roles', icon: Shield },
     { to: '/alerts', title: 'Alerts', sub: 'Urgent issues and unpaid follow-up', icon: Bell },
     can('reports.view') && isEnabled('reports') && { to: '/reports', title: 'Reports', sub: 'Cash, occupancy, usage, and operating snapshot', icon: FileText },
+    can('quotations.view') && { to: '/quotations', title: 'Quotations', sub: 'Review quotes and conversion status', icon: ClipboardCheck },
+    can('invoices.view') && { to: '/invoices', title: 'Invoices', sub: 'Guest invoices, paid amounts, and balances', icon: ReceiptText },
+    can('expenses.view') && { to: '/expenses', title: 'Expenses', sub: 'Operating spend and maintenance costs', icon: WalletCards },
+    can('audit.view') && { to: '/audit', title: 'Financial Audit', sub: 'Payment activity and validation signals', icon: Shield },
     can('conference.view') && isEnabled('conference') && { to: '/conference', title: 'Conference', sub: 'Event and venue bookings', icon: Building2 },
     can('pool.view') && isEnabled('pool') && { to: '/day-use', title: 'Day Use', sub: 'Walk-in activity visibility', icon: Briefcase },
     can('inventory.view') && isEnabled('inventory') && { to: '/inventory', title: 'Inventory', sub: 'Low stock and replenishment watch', icon: Package },
@@ -35,8 +54,8 @@ export default function More() {
   return (
     <div className="min-h-screen bg-gray-950 pb-24">
       <div className="bg-gray-900 px-4 pt-12 pb-4">
-        <h1 className="text-lg font-bold text-white">More</h1>
-        <p className="text-xs text-gray-400">People, operations, reports, and support tools</p>
+        <h1 className="text-lg font-bold text-white">Menu</h1>
+        <p className="text-xs text-gray-400">All manager pages in one place</p>
       </div>
 
       <div className="px-4 py-4 grid grid-cols-1 gap-3">

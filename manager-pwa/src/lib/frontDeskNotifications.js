@@ -34,18 +34,28 @@ export function getFrontDeskNotificationVersion(request, latestDeskMessage = nul
 
 export function upsertFrontDeskNotification(lodgeId, request, { quiet = false } = {}) {
   if (!lodgeId || !isFrontDeskConversation(request)) return null
+  const sourceKey = getFrontDeskNotificationSourceKey(request)
+  const legacySourceKey = getLegacyFrontDeskNotificationSourceKey(request)
+  const serverUnread = typeof request?.manager_has_unread === 'boolean'
+    ? request.manager_has_unread
+    : null
+
+  if (serverUnread === false) {
+    removePwaNotification(lodgeId, sourceKey)
+    if (legacySourceKey !== sourceKey) removePwaNotification(lodgeId, legacySourceKey)
+    return null
+  }
+
   const messages = normalizeSupportMessages(request)
   const latestMessage = messages[messages.length - 1] || null
   const latestDeskMessage = latestMessage && supportMessageSide(latestMessage) === 'desk' ? latestMessage : null
   const hasDeskResponse = latestDeskMessage || String(request.admin_notes || '').trim()
   if (!hasDeskResponse) return null
 
-  const sourceKey = getFrontDeskNotificationSourceKey(request)
-  const legacySourceKey = getLegacyFrontDeskNotificationSourceKey(request)
   if (legacySourceKey !== sourceKey) removePwaNotification(lodgeId, legacySourceKey)
   const version = getFrontDeskNotificationVersion(request, latestDeskMessage)
   const seen = getPwaNotificationSeenVersion(lodgeId, sourceKey)
-  const alreadySeen = seen?.version === version
+  const alreadySeen = serverUnread === true ? false : seen?.version === version
   const now = new Date().toISOString()
   const notification = upsertPwaNotification(lodgeId, {
     sourceKey,

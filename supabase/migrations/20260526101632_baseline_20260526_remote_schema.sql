@@ -2,8 +2,6 @@
 -- PostgreSQL database dump
 --
 
-\restrict 1IsXc1BpiF4mZd94uUpOXs1rvfdzeHMCdsTq8erhSJnhISCAFw6Au5NPIwtrYB4
-
 -- Dumped from database version 17.6
 -- Dumped by pg_dump version 17.10
 
@@ -30,7 +28,7 @@ CREATE SCHEMA auth;
 -- Name: extensions; Type: SCHEMA; Schema: -; Owner: -
 --
 
-CREATE SCHEMA extensions;
+CREATE SCHEMA IF NOT EXISTS extensions;
 
 
 --
@@ -51,7 +49,7 @@ CREATE SCHEMA graphql_public;
 -- Name: public; Type: SCHEMA; Schema: -; Owner: -
 --
 
-CREATE SCHEMA public;
+CREATE SCHEMA IF NOT EXISTS public;
 
 
 --
@@ -20132,6 +20130,4 @@ ALTER TABLE storage.vector_indexes ENABLE ROW LEVEL SECURITY;
 --
 -- PostgreSQL database dump complete
 --
-
-\unrestrict 1IsXc1BpiF4mZd94uUpOXs1rvfdzeHMCdsTq8erhSJnhISCAFw6Au5NPIwtrYB4
 

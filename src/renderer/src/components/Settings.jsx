@@ -8,8 +8,7 @@ import { applyThemeMode, getStoredThemeMode, resolveThemeMode, saveThemeMode } f
 const SystemHealthPanel = lazy(() => import('./SystemHealthPanel'))
 const SubscriptionAccessPanel = lazy(() => import('./SubscriptionAccessPanel'))
 
-// Update this to your actual booking site URL after deployment
-const BOOKING_SITE_BASE = 'https://luminous-flan-27fdac.netlify.app'
+const BOOKING_SITE_BASE = 'https://borokoonlinebookings.netlify.app'
 const EMAIL_PROVIDER_PRESETS = {
   gmail: {
     label: 'Gmail',

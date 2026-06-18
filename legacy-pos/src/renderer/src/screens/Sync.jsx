@@ -11,6 +11,7 @@ export default function Sync({ user, isOnline, setIsOnline }) {
   const [showInventoryDiag, setShowInventoryDiag] = useState(false);
   const [updateInfo, setUpdateInfo] = useState(null);
   const [updateBusy, setUpdateBusy] = useState('');
+  const [meshStatus, setMeshStatus] = useState(null);
 
   const loadStatus = useCallback(async () => {
     try {
@@ -22,6 +23,8 @@ export default function Sync({ user, isOnline, setIsOnline }) {
       setInventoryDiag(diag);
       const updates = await window.api.pos.updates?.getState?.().catch(() => null);
       if (updates) setUpdateInfo(updates);
+      const mesh = await window.api.pos.mesh?.getStatus?.().catch(() => null);
+      if (mesh) setMeshStatus(mesh);
     } catch (e) {
       console.error('Failed to load sync status:', e);
     } finally {
@@ -196,6 +199,31 @@ export default function Sync({ user, isOnline, setIsOnline }) {
             ) : (
               <p className="text-sm text-slate-400">No status available</p>
             )}
+          </div>
+
+          <div className="rounded-xl border border-slate-200 bg-white p-6 lg:col-span-2">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h2 className="font-bold text-slate-800">Local Lodge Mesh</h2>
+                <p className="mt-1 text-sm text-slate-600">
+                  {meshStatus?.running
+                    ? `${meshStatus.peerCount || 0} nearby Boroko device${Number(meshStatus.peerCount || 0) === 1 ? '' : 's'} connected`
+                    : (meshStatus?.lastError || 'Waiting for local mesh setup')}
+                </p>
+                {meshStatus?.lastMergeAt && (
+                  <p className="mt-1 text-xs text-slate-400">Last local exchange: {new Date(meshStatus.lastMergeAt).toLocaleString()}</p>
+                )}
+              </div>
+              <button
+                onClick={async () => {
+                  const next = await window.api.pos.mesh?.syncNow?.();
+                  if (next) setMeshStatus(next);
+                }}
+                disabled={!meshStatus?.running}
+                className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50">
+                Exchange Now
+              </button>
+            </div>
           </div>
 
           {activeItems.length > 0 && (

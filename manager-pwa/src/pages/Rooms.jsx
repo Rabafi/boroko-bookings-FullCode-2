@@ -30,7 +30,7 @@ const FILTERS = [
 function matchesRoomFilter(item, filter) {
   if (filter === 'all') return true
   if (filter === 'occupied') return Boolean(item.booking)
-  if (filter === 'maintenance') return item.maintenanceItems.length > 0
+  if (filter === 'maintenance') return item.status === 'maintenance'
   return item.status === filter
 }
 
@@ -165,7 +165,7 @@ export default function Rooms() {
       ])
       setRooms(roomRows || [])
       setBookings((bookingRows || []).filter((booking) => booking.status === 'checked_in'))
-      setMaintenance((maintenanceRows || []).filter((ticket) => ticket.status === 'open').map(normalizeMaintenanceTicket))
+      setMaintenance((maintenanceRows || []).filter((ticket) => ticket.status !== 'resolved').map(normalizeMaintenanceTicket))
       const cacheTimes = [
         readCacheEntry(user.lodge_id, 'rooms', null)?.updatedAt,
         readCacheEntry(user.lodge_id, 'bookings', null)?.updatedAt,
@@ -184,7 +184,11 @@ export default function Rooms() {
   const roomItems = useMemo(() => rooms.map((room) => {
     const booking = bookings.find((row) => row.room_id === room.id) || null
     const maintenanceItems = maintenance.filter((ticket) => ticket.room_id === room.id || String(ticket.room_id || '') === String(room.id))
-    const status = maintenanceItems.length > 0 ? 'maintenance' : booking ? 'occupied' : room.housekeeping_status || 'clean'
+    const status = maintenanceItems.length > 0 || room.status === 'maintenance'
+      ? 'maintenance'
+      : booking
+        ? 'occupied'
+        : room.housekeeping_status || 'clean'
     return { room, booking, maintenanceItems, status }
   }), [bookings, maintenance, rooms])
 
@@ -192,7 +196,7 @@ export default function Rooms() {
     total: roomItems.length,
     occupied: roomItems.filter((item) => item.booking).length,
     dirty: roomItems.filter((item) => item.status === 'dirty').length,
-    maintenance: roomItems.filter((item) => item.maintenanceItems.length > 0).length
+    maintenance: roomItems.filter((item) => item.status === 'maintenance').length
   }), [roomItems])
 
   const filterCounts = useMemo(() => Object.fromEntries(

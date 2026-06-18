@@ -1665,12 +1665,38 @@ function isQuotationNumberConflict(message = '') {
   return /quotations_lodge_id_quotation_number_key|duplicate key value/i.test(String(message));
 }
 
+function isExclusiveEventQuotation(quotation = {}) {
+  return quotation?.quotation_type === 'exclusive_event';
+}
+
+function getQuotationNights(checkIn, checkOut) {
+  if (!checkIn || !checkOut) return 0;
+  const start = new Date(checkIn).getTime();
+  const end = new Date(checkOut).getTime();
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return 0;
+  return Math.ceil((end - start) / (1000 * 60 * 60 * 24));
+}
+
+function buildQuotationEventNotes(quotation, roomCount) {
+  const groupId = `evt-quotation-${quotation.id}`;
+  const notes = [
+  `[GROUP:${groupId}][ROOMS:${roomCount}]`,
+  `Event: ${quotation.event_name || quotation.customer_name || 'Exclusive event'}`,
+  String(quotation.notes || '').trim()].
+  filter(Boolean);
+  return notes.join('\n');
+}
+
 function buildQuotationRecord(data, overrides = {}) {
   const customer = readCache('customers').find((c) => c.id === data.customer_id);
-  const room = data.room_id ? readCache('rooms').find((r) => r.id === data.room_id) : null;
+  const quotationType = data.quotation_type === 'exclusive_event' ? 'exclusive_event' : 'room';
+  const isEvent = quotationType === 'exclusive_event';
+  const room = !isEvent && data.room_id ? readCache('rooms').find((r) => r.id === data.room_id) : null;
 
-  const subtotal = Number(data.subtotal ?? 0);
-  const tax_amount = Number(calcTax(subtotal, data.tax_rate ?? 0));
+  const eventDailyRate = isEvent ? Number(data.event_daily_rate || 0) : null;
+  const eventTotal = isEvent ? eventDailyRate * getQuotationNights(data.check_in, data.check_out) : null;
+  const subtotal = isEvent ? eventTotal : Number(data.subtotal ?? 0);
+  const tax_amount = isEvent ? 0 : Number(calcTax(subtotal, data.tax_rate ?? 0));
   const total_amount = subtotal + tax_amount;
 
   return {
@@ -1680,12 +1706,15 @@ function buildQuotationRecord(data, overrides = {}) {
     customer_id: data.customer_id,
     customer_name: data.customer_name || customer?.name || '',
     customer_phone: data.customer_phone || customer?.phone || '',
-    room_id: data.room_id || null,
-    room_name: data.room_name || (room ? `Room ${room.room_number}` : ''),
+    quotation_type: quotationType,
+    event_name: isEvent ? String(data.event_name || '').trim() : null,
+    event_daily_rate: eventDailyRate,
+    room_id: isEvent ? null : data.room_id || null,
+    room_name: isEvent ? 'Full Lodge' : data.room_name || (room ? `Room ${room.room_number}` : ''),
     check_in: data.check_in || null,
     check_out: data.check_out || null,
-    adults: Number(data.adults) || 1,
-    children: Number(data.children) || 0,
+    adults: isEvent ? 1 : Number(data.adults) || 1,
+    children: isEvent ? 0 : Number(data.children) || 0,
     subtotal,
     tax_amount,
     total_amount,
@@ -1702,6 +1731,8 @@ function buildQuotationRecord(data, overrides = {}) {
 
 function normalizeQuotationForDisplay(q, { customer = null, room = null, convertedBookingId = null, todayStr = null } = {}) {
   if (!q || typeof q !== 'object') return q;
+  const quotationType = q.quotation_type === 'exclusive_event' ? 'exclusive_event' : 'room';
+  const isEvent = quotationType === 'exclusive_event';
   const subtotal = Number(q.subtotal ?? 0);
   const taxAmount = Number(q.tax_amount ?? calcTax(subtotal, q.tax_rate ?? 0));
   const totalAmount = Number(q.total_amount ?? subtotal + taxAmount);
@@ -1720,7 +1751,10 @@ function normalizeQuotationForDisplay(q, { customer = null, room = null, convert
     customer_name: q.customer_name || customer?.name || 'Unknown guest',
     customer_phone: q.customer_phone || customer?.phone || '',
     customer_email: q.customer_email || q.customers?.email || customer?.email || '',
-    room_name: q.room_name || (roomNumber ? `Room ${roomNumber}` : ''),
+    quotation_type: quotationType,
+    event_name: isEvent ? q.event_name || q.customer_name || 'Exclusive event' : null,
+    event_daily_rate: isEvent ? Number(q.event_daily_rate || 0) : null,
+    room_name: isEvent ? 'Full Lodge' : q.room_name || (roomNumber ? `Room ${roomNumber}` : ''),
     check_in: q.check_in || null,
     check_out: q.check_out || null,
     adults: Number(q.adults) || 1,
@@ -1871,8 +1905,13 @@ export async function updateQuotation(id, data) {
     if (live) isLocked = LOCKED_STATUSES.includes(live.status);
   }
 
-  const subtotal = Number(data.subtotal ?? 0);
-  const tax_amount = Number(calcTax(subtotal, data.tax_rate ?? 0));
+  const quotationType = data.quotation_type === 'exclusive_event' ? 'exclusive_event' : 'room';
+  const isEvent = quotationType === 'exclusive_event';
+  const eventDailyRate = isEvent ? Number(data.event_daily_rate || 0) : null;
+  const subtotal = isEvent ?
+  eventDailyRate * getQuotationNights(data.check_in, data.check_out) :
+  Number(data.subtotal ?? 0);
+  const tax_amount = isEvent ? 0 : Number(calcTax(subtotal, data.tax_rate ?? 0));
   const total_amount = subtotal + tax_amount;
 
   // Full update object
@@ -1890,12 +1929,15 @@ export async function updateQuotation(id, data) {
   if (!isLocked) {
     Object.assign(update, {
       customer_id: data.customer_id,
-      room_id: data.room_id || null,
-      room_name: data.room_name || '',
+      quotation_type: quotationType,
+      event_name: isEvent ? String(data.event_name || '').trim() : null,
+      event_daily_rate: eventDailyRate,
+      room_id: isEvent ? null : data.room_id || null,
+      room_name: isEvent ? 'Full Lodge' : data.room_name || '',
       check_in: data.check_in || null,
       check_out: data.check_out || null,
-      adults: Number(data.adults) || 1,
-      children: Number(data.children) || 0,
+      adults: isEvent ? 1 : Number(data.adults) || 1,
+      children: isEvent ? 0 : Number(data.children) || 0,
       subtotal,
       tax_amount,
       total_amount
@@ -1974,6 +2016,9 @@ export async function duplicateQuotation(id) {
     customer_id: source.customer_id,
     customer_name: source.customer_name,
     customer_phone: source.customer_phone,
+    quotation_type: source.quotation_type || 'room',
+    event_name: source.event_name,
+    event_daily_rate: source.event_daily_rate,
     room_id: source.room_id,
     room_name: source.room_name,
     check_in: source.check_in,
@@ -2017,7 +2062,8 @@ export async function convertQuotationToBooking(quotationId, depositAmount = 0, 
     if (!['sent', 'accepted'].includes(quotation.status)) {
       throw new Error('Quotation must be sent or accepted before conversion.');
     }
-    if (quotation.room_id && quotation.check_in && quotation.check_out) {
+    const isEvent = isExclusiveEventQuotation(quotation);
+    if (!isEvent && quotation.room_id && quotation.check_in && quotation.check_out) {
       await checkRoomConflict(quotation.room_id, quotation.check_in, quotation.check_out);
     }
 
@@ -2025,22 +2071,42 @@ export async function convertQuotationToBooking(quotationId, depositAmount = 0, 
     const now = new Date().toISOString();
     const total = Number(quotation.total_amount || 0);
     const optimisticPayment = buildOfflineBookingFinancialState(total, deposit);
-    const room = quotation.room_id ?
-    readCache('rooms').find((entry) => entry.id === quotation.room_id) :
-    null;
+    const cachedRooms = readCache('rooms');
+    const eventRooms = isEvent ? cachedRooms.filter((entry) => entry.status !== 'maintenance') : [];
+    const room = isEvent ?
+    [...eventRooms].sort((left, right) =>
+    String(left.room_number || '').localeCompare(String(right.room_number || ''), undefined, { numeric: true, sensitivity: 'base' })
+    )[0] :
+    quotation.room_id ? cachedRooms.find((entry) => entry.id === quotation.room_id) : null;
+    if (isEvent) {
+      if (!quotation.check_in || !quotation.check_out || !quotation.event_name || Number(quotation.event_daily_rate || 0) <= 0) {
+        throw new Error('Event / lodge quotation details are incomplete.');
+      }
+      if (!room || eventRooms.length === 0) {
+        throw new Error('No rooms are available for an exclusive event booking.');
+      }
+      const conflict = readCache('bookings').find((booking) =>
+      booking.status !== 'cancelled' &&
+      booking.check_in < quotation.check_out &&
+      booking.check_out > quotation.check_in
+      );
+      if (conflict) {
+        throw new Error('Cannot create exclusive event — the lodge already has bookings during these dates.');
+      }
+    }
     const localBooking = {
       id: localBookingId,
       lodge_id: state.lodgeId,
       customer_id: quotation.customer_id || null,
       customer_name: quotation.customer_name || '',
       customer_phone: quotation.customer_phone || '',
-      room_id: quotation.room_id || null,
-      room_number: room?.room_number || quotation.room_name || '',
-      room_name: quotation.room_name || (room?.room_number ? `Room ${room.room_number}` : ''),
+      room_id: isEvent ? room?.id || null : quotation.room_id || null,
+      room_number: isEvent ? 'Full Lodge' : room?.room_number || quotation.room_name || '',
+      room_name: isEvent ? 'Full Lodge' : quotation.room_name || (room?.room_number ? `Room ${room.room_number}` : ''),
       check_in: quotation.check_in || null,
       check_out: quotation.check_out || null,
-      adults: Number(quotation.adults) || 1,
-      children: Number(quotation.children) || 0,
+      adults: isEvent ? 1 : Number(quotation.adults) || 1,
+      children: isEvent ? 0 : Number(quotation.children) || 0,
       total_amount: total,
       amount_paid: optimisticPayment.amount_paid,
       deposit_amount: deposit,
@@ -2050,7 +2116,14 @@ export async function convertQuotationToBooking(quotationId, depositAmount = 0, 
       invoice_number: null,
       quotation_id: quotationId,
       created_by: state.currentUser?.id || null,
-      notes: quotation.notes || '',
+      notes: isEvent ? buildQuotationEventNotes(quotation, eventRooms.length) : quotation.notes || '',
+      is_exclusive_event: isEvent,
+      event_daily_rate: isEvent ? Number(quotation.event_daily_rate || 0) : null,
+      ...(isEvent ? {
+        _event_group: true,
+        room_count: eventRooms.length,
+        room_type: 'Full Lodge'
+      } : {}),
       _local_invoice_number: buildLocalPendingInvoiceNumber(localBookingId),
       _pending_sync: true,
       _pending_payment: deposit > 0,

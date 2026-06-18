@@ -24,6 +24,9 @@ const emptyForm = {
   rate_per_night: '',
   max_occupancy: 2,
   status: 'available',
+  maintenance_issue: '',
+  maintenance_description: '',
+  maintenance_priority: 'medium',
   description: '',
   photos: [],
   amenities: []
@@ -274,6 +277,9 @@ export default function Rooms() {
       rate_per_night: room.rate_per_night,
       max_occupancy: room.max_occupancy,
       status: room.status,
+      maintenance_issue: '',
+      maintenance_description: '',
+      maintenance_priority: 'medium',
       description: room.description || '',
       photos,
       amenities: Array.isArray(room.amenities) ? room.amenities : []
@@ -291,6 +297,13 @@ export default function Rooms() {
       rate_per_night: parseFloat(form.rate_per_night),
       max_occupancy: parseInt(form.max_occupancy),
       amenities: Array.isArray(form.amenities) ? form.amenities.filter(Boolean) : []
+    }
+    const existingRoom = editing ? rooms.find((room) => room.id === editing) : null
+    const isNewMaintenanceState = form.status === 'maintenance' && existingRoom?.status !== 'maintenance'
+    if (isNewMaintenanceState && !form.maintenance_issue.trim()) {
+      setLoading(false)
+      setError('Describe why this room is under maintenance so staff can track and resolve it.')
+      return
     }
     let res
     if (editing) {
@@ -660,6 +673,45 @@ export default function Rooms() {
                 ))}
               </select>
             </Field>
+            {form.status === 'maintenance' && (
+              <div className="grid gap-4 rounded-2xl border border-orange-200 bg-orange-50 p-4">
+                <Field
+                  label="Maintenance Issue"
+                  required={!editing || rooms.find((room) => room.id === editing)?.status !== 'maintenance'}
+                  helper={editing && rooms.find((room) => room.id === editing)?.status === 'maintenance'
+                    ? 'The existing open maintenance ticket remains linked to this room.'
+                    : 'A maintenance ticket will be created automatically with the room.'}
+                >
+                  <input
+                    className="input"
+                    value={form.maintenance_issue}
+                    onChange={(e) => setForm({ ...form, maintenance_issue: e.target.value })}
+                    placeholder="e.g. Air conditioner not cooling"
+                    required={!editing || rooms.find((room) => room.id === editing)?.status !== 'maintenance'}
+                  />
+                </Field>
+                <Field label="Maintenance Details">
+                  <textarea
+                    className="input resize-none"
+                    rows={2}
+                    value={form.maintenance_description}
+                    onChange={(e) => setForm({ ...form, maintenance_description: e.target.value })}
+                    placeholder="Optional repair notes"
+                  />
+                </Field>
+                <Field label="Priority">
+                  <select
+                    className="input capitalize"
+                    value={form.maintenance_priority}
+                    onChange={(e) => setForm({ ...form, maintenance_priority: e.target.value })}
+                  >
+                    {['low', 'medium', 'high', 'urgent'].map((priority) => (
+                      <option key={priority} value={priority}>{priority}</option>
+                    ))}
+                  </select>
+                </Field>
+              </div>
+            )}
             <Field label="Description">
               <textarea
                 className="input resize-none"

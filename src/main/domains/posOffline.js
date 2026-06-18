@@ -1,6 +1,6 @@
 import { readCache, writeCache } from './cacheStore.js';
 import { readSyncQueue } from './syncStore.js';
-import { isPosCreateOrderQueueItem, isPosVoidQueueItem } from './syncShared.js';
+import { isPosCreateOrderQueueItem } from './syncShared.js';
 
 function normalizeInventoryStockValue(value) {
   const numeric = Number(value);
@@ -117,37 +117,14 @@ export function restoreOfflineDayUseInventoryReservation(extras = []) {
 export function applyOfflinePosInventoryReservation(items = [], { outletId = null } = {}) {
   const usage = buildQueuedPosInventoryUsage(items, { outletId });
   if (usage.size === 0) return [];
-  const inventory = readCache('inventory-items');
-  const next = inventory.map((item) => {
-    const used = usage.get(item?.id) || 0;
-    if (!used) return item;
-    return {
-      ...item,
-      current_stock: Math.max(0, normalizeInventoryStockValue(item.current_stock) - used),
-      _pending_sync: true,
-      _sync_state: 'pending'
-    };
-  });
-  writeCache('inventory-items', next, { source: 'local' });
+  refreshOfflinePosInventoryProjection();
   return getOfflinePosInventoryReservation(items, { outletId });
 }
 
 export function restoreOfflinePosInventoryReservation(items = [], { outletId = null } = {}) {
-  const usage = buildQueuedPosInventoryUsage(items, { outletId });
-  if (usage.size === 0) return [];
-  const inventory = readCache('inventory-items');
-  const next = inventory.map((item) => {
-    const restored = usage.get(item?.id) || 0;
-    if (!restored) return item;
-    return {
-      ...item,
-      current_stock: normalizeInventoryStockValue(item.current_stock) + restored,
-      _pending_sync: true,
-      _sync_state: 'pending'
-    };
-  });
-  writeCache('inventory-items', next, { source: 'local' });
-  return [...usage.entries()].map(([inventory_item_id, quantity]) => ({ inventory_item_id, quantity }));
+  // Pending voids and returns must never make stock sellable. The authoritative
+  // server refresh after a successful RPC applies the restoration.
+  return getOfflinePosInventoryReservation(items, { outletId });
 }
 
 export function readLocalPosVoidHistory() {
@@ -187,29 +164,35 @@ export function patchLocalPosVoidHistory(logId, patch = {}) {
 }
 
 export function applyQueuedPosInventoryReservations(remoteInventoryRows = []) {
-  const queuedItems = readSyncQueue().filter((item) => isPosCreateOrderQueueItem(item) || isPosVoidQueueItem(item));
-  if (queuedItems.length === 0) return remoteInventoryRows || [];
+  const queuedItems = readSyncQueue().filter((item) => isPosCreateOrderQueueItem(item));
 
   const usage = new Map();
   for (const item of queuedItems) {
     const payload = item?.data?.payload || {};
     const orderUsage = buildQueuedPosInventoryUsage(payload.items || [], { outletId: payload.outlet_id || null });
     for (const [inventoryItemId, quantity] of orderUsage.entries()) {
-      const multiplier = isPosVoidQueueItem(item) ? -1 : 1;
-      usage.set(inventoryItemId, (usage.get(inventoryItemId) || 0) + quantity * multiplier);
+      usage.set(inventoryItemId, (usage.get(inventoryItemId) || 0) + quantity);
     }
   }
 
   return (remoteInventoryRows || []).map((row) => {
     const used = usage.get(row?.id) || 0;
-    if (!used) return row;
+    const syncedStock = normalizeInventoryStockValue(row.synced_current_stock ?? row.current_stock);
     return {
       ...row,
-      current_stock: Math.max(0, normalizeInventoryStockValue(row.current_stock) - used),
-      _pending_sync: true,
-      _sync_state: 'pending'
+      synced_current_stock: syncedStock,
+      current_stock: Math.max(0, syncedStock - used),
+      pending_pos_reservation: used,
+      ...(used ? { _pending_sync: true, _sync_state: 'pending' } : {})
     };
   });
+}
+
+export function refreshOfflinePosInventoryProjection() {
+  const inventory = readCache('inventory-items');
+  const projected = applyQueuedPosInventoryReservations(inventory);
+  writeCache('inventory-items', projected, { source: 'local-projection' });
+  return projected;
 }
 
 export function applyQueuedDayUseInventoryReservations(remoteInventoryRows = []) {

@@ -14,11 +14,11 @@ export function ensureQueuedItem(item = {}, fallbackType = 'op') {
 }
 
 export function isPosCreateOrderQueueItem(item) {
-  return item?.type === 'rpc' && item?.table === 'create_pos_order';
+  return item?.type === 'rpc' && (item?.table === 'create_pos_order' || item?.table === 'create_pos_order_v3');
 }
 
 export function isPosVoidQueueItem(item) {
-  return item?.type === 'rpc' && item?.table === 'approve_pos_void_with_pin';
+  return item?.type === 'rpc' && (item?.table === 'approve_pos_void_with_pin' || item?.table === 'create_pos_return_v3');
 }
 
 export function isInventoryItemQueueItem(item) {
@@ -63,7 +63,11 @@ export function getQueuedDayUseEntryId(item) {
 }
 
 export function getQueuedPosOrderId(item) {
-  const payloadId = String(item?.data?.payload?.id || item?.data?.payload?.order_id || '').trim();
+  const payloadId = String(
+    item?.table === 'create_pos_return_v3'
+      ? item?.data?.payload?.return_order_id
+      : item?.data?.payload?.id || item?.data?.payload?.order_id || ''
+  ).trim();
   if (payloadId) return payloadId;
 
   const queueId = String(item?._queue_id || '').trim();
@@ -73,6 +77,10 @@ export function getQueuedPosOrderId(item) {
   }
   if (queueId.startsWith('pos-void-')) {
     const parsedId = queueId.slice('pos-void-'.length).trim();
+    if (parsedId) return parsedId;
+  }
+  if (queueId.startsWith('pos-return-')) {
+    const parsedId = queueId.slice('pos-return-'.length).trim();
     if (parsedId) return parsedId;
   }
 
@@ -123,7 +131,6 @@ export function normalizeQueuedSyncItemForReplay(item = {}) {
       next.data.p_idempotency_key = `sync:${next.table}:${queueId}`.slice(0, 128);
     }
   }
-
   if (next.type === 'rpc' && next.table === 'adjust_inventory_stock' && !next.data.p_adjustment_id) {
     const queueId = String(next._queue_id || '');
     const prefix = 'inventory-adjust-';

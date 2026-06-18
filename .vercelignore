@@ -3,8 +3,14 @@
 .cursor
 .netlify
 node_modules
+**/node_modules
 dist
+**/dist
+**/dist-*
 out
+build
+.release
+prebuilds
 test-results
 scratch
 Playwright tests

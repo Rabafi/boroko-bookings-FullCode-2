@@ -33,10 +33,34 @@ const ALLOWED_RPC_TABLES = new Set([
   'delete_conference_booking',
   'add_pool_day_use',
   'delete_pool_day_use',
+  'update_pool_day_use',
+  'create_inventory_item',
   'adjust_inventory_stock',
   'create_pos_order',
+  'create_pos_order_v3',
+  'create_pos_return_v3',
   'approve_pos_void_with_pin',
-  'upsert_pos_cashup'
+  'upsert_pos_cashup',
+  'finalize_pos_shift_cashup_v2',
+  'upsert_pos_tab',
+  'update_pos_tab_status',
+  'upsert_pos_table',
+  'open_pos_shift_with_id',
+  'close_pos_shift_with_id',
+  'create_pos_menu_item',
+  'update_pos_menu_item',
+  'delete_pos_menu_item',
+  'set_bar_pos_pack_template',
+  'update_pos_prep_ticket_status',
+  'upsert_pos_modifier_groups',
+  'upsert_pos_promotions',
+  'upsert_pos_floor_layout',
+  'create_maintenance_ticket'
+]);
+
+const ORIGIN_DEVICE_ONLY_RPC_TABLES = new Set([
+  'approve_pos_void_with_pin',
+  'create_pos_return_v3'
 ]);
 
 function isPlainObject(value) {
@@ -67,10 +91,13 @@ function normalizePositiveQty(value, fallback = 1) {
 function getPosInventoryUsage(items = []) {
   const usage = new Map();
   for (const entry of items || []) {
-    const inventoryItemId = String(entry?.inventory_item_id || '').trim();
+    const menuItem = entry?.menu_item_id
+      ? readCache('pos-menu-items').find((row) => row?.id === entry.menu_item_id)
+      : null;
+    const inventoryItemId = String(entry?.inventory_item_id || menuItem?.inventory_item_id || '').trim();
     if (!inventoryItemId) continue;
     const quantity = Number(entry.quantity || 0);
-    const depletionQty = normalizePositiveQty(entry.depletion_qty, 1);
+    const depletionQty = normalizePositiveQty(entry.depletion_qty ?? menuItem?.depletion_qty, 1);
     if (quantity === 0) continue;
     usage.set(inventoryItemId, (usage.get(inventoryItemId) || 0) + quantity * depletionQty);
   }
@@ -86,19 +113,18 @@ export function applyImportedPosInventoryEffects(items = []) {
   let nextInventory = inventory;
 
   for (const item of items) {
-    if (item.table !== 'create_pos_order' && item.table !== 'approve_pos_void_with_pin') continue;
+    if (!['create_pos_order', 'create_pos_order_v3'].includes(item.table)) continue;
     const payload = item.data?.payload || {};
     const usage = getPosInventoryUsage(payload.items || []);
     if (usage.size === 0) continue;
 
-    const multiplier = item.table === 'approve_pos_void_with_pin' ? 1 : -1;
     nextInventory = nextInventory.map((row) => {
       const delta = usage.get(row?.id) || 0;
       if (!delta) return row;
       changed = true;
       return {
         ...row,
-        current_stock: Math.max(0, Number(row.current_stock || 0) + (delta * multiplier)),
+        current_stock: Math.max(0, Number(row.current_stock || 0) - delta),
         _pending_sync: true,
         _sync_state: 'pending',
         _mesh_inventory_adjusted_at: new Date().toISOString()
@@ -109,6 +135,20 @@ export function applyImportedPosInventoryEffects(items = []) {
   if (changed) {
     writeCache('inventory-items', nextInventory);
   }
+}
+
+function containsMachineBoundSecret(value) {
+  if (Array.isArray(value)) return value.some(containsMachineBoundSecret);
+  if (!value || typeof value !== 'object') return false;
+  if (value._secure_queue_secret === true) return true;
+  return Object.values(value).some(containsMachineBoundSecret);
+}
+
+export function isMeshShareableQueueItem(item = {}) {
+  if (!item || item.type !== 'rpc') return false;
+  if (!ALLOWED_RPC_TABLES.has(String(item.table || '').trim())) return false;
+  if (ORIGIN_DEVICE_ONLY_RPC_TABLES.has(item.table)) return false;
+  return !containsMachineBoundSecret(item.data);
 }
 
 function stripMeshMetadata(item = {}) {
@@ -131,6 +171,8 @@ function getQueueItemIntentId(item = {}) {
     item.intentId ||
     item.data?.p_idempotency_key ||
     item.data?.payload?.create_idempotency_key ||
+    item.data?.payload?.return_idempotency_key ||
+    item.data?.payload?.cashup_id ||
     item.data?.payload?.idempotency_key ||
     ''
   ).trim();
@@ -225,7 +267,7 @@ export function validateSyncQueueItem(item) {
       if (!hasString(line.item_name) && !hasString(line.menu_item_id) && !hasString(line.inventory_item_id)) {
         return { isValid: false, reason: 'create_pos_order line item missing identity' };
       }
-      if (!isFiniteNumber(line.quantity) || Number(line.quantity) === 0) {
+      if (!isFiniteNumber(line.quantity) || Number(line.quantity) <= 0) {
         return { isValid: false, reason: 'create_pos_order line item has invalid quantity' };
       }
       if (!isFiniteNumber(line.unit_price)) {
@@ -264,6 +306,28 @@ export function validateSyncQueueItem(item) {
     }
   }
 
+  if (item.table === 'create_pos_order_v3') {
+    const payload = item.data.payload;
+    if (!isPlainObject(payload)) return { isValid: false, reason: 'create_pos_order_v3 missing payload object' };
+    const required = ['id', 'lodge_id', 'catalog_snapshot_id', 'shift_id', 'source_device_id', 'create_idempotency_key'];
+    const missing = required.filter((field) => !hasString(payload[field]));
+    if (missing.length > 0) return { isValid: false, reason: `create_pos_order_v3 missing ${missing.join(', ')}` };
+    if (!Array.isArray(payload.items) || payload.items.length === 0) {
+      return { isValid: false, reason: 'create_pos_order_v3 missing line items' };
+    }
+    for (const line of payload.items) {
+      if (!isPlainObject(line) || !hasString(line.menu_item_id)) {
+        return { isValid: false, reason: 'create_pos_order_v3 line item missing menu identity' };
+      }
+      if (!Number.isInteger(Number(line.quantity)) || Number(line.quantity) <= 0) {
+        return { isValid: false, reason: 'create_pos_order_v3 line item has invalid quantity' };
+      }
+      if (line.modifier_option_ids != null && !Array.isArray(line.modifier_option_ids)) {
+        return { isValid: false, reason: 'create_pos_order_v3 modifier selections must be an array' };
+      }
+    }
+  }
+
   if (item.table === 'upsert_pos_cashup') {
     const payload = item.data.payload;
     if (!isPlainObject(payload)) return { isValid: false, reason: 'upsert_pos_cashup missing payload object' };
@@ -272,7 +336,149 @@ export function validateSyncQueueItem(item) {
     }
   }
 
+  if (item.table === 'finalize_pos_shift_cashup_v2') {
+    const payload = item.data.payload;
+    if (!isPlainObject(payload)) return { isValid: false, reason: 'finalize_pos_shift_cashup_v2 missing payload object' };
+    const required = ['cashup_id', 'lodge_id', 'shift_id'];
+    const missing = required.filter((field) => !hasString(payload[field]));
+    if (missing.length > 0) return { isValid: false, reason: `finalize_pos_shift_cashup_v2 missing ${missing.join(', ')}` };
+    if (!isPlainObject(payload.counted_by_method)) {
+      return { isValid: false, reason: 'finalize_pos_shift_cashup_v2 missing counted tender totals' };
+    }
+  }
+
+  if (item.table === 'create_inventory_item') {
+    const payload = item.data.payload;
+    if (!isPlainObject(payload) || !hasString(payload.id) || !hasString(payload.lodge_id) || !hasString(payload.name)) {
+      return { isValid: false, reason: 'create_inventory_item missing required item fields' };
+    }
+  }
+
+  if (item.table === 'create_maintenance_ticket') {
+    const payload = item.data.payload;
+    if (!isPlainObject(payload) || !hasString(payload.id) || !hasString(payload.lodge_id)) {
+      return { isValid: false, reason: 'create_maintenance_ticket missing required ticket fields' };
+    }
+  }
+
+  if (['upsert_pos_tab', 'upsert_pos_table'].includes(item.table)) {
+    const payload = item.data.payload;
+    if (!isPlainObject(payload) || !hasString(payload.id) || !hasString(payload.lodge_id)) {
+      return { isValid: false, reason: `${item.table} missing required payload fields` };
+    }
+  }
+
+  if (item.table === 'update_pos_tab_status') {
+    if (!hasString(item.data.p_tab_id) || !hasString(item.data.p_status)) {
+      return { isValid: false, reason: 'update_pos_tab_status missing tab or status' };
+    }
+  }
+
+  if (['open_pos_shift_with_id', 'close_pos_shift_with_id'].includes(item.table)) {
+    const payload = item.data.payload;
+    if (!isPlainObject(payload) || !hasString(payload.id) || !hasString(payload.lodge_id)) {
+      return { isValid: false, reason: `${item.table} missing required shift fields` };
+    }
+  }
+
+  if (['create_pos_menu_item', 'set_bar_pos_pack_template', 'upsert_pos_modifier_groups', 'upsert_pos_promotions', 'upsert_pos_floor_layout'].includes(item.table)) {
+    const payload = item.data.payload;
+    if (!isPlainObject(payload) || !hasString(payload.lodge_id)) {
+      return { isValid: false, reason: `${item.table} missing lodge-scoped payload` };
+    }
+  }
+
+  if (['update_pos_menu_item', 'delete_pos_menu_item'].includes(item.table)) {
+    if (!hasString(item.data.p_id) || !hasString(item.data.p_lodge_id)) {
+      return { isValid: false, reason: `${item.table} missing item or lodge` };
+    }
+  }
+
+  if (item.table === 'update_pos_prep_ticket_status' && !hasString(item.data.p_ticket_id)) {
+    return { isValid: false, reason: 'update_pos_prep_ticket_status missing ticket id' };
+  }
+
+  if (item.table === 'update_pool_day_use') {
+    const payload = item.data.payload;
+    if (!isPlainObject(payload) || !hasString(payload.id) || !hasString(payload.lodge_id) || !hasString(payload.idempotency_key)) {
+      return { isValid: false, reason: 'update_pool_day_use missing required operation fields' };
+    }
+  }
+
   return { isValid: true };
+}
+
+function applyImportedBookingCacheEffects(items = []) {
+  const imported = [];
+  for (const item of items) {
+    if (item.table === 'create_booking') {
+      const data = item.data || {};
+      imported.push({
+        id: data.p_booking_id,
+        lodge_id: data.p_lodge_id,
+        customer_id: data.p_customer_id,
+        room_id: data.p_room_id,
+        check_in: data.p_check_in,
+        check_out: data.p_check_out,
+        adults: data.p_adults,
+        children: data.p_children || 0,
+        total_amount: Number(data.p_total_amount || 0),
+        amount_paid: Number(data.p_deposit_amount || 0),
+        notes: data.p_notes || '',
+        status: 'pending',
+        payment_status: Number(data.p_deposit_amount || 0) > 0 ? 'partial' : 'unpaid',
+        created_at: item.timestamp || item.created_at || new Date().toISOString(),
+        _pending_sync: true,
+        _sync_state: 'pending',
+        _mesh_imported: true,
+        _mesh_source_node_id: item._mesh_source_node_id
+      });
+    } else if (item.table === 'create_booking_record') {
+      const payload = item.data?.payload || {};
+      imported.push({
+        ...payload,
+        status: payload.status || 'pending',
+        created_at: payload.created_at || item.timestamp || new Date().toISOString(),
+        _pending_sync: true,
+        _sync_state: 'pending',
+        _mesh_imported: true,
+        _mesh_source_node_id: item._mesh_source_node_id
+      });
+    }
+  }
+  if (imported.length === 0) return;
+  const existing = readCache('bookings');
+  const importedIds = new Set(imported.map((row) => row.id).filter(Boolean));
+  writeCache('bookings', [
+    ...existing.filter((row) => !importedIds.has(row?.id)),
+    ...imported
+  ]);
+}
+
+function applyImportedOperationalCacheEffects(items = []) {
+  for (const item of items) {
+    if (item.table !== 'update_pool_day_use') continue;
+    const payload = item.data?.payload || {};
+    const rows = readCache('pool-day-use');
+    const index = rows.findIndex((row) => row?.id === payload.id);
+    if (index < 0) continue;
+    const current = rows[index];
+    const next = [...rows];
+    next[index] = {
+      ...current,
+      ...(payload.status ? { status: payload.status } : {}),
+      ...(payload.payment_method ? { payment_method: payload.payment_method } : {}),
+      ...(payload.settle_balance ? {
+        deposit_amount: Number(current.total || 0),
+        balance_due: 0
+      } : {}),
+      _pending_sync: true,
+      _sync_state: 'pending',
+      _mesh_imported: true,
+      _mesh_source_node_id: item._mesh_source_node_id
+    };
+    writeCache('pool-day-use', next);
+  }
 }
 
 /**
@@ -418,6 +624,8 @@ export async function syncMeshQueues() {
           const mergedQueue = [...latestLocalQueue, ...deduplicatedNewItems];
           writeSyncQueue(mergedQueue);
           applyImportedPosInventoryEffects(deduplicatedNewItems);
+          applyImportedBookingCacheEffects(deduplicatedNewItems);
+          applyImportedOperationalCacheEffects(deduplicatedNewItems);
           meshState.lastQueueMergeAt = new Date();
           hasMergedNewItems = true;
           console.log(`[MeshMerge] Successfully imported ${deduplicatedNewItems.length} operations from Peer ${peerId}.`);

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { AlertTriangle, BellRing, CalendarClock, CreditCard, FileText, MessageSquare, Package, RefreshCw, TrendingUp, Wrench } from 'lucide-react'
+import { AlertTriangle, BellRing, CalendarClock, CreditCard, FileText, MessageSquare, Package, RefreshCw, ShoppingCart, TrendingUp, Wrench } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { useFeatures } from '../contexts/FeaturesContext'
 import { getDashboardSnapshot, getFinancialActivityFeed, getSupportRequests, listBookings } from '../lib/api'
@@ -75,7 +75,7 @@ function latestDeskMessage(request) {
 
 export default function Dashboard() {
   const { user, logout } = useAuth()
-  const { can, features } = useFeatures()
+  const { can, features, isEnabled } = useFeatures()
   const pwaEnabled = Object.keys(features).length > 0 && features.pwa === true
   const { showToast } = useToast()
   const [loading, setLoading] = useState(true)
@@ -387,6 +387,7 @@ export default function Dashboard() {
         <div className="grid grid-cols-2 gap-3">
           <QuickLink to="/alerts?filter=all" icon={AlertTriangle} label="Alerts" sub={`${openAlertCount} open`} />
           <QuickLink to="/money?focus=outstanding" icon={TrendingUp} label="Money" sub="Balances and audit" />
+          {can('pos.reports') && isEnabled('pos') && <QuickLink to="/pos" icon={ShoppingCart} label="POS Sales" sub="Live sales and history" />}
           {pwaEnabled && <QuickLink to="/control" icon={MessageSquare} label="Inbox" sub="Front desk chat" />}
           {can('reports.view') ? (
             <QuickLink to="/reports" icon={FileText} label="Reports" sub="Full snapshot" />

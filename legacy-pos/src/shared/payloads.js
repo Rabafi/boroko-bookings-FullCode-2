@@ -83,6 +83,47 @@ export function buildCreatePosOrderPayload(input = {}) {
   };
 }
 
+export function buildCreatePosOrderPayloadV3(input = {}) {
+  const legacy = buildCreatePosOrderPayload(input);
+  if (!legacy.id || !legacy.lodge_id || !input.catalog_snapshot_id || !input.shift_id) {
+    throw new Error('Order, lodge, catalog snapshot, and open shift are required.');
+  }
+  return {
+    id: legacy.id,
+    lodge_id: legacy.lodge_id,
+    catalog_snapshot_id: input.catalog_snapshot_id,
+    shift_id: input.shift_id,
+    source_device_id: input.source_device_id || 'legacy-pos',
+    outlet_id: legacy.outlet_id,
+    room_id: legacy.room_id,
+    booking_id: legacy.booking_id,
+    walk_in_name: legacy.walk_in_name,
+    notes: legacy.notes,
+    payment_method: legacy.payment_method,
+    payment_breakdown: legacy.payment_breakdown,
+    service_mode: legacy.service_mode,
+    table_name: legacy.table_name,
+    tab_name: legacy.tab_name,
+    waiter_name: legacy.waiter_name,
+    ticket_status: legacy.ticket_status,
+    create_idempotency_key: legacy.create_idempotency_key,
+    client_created_at: legacy.created_at_client,
+    tip_total: legacy.tip_total,
+    promotion_id: input.promotion_id || null,
+    manual_discount: input.manual_discount || null,
+    items: (input.items || []).map((item) => ({
+      menu_item_id: item.menu_item_id || null,
+      quantity: normalizePositiveQty(item.quantity, 1),
+      modifier_option_ids: Array.isArray(item.modifier_option_ids)
+        ? item.modifier_option_ids
+        : (Array.isArray(item.modifiers) ? item.modifiers : [])
+          .map((modifier) => typeof modifier === 'string' ? modifier : modifier?.id)
+          .filter(Boolean),
+      item_notes: item.item_notes || null
+    }))
+  };
+}
+
 export function buildVoidPayload(input = {}) {
   const orderId = input.order_id;
   if (!orderId) throw new Error('order_id is required for void');
@@ -93,9 +134,47 @@ export function buildVoidPayload(input = {}) {
     approved_by: input.approved_by,
     pin: String(input.pin || '').trim(),
     reason: input.reason || null,
+    device_id: input.device_id || 'legacy-pos',
     outlet_id: input.outlet_id || null,
     override_log_id: input.override_log_id || randomUUID(),
     created_at: input.created_at || new Date().toISOString()
+  };
+}
+
+export function buildReturnPayloadV3(input = {}) {
+  if (!input.order_id || !input.return_order_id || !input.shift_id) {
+    throw new Error('Order, return order, and open shift are required.');
+  }
+  return {
+    order_id: input.order_id,
+    lodge_id: input.lodge_id,
+    return_order_id: input.return_order_id,
+    shift_id: input.shift_id,
+    return_idempotency_key: input.return_idempotency_key || `pos-return:${input.return_order_id}`,
+    approval_pin: String(input.pin || input.approval_pin || '').trim(),
+    approver_id: input.approver_id || null,
+    device_id: input.device_id || 'legacy-pos',
+    reason: String(input.reason || '').trim(),
+    override_log_id: input.override_log_id || randomUUID(),
+    lines: (input.lines || []).map((line) => ({
+      line_id: line.line_id || line.id || null,
+      quantity: Math.abs(Number(line.quantity) || 0)
+    }))
+  };
+}
+
+export function buildFinalizeCashupPayloadV2(input = {}) {
+  const cashupId = input.cashup_id || input.id || randomUUID();
+  if (!input.lodge_id || !input.shift_id) {
+    throw new Error('Lodge and open shift are required for cash-up.');
+  }
+  return {
+    lodge_id: input.lodge_id,
+    shift_id: input.shift_id,
+    cashup_id: cashupId,
+    idempotency_key: input.idempotency_key || `pos-cashup:${cashupId}`,
+    counted_by_method: input.counted_by_method || {},
+    notes: input.notes || null
   };
 }
 

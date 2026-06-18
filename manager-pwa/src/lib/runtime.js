@@ -473,6 +473,22 @@ export function markPwaNotificationRead(lodgeId, notificationId) {
   emit('boroko:pwa-notifications', { lodgeId, items: next, readId: notificationId })
 }
 
+export function markPwaNotificationReadBySourceKey(lodgeId, sourceKey) {
+  if (!sourceKey) return
+  const key = notificationStoreKey(lodgeId)
+  const current = readLocalJson(key, [])
+  const readAt = new Date().toISOString()
+  const next = (Array.isArray(current) ? current : []).map((item) => {
+    if ((item?.sourceKey || item?.id) !== sourceKey) return item
+    if (item?.meta?.notificationVersion) {
+      setPwaNotificationSeenVersion(lodgeId, item.sourceKey || item.id, item.meta.notificationVersion)
+    }
+    return item?.readAt ? item : { ...item, readAt }
+  })
+  writeLocalJson(key, next)
+  emit('boroko:pwa-notifications', { lodgeId, items: next, readSourceKey: sourceKey })
+}
+
 // Maximum retries before a saved change is considered stuck.
 const PWA_MAX_RETRIES = 3
 

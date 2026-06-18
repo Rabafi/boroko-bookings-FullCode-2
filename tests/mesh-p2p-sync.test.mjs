@@ -159,7 +159,7 @@ async function runTests() {
   const { meshState } = await import('../scratch/mocked/meshState.js');
   const { generateMeshSignature, validateIncomingRequest, computeBodyHash } = await import('../scratch/mocked/meshSecurity.js');
   const { createLocalLock, registerRemoteLock, releaseLocalLock } = await import('../scratch/mocked/meshLocks.js');
-  const { validateSyncQueueItem, syncMeshQueues, applyImportedPosInventoryEffects } = await import('../scratch/mocked/meshQueueMerge.js');
+  const { validateSyncQueueItem, syncMeshQueues, applyImportedPosInventoryEffects, isMeshShareableQueueItem } = await import('../scratch/mocked/meshQueueMerge.js');
   const { detectConflicts, datesOverlap } = await import('../scratch/mocked/meshConflict.js');
   const { state } = await import('../scratch/mocked/mockState.js');
   const mockSyncStore = await import('../scratch/mocked/mockSyncStore.js');
@@ -257,8 +257,8 @@ async function runTests() {
   // ----------------------------------------------------
   // TEST 4: Timestamp Drift Rejection
   // ----------------------------------------------------
-  await runTest('Timestamp drift rejection (> 10 seconds)', () => {
-    const oldTimestamp = new Date(Date.now() - 15000).toISOString(); // 15 seconds ago
+  await runTest('Timestamp drift rejection (> 30 seconds)', () => {
+    const oldTimestamp = new Date(Date.now() - 45000).toISOString();
     const nonce = crypto.randomUUID();
     const signature = generateMeshSignature('GET', '/mesh/hello', oldTimestamp, nonce, '', meshState.lodgeMeshSecret);
 
@@ -346,6 +346,38 @@ async function runTests() {
     const invalidPosValidation = validateSyncQueueItem(invalidPosItem);
     assert.equal(invalidPosValidation.isValid, false);
     assert.match(invalidPosValidation.reason, /invalid quantity/);
+
+    const validPosV3Item = {
+      _queue_id: 'pos-order-v3-11',
+      type: 'rpc',
+      table: 'create_pos_order_v3',
+      data: {
+        payload: {
+          id: 'pos-v3-11',
+          lodge_id: meshState.lodgeId,
+          catalog_snapshot_id: 'catalog-11',
+          shift_id: 'shift-11',
+          source_device_id: 'desktop-test',
+          create_idempotency_key: 'pos-v3-intent-11',
+          items: [{ menu_item_id: 'menu-water', quantity: 2, modifier_option_ids: [] }]
+        }
+      }
+    };
+    assert.equal(validateSyncQueueItem(validPosV3Item).isValid, true);
+    assert.equal(isMeshShareableQueueItem(validPosV3Item), true);
+
+    const encryptedApproval = {
+      _queue_id: 'pos-return-secret',
+      type: 'rpc',
+      table: 'create_pos_return_v3',
+      data: {
+        payload: {
+          lodge_id: meshState.lodgeId,
+          approval_pin: { _secure_queue_secret: true, data: 'machine-bound' }
+        }
+      }
+    };
+    assert.equal(isMeshShareableQueueItem(encryptedApproval), false, 'Machine-bound approvals must stay on their origin device');
   });
 
   // ----------------------------------------------------
@@ -568,6 +600,9 @@ async function runTests() {
       { id: 'stock-1', name: 'Water', current_stock: 12 },
       { id: 'stock-2', name: 'Juice', current_stock: 8 }
     ]);
+    mockCacheStore.setMockCache('pos-menu-items', [
+      { id: 'menu-water', name: 'Water', inventory_item_id: 'stock-1', depletion_qty: 2 }
+    ]);
 
     applyImportedPosInventoryEffects([
       {
@@ -612,7 +647,32 @@ async function runTests() {
     ]);
 
     inventory = mockCacheStore.readCache('inventory-items');
-    assert.equal(inventory.find((item) => item.id === 'stock-1').current_stock, 10);
+    assert.equal(inventory.find((item) => item.id === 'stock-1').current_stock, 8, 'Pending void must not restore sellable stock');
+
+    mockCacheStore.setMockCache('inventory-items', [
+      { id: 'stock-1', name: 'Water', current_stock: 12 }
+    ]);
+    applyImportedPosInventoryEffects([
+      {
+        _queue_id: 'pos-order-peer-v3',
+        type: 'rpc',
+        table: 'create_pos_order_v3',
+        data: {
+          payload: {
+            lodge_id: meshState.lodgeId,
+            id: 'peer-pos-v3',
+            catalog_snapshot_id: 'catalog-1',
+            shift_id: 'shift-1',
+            source_device_id: 'peer-device',
+            create_idempotency_key: 'peer-pos-v3-intent',
+            items: [{ menu_item_id: 'menu-water', quantity: 2, modifier_option_ids: [] }]
+          }
+        },
+        _mesh_imported: true
+      }
+    ]);
+    inventory = mockCacheStore.readCache('inventory-items');
+    assert.equal(inventory.find((item) => item.id === 'stock-1').current_stock, 8, 'V3 mesh sale must reserve linked stock');
   });
 
   // ----------------------------------------------------
@@ -632,6 +692,32 @@ async function runTests() {
 
     assert.ok(!allowlisted.includes('/mesh/cache'));
     assert.ok(!allowlisted.some(r => r.startsWith('/mesh/cache/')));
+  });
+
+  await runTest('Every desktop offline RPC operation is represented by the mesh contract', async () => {
+    const domainDir = path.join(workspaceRoot, 'src', 'main', 'domains');
+    const domainFiles = await fs.readdir(domainDir, { withFileTypes: true });
+    const queuedOperations = new Set();
+    for (const entry of domainFiles) {
+      if (!entry.isFile() || !entry.name.endsWith('.js')) continue;
+      const source = await fs.readFile(path.join(domainDir, entry.name), 'utf8');
+      for (const match of source.matchAll(/queueOperation\(\s*['"]rpc['"]\s*,\s*['"]([^'"]+)['"]/g)) {
+        queuedOperations.add(match[1]);
+      }
+    }
+    const meshSource = await fs.readFile(path.join(workspaceRoot, 'src', 'main', 'domains', 'mesh', 'meshQueueMerge.js'), 'utf8');
+    for (const operation of queuedOperations) {
+      assert.ok(meshSource.includes(`'${operation}'`), `${operation} is queued offline but missing from the mesh contract`);
+    }
+    const nonRpcQueueCalls = [];
+    for (const entry of domainFiles) {
+      if (!entry.isFile() || !entry.name.endsWith('.js')) continue;
+      const source = await fs.readFile(path.join(domainDir, entry.name), 'utf8');
+      for (const match of source.matchAll(/queueOperation\(\s*['"]([^'"]+)['"]/g)) {
+        if (match[1] !== 'rpc') nonRpcQueueCalls.push(`${entry.name}:${match[1]}`);
+      }
+    }
+    assert.deepEqual(nonRpcQueueCalls, [], 'All offline mutations must be RPC operations');
   });
 
   console.log('----------------------------------------------------');

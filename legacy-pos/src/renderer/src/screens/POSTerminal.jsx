@@ -453,7 +453,7 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
   const applicablePromo = useMemo(() => {
     if (!promotions.length || !cart.length) return null;
     for (const promo of promotions) {
-      if (!promo || promo.enabled === false) continue;
+      if (!promo || promo.active === false || promo.enabled === false) continue;
       if (promo.applies_to_category && promo.applies_to_category !== 'All') {
         const hasMatching = cartForTotals.some((c) => (c.category || 'Other') === promo.applies_to_category);
         if (!hasMatching) continue;
@@ -644,21 +644,32 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
         cashier_id: selectedStaff.id,
         cashier_name: selectedStaff.name || selectedStaff.email,
         shift_id: currentShift?.id || null,
+        promotion_id: appliedPromo?.id || null,
+        manual_discount: !appliedPromo && Number(discountValue || 0) > 0
+          ? { type: 'amount', value: Number(discountValue), reason: discountReason || 'Manual discount' }
+          : null,
         created_at_client: new Date().toISOString()
       });
 
       if (result?.success) {
+        const authoritativeItems = result.offline
+          ? cartForTotals
+          : (Array.isArray(result.items) ? result.items : cartForTotals);
         const orderData = {
-          id: result.id || submitIntentId, total: cartTotals.total, gross_total: cartTotals.gross_total,
-          discount_total: cartTotals.discount_total, tax_rate: cartTotals.tax_rate,
-          tax_total: cartTotals.tax_total, tip_total: cartTotals.tip_total,
-          status: 'completed', created_at: new Date().toISOString(),
-          payment_method: effectivePaymentMethod,
-          payment_breakdown: paymentBreakdown,
+          id: result.id || submitIntentId,
+          total: result.offline ? cartTotals.total : Number(result.total || 0),
+          gross_total: result.offline ? cartTotals.gross_total : Number(result.gross_total || 0),
+          discount_total: result.offline ? cartTotals.discount_total : Number(result.discount_total || 0),
+          tax_rate: result.offline ? cartTotals.tax_rate : Number(result.tax_rate || 0),
+          tax_total: result.offline ? cartTotals.tax_total : Number(result.tax_total || 0),
+          tip_total: result.offline ? cartTotals.tip_total : Number(result.tip_total || 0),
+          status: result.offline ? 'pending' : 'completed', created_at: new Date().toISOString(),
+          payment_method: result.payment_method || effectivePaymentMethod,
+          payment_breakdown: result.payment_breakdown || paymentBreakdown,
           walk_in_name: customerType === 'walkin' ? walkInName : null,
           table_name: tableName || null, waiter_name: selectedWaiter?.name || null,
           cashier_name: selectedStaff.name || selectedStaff.email,
-          pos_order_items: cartForTotals.map((item, idx) => ({ id: `local-${idx}`, ...item, subtotal: item.quantity * item.unit_price })),
+          pos_order_items: authoritativeItems.map((item, idx) => ({ id: `local-${idx}`, ...item, subtotal: item.subtotal ?? item.quantity * item.unit_price })),
           _pending_sync: result.offline || false
         };
         submitIntentRef.current = { signature: null, intentId: null };
@@ -1065,7 +1076,9 @@ function ReceiptModal({ order, settings, currency, onClose }) {
         <div className="p-6">
           <div className="text-center mb-4">
             <Check className="mx-auto h-12 w-12 text-emerald-500" />
-            <p className="mt-2 text-sm text-slate-500">{order._pending_sync ? 'Saved offline - will sync when connected' : 'Order submitted successfully'}</p>
+            <p className={`mt-2 text-sm font-semibold ${order._pending_sync ? 'text-amber-700' : 'text-slate-500'}`}>
+              {order._pending_sync ? 'Provisional receipt — pending server confirmation' : 'Order submitted successfully'}
+            </p>
           </div>
           <div className="rounded-lg bg-slate-50 p-4 text-sm space-y-1">
             <div className="flex justify-between"><span className="text-slate-500">Order ID</span><span className="font-mono text-xs">{String(order.id).slice(0, 8)}</span></div>

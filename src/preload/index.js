@@ -149,6 +149,7 @@ const api = {
   requests: {
     getAll: (limit) => ipcRenderer.invoke('requests:getAll', limit),
     update: (id, updates) => ipcRenderer.invoke('requests:update', id, updates),
+    markRead: (id, audience, messageId) => ipcRenderer.invoke('requests:markRead', id, audience, messageId),
     addMessage: (id, payload) => ipcRenderer.invoke('requests:addMessage', id, payload)
   },
   notifications: {

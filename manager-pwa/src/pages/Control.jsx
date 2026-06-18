@@ -1,13 +1,13 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { MessageCircle, Plus, RefreshCw, Send, Wifi, WifiOff, X } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { useFeatures } from '../contexts/FeaturesContext'
-import { addSupportTicketMessage, createSupportTicket, flushOfflineQueue, getControlSnapshot, getSupportRequests } from '../lib/api'
+import { addSupportTicketMessage, createSupportTicket, flushOfflineQueue, getControlSnapshot, getSupportRequests, markSupportRequestRead } from '../lib/api'
 import { supabase } from '../lib/supabase'
-import { getNotificationSettings, getPwaQueueHealth, publishPwaHealth, subscribeRuntimeEvent } from '../lib/runtime'
+import { getNotificationSettings, getPwaQueueHealth, markPwaNotificationReadBySourceKey, publishPwaHealth, subscribeRuntimeEvent } from '../lib/runtime'
 import { shortDateTime, titleCase } from '../lib/format'
 import { buildSupportAuthorFromUser, normalizeSupportMessages, supportMessageSide, supportSenderMeta, supportSenderName } from '@shared/supportThreads'
-import { isFrontDeskConversation, upsertFrontDeskNotification } from '../lib/frontDeskNotifications'
+import { getFrontDeskNotificationSourceKey, isFrontDeskConversation, upsertFrontDeskNotification } from '../lib/frontDeskNotifications'
 import { useToast } from '../App'
 
 function latestMessage(request) {
@@ -112,6 +112,7 @@ export default function Control() {
   const [sending, setSending] = useState(false)
   const [notifications, setNotifications] = useState(() => getNotificationSettings())
   const [queueHealth, setQueueHealth] = useState(() => null)
+  const acknowledgedMessagesRef = useRef(new Set())
   const pwaDisabled = Object.keys(features).length > 0 && features.pwa !== true
 
   const conversations = useMemo(() => (
@@ -121,7 +122,10 @@ export default function Control() {
   ), [requests])
 
   const activeRequest = conversations.find((request) => request.id === selectedId) || conversations[0] || null
-  const activeMessages = activeRequest ? normalizeSupportMessages(activeRequest) : []
+  const activeMessages = useMemo(
+    () => activeRequest ? normalizeSupportMessages(activeRequest) : [],
+    [activeRequest]
+  )
 
   const load = useCallback(async () => {
     if (pwaDisabled || !user?.lodge_id) {
@@ -152,7 +156,7 @@ export default function Control() {
       }
       nextRows.forEach((request) => {
         if (notifications.frontDeskRequests === false) return
-        upsertFrontDeskNotification(user.lodge_id, request, { quiet: true })
+        upsertFrontDeskNotification(user.lodge_id, request)
       })
     } catch (error) {
       setLoadError(error?.message || 'Inbox could not load.')
@@ -181,6 +185,37 @@ export default function Control() {
       unsubscribeIssues?.()
     }
   }, [load, pwaDisabled])
+
+  useEffect(() => {
+    if (!activeRequest?.id || !user?.lodge_id || activeRequest.manager_has_unread === false) return
+    const latestDeskMessage = [...activeMessages].reverse().find((message) => supportMessageSide(message) === 'desk')
+    if (!latestDeskMessage?.id) return
+
+    const acknowledgementKey = `${activeRequest.id}:${latestDeskMessage.id}`
+    if (acknowledgedMessagesRef.current.has(acknowledgementKey)) return
+    acknowledgedMessagesRef.current.add(acknowledgementKey)
+
+    markSupportRequestRead(user.lodge_id, activeRequest.id, 'manager', latestDeskMessage.id)
+      .then(() => {
+        setRequests((current) => current.map((request) => (
+          request.id === activeRequest.id
+            ? {
+                ...request,
+                manager_has_unread: false,
+                manager_read_message_id: latestDeskMessage.id,
+                manager_read_at: new Date().toISOString()
+              }
+            : request
+        )))
+        markPwaNotificationReadBySourceKey(
+          user.lodge_id,
+          getFrontDeskNotificationSourceKey(activeRequest)
+        )
+      })
+      .catch(() => {
+        acknowledgedMessagesRef.current.delete(acknowledgementKey)
+      })
+  }, [activeMessages, activeRequest, user?.lodge_id])
 
   if (pwaDisabled) {
     return (

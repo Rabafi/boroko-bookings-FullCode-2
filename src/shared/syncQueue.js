@@ -9,15 +9,19 @@ export const FINANCIAL_SYNC_TABLES = new Set([
   'delete_booking_charge',
   'approve_booking_refund',
   'create_pos_order',
+  'create_pos_order_v3',
   'create_pos_partial_return_with_pin',
+  'create_pos_return_v3',
   'void_pos_order',
   'approve_pos_void_with_pin',
   'upsert_pos_cashup',
+  'finalize_pos_shift_cashup_v2',
   'create_conference_booking',
   'update_conference_booking',
   'update_conference_booking_payment',
   'delete_conference_booking',
   'add_pool_day_use',
+  'update_pool_day_use',
   'delete_pool_day_use'
 ])
 

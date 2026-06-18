@@ -145,6 +145,7 @@ export default function Orders({ user, settings, isOnline }) {
   const [returnModal, setReturnModal] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [copiedId, setCopiedId] = useState(null);
+  const [currentShift, setCurrentShift] = useState(null);
   const currency = settings?.currency || CURRENCY;
 
   const copyOrderId = (id) => {
@@ -166,6 +167,11 @@ export default function Orders({ user, settings, isOnline }) {
   }, [dateFilter]);
 
   useEffect(() => { loadOrders(); }, [loadOrders]);
+  useEffect(() => {
+    window.api.pos.getShifts()
+      .then((rows) => setCurrentShift((rows || []).find((shift) => shift.status === 'open') || null))
+      .catch(() => setCurrentShift(null));
+  }, []);
 
   const filtered = orders.filter((o) => {
     if (!search) return true;
@@ -215,7 +221,8 @@ export default function Orders({ user, settings, isOnline }) {
         })),
         cashier_user_id: user.id,
         cashier_name: user.name || user.email,
-        outlet_id: returnModal.outlet_id || null
+        outlet_id: returnModal.outlet_id || null,
+        shift_id: currentShift?.id || null
       };
       await window.api.pos.partialReturn(payload);
       setReturnModal(null);

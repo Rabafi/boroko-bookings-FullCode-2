@@ -4,7 +4,7 @@ import { validateIncomingRequest } from './meshSecurity.js';
 import { meshState } from './meshState.js';
 import { readSyncQueue } from '../syncStore.js';
 import { registerRemoteLock, releaseRemoteLock } from './meshLocks.js';
-import { getQueueItemBodyHash } from './meshQueueMerge.js';
+import { getQueueItemBodyHash, isMeshShareableQueueItem } from './meshQueueMerge.js';
 
 /**
  * Starts the P2P dynamic local HTTP server.
@@ -81,7 +81,7 @@ export function startMeshServer(lodgeMeshSecret) {
         }
 
         if (req.method === 'GET' && pathname === '/mesh/state') {
-          const queue = readSyncQueue();
+          const queue = readSyncQueue().filter(isMeshShareableQueueItem);
           let oldestQueuedAt = null;
           if (queue.length > 0) {
             const times = queue
@@ -128,7 +128,7 @@ export function startMeshServer(lodgeMeshSecret) {
         }
 
         if (req.method === 'GET' && pathname === '/mesh/queue/summary') {
-          const queue = readSyncQueue();
+          const queue = readSyncQueue().filter(isMeshShareableQueueItem);
           const summary = queue.map((item) => ({
             _queue_id: item._queue_id,
             intentId: item.intentId || item.data?.p_idempotency_key || item.data?.payload?.create_idempotency_key || null,

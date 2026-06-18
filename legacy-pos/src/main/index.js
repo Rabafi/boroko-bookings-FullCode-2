@@ -9,7 +9,13 @@ import { fileURLToPath } from 'url';
 import { createHash, randomUUID } from 'crypto';
 import { createClient } from '@supabase/supabase-js';
 import { normalizePosHardwareSettings } from '../shared/hardwareSettings.js';
-import { buildCreatePosOrderPayload, buildVoidPayload, buildCashupPayload, normalizePaymentBreakdown } from '../shared/payloads.js';
+import {
+  buildCreatePosOrderPayloadV3,
+  buildVoidPayload,
+  buildReturnPayloadV3,
+  buildFinalizeCashupPayloadV2,
+  normalizePaymentBreakdown
+} from '../shared/payloads.js';
 import {
   createQueueItem,
   isQueueItemReady,
@@ -26,7 +32,16 @@ import {
   sendPaymentTerminalTotal
 } from './hardware/posHardwareAdapter.js';
 import { LOW_RESOURCE, getLowResourceConfig } from '../shared/lowResource.js';
-import { normalizeMoney } from '../shared/totals.js';
+import { buildPosTotals, normalizeMoney } from '../shared/totals.js';
+import {
+  appendFinancialJournalEvent,
+  rebuildFinancialQueueFromJournal
+} from './storage/financialJournal.js';
+import {
+  protectLegacyQueuePayload,
+  resolveLegacyQueuePayload
+} from './storage/secureQueueSecrets.js';
+import { createLegacyMeshController } from './mesh/legacyMesh.js';
 
 const { autoUpdater } = autoUpdaterPkg;
 
@@ -72,34 +87,42 @@ function buildOfflineInventoryUsage(items = []) {
 function applyOfflinePosInventoryReservation(items = []) {
   const usage = buildOfflineInventoryUsage(items);
   if (usage.size === 0) return [];
-  const inventory = readInventoryCache();
-  const next = inventory.map((item) => {
-    const used = usage.get(item?.id) || 0;
-    if (!used) return item;
-    return {
-      ...item,
-      current_stock: Math.max(0, normalizeInventoryStockValue(item.current_stock) - used),
-      _pending_sync: true,
-      _sync_state: 'pending'
-    };
-  });
-  writeInventoryCache(next);
+  refreshLegacyInventoryProjection();
   return [...usage.entries()].map(([inventory_item_id, quantity]) => ({ inventory_item_id, quantity }));
 }
 
 function restoreOfflinePosInventoryReservation(items = []) {
-  const usage = buildOfflineInventoryUsage(items);
-  if (usage.size === 0) return;
-  const inventory = readInventoryCache();
-  const next = inventory.map((item) => {
-    const restored = usage.get(item?.id) || 0;
-    if (!restored) return item;
+  // Pending returns and voids are requests, not accepted stock movements.
+  return [...buildOfflineInventoryUsage(items).entries()];
+}
+
+function applyQueuedLegacyInventoryReservations(rows = []) {
+  const usage = new Map();
+  for (const item of readSyncQueue()) {
+    if (item?.functionName !== 'create_pos_order_v3' || item?.status === 'synced') continue;
+    const payload = item?.payload?.payload || {};
+    const orderUsage = buildOfflineInventoryUsage(payload.items || []);
+    for (const [inventoryItemId, quantity] of orderUsage.entries()) {
+      usage.set(inventoryItemId, (usage.get(inventoryItemId) || 0) + quantity);
+    }
+  }
+  return (rows || []).map((item) => {
+    const reserved = usage.get(item?.id) || 0;
+    const syncedStock = normalizeInventoryStockValue(item.synced_current_stock ?? item.current_stock);
     return {
       ...item,
-      current_stock: normalizeInventoryStockValue(item.current_stock) + restored
+      synced_current_stock: syncedStock,
+      current_stock: Math.max(0, syncedStock - reserved),
+      pending_pos_reservation: reserved,
+      ...(reserved ? { _pending_sync: true, _sync_state: 'pending' } : {})
     };
   });
-  writeInventoryCache(next);
+}
+
+function refreshLegacyInventoryProjection() {
+  const projected = applyQueuedLegacyInventoryReservations(readInventoryCache());
+  writeInventoryCache(projected);
+  return projected;
 }
 
 // ── Cash-Up Summarizer (main-process authoritative) ────────────────────────
@@ -170,7 +193,6 @@ function buildTrustedSessionRecord(user, session, passwordHash, borokoSession = 
     lodge_id: user.lodge_id,
     lodge_name: user.lodge_name || null,
     allowed_outlet_ids: user.allowed_outlet_ids || [],
-    pin_hash: user.pin_hash || null,
     capability_overrides: user.capability_overrides || null,
     session_token: session?.access_token || null,
     session_access_token: session?.access_token || null,
@@ -209,7 +231,6 @@ function restoreTrustedSession(email, password) {
     lodge_id: session.lodge_id,
     lodge_name: session.lodge_name || null,
     allowed_outlet_ids: session.allowed_outlet_ids || [],
-    pin_hash: session.pin_hash || null,
     capability_overrides: session.capability_overrides || null
   };
   const authSession = session.session_access_token || session.session_refresh_token
@@ -242,7 +263,7 @@ const __dirname = path.dirname(__filename);
 const devLegacyRoot = path.resolve(__dirname, '..', '..');
 const devWorkspaceRoot = path.resolve(devLegacyRoot, '..');
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const USER_SELECT = 'id, auth_user_id, name, email, role, status, lodge_id, allowed_outlet_ids, pin_hash, capability_overrides';
+const USER_SELECT = 'id, auth_user_id, name, email, role, status, lodge_id, allowed_outlet_ids, capability_overrides';
 
 function readJsonFile(filePath) {
   try {
@@ -302,8 +323,12 @@ const state = {
   syncInProgress: false,
   localConfig: null,
   runtimeConfig: null,
-  lowResource: getLowResourceConfig()
+  lowResource: getLowResourceConfig(),
+  financialJournalHealthy: true,
+  financialJournalError: '',
+  meshStatus: { running: false, peerCount: 0, lastMergeAt: null, lastError: '' }
 };
+let legacyMeshController = null;
 
 function getConfigPath() {
   return path.join(app.getPath('userData'), 'pos-config.json');
@@ -390,6 +415,7 @@ function normalizeUserProfile(user, authUser = null) {
     refresh_token: _refreshToken,
     password_hash: _passwordHash,
     offline_password_hash: _offlinePasswordHash,
+    pin_hash: _pinHash,
     ...safeUser
   } = user;
   return {
@@ -591,14 +617,199 @@ function readObjectCacheForCurrentLodge(name, { strict = true } = {}) {
 function writeCache(name, data) {
   const filePath = path.join(state.cacheDir, `${name}.json`);
   const tmpPath = filePath + '.tmp';
+  const financialCache = new Set([
+    'sync-queue', 'pos-orders', 'pos-cashups', 'pos-shifts', 'inventory-items'
+  ]).has(name);
   try {
-    fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), 'utf-8');
+    const fd = fs.openSync(tmpPath, 'w');
+    try {
+      fs.writeSync(fd, JSON.stringify(data, null, 2), null, 'utf8');
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
     fs.renameSync(tmpPath, filePath);
-  } catch (e) { try { fs.unlinkSync(tmpPath); } catch {} }
+  } catch (e) {
+    try { fs.unlinkSync(tmpPath); } catch {}
+    if (financialCache) throw new Error(`Could not durably save ${name}: ${e.message}`);
+    console.warn(`[POS Cache] Could not save ${name}:`, e?.message || e);
+  }
 }
 
 function readSyncQueue() { return readCache('sync-queue'); }
 function writeSyncQueue(queue) { writeCache('sync-queue', queue); }
+
+const FINANCIAL_QUEUE_TYPES = new Set([
+  'pos_order', 'pos_return', 'pos_void', 'pos_cashup', 'pos_shift_open', 'pos_shift_close'
+]);
+
+function isFinancialQueueItem(item) {
+  return FINANCIAL_QUEUE_TYPES.has(item?.entityType);
+}
+
+function ensureFinancialJournalReady() {
+  if (!state.financialJournalHealthy) {
+    throw new Error(`Financial operations are locked because the local journal needs repair: ${state.financialJournalError}`);
+  }
+}
+
+function enqueueLegacyQueueItem(queueItem) {
+  const financial = isFinancialQueueItem(queueItem);
+  if (financial) ensureFinancialJournalReady();
+  const protectedItem = {
+    ...queueItem,
+    payload: protectLegacyQueuePayload(queueItem.payload)
+  };
+  if (financial) {
+    appendFinancialJournalEvent(state.cacheDir, {
+      event_type: 'queue_operation',
+      queue_item_id: protectedItem.id,
+      queue_item: protectedItem
+    });
+  }
+  const queue = readSyncQueue();
+  if (!queue.some((item) => item.id === protectedItem.id)) queue.push(protectedItem);
+  writeSyncQueue(queue);
+  return protectedItem;
+}
+
+function journalQueueState(item, patch) {
+  if (!isFinancialQueueItem(item)) return;
+  appendFinancialJournalEvent(state.cacheDir, {
+    event_type: 'queue_state',
+    queue_item_id: item.id,
+    patch
+  });
+}
+
+function recoverFinancialQueue() {
+  try {
+    const recovered = rebuildFinancialQueueFromJournal(state.cacheDir);
+    const existing = readSyncQueue();
+    const nonFinancial = existing.filter((item) => !isFinancialQueueItem(item));
+    const byId = new Map(recovered.map((item) => [item.id, item]));
+    for (const item of existing.filter(isFinancialQueueItem)) {
+      if (!byId.has(item.id)) byId.set(item.id, item);
+    }
+    writeSyncQueue([...nonFinancial, ...byId.values()]);
+    state.financialJournalHealthy = true;
+    state.financialJournalError = '';
+  } catch (error) {
+    state.financialJournalHealthy = false;
+    state.financialJournalError = error?.message || String(error);
+    console.error('[Financial Journal] Recovery failed:', error);
+  }
+}
+
+function getLegacyMeshSecret() {
+  const settings = readCache('settings');
+  const row = Array.isArray(settings) ? settings[0] : settings;
+  return String(row?.lodge_mesh_secret || '').trim();
+}
+
+function getLegacyMeshEntity(item = {}) {
+  const payload = item.data?.payload || {};
+  if (item.table === 'create_pos_order_v3') return { entityType: 'pos_order', entityId: payload.id };
+  if (item.table === 'finalize_pos_shift_cashup_v2') return { entityType: 'pos_cashup', entityId: payload.cashup_id };
+  if (item.table === 'upsert_pos_tab' || item.table === 'update_pos_tab_status') {
+    return { entityType: 'pos_tab', entityId: payload.id || item.data?.p_tab_id };
+  }
+  if (item.table === 'upsert_pos_table') return { entityType: 'pos_table', entityId: payload.id };
+  if (item.table === 'open_pos_shift_with_id') return { entityType: 'pos_shift_open', entityId: payload.id };
+  if (item.table === 'close_pos_shift_with_id') return { entityType: 'pos_shift_close', entityId: payload.id };
+  return {
+    entityType: item._legacy_entity_type || 'pos_config',
+    entityId: item._legacy_entity_id || payload.id || item.id || item._queue_id
+  };
+}
+
+function cacheImportedLegacyMeshOperation(item = {}) {
+  const payload = item.data?.payload || {};
+  if (item.table === 'create_pos_order_v3' && payload.id) {
+    const orders = readCache('pos-orders');
+    if (!orders.some((row) => row?.id === payload.id)) {
+      const menu = readMenuCache();
+      const displayItems = (payload.items || []).map((line) => {
+        const menuItem = menu.find((row) => row?.id === line.menu_item_id) || {};
+        return {
+          id: randomUUID(),
+          order_id: payload.id,
+          menu_item_id: line.menu_item_id,
+          item_name: menuItem.name || 'Pending mesh sale item',
+          quantity: Number(line.quantity || 0),
+          unit_price: Number(menuItem.price || 0),
+          subtotal: Number(line.quantity || 0) * Number(menuItem.price || 0),
+          inventory_item_id: menuItem.inventory_item_id || null,
+          depletion_qty: menuItem.depletion_qty || 1
+        };
+      });
+      const totals = buildPosTotals(displayItems, payload);
+      orders.unshift({
+        ...payload,
+        total: totals.total,
+        gross_total: totals.gross_total,
+        discount_total: totals.discount_total,
+        tax_total: totals.tax_total,
+        status: 'pending',
+        created_at: payload.client_created_at || item.timestamp || new Date().toISOString(),
+        _pending_sync: true,
+        _sync_state: 'pending',
+        _mesh_imported: true,
+        _mesh_source_node_id: item._mesh_source_node_id,
+        pos_order_items: displayItems
+      });
+      writeCache('pos-orders', orders);
+    }
+  }
+}
+
+function importLegacyMeshItems(items = []) {
+  const existing = readSyncQueue();
+  const existingIds = new Set(existing.map((item) => item.id));
+  let imported = 0;
+  for (const item of items) {
+    if (!item?._queue_id || existingIds.has(item._queue_id)) continue;
+    if (item._depends_on && !existingIds.has(item._depends_on)) continue;
+    const { entityType, entityId } = getLegacyMeshEntity(item);
+    enqueueLegacyQueueItem({
+      id: item._queue_id,
+      type: 'rpc',
+      functionName: item.table,
+      payload: item.data,
+      status: 'pending',
+      createdAt: item.timestamp || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      attempts: 0,
+      lastError: null,
+      dependsOn: item._depends_on || null,
+      entityType,
+      entityId,
+      _mesh_imported: true,
+      _mesh_source_node_id: item._mesh_source_node_id,
+      _mesh_imported_at: item._mesh_imported_at
+    });
+    existingIds.add(item._queue_id);
+    cacheImportedLegacyMeshOperation(item);
+    imported++;
+  }
+  if (imported > 0) refreshLegacyInventoryProjection();
+  return imported;
+}
+
+function startLegacyMesh() {
+  if (legacyMeshController || !state.cacheDir) return;
+  legacyMeshController = createLegacyMeshController({
+    cacheDir: state.cacheDir,
+    getLodgeId: () => state.lodgeId,
+    getMeshSecret: getLegacyMeshSecret,
+    readQueue: readSyncQueue,
+    importCanonicalItems: importLegacyMeshItems,
+    onStatus: (status) => {
+      state.meshStatus = status;
+    }
+  });
+  legacyMeshController.start();
+}
 
 // ── GitHub Release Updates ─────────────────────────────────────────────────
 autoUpdater.autoDownload = false;
@@ -672,27 +883,92 @@ function getUpdateInstallSafety() {
   const failedItems = queue.filter((item) => ['failed', 'manual_review_required'].includes(item.status));
   const openShifts = (Array.isArray(readCache('pos-shifts')) ? readCache('pos-shifts') : [])
     .filter((shift) => String(shift?.status || '').toLowerCase() === 'open');
+  const openTabs = (Array.isArray(readCache('pos-tabs')) ? readCache('pos-tabs') : [])
+    .filter((tab) => ['open', 'running', 'ready', 'delivered'].includes(String(tab?.status || '').toLowerCase()));
+  const unfinalizedCashups = openShifts.filter((shift) =>
+    !(readCache('pos-cashups') || []).some((cashup) =>
+      cashup?.shift_id === shift.id && !cashup?._pending_sync
+    )
+  );
   const blockers = [];
 
   if (pendingItems.length > 0) blockers.push(`${pendingItems.length} pending sync item(s)`);
   if (failedItems.length > 0) blockers.push(`${failedItems.length} failed/manual review sync item(s)`);
   if (openShifts.length > 0) blockers.push(`${openShifts.length} open shift(s)`);
+  if (openTabs.length > 0) blockers.push(`${openTabs.length} open table/tab(s)`);
+  if (unfinalizedCashups.length > 0) blockers.push(`${unfinalizedCashups.length} unfinalized cash-up(s)`);
 
   return {
     blocked: blockers.length > 0,
     blockers,
     pendingCount: pendingItems.length,
     failedCount: failedItems.length,
-    openShiftCount: openShifts.length
+    openShiftCount: openShifts.length,
+    openTabCount: openTabs.length,
+    unfinalizedCashupCount: unfinalizedCashups.length
   };
 }
 
 function getLegacyPosDeviceId() {
   try {
     const source = app?.getPath?.('userData') || 'boroko-legacy-pos';
-    return createHash('sha256').update(String(source)).digest('hex').slice(0, 24);
+    return `legacy-${createHash('sha256').update(String(source)).digest('hex').slice(0, 24)}`;
   } catch {
     return 'legacy-pos-unknown';
+  }
+}
+
+function getCachedLegacyCatalog(outletId = null) {
+  const rows = readCache('pos-catalog-snapshots');
+  return (Array.isArray(rows) ? rows : []).find((row) =>
+    row?.success === true &&
+    row?.snapshot_id &&
+    (row?.outlet_id || null) === (outletId || null)
+  ) || null;
+}
+
+async function getActiveLegacyCatalog(outletId = null) {
+  if (!state.isOnline || !state.supabase) {
+    const cached = getCachedLegacyCatalog(outletId);
+    if (cached) return cached;
+    throw new Error('No catalog snapshot is available offline. Connect and publish the POS catalog first.');
+  }
+  const { data, error } = await state.supabase.rpc('get_active_pos_catalog_snapshot', {
+    p_lodge_id: requireLodgeContext(),
+    p_outlet_id: outletId || null
+  });
+  if (error) throw new Error(error.message);
+  if (!data?.success) throw new Error(data?.error || 'No active POS catalog is available.');
+  const rows = readCache('pos-catalog-snapshots');
+  writeCache('pos-catalog-snapshots', [
+    data,
+    ...(Array.isArray(rows) ? rows : []).filter((row) =>
+      (row?.outlet_id || null) !== (outletId || null)
+    )
+  ]);
+  return data;
+}
+
+async function publishLegacyCatalog(outletId = null) {
+  if (!state.isOnline || !state.supabase) {
+    throw new Error('Catalog publication requires an internet connection.');
+  }
+  const { data, error } = await state.supabase.rpc('publish_pos_catalog_snapshot', {
+    p_lodge_id: requireLodgeContext(),
+    p_outlet_id: outletId || null
+  });
+  if (error) throw new Error(error.message);
+  if (!data?.success) throw new Error(data?.error || 'Could not publish the POS catalog.');
+  return getActiveLegacyCatalog(outletId);
+}
+
+async function publishAllLegacyCatalogs() {
+  const targets = new Set([null]);
+  for (const outlet of readCache('outlets') || []) {
+    if (outlet?.id) targets.add(outlet.id);
+  }
+  for (const outletId of targets) {
+    await publishLegacyCatalog(outletId);
   }
 }
 
@@ -1194,6 +1470,7 @@ function registerIpcHandlers() {
         const { data: result, error } = await state.supabase.rpc('create_pos_menu_item', { payload });
         if (error) throw new Error(error.message);
         if (!result?.success) throw new Error(result?.error || 'Could not create POS menu item');
+        await publishLegacyCatalog(payload.outlet_id || null);
         return { success: true, id: result?.id };
       } catch (rpcError) {
         if (isNetworkError(rpcError)) {
@@ -1221,6 +1498,7 @@ function registerIpcHandlers() {
         const { data: result, error } = await state.supabase.rpc('update_pos_menu_item', rpcArgs);
         if (error) throw new Error(error.message);
         if (!result?.success) throw new Error(result?.error || 'Could not update POS menu item');
+        await publishAllLegacyCatalogs();
         return { success: true };
       } catch (rpcError) {
         if (isNetworkError(rpcError)) {
@@ -1246,6 +1524,7 @@ function registerIpcHandlers() {
         const { data: result, error } = await state.supabase.rpc('delete_pos_menu_item', rpcArgs);
         if (error) throw new Error(error.message);
         if (!result?.success) throw new Error(result?.error || 'Could not delete POS menu item');
+        await publishAllLegacyCatalogs();
         return { success: true };
       } catch (rpcError) {
         if (isNetworkError(rpcError)) {
@@ -1272,6 +1551,7 @@ function registerIpcHandlers() {
         const { data: result, error } = await state.supabase.rpc('set_bar_pos_pack_template', { payload });
         if (error) throw new Error(error.message);
         if (!result?.success) throw new Error(result?.error || 'Could not update Bar POS template');
+        await publishAllLegacyCatalogs();
         return { success: true };
       } catch (rpcError) {
         if (isNetworkError(rpcError)) {
@@ -1285,9 +1565,7 @@ function registerIpcHandlers() {
 
   function queueOfflineRpcMutation(functionName, rpcArgs, entityType, entityId, { dependsOn = null, localPatch = null, cacheName = null } = {}) {
     const queueItem = createQueueItem({ functionName, payload: rpcArgs, entityType, entityId, dependsOn });
-    const queue = readSyncQueue();
-    queue.push(queueItem);
-    writeSyncQueue(queue);
+    enqueueLegacyQueueItem(queueItem);
     if (cacheName && localPatch) {
       const cached = readCache(cacheName);
       if (localPatch._insert) {
@@ -1304,38 +1582,52 @@ function registerIpcHandlers() {
   // ── Orders (with automatic offline queue on network error) ─────────────────
   ipcMain.handle('pos:create-order', async (_event, data) => {
     const lodgeId = requireLodgeContext();
-    const payload = buildCreatePosOrderPayload({
+    if (!data.shift_id) throw new Error('Open a shift before creating an order.');
+    const catalog = state.isOnline
+      ? await getActiveLegacyCatalog(data.outlet_id || null)
+      : getCachedLegacyCatalog(data.outlet_id || null);
+    if (!catalog?.snapshot_id) {
+      throw new Error('No catalog snapshot is available for this outlet. Connect and publish the catalog first.');
+    }
+    const payload = buildCreatePosOrderPayloadV3({
       ...data,
       lodge_id: lodgeId,
+      catalog_snapshot_id: catalog.snapshot_id,
+      source_device_id: getLegacyPosDeviceId(),
       cashier_id: data.cashier_id || state.currentUser?.id,
       cashier_name: data.cashier_name || state.currentUser?.name
     });
+    const estimates = buildPosTotals(data.items || [], data);
 
     // Offline folio guard: block if no cached booking
     if (payload.payment_method === 'folio' && !payload.booking_id && !state.isOnline) {
       throw new Error('Room folio charge requires an active booking. Go online first or ensure the booking is cached locally.');
     }
 
-    if (!state.isOnline || !state.supabase) {
+    const queueProvisionalOrder = () => {
       const queueItem = createQueueItem({
-        functionName: 'create_pos_order',
+        functionName: 'create_pos_order_v3',
         payload: { payload },
         entityType: 'pos_order',
         entityId: payload.id
       });
-      const queue = readSyncQueue();
-      queue.push(queueItem);
-      writeSyncQueue(queue);
+      enqueueLegacyQueueItem(queueItem);
 
       const orderRow = {
         ...payload,
-        status: 'completed',
-        created_at: payload.created_at_client,
+        total: estimates.total,
+        gross_total: estimates.gross_total,
+        discount_total: estimates.discount_total,
+        tax_rate: estimates.tax_rate,
+        tax_total: estimates.tax_total,
+        tip_total: estimates.tip_total,
+        status: 'pending',
+        created_at: payload.client_created_at,
         _pending_sync: true,
         _sync_state: 'pending',
         _idempotency_key: payload.create_idempotency_key,
         _sync_created_offline: true,
-        pos_order_items: payload.items.map((item, idx) => ({
+        pos_order_items: (data.items || []).map((item) => ({
           id: randomUUID(), order_id: payload.id, lodge_id: lodgeId, ...item,
           subtotal: Number(item.quantity || 0) * Number(item.unit_price || 0)
         }))
@@ -1343,51 +1635,27 @@ function registerIpcHandlers() {
       const cachedOrders = readCache('pos-orders');
       cachedOrders.unshift(orderRow);
       writeCache('pos-orders', cachedOrders);
-      applyOfflinePosInventoryReservation(payload.items);
+      applyOfflinePosInventoryReservation(data.items || []);
       appendPrepTickets(orderRow, orderRow.pos_order_items);
-      return { success: true, id: payload.id, offline: true };
+      return { success: true, id: payload.id, offline: true, provisional: true };
+    };
+
+    if (!state.isOnline || !state.supabase) {
+      return queueProvisionalOrder();
     }
 
     // Online path
     try {
-      const { data: result, error } = await state.supabase.rpc('create_pos_order', { payload });
+      const { data: result, error } = await state.supabase.rpc('create_pos_order_v3', { payload });
       if (error) throw new Error(error.message);
       if (!result?.success) throw new Error(result?.error || 'Order failed');
-      appendPrepTickets({ id: result.id || payload.id, ...payload }, payload.items);
+      appendPrepTickets({ id: result.id || payload.id, ...payload }, result.items || data.items || []);
       await refreshRemoteOrders();
-      return { success: true, id: result.id || payload.id };
+      return result;
     } catch (rpcError) {
       // Network error → queue automatically with same payload
       if (isNetworkError(rpcError)) {
-        const queueItem = createQueueItem({
-          functionName: 'create_pos_order',
-          payload: { payload },
-          entityType: 'pos_order',
-          entityId: payload.id
-        });
-        const queue = readSyncQueue();
-        queue.push(queueItem);
-        writeSyncQueue(queue);
-
-        const orderRow = {
-          ...payload,
-          status: 'completed',
-          created_at: payload.created_at_client,
-          _pending_sync: true,
-          _sync_state: 'pending',
-          _idempotency_key: payload.create_idempotency_key,
-          _sync_created_offline: true,
-          pos_order_items: payload.items.map((item, idx) => ({
-            id: randomUUID(), order_id: payload.id, lodge_id: lodgeId, ...item,
-            subtotal: Number(item.quantity || 0) * Number(item.unit_price || 0)
-          }))
-        };
-        const cachedOrders = readCache('pos-orders');
-        cachedOrders.unshift(orderRow);
-        writeCache('pos-orders', cachedOrders);
-        applyOfflinePosInventoryReservation(payload.items);
-        appendPrepTickets(orderRow, orderRow.pos_order_items);
-        return { success: true, id: payload.id, offline: true, queued: true };
+        return { ...queueProvisionalOrder(), queued: true };
       }
       // Business error → do not queue, propagate
       throw rpcError;
@@ -1414,7 +1682,11 @@ function registerIpcHandlers() {
 
   ipcMain.handle('pos:void-order', async (_event, payload) => {
     const lodgeId = requireLodgeContext();
-    const voidPayload = buildVoidPayload({ ...payload, lodge_id: lodgeId });
+    const voidPayload = buildVoidPayload({
+      ...payload,
+      lodge_id: lodgeId,
+      device_id: getLegacyPosDeviceId()
+    });
 
     // Online path
     if (state.isOnline && state.supabase) {
@@ -1423,7 +1695,7 @@ function registerIpcHandlers() {
         if (error) throw new Error(error.message);
         if (!result?.success) throw new Error(result?.error || 'Void failed');
         await refreshRemoteOrders();
-        return { success: true, override_log_id: voidPayload.override_log_id };
+        return result;
       } catch (rpcError) {
         if (isNetworkError(rpcError)) {
           return queueOfflineVoid(voidPayload, lodgeId);
@@ -1443,42 +1715,28 @@ function registerIpcHandlers() {
     const isOrderPending = cachedOrder._pending_sync || cachedOrder._sync_created_offline;
     const queueItem = createQueueItem({
       functionName: 'approve_pos_void_with_pin',
-      payload: { payload: { ...voidPayload, items: (cachedOrder.pos_order_items || []).map((item) => ({
-        menu_item_id: item.menu_item_id || null,
-        inventory_item_id: item.inventory_item_id || null,
-        depletion_qty: item.depletion_qty || 1,
-        item_name: item.item_name,
-        quantity: item.quantity,
-        unit_price: item.unit_price
-      }))} },
+      payload: { payload: voidPayload },
       entityType: 'pos_void',
       entityId: voidPayload.order_id,
       dependsOn: isOrderPending ? `pos_order-${voidPayload.order_id}` : null
     });
-    const queue = readSyncQueue();
-    queue.push(queueItem);
-    writeSyncQueue(queue);
-
-    const orderItems = cachedOrder.pos_order_items || [];
-    restoreOfflinePosInventoryReservation(orderItems);
+    enqueueLegacyQueueItem(queueItem);
 
     patchLocalOrderState(voidPayload.order_id, {
-      status: 'voided',
       _pending_sync: true,
       _sync_state: 'pending',
       _pending_void: true,
-      _void_reason: voidPayload.reason,
-      _void_approved_by: voidPayload.approved_by
+      _void_reason: voidPayload.reason
     });
 
-    return { success: true, offline: true, override_log_id: voidPayload.override_log_id };
+    return { success: true, offline: true, provisional: true, override_log_id: voidPayload.override_log_id };
   }
 
   ipcMain.handle('pos:partial-return', async (_event, payload) => {
     const lodgeId = requireLodgeContext();
-    const { order_id, pin, reason, lines, cashier_user_id, cashier_name, outlet_id } = payload || {};
-    if (!order_id || !pin || !Array.isArray(lines) || lines.length === 0) {
-      throw new Error('order_id, pin, and at least one line are required for partial return.');
+    const { order_id, pin, reason, lines, outlet_id, shift_id } = payload || {};
+    if (!order_id || !pin || !shift_id || !String(reason || '').trim() || !Array.isArray(lines) || lines.length === 0) {
+      throw new Error('Order, open shift, PIN, reason, and at least one line are required for partial return.');
     }
 
     const cachedOrders = readCache('pos-orders');
@@ -1489,28 +1747,31 @@ function registerIpcHandlers() {
     const returnId = randomUUID();
     const returnIdempotencyKey = `pos-return:${returnId}`;
 
-    const rpcPayload = {
+    for (const line of lines) {
+      const parentItem = (parentOrder.pos_order_items || []).find((item) => item.id === (line.line_id || line.id));
+      const quantity = Number(line.quantity || 0);
+      if (!parentItem || !Number.isInteger(quantity) || quantity <= 0 || quantity > Number(parentItem.quantity || 0)) {
+        throw new Error('Return quantities must be positive whole numbers and cannot exceed the sold quantity.');
+      }
+    }
+
+    const rpcPayload = buildReturnPayloadV3({
       order_id,
       lodge_id: lodgeId,
       return_order_id: returnId,
+      shift_id,
       return_idempotency_key: returnIdempotencyKey,
       pin,
-      reason: reason || `Partial return for order ${order_id}`,
-      requested_by: cashier_user_id || state.currentUser?.id,
-      cashier_id: cashier_user_id || state.currentUser?.id,
-      cashier_name: cashier_name || state.currentUser?.name,
+      device_id: getLegacyPosDeviceId(),
+      reason,
       outlet_id: outlet_id || parentOrder.outlet_id || null,
       override_log_id: randomUUID(),
-      created_at: new Date().toISOString(),
-      lines: lines.map((line) => ({
-        line_id: line.line_id || line.id || null,
-        quantity: Math.abs(Number(line.quantity) || 0)
-      }))
-    };
+      lines
+    });
 
     if (state.isOnline && state.supabase) {
       try {
-        const { data: result, error } = await state.supabase.rpc('create_pos_partial_return_with_pin', { payload: rpcPayload });
+        const { data: result, error } = await state.supabase.rpc('create_pos_return_v3', { payload: rpcPayload });
         if (error) throw new Error(error.message);
         if (!result?.success) throw new Error(result?.error || 'Return failed');
         await refreshRemoteOrders();
@@ -1528,20 +1789,18 @@ function registerIpcHandlers() {
   function queueOfflineReturn(rpcPayload, lines, lodgeId, parentOrderId, isParentPending, parentOrder) {
     const returnId = rpcPayload.return_order_id;
     const queueItem = createQueueItem({
-      functionName: 'create_pos_partial_return_with_pin',
+      functionName: 'create_pos_return_v3',
       payload: { payload: rpcPayload },
       entityType: 'pos_return',
       entityId: returnId,
       dependsOn: isParentPending ? `pos_order-${parentOrderId}` : null
     });
-    const queue = readSyncQueue();
-    queue.push(queueItem);
-    writeSyncQueue(queue);
+    enqueueLegacyQueueItem(queueItem);
 
     const returnItems = lines.map((line) => {
       const parentItem = (parentOrder.pos_order_items || []).find((pi) => pi.id === line.line_id || pi.menu_item_id === line.menu_item_id);
       if (!parentItem) return null;
-      const qty = Math.min(Math.abs(Number(line.quantity) || 0), Number(parentItem.quantity) || 0);
+      const qty = Math.abs(Number(line.quantity) || 0);
       if (qty <= 0) return null;
       return {
         menu_item_id: parentItem.menu_item_id || null,
@@ -1574,12 +1833,14 @@ function registerIpcHandlers() {
       room_id: parentOrder.room_id || null,
       booking_id: parentOrder.booking_id || null,
       notes: rpcPayload.reason,
-      cashier_id: rpcPayload.cashier_id,
-      cashier_name: rpcPayload.cashier_name,
-      status: 'completed',
-      created_at: rpcPayload.created_at,
+      cashier_id: state.currentUser?.id || null,
+      cashier_name: state.currentUser?.name || null,
+      shift_id: rpcPayload.shift_id,
+      status: 'pending',
+      created_at: new Date().toISOString(),
       _pending_sync: true,
       _sync_state: 'pending',
+      _pending_return: true,
       _idempotency_key: rpcPayload.return_idempotency_key,
       _sync_created_offline: true,
       pos_order_items: returnItemsCached
@@ -1588,18 +1849,27 @@ function registerIpcHandlers() {
     cachedOrders.unshift(returnRow);
     writeCache('pos-orders', cachedOrders);
 
-    restoreOfflinePosInventoryReservation(returnItems.map((item) => ({
-      ...item,
-      quantity: Math.abs(item.quantity),
-      item_name: item.item_name.replace(/^Return: /, '')
-    })));
-
-    return { success: true, id: returnId, offline: true };
+    return { success: true, id: returnId, offline: true, provisional: true };
   }
 
   // ── Cash-Up ────────────────────────────────────────────────────────────────
-  ipcMain.handle('pos:get-cashup-summary', async (_event, { date, outletId, openingFloat } = {}) => {
+  ipcMain.handle('pos:get-cashup-summary', async (_event, { date, outletId, openingFloat, shiftId } = {}) => {
     const lodgeId = requireLodgeContext();
+    if (state.isOnline && state.supabase && shiftId) {
+      const { data, error } = await state.supabase.rpc('get_pos_shift_cashup_preview_v2', {
+        p_shift_id: shiftId,
+        p_lodge_id: lodgeId
+      });
+      if (error) throw new Error(error.message);
+      if (!data?.success) throw new Error(data?.error || 'Could not load shift cash-up preview.');
+      return {
+        ...data,
+        orders_count: data.order_count || 0,
+        returns_total: data.returns || 0,
+        by_method: data.expected_by_method || {},
+        pending_count: 0
+      };
+    }
     const outletFilter = getUserOutletFilter();
     let orders = readCache('pos-orders');
     if (date) {
@@ -1619,6 +1889,7 @@ function registerIpcHandlers() {
 
   ipcMain.handle('pos:create-cashup', async (_event, payload) => {
     const lodgeId = requireLodgeContext();
+    if (!payload.shift_id) throw new Error('An open shift is required for cash-up.');
     const outletFilter = getUserOutletFilter();
     const date = payload.date || new Date().toISOString().slice(0, 10);
 
@@ -1644,10 +1915,19 @@ function registerIpcHandlers() {
       const counted = Number(countedByMethod[method]) || 0;
       varianceByMethod[method] = normalizeMoney(counted - expected);
     }
+    varianceByMethod.cash = cashOverShort;
 
-    const cashupPayload = buildCashupPayload({
-      id: payload.id || randomUUID(),
+    const cashupPayload = buildFinalizeCashupPayloadV2({
+      cashup_id: payload.id || randomUUID(),
       lodge_id: lodgeId,
+      shift_id: payload.shift_id,
+      counted_by_method: countedByMethod,
+      notes: payload.notes || null
+    });
+    const localCashup = {
+      id: cashupPayload.cashup_id,
+      lodge_id: lodgeId,
+      shift_id: payload.shift_id,
       date,
       outlet_id: payload.outlet_id || null,
       opening_float: openingFloat,
@@ -1666,48 +1946,55 @@ function registerIpcHandlers() {
       created_by: state.currentUser?.id,
       created_by_name: state.currentUser?.name,
       cashier_id: payload.cashier_id || state.currentUser?.id,
-      cashier_name: payload.cashier_name || state.currentUser?.name
-    });
+      cashier_name: payload.cashier_name || state.currentUser?.name,
+      created_at: new Date().toISOString()
+    };
 
     if (!state.isOnline || !state.supabase) {
       const queueItem = createQueueItem({
-        functionName: 'upsert_pos_cashup',
+        functionName: 'finalize_pos_shift_cashup_v2',
         payload: { payload: cashupPayload },
         entityType: 'pos_cashup',
-        entityId: cashupPayload.id
+        entityId: cashupPayload.cashup_id
       });
-      const queue = readSyncQueue();
-      queue.push(queueItem);
-      writeSyncQueue(queue);
+      enqueueLegacyQueueItem(queueItem);
       const cashups = readCache('pos-cashups');
-      cashups.unshift({ ...cashupPayload, _pending_sync: true, _sync_state: 'pending' });
+      cashups.unshift({ ...localCashup, _pending_sync: true, _sync_state: 'pending' });
       writeCache('pos-cashups', cashups);
-      return { success: true, id: cashupPayload.id, offline: true };
+      return { success: true, id: cashupPayload.cashup_id, offline: true, provisional: true };
     }
 
     try {
-      const { data: result, error } = await state.supabase.rpc('upsert_pos_cashup', { payload: cashupPayload });
+      const { data: result, error } = await state.supabase.rpc('finalize_pos_shift_cashup_v2', { payload: cashupPayload });
       if (error) throw new Error(error.message);
       if (!result?.success) throw new Error(result?.error || 'Cash-up failed');
       const cashups = readCache('pos-cashups');
-      cashups.unshift(cashupPayload);
+      cashups.unshift({
+        ...localCashup,
+        id: result.cashup_id || cashupPayload.cashup_id,
+        expected_cash_drawer: Number(result.expected_cash_drawer || 0),
+        expected_by_method: result.expected_by_method || {},
+        counted_by_method: result.counted_by_method || countedByMethod,
+        variance_by_method: result.variance_by_method || {},
+        _pending_sync: false,
+        _sync_state: 'synced'
+      });
       writeCache('pos-cashups', cashups);
-      return { success: true, id: cashupPayload.id };
+      await refreshRemoteOrders();
+      return result;
     } catch (rpcError) {
       if (isNetworkError(rpcError)) {
         const queueItem = createQueueItem({
-          functionName: 'upsert_pos_cashup',
+          functionName: 'finalize_pos_shift_cashup_v2',
           payload: { payload: cashupPayload },
           entityType: 'pos_cashup',
-          entityId: cashupPayload.id
+          entityId: cashupPayload.cashup_id
         });
-        const queue = readSyncQueue();
-        queue.push(queueItem);
-        writeSyncQueue(queue);
+        enqueueLegacyQueueItem(queueItem);
         const cashups = readCache('pos-cashups');
-        cashups.unshift({ ...cashupPayload, _pending_sync: true, _sync_state: 'pending' });
+        cashups.unshift({ ...localCashup, _pending_sync: true, _sync_state: 'pending' });
         writeCache('pos-cashups', cashups);
-        return { success: true, id: cashupPayload.id, offline: true };
+        return { success: true, id: cashupPayload.cashup_id, offline: true, provisional: true };
       }
       throw rpcError;
     }
@@ -1781,26 +2068,32 @@ function registerIpcHandlers() {
   ipcMain.handle('pos:get-staff', async () => {
     if (state.isOnline && state.supabase && hasLodgeContext()) {
       const lodgeId = requireLodgeContext();
-      const { data, error } = await state.supabase.from('users')
-        .select('id, name, email, role, pin_hash, allowed_outlet_ids').eq('lodge_id', lodgeId).eq('status', 'active');
+      const { data, error } = await state.supabase.rpc('pos_get_safe_staff', {
+        p_lodge_id: lodgeId
+      });
       if (error) throw new Error(error.message);
-      writeCache('users', data || []);
-      return data || [];
+      const safe = Array.isArray(data) ? data : [];
+      writeCache('pos-staff', safe);
+      return safe;
     }
-    return readCache('users');
+    const cached = readCache('pos-staff');
+    return Array.isArray(cached) ? cached : [];
   });
 
   ipcMain.handle('pos:get-approver-candidates', async () => {
-    const cachedCandidates = () => readCache('users')
-      .filter((u) => u?.pin_hash)
+    const cachedCandidates = () => (Array.isArray(readCache('pos-staff')) ? readCache('pos-staff') : [])
+      .filter((u) => u?.has_pin)
       .filter((u) => ['supervisor', 'manager', 'admin', 'super_admin'].includes(String(u.role || '').toLowerCase()));
     if (!state.isOnline || !hasLodgeContext()) return cachedCandidates();
-    const { data, error } = await state.supabase.from('users')
-      .select('id, name, role, pin_hash, allowed_outlet_ids')
-      .eq('lodge_id', requireLodgeContext()).not('pin_hash', 'is', null)
-      .in('role', ['supervisor', 'manager', 'admin', 'super_admin']);
+    const { data, error } = await state.supabase.rpc('pos_get_safe_staff', {
+      p_lodge_id: requireLodgeContext()
+    });
     if (error) return cachedCandidates();
-    return (data || []).filter((u) => u?.pin_hash);
+    const rows = Array.isArray(data) ? data : [];
+    writeCache('pos-staff', rows);
+    return rows
+      .filter((u) => u?.has_pin)
+      .filter((u) => ['supervisor', 'manager', 'admin', 'super_admin'].includes(String(u.role || '').toLowerCase()));
   });
 
   // ── Inventory ──────────────────────────────────────────────────────────────
@@ -2171,19 +2464,16 @@ function registerIpcHandlers() {
       entityId: shiftId,
       dependsOn: status === 'closed' ? `pos_shift_open-${shiftId}` : null
     });
-    const queue = readSyncQueue();
-    queue.push(queueItem);
-    writeSyncQueue(queue);
+    enqueueLegacyQueueItem(queueItem);
     const shifts = readCache('pos-shifts');
     if (status === 'closed') {
       const idx = shifts.findIndex((s) => s.id === shiftId);
       if (idx >= 0) {
         shifts[idx] = {
           ...shifts[idx],
-          status: 'closed',
           closing_cash: payload.closing_cash,
-          closed_at: new Date().toISOString(),
           notes: payload.notes || shifts[idx].notes,
+          _pending_close: true,
           _pending_sync: true,
           _sync_state: 'pending'
         };
@@ -2214,7 +2504,7 @@ function registerIpcHandlers() {
   ipcMain.handle('pos:get-modifier-groups', async () => {
     if (state.isOnline && state.supabase && hasLodgeContext()) {
       const { data, error } = await state.supabase.from('pos_modifier_groups')
-        .select('id, lodge_id, outlet_id, name, options, required, max_select, active, updated_at')
+        .select('id, lodge_id, name, applies_to_categories, options, active, updated_at')
         .eq('lodge_id', requireLodgeContext()).eq('active', true).order('updated_at', { ascending: false }).limit(state.lowResource.configLimit);
       if (!error && data) {
         writeCache('pos-modifier-groups', data);
@@ -2233,6 +2523,8 @@ function registerIpcHandlers() {
         });
         if (error) throw new Error(error.message);
         if (!result?.success) throw new Error(result?.error || 'Could not save modifier groups');
+        writeCache('pos-modifier-groups', safeGroups);
+        await publishAllLegacyCatalogs();
       } catch (rpcError) {
         if (isNetworkError(rpcError)) {
           queueOfflineRpcMutation('upsert_pos_modifier_groups', { payload: { lodge_id: lodgeId, groups: safeGroups } }, 'pos_config', 'modifier-groups', {
@@ -2254,8 +2546,8 @@ function registerIpcHandlers() {
   ipcMain.handle('pos:get-promotions', async () => {
     if (state.isOnline && state.supabase && hasLodgeContext()) {
       const { data, error } = await state.supabase.from('pos_promotions')
-        .select('id, lodge_id, outlet_id, name, discount_type, discount_value, applies_to_category, starts_at, ends_at, enabled, updated_at')
-        .eq('lodge_id', requireLodgeContext()).eq('enabled', true).order('updated_at', { ascending: false }).limit(state.lowResource.configLimit);
+        .select('id, lodge_id, name, discount_type, discount_value, applies_to_category, active, updated_at')
+        .eq('lodge_id', requireLodgeContext()).eq('active', true).order('updated_at', { ascending: false }).limit(state.lowResource.configLimit);
       if (!error && data) {
         writeCache('pos-promotions', data);
         return data;
@@ -2273,6 +2565,8 @@ function registerIpcHandlers() {
         });
         if (error) throw new Error(error.message);
         if (!result?.success) throw new Error(result?.error || 'Could not save promotions');
+        writeCache('pos-promotions', safePromos);
+        await publishAllLegacyCatalogs();
       } catch (rpcError) {
         if (isNetworkError(rpcError)) {
           queueOfflineRpcMutation('upsert_pos_promotions', { payload: { lodge_id: lodgeId, promotions: safePromos } }, 'pos_config', 'promotions', {
@@ -2445,14 +2739,17 @@ function registerIpcHandlers() {
         if (!isQueueItemReady(item, queue)) continue;
 
         queue[i] = markItemSyncing(item);
+        journalQueueState(item, { status: 'syncing', updatedAt: queue[i].updatedAt });
         writeSyncQueue(queue);
 
         try {
-          const { data: result, error } = await state.supabase.rpc(item.functionName, item.payload);
+          const replayPayload = resolveLegacyQueuePayload(item.payload);
+          const { data: result, error } = await state.supabase.rpc(item.functionName, replayPayload);
           if (error) throw new Error(error.message);
           if (result?.success === false && result?.error) throw new Error(result.error);
 
           queue[i] = markItemSynced(item);
+          journalQueueState(item, { status: 'synced', updatedAt: queue[i].updatedAt });
           synced++;
 
           patchLocalCacheState(item.entityType, item.entityId, {
@@ -2467,6 +2764,12 @@ function registerIpcHandlers() {
           } else {
             queue[i] = { ...markItemFailed(item, err.message), status: 'manual_review_required' };
           }
+          journalQueueState(item, {
+            status: queue[i].status,
+            attempts: queue[i].attempts,
+            lastError: queue[i].lastError,
+            updatedAt: queue[i].updatedAt
+          });
           failed++;
 
           patchLocalCacheState(item.entityType, item.entityId, {
@@ -2478,6 +2781,7 @@ function registerIpcHandlers() {
       }
 
       if (synced > 0) await refreshRemoteOrders();
+      refreshLegacyInventoryProjection();
       await publishLegacyPosDeviceHealth().catch(() => {});
       return { synced, failed };
     } finally {
@@ -2507,6 +2811,11 @@ function registerIpcHandlers() {
   ipcMain.handle('pos:get-user-pos-access', () => ({ outletFilter: getUserOutletFilter() }));
   ipcMain.handle('pos:get-app-version', () => app.getVersion());
   ipcMain.handle('pos:get-low-resource-config', () => state.lowResource);
+  ipcMain.handle('pos:get-mesh-status', () => ({ ...state.meshStatus }));
+  ipcMain.handle('pos:mesh-sync-now', async () => {
+    await legacyMeshController?.syncNow?.();
+    return { ...state.meshStatus };
+  });
 
   ipcMain.handle('pos:update-get-state', () => ({
     ...updateState,
@@ -2701,10 +3010,21 @@ function isMissingInventoryCompatibilityColumnError(error) {
 app.commandLine.appendSwitch('disable-gpu');
 app.commandLine.appendSwitch('js-flags', '--max-old-space-size=128');
 
-// ── Certificate fix for legacy Windows (POSReady 7) ─────────────────────────
-// POSReady 7 has an outdated root certificate store that can fail modern GitHub
-// release certificates. Keep the compatibility exception scoped to GitHub
-// update hosts only; all other app traffic keeps normal certificate checks.
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();
+  });
+}
+
+// ── GitHub updater certificate compatibility for Windows POSReady 7 ─────────
+// Some supported legacy terminals cannot validate GitHub's modern certificate
+// chain. Keep this exception limited to the known GitHub release hosts used by
+// electron-updater. Supabase and every other connection retain normal checks.
 const GITHUB_UPDATE_CERT_HOSTS = new Set([
   'github.com',
   'api.github.com',
@@ -2727,17 +3047,20 @@ app.on('certificate-error', (event, webContents, url, error, certificate, callba
   if (isGitHubUpdateCertificateHost(url)) {
     event.preventDefault();
     callback(true);
-  } else {
-    callback(false);
+    return;
   }
+  callback(false);
 });
 
 // ── App Lifecycle ─────────────────────────────────────────────────────────────
 app.whenReady().then(() => {
+  if (!hasSingleInstanceLock) return;
   session.defaultSession.setCertificateVerifyProc((request, callback) => {
     callback(isGitHubUpdateCertificateHost(request.hostname || request.url) ? 0 : -3);
   });
   state.cacheDir = getCacheDir();
+  recoverFinancialQueue();
+  startLegacyMesh();
   state.localConfig = readLocalConfig();
   state.runtimeConfig = readRuntimeConfig();
   state.lowResource = getLowResourceConfig(state.localConfig?.lowResource || {});
@@ -2756,4 +3079,5 @@ app.whenReady().then(() => {
   });
 });
 
+app.on('before-quit', () => legacyMeshController?.stop?.());
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });

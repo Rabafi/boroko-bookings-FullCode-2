@@ -83,7 +83,7 @@ export function validateIncomingRequest(method, path, headers, body, secret) {
 
   const now = Date.now();
   const drift = Math.abs(now - requestTime);
-  if (drift > 30000) { // 30 seconds tolerance (accommodates LAN clock drift)
+  if (drift > 30000) {
     return { isValid: false, error: `Timestamp drift exceeds tolerance. Drift: ${drift}ms` };
   }
 

@@ -322,6 +322,7 @@ export {
   createSupportTicket,
   getLodgeSupportTickets,
   getLodgeSupportTicketById,
+  markLodgeSupportTicketRead,
   updateLodgeSupportTicket,
   addLodgeSupportTicketMessage,
   updateSupportTicket,

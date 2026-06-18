@@ -2,8 +2,24 @@
 
 * { box-sizing: border-box; }
 
+html {
+  min-width: 320px;
+  min-height: 100%;
+  background: #0f1f19;
+  color-scheme: dark;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html.light-mode {
+  background: #f4efe7;
+  color-scheme: light;
+}
+
 body {
   margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  min-height: 100dvh;
   background:
     radial-gradient(circle at 12% 0%, rgba(23, 76, 58, 0.22), transparent 28%),
     radial-gradient(circle at 88% 12%, rgba(203, 126, 48, 0.14), transparent 24%),
@@ -26,7 +42,9 @@ body {
 }
 
 #root {
+  min-height: 100vh;
   min-height: 100svh;
+  min-height: 100dvh;
   display: flex;
   flex-direction: column;
 }
@@ -56,6 +74,7 @@ html.light-mode .bg-gray-950 { background-color: #f4efe7 !important; }
 html.light-mode .bg-gray-900 { background-color: #f8f4ed !important; }
 html.light-mode .bg-gray-800 { background-color: #ffffff !important; }
 html.light-mode .bg-gray-700 { background-color: #e8e0d4 !important; }
+html.light-mode .bg-gray-600 { background-color: #ddd3c6 !important; }
 
 /* Text */
 html.light-mode .text-white   { color: #163229 !important; }
@@ -69,7 +88,11 @@ html.light-mode .text-gray-500 { color: #6e857d !important; }
 html.light-mode .border-gray-600,
 html.light-mode .border-gray-700 { border-color: #d5cec4 !important; }
 html.light-mode .border-gray-800 { border-color: #e0d8ce !important; }
+html.light-mode .border-gray-900 { border-color: #e9e1d7 !important; }
 html.light-mode .border-white\/10 { border-color: rgba(22, 50, 41, 0.10) !important; }
+html.light-mode [class*="divide-gray-"] > :not(:last-child) {
+  border-color: #e0d8ce !important;
+}
 
 /* Bottom nav */
 html.light-mode nav.bg-gray-900 { background-color: #ffffff !important; border-color: #e0d8ce !important; }
@@ -231,7 +254,8 @@ html.light-mode [class*="text-white/"] {
 
 html.light-mode input::placeholder,
 html.light-mode textarea::placeholder {
-  color: #94a3b8 !important;
+  color: #71837b !important;
+  opacity: 1;
 }
 
 html.light-mode .pwa-page-shell > * > .bg-gray-900:first-child {
@@ -251,6 +275,8 @@ html.light-mode .shadow-2xl {
 .pwa-bottom-nav {
   min-height: calc(4.55rem + env(safe-area-inset-bottom));
   box-shadow: 0 -18px 50px rgba(0, 0, 0, 0.26);
+  background-color: rgba(17, 24, 39, 0.96);
+  -webkit-backdrop-filter: blur(18px);
   backdrop-filter: blur(18px);
 }
 
@@ -330,6 +356,26 @@ html.light-mode textarea {
   background-color: #ffffff !important;
   color: #163229 !important;
   border-color: #d5cec4 !important;
+  caret-color: #174c3a;
+  -webkit-text-fill-color: #163229;
+  opacity: 1;
+}
+
+html.light-mode select option {
+  background: #ffffff;
+  color: #163229;
+}
+
+html.light-mode input:-webkit-autofill,
+html.light-mode input:-webkit-autofill:hover,
+html.light-mode input:-webkit-autofill:focus {
+  -webkit-box-shadow: 0 0 0 1000px #ffffff inset !important;
+  -webkit-text-fill-color: #163229 !important;
+  caret-color: #174c3a;
+}
+
+html.light-mode .focus\:ring-green-500:focus {
+  --tw-ring-color: rgba(23, 76, 58, 0.42) !important;
 }
 
 html.light-mode .pwa-card {
@@ -349,4 +395,54 @@ html.light-mode .pwa-pulse-card {
 html.light-mode .pwa-action-row {
   background: rgba(246, 242, 235, 0.86);
   border-color: rgba(22, 50, 41, 0.08);
+}
+
+@supports not (backdrop-filter: blur(1px)) {
+  .pwa-bottom-nav {
+    background-color: #111827;
+  }
+
+  html.light-mode .pwa-bottom-nav {
+    background-color: #ffffff !important;
+  }
+}
+
+@media (max-width: 360px) {
+  .pwa-page-shell > * {
+    padding-inline: 0.55rem;
+  }
+}
+
+@media (max-height: 700px) {
+  .pwa-login-shell {
+    justify-content: flex-start;
+    padding-top: max(3.25rem, calc(env(safe-area-inset-top) + 2.5rem)) !important;
+    padding-bottom: max(1rem, env(safe-area-inset-bottom)) !important;
+  }
+
+  .pwa-login-intro {
+    margin-bottom: 1rem;
+  }
+
+  .pwa-login-logo {
+    height: 5rem;
+    margin-bottom: 0.5rem;
+  }
+
+  .pwa-login-form {
+    gap: 0.65rem;
+  }
+
+  .pwa-login-footer {
+    margin-top: 1rem;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .pwa-bottom-nav,
+  .pwa-card,
+  .pwa-pulse-card {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
 }

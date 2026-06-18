@@ -164,7 +164,7 @@ async function run() {
   assert.match(database, /async function fetchInventoryItemsForRefresh\(\)[\s\S]*?from\('inventory_items'\)[\s\S]*?INVENTORY_ITEM_LEGACY_SELECT/)
   assert.match(database, /'inventory-items':\s*\(\)\s*=>\s*fetchInventoryItemsForRefresh\(\)/)
   assert.match(database, /'inventory-purchases':\s*\(\)\s*=>\s*(state\.)?supabase[\s\S]*?from\('inventory_purchases'\)/)
-  assert.match(database, /refreshCache\(\s*'inventory-items',\s*'inventory-purchases'\s*\)\.catch\(\(\) => \{\}\)/)
+  assert.match(database, /refreshCache\(\s*'inventory-items',\s*'inventory-purchases'\s*\)[\s\S]{0,120}\.catch\(\(\) => refreshOfflinePosInventoryProjection\(\)\)/)
   assert.match(database, /async function _getInventoryItems\(\)\s*\{[\s\S]*?if \(state\.isOnline\)/)
   assert.match(database, /export function getInventoryItems\(\)\s*\{[\s\S]*?dedupePromise\('getInventoryItems', _getInventoryItems\)/)
   assert.match(database, /getInventoryItems received empty live result; using cached inventory items instead/)
@@ -954,6 +954,24 @@ async function run() {
   // ── Notification idempotency index migration ──
   const idempMig = await read('supabase/migrations/20260615100000_notification_idempotency_index.sql')
   assert.match(idempMig, /idx_notification_events_idempotent/)
+
+  // ── Room maintenance is atomic and visible across desktop and PWA ──
+  const roomMaintenanceSql = await read('supabase/migrations/20260618190000_atomic_room_maintenance_flow.sql')
+  const roomsDomain = await read('src/main/domains/rooms.js')
+  const maintenanceFlowDomain = await read('src/main/domains/maintenance.js')
+  const desktopRooms = await read('src/renderer/src/components/Rooms.jsx')
+  const pwaRooms = await read('manager-pwa/src/pages/Rooms.jsx')
+  assert.match(roomMaintenanceSql, /create or replace function public\.create_room\(payload jsonb\)[\s\S]*insert into public\.maintenance_tickets/)
+  assert.match(roomMaintenanceSql, /app_reconcile_room_maintenance_status/)
+  assert.match(roomMaintenanceSql, /b\.status = 'checked_in'/)
+  assert.match(roomMaintenanceSql, /Resolve the open maintenance ticket before changing this room status/)
+  assert.match(roomMaintenanceSql, /Automatically created to repair a missing maintenance record/)
+  assert.match(roomsDomain, /maintenance_ticket_id:\s*maintenanceTicketId/)
+  assert.match(roomsDomain, /queueOperation\('rpc', 'create_room'/)
+  assert.doesNotMatch(maintenanceFlowDomain, /supabase\.rpc\('set_room_status'/)
+  assert.match(maintenanceFlowDomain, /queueOperation\('rpc', 'create_maintenance_ticket'/)
+  assert.match(desktopRooms, /Maintenance Issue/)
+  assert.match(pwaRooms, /room\.status === 'maintenance'/)
 
   console.log('production-guardrails: ok')
 }

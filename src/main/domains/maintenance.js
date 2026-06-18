@@ -1,5 +1,6 @@
+import { randomUUID } from 'crypto'
 import { state } from '../state.js'
-import { readCache, refreshCache, writeCache, dedupePromise } from './infrastructure.js'
+import { queueOperation, readCache, refreshCache, writeCache, dedupePromise } from './infrastructure.js'
 
 // ─── MAINTENANCE TICKETS ──────────────────────────────────────────────────────
 
@@ -92,21 +93,28 @@ export async function createMaintenanceTicket(data) {
     const { data: result, error } = await state.supabase.rpc('create_maintenance_ticket', { payload: ticket });
     if (error) throw new Error(error.message);
     if (!result?.success) throw new Error(result?.error || 'Could not create maintenance ticket');
-    // If a room is selected, mark it as maintenance
-    if (data.room_id) {
-      const { data: roomResult, error: roomError } = await state.supabase.rpc('set_room_status', {
-        p_id: data.room_id,
-        p_lodge_id: state.lodgeId,
-        p_status: 'maintenance'
-      });
-      if (roomError) throw new Error(roomError.message);
-      if (!roomResult?.success) throw new Error(roomResult?.error || 'Could not update room status');
-      await refreshCache('rooms');
-    }
+    await refreshCache('rooms');
     await refreshCache('maintenance');
     return { success: true, id: result?.id };
   }
-  return { success: false, error: 'Requires internet connection' };
+  const id = randomUUID();
+  const queuedTicket = {
+    ...ticket,
+    id,
+    created_at: new Date().toISOString(),
+    _pending_sync: true
+  };
+  writeCache('maintenance', [queuedTicket, ...readCache('maintenance')]);
+  if (data.room_id) {
+    const rooms = readCache('rooms');
+    const roomIndex = rooms.findIndex((room) => String(room.id) === String(data.room_id));
+    if (roomIndex >= 0) rooms[roomIndex] = { ...rooms[roomIndex], status: 'maintenance' };
+    writeCache('rooms', rooms);
+  }
+  queueOperation('rpc', 'create_maintenance_ticket', { payload: queuedTicket }, null, {
+    _queue_id: `maintenance-${id}`
+  });
+  return { success: true, id, queued: true };
 }
 
 export async function updateMaintenanceTicket(id, data) {
@@ -145,26 +153,7 @@ export async function resolveMaintenanceTicket(id, roomId) {
     });
     if (error) throw new Error(error.message);
     if (!result?.success) throw new Error(result?.error || 'Could not resolve maintenance ticket');
-    // Restore room status to available if no other open tickets
-    if (roomId) {
-      const { data: openTickets } = await state.supabase.
-      from('maintenance_tickets').
-      select('id').
-      eq('lodge_id', state.lodgeId).
-      eq('room_id', roomId).
-      neq('status', 'resolved').
-      neq('id', id);
-      if (!openTickets || openTickets.length === 0) {
-        const { data: roomResult, error: roomError } = await state.supabase.rpc('set_room_status', {
-          p_id: roomId,
-          p_lodge_id: state.lodgeId,
-          p_status: 'available'
-        });
-        if (roomError) throw new Error(roomError.message);
-        if (!roomResult?.success) throw new Error(roomResult?.error || 'Could not update room status');
-      }
-      await refreshCache('rooms');
-    }
+    if (roomId) await refreshCache('rooms');
     await refreshCache('maintenance');
     return { success: true };
   }

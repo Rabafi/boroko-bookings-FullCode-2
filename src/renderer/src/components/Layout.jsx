@@ -496,21 +496,60 @@ export default function Layout() {
 
     const isSeenVersion = (version) => getSeenVersions().includes(version)
 
+    const acknowledgeRequest = (request, latest) => {
+      const version = supportAlertId(request, latest)
+      rememberSeenVersions([version])
+      window.api.requests.markRead?.(request.id, 'front_desk', latest?.id || null).catch(() => {})
+    }
+
+    const announceRequest = (request, latest, variant) => {
+      const note = latest?.body || request.description || request.admin_notes || 'A new request arrived from the manager mobile app.'
+      pushInboxAlert(request, latest, variant)
+      window.api.app.notify({
+        title: variant === 'reply'
+          ? `New inbox reply from ${supportSenderName(latest)}`
+          : `Front desk request: ${request.title}`,
+        body: note,
+        sound: true,
+        flash: true
+      }).catch(() => {})
+      acknowledgeRequest(request, latest)
+    }
+
     const loadSupportRequests = async () => {
       try {
         const rows = await window.api.requests.getAll(12)
         if (cancelled) return
         const nextRows = Array.isArray(rows) ? rows : []
         if (!supportRequestsPrimedRef.current) {
+          const initialUnread = nextRows.filter((row) => {
+            if (String(row.category || '').trim().toLowerCase() !== 'front desk request') return false
+            const latest = latestSupportMessage(row)
+            return row.front_desk_has_unread === true &&
+              latest &&
+              supportMessageSide(latest) === 'manager'
+          })
+          initialUnread.slice(0, 3).forEach((request) => {
+            announceRequest(request, latestSupportMessage(request), 'new')
+          })
+          initialUnread.slice(3).forEach((request) => {
+            acknowledgeRequest(request, latestSupportMessage(request))
+          })
           supportRequestIdsRef.current = new Map(nextRows.map((row) => [row.id, row]))
           rememberSeenVersions(
             nextRows
               .filter((row) => String(row.category || '').trim().toLowerCase() === 'front desk request')
+              .filter((row) => typeof row.front_desk_has_unread !== 'boolean')
               .map((row) => {
                 const latest = latestSupportMessage(row)
                 return latest && supportMessageSide(latest) === 'manager' ? supportAlertId(row, latest) : null
               })
           )
+          if (initialUnread.length > 0) {
+            window.dispatchEvent(new CustomEvent('boroko:desktop-inbox-updated', {
+              detail: { requests: initialUnread }
+            }))
+          }
           writeJsonStorage(scanKey, new Date().toISOString())
           supportRequestsPrimedRef.current = true
           return
@@ -522,6 +561,9 @@ export default function Layout() {
           const latest = latestSupportMessage(row)
           if (!latest || supportMessageSide(latest) !== 'manager') return false
           const version = supportAlertId(row, latest)
+          if (typeof row.front_desk_has_unread === 'boolean') {
+            return row.front_desk_has_unread === true && !supportRequestIdsRef.current.has(row.id)
+          }
           return !supportRequestIdsRef.current.has(row.id) &&
             !isSeenVersion(version) &&
             isAfterStoredScan(latest.created_at || row.created_at, lastScanAt)
@@ -535,7 +577,11 @@ export default function Layout() {
           const previousLatest = latestSupportMessage(previous)
           if (!latest || supportMessageSide(latest) !== 'manager') return false
           const version = supportAlertId(row, latest)
-          return String(latest.id || latest.created_at || latest.body) !== String(previousLatest?.id || previousLatest?.created_at || previousLatest?.body || '') &&
+          const changed = String(latest.id || latest.created_at || latest.body) !== String(previousLatest?.id || previousLatest?.created_at || previousLatest?.body || '')
+          if (typeof row.front_desk_has_unread === 'boolean') {
+            return row.front_desk_has_unread === true && changed
+          }
+          return changed &&
             !isSeenVersion(version) &&
             isAfterStoredScan(latest.created_at || row.updated_at, lastScanAt)
         })
@@ -543,29 +589,20 @@ export default function Layout() {
         if (newFrontDeskRequests.length > 0) {
           newFrontDeskRequests.slice(0, 3).forEach((request) => {
             const latest = latestSupportMessage(request)
-            const note = latest?.body || request.description || request.admin_notes || 'A new request arrived from the manager mobile app.'
-            pushInboxAlert(request, latest, 'new')
-            window.api.app.notify({
-              title: `Front desk request: ${request.title}`,
-              body: note,
-              sound: true,
-              flash: true
-            }).catch(() => {})
-            rememberSeenVersions([supportAlertId(request, latest)])
+            announceRequest(request, latest, 'new')
+          })
+          newFrontDeskRequests.slice(3).forEach((request) => {
+            acknowledgeRequest(request, latestSupportMessage(request))
           })
         }
 
         if (updatedFrontDeskRequests.length > 0) {
           updatedFrontDeskRequests.slice(0, 3).forEach((request) => {
             const latest = latestSupportMessage(request)
-            pushInboxAlert(request, latest, 'reply')
-            window.api.app.notify({
-              title: `New inbox reply from ${supportSenderName(latest)}`,
-              body: latest?.body || request.title || 'The manager mobile app added a message.',
-              sound: true,
-              flash: true
-            }).catch(() => {})
-            rememberSeenVersions([supportAlertId(request, latest)])
+            announceRequest(request, latest, 'reply')
+          })
+          updatedFrontDeskRequests.slice(3).forEach((request) => {
+            acknowledgeRequest(request, latestSupportMessage(request))
           })
         }
 

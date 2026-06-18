@@ -105,7 +105,7 @@ function summarizeActivity(staffUser) {
   if (staffUser.last_activity_at) items.push(`Last activity ${formatDateTime(staffUser.last_activity_at)}`)
   if (staffUser.invite_sent_at && !staffUser.last_sign_in_at) items.push(`Invite sent ${formatDateTime(staffUser.invite_sent_at)}`)
   if (staffUser.password_updated_at) items.push(`Password updated ${formatDateTime(staffUser.password_updated_at)}`)
-  items.push(staffUser.pin_hash ? 'Approval PIN set' : 'No approval PIN')
+  items.push(staffUser.has_pin || staffUser.pin_hash ? 'Approval PIN set' : 'No approval PIN')
   return items
 }
 

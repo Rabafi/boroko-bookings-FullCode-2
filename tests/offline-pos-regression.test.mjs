@@ -52,11 +52,11 @@ async function run() {
   assert.match(database, /const mergedLiveRows = mergeRemotePosOrdersWithLocalState\(data \|\| \[\], cachedOrders\)/)
   assert.match(database, /return applyPosOrderFilters\(mergedLiveRows, startDate, endDate, outletFilter\)/)
 
-  // Replay payload must carry the inventory linkage needed to deduct stock on the server.
-  assert.match(database, /inventory_item_id: item\.inventory_item_id \|\| null/)
-  assert.match(database, /depletion_qty: normalizePositiveQty\(item\.depletion_qty, 1\)/)
-  assert.match(database, /inventory_item_id: i\.inventory_item_id \|\| null/)
-  assert.match(database, /depletion_qty: normalizePositiveQty\(i\.depletion_qty, 1\)/)
+  // Replay payload carries selections only; catalog snapshot resolves price and stock links.
+  assert.match(database, /modifier_option_ids: Array\.isArray\(item\.modifier_option_ids\)/)
+  assert.match(database, /modifier_option_ids: Array\.isArray\(i\.modifier_option_ids\)/)
+  assert.match(database, /catalog_snapshot_id: offlineCatalogSnapshotId/)
+  assert.match(database, /source_device_id: getDesktopPosDeviceId\(\)/)
   assert.match(database, /queueItemNeedsInventoryRefresh\(item\)[\s\S]*resolveQueuedPosInventoryLink/)
 
   // The reconnect crash fix must stay imported in the sync badge.

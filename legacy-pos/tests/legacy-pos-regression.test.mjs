@@ -225,7 +225,7 @@ test('Main process has no direct .from().insert() for forbidden tables', () => {
 
 test('All critical mutations use RPC', () => {
   const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
-  for (const rpc of ['create_pos_order', 'approve_pos_void_with_pin', 'upsert_pos_cashup', 'create_pos_menu_item', 'update_pos_menu_item', 'delete_pos_menu_item', 'set_bar_pos_pack_template', 'update_pos_prep_ticket_status', 'open_pos_shift_with_id', 'close_pos_shift_with_id', 'get_pos_shifts', 'create_pos_partial_return_with_pin']) {
+  for (const rpc of ['create_pos_order_v3', 'approve_pos_void_with_pin', 'finalize_pos_shift_cashup_v2', 'create_pos_menu_item', 'update_pos_menu_item', 'delete_pos_menu_item', 'set_bar_pos_pack_template', 'update_pos_prep_ticket_status', 'open_pos_shift_with_id', 'close_pos_shift_with_id', 'get_pos_shifts', 'create_pos_return_v3']) {
     assert.ok(content.includes(`.rpc('${rpc}'`), `${rpc} must use RPC`);
   }
 });
@@ -347,7 +347,7 @@ test('Main process print-receipt handler uses printEscPosReceipt', () => {
 
 test('Main imports printEscPosReceipt (not buildEscPosReceipt)', () => {
   const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
-  assert.ok(content.includes('printEscPosReceipt,\n  openCashDrawer'));
+  assert.match(content, /printEscPosReceipt,\r?\n\s+openCashDrawer/);
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -948,7 +948,7 @@ test('Partial return supports offline operation', () => {
 
 test('Create order applies offline inventory reservation', () => {
   const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
-  assert.ok(content.includes('applyOfflinePosInventoryReservation(payload.items)'), 'Must apply inventory reservation in offline order path');
+  assert.ok(content.includes('applyOfflinePosInventoryReservation(data.items || [])'), 'Must apply inventory reservation in offline order path');
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1211,7 +1211,7 @@ test('Partial return main process validates PIN via database RPC', () => {
   const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
   const returnIdx = content.indexOf("ipcMain.handle('pos:partial-return'");
   const returnSection = content.slice(returnIdx, returnIdx + 3000);
-  assert.ok(returnSection.includes('create_pos_partial_return_with_pin'), 'Must use database-authoritative return RPC');
+  assert.ok(returnSection.includes('create_pos_return_v3'), 'Must use database-authoritative return RPC');
   assert.ok(returnSection.includes('pin'), 'Must send PIN to RPC for server-side validation');
 });
 
@@ -1382,11 +1382,11 @@ test('Cash-up summarizer applies sign of order total to payment amounts', () => 
 // P0-4: Desktop POS uses create_pos_partial_return_with_pin RPC
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test('Desktop POS createPosPartialReturnWithPin calls new RPC', () => {
+test('Desktop POS createPosPartialReturnWithPin calls v3 RPC', () => {
   const content = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'main', 'domains', 'pos.js'), 'utf-8');
-  assert.ok(content.includes("create_pos_partial_return_with_pin"), 'Desktop must call create_pos_partial_return_with_pin RPC');
+  assert.ok(content.includes("create_pos_return_v3"), 'Desktop must call create_pos_return_v3 RPC');
   assert.ok(content.includes('rpcPayload'), 'Desktop must build rpcPayload');
-  assert.ok(content.includes("state.supabase.rpc('create_pos_partial_return_with_pin'"), 'Desktop must use supabase.rpc for online path');
+  assert.ok(content.includes("state.supabase.rpc('create_pos_return_v3'"), 'Desktop must use supabase.rpc for online path');
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1489,17 +1489,17 @@ test('Return RPC includes original_order_item_id in built return items', () => {
 // P0-3: Desktop offline return queues create_pos_partial_return_with_pin
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test('Desktop offline return queues create_pos_partial_return_with_pin, not createPosOrder', () => {
+test('Desktop offline return queues create_pos_return_v3, not createPosOrder', () => {
   const content = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'main', 'domains', 'pos.js'), 'utf-8');
-  const returnIdx = content.indexOf("create_pos_partial_return_with_pin', { payload: rpcPayload }");
+  const returnIdx = content.indexOf("create_pos_return_v3', { payload: rpcPayload }");
   const returnSection = content.slice(returnIdx - 200, returnIdx + 2000);
-  assert.ok(returnSection.includes("queueOperation('rpc', 'create_pos_partial_return_with_pin'"), 'Must queue create_pos_partial_return_with_pin for offline');
+  assert.ok(returnSection.includes("queueOperation('rpc', 'create_pos_return_v3'"), 'Must queue create_pos_return_v3 for offline');
   assert.ok(!returnSection.includes('createPosOrder({'), 'Must NOT fall back to createPosOrder');
 });
 
-test('Desktop FINANCIAL_SYNC_TABLES includes create_pos_partial_return_with_pin', () => {
+test('Desktop FINANCIAL_SYNC_TABLES includes create_pos_return_v3', () => {
   const content = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'shared', 'syncQueue.js'), 'utf-8');
-  assert.ok(content.includes("'create_pos_partial_return_with_pin'"), 'FINANCIAL_SYNC_TABLES must include create_pos_partial_return_with_pin');
+  assert.ok(content.includes("'create_pos_return_v3'"), 'FINANCIAL_SYNC_TABLES must include create_pos_return_v3');
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1789,15 +1789,50 @@ test('POSTerminal cart and menu regions are swipe-scrollable', () => {
   assert.ok(content.includes('touch-scroll-y max-h-[46vh] overflow-y-auto'), 'Order details must allow vertical swipe scrolling');
 });
 
-test('Legacy updater handles old Windows GitHub certificate failures clearly', () => {
+test('Legacy updater limits the POSReady 7 certificate exception to GitHub release hosts', () => {
   const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
-  assert.ok(content.includes('GITHUB_UPDATE_CERT_HOSTS'), 'Updater certificate compatibility must be scoped to known GitHub hosts');
-  assert.ok(content.includes('github-releases.githubusercontent.com'), 'GitHub release asset host must be trusted for updater checks');
-  assert.ok(content.includes('objects.githubusercontent.com'), 'GitHub object download host must be trusted for updater checks');
-  assert.ok(content.includes('setCertificateVerifyProc'), 'Electron net certificate verification must handle legacy update hosts');
+  assert.ok(content.includes('GITHUB_UPDATE_CERT_HOSTS'), 'Must explicitly list the allowed GitHub update hosts');
+  assert.ok(content.includes('isGitHubUpdateCertificateHost(url)'), 'Certificate exceptions must be host-scoped');
+  assert.ok(content.includes('event.preventDefault()'), 'Known GitHub update hosts must support the legacy certificate exception');
+  assert.ok(content.includes('setCertificateVerifyProc'), 'Electron network requests must use the same host-scoped compatibility rule');
+  assert.ok(content.includes('callback(false)'), 'Non-GitHub certificate errors must still be rejected');
+  assert.ok(!content.includes("NODE_TLS_REJECT_UNAUTHORIZED = '0'"), 'Updater must not disable TLS verification globally');
   assert.ok(content.includes('formatUpdateError'), 'Updater must normalize certificate failures');
   assert.ok(content.includes('ERR_CERT_AUTHORITY_INVALID'.toLowerCase()), 'Updater must detect invalid certificate authority failures');
-  assert.ok(!content.includes("NODE_TLS_REJECT_UNAUTHORIZED = '0'"), 'Updater must not disable TLS verification globally');
+});
+
+test('Legacy financial queue is journaled and approval secrets are encrypted', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
+  const journal = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'storage', 'financialJournal.js'), 'utf-8');
+  const secrets = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'storage', 'secureQueueSecrets.js'), 'utf-8');
+  assert.ok(main.includes('appendFinancialJournalEvent'), 'Financial queue mutations must be journaled');
+  assert.ok(main.includes('rebuildFinancialQueueFromJournal'), 'Startup must rebuild pending financial operations');
+  assert.ok(journal.includes('fs.fsyncSync'), 'Journal appends must be flushed to disk');
+  assert.ok(journal.includes('append verification failed'), 'Journal appends must be reread and verified');
+  assert.ok(secrets.includes('safeStorage.encryptString'), 'Queued approval PINs must use OS-backed encryption');
+  assert.ok(secrets.includes('Secure Windows credential storage is unavailable'), 'There must be no plaintext fallback');
+});
+
+test('Legacy release and process hardening is enabled', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
+  const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf-8'));
+  assert.ok(main.includes('app.requestSingleInstanceLock()'), 'POS must prevent concurrent local instances');
+  assert.notEqual(pkg.build.win.forceCodeSigning, true, 'Legacy releases must remain buildable when no compatible signing certificate is configured');
+});
+
+test('Legacy POS participates in the authenticated local lodge mesh', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
+  const preload = fs.readFileSync(path.join(__dirname, '..', 'src', 'preload', 'index.js'), 'utf-8');
+  const syncScreen = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'src', 'screens', 'Sync.jsx'), 'utf-8');
+  const mesh = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'mesh', 'legacyMesh.js'), 'utf-8');
+  assert.ok(main.includes('createLegacyMeshController'), 'Main process must start the legacy mesh controller');
+  assert.ok(mesh.includes('boroko_mesh_hello'), 'Legacy POS must use the same LAN discovery beacon');
+  assert.ok(mesh.includes('create_pos_order_v3'), 'Legacy mesh must exchange v3 sales');
+  assert.ok(mesh.includes('finalize_pos_shift_cashup_v2'), 'Legacy mesh must exchange atomic cash-ups');
+  assert.ok(mesh.includes('hasMachineBoundSecret'), 'Machine-bound approval secrets must not leave their origin device');
+  assert.ok(mesh.includes('createHmac'), 'Mesh requests must be authenticated');
+  assert.ok(preload.includes('pos:get-mesh-status'), 'Renderer must be able to inspect mesh health');
+  assert.ok(syncScreen.includes('Local Lodge Mesh'), 'Operators must be shown local mesh status');
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════

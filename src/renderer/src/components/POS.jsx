@@ -143,21 +143,11 @@ function normalizePosSubmitSignatureItem(item = {}) {
     depletion_qty: normalizePositiveQty(item.depletion_qty, 1),
     item_name: String(item.item_name || '').trim(),
     quantity: Number(item.quantity || 0),
-    unit_price: Number(item.unit_price || 0)
-  }
-}
-
-function buildDiscountLine(discountAmount, reason = '') {
-  const amount = Number(discountAmount || 0)
-  if (!(amount > 0)) return null
-  return {
-    order_key: 'discount:order',
-    menu_item_id: null,
-    inventory_item_id: null,
-    depletion_qty: 1,
-    item_name: reason ? `Discount: ${String(reason).trim()}` : 'Discount',
-    quantity: 1,
-    unit_price: -Math.round(amount * 100) / 100
+    unit_price: Number(item.unit_price || 0),
+    modifier_option_ids: (item.modifiers || [])
+      .map((modifier) => modifier?.id || modifier)
+      .filter(Boolean)
+      .sort()
   }
 }
 
@@ -182,7 +172,11 @@ function buildPosSubmitSignature({
   tableName,
   activeTabId,
   selectedOutletId,
-  orderItems
+  orderItems,
+  appliedPromotionId,
+  discountMode,
+  discountValue,
+  discountReason
 }) {
   return JSON.stringify({
     customerType: customerType || 'walkin',
@@ -196,6 +190,12 @@ function buildPosSubmitSignature({
     table_name: tableName || null,
     tab_id: activeTabId || null,
     outlet_id: selectedOutletId || null,
+    promotion_id: appliedPromotionId || null,
+    manual_discount: appliedPromotionId ? null : {
+      type: discountMode || 'amount',
+      value: Number(discountValue || 0),
+      reason: String(discountReason || '').trim()
+    },
     items: (orderItems || [])
       .map(normalizePosSubmitSignatureItem)
       .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))
@@ -291,6 +291,7 @@ export default function POS() {
   const [modifierDraftNotes, setModifierDraftNotes] = useState('')
   const [modifierForm, setModifierForm] = useState({ name: '', options: '' })
   const [promotionForm, setPromotionForm] = useState({ name: '', discount_type: 'amount', discount_value: '', applies_to_category: 'All' })
+  const [appliedPromotionId, setAppliedPromotionId] = useState(null)
   const [floorAreaName, setFloorAreaName] = useState('')
   const [ticketClock, setTicketClock] = useState(Date.now())
   const [submitting, setSubmitting] = useState(false)
@@ -543,6 +544,7 @@ export default function POS() {
     try {
       const [summary, history] = await Promise.all([
         window.api.pos.getCashupSummary({
+          shift_id: currentShift?.id || null,
           date: cashupDate,
           outlet_id: cashupOutletId || null,
           opening_float: Number(cashupOpeningFloat || 0),
@@ -562,7 +564,7 @@ export default function POS() {
     } finally {
       setCashupLoading(false)
     }
-  }, [cashupDate, cashupOpeningFloat, cashupOutletId, currentOperator.id, currentOperator.name])
+  }, [cashupDate, cashupOpeningFloat, cashupOutletId, currentOperator.id, currentOperator.name, currentShift?.id])
 
   const loadPosOperations = useCallback(async () => {
     const [tabs, ticketRows, shift, hardware, staffRows, modifierRows, promotionRows, floorRows, auditRows] = await Promise.all([
@@ -831,16 +833,21 @@ export default function POS() {
 
   const orderSubtotal = orderItems.reduce((s, i) => s + i.quantity * i.unit_price, 0)
   const parsedDiscountValue = Number(discountValue || 0)
-  const orderDiscountAmount = canDiscount && orderSubtotal > 0 && parsedDiscountValue > 0
+  const appliedPromotion = promotions.find((promotion) => promotion.id === appliedPromotionId) || null
+  const discountBase = appliedPromotion && String(appliedPromotion.applies_to_category || 'All').toLowerCase() !== 'all'
+    ? orderItems
+      .filter((item) => String(item.category || '').toLowerCase() === String(appliedPromotion.applies_to_category).toLowerCase())
+      .reduce((sum, item) => sum + Number(item.quantity || 0) * Number(item.unit_price || 0), 0)
+    : orderSubtotal
+  const orderDiscountAmount = canDiscount && discountBase > 0 && parsedDiscountValue > 0
     ? Math.min(
-        orderSubtotal,
+        discountBase,
         discountMode === 'percent'
-          ? orderSubtotal * Math.min(parsedDiscountValue, 100) / 100
+          ? discountBase * Math.min(parsedDiscountValue, 100) / 100
           : parsedDiscountValue
       )
     : 0
-  const discountLine = buildDiscountLine(orderDiscountAmount, discountReason)
-  const orderItemsForSubmit = discountLine ? [...orderItems, discountLine] : orderItems
+  const orderItemsForSubmit = orderItems
   const taxableSubtotal = Math.max(0, orderSubtotal - orderDiscountAmount)
   const orderTaxTotal = taxEnabled ? Math.round((taxableSubtotal * Number(taxRate || 0) / 100) * 100) / 100 : 0
   const orderTipTotal = Math.max(0, Number(tipAmount || 0))
@@ -910,6 +917,10 @@ export default function POS() {
       alert(`Split payments must match the order total. Remaining balance: ${currency} ${fmt(splitBalance)}`)
       return
     }
+    if (!appliedPromotionId && orderDiscountAmount > 0 && !discountReason.trim()) {
+      alert('Enter a reason for the manual discount.')
+      return
+    }
 
     setSubmitting(true)
     try {
@@ -925,7 +936,11 @@ export default function POS() {
         tableName,
         activeTabId,
         selectedOutletId: selectedOutlet?.id || null,
-        orderItems: orderItemsForSubmit
+        orderItems: orderItemsForSubmit,
+        appliedPromotionId,
+        discountMode,
+        discountValue,
+        discountReason
       })
       if (submitIntentRef.current.signature !== submitSignature || !submitIntentRef.current.intentId) {
         submitIntentRef.current = {
@@ -992,16 +1007,27 @@ export default function POS() {
         tab_id: tabIdForOrder,
         shift_id: currentShift?.id || null,
         outlet_id: selectedOutlet.id,
-        outlet_name: selectedOutlet.name
+        outlet_name: selectedOutlet.name,
+        promotion_id: appliedPromotionId,
+        manual_discount: !appliedPromotionId && orderDiscountAmount > 0
+          ? {
+              type: discountMode,
+              value: parsedDiscountValue,
+              reason: discountReason.trim()
+            }
+          : null
       })
       if (result?.success) {
+        const authoritativeItems = result.offline === true
+          ? orderItemsForSubmit
+          : (Array.isArray(result.items) ? result.items : orderItemsForSubmit)
         const receiptOrder = {
           id: result.id || submitIntentId,
           receipt_number: result.receipt_number || null,
           room_id: customerType === 'room' ? selectedRoom : null,
           booking_id: customerType === 'room' ? selectedBookingId : null,
           walk_in_name: customerType === 'walkin' ? (walkInName.trim() || 'Walk-in') : null,
-          pos_order_items: orderItemsForSubmit.map((item, idx) => ({
+          pos_order_items: authoritativeItems.map((item, idx) => ({
             id: item.id || `${submitIntentId}-${idx}`,
             item_name: item.item_name,
             quantity: Number(item.quantity || 0),
@@ -1009,13 +1035,13 @@ export default function POS() {
             modifiers: item.modifiers || [],
             item_notes: item.item_notes || null
           })),
-          payment_method: customerType === 'room' ? 'folio' : splitPaymentsEnabled ? 'split' : paymentMethod,
-          payment_breakdown: normalizedPaymentBreakdown,
-          gross_total: orderSubtotal,
-          discount_total: orderDiscountAmount,
-          tax_total: orderTaxTotal,
-          tip_total: orderTipTotal,
-          total: orderTotal,
+          payment_method: result.payment_method || (customerType === 'room' ? 'folio' : splitPaymentsEnabled ? 'split' : paymentMethod),
+          payment_breakdown: result.payment_breakdown || normalizedPaymentBreakdown,
+          gross_total: result.offline === true ? orderSubtotal : Number(result.gross_total || 0),
+          discount_total: result.offline === true ? orderDiscountAmount : Number(result.discount_total || 0),
+          tax_total: result.offline === true ? orderTaxTotal : Number(result.tax_total || 0),
+          tip_total: result.offline === true ? orderTipTotal : Number(result.tip_total || 0),
+          total: result.offline === true ? orderTotal : Number(result.total || 0),
           table_name: serviceMode === 'table' ? tableName.trim() || null : null,
           waiter_name: serviceMode === 'table' ? tableWaiterName || null : null,
           cashier_name: currentOperator.name || currentOperator.email || null,
@@ -1033,6 +1059,7 @@ export default function POS() {
         setDiscountValue('')
         setDiscountReason('')
         setDiscountMode('amount')
+        setAppliedPromotionId(null)
         setTaxEnabled(settings?.vat_enabled === true)
         setTaxRate(settings?.vat_enabled === true ? String(settings?.vat_rate || '') : '')
         setTipAmount('')
@@ -1359,7 +1386,11 @@ export default function POS() {
           ...prev.filter((entry) => entry.order_id !== voidTarget.id)
         ])
         setOrders((prev) => prev.map((order) => (
-          order.id === voidTarget.id ? { ...order, status: 'voided' } : order
+          order.id === voidTarget.id
+            ? res?.offline === true
+              ? { ...order, _pending_void: true, _pending_sync: true, _sync_state: 'pending' }
+              : { ...order, status: 'voided' }
+            : order
         )))
         closeVoidModal(true)
         await refreshLivePosState({ includeOrders: true })
@@ -1429,6 +1460,7 @@ export default function POS() {
         pin: returnPin.trim(),
         reason: returnReason.trim(),
         payment_method: returnPaymentMethod,
+        shift_id: currentShift?.id || null,
         cashier_user_id: currentOperator.id || currentUser?.id || null,
         outlet_id: returnTarget.outlet_id || selectedOutlet?.id || null
       })
@@ -1468,6 +1500,7 @@ export default function POS() {
         cashupMethodRows.map((method) => [method.value, Number(cashupCounted[method.value] || 0)])
       )
       const res = await window.api.pos.createCashup({
+        shift_id: currentShift?.id || null,
         date: cashupDate,
         outlet_id: cashupOutletId || null,
         opening_float: Number(cashupOpeningFloat || 0),
@@ -1539,6 +1572,7 @@ export default function POS() {
 
   const applyPromotion = (promotion) => {
     if (!promotion) return
+    setAppliedPromotionId(promotion.id || null)
     setDiscountMode(promotion.discount_type === 'percent' ? 'percent' : 'amount')
     setDiscountValue(String(promotion.discount_value || ''))
     setDiscountReason(promotion.name || 'Promotion')
@@ -2599,7 +2633,10 @@ export default function POS() {
                       <select
                         className="input text-xs"
                         value={discountMode}
-                        onChange={(e) => setDiscountMode(e.target.value)}
+                        onChange={(e) => {
+                          setAppliedPromotionId(null)
+                          setDiscountMode(e.target.value)
+                        }}
                       >
                         <option value="amount">{currency}</option>
                         <option value="percent">%</option>
@@ -2610,7 +2647,10 @@ export default function POS() {
                         min="0"
                         className="input text-xs"
                         value={discountValue}
-                        onChange={(e) => setDiscountValue(e.target.value)}
+                        onChange={(e) => {
+                          setAppliedPromotionId(null)
+                          setDiscountValue(e.target.value)
+                        }}
                         placeholder={discountMode === 'percent' ? 'Percent' : 'Amount'}
                       />
                     </div>
@@ -2619,7 +2659,10 @@ export default function POS() {
                         type="text"
                         className="input mt-2 text-xs"
                         value={discountReason}
-                        onChange={(e) => setDiscountReason(e.target.value)}
+                        onChange={(e) => {
+                          setAppliedPromotionId(null)
+                          setDiscountReason(e.target.value)
+                        }}
                         placeholder="Reason, e.g. manager special"
                       />
                     )}

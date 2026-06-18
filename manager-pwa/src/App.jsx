@@ -6,7 +6,7 @@ import { FeaturesProvider, useFeatures } from './contexts/FeaturesContext'
 import { getSubscriptionPlan, normalizeSubscriptionPlan } from '@shared/subscriptionPlans'
 import { supabase } from './lib/supabase'
 import BottomNav from './components/BottomNav'
-import { flushOfflineQueue, getQueueStatus, getSupportRequests } from './lib/api'
+import { flushOfflineQueue, getQueueStatus, getSupportRequests, markSupportRequestRead } from './lib/api'
 import { dismissPwaNotification, getNotificationSettings, getRuntimeMeta, getUnreadPwaNotificationCount, listPwaNotifications, markPwaNotificationRead, setRuntimeMeta, subscribeRuntimeEvent } from './lib/runtime'
 import { shortDateTime } from './lib/format'
 import { normalizeSupportMessages, supportMessageSide, supportSenderMeta, supportSenderName } from '@shared/supportThreads'
@@ -34,6 +34,7 @@ const Conference = lazy(() => import('./pages/Conference'))
 const DayUse = lazy(() => import('./pages/DayUse'))
 const Inventory = lazy(() => import('./pages/Inventory'))
 const Control = lazy(() => import('./pages/Control'))
+const PosSales = lazy(() => import('./pages/PosSales'))
 
 const ToastContext = createContext({ showToast: () => {} })
 
@@ -121,13 +122,26 @@ async function unsubscribeFromPush(user) {
 
 function useDarkMode() {
   const [dark, setDark] = useState(() => {
-    const saved = localStorage.getItem('boroko_pwa_theme')
-    return saved ? saved === 'dark' : true
+    try {
+      const saved = localStorage.getItem('boroko_pwa_theme')
+      if (saved) return saved === 'dark'
+      return !window.matchMedia?.('(prefers-color-scheme: light)').matches
+    } catch {
+      return true
+    }
   })
 
   useEffect(() => {
     document.documentElement.classList.toggle('light-mode', !dark)
-    localStorage.setItem('boroko_pwa_theme', dark ? 'dark' : 'light')
+    document.documentElement.classList.toggle('dark-mode', dark)
+    document.documentElement.style.colorScheme = dark ? 'dark' : 'light'
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', dark ? '#174c3a' : '#f8f4ed')
+    document.querySelector('meta[name="apple-mobile-web-app-status-bar-style"]')?.setAttribute('content', dark ? 'black-translucent' : 'default')
+    try {
+      localStorage.setItem('boroko_pwa_theme', dark ? 'dark' : 'light')
+    } catch {
+      // Theme still applies for the current session when storage is restricted.
+    }
   }, [dark])
 
   return [dark, setDark]
@@ -607,7 +621,10 @@ function NotificationCenter({ notificationCount, setNotificationCount }) {
       const lastScan = getRuntimeMeta(user.lodge_id, 'frontdesk-last-scan-at', null)
       const updatedAt = request?.updated_at || request?.created_at || null
       const isNewSinceLastScan = lastScan && updatedAt && new Date(updatedAt).getTime() > new Date(lastScan).getTime()
-      upsertFrontDeskNotification(user.lodge_id, request, { quiet: initialBatchRef.current && !isNewSinceLastScan })
+      const hasServerUnreadState = typeof request?.manager_has_unread === 'boolean'
+      upsertFrontDeskNotification(user.lodge_id, request, {
+        quiet: hasServerUnreadState ? false : initialBatchRef.current && !isNewSinceLastScan
+      })
     }
 
     const loadFrontDeskReplies = async () => {
@@ -653,6 +670,12 @@ function NotificationCenter({ notificationCount, setNotificationCount }) {
   }, [activeNotification, notifications])
 
   const clearNotification = (item) => {
+    const requestId = item?.meta?.requestId
+    if (requestId) {
+      const messages = normalizeSupportMessages({ messages: item?.meta?.messages || [] })
+      const latestDeskMessage = [...messages].reverse().find((message) => supportMessageSide(message) === 'desk')
+      markSupportRequestRead(user.lodge_id, requestId, 'manager', latestDeskMessage?.id || null).catch(() => {})
+    }
     dismissPwaNotification(user.lodge_id, item.sourceKey || item.id)
     if (activeNotification?.id === item.id) {
       setActiveNotification(null)
@@ -710,6 +733,12 @@ function NotificationCenter({ notificationCount, setNotificationCount }) {
                   item={item}
                   onOpen={(notification) => {
                     markPwaNotificationRead(user.lodge_id, notification.id)
+                    const requestId = notification?.meta?.requestId
+                    if (requestId) {
+                      const messages = normalizeSupportMessages({ messages: notification?.meta?.messages || [] })
+                      const latestDeskMessage = [...messages].reverse().find((message) => supportMessageSide(message) === 'desk')
+                      markSupportRequestRead(user.lodge_id, requestId, 'manager', latestDeskMessage?.id || null).catch(() => {})
+                    }
                     setActiveNotification(notification)
                   }}
                   onClear={clearNotification}
@@ -934,7 +963,7 @@ function AuthenticatedShell({ alertCount, dark, setDark, setAlertCount, notifica
         safeCount(supabase.from('bookings').select('id', { count: 'exact', head: true }).eq('lodge_id', lodgeId).in('payment_status', ['unpaid', 'partial']).neq('status', 'cancelled')),
         safeCount(supabase.from('maintenance_tickets').select('id', { count: 'exact', head: true }).eq('lodge_id', lodgeId).eq('status', 'open')),
         inventoryEnabled
-          ? safeRows(supabase.from('inventory_items').select('id, quantity, current_stock, reorder_level').eq('lodge_id', lodgeId).limit(500))
+          ? safeRows(supabase.from('inventory_items').select('id, current_stock, reorder_level').eq('lodge_id', lodgeId).limit(500))
           : Promise.resolve([]),
         safeCount(
           supabase
@@ -950,7 +979,7 @@ function AuthenticatedShell({ alertCount, dark, setDark, setAlertCount, notifica
 
       const lowStock = stock.filter((item) => {
         const reorder = Number(item.reorder_level ?? 0)
-        const current = Number(item.current_stock ?? item.quantity ?? 0)
+        const current = Number(item.current_stock ?? 0)
         return reorder > 0 && current <= reorder
       })
 
@@ -1029,6 +1058,7 @@ function AuthenticatedShell({ alertCount, dark, setDark, setAlertCount, notifica
           <Route path="/conference" element={<Suspense fallback={<PageLoader />}><Guard capability="conference.view"><Conference /></Guard></Suspense>} />
           <Route path="/day-use" element={<Suspense fallback={<PageLoader />}><Guard capability="pool.view"><DayUse /></Guard></Suspense>} />
           <Route path="/inventory" element={<Suspense fallback={<PageLoader />}><Guard capability="inventory.view"><Inventory /></Guard></Suspense>} />
+          <Route path="/pos" element={<Suspense fallback={<PageLoader />}><Guard capability="pos.reports"><PosSales /></Guard></Suspense>} />
           <Route path="/control" element={<Suspense fallback={<PageLoader />}><Control /></Suspense>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
@@ -1070,7 +1100,7 @@ function AppShell() {
     )
   }
 
-  if (!user) return <Login />
+  if (!user) return <Login dark={dark} setDark={setDark} />
 
   return (
     <FeaturesProvider>

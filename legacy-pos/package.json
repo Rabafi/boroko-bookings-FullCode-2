@@ -1,6 +1,6 @@
 {
   "name": "boroko-pos-legacy",
-  "version": "1.0.3",
+  "version": "1.0.5",
   "type": "module",
   "description": "Boroko POS Legacy for Windows Embedded POSReady 7",
   "author": {
@@ -63,7 +63,7 @@
         {
           "target": "nsis",
           "arch": [
-            "x64"
+            "ia32"
           ]
         }
       ]

@@ -78,6 +78,21 @@ function patchLocalQueuedDayUseEntry(id, update = {}) {
           }
         };
       }
+      if (item?.type === 'rpc' && item?.table === 'update_pool_day_use' && item?.data?.payload?.id === id) {
+        updated = true;
+        const currentPayload = item.data.payload;
+        return {
+          ...item,
+          data: {
+            payload: {
+              ...currentPayload,
+              ...(Object.prototype.hasOwnProperty.call(update, 'status') ? { status: update.status } : {}),
+              ...(Object.prototype.hasOwnProperty.call(update, 'payment_method') ? { payment_method: update.payment_method } : {}),
+              ...(Number(update.balance_due) === 0 ? { settle_balance: true } : {})
+            }
+          }
+        };
+      }
       return item;
     });
     if (!updated) {
@@ -101,26 +116,41 @@ async function updatePoolDayUseEntryFields(id, update = {}) {
   const existing = cachedEntries.find((row) => row.id === id);
   if (!existing) throw new Error('Day-use entry could not be found.');
   const nextEntry = { ...existing, ...update };
+  const operationPayload = {
+    id,
+    lodge_id: state.lodgeId,
+    idempotency_key: `dayuse-update:${id}:${randomUUID()}`,
+    expected_updated_at: existing.updated_at || null,
+    ...(Object.prototype.hasOwnProperty.call(update, 'status') ? { status: update.status } : {}),
+    ...(Object.prototype.hasOwnProperty.call(update, 'payment_method') ? { payment_method: update.payment_method } : {}),
+    ...(Number(update.balance_due) === 0 && Number(update.deposit_amount) >= Number(existing.total || 0)
+      ? { settle_balance: true }
+      : {})
+  };
 
   if (state.isOnline) {
     if (Object.prototype.hasOwnProperty.call(update, 'resource_name') || Object.prototype.hasOwnProperty.call(update, 'resource_key') || Object.prototype.hasOwnProperty.call(update, 'start_time') || Object.prototype.hasOwnProperty.call(update, 'duration_hours') || Object.prototype.hasOwnProperty.call(update, 'date')) {
       await assertResourceAvailability(nextEntry, id);
     }
-    const { data, error } = await state.supabase
-      .from('pool_day_use')
-      .update(update)
-      .eq('id', id)
-      .eq('lodge_id', state.lodgeId)
-      .select('*')
-      .single();
+    const { data, error } = await state.supabase.rpc('update_pool_day_use', { payload: operationPayload });
     if (error) throw new Error(error.message);
-    writeCache('pool-day-use', cachedEntries.map((row) => row.id === id ? { ...row, ...data } : row), { source: 'local' });
-    return { success: true, offline: false, entry: { ...existing, ...data } };
+    if (!data?.success) throw new Error(data?.error || 'Could not update day-use entry');
+    const confirmed = {
+      ...existing,
+      ...update,
+      status: data.status || update.status || existing.status,
+      deposit_amount: data.deposit_amount ?? update.deposit_amount ?? existing.deposit_amount,
+      balance_due: data.balance_due ?? update.balance_due ?? existing.balance_due,
+      payment_method: data.payment_method || update.payment_method || existing.payment_method,
+      updated_at: data.updated_at || existing.updated_at
+    };
+    writeCache('pool-day-use', cachedEntries.map((row) => row.id === id ? confirmed : row), { source: 'local' });
+    return { success: true, offline: false, entry: confirmed };
   }
 
   const patchedQueuedDraft = patchLocalQueuedDayUseEntry(id, update);
   if (!patchedQueuedDraft) {
-    queueOperation('update', 'pool_day_use', update, id, {
+    queueOperation('rpc', 'update_pool_day_use', { payload: operationPayload }, id, {
       _queue_id: `dayuse-update-${id}`,
       ...(existing?._pending_sync ? { _depends_on: `dayuse-${id}` } : {})
     });

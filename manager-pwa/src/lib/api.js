@@ -145,6 +145,21 @@ async function safeSelectPaged(buildQuery, fallback = [], { pageSize = 1000, max
 const INVENTORY_ITEM_SELECT = 'id, name, category, unit, current_stock, reorder_level, selling_price, outlet_id, latest_unit_cost, lodge_id, created_at, updated_at, sku, barcode, is_active'
 const INVENTORY_ITEM_LEGACY_SELECT = 'id, name, category, unit, current_stock, reorder_level, selling_price, outlet_id, latest_unit_cost, lodge_id, created_at'
 const DAY_USE_LIST_SELECT = 'id, date, resource_key, resource_name, start_time, end_time, status, total, adults, children, notes, created_at, updated_at, deposit_amount, balance_due, fee_per_adult, fee_per_child, flat_fee, hourly_rate, package_fee, pricing_mode, created_by'
+const BOOKING_LIST_SELECT = 'id, customer_id, room_id, check_in, check_out, adults, children, total_amount, status, payment_status, amount_paid, charges_total, deposit_amount, notes, is_exclusive_event, invoice_number, created_at, updated_at, created_by, payment_method, source, quotation_id, event_daily_rate, customer:customers(name), room:rooms(room_number)'
+const CONFERENCE_BOOKING_SELECT = 'id, booking_date, start_time, end_time, client_name, company, attendees, setup_type, room_name, includes_catering, catering_notes, total_amount, deposit_paid, payment_status, payment_method, notes, created_at, lodge_id'
+const QUOTATION_SELECT = 'id, customer_id, customer_name, customer_phone, quotation_type, event_name, event_daily_rate, room_id, room_name, check_in, check_out, adults, children, subtotal, tax_amount, total_amount, currency, notes, status, valid_until, quotation_number, created_at, updated_at, created_by, lodge_id, parent_quotation_id, converted_booking_id'
+const QUOTATION_LEGACY_SELECT = 'id, customer_id, customer_name, customer_phone, room_id, room_name, check_in, check_out, adults, children, subtotal, tax_amount, total_amount, currency, notes, status, valid_until, quotation_number, created_at, updated_at, created_by, lodge_id, parent_quotation_id, converted_booking_id'
+
+function normalizeBookingRelations(row = {}) {
+  const customer = Array.isArray(row.customer) ? row.customer[0] : row.customer
+  const room = Array.isArray(row.room) ? row.room[0] : row.room
+  return {
+    ...row,
+    customer_name: row.customer_name || customer?.name || null,
+    guest_name: row.guest_name || customer?.name || null,
+    room_number: row.room_number || room?.room_number || null
+  }
+}
 
 function isMissingInventoryCompatibilityColumnError(error) {
   return /column\s+inventory_items\.(barcode|is_active|sku|updated_at)\s+does\s+not\s+exist/i.test(String(error?.message || ''))
@@ -169,6 +184,34 @@ async function safeInventorySelect(lodgeId, { orderByCategory = false } = {}) {
     sku: null,
     barcode: null,
     is_active: true
+  }))
+}
+
+function isMissingQuotationCompatibilityColumnError(error) {
+  return /column\s+quotations\.(quotation_type|event_name|event_daily_rate)\s+does\s+not\s+exist/i.test(String(error?.message || ''))
+}
+
+async function safeQuotationSelect(lodgeId) {
+  const buildQuery = (columns) => supabase
+    .from('quotations')
+    .select(columns)
+    .eq('lodge_id', lodgeId)
+    .order('created_at', { ascending: false })
+    .limit(200)
+
+  const primary = await buildQuery(QUOTATION_SELECT)
+  if (!primary.error) return primary.data || []
+  if (!isMissingQuotationCompatibilityColumnError(primary.error)) {
+    throw new Error(friendlyErrorMessage(primary.error, 'Could not load quotations.'))
+  }
+
+  const legacy = await buildQuery(QUOTATION_LEGACY_SELECT)
+  if (legacy.error) throw new Error(friendlyErrorMessage(legacy.error, 'Could not load quotations.'))
+  return (legacy.data || []).map((row) => ({
+    ...row,
+    quotation_type: 'room',
+    event_name: null,
+    event_daily_rate: null
   }))
 }
 
@@ -240,18 +283,18 @@ async function buildDashboardSnapshotLegacy(lodgeId, today = formatDate(new Date
 
   const [rooms, bookings, payments, expenses, maintenance, inventory, quotations, conference, dayUse] = await Promise.all([
     safeSelect(supabase.from('rooms').select('id, room_number, room_type, rate_per_night, max_occupancy, status, amenities, description, photo, photos, lodge_id, created_at, updated_at, housekeeping_status, housekeeping_notes').eq('lodge_id', lodgeId).order('room_number').limit(200)),
-    safeSelectPaged(() => supabase.from('bookings').select('id, customer_id, room_id, check_in, check_out, adults, children, total_amount, status, payment_status, amount_paid, charges_total, deposit_amount, notes, is_exclusive_event, invoice_number, created_at, updated_at, created_by, payment_method, source, quotation_id, event_daily_rate').eq('lodge_id', lodgeId).order('check_in', { ascending: false })),
+    listBookings(lodgeId, { forceFresh: true }),
     safeSelect(supabase.from('payments').select('amount, paid_at').eq('lodge_id', lodgeId).gte('paid_at', monthStart).lt('paid_at', monthEndExclusive), []),
     safeSelect(supabase.from('expenses').select('id, amount, date, category, description').eq('lodge_id', lodgeId).gte('date', monthStart).limit(200)),
-    safeSelect(supabase.from('maintenance_tickets').select('id, room_id, title, issue, description, status, priority, reported_date, labour_cost, parts_cost, total_cost, vendor_name, cost_notes, completed_at, created_at, updated_at').eq('lodge_id', lodgeId).order('created_at', { ascending: false }).limit(100)),
+    listMaintenanceTickets(lodgeId, { forceFresh: true }),
     safeInventorySelect(lodgeId),
     safeSelect(supabase.from('quotations').select('id, customer_id, customer_name, customer_phone, room_id, room_name, check_in, check_out, adults, children, subtotal, tax_amount, total_amount, currency, notes, status, valid_until, quotation_number, created_at, updated_at, created_by, lodge_id, parent_quotation_id, converted_booking_id').eq('lodge_id', lodgeId).order('created_at', { ascending: false }).limit(200)),
-    safeSelect(supabase.from('conference_bookings').select('id, booking_date, start_time, end_time, client_name, company, attendees, setup_type, room_name, includes_catering, catering_notes, total_amount, deposit_paid, payment_status, payment_method, notes, created_at, updated_at, lodge_id').eq('lodge_id', lodgeId).gte('booking_date', today).lte('booking_date', nextWeek).order('booking_date').limit(50)),
+    safeSelect(supabase.from('conference_bookings').select(CONFERENCE_BOOKING_SELECT).eq('lodge_id', lodgeId).gte('booking_date', today).lte('booking_date', nextWeek).order('booking_date').limit(50)),
     safeSelect(supabase.from('pool_day_use').select(DAY_USE_LIST_SELECT).eq('lodge_id', lodgeId).gte('date', monthStart).limit(200))
   ])
 
   const occupied = bookings.filter((booking) => booking.status === 'checked_in').length
-  const openMaintenance = maintenance.filter((ticket) => ticket.status === 'open')
+  const openMaintenance = maintenance.filter((ticket) => ticket.status !== 'resolved')
   const lowStock = inventory.filter((item) => Number(item.reorder_level || 0) > 0 && Number(item.current_stock ?? item.quantity ?? 0) <= Number(item.reorder_level || 0))
   const unpaidBookings = bookings.filter((booking) => !['cancelled', 'checked_out'].includes(booking.status) && ['partial', 'unpaid'].includes(String(booking.payment_status || '').toLowerCase()))
   const outstandingTotal = unpaidBookings.reduce((sum, booking) => {
@@ -848,6 +891,57 @@ export async function getReportsSnapshot(lodgeId, options = {}) {
   })
 }
 
+export async function getManagerPosSnapshot(lodgeId, options = {}) {
+  assertCapability('pos.reports')
+  const today = formatDate(new Date())
+  const startDate = options.startDate || today
+  const endDate = options.endDate || today
+  const outletId = options.outletId || null
+  return queryWithCache({
+    lodgeId,
+    key: `pos_snapshot:${startDate}:${endDate}:${outletId || 'all'}`,
+    fallback: null,
+    forceFresh: options.forceFresh === true,
+    maxAgeMs: 30_000,
+    fetcher: () => readRpcJson(
+      'get_manager_pos_snapshot',
+      {
+        p_lodge_id: lodgeId,
+        p_start_date: startDate,
+        p_end_date: endDate,
+        p_outlet_id: outletId
+      },
+      'Could not load the POS sales snapshot.'
+    )
+  })
+}
+
+export async function getManagerPosTransactions(lodgeId, options = {}) {
+  assertCapability('pos.reports')
+  const today = formatDate(new Date())
+  const data = await readRpcJson(
+    'get_manager_pos_transactions',
+    {
+      p_lodge_id: lodgeId,
+      p_start_date: options.startDate || today,
+      p_end_date: options.endDate || today,
+      p_outlet_id: options.outletId || null,
+      p_status: options.status || 'posted',
+      p_transaction_type: options.transactionType || 'all',
+      p_search: options.search || null,
+      p_limit: Math.min(Math.max(Number(options.limit) || 30, 1), 100),
+      p_offset: Math.max(Number(options.offset) || 0, 0)
+    },
+    'Could not load POS transaction history.'
+  )
+  return {
+    total_count: Number(data?.total_count || 0),
+    limit: Number(data?.limit || options.limit || 30),
+    offset: Number(data?.offset || options.offset || 0),
+    transactions: Array.isArray(data?.transactions) ? data.transactions : []
+  }
+}
+
 export async function listRooms(lodgeId) {
   return queryWithCache({
     lodgeId,
@@ -863,7 +957,13 @@ export async function listBookings(lodgeId, options = {}) {
     key: 'bookings',
     fallback: [],
     forceFresh: options.forceFresh === true,
-    fetcher: () => safeSelectPaged(() => supabase.from('bookings').select('id, customer_id, room_id, check_in, check_out, adults, children, total_amount, status, payment_status, amount_paid, charges_total, deposit_amount, notes, is_exclusive_event, invoice_number, created_at, updated_at, created_by, payment_method, source, quotation_id, event_daily_rate').eq('lodge_id', lodgeId).order('check_in', { ascending: false }), [])
+    fetcher: async () => {
+      const rows = await safeSelectPaged(
+        () => supabase.from('bookings').select(BOOKING_LIST_SELECT).eq('lodge_id', lodgeId).order('check_in', { ascending: false }),
+        []
+      )
+      return rows.map(normalizeBookingRelations)
+    }
   })
 }
 
@@ -892,7 +992,15 @@ export async function listMaintenanceTickets(lodgeId, options = {}) {
     key: 'maintenance',
     fallback: [],
     forceFresh: options.forceFresh === true,
-    fetcher: () => safeSelect(supabase.from('maintenance_tickets').select('id, room_id, title, issue, description, status, priority, reported_date, labour_cost, parts_cost, total_cost, vendor_name, cost_notes, completed_at, created_at, updated_at').eq('lodge_id', lodgeId).order('created_at', { ascending: false }).limit(200), [])
+    fetcher: () => safeSelect(
+      supabase
+        .from('maintenance_tickets')
+        .select('id, room_id, title, description, status, priority, reported_date, labour_cost, parts_cost, total_cost, vendor_name, cost_notes, created_at')
+        .eq('lodge_id', lodgeId)
+        .order('created_at', { ascending: false })
+        .limit(200),
+      []
+    )
   })
 }
 
@@ -939,7 +1047,7 @@ export async function listQuotations(lodgeId) {
     lodgeId,
     key: 'quotations',
     fallback: [],
-    fetcher: () => safeSelect(supabase.from('quotations').select('id, customer_id, customer_name, customer_phone, room_id, room_name, check_in, check_out, adults, children, subtotal, tax_amount, total_amount, currency, notes, status, valid_until, quotation_number, created_at, updated_at, created_by, lodge_id, parent_quotation_id, converted_booking_id').eq('lodge_id', lodgeId).order('created_at', { ascending: false }).limit(200), [])
+    fetcher: () => safeQuotationSelect(lodgeId)
   })
 }
 
@@ -966,10 +1074,11 @@ export async function listGuests(lodgeId) {
 
 export async function getGuestHistory(lodgeId, customerId) {
   assertCapability('guests.view')
-  return safeSelect(
-    supabase.from('bookings').select('id, customer_id, room_id, check_in, check_out, adults, children, total_amount, status, payment_status, amount_paid, charges_total, deposit_amount, notes, is_exclusive_event, invoice_number, created_at, updated_at, created_by, payment_method, source, quotation_id, event_daily_rate').eq('lodge_id', lodgeId).eq('customer_id', customerId).order('check_in', { ascending: false }).limit(200),
+  const rows = await safeSelect(
+    supabase.from('bookings').select(BOOKING_LIST_SELECT).eq('lodge_id', lodgeId).eq('customer_id', customerId).order('check_in', { ascending: false }).limit(200),
     []
   )
+  return rows.map(normalizeBookingRelations)
 }
 
 export async function listStaff(lodgeId) {
@@ -989,7 +1098,7 @@ export async function listConferenceBookings(lodgeId, start, end) {
     key: 'conference',
     fallback: [],
     fetcher: async () => {
-      let query = supabase.from('conference_bookings').select('id, booking_date, start_time, end_time, client_name, company, attendees, setup_type, room_name, includes_catering, catering_notes, total_amount, deposit_paid, payment_status, payment_method, notes, created_at, updated_at, lodge_id').eq('lodge_id', lodgeId)
+      let query = supabase.from('conference_bookings').select(CONFERENCE_BOOKING_SELECT).eq('lodge_id', lodgeId)
       if (start) query = query.gte('booking_date', start)
       if (end) query = query.lte('booking_date', end)
       return safeSelect(query.order('booking_date', { ascending: false }).order('start_time').limit(200), [])
@@ -1187,7 +1296,15 @@ export async function getFinancialActivityFeed(lodgeId, limit = 20) {
     getInvoiceDeliveryHistory(lodgeId, limit).catch(() => []),
     getRefundHistory(lodgeId, limit).catch(() => []),
     safeSelect(supabase.from('maintenance_tickets').select('id, room_id, title, priority, status, created_at').eq('lodge_id', lodgeId).order('created_at', { ascending: false }).limit(limit), []),
-    safeSelect(supabase.from('bookings').select('id, guest_name, room_number, created_at, status, invoice_number').eq('lodge_id', lodgeId).order('created_at', { ascending: false }).limit(limit), [])
+    safeSelect(
+      supabase
+        .from('bookings')
+        .select('id, customer_id, room_id, created_at, status, invoice_number, customer:customers(name), room:rooms(room_number)')
+        .eq('lodge_id', lodgeId)
+        .order('created_at', { ascending: false })
+        .limit(limit),
+      []
+    ).then((rows) => rows.map(normalizeBookingRelations))
   ])
 
   const activity = [
@@ -1246,6 +1363,17 @@ export async function getSupportRequests(lodgeId, limit = 20) {
   })
   if (error) throw new Error(friendlyErrorMessage(error, 'Could not load support requests.'))
   return normalizeSupportTickets(data)
+}
+
+export async function markSupportRequestRead(lodgeId, ticketId, audience = 'manager', messageId = null) {
+  const { data, error } = await supabase.rpc('mark_lodge_support_ticket_read', {
+    p_ticket_id: ticketId,
+    p_lodge_id: lodgeId,
+    p_audience: audience,
+    p_message_id: messageId || null
+  })
+  ensureSuccess(data, error, 'Could not update inbox read state')
+  return data
 }
 
 export async function createSupportTicket(lodgeId, payload) {

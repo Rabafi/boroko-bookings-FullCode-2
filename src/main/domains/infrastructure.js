@@ -58,11 +58,13 @@ import {
   getOfflinePosInventoryReservation,
   patchLocalPosVoidHistory,
   readLocalPosVoidHistory,
+  refreshOfflinePosInventoryProjection,
   restoreOfflinePosInventoryReservation,
   upsertLocalPosVoidHistory
 } from './posOffline.js';
 import { mergeRemoteBookingsWithLocalState } from './bookingMerge.js';
 import { mergeRemotePosOrdersWithLocalState } from './posMerge.js';
+import { protectQueuedRpcData, resolveQueuedRpcData } from './secureQueueSecrets.js';
 import {
   markClearedSyncItemForManualReview,
   patchCachedBookingSyncState,
@@ -152,6 +154,7 @@ export {
   getOfflineDayUseInventoryReservation,
   getOfflinePosInventoryReservation,
   readLocalPosVoidHistory,
+  refreshOfflinePosInventoryProjection,
   restoreOfflineDayUseInventoryReservation,
   restoreOfflinePosInventoryReservation,
   upsertLocalPosVoidHistory
@@ -590,6 +593,7 @@ async function _runSyncQueue() {
       const retryCount = (item.retryCount || 0) + 1;
       const skipped = { ...item, _state: 'pending', retryCount, lastError: 'Skipped: parent operation failed', lastAttemptedAt: new Date().toISOString() };
       if (isPosCreateOrderQueueItem(item)) {
+        shouldRefreshInventory = true;
         const orderId = getQueuedPosOrderId(item);
         if (orderId) {
           console.warn('[POS SYNC] Failed order', orderId, 'Skipped: parent operation failed');
@@ -683,7 +687,8 @@ async function _runSyncQueue() {
         const itemLodgeId = item.data?.lodge_id || item.lodge_id || state.lodgeId;
         ({ error: supabaseError } = await state.supabase.from(item.table).delete().eq('id', item.id).eq('lodge_id', itemLodgeId));
       } else if (item.type === 'rpc') {
-        const { data, error } = await state.supabase.rpc(item.table, item.data);
+        const replayData = resolveQueuedRpcData(item.data);
+        const { data, error } = await state.supabase.rpc(item.table, replayData);
         rpcResultData = data || null;
         if (error) {
           if (isAlreadyAppliedRpcError(item, error)) {
@@ -725,6 +730,7 @@ async function _runSyncQueue() {
         }
       }
       if (isPosVoidQueueItem(item)) {
+        shouldRefreshInventory = true;
         const orderId = getQueuedPosOrderId(item);
         if (orderId) {
           console.warn('[POS VOID SYNC] Failed void', orderId, errorMessage);
@@ -777,7 +783,7 @@ async function _runSyncQueue() {
           }
         }
       }
-      if (item.type === 'update' && item.table === 'pool_day_use') {
+      if ((item.type === 'update' && item.table === 'pool_day_use') || (item.type === 'rpc' && item.table === 'update_pool_day_use')) {
         const entryId = item.id || getQueuedDayUseEntryId(item);
         if (entryId) {
           patchCachedDayUseSyncState(entryId, {
@@ -956,7 +962,7 @@ async function _runSyncQueue() {
           console.log('[INVENTORY SYNC] Synced stock adjustment', inventoryItemId);
         }
       }
-      if (item.type === 'update' && item.table === 'pool_day_use') {
+      if ((item.type === 'update' && item.table === 'pool_day_use') || (item.type === 'rpc' && item.table === 'update_pool_day_use')) {
         const entryId = item.id || getQueuedDayUseEntryId(item);
         if (entryId) {
           patchCachedDayUseSyncState(entryId, {
@@ -976,7 +982,7 @@ async function _runSyncQueue() {
       if (item.type === 'rpc' && ['create_quotation', 'update_quotation', 'convert_quotation', 'convert_quotation_to_booking'].includes(item.table)) shouldRefreshQuotations = true;
       if (isPosCreateOrderQueueItem(item) || isPosVoidQueueItem(item)) shouldRefreshPosOrders = true;
       if (item.type === 'rpc' && ['create_conference_booking', 'update_conference_booking', 'delete_conference_booking'].includes(item.table)) shouldRefreshConference = true;
-      if ((item.type === 'rpc' && ['add_pool_day_use', 'delete_pool_day_use'].includes(item.table)) || (item.type === 'update' && item.table === 'pool_day_use')) shouldRefreshPoolDayUse = true;
+      if ((item.type === 'rpc' && ['add_pool_day_use', 'update_pool_day_use', 'delete_pool_day_use'].includes(item.table)) || (item.type === 'update' && item.table === 'pool_day_use')) shouldRefreshPoolDayUse = true;
       // Phase 1: persist committed state before removing from queue file.
       // Crash here → restart sees 'committed' → skips RPC without retrying.
       writeSyncQueue([{ ...item, _state: 'committed' }, ...pending]);
@@ -1008,8 +1014,9 @@ async function _runSyncQueue() {
   }
   writeSyncQueue(pending);
 
-  if (successCount > 0 && shouldRefreshInventory) {
-    refreshCache('inventory-items', 'inventory-purchases').catch(() => {});
+  if (shouldRefreshInventory) {
+    refreshCache('inventory-items', 'inventory-purchases')
+      .catch(() => refreshOfflinePosInventoryProjection());
   }
 
   // P2-16: snapshot optimistic booking state before refresh so we can detect drift afterwards
@@ -1148,10 +1155,11 @@ export function queueOperation(type, table, data, id = null, meta = {}) {
     ...meta
   };
   // Guardrail: create_quotation defaults to _queue_id: `quotation-${record.id}`.
+  const queuedData = type === 'rpc' ? protectQueuedRpcData(data) : data;
   const queuedItem = ensureQueuedItem({
     type,
     table,
-    data,
+    data: queuedData,
     id,
     timestamp: new Date().toISOString(),
     ...derivedMeta

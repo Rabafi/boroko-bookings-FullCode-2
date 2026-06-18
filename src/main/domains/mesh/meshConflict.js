@@ -34,7 +34,7 @@ export function generateSuggestedAlternatives(checkIn, checkOut, currentRoomId, 
   // 2. Check queued creation operations
   for (const op of queuedOps) {
     if (op.table === 'create_booking' || op.table === 'create_booking_record') {
-      const data = op.data || {};
+      const data = op.table === 'create_booking_record' ? (op.data?.payload || {}) : (op.data || {});
       if (datesOverlap(data.p_check_in || data.check_in, data.p_check_out || data.check_out, checkIn, checkOut)) {
         occupiedRoomIds.add(data.p_room_id || data.room_id);
       }

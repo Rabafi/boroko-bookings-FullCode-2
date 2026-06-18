@@ -23,12 +23,14 @@ async function run() {
   const infrastructure = await read('src/main/domains/infrastructure.js')
   const syncCache = await read('src/main/domains/syncCache.js')
   const meshQueueMerge = await read('src/main/domains/mesh/meshQueueMerge.js')
+  const pool = await read('src/main/domains/pool.js')
   const pwaApi = await read('manager-pwa/src/lib/api.js')
   const integritySql = await read('supabase/migrations/20260618120000_idempotent_inventory_adjustments.sql')
   const mutationAuditSql = await read('supabase/migrations/20260618130000_financial_mutation_idempotency_and_booking_audit.sql')
   const overloadFixSql = await read('supabase/migrations/20260618131000_remove_ambiguous_booking_rpc_defaults.sql')
   const baselineSql = await read('supabase/migrations/20260526101632_baseline_20260526_remote_schema.sql')
   const paymentSql = await read('supabase/migrations/20260612193000_legacy_pos_database_contract.sql')
+  const poolMeshSql = await read('supabase/migrations/20260618211000_pool_day_use_mesh_contract.sql')
 
   const createBooking = functionSection(
     bookings,
@@ -86,6 +88,16 @@ async function run() {
   )
 
   assert.match(meshQueueMerge, /adjust_inventory_stock missing adjustment id/)
+  assert.match(meshQueueMerge, /update_pool_day_use/)
+  assert.match(pool, /rpc\('update_pool_day_use'/)
+  assert.doesNotMatch(
+    functionSection(pool, 'async function updatePoolDayUseEntryFields(', '// ─── POOL / DAY USE'),
+    /\.from\('pool_day_use'\)[\s\S]*\.update\(/,
+    'day-use settlement must not directly update financial rows'
+  )
+  assert.match(poolMeshSql, /for update/)
+  assert.match(poolMeshSql, /pool_day_use_operation_receipts/)
+  assert.match(poolMeshSql, /'idempotent', true/)
   assert.match(integritySql, /inventory_movements_adjustment_idempotency_uidx/)
   assert.match(integritySql, /where reference_type = 'inventory_adjustment' and reference_id is not null/)
   assert.match(integritySql, /for update/)

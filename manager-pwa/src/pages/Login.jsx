@@ -1,11 +1,25 @@
 import { useState } from 'react'
 import { useAuth } from '../contexts/AuthContext'
-import { Eye, EyeOff, LogIn, Building2, ChevronRight, Mail } from 'lucide-react'
+import { Eye, EyeOff, LogIn, Building2, ChevronRight, Mail, Moon, Sun } from 'lucide-react'
 import { sendPasswordResetEmail } from '../lib/supabase'
 import borokoLogoDark from '../assets/boroko-bookings-logo-dark.png'
 import borokoLogoLight from '../assets/boroko-bookings-logo-light.png'
 
-export default function Login() {
+function ThemeButton({ dark, setDark }) {
+  return (
+    <button
+      type="button"
+      onClick={() => setDark((value) => !value)}
+      className="absolute right-[max(1rem,env(safe-area-inset-right))] top-[max(1rem,env(safe-area-inset-top))] z-10 rounded-full border border-gray-700 bg-gray-800 p-2.5 text-gray-300 shadow-lg transition-colors hover:bg-gray-700 hover:text-white"
+      aria-label={dark ? 'Switch to light mode' : 'Switch to dark mode'}
+      title={dark ? 'Switch to light mode' : 'Switch to dark mode'}
+    >
+      {dark ? <Sun size={18} /> : <Moon size={18} />}
+    </button>
+  )
+}
+
+export default function Login({ dark, setDark }) {
   const { login, pendingLodges, selectLodge } = useAuth()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -50,15 +64,15 @@ export default function Login() {
   }
 
   const inp = 'w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-green-500'
-  const lightMode = typeof document !== 'undefined' && document.documentElement.classList.contains('light-mode')
-  const logoSrc = lightMode ? borokoLogoLight : borokoLogoDark
+  const logoSrc = dark ? borokoLogoDark : borokoLogoLight
 
   // ── Lodge picker (shown when same email exists in multiple lodges) ──
   if (pendingLodges) {
     return (
-      <div className="min-h-screen bg-gray-950 flex flex-col items-center justify-center px-6">
-        <div className="mb-8 text-center">
-          <div className="mx-auto mb-4 flex h-28 w-80 max-w-[88vw] items-center justify-center">
+      <div className="pwa-login-shell relative min-h-screen bg-gray-950 flex flex-col items-center justify-center px-6 py-16">
+        <ThemeButton dark={dark} setDark={setDark} />
+        <div className="pwa-login-intro mb-8 text-center">
+          <div className="pwa-login-logo mx-auto mb-4 flex h-28 w-80 max-w-[88vw] items-center justify-center">
             <img src={logoSrc} alt="Boroko Manager" className="max-h-full max-w-full object-contain" draggable="false" />
           </div>
           <h1 className="text-xl font-bold text-white">Select Your Lodge</h1>
@@ -89,16 +103,17 @@ export default function Login() {
 
   // ── Login form ──
   return (
-    <div className="min-h-screen bg-gray-950 flex flex-col items-center justify-center px-6">
-      <div className="mb-8 text-center">
-        <div className="mx-auto mb-4 flex h-32 w-96 max-w-[88vw] items-center justify-center">
+    <div className="pwa-login-shell relative min-h-screen bg-gray-950 flex flex-col items-center justify-center px-6 py-16">
+      <ThemeButton dark={dark} setDark={setDark} />
+      <div className="pwa-login-intro mb-8 text-center">
+        <div className="pwa-login-logo mx-auto mb-4 flex h-32 w-96 max-w-[88vw] items-center justify-center">
           <img src={logoSrc} alt="Boroko Manager" className="max-h-full max-w-full object-contain" draggable="false" />
         </div>
         <h1 className="text-2xl font-bold text-white">Boroko Manager Mobile App</h1>
         <p className="text-gray-400 text-sm mt-1">Leadership access for lodge managers and admins</p>
       </div>
 
-      <form onSubmit={submit} className="w-full max-w-sm space-y-4">
+      <form onSubmit={submit} className="pwa-login-form w-full max-w-sm space-y-4">
         <div>
           <label className="text-xs text-gray-400 block mb-1.5">Email</label>
           <input
@@ -166,7 +181,7 @@ export default function Login() {
         </button>
       </form>
 
-      <p className="text-gray-600 text-xs mt-8">Boroko Bookings Manager v1.0</p>
+      <p className="pwa-login-footer text-gray-600 text-xs mt-8">Boroko Bookings Manager v1.0</p>
     </div>
   )
 }

@@ -63,6 +63,7 @@ export async function getRoomById(id) {
 export async function createRoom(data) {
   await assertCreationWithinUsageLimit('room', { forceRemoteRefresh: state.isOnline });
   const id = randomUUID();
+  const maintenanceTicketId = data.status === 'maintenance' ? randomUUID() : null;
   const room = {
     id,
     room_number: data.room_number,
@@ -73,20 +74,41 @@ export async function createRoom(data) {
     description: data.description || '',
     photos: Array.isArray(data.photos) ? data.photos : data.photo ? [data.photo] : [],
     amenities: Array.isArray(data.amenities) ? data.amenities : [],
-    lodge_id: state.lodgeId
+    lodge_id: state.lodgeId,
+    maintenance_ticket_id: maintenanceTicketId,
+    maintenance_issue: data.maintenance_issue || '',
+    maintenance_description: data.maintenance_description || '',
+    maintenance_priority: data.maintenance_priority || 'medium'
   };
 
   if (state.isOnline) {
     const { data: result, error } = await state.supabase.rpc('create_room', { payload: room });
     if (error) throw new Error(error.message);
     if (!result?.success) throw new Error(result?.error || 'Could not create room');
-    await refreshCache('rooms');
+    await Promise.all([refreshCache('rooms'), refreshCache('maintenance')]);
     return result?.id;
   } else {
     const cached = readCache('rooms');
     const newRoom = { ...room, _pending_sync: true, created_at: new Date().toISOString() };
     cached.push(newRoom);
     writeCache('rooms', cached);
+    if (maintenanceTicketId) {
+      writeCache('maintenance', [{
+        id: maintenanceTicketId,
+        lodge_id: state.lodgeId,
+        room_id: id,
+        room_number: room.room_number,
+        room_type: room.room_type,
+        title: room.maintenance_issue || 'Room created under maintenance',
+        issue: room.maintenance_issue || 'Room created under maintenance',
+        description: room.maintenance_description || '',
+        priority: room.maintenance_priority,
+        status: 'open',
+        reported_date: new Date().toISOString().slice(0, 10),
+        created_at: new Date().toISOString(),
+        _pending_sync: true
+      }, ...readCache('maintenance')]);
+    }
     // P2-15: assign _queue_id so any offline update to this room can declare _depends_on
     queueOperation('rpc', 'create_room', { payload: room }, null, { _queue_id: `room-${id}` });
     return id;
@@ -102,7 +124,11 @@ export async function updateRoom(id, data) {
     status: data.status,
     description: data.description,
     photos: Array.isArray(data.photos) ? data.photos : data.photo ? [data.photo] : [],
-    amenities: Array.isArray(data.amenities) ? data.amenities : []
+    amenities: Array.isArray(data.amenities) ? data.amenities : [],
+    maintenance_ticket_id: data.status === 'maintenance' ? randomUUID() : null,
+    maintenance_issue: data.maintenance_issue || '',
+    maintenance_description: data.maintenance_description || '',
+    maintenance_priority: data.maintenance_priority || 'medium'
   };
 
   if (state.isOnline) {
@@ -118,10 +144,33 @@ export async function updateRoom(id, data) {
   } else {
     const cached = readCache('rooms');
     const idx = cached.findIndex((r) => r.id === id);
+    const openMaintenance = readCache('maintenance').filter((ticket) =>
+      String(ticket.room_id) === String(id) && ticket.status !== 'resolved'
+    );
+    if (data.status !== 'maintenance' && openMaintenance.length > 0) {
+      throw new Error('Resolve the open maintenance ticket before changing this room status.');
+    }
     // P2-15: if the room itself hasn't synced yet, update must wait for creation to land first
     const roomPendingSync = idx >= 0 && cached[idx]?._pending_sync;
     if (idx >= 0) cached[idx] = { ...cached[idx], ...update };
     writeCache('rooms', cached);
+    if (data.status === 'maintenance' && openMaintenance.length === 0) {
+      writeCache('maintenance', [{
+        id: update.maintenance_ticket_id,
+        lodge_id: state.lodgeId,
+        room_id: id,
+        room_number: cached[idx]?.room_number || null,
+        room_type: cached[idx]?.room_type || null,
+        title: update.maintenance_issue || 'Room marked under maintenance',
+        issue: update.maintenance_issue || 'Room marked under maintenance',
+        description: update.maintenance_description || '',
+        priority: update.maintenance_priority,
+        status: 'open',
+        reported_date: new Date().toISOString().slice(0, 10),
+        created_at: new Date().toISOString(),
+        _pending_sync: true
+      }, ...readCache('maintenance')]);
+    }
     queueOperation('rpc', 'update_room', {
       p_id: id,
       p_lodge_id: state.lodgeId,

@@ -25,6 +25,7 @@ export function normalizePlanName(plan) {
   if (!raw) return 'Starter';
   if (raw === 'basic') return 'Starter';
   if (raw === 'premium') return 'Pro';
+  if (raw === 'trial') return 'Pro';
   if (raw === 'starter') return 'Starter';
   if (raw === 'standard') return 'Standard';
   if (raw === 'pro') return 'Pro';

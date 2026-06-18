@@ -14,12 +14,20 @@ export default function CashUp({ user, settings, isOnline }) {
   const [submitting, setSubmitting] = useState(false);
   const [cashups, setCashups] = useState([]);
   const [summary, setSummary] = useState(null);
+  const [currentShift, setCurrentShift] = useState(null);
   const currency = settings?.currency || CURRENCY;
 
   const loadOrders = useCallback(async () => {
     setLoading(true);
     try {
-      const s = await window.api.pos.getCashupSummary({ date, openingFloat: Number(openingFloat) || 0 });
+      const shifts = await window.api.pos.getShifts();
+      const openShift = (shifts || []).find((shift) => shift.status === 'open') || null;
+      setCurrentShift(openShift);
+      const s = await window.api.pos.getCashupSummary({
+        date,
+        openingFloat: Number(openingFloat) || 0,
+        shiftId: openShift?.id || null
+      });
       setSummary(s);
       const c = await window.api.pos.getCashups({ limit: 10 });
       setCashups(c || []);
@@ -63,6 +71,7 @@ export default function CashUp({ user, settings, isOnline }) {
     setSubmitting(true);
     try {
       const payload = {
+        shift_id: currentShift?.id || null,
         date,
         opening_float: Number(openingFloat) || 0,
         counted_by_method: {},

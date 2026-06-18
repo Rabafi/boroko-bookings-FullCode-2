@@ -5,7 +5,8 @@ const PLAN_ALIASES = {
   starter: 'Starter',
   standard: 'Standard',
   premium: 'Pro',
-  pro: 'Pro'
+  pro: 'Pro',
+  trial: 'Pro'
 }
 
 const FEATURE_REQUIRED_PLAN = {

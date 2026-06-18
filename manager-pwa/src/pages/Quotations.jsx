@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { RefreshCw } from 'lucide-react'
+import { Building2, BedDouble, RefreshCw } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { FRONT_DESK_ONLY_MESSAGE, listQuotations } from '../lib/api'
 import { bookingStatusClass, money, shortDate, titleCase } from '../lib/format'
@@ -21,7 +21,10 @@ export default function Quotations() {
 
   const filtered = quotations.filter((quotation) => {
     const query = search.toLowerCase()
-    return !query || quotation.customer_name?.toLowerCase().includes(query) || quotation.quotation_number?.toLowerCase().includes(query)
+    return !query
+      || quotation.customer_name?.toLowerCase().includes(query)
+      || quotation.event_name?.toLowerCase().includes(query)
+      || quotation.quotation_number?.toLowerCase().includes(query)
   })
 
   return (
@@ -48,7 +51,12 @@ export default function Quotations() {
               <div className="min-w-0">
                 <p className="text-sm font-semibold text-white">{quotation.customer_name || 'Guest'}</p>
                 <p className="text-xs text-gray-400 mt-1">{quotation.quotation_number || 'Draft quotation'} • {shortDate(quotation.valid_until || quotation.created_at)}</p>
-                <p className="text-xs text-gray-500 mt-1">{quotation.room_name || 'Room not locked'} • {money(quotation.total_amount, quotation.currency || 'BWP')}</p>
+                <p className="mt-1 flex items-center gap-1 text-xs text-gray-500">
+                  {quotation.quotation_type === 'exclusive_event'
+                    ? <><Building2 size={12} className="text-indigo-400" /> Full Lodge{quotation.event_name ? ` · ${quotation.event_name}` : ''}</>
+                    : <><BedDouble size={12} /> {quotation.room_name || 'Room not locked'}</>}
+                  <span>• {money(quotation.total_amount, quotation.currency || 'BWP')}</span>
+                </p>
               </div>
               <span className={`text-xs px-2 py-0.5 rounded-full ${bookingStatusClass(quotation.status)}`}>{titleCase(quotation.status)}</span>
             </div>
