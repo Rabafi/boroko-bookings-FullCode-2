@@ -1,3 +1,21 @@
+## Boroko Bookings 1.5.0
+
+### Highlights
+- POS critical repair: financial write lockdown, pricing v2, returns v2, cash-up v2
+- Event/lodge quotations with full RPC flow
+- Atomic room maintenance flow
+- PWA: POS reporting, light mode, burger menu, schema contract repair
+- Inbox server read receipts
+- Pool day-use mesh sync contract
+- Legacy POS: mesh/storage modules, enhanced sync, payload schema
+- Secure queue secrets for offline idempotency
+
+### Operator Notes
+- New POS financial safeguards are active — verify cash-up reports after update.
+- Event quotations are now available from the front desk and PWA.
+- Update both the main desktop app and legacy POS terminals.
+- Restart all apps after download to apply.
+
 ## Boroko Bookings 1.3.16
 
 ### Highlights

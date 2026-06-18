@@ -1,6 +1,6 @@
 {
   "name": "boroko-pos-legacy",
-  "version": "1.0.5",
+  "version": "1.1.0",
   "type": "module",
   "description": "Boroko POS Legacy for Windows Embedded POSReady 7",
   "author": {
