@@ -1,9 +1,9 @@
-import fs from 'fs';
 import path from 'path';
 import { state } from '../state.js';
 import { readCache, writeCache } from './cacheStore.js';
 import { normalizeEmail, normalizeLodgeId, normalizeUserRecord } from './shared.js';
 import { normalizeStaffStatus } from '../../shared/accessControl.js';
+import { readSecureJson, writeSecureJson } from './secureLocalStore.js';
 
 export function normalizeSessionUser(user) {
   if (!user || typeof user !== 'object') return user || null;
@@ -60,11 +60,14 @@ export function mergeSessionUserScope(existingUser, refreshedUser) {
 }
 
 export function readAuthCache() {
-  try {return JSON.parse(fs.readFileSync(path.join(state.cacheDir, 'auth-cache.json'), 'utf-8'));} catch {return [];}
+  if (!state.cacheDir) return [];
+  const parsed = readSecureJson(path.join(state.cacheDir, 'auth-cache.json'), []);
+  return Array.isArray(parsed) ? parsed : [];
 }
 
 export function writeAuthCache(entries) {
-  try {fs.writeFileSync(path.join(state.cacheDir, 'auth-cache.json'), JSON.stringify(entries, null, 2), 'utf-8');} catch {}
+  if (!state.cacheDir) return;
+  writeSecureJson(path.join(state.cacheDir, 'auth-cache.json'), Array.isArray(entries) ? entries : []);
 }
 
 export function upsertCachedUser(user) {

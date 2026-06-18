@@ -243,8 +243,8 @@ const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_KEY;
 
 
 const AUTH_CONTRACT_VERSION = 2;
-const CONNECTIVITY_CHECK_INTERVAL_MS = 3000;
-const PERIODIC_SYNC_INTERVAL_MS = 15000;
+const CONNECTIVITY_CHECK_INTERVAL_MS = 60000;
+const PERIODIC_SYNC_INTERVAL_MS = 120000;
 const PROFILE_CACHE_FILES = {
   settings: [],
   users: [],
@@ -471,7 +471,7 @@ function isAlreadyAppliedRpcError(item, errorOrMessage) {
 }
 
 export async function processSyncQueue() {
-  if (state.syncInProgress) return { success: false, skipped: true, error: 'Sync is already in progress.' };
+  if (state.syncQueuePromise) return state.syncQueuePromise;
   // P0-5: Never replay queued operations before a real user session is confirmed.
   // Offline financial RPCs carry lodge-scoped auth; replaying them before the
   // correct Supabase client/session is restored can poison data or fail silently.
@@ -481,29 +481,33 @@ export async function processSyncQueue() {
     return { success: false, skipped: true, error: 'No authenticated session — please log in first.' };
   }
   state.syncInProgress = true;
-  try {
-    await _runSyncQueue();
-    return { success: true };
-  } catch (error) {
-    const message = getErrorMessage(error);
-    console.error('[Sync] Fatal sync loop error:', error);
-    appendHealthFault({
-      type: 'sync_loop_error',
-      scope: 'sync-queue',
-      severity: 'error',
-      message,
-      at: new Date().toISOString()
-    });
-    writeSyncMeta({
-      lastSyncFinishedAt: new Date().toISOString(),
-      lastSyncOutcome: 'fatal_error',
-      lastSyncError: message
-    });
-    return { success: false, error: message };
-  } finally {
-    state.syncInProgress = false;
-    broadcastSyncStatus();
-  }
+  state.syncQueuePromise = (async () => {
+    try {
+      await _runSyncQueue();
+      return { success: true };
+    } catch (error) {
+      const message = getErrorMessage(error);
+      console.error('[Sync] Fatal sync loop error:', error);
+      appendHealthFault({
+        type: 'sync_loop_error',
+        scope: 'sync-queue',
+        severity: 'error',
+        message,
+        at: new Date().toISOString()
+      });
+      writeSyncMeta({
+        lastSyncFinishedAt: new Date().toISOString(),
+        lastSyncOutcome: 'fatal_error',
+        lastSyncError: message
+      });
+      return { success: false, error: message };
+    } finally {
+      state.syncInProgress = false;
+      state.syncQueuePromise = null;
+      broadcastSyncStatus();
+    }
+  })();
+  return state.syncQueuePromise;
 }
 
 async function _runSyncQueue() {
@@ -544,6 +548,7 @@ async function _runSyncQueue() {
   const pending = [...queue];
   // P1-8: widen post-sync refresh tracking
   let shouldRefreshBookings = false;
+  let shouldRefreshBookingsAfterFailure = false;
   let shouldRefreshInventory = false;
   let shouldRefreshCustomers = false;
   let shouldRefreshRooms = false;
@@ -767,6 +772,9 @@ async function _runSyncQueue() {
             _sync_state: 'failed',
             _sync_error: `${item.table} rejected by server: ${errorMessage}`
           });
+          if (item.table === 'update_booking_payment') {
+            shouldRefreshBookingsAfterFailure = true;
+          }
         }
       }
       if (item.type === 'update' && item.table === 'pool_day_use') {
@@ -1023,7 +1031,7 @@ async function _runSyncQueue() {
 
   // P1-8: widen canonical post-sync refresh
   const refreshTargets = [];
-  if (successCount > 0 && shouldRefreshBookings) refreshTargets.push('bookings');
+  if ((successCount > 0 && shouldRefreshBookings) || shouldRefreshBookingsAfterFailure) refreshTargets.push('bookings');
   if (successCount > 0 && shouldRefreshCustomers) refreshTargets.push('customers');
   if (successCount > 0 && shouldRefreshRooms) refreshTargets.push('rooms');
   if (successCount > 0 && shouldRefreshUsers) refreshTargets.push('users');
@@ -1066,17 +1074,8 @@ async function _runSyncQueue() {
   }
 
   if (deadLetter.length > 0) {
-    const deadPath = path.join(state.cacheDir, 'sync-failed.json');
-    const deadTmp = deadPath + '.tmp';
-    let existing = [];
-    try {existing = JSON.parse(fs.readFileSync(deadPath, 'utf-8'));} catch {/* empty */}
-    try {
-      fs.writeFileSync(deadTmp, JSON.stringify([...existing, ...deadLetter], null, 2), 'utf-8');
-      fs.renameSync(deadTmp, deadPath);
-    } catch (e) {
-      console.error('[Sync] Dead-letter write failed:', e);
-      try {fs.unlinkSync(deadTmp);} catch {/* ignore */}
-    }
+    const existing = readFailedSyncQueue();
+    writeFailedSyncQueue([...existing, ...deadLetter]);
     for (const item of deadLetter) {
       console.error('[SYNC DEAD LETTER]', item);
     }
@@ -1307,7 +1306,7 @@ export async function initDatabase() {
         const nowOnline = await checkOnline();
         const hasPendingSync = readSyncQueue().length > 0 || readFailedSyncQueue().some((item) => item?.manualRetryOnly !== true);
         if (nowOnline && state.lodgeId && state.replayAuthReady && (wasOffline || hasPendingSync)) {
-          console.log('Back online — syncing changes...');
+          console.log('Back online - syncing changes...');
           await requeueEligibleFailedSyncItems();
           await processSyncQueue();
           if (wasOffline) await refreshAllCaches();

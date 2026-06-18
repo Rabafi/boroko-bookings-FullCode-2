@@ -224,6 +224,14 @@ function receiptItems(order) {
 
 function receiptPayments(order) {
   if (Array.isArray(order?.payment_breakdown)) return order.payment_breakdown;
+  if (typeof order?.payment_breakdown === 'string') {
+    try {
+      const parsed = JSON.parse(order.payment_breakdown);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
   return [];
 }
 
@@ -259,6 +267,7 @@ export function buildEscPosReceipt(order = {}, business = {}, settings = {}, opt
   pushText(buffers, `Receipt: ${receiptNo}`);
   pushText(buffers, `Date: ${new Date(order.created_at || Date.now()).toLocaleString('en-GB')}`);
   if (order.cashier_name) pushText(buffers, `Cashier: ${order.cashier_name}`);
+  if (order.outlet_name) pushText(buffers, `Outlet: ${order.outlet_name}`);
   if (order.table_name) pushText(buffers, `Table: ${order.table_name}`);
   if (order.walk_in_name) pushText(buffers, `Guest: ${order.walk_in_name}`);
   if (order.room_id) pushText(buffers, 'Guest: Room guest');
@@ -266,7 +275,7 @@ export function buildEscPosReceipt(order = {}, business = {}, settings = {}, opt
 
   for (const item of receiptItems(order)) {
     const quantity = normalizeMoney(item.quantity || 0);
-    const unitPrice = normalizeMoney(item.unit_price || 0);
+    const unitPrice = normalizeMoney(item.unit_price || item.price || 0);
     const total = normalizeMoney(quantity * unitPrice);
     for (const line of wrapText(item.item_name || 'Item', width)) pushText(buffers, line);
     pushText(buffers, twoColumn(`${quantity} x ${formatCurrency(currency, unitPrice)}`, formatCurrency(currency, total), width)[0]);
@@ -326,7 +335,7 @@ export async function sendRawEscPos(settings = {}, payload) {
   }
   const target = inferRawTarget(normalized);
   if (!target || (target.type === 'network' && !target.host) || (target.type === 'path' && !target.path)) {
-    return { success: false, error: 'Set an ESC/POS network host or device path first.' };
+    return { success: false, error: 'Set an ESC/POS network host, device path, or Windows printer share first.' };
   }
 
   const bytes = Buffer.isBuffer(payload) ? payload : Buffer.from(payload || []);
@@ -403,6 +412,14 @@ export async function openCashDrawer(settings = {}) {
 export async function testPosHardwareDevice(kind = 'receipt', settings = {}, business = {}) {
   const normalized = normalizePosHardwareSettings(settings);
   if (kind === 'drawer') return openCashDrawer(normalized);
+  if (kind === 'payment-terminal') {
+    return sendPaymentTerminalTotal(normalized, {
+      amount: 1,
+      currency: business.currency || 'BWP',
+      reference: `TEST-${Date.now()}`,
+      test: true
+    });
+  }
   if (kind === 'escpos' || kind === 'receipt') {
     const testOrder = {
       id: `TEST-${Date.now()}`,
@@ -421,4 +438,81 @@ export async function testPosHardwareDevice(kind = 'receipt', settings = {}, bus
     kind,
     message: 'Windows printer mode is configured. Use Print Receipt to test.'
   };
+}
+
+export async function sendPaymentTerminalTotal(settings = {}, data = {}) {
+  const normalized = normalizePosHardwareSettings(settings);
+  const mode = normalized.payment_terminal_mode;
+  const amount = normalizeMoney(data.amount);
+  if (mode === 'manual' || !normalized.payment_terminal_provider) {
+    return {
+      success: false,
+      manual: true,
+      error: 'Payment terminal is in manual mode. Charge the card machine manually and enter the approval code.'
+    };
+  }
+  if (!normalized.payment_terminal_bridge_url) {
+    return {
+      success: false,
+      error: `Provider ${normalized.payment_terminal_provider} is saved, but no local bridge/API URL is configured.`
+    };
+  }
+
+  const payload = {
+    type: data.test ? 'test_sale' : 'sale',
+    provider: normalized.payment_terminal_provider,
+    terminal: normalized.payment_terminal_name || null,
+    amount,
+    currency: data.currency || 'BWP',
+    reference: data.reference || `POS-${Date.now()}`,
+    request_id: data.request_id || data.id || cryptoRandomId(),
+    metadata: data.metadata || {}
+  };
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), normalized.payment_terminal_timeout_ms);
+  try {
+    const response = await fetch(normalized.payment_terminal_bridge_url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: controller.signal
+    });
+    const text = await response.text();
+    let body = {};
+    try { body = text ? JSON.parse(text) : {}; } catch { body = { raw: text }; }
+    if (!response.ok) {
+      return { success: false, error: body.error || body.message || `Terminal bridge returned ${response.status}.` };
+    }
+    const approved = body.approved === true || body.success === true || String(body.status || '').toLowerCase() === 'approved';
+    if (!approved) {
+      return {
+        success: false,
+        declined: true,
+        error: body.error || body.message || body.status || 'Payment was not approved by the terminal.',
+        terminal: body
+      };
+    }
+    return {
+      success: true,
+      approved: true,
+      message: body.message || 'Payment approved by terminal.',
+      approval_code: body.approval_code || body.approvalCode || body.auth_code || null,
+      reference: body.reference || body.transaction_id || body.transactionId || payload.reference,
+      terminal: body
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error?.name === 'AbortError'
+        ? 'Timed out waiting for the payment terminal.'
+        : error?.message || 'Could not reach payment terminal bridge.'
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function cryptoRandomId() {
+  return `pos-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }

@@ -269,6 +269,7 @@ export default function Bookings() {
   const [chargeForm, setChargeForm] = useState({ description: '', amount: '', category: 'Food & Beverage', quantity: 1, outlet_id: '' })
   const [chargeLoading, setChargeLoading] = useState(false)
   const [chargeError, setChargeError] = useState('')
+  const chargeIntentCacheRef = useRef(new Map())
   const [voidChargeRequest, setVoidChargeRequest] = useState(null)
   const [voidReason, setVoidReason] = useState('Entered in error')
 
@@ -299,13 +300,28 @@ export default function Bookings() {
     setChargeLoading(true)
     setChargeError('')
     try {
+      const chargeSignature = JSON.stringify({
+        booking_id: chargesBooking.id,
+        description: String(chargeForm.description || '').trim(),
+        amount: Number(chargeForm.amount || 0).toFixed(2),
+        category: chargeForm.category || 'Other',
+        quantity: Number(chargeForm.quantity || 1),
+        outlet_id: chargeForm.outlet_id || null
+      })
+      const cachedIntent = chargeIntentCacheRef.current.get(chargesBooking.id)
+      const idempotencyKey = cachedIntent?.signature === chargeSignature
+        ? cachedIntent.key
+        : crypto.randomUUID()
+      chargeIntentCacheRef.current.set(chargesBooking.id, { signature: chargeSignature, key: idempotencyKey })
       const res = await window.api.charges.add(chargesBooking.id, {
         ...chargeForm,
         unit_price: parseFloat(chargeForm.amount),
         amount: parseFloat(chargeForm.amount),
-        quantity: parseInt(chargeForm.quantity)
+        quantity: parseInt(chargeForm.quantity),
+        idempotency_key: idempotencyKey
       })
       if (res?.success === false) throw new Error(res.error || 'Failed to add charge')
+      chargeIntentCacheRef.current.delete(chargesBooking.id)
       const result = await window.api.charges.getByBooking(chargesBooking.id).catch(() => ({ unavailable: true }))
       const normalized = normalizeChargesResponse(result)
       setCharges(normalized.items)
@@ -1356,7 +1372,7 @@ export default function Bookings() {
                           ⏳ Payment pending sync
                         </span>
                         <p className="mt-1 text-xs text-amber-700">
-                          Payment saved locally — will sync when online
+                          Displayed balance is an estimate until Supabase confirms the payment
                         </p>
                       </>
                     )}

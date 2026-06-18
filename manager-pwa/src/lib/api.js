@@ -95,10 +95,6 @@ function formatDate(value) {
   return new Date(value).toISOString().slice(0, 10)
 }
 
-function rejectFrontDeskOnlyAction() {
-  throw new Error(FRONT_DESK_ONLY_MESSAGE)
-}
-
 function upsertById(list, record) {
   const index = list.findIndex((entry) => entry.id === record.id)
   if (index === -1) return [record, ...list]
@@ -131,6 +127,19 @@ async function safeSelect(queryBuilder, fallback = []) {
   const { data, error } = await queryBuilder
   if (error) throw new Error(friendlyErrorMessage(error, 'Could not load data.'))
   return data || fallback
+}
+
+async function safeSelectPaged(buildQuery, fallback = [], { pageSize = 1000, maxRows = 10000 } = {}) {
+  const rows = []
+  for (let from = 0; from < maxRows; from += pageSize) {
+    const to = Math.min(from + pageSize - 1, maxRows - 1)
+    const { data, error } = await buildQuery().range(from, to)
+    if (error) throw new Error(friendlyErrorMessage(error, 'Could not load data.'))
+    const page = data || []
+    rows.push(...page)
+    if (page.length < to - from + 1) break
+  }
+  return rows.length > 0 ? rows : fallback
 }
 
 const INVENTORY_ITEM_SELECT = 'id, name, category, unit, current_stock, reorder_level, selling_price, outlet_id, latest_unit_cost, lodge_id, created_at, updated_at, sku, barcode, is_active'
@@ -231,7 +240,7 @@ async function buildDashboardSnapshotLegacy(lodgeId, today = formatDate(new Date
 
   const [rooms, bookings, payments, expenses, maintenance, inventory, quotations, conference, dayUse] = await Promise.all([
     safeSelect(supabase.from('rooms').select('id, room_number, room_type, rate_per_night, max_occupancy, status, amenities, description, photo, photos, lodge_id, created_at, updated_at, housekeeping_status, housekeeping_notes').eq('lodge_id', lodgeId).order('room_number').limit(200)),
-    safeSelect(supabase.from('bookings').select('id, customer_id, room_id, check_in, check_out, adults, children, total_amount, status, payment_status, amount_paid, charges_total, deposit_amount, notes, is_exclusive_event, invoice_number, created_at, updated_at, created_by, payment_method, source, quotation_id, event_daily_rate').eq('lodge_id', lodgeId).order('check_in', { ascending: false }).limit(500)),
+    safeSelectPaged(() => supabase.from('bookings').select('id, customer_id, room_id, check_in, check_out, adults, children, total_amount, status, payment_status, amount_paid, charges_total, deposit_amount, notes, is_exclusive_event, invoice_number, created_at, updated_at, created_by, payment_method, source, quotation_id, event_daily_rate').eq('lodge_id', lodgeId).order('check_in', { ascending: false })),
     safeSelect(supabase.from('payments').select('amount, paid_at').eq('lodge_id', lodgeId).gte('paid_at', monthStart).lt('paid_at', monthEndExclusive), []),
     safeSelect(supabase.from('expenses').select('id, amount, date, category, description').eq('lodge_id', lodgeId).gte('date', monthStart).limit(200)),
     safeSelect(supabase.from('maintenance_tickets').select('id, room_id, title, issue, description, status, priority, reported_date, labour_cost, parts_cost, total_cost, vendor_name, cost_notes, completed_at, created_at, updated_at').eq('lodge_id', lodgeId).order('created_at', { ascending: false }).limit(100)),
@@ -346,7 +355,7 @@ async function buildReportsSnapshotLegacy(lodgeId, today = formatDate(new Date()
 
   const [rooms, bookings, payments, expenses, posOrders, conferenceBookings, poolDayUse] = await Promise.all([
     safeSelect(supabase.from('rooms').select('id').eq('lodge_id', lodgeId), []),
-    safeSelect(supabase.from('bookings').select('id, check_in, check_out, total_amount, charges_total, amount_paid, payment_status, status').eq('lodge_id', lodgeId), []),
+    safeSelectPaged(() => supabase.from('bookings').select('id, check_in, check_out, total_amount, charges_total, amount_paid, payment_status, status').eq('lodge_id', lodgeId), []),
     safeSelect(supabase.from('payments').select('booking_id, amount, paid_at, type').eq('lodge_id', lodgeId).gte('paid_at', reportCashStart).lte('paid_at', reportCashEnd), []),
     safeSelect(supabase.from('expenses').select('amount, date').eq('lodge_id', lodgeId).gte('date', monthStart).lte('date', monthEnd), []),
     safeSelect(supabase.from('pos_orders').select('total, created_at').eq('lodge_id', lodgeId).gte('created_at', monthStart).neq('status', 'voided'), []),
@@ -508,24 +517,6 @@ async function fetchFeatureOverrides(lodgeId) {
   }, {})
 }
 
-async function executeCreateBooking(payload) {
-  const { data, error } = await supabase.rpc('create_booking', payload)
-  ensureSuccess(data, error, 'Could not create booking')
-  return data
-}
-
-async function executeUpdateBookingStatus(payload) {
-  const { data, error } = await supabase.rpc('update_booking_status', payload)
-  ensureSuccess(data, error, 'Could not update booking status')
-  return data
-}
-
-async function executeUpdateBookingPayment(payload) {
-  const { data, error } = await supabase.rpc('update_booking_payment', payload)
-  ensureSuccess(data, error, 'Could not record payment')
-  return data
-}
-
 async function executeCreateCustomer(payload) {
   const { data, error } = await supabase.rpc('create_customer', { payload })
   ensureSuccess(data, error, 'Could not create customer')
@@ -669,10 +660,11 @@ async function executeInventory(mode, payload) {
     return data
   }
   const { data, error } = await supabase.rpc('adjust_inventory_stock', {
-    p_id: payload.id,
+    p_item_id: payload.id,
     p_lodge_id: payload.lodge_id,
     p_delta: payload.delta,
-    p_notes: payload.notes || ''
+    p_notes: payload.notes || '',
+    p_adjustment_id: payload.adjustment_id || crypto.randomUUID()
   })
   ensureSuccess(data, error, 'Could not adjust stock')
   return data
@@ -871,7 +863,7 @@ export async function listBookings(lodgeId, options = {}) {
     key: 'bookings',
     fallback: [],
     forceFresh: options.forceFresh === true,
-    fetcher: () => safeSelect(supabase.from('bookings').select('id, customer_id, room_id, check_in, check_out, adults, children, total_amount, status, payment_status, amount_paid, charges_total, deposit_amount, notes, is_exclusive_event, invoice_number, created_at, updated_at, created_by, payment_method, source, quotation_id, event_daily_rate').eq('lodge_id', lodgeId).order('check_in', { ascending: false }).limit(500), [])
+    fetcher: () => safeSelectPaged(() => supabase.from('bookings').select('id, customer_id, room_id, check_in, check_out, adults, children, total_amount, status, payment_status, amount_paid, charges_total, deposit_amount, notes, is_exclusive_event, invoice_number, created_at, updated_at, created_by, payment_method, source, quotation_id, event_daily_rate').eq('lodge_id', lodgeId).order('check_in', { ascending: false }), [])
   })
 }
 
@@ -1353,7 +1345,10 @@ async function performOfflineQueueFlush(lodgeId) {
           await executeInventory('purchase', item.payload)
           break
         case 'inventory/adjust':
-          await executeInventory('adjust', item.payload)
+          await executeInventory('adjust', {
+            ...item.payload,
+            adjustment_id: item.payload?.adjustment_id || item.id
+          })
           break
         case 'support/create':
           await executeSupport(item.payload)

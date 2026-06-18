@@ -60,7 +60,7 @@ const DEFAULT_SETTINGS = {
   setup_complete: false
 };
 const SETTINGS_QUERY_TIMEOUT_MS = 15000;
-const SETTINGS_BACKGROUND_REFRESH_TIMEOUT_MS = 5000;
+const SETTINGS_BACKGROUND_REFRESH_TIMEOUT_MS = 10000;
 let settingsRefreshInFlight = null;
 
 function getDefaultSettings() {

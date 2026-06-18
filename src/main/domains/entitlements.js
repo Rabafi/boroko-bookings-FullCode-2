@@ -21,7 +21,8 @@ const ENTITLEMENT_CACHE_TTL_MS = 10_000
 export function isMissingEntitlementRpcError(error) {
   const message = String(error?.message || '');
   return error?.code === 'PGRST202' ||
-  /get_lodge_entitlement|activate_license_key|issue_subscription_contract|update_subscription_contract|set_subscription_feature_override|clear_subscription_feature_override|schema cache|operator does not exist: text = uuid/i.test(message);
+  /schema cache/i.test(message) ||
+  /operator does not exist: text = uuid/i.test(message);
 }
 
 function supabaseRpcWithTimeout(client, rpcName, params, timeoutMs) {

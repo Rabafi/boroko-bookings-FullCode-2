@@ -1,6 +1,6 @@
 {
   "name": "boroko-bookings",
-  "version": "1.3.16",
+  "version": "1.3.17",
   "type": "module",
   "description": "Boroko Lodge Booking Management System",
   "author": {
@@ -16,6 +16,7 @@
     "test": "node .\\tests\\production-guardrails.test.mjs",
     "test:offline-pos-critical": "node .\\tests\\offline-pos-regression.test.mjs",
     "test:offline-queue-critical": "node .\\tests\\offline-queue-regression.test.mjs",
+    "test:financial-integrity": "node .\\tests\\financial-integrity-regression.test.mjs",
     "test:inventory-offline-sync": "node .\\tests\\inventory-offline-sync-regression.test.mjs",
     "test:import-critical": "node .\\tests\\import-system-regression.test.mjs",
     "test:pos-hardware-adapter": "node .\\tests\\pos-hardware-adapter.test.mjs",
@@ -51,6 +52,11 @@
     "legacy-pos:build": "npm --prefix legacy-pos run build",
     "legacy-pos:dist": "npm --prefix legacy-pos run dist",
     "legacy-pos:dist:dir": "npm --prefix legacy-pos run dist:dir",
+    "legacy-pos:dist:publish": "npm --prefix legacy-pos run dist:publish",
+    "legacy-pos:release:patch": "npm --prefix legacy-pos run release:patch",
+    "legacy-pos:release:minor": "npm --prefix legacy-pos run release:minor",
+    "legacy-pos:release:major": "npm --prefix legacy-pos run release:major",
+    "legacy-pos:release:publish": "npm --prefix legacy-pos run release:publish",
     "legacy-pos:test": "npm --prefix legacy-pos run test",
     "legacy-pos:db:probe": "npm --prefix legacy-pos run db:probe"
   },

@@ -4,6 +4,7 @@ import { BellRing, ChevronDown, ChevronUp, Download, FileText, RefreshCw, Rotate
 import { APP_FEATURES, FEATURE_LABELS, buildCapabilitySnapshot, isPosFullAccessRole } from '../../shared/accessControl'
 import { SUBSCRIPTION_PLAN_ORDER, getAllSubscriptionPlans, getFeatureRequiredPlan, getSubscriptionPlan, normalizeSubscriptionPlan } from '../../shared/subscriptionPlans'
 import AppErrorBoundary from './components/AppErrorBoundary'
+import { ToastProvider } from './components/shared/Toast'
 import { Modal } from './components/shared/Modal'
 import { extractReleaseHighlights, formatReleaseDate, toReleaseSections } from './utils/updatePresentation'
 import { applyThemeMode, getStoredThemeMode } from './utils/themeMode'
@@ -576,7 +577,7 @@ function FinancialHealthBanner() {
       }
     }
     load()
-    const interval = setInterval(load, 60_000)
+    const interval = setInterval(load, 5 * 60_000)
     return () => {
       mounted = false
       clearInterval(interval)
@@ -606,7 +607,7 @@ function FinancialHealthBanner() {
       >
         <div className={`h-2.5 w-2.5 rounded-full ${dotTone}`} />
         <span className="font-semibold">{count} {label}{count === 1 ? '' : 's'}</span>
-        <span className="hidden max-w-[260px] truncate text-[11px] font-medium opacity-80 sm:inline">{firstMessage}</span>
+        <span className="hidden max-w-[320px] text-[11px] font-medium opacity-80 sm:inline leading-tight">{firstMessage}</span>
         <span className="text-[11px] font-medium opacity-75">Open Health</span>
       </button>
     </div>
@@ -839,7 +840,7 @@ export default function App() {
     return () => media.removeEventListener?.('change', syncSystemTheme)
   }, [])
 
-  // Poll for pending online booking requests every 60 seconds
+  // Poll for pending online booking requests at a gentler cadence.
   const refreshOnlineRequests = useCallback(async () => {
     if (!window.api?.bookings?.getPendingOnline) return
     try {
@@ -853,8 +854,17 @@ export default function App() {
     if (!user || user.isMasterAdmin) return
     if (activeProfile?.status !== 'ready') return
     refreshOnlineRequests()
-    const interval = setInterval(refreshOnlineRequests, 60_000)
-    return () => clearInterval(interval)
+    const interval = setInterval(() => {
+      if (document.visibilityState !== 'hidden') refreshOnlineRequests()
+    }, 2 * 60_000)
+    const handleVisible = () => {
+      if (document.visibilityState === 'visible') refreshOnlineRequests()
+    }
+    document.addEventListener('visibilitychange', handleVisible)
+    return () => {
+      clearInterval(interval)
+      document.removeEventListener('visibilitychange', handleVisible)
+    }
   }, [activeProfile?.status, isBrowserPreview, refreshOnlineRequests, user])
 
   const runFocusRecovery = useCallback((reason, preferredTarget = null) => {
@@ -1049,7 +1059,7 @@ export default function App() {
             await refreshEntitlement()
             interval = setInterval(() => {
               refreshEntitlement().catch(() => {})
-            }, 60_000)
+            }, 15 * 60_000)
           } else if (!cancelled) {
             applyEntitlement(DEFAULT_TRIAL_STATUS)
           }
@@ -1301,9 +1311,11 @@ export default function App() {
       <AuthContext.Provider value={authContextValue}>
         <ProfilesContext.Provider value={profilesContextValue}>
           <SettingsContext.Provider value={settingsContextValue}>
-            <AppErrorBoundary>
-              <Lazy><AdminCentral /></Lazy>
-            </AppErrorBoundary>
+            <ToastProvider>
+              <AppErrorBoundary>
+                <Lazy><AdminCentral /></Lazy>
+              </AppErrorBoundary>
+            </ToastProvider>
           </SettingsContext.Provider>
         </ProfilesContext.Provider>
       </AuthContext.Provider>

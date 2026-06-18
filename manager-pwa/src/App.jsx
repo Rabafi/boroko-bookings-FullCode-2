@@ -149,7 +149,9 @@ function BroadcastBanners() {
       if (data) setBanners(data.filter((item) => !dismissed.includes(item.id)))
     }
     load()
-    interval = setInterval(load, 5 * 60 * 1000)
+    interval = setInterval(() => {
+      if (document.visibilityState !== 'hidden') load()
+    }, 15 * 60 * 1000)
     return () => clearInterval(interval)
   }, [])
 
@@ -622,10 +624,17 @@ function NotificationCenter({ notificationCount, setNotificationCount }) {
     }
 
     loadFrontDeskReplies()
-    const interval = window.setInterval(loadFrontDeskReplies, 60_000)
+    const interval = window.setInterval(() => {
+      if (document.visibilityState !== 'hidden') loadFrontDeskReplies()
+    }, 2 * 60_000)
+    const handleVisible = () => {
+      if (document.visibilityState === 'visible') loadFrontDeskReplies()
+    }
+    document.addEventListener('visibilitychange', handleVisible)
     return () => {
       cancelled = true
       window.clearInterval(interval)
+      document.removeEventListener('visibilitychange', handleVisible)
     }
   }, [user?.lodge_id])
 
@@ -905,22 +914,32 @@ function AuthenticatedShell({ alertCount, dark, setDark, setAlertCount, notifica
       }
     }
 
+    const safeCount = async (query) => {
+      try {
+        const { count, error } = await query
+        if (error) return 0
+        return Number(count || 0)
+      } catch {
+        return 0
+      }
+    }
+
     const refreshAlertCount = async () => {
       const today = new Date().toISOString().slice(0, 10)
       const blockedSince = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
       const lodgeId = user.lodge_id
 
       const [overdue, unpaid, maintenance, stock, blockedDemand] = await Promise.all([
-        safeRows(supabase.from('bookings').select('id').eq('lodge_id', lodgeId).eq('status', 'checked_in').lt('check_out', today)),
-        safeRows(supabase.from('bookings').select('id').eq('lodge_id', lodgeId).in('payment_status', ['unpaid', 'partial']).neq('status', 'cancelled')),
-        safeRows(supabase.from('maintenance_tickets').select('id').eq('lodge_id', lodgeId).eq('status', 'open')),
+        safeCount(supabase.from('bookings').select('id', { count: 'exact', head: true }).eq('lodge_id', lodgeId).eq('status', 'checked_in').lt('check_out', today)),
+        safeCount(supabase.from('bookings').select('id', { count: 'exact', head: true }).eq('lodge_id', lodgeId).in('payment_status', ['unpaid', 'partial']).neq('status', 'cancelled')),
+        safeCount(supabase.from('maintenance_tickets').select('id', { count: 'exact', head: true }).eq('lodge_id', lodgeId).eq('status', 'open')),
         inventoryEnabled
-          ? safeRows(supabase.from('inventory_items').select('id, quantity, current_stock, reorder_level').eq('lodge_id', lodgeId))
+          ? safeRows(supabase.from('inventory_items').select('id, quantity, current_stock, reorder_level').eq('lodge_id', lodgeId).limit(500))
           : Promise.resolve([]),
-        safeRows(
+        safeCount(
           supabase
             .from('rejected_online_bookings')
-            .select('id')
+            .select('id', { count: 'exact', head: true })
             .eq('lodge_id', lodgeId)
             .eq('rejection_reason', 'maintenance')
             .gte('attempted_at', blockedSince)
@@ -935,11 +954,13 @@ function AuthenticatedShell({ alertCount, dark, setDark, setAlertCount, notifica
         return reorder > 0 && current <= reorder
       })
 
-      setAlertCount(overdue.length + unpaid.length + maintenance.length + lowStock.length + blockedDemand.length)
+      setAlertCount(overdue + unpaid + maintenance + lowStock.length + blockedDemand)
     }
 
     refreshAlertCount()
-    const interval = window.setInterval(refreshAlertCount, 60_000)
+    const interval = window.setInterval(() => {
+      if (document.visibilityState !== 'hidden') refreshAlertCount()
+    }, 5 * 60_000)
     const handleVisible = () => {
       if (document.visibilityState === 'visible') refreshAlertCount()
     }

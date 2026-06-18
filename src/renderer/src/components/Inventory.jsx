@@ -90,6 +90,7 @@ export default function Inventory() {
   const [adjustDelta, setAdjustDelta] = useState('')
   const [adjustNotes, setAdjustNotes] = useState('')
   const [adjustPin, setAdjustPin] = useState('')
+  const [adjustOperationId, setAdjustOperationId] = useState('')
   const [adjustSaving, setAdjustSaving] = useState(false)
   const [adjustError, setAdjustError] = useState('')
 
@@ -98,6 +99,7 @@ export default function Inventory() {
   const [openingQty, setOpeningQty] = useState('')
   const [openingNotes, setOpeningNotes] = useState('')
   const [openingPin, setOpeningPin] = useState('')
+  const [openingOperationId, setOpeningOperationId] = useState('')
   const [openingSaving, setOpeningSaving] = useState(false)
   const [openingError, setOpeningError] = useState('')
 
@@ -537,6 +539,7 @@ export default function Inventory() {
     setAdjustDelta('')
     setAdjustNotes('')
     setAdjustPin('')
+    setAdjustOperationId(crypto.randomUUID())
     setAdjustError('')
     setAdjustModal(true)
   }
@@ -546,6 +549,7 @@ export default function Inventory() {
     setOpeningQty(item ? String(item.current_stock || 0) : '')
     setOpeningNotes('Opening stock setup')
     setOpeningPin('')
+    setOpeningOperationId(crypto.randomUUID())
     setOpeningError('')
     setOpeningModal(true)
   }
@@ -555,7 +559,13 @@ export default function Inventory() {
     setAdjustSaving(true)
     setAdjustError('')
     try {
-      const result = await window.api.inventory.adjustStock(adjustItem.id, parseFloat(adjustDelta), adjustNotes, adjustPin)
+      const result = await window.api.inventory.adjustStock(
+        adjustItem.id,
+        parseFloat(adjustDelta),
+        adjustNotes,
+        adjustPin,
+        adjustOperationId
+      )
       if (!result?.success) {
         setAdjustError(result?.error || 'Failed to adjust stock. Please try again.')
         return
@@ -597,7 +607,8 @@ export default function Inventory() {
         item.id,
         delta,
         openingNotes || `Opening stock set to ${targetQty} ${item.unit}`,
-        openingPin
+        openingPin,
+        openingOperationId
       )
       if (!result?.success) {
         setOpeningError(result?.error || 'Could not set opening stock.')

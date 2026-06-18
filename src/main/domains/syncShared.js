@@ -115,6 +115,26 @@ export function normalizeQueuedSyncItemForReplay(item = {}) {
   if (!item) return item;
   const next = { ...item, data: { ...(item.data || {}) } };
 
+  if (next.type === 'rpc' &&
+  ['update_booking', 'update_booking_status'].includes(next.table) &&
+  !next.data.p_idempotency_key) {
+    const queueId = String(next._queue_id || '').replace(/[^A-Za-z0-9:_-]/g, '-').slice(0, 80);
+    if (queueId) {
+      next.data.p_idempotency_key = `sync:${next.table}:${queueId}`.slice(0, 128);
+    }
+  }
+
+  if (next.type === 'rpc' && next.table === 'adjust_inventory_stock' && !next.data.p_adjustment_id) {
+    const queueId = String(next._queue_id || '');
+    const prefix = 'inventory-adjust-';
+    if (queueId.startsWith(prefix)) {
+      const adjustmentId = queueId.slice(prefix.length);
+      if (/^[0-9a-fA-F-]{36}$/.test(adjustmentId)) {
+        next.data.p_adjustment_id = adjustmentId;
+      }
+    }
+  }
+
   if (next.type === 'rpc' && ['update_booking', 'update_customer', 'update_room', 'update_quotation'].includes(next.table) && !('p_expected_updated_at' in next.data)) {
     next.data.p_expected_updated_at = null;
   }

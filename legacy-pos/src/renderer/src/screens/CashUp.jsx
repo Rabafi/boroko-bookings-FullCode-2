@@ -7,20 +7,20 @@ const PAYMENT_METHODS = ['cash', 'card', 'bank_transfer', 'orange_money', 'myzak
 
 export default function CashUp({ user, settings, isOnline }) {
   const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
-  const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [openingFloat, setOpeningFloat] = useState('');
-  const [countedCash, setCountedCash] = useState('');
+  const [countedMethods, setCountedMethods] = useState({});
   const [notes, setNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [cashups, setCashups] = useState([]);
+  const [summary, setSummary] = useState(null);
   const currency = settings?.currency || CURRENCY;
 
   const loadOrders = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await window.api.pos.getOrders({ startDate: date, endDate: date });
-      setOrders(data || []);
+      const s = await window.api.pos.getCashupSummary({ date, openingFloat: Number(openingFloat) || 0 });
+      setSummary(s);
       const c = await window.api.pos.getCashups({ limit: 10 });
       setCashups(c || []);
     } catch (e) {
@@ -28,51 +28,36 @@ export default function CashUp({ user, settings, isOnline }) {
     } finally {
       setLoading(false);
     }
-  }, [date]);
+  }, [date, openingFloat]);
 
   useEffect(() => { loadOrders(); }, [loadOrders]);
 
-  const summary = useMemo(() => {
-    const completed = orders.filter((o) => o.status === 'completed');
-    const voided = orders.filter((o) => o.status === 'voided');
-    const byMethod = {};
-    let grossSales = 0;
-    let returnTotal = 0;
-    let pendingCount = 0;
-
-    for (const order of completed) {
-      const total = Number(order.total || 0);
-      const breakdown = Array.isArray(order.payment_breakdown)
-        ? order.payment_breakdown
-        : typeof order.payment_breakdown === 'string'
-          ? (() => { try { return JSON.parse(order.payment_breakdown) } catch { return [] } })()
-          : [];
-
-      for (const p of breakdown) {
-        byMethod[p.method] = Number(byMethod[p.method] || 0) + Number(p.amount || 0);
+  useEffect(() => {
+    if (summary?.by_method) {
+      const initial = {};
+      for (const m of PAYMENT_METHODS) {
+        initial[m] = '';
       }
-      if (total >= 0) grossSales += total;
-      else returnTotal += Math.abs(total);
-      if (order._pending_sync) pendingCount++;
+      setCountedMethods((prev) => ({ ...initial, ...prev }));
     }
+  }, [summary?.by_method]);
 
-    const netSales = completed.reduce((sum, o) => sum + Number(o.total || 0), 0);
-    const float = Number(openingFloat) || 0;
-    const cashSales = Number(byMethod.cash || 0);
+  const varianceByMethod = useMemo(() => {
+    if (!summary) return {};
+    const result = {};
+    for (const m of PAYMENT_METHODS) {
+      const expected = m === 'cash'
+        ? (Number(summary.by_method?.cash || 0) + (Number(openingFloat) || 0))
+        : Number(summary.by_method?.[m] || 0);
+      const counted = Number(countedMethods[m]) || 0;
+      result[m] = counted - expected;
+    }
+    return result;
+  }, [summary, countedMethods, openingFloat]);
 
-    return {
-      orders_count: completed.length,
-      void_count: voided.length,
-      pending_count: pendingCount,
-      gross_sales: grossSales,
-      returns_total: returnTotal,
-      net_sales: netSales,
-      by_method: byMethod,
-      expected_cash_drawer: float + cashSales,
-      counted_cash: Number(countedCash) || 0,
-      cash_variance: (Number(countedCash) || 0) - (float + cashSales)
-    };
-  }, [orders, openingFloat, countedCash]);
+  const totalVariance = useMemo(() => {
+    return Object.values(varianceByMethod).reduce((sum, v) => sum + v, 0);
+  }, [varianceByMethod]);
 
   const handleSubmitCashup = async () => {
     setSubmitting(true);
@@ -80,24 +65,26 @@ export default function CashUp({ user, settings, isOnline }) {
       const payload = {
         date,
         opening_float: Number(openingFloat) || 0,
-        expected_cash_drawer: summary.expected_cash_drawer,
-        expected_by_method: summary.by_method,
-        counted_by_method: { cash: Number(countedCash) || 0 },
-        variance_by_method: { cash: summary.cash_variance },
-        cash_over_short: summary.cash_variance,
-        orders_count: summary.orders_count,
-        void_count: summary.void_count,
-        pending_count: summary.pending_count,
-        gross_sales: summary.gross_sales,
-        returns_total: summary.returns_total,
-        net_sales: summary.net_sales,
+        counted_by_method: {},
+        variance_by_method: {},
+        cash_over_short: 0,
         notes: notes || null,
         cashier_id: user.id,
         cashier_name: user.name || user.email
       };
+      for (const m of PAYMENT_METHODS) {
+        const counted = Number(countedMethods[m]) || 0;
+        if (counted > 0 || m === 'cash') {
+          payload.counted_by_method[m] = counted;
+        }
+        if (varianceByMethod[m] !== undefined) {
+          payload.variance_by_method[m] = varianceByMethod[m];
+        }
+      }
+      payload.cash_over_short = totalVariance;
       await window.api.pos.createCashup(payload);
       setOpeningFloat('');
-      setCountedCash('');
+      setCountedMethods({});
       setNotes('');
       await loadOrders();
       alert('Cash-up saved successfully!');
@@ -126,8 +113,23 @@ export default function CashUp({ user, settings, isOnline }) {
       </div>
 
       {loading ? (
-        <div className="flex py-12 justify-center">
-          <div className="h-8 w-8 animate-spin rounded-full border-4 border-emerald-500 border-t-transparent" />
+        <div className="grid gap-6 lg:grid-cols-2">
+          <div className="space-y-4">
+            <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-3">
+              <div className="h-5 w-32 animate-pulse rounded bg-slate-200" />
+              {[1,2,3,4,5].map((i) => <div key={i} className="h-4 w-full animate-pulse rounded bg-slate-100" />)}
+            </div>
+            <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-3">
+              <div className="h-5 w-48 animate-pulse rounded bg-slate-200" />
+              {[1,2,3].map((i) => <div key={i} className="h-4 w-full animate-pulse rounded bg-slate-100" />)}
+            </div>
+          </div>
+          <div className="space-y-4">
+            <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-3">
+              <div className="h-5 w-40 animate-pulse rounded bg-slate-200" />
+              {[1,2,3,4].map((i) => <div key={i} className="h-10 w-full animate-pulse rounded bg-slate-100" />)}
+            </div>
+          </div>
         </div>
       ) : (
         <div className="grid gap-6 lg:grid-cols-2">
@@ -136,26 +138,26 @@ export default function CashUp({ user, settings, isOnline }) {
             <div className="rounded-xl border border-slate-200 bg-white p-5">
               <h2 className="mb-4 font-bold text-slate-800">Sales Summary</h2>
               <div className="space-y-2 text-sm">
-                <div className="flex justify-between"><span className="text-slate-500">Orders</span><span className="font-semibold">{summary.orders_count}</span></div>
-                <div className="flex justify-between"><span className="text-slate-500">Voids</span><span className="font-semibold text-red-600">{summary.void_count}</span></div>
-                <div className="flex justify-between"><span className="text-slate-500">Pending Sync</span><span className="font-semibold text-amber-600">{summary.pending_count}</span></div>
+                <div className="flex justify-between"><span className="text-slate-500">Orders</span><span className="font-semibold">{summary?.orders_count || 0}</span></div>
+                <div className="flex justify-between"><span className="text-slate-500">Voids</span><span className="font-semibold text-red-600">{summary?.void_count || 0}</span></div>
+                <div className="flex justify-between"><span className="text-slate-500">Pending Sync</span><span className="font-semibold text-amber-600">{summary?.pending_count || 0}</span></div>
                 <hr className="border-slate-100" />
-                <div className="flex justify-between"><span className="text-slate-500">Gross Sales</span><span className="font-semibold">{currency} {fmt(summary.gross_sales)}</span></div>
-                <div className="flex justify-between"><span className="text-slate-500">Returns</span><span className="font-semibold text-red-600">-{currency} {fmt(summary.returns_total)}</span></div>
-                <div className="flex justify-between border-t border-slate-200 pt-2"><span className="font-bold">Net Sales</span><span className="font-bold text-emerald-700">{currency} {fmt(summary.net_sales)}</span></div>
+                <div className="flex justify-between"><span className="text-slate-500">Gross Sales</span><span className="font-semibold">{currency} {fmt(summary?.gross_sales)}</span></div>
+                <div className="flex justify-between"><span className="text-slate-500">Returns</span><span className="font-semibold text-red-600">-{currency} {fmt(summary?.returns_total)}</span></div>
+                <div className="flex justify-between border-t border-slate-200 pt-2"><span className="font-bold">Net Sales</span><span className="font-bold text-emerald-700">{currency} {fmt(summary?.net_sales)}</span></div>
               </div>
             </div>
 
             <div className="rounded-xl border border-slate-200 bg-white p-5">
-              <h2 className="mb-4 font-bold text-slate-800">By Payment Method</h2>
+              <h2 className="mb-4 font-bold text-slate-800">By Payment Method (Expected)</h2>
               <div className="space-y-2 text-sm">
-                {PAYMENT_METHODS.filter((m) => summary.by_method[m] > 0).map((m) => (
+                {PAYMENT_METHODS.filter((m) => (summary?.by_method?.[m] || 0) > 0).map((m) => (
                   <div key={m} className="flex justify-between">
                     <span className="text-slate-500 capitalize">{m.replace(/_/g, ' ')}</span>
-                    <span className="font-semibold">{currency} {fmt(summary.by_method[m])}</span>
+                    <span className="font-semibold">{currency} {fmt(summary?.by_method?.[m])}</span>
                   </div>
                 ))}
-                {PAYMENT_METHODS.every((m) => !summary.by_method[m]) && (
+                {PAYMENT_METHODS.every((m) => !(summary?.by_method?.[m] > 0)) && (
                   <p className="text-xs text-slate-400">No sales for this date</p>
                 )}
               </div>
@@ -165,7 +167,7 @@ export default function CashUp({ user, settings, isOnline }) {
           {/* Cash Count */}
           <div className="space-y-4">
             <div className="rounded-xl border border-slate-200 bg-white p-5">
-              <h2 className="mb-4 font-bold text-slate-800">Cash Count</h2>
+              <h2 className="mb-4 font-bold text-slate-800">Count & Variance</h2>
               <div className="space-y-3">
                 <div>
                   <label className="text-xs font-medium text-slate-500">Opening Float ({currency})</label>
@@ -178,26 +180,44 @@ export default function CashUp({ user, settings, isOnline }) {
                     min="0"
                   />
                 </div>
-                <div>
-                  <label className="text-xs font-medium text-slate-500">Expected Cash Drawer ({currency})</label>
-                  <p className="mt-1 text-lg font-bold text-slate-800">{currency} {fmt(summary.expected_cash_drawer)}</p>
-                </div>
-                <div>
-                  <label className="text-xs font-medium text-slate-500">Counted Cash ({currency})</label>
-                  <input
-                    type="number"
-                    value={countedCash}
-                    onChange={(e) => setCountedCash(e.target.value)}
-                    placeholder="0.00"
-                    className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
-                    min="0"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs font-medium text-slate-500">Variance ({currency})</label>
-                  <p className={`mt-1 text-lg font-bold ${summary.cash_variance === 0 ? 'text-slate-800' : summary.cash_variance > 0 ? 'text-emerald-700' : 'text-red-600'}`}>
-                    {currency} {fmt(summary.cash_variance)}
-                  </p>
+                {PAYMENT_METHODS.map((m) => {
+                  const expected = m === 'cash'
+                    ? (Number(summary?.by_method?.cash || 0) + (Number(openingFloat) || 0))
+                    : Number(summary?.by_method?.[m] || 0);
+                  if (expected <= 0 && m !== 'cash') return null;
+                  return (
+                    <div key={m} className="grid grid-cols-3 gap-2 items-end">
+                      <div>
+                        <label className="text-xs font-medium text-slate-500 capitalize">{m.replace(/_/g, ' ')} Expected</label>
+                        <p className="mt-1 text-sm font-semibold text-slate-700">{currency} {fmt(expected)}</p>
+                      </div>
+                      <div>
+                        <label className="text-xs font-medium text-slate-500">Counted</label>
+                        <input
+                          type="number"
+                          value={countedMethods[m] || ''}
+                          onChange={(e) => setCountedMethods((prev) => ({ ...prev, [m]: e.target.value }))}
+                          placeholder="0.00"
+                          className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                          min="0"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs font-medium text-slate-500">Variance</label>
+                        <p className={`mt-1 text-sm font-bold ${varianceByMethod[m] === 0 ? 'text-slate-800' : varianceByMethod[m] > 0 ? 'text-emerald-700' : 'text-red-600'}`}>
+                          {currency} {fmt(varianceByMethod[m])}
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })}
+                <div className="pt-2 border-t border-slate-200">
+                  <div className="flex justify-between">
+                    <span className="text-xs font-medium text-slate-500">Total Variance</span>
+                    <span className={`text-sm font-bold ${totalVariance === 0 ? 'text-slate-800' : totalVariance > 0 ? 'text-emerald-700' : 'text-red-600'}`}>
+                      {currency} {fmt(totalVariance)}
+                    </span>
+                  </div>
                 </div>
                 <div>
                   <label className="text-xs font-medium text-slate-500">Notes</label>

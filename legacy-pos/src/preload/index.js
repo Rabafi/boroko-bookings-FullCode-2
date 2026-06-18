@@ -1,9 +1,16 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
+const onIpc = (channel, cb) => {
+  const listener = (_event, value) => cb(value);
+  ipcRenderer.on(channel, listener);
+  return () => ipcRenderer.off(channel, listener);
+};
+
 const posAPI = {
   // Auth
   login: (email, password) => ipcRenderer.invoke('pos:auth-login', { email, password }),
-  restoreSession: () => ipcRenderer.invoke('pos:auth-restore'),
+  restoreSession: (credentials) => ipcRenderer.invoke('pos:auth-restore', credentials),
+  hasTrustedSession: (email) => ipcRenderer.invoke('pos:auth-has-trusted-session', email),
   logout: () => ipcRenderer.invoke('pos:auth-logout'),
   getConfig: () => ipcRenderer.invoke('pos:config'),
   saveConfig: (data) => ipcRenderer.invoke('pos:save-config', data),
@@ -30,6 +37,7 @@ const posAPI = {
   // Cash-Up
   createCashup: (payload) => ipcRenderer.invoke('pos:create-cashup', payload),
   getCashups: (filters) => ipcRenderer.invoke('pos:get-cashups', filters),
+  getCashupSummary: (filters) => ipcRenderer.invoke('pos:get-cashup-summary', filters),
 
   // Outlets
   getOutlets: () => ipcRenderer.invoke('pos:get-outlets'),
@@ -62,6 +70,7 @@ const posAPI = {
   printReceipt: (data) => ipcRenderer.invoke('pos:print-receipt', data),
   openCashDrawer: (settings) => ipcRenderer.invoke('pos:open-cash-drawer', settings),
   testHardware: (data) => ipcRenderer.invoke('pos:test-hardware', data),
+  sendPaymentTerminalTotal: (data) => ipcRenderer.invoke('pos:send-payment-terminal-total', data),
   getReceiptPrinters: () => ipcRenderer.invoke('pos:get-receipt-printers'),
   getDisplays: () => ipcRenderer.invoke('pos:get-displays'),
 
@@ -97,13 +106,34 @@ const posAPI = {
 
   // Sync
   getSyncStatus: () => ipcRenderer.invoke('pos:get-sync-status'),
+  getSyncQueueDetail: () => ipcRenderer.invoke('pos:get-sync-queue-detail'),
   syncRetry: () => ipcRenderer.invoke('pos:sync-retry'),
 
   // Settings
   getSettings: () => ipcRenderer.invoke('pos:get-settings'),
   getUserPosAccess: () => ipcRenderer.invoke('pos:get-user-pos-access'),
   getAppVersion: () => ipcRenderer.invoke('pos:get-app-version'),
-  getLowResourceConfig: () => ipcRenderer.invoke('pos:get-low-resource-config')
+  getLowResourceConfig: () => ipcRenderer.invoke('pos:get-low-resource-config'),
+
+  // App Updates
+  updates: {
+    onAvailable: (cb) => onIpc('pos:update-available', cb),
+    onNotAvailable: (cb) => onIpc('pos:update-not-available', cb),
+    onProgress: (cb) => onIpc('pos:update-progress', cb),
+    onReady: (cb) => onIpc('pos:update-ready', cb),
+    onError: (cb) => onIpc('pos:update-error', cb),
+    check: () => ipcRenderer.invoke('pos:update-check'),
+    download: () => ipcRenderer.invoke('pos:update-download'),
+    install: (options) => ipcRenderer.invoke('pos:update-install', options || {}),
+    getState: () => ipcRenderer.invoke('pos:update-get-state'),
+    getInstallSafety: () => ipcRenderer.invoke('pos:update-get-install-safety')
+  },
+
+  // Bootstrap & Window
+  bootstrapReferenceData: () => ipcRenderer.invoke('pos:bootstrap-reference-data'),
+  getWindowState: () => ipcRenderer.invoke('pos:get-window-state'),
+  toggleFullscreen: () => ipcRenderer.invoke('pos:toggle-fullscreen'),
+  getInventoryDiagnostics: () => ipcRenderer.invoke('pos:get-inventory-diagnostics')
 };
 
 contextBridge.exposeInMainWorld('api', { pos: posAPI });

@@ -9,6 +9,7 @@ export const state = {
   backupIntervalStarted: false,
   lodgeId: null,
   syncInProgress: false,
+  syncQueuePromise: null,
   replayAuthReady: false,
   backendSession: null,
   consecutiveConnectivityFailures: 0,
@@ -41,6 +42,7 @@ export function resetState() {
   state.backupIntervalStarted = false
   state.lodgeId = null
   state.syncInProgress = false
+  state.syncQueuePromise = null
   state.replayAuthReady = false
   state.backendSession = null
   state.consecutiveConnectivityFailures = 0

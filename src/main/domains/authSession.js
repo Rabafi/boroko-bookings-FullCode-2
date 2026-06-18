@@ -1,4 +1,3 @@
-import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
@@ -25,6 +24,11 @@ import {
   normalizeLodgeId,
   normalizeUserRecord
 } from './shared.js';
+import {
+  readSecureJson,
+  removeSecureJson,
+  writeSecureJson
+} from './secureLocalStore.js';
 
 function authTrace(label, payload = {}) {
   if (process.env.BOROKO_AUTH_TRACE !== '1') return;
@@ -59,21 +63,16 @@ function getTrustedSessionsPath() {
 }
 
 export function readSessionNonce() {
-  try {return JSON.parse(fs.readFileSync(getSessionNoncePath(), 'utf-8'));}
-  catch {return null;}
+  return readSecureJson(getSessionNoncePath(), null);
 }
 
 function readTrustedSessions() {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(getTrustedSessionsPath(), 'utf-8'));
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
+  const parsed = readSecureJson(getTrustedSessionsPath(), []);
+  return Array.isArray(parsed) ? parsed : [];
 }
 
 function writeTrustedSessions(sessions) {
-  try {fs.writeFileSync(getTrustedSessionsPath(), JSON.stringify(sessions, null, 2), 'utf-8');} catch {}
+  writeSecureJson(getTrustedSessionsPath(), Array.isArray(sessions) ? sessions : []);
 }
 
 export function pruneExpiredTrustedSessions(sessions = readTrustedSessions()) {
@@ -139,7 +138,7 @@ function buildTrustedSessionRecord(user, nonce, password = '') {
 
 export function writeSessionNonce(user, nonce, password = '') {
   const record = buildTrustedSessionRecord(user, nonce, password);
-  fs.writeFileSync(getSessionNoncePath(), JSON.stringify(record, null, 2), 'utf-8');
+  writeSecureJson(getSessionNoncePath(), record);
 
   const sessions = pruneExpiredTrustedSessions();
   const normalizedRecord = normalizeTrustedSessionRecord(record);
@@ -168,7 +167,7 @@ export function writeSessionNonce(user, nonce, password = '') {
 }
 
 export function clearSessionNonce() {
-  try {fs.unlinkSync(getSessionNoncePath());} catch {/* file may not exist */}
+  removeSecureJson(getSessionNoncePath());
 }
 
 export function createSessionNonce(user, password = '') {

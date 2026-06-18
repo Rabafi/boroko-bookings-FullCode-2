@@ -81,7 +81,8 @@ async function probeRpc(name, args = {}, options = {}) {
 
 // ─── HEALTH DIAGNOSTICS & OFFLINE SAFETY ───────────────────────────────────────
 
-export async function getSystemHealth() {
+export async function getSystemHealth(options = {}) {
+  const includeMutationProbes = options?.includeMutationProbes === true;
   const diagnostics = await getLodgeDiagnostics(state.lodgeId || '').catch((error) => ({ error: error.message }));
   const sync = getSyncStatus();
   const backups = getBackupInfoForHealth();
@@ -89,7 +90,7 @@ export async function getSystemHealth() {
   const faults = readHealthFaults();
   const finance = {
     payments_rpc: { ok: false, message: 'Offline or not checked yet.' },
-    contract: { ok: false, probes: {}, allOk: false, message: 'Not checked yet.' }
+    contract: { ok: true, probes: {}, allOk: true, skipped: true, message: 'Deep mutation probes skipped by default.' }
   };
 
   await checkOnline();
@@ -111,7 +112,29 @@ export async function getSystemHealth() {
       };
     }
 
-    // P0-7: probe all replay-critical RPCs
+    if (!includeMutationProbes) {
+      finance.contract = {
+        ok: true,
+        probes: {},
+        allOk: true,
+        skipped: true,
+        message: 'Deep mutation probes skipped by default to avoid load and accidental writes.'
+      };
+      return {
+        checked_at: new Date().toISOString(),
+        lodge_id: state.lodgeId,
+        online: state.isOnline,
+        replayAuthReady: state.replayAuthReady,
+        sync,
+        backups,
+        backup_health,
+        diagnostics,
+        finance,
+        faults
+      };
+    }
+
+    // P0-7: opt-in probe of replay-critical RPCs.
     const probeBookingId = randomUUID();
     const probeCustomerId = randomUUID();
     const probeRoomId = randomUUID();
@@ -232,7 +255,8 @@ export async function getSystemHealth() {
       p_item_id: randomUUID(),
       p_lodge_id: state.lodgeId,
       p_delta: 1,
-      p_notes: 'contract probe'
+      p_notes: 'contract probe',
+      p_adjustment_id: randomUUID()
     }).then((r) => ['adjust_inventory_stock', r]),
     probeRpc('upsert_pos_cashup', {
       payload: {
@@ -429,4 +453,21 @@ export async function getDeviceHealthRollup() {
   const { data, error } = await state.supabase.rpc('get_device_health_rollup', { p_lodge_id: state.lodgeId });
   if (error) throw new Error(error.message);
   return { available: true, devices: Array.isArray(data) ? data : [] };
+}
+
+// ── Fleet Health (cross-lodge) ────────────────────────────────────────────────
+export async function getFleetHealthRollup() {
+  if (!state.isOnline) return []
+  if (!state.adminDb) return []
+  const { data, error } = await state.adminDb.rpc('get_fleet_health_rollup')
+  if (error) return []
+  return data || []
+}
+
+export async function getFleetHealthSummary() {
+  if (!state.isOnline) return null
+  if (!state.adminDb) return null
+  const { data, error } = await state.adminDb.rpc('get_fleet_health_summary')
+  if (error) return null
+  return data?.[0] || null
 }

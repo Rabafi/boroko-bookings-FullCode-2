@@ -1205,6 +1205,28 @@ function setUpdateState(patch = {}) {
   return { ...updateState }
 }
 
+function getDesktopDeviceIdForUpdater() {
+  try {
+    const source = app?.getPath?.('userData') || 'boroko-desktop'
+    return crypto.createHash('sha256').update(String(source)).digest('hex').slice(0, 24)
+  } catch { return 'desktop-unknown' }
+}
+
+async function gateUpdateCheck() {
+  try {
+    const res = await db.checkUpdateAvailability(app.getVersion(), getDesktopDeviceIdForUpdater())
+    if (res?.update_available) {
+      console.log(`[Updater] RPC gate: update to v${res.latest_version} allowed (force=${res.force_update})`)
+      return true
+    }
+    console.log('[Updater] RPC gate: no update offered by Command Central')
+    return false
+  } catch (err) {
+    console.warn('[Updater] RPC gate check failed, allowing fallback:', err?.message)
+    return true // fail-open: if RPC is unreachable, allow normal update flow
+  }
+}
+
 function setupAutoUpdater(mainWindow) {
   // Only run in production (not dev mode)
   if (is.dev) return
@@ -1275,10 +1297,14 @@ function setupAutoUpdater(mainWindow) {
   })
 
   // Check on startup (after a short delay so the app feels snappy)
-  setTimeout(() => autoUpdater.checkForUpdates(), 8000)
+  setTimeout(async () => {
+    if (await gateUpdateCheck()) autoUpdater.checkForUpdates()
+  }, 8000)
 
-  // Then re-check every 4 hours
-  setInterval(() => autoUpdater.checkForUpdates(), 4 * 60 * 60 * 1000)
+  // Then re-check every 4 hours (gated through Command Central rollout)
+  setInterval(async () => {
+    if (await gateUpdateCheck()) autoUpdater.checkForUpdates()
+  }, 4 * 60 * 60 * 1000)
 }
 
 function createWindow() {
@@ -1324,7 +1350,7 @@ function createWindow() {
   }
 
   const computeAttention = async () => {
-    // Keep this extremely lightweight (runs every 30s).
+    // Keep this lightweight; it reads dashboard data, so avoid hot polling.
     // We start with existing dashboard stats + upcoming checkouts heuristics.
     const stats = await db.getDashboardStats().catch(() => null)
     const upcoming = await db.getUpcomingCheckins().catch(() => ({ today: [], tomorrow: [], dayAfter: [] }))
@@ -1368,7 +1394,7 @@ function createWindow() {
       } catch {
         // silent: watcher is best-effort
       }
-    }, 30_000)
+    }, 5 * 60_000)
 
     // Initial pulse a few seconds after boot
     setTimeout(() => {
@@ -2368,13 +2394,6 @@ app.whenReady().then(async () => {
   // Init DB
   await db.initDatabase()
 
-  // Start recurring financial validation (every 2 hours while app is open)
-  setInterval(() => {
-    db.runScheduledFinancialValidation('scheduled').catch((err) => {
-      console.warn('[Financial Validation] Scheduled run failed:', err?.message || err)
-    })
-  }, 2 * 60 * 60 * 1000)
-
   // ── Auth ──────────────────────────────────────────────────────────────────
   ipcMain.handle('auth:login', async (_, email, password) => {
     try {
@@ -2974,11 +2993,11 @@ app.whenReady().then(async () => {
   // ── Admin: Company & License Management ───────────────────────────────────
   ipcMain.handle('admin:getCompanies', async () => {
     try { requireRole('super_admin'); return await db.getAllCompanies() }
-    catch { return [] }
+    catch (e) { console.error('[admin:getCompanies]', e?.message || e); throw e }
   })
   ipcMain.handle('admin:getLicenses', async () => {
     try { requireRole('super_admin'); return await db.getLicenses() }
-    catch { return [] }
+    catch (e) { console.error('[admin:getLicenses]', e?.message || e); throw e }
   })
   ipcMain.handle('admin:createLicense', async (_, data) => {
     try { requireRole('super_admin'); return await db.createLicense(data) }
@@ -3115,6 +3134,153 @@ app.whenReady().then(async () => {
     catch { return [] }
   })
 
+  ipcMain.handle('admin:getAuditSummary', async (_, filters) => {
+    try { requireRole('super_admin'); return await db.getAuditSummary(filters || {}) }
+    catch { return [] }
+  })
+
+  // ── Admin Notifications ──────────────────────────────────────────────────
+  ipcMain.handle('admin:createNotification', async (_, payload) => {
+    try { requireRole('super_admin'); return { id: await db.createNotification(payload) } }
+    catch { return { error: 'Failed to create notification' } }
+  })
+  ipcMain.handle('admin:getNotifications', async (_, filters) => {
+    try { requireRole('super_admin'); return await db.getNotifications(filters || {}) }
+    catch { return [] }
+  })
+  ipcMain.handle('admin:getUnreadCount', async () => {
+    try { requireRole('super_admin'); return await db.getUnreadCount() }
+    catch { return 0 }
+  })
+  ipcMain.handle('admin:markNotificationsRead', async (_, ids) => {
+    try { requireRole('super_admin'); return { count: await db.markNotificationsRead(ids) } }
+    catch { return { count: 0 } }
+  })
+  ipcMain.handle('admin:cleanupNotifications', async (_, days) => {
+    try { requireRole('super_admin'); return { ok: true, count: await db.cleanupNotifications(days) } }
+    catch (e) { return { ok: false, count: 0, error: e.message } }
+  })
+
+  // ── Release Control ────────────────────────────────────────────────────────
+  ipcMain.handle('admin:getScheduledReleases', async () => {
+    try { requireRole('super_admin'); return await db.getScheduledReleases() }
+    catch { return [] }
+  })
+  ipcMain.handle('admin:expireOverdueFeatures', async () => {
+    try { requireRole('super_admin'); return { ok: true, count: await db.expireOverdueFeatures() } }
+    catch (e) { return { ok: false, count: 0, error: e.message } }
+  })
+
+  // ── Notification Automation ──────────────────────────────────────────────
+  ipcMain.handle('admin:getNotificationRules', async () => {
+    try { requireRole('super_admin'); return await db.getNotificationRules() }
+    catch { return [] }
+  })
+  ipcMain.handle('admin:upsertNotificationRule', async (_, rule) => {
+    try { requireRole('super_admin'); return await db.upsertNotificationRule(rule) }
+    catch (e) { return { ok: false, error: e.message } }
+  })
+  ipcMain.handle('admin:evaluateRule', async (_, ruleKey) => {
+    try { requireRole('super_admin'); return await db.evaluateRule(ruleKey) }
+    catch (e) { return { ok: false, error: e.message } }
+  })
+  ipcMain.handle('admin:evaluateAllRules', async () => {
+    try { requireRole('super_admin'); return await db.evaluateAllRules() }
+    catch (e) { return { ok: false, error: e.message, results: [] } }
+  })
+  ipcMain.handle('admin:getNotificationEvents', async (_, opts) => {
+    try { requireRole('super_admin'); return await db.getNotificationEvents(opts || {}) }
+    catch { return [] }
+  })
+  ipcMain.handle('admin:getNotificationEventSummary', async () => {
+    try { requireRole('super_admin'); return await db.getNotificationEventSummary() }
+    catch { return { total_events: 0, undispatched: 0, active_rules: 0, events_by_rule_7d: {} } }
+  })
+  ipcMain.handle('admin:markEventsDispatched', async (_, eventIds) => {
+    try { requireRole('super_admin'); return await db.markEventsDispatched(eventIds) }
+    catch (e) { return { ok: false, error: e.message } }
+  })
+
+  // ── Accounting ──────────────────────────────────────────────────────────
+  ipcMain.handle('admin:getMrrSummary', async () => {
+    try { requireRole('super_admin'); return await db.getMrrSummary() }
+    catch { return { ok: true, mrr: 0, arr: 0, lodge_count: 0, trials_active: 0, by_plan: {} } }
+  })
+  ipcMain.handle('admin:getRevenueSummary', async (_, days) => {
+    try { requireRole('super_admin'); return await db.getRevenueSummary(days) }
+    catch { return { ok: true, daily: [], total_revenue: 0, payment_count: 0, avg_daily: 0 } }
+  })
+  ipcMain.handle('admin:getLodgeFinancialSummary', async () => {
+    try { requireRole('super_admin'); return await db.getLodgeFinancialSummary() }
+    catch { return { ok: true, lodges: [] } }
+  })
+  ipcMain.handle('admin:getCollectionsQueue', async () => {
+    try { requireRole('super_admin'); return await db.getCollectionsQueue() }
+    catch { return { ok: true, queue: [] } }
+  })
+  ipcMain.handle('admin:getRevenueByMethod', async (_, days) => {
+    try { requireRole('super_admin'); return await db.getRevenueByMethod(days) }
+    catch { return { ok: true, methods: [] } }
+  })
+
+  // ── Task Center ─────────────────────────────────────────────────────────
+  ipcMain.handle('admin:getAdminToday', async () => {
+    try { requireRole('super_admin'); return await db.getAdminToday() }
+    catch { return { ok: false, error: 'Failed to load', summary: {}, overdue_bookings: [], trials_ending: [], failed_devices: [], urgent_tickets: [], lead_followups: [], recent_payments: [] } }
+  })
+
+  // ── Global Search ───────────────────────────────────────────────────────
+  ipcMain.handle('admin:globalSearch', async (_, query, limit) => {
+    try { requireRole('super_admin'); return await db.globalSearch(query, limit) }
+    catch { return { ok: true, results: [] } }
+  })
+
+  // ── Bulk Actions ────────────────────────────────────────────────────────
+  ipcMain.handle('admin:bulkUpdateStatus', async (_, entityType, entityIds, newStatus) => {
+    try { requireRole('super_admin'); return await db.bulkUpdateStatus(entityType, entityIds, newStatus) }
+    catch (e) { return { ok: false, error: e.message } }
+  })
+  ipcMain.handle('admin:bulkDelete', async (_, entityType, entityIds) => {
+    try { requireRole('super_admin'); return await db.bulkDelete(entityType, entityIds) }
+    catch (e) { return { ok: false, error: e.message } }
+  })
+  ipcMain.handle('admin:bulkNotify', async (_, entityType, entityIds, message) => {
+    try { requireRole('super_admin'); return await db.bulkNotify(entityType, entityIds, message) }
+    catch (e) { return { ok: false, error: e.message } }
+  })
+
+  // ── Deep Fleet Health + App Update Control ──────────────────────────────
+  ipcMain.handle('admin:pushUpdateNotification', async (_, version, message, force) => {
+    try { requireRole('super_admin'); return await db.pushUpdateNotification(version, message, force) }
+    catch (e) { return { ok: false, error: e.message } }
+  })
+  ipcMain.handle('admin:getSyncQueueStatus', async () => {
+    try { requireRole('super_admin'); return await db.getSyncQueueStatus() }
+    catch { return { ok: true, devices: [], stale_count: 0, total_devices: 0 } }
+  })
+
+  // ── Release Rollout Control ────────────────────────────────────────────
+  ipcMain.handle('admin:createRelease', async (_, release) => {
+    try { requireRole('super_admin'); return await db.createRelease(release) }
+    catch (e) { return { ok: false, error: e.message } }
+  })
+  ipcMain.handle('admin:updateRelease', async (_, version, updates) => {
+    try { requireRole('super_admin'); return await db.updateRelease(version, updates) }
+    catch (e) { return { ok: false, error: e.message } }
+  })
+  ipcMain.handle('admin:checkUpdateAvailability', async (_, currentVersion, deviceId) => {
+    try { requireRole('super_admin'); return await db.checkUpdateAvailability(currentVersion, deviceId) }
+    catch { return { ok: true, update_available: false } }
+  })
+  ipcMain.handle('admin:getReleases', async () => {
+    try { requireRole('super_admin'); return await db.getReleases() }
+    catch { return [] }
+  })
+  ipcMain.handle('admin:getSurfaceIntelligence', async () => {
+    try { requireRole('super_admin'); return await db.getSurfaceIntelligence() }
+    catch (e) { return { ok: false, error: e.message, surfaces: [], totals: {} } }
+  })
+
   // ── Admin: Company Stats ──────────────────────────────────────────────────
   ipcMain.handle('admin:getCompanyStats', async (_, lodgeId) => {
     try { requireRole('super_admin'); return await db.getCompanyStats(lodgeId) }
@@ -3203,6 +3369,69 @@ app.whenReady().then(async () => {
   ipcMain.handle('admin:updateMarketingLeadStatus', async (_, id, status) => {
     try { requireRole('super_admin'); return await db.updateMarketingLeadStatus(id, status) }
     catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('admin:updateLeadCrm', async (_, id, fields) => {
+    try { requireRole('super_admin'); return await db.updateLeadCrm(id, fields || {}) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('admin:getSalesPipelineSummary', async () => {
+    try { requireRole('super_admin'); return await db.getSalesPipelineSummary() }
+    catch (e) { return [] }
+  })
+
+  // ── Generic Admin Excel Export ────────────────────────────────────────────
+  ipcMain.handle('admin:exportExcel', async (event, payload = {}) => {
+    const { title = 'Export', rows = [], sheetName, columns } = payload
+    const win = BrowserWindow.fromWebContents(event.sender)
+    const { filePath, canceled } = await dialog.showSaveDialog(win, {
+      title: `Export ${title} to Excel`,
+      defaultPath: `boroko-${title.toLowerCase().replace(/\s+/g, '-')}-${new Date().toISOString().slice(0, 10)}.xlsx`,
+      filters: [{ name: 'Excel Files', extensions: ['xlsx'] }]
+    })
+    if (canceled || !filePath) return { success: false }
+    try {
+      const wb = XLSX.utils.book_new()
+      const cols = columns || (rows.length ? Object.keys(rows[0]).map(k => ({ key: k, header: k })) : [])
+      const headers = cols.map(c => c.header)
+      const data = rows.map(row => cols.map(c => row[c.key] ?? ''))
+      const ws = XLSX.utils.aoa_to_sheet([headers, ...data])
+      if (cols.length) ws['!cols'] = cols.map(c => ({ wch: c.width || Math.max(12, (c.header || '').length + 4) }))
+      XLSX.utils.book_append_sheet(wb, ws, sheetName || title.slice(0, 31))
+      const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' })
+      fs.writeFileSync(filePath, buffer)
+      return { success: true, filePath }
+    } catch (e) { return { success: false, error: e.message } }
+  })
+
+  // ── Generic Admin PDF Export (print-to-PDF) ──────────────────────────────
+  ipcMain.handle('admin:exportPdf', async (event, payload = {}) => {
+    const { title = 'Export', rows = [], columns } = payload
+    const cols = columns || (rows.length ? Object.keys(rows[0]).map(k => ({ key: k, header: k })) : [])
+    const win = BrowserWindow.fromWebContents(event.sender)
+    const { filePath, canceled } = await dialog.showSaveDialog(win, {
+      title: `Export ${title} to PDF`,
+      defaultPath: `boroko-${title.toLowerCase().replace(/\s+/g, '-')}-${new Date().toISOString().slice(0, 10)}.pdf`,
+      filters: [{ name: 'PDF Files', extensions: ['pdf'] }]
+    })
+    if (canceled || !filePath) return { success: false }
+    const printWin = new BrowserWindow({ show: false, webPreferences: { offscreen: true } })
+    const headers = cols.map(c => `<th style="padding:8px 12px;border-bottom:2px solid #333;text-align:left;font-size:11px;color:#666;">${escapeHtml(c.header)}</th>`).join('')
+    const bodyRows = rows.map(row =>
+      `<tr>${cols.map(c => `<td style="padding:6px 12px;border-bottom:1px solid #eee;font-size:12px;">${escapeHtml(String(row[c.key] ?? ''))}</td>`).join('')}</tr>`
+    ).join('')
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+      body{font-family:-apple-system,sans-serif;padding:40px;color:#111;}
+      h1{font-size:18px;margin-bottom:4px;} p.sub{font-size:12px;color:#888;margin-top:0;}
+      table{width:100%;border-collapse:collapse;margin-top:16px;}
+    </style></head><body>
+      <h1>${escapeHtml(title)}</h1><p class="sub">Boroko Bookings · Generated ${escapeHtml(new Date().toLocaleString())}</p>
+      <table><thead><tr>${headers}</tr></thead><tbody>${bodyRows}</tbody></table>
+    </body></html>`
+    await printWin.loadURL(`data:text/html,${encodeURIComponent(html)}`)
+    const pdfData = await printWin.webContents.printToPDF({ printBackground: true, pageSize: 'A4' })
+    fs.writeFileSync(filePath, pdfData)
+    printWin.destroy()
+    return { success: true, filePath }
   })
   ipcMain.handle('trial:getInvoices', async (_, lodgeId) => {
     try {
@@ -3399,6 +3628,7 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('users:create', async (_, data) => {
     try {
+      requireRole('admin', 'super_admin')
       await requireCapability('staff.manage')
       if (data?.role && normalizeAppRole(data.role) !== 'receptionist') {
         await requireCapability('staff.permissions')
@@ -3408,6 +3638,7 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('users:update', async (_, id, data) => {
     try {
+      requireRole('admin', 'super_admin')
       await requireCapability('staff.manage')
       if (data?.role) {
         await requireCapability('staff.permissions')
@@ -3418,6 +3649,7 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('users:resetPassword', async (_, id, password) => {
     try {
+      requireRole('admin', 'super_admin')
       await requireCapability('staff.manage')
       await assertResourceBelongsToCurrentLodge('User', id, db.getUserById)
       await db.resetUserPassword(id, password); return { success: true }
@@ -3425,6 +3657,7 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('users:delete', async (_, id) => {
     try {
+      requireRole('admin', 'super_admin')
       await requireCapability('staff.manage')
       await assertResourceBelongsToCurrentLodge('User', id, db.getUserById)
       await db.deleteUser(id); return { success: true }
@@ -4998,11 +5231,11 @@ app.whenReady().then(async () => {
       return []
     }
   })
-  ipcMain.handle('inventory:adjustStock', async (_, itemId, delta, notes, managerPin) => {
+  ipcMain.handle('inventory:adjustStock', async (_, itemId, delta, notes, managerPin, adjustmentId) => {
     try {
       await requireCapability('inventory.manage')
       await assertResourceBelongsToCurrentLodge('Inventory item', itemId, db.getInventoryItemById)
-      return await db.adjustInventoryStock(itemId, delta, notes, managerPin)
+      return await db.adjustInventoryStock(itemId, delta, notes, adjustmentId)
     } catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('inventory:getMovements', async (_, filters) => {
@@ -5568,10 +5801,10 @@ app.whenReady().then(async () => {
     }
     catch (e) { return { error: e.message } }
   })
-  ipcMain.handle('settings:getSystemHealth', async () => {
+  ipcMain.handle('settings:getSystemHealth', async (_, options = {}) => {
     try {
       await requireCapability('system.health')
-      return await db.getSystemHealth()
+      return await db.getSystemHealth(options)
     }
     catch (e) { return { error: e.message } }
   })
@@ -5628,6 +5861,14 @@ app.whenReady().then(async () => {
       await requireCapability('system.health')
       return await db.getDeviceHealthRollup()
     } catch { return { available: false, devices: [] } }
+  })
+  ipcMain.handle('admin:getFleetHealthRollup', async () => {
+    try { requireRole('super_admin'); return await db.getFleetHealthRollup() }
+    catch { return [] }
+  })
+  ipcMain.handle('admin:getFleetHealthSummary', async () => {
+    try { requireRole('super_admin'); return await db.getFleetHealthSummary() }
+    catch { return null }
   })
   ipcMain.handle('trial:getStatus', async (_, lodgeId) => {
     try { return await db.getTrialStatus(lodgeId) }
@@ -5866,6 +6107,19 @@ app.whenReady().then(async () => {
     db.runScheduledFinancialValidation('scheduled').catch((error) => {
       console.error('Scheduled financial validation check failed:', error?.message || error)
     })
+  }, 6 * 60 * 60 * 1000)
+
+  // ── Notification Automation Scheduler ──────────────────────────────────────
+  setTimeout(() => {
+    db.evaluateAllRules().catch((error) => {
+      console.error('Initial notification automation check failed:', error?.message || error)
+    })
+  }, 5 * 60_000)
+
+  setInterval(() => {
+    db.evaluateAllRules().catch((error) => {
+      console.error('Scheduled notification automation check failed:', error?.message || error)
+    })
   }, 60 * 60 * 1000)
 
   // ── Update IPC ──────────────────────────────────────────────────────────────
@@ -5876,6 +6130,10 @@ app.whenReady().then(async () => {
     if (is.dev) return { success: true, updateAvailable: false, dev: true }
     try {
       setUpdateState({ phase: 'checking', error: '' })
+      const allowed = await gateUpdateCheck()
+      if (!allowed) {
+        return { success: true, updateAvailable: false, gated: true, state: { ...updateState } }
+      }
       const result = await autoUpdater.checkForUpdates()
       const info = result?.updateInfo || {}
       const latestVersion = info.version

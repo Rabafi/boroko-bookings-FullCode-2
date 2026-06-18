@@ -51,6 +51,15 @@ export function createBookingIdempotencyKey(bookingId) {
   return `create-booking:${bookingId}`;
 }
 
+function createOperationIdempotencyKey(prefix, payload = {}) {
+  const digest = crypto.
+  createHash('sha256').
+  update(JSON.stringify(payload)).
+  digest('hex').
+  slice(0, 32);
+  return `${prefix}:${digest}`.slice(0, 128);
+}
+
 function createPaymentIdempotencyKey(bookingId, type = 'payment', intentId = null, fallbackSignature = null) {
   if (type === 'deposit') {
     // Deterministic — bound to the booking, safe to replay without generating a duplicate
@@ -99,16 +108,32 @@ export async function checkExclusiveEventConflict(checkIn, checkOut, excludeGrou
 }
 
 const BOOKING_LIST_SELECT = 'id, customer_id, room_id, check_in, check_out, adults, children, total_amount, status, payment_status, amount_paid, charges_total, deposit_amount, notes, is_exclusive_event, invoice_number, created_at, updated_at, created_by, payment_method, source, quotation_id, event_daily_rate';
+const BOOKING_PAGE_SIZE = 1000;
+const BOOKING_MAX_ROWS = 10000;
+
+async function fetchPagedBookingRows(buildQuery, maxRows = BOOKING_MAX_ROWS) {
+  const rows = [];
+  for (let from = 0; from < maxRows; from += BOOKING_PAGE_SIZE) {
+    const to = Math.min(from + BOOKING_PAGE_SIZE - 1, maxRows - 1);
+    const { data, error } = await buildQuery().range(from, to);
+    if (error) throw error;
+    const page = data || [];
+    rows.push(...page);
+    if (page.length < to - from + 1) break;
+  }
+  if (rows.length >= maxRows) {
+    console.warn(`[Bookings] Reached ${maxRows} row read cap; narrow the date range to load older bookings.`);
+  }
+  return rows;
+}
 
 async function _getAllBookings() {
   try {
-    const { data, error } = await state.supabase.
-    from('bookings').
-    select(`${BOOKING_LIST_SELECT}, customers(name, phone, email), rooms(room_number, room_type, rate_per_night)`).
-    eq('lodge_id', state.lodgeId).
-    order('check_in', { ascending: false }).
-    limit(500);
-    if (error) throw error;
+    const data = await fetchPagedBookingRows(() => state.supabase.
+      from('bookings').
+      select(`${BOOKING_LIST_SELECT}, customers(name, phone, email), rooms(room_number, room_type, rate_per_night)`).
+      eq('lodge_id', state.lodgeId).
+      order('check_in', { ascending: false }));
 
     const cached = readCache('bookings');
     if ((data || []).length === 0 && cached.length > 0) {
@@ -304,11 +329,12 @@ export async function getPendingOnlineBookings() {
     if (state.isOnline) {
       const { data, error } = await state.supabase.
       from('bookings').
-      select(`*, customers(name, phone, email), rooms(room_number, room_type)`).
+      select(`id, lodge_id, customer_id, room_id, check_in, check_out, adults, children, total_amount, amount_paid, payment_status, status, source, created_at, notes, customers(name, phone, email), rooms(room_number, room_type)`).
       eq('lodge_id', state.lodgeId).
       eq('source', 'online').
       eq('status', 'pending').
-      order('created_at', { ascending: false });
+      order('created_at', { ascending: false }).
+      limit(100);
       if (error) throw error;
       return (data || []).map((b) => ({
         ...b,
@@ -330,13 +356,13 @@ export async function getPendingOnlineBookings() {
 
 export async function getBookingsByDateRange(startDate, endDate) {
   if (state.isOnline) {
-    const { data } = await state.supabase.
-    from('bookings').
-    select(`*, customers(name), rooms(room_number, room_type, rate_per_night)`).
-    eq('lodge_id', state.lodgeId).
-    neq('status', 'cancelled').
-    lte('check_in', endDate).
-    gt('check_out', startDate);
+    const data = await fetchPagedBookingRows(() => state.supabase.
+      from('bookings').
+      select(`*, customers(name), rooms(room_number, room_type, rate_per_night)`).
+      eq('lodge_id', state.lodgeId).
+      neq('status', 'cancelled').
+      lte('check_in', endDate).
+      gt('check_out', startDate), 5000);
 
     if (data) {
       return data.map((b) => ({
@@ -545,19 +571,11 @@ export async function createBooking(data) {
       createBackup();
 
       const bookingId = result.booking_id || id;
-
-      // P2: Explicitly record deposit if provided.
-      // This ensures payment records are created even if the create_booking RPC is an older version.
-      if (deposit > 0) {
-        try {
-          await updateBookingPayment(bookingId, deposit, paymentMethod, 'deposit');
-        } catch (depError) {
-          // If deposit fails but booking succeeded, surface as a warning so the UI stays in the modal.
-          const err = new Error(depError.message || 'Deposit could not be recorded');
-          err.code = 'DEPOSIT_FAILED';
-          err.booking_id = bookingId;
-          throw err;
-        }
+      if (result.depositWarning) {
+        const err = new Error(result.depositWarning);
+        err.code = 'DEPOSIT_FAILED';
+        err.booking_id = bookingId;
+        throw err;
       }
       return bookingId;
     } else {
@@ -573,6 +591,7 @@ export async function createBooking(data) {
         _local_invoice_number: buildLocalPendingInvoiceNumber(id),
         _pending_sync: true,
         _pending_payment: deposit > 0,
+        _financial_estimate: deposit > 0,
         _sync_created_offline: true,
         _sync_state: 'pending',
         _sync_error: null,
@@ -603,12 +622,6 @@ export async function createBooking(data) {
 
       cached.push(newBooking);
       writeCache('bookings', cached);
-
-      // P2: Explicitly queue deposit if provided.
-      // updateBookingPayment handles its own queuing and dependency on the booking creation record.
-      if (deposit > 0) {
-        await updateBookingPayment(id, deposit, paymentMethod, 'deposit');
-      }
 
       const _r = readCache('rooms').find((r) => r.id === newBooking.room_id);
       const _c = readCache('customers').find((c) => c.id === newBooking.customer_id);
@@ -676,13 +689,25 @@ export async function updateBooking(id, data) {
       ...update,
       ...(expectedUpdatedAt ? { expected_updated_at: expectedUpdatedAt } : {})
     };
+    const idempotencyKey = createOperationIdempotencyKey(`booking:update:${id}`, {
+      expected_updated_at: expectedUpdatedAt,
+      customer_id: update.customer_id,
+      room_id: update.room_id,
+      check_in: update.check_in,
+      check_out: update.check_out,
+      adults: update.adults,
+      children: update.children,
+      total_amount: update.total_amount,
+      notes: update.notes
+    });
 
     if (state.isOnline) {
       const { data: result, error } = await state.supabase.rpc('update_booking', {
         p_id: id,
         p_lodge_id: state.lodgeId,
         payload: rpcPayload,
-        p_expected_updated_at: rpcPayload.expected_updated_at || null
+        p_expected_updated_at: rpcPayload.expected_updated_at || null,
+        p_idempotency_key: idempotencyKey
       });
       if (error) throw new Error(error.message);
       if (!result?.success) throw new Error(result?.error || 'Could not update booking');
@@ -696,7 +721,8 @@ export async function updateBooking(id, data) {
         p_id: id,
         p_lodge_id: state.lodgeId,
         payload: rpcPayload,
-        p_expected_updated_at: rpcPayload.expected_updated_at || null
+        p_expected_updated_at: rpcPayload.expected_updated_at || null,
+        p_idempotency_key: idempotencyKey
       }, null, _updDepend ? { _depends_on: _updDepend } : {});
       // Cache SECOND — offline estimate includes charges_total for correct local display
       if (idx >= 0) {
@@ -752,6 +778,10 @@ export async function updateBookingStatus(id, status) {
 
   const expectedUpdatedAt = currentBooking?.updated_at || null;
   const update = { status, updated_at: new Date().toISOString() };
+  const idempotencyKey = createOperationIdempotencyKey(`booking:status:${id}`, {
+    expected_updated_at: expectedUpdatedAt,
+    status
+  });
 
   const roomStatus =
   status === 'checked_in' ? 'occupied' :
@@ -779,7 +809,8 @@ export async function updateBookingStatus(id, status) {
       p_id: id,
       p_lodge_id: state.lodgeId,
       p_status: status,
-      p_expected_updated_at: expectedUpdatedAt
+      p_expected_updated_at: expectedUpdatedAt,
+      p_idempotency_key: idempotencyKey
     });
     if (error) throw new Error(error.message);
     if (!result?.success) throw new Error(result?.error || 'Could not update booking status');
@@ -802,7 +833,8 @@ export async function updateBookingStatus(id, status) {
       p_id: id,
       p_lodge_id: state.lodgeId,
       p_status: status,
-      p_expected_updated_at: _stDepend ? null : expectedUpdatedAt
+      p_expected_updated_at: _stDepend ? null : expectedUpdatedAt,
+      p_idempotency_key: idempotencyKey
     }, null, _stDepend ? { _depends_on: _stDepend } : {});
     // Cache SECOND — booking
     if (idx >= 0) bookings[idx] = { ...bookings[idx], ...update };
@@ -896,7 +928,10 @@ export async function updateBookingPayment(id, paymentAmount, paymentMethod, typ
       // Cache SECOND
       cached[idx] = {
         ...b,
+        amount_paid: newPaid,
+        payment_status: newPaid >= totalOwed && totalOwed > 0 ? 'paid' : newPaid > 0 ? 'partial' : 'unpaid',
         _pending_payment: true, // local estimate — not server-confirmed; cleared by refreshCache
+        _financial_estimate: true,
         _pending_sync: true, // UI-only flag — never sent to Supabase; cleared by next refreshCache from DB
         updated_at: new Date().toISOString()
       };
@@ -979,7 +1014,17 @@ export async function refundBooking(bookingId, options = {}) {
       p_requested_by: state.currentUser?.id || null,
       p_approved_by: approver.approved_by,
       p_proof_reference: proofReference,
-      p_approval_note: approvalNote
+      p_approval_note: approvalNote,
+      p_idempotency_key: createOperationIdempotencyKey(`booking:refund:${bookingId}`, {
+        expected_updated_at: booking.updated_at || null,
+        retained_percent: retainedPercent,
+        method: paymentMethod,
+        notes,
+        requested_by: state.currentUser?.id || null,
+        approved_by: approver.approved_by,
+        proof_reference: proofReference,
+        approval_note: approvalNote
+      })
     });
 
     if (error) throw new Error(error.message || 'Refund failed');
@@ -1257,6 +1302,14 @@ export async function addBookingCharge(bookingId, data) {
   try {
     if (Number(data.unit_price) <= 0) throw new Error('Charge unit price must be greater than zero');
     const currentBooking = readCache('bookings').find((booking) => booking.id === bookingId) || null;
+    const idempotencyKey = data.idempotency_key || createOperationIdempotencyKey(`booking:charge:${bookingId}`, {
+      expected_updated_at: currentBooking?.updated_at || null,
+      description: data.description,
+      category: data.category || 'other',
+      quantity: Number(data.quantity) || 1,
+      unit_price: Number(data.unit_price) || 0,
+      outlet_id: data.outlet_id || null
+    });
     if (state.isOnline) {
       const { data: result, error } = await state.supabase.rpc('add_booking_charge', {
         p_booking_id: bookingId,
@@ -1266,7 +1319,8 @@ export async function addBookingCharge(bookingId, data) {
         p_quantity: Number(data.quantity) || 1,
         p_unit_price: Number(data.unit_price) || 0,
         p_outlet_id: data.outlet_id || null, // explicit outlet attribution; null = Unassigned
-        p_expected_updated_at: currentBooking?.updated_at || null
+        p_expected_updated_at: currentBooking?.updated_at || null,
+        p_idempotency_key: idempotencyKey
       });
       if (error) throw new Error(error.message);
       if (!result?.success) throw new Error(result?.error || 'Could not add booking charge');
@@ -2000,6 +2054,7 @@ export async function convertQuotationToBooking(quotationId, depositAmount = 0, 
       _local_invoice_number: buildLocalPendingInvoiceNumber(localBookingId),
       _pending_sync: true,
       _pending_payment: deposit > 0,
+      _financial_estimate: deposit > 0,
       _sync_created_offline: true,
       _sync_state: 'pending',
       _sync_error: null,
@@ -2070,20 +2125,10 @@ export async function convertQuotationToBooking(quotationId, depositAmount = 0, 
   await refreshCache('quotations');
 
   const bookingId = result.booking_id || result.id;
-
-  // P2: Explicitly record deposit if provided.
-  if (deposit > 0) {
-    try {
-      await updateBookingPayment(bookingId, deposit, method, 'deposit');
-    } catch (depError) {
-      logActivity('quotation_converted', `Quotation ${quotationId} converted to booking ${bookingId} (Deposit failed: ${depError.message})`);
-      return {
-        booking_id: bookingId,
-        invoice_number: result.invoice_number,
-        depositWarning: depError.message
-      };
-    }
-  }
   logActivity('quotation_converted', `Quotation ${quotationId} converted to booking ${bookingId}`);
-  return { booking_id: bookingId, invoice_number: result.invoice_number };
+  return {
+    booking_id: bookingId,
+    invoice_number: result.invoice_number,
+    ...(result.depositWarning ? { depositWarning: result.depositWarning } : {})
+  };
 }

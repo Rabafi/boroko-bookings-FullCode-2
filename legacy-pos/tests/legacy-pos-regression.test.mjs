@@ -225,7 +225,7 @@ test('Main process has no direct .from().insert() for forbidden tables', () => {
 
 test('All critical mutations use RPC', () => {
   const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
-  for (const rpc of ['create_pos_order', 'approve_pos_void_with_pin', 'upsert_pos_cashup', 'create_pos_menu_item', 'update_pos_menu_item', 'delete_pos_menu_item', 'set_bar_pos_pack_template', 'update_pos_prep_ticket_status', 'open_pos_shift', 'close_pos_shift', 'get_pos_shifts']) {
+  for (const rpc of ['create_pos_order', 'approve_pos_void_with_pin', 'upsert_pos_cashup', 'create_pos_menu_item', 'update_pos_menu_item', 'delete_pos_menu_item', 'set_bar_pos_pack_template', 'update_pos_prep_ticket_status', 'open_pos_shift_with_id', 'close_pos_shift_with_id', 'get_pos_shifts', 'create_pos_partial_return_with_pin']) {
     assert.ok(content.includes(`.rpc('${rpc}'`), `${rpc} must use RPC`);
   }
 });
@@ -392,7 +392,8 @@ test('Main process polyfills fetch globals for Electron 22 Supabase client', () 
   assert.ok(content.includes('installFetchCompat'), 'Must install fetch compatibility');
   assert.ok(content.includes('globalThis.Headers'), 'Must define Headers for supabase-js');
   assert.ok(content.includes('globalThis.WebSocket'), 'Must define WebSocket for realtime-js');
-  assert.ok(content.includes('global: { fetch: globalThis.fetch }'), 'Must pass compatible fetch to Supabase');
+  assert.ok(content.includes('buildSupabaseGlobalOptions'), 'Must build Supabase global options');
+  assert.ok(content.includes('fetch: globalThis.fetch'), 'Must pass compatible fetch to Supabase');
   assert.ok(content.includes('realtime: { transport: WebSocket }'), 'Must pass ws transport to Supabase realtime');
 });
 
@@ -818,7 +819,7 @@ test('Login.jsx does NOT contain "Save and continue" button', () => {
 test('Login.jsx only shows email/password login form', () => {
   const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'src', 'screens', 'Login.jsx'), 'utf-8');
   assert.ok(content.includes('type="email"'), 'Must have email input');
-  assert.ok(content.includes('type="password"'), 'Must have password input');
+  assert.ok(content.includes("showPassword ? 'text' : 'password'"), 'Must have password input hidden by default');
   assert.ok(content.includes('Sign In'), 'Must have Sign In button');
 });
 
@@ -828,9 +829,46 @@ test('Login.jsx only shows email/password login form', () => {
 
 test('Auth resolves staff profile through auth_user_id and email fallback', () => {
   const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
+  assert.ok(content.includes("rpc('resolve_legacy_pos_staff_profile'"), 'Must resolve staff profile through POS auth RPC first');
   assert.ok(content.includes("lookupUserProfileBy('auth_user_id'"), 'Must check users.auth_user_id');
   assert.ok(content.includes("lookupUserProfileBy('email'"), 'Must fall back to email match');
   assert.ok(!content.includes(".eq('id', data.user.id).single()"), 'Must not treat Supabase Auth ID as the staff row ID only');
+});
+
+test('Database contract includes POS staff auth resolver RPC', () => {
+  const migration = fs.readFileSync(path.join(__dirname, '..', '..', 'supabase', 'migrations', '20260613010000_legacy_pos_auth_profile_resolution.sql'), 'utf-8');
+  assert.ok(migration.includes('create or replace function public.resolve_legacy_pos_staff_profile'), 'Must define POS staff resolver RPC');
+  assert.ok(migration.includes('security definer'), 'Resolver must be database-enforced');
+  assert.ok(migration.includes('app_authenticated_user_id()'), 'Resolver must use current Supabase auth user');
+  assert.ok(migration.includes('More than one Boroko staff profile'), 'Resolver must reject ambiguous email matches');
+  assert.ok(migration.includes('grant execute on function public.resolve_legacy_pos_staff_profile(uuid) to authenticated'), 'Authenticated users must be able to call resolver');
+});
+
+test('Legacy POS issues Boroko app session after Supabase Auth login', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
+  assert.ok(content.includes('issueLegacyBorokoSession'), 'Must issue Boroko app session');
+  assert.ok(content.includes("rpc('authenticate_user_from_supabase'"), 'Must fall back to desktop app-session RPC');
+  assert.ok(content.includes("'x-boroko-session'"), 'Supabase client must send Boroko session header');
+  assert.ok(content.includes('applySupabaseContext({ authSession: data.session, borokoSession })'), 'Login must rebuild client with app-session token');
+  assert.ok(content.includes('requireBorokoSession(await issueLegacyBorokoSession(userData))'), 'Online login must fail loudly if app-session token is missing');
+});
+
+test('Renderer-facing user profile strips session secrets', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
+  const normalizer = content.match(/function normalizeUserProfile\(user, authUser = null\) \{[\s\S]*?\n\}/);
+  assert.ok(normalizer, 'Must have normalizeUserProfile helper');
+  assert.ok(normalizer[0].includes('session_token: _sessionToken'), 'Must strip Boroko session token');
+  assert.ok(normalizer[0].includes('session_expires_at: _sessionExpiresAt'), 'Must strip Boroko session expiry');
+  assert.ok(normalizer[0].includes('...safeUser'), 'Must spread sanitized user fields only');
+});
+
+test('Legacy POS app-session bridge migration returns lodge name and session token', () => {
+  const migration = fs.readFileSync(path.join(__dirname, '..', '..', 'supabase', 'migrations', '20260613130000_legacy_pos_app_session_bridge.sql'), 'utf-8');
+  assert.ok(migration.includes('drop function if exists public.resolve_legacy_pos_staff_profile(uuid)'), 'Must replace previous return contract');
+  assert.ok(migration.includes('lodge_name text'), 'Resolver must return lodge display name');
+  assert.ok(migration.includes('session_token text'), 'Resolver must return Boroko session token');
+  assert.ok(migration.includes('public.issue_app_session'), 'Resolver must issue app session');
+  assert.ok(migration.includes("'app', 'legacy-pos'"), 'Issued session metadata must identify legacy POS');
 });
 
 test('Main process normalizes and requires lodge context before live lodge queries', () => {
@@ -855,6 +893,911 @@ test('Terminal keeps desktop POS stock, scanner, and idempotent submit safeguard
   assert.ok(content.includes('barcodeBufferRef'), 'Must support barcode scanner input');
   assert.ok(content.includes('submitIntentRef'), 'Must preserve submit intent for retries');
   assert.ok(content.includes('submit_intent_id'), 'Must pass stable submit intent to payload builder');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// OFFLINE FIRST COVERAGE — P0
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test('Main process has offline inventory reservation helpers', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
+  assert.ok(content.includes('applyOfflinePosInventoryReservation'), 'Must have offline inventory reservation');
+  assert.ok(content.includes('restoreOfflinePosInventoryReservation'), 'Must have inventory restore for voids');
+  assert.ok(content.includes('buildOfflineInventoryUsage'), 'Must build inventory usage map');
+});
+
+test('Main process has cash-up summarizer in main process', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
+  assert.ok(content.includes('summarizeCashupOrders'), 'Must have main-process cash-up summarizer');
+  assert.ok(content.includes('getOrderPaymentRows'), 'Must parse payment_breakdown from orders');
+});
+
+test('Main process has offline session/trusted session helpers', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
+  assert.ok(content.includes('restoreTrustedSession'), 'Must have offline session restore');
+  assert.ok(content.includes('saveTrustedSession'), 'Must save trusted session on login');
+  assert.ok(content.includes('trusted-sessions.json'), 'Must persist trusted sessions');
+});
+
+test('Main process saves trusted session on login', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
+  assert.ok(content.includes('saveTrustedSession(userData, data.session, password, state.borokoSession)'), 'Must save trusted session with Boroko app session during login');
+  assert.ok(content.includes('boroko_session_token'), 'Trusted session must store Boroko app session separately from Supabase token');
+});
+
+test('Auth restore supports offline unlock with credentials', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
+  const restoreHandler = content.match(/ipcMain\.handle\('pos:auth-restore'[\s\S]*?(?=ipcMain\.handle\('pos:)/);
+  assert.ok(restoreHandler, 'Must have auth-restore handler');
+  assert.ok(restoreHandler[0].includes('credentials?.email'), 'Must accept credentials for offline unlock');
+  assert.ok(restoreHandler[0].includes('restoreTrustedSession'), 'Must call restoreTrustedSession');
+});
+
+test('Void order supports offline with cached orders', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
+  assert.ok(content.includes('queueOfflineVoid'), 'Must have offline void queue helper');
+  assert.ok(content.includes('restoreOfflinePosInventoryReservation'), 'Must restore inventory on offline void');
+  assert.ok(content.includes('_pending_void'), 'Must mark order as pending void');
+});
+
+test('Partial return supports offline operation', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
+  assert.ok(content.includes('queueOfflineReturn'), 'Must have offline return queue helper');
+  assert.ok(content.includes('pos-return:'), 'Must use return idempotency key prefix');
+});
+
+test('Create order applies offline inventory reservation', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
+  assert.ok(content.includes('applyOfflinePosInventoryReservation(payload.items)'), 'Must apply inventory reservation in offline order path');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// OFFLINE FIRST COVERAGE — P1
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test('Menu CRUD supports offline with queue replay', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
+  assert.ok(content.includes('queueOfflineRpcMutation'), 'Must have offline RPC mutation helper');
+  assert.ok(content.includes("'create_pos_menu_item'"), 'Menu create must use RPC name');
+  assert.ok(content.includes("'update_pos_menu_item'"), 'Menu update must use RPC name');
+  assert.ok(content.includes("'delete_pos_menu_item'"), 'Menu delete must use RPC name');
+  assert.ok(content.includes("'set_bar_pos_pack_template'"), 'Bar pack must use RPC name');
+});
+
+test('Table/tab CRUD supports offline with queue replay', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
+  assert.ok(content.includes("'upsert_pos_table'"), 'Table save must use RPC name');
+  assert.ok(content.includes("'upsert_pos_tab'"), 'Tab save must use RPC name');
+  assert.ok(content.includes("'update_pos_tab_status'"), 'Tab status must use RPC name');
+});
+
+test('Shift open/close supports offline with queue replay', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
+  assert.ok(content.includes('queueOfflineShiftMutation'), 'Must have offline shift mutation helper');
+  assert.ok(content.includes("'open_pos_shift_with_id'"), 'Shift open must use RPC name');
+  assert.ok(content.includes("'close_pos_shift_with_id'"), 'Shift close must use RPC name');
+});
+
+test('Modifier groups, promotions, floor layout save offline with queue replay', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
+  assert.ok(content.includes("'upsert_pos_modifier_groups'"), 'Modifier groups must use RPC');
+  assert.ok(content.includes("'upsert_pos_promotions'"), 'Promotions must use RPC');
+  assert.ok(content.includes("'upsert_pos_floor_layout'"), 'Floor layout must use RPC');
+});
+
+test('Cash-up uses main-process summarizer', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
+  const cashupHandler = content.match(/ipcMain\.handle\('pos:create-cashup'[\s\S]*?(?=ipcMain\.handle\('pos:)/);
+  assert.ok(cashupHandler, 'Must have create-cashup handler');
+  assert.ok(cashupHandler[0].includes('summarizeCashupOrders'), 'Must call main-process summarizer');
+});
+
+test('Cash-up summary IPC handler exists', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
+  assert.ok(content.includes("'pos:get-cashup-summary'"), 'Must have cash-up summary handler');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// OFFLINE FIRST COVERAGE — SYNC VISIBILITY
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test('Sync queue detail handler exists', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
+  assert.ok(content.includes("'pos:get-sync-queue-detail'"), 'Must have sync queue detail handler');
+});
+
+test('Sync queue detail returns entity type, function name, attempts, errors', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
+  const detailHandler = content.match(/ipcMain\.handle\('pos:get-sync-queue-detail'[\s\S]*?(?=ipcMain\.handle\('pos:)/);
+  assert.ok(detailHandler, 'Must have sync queue detail handler');
+  assert.ok(detailHandler[0].includes('entityType'), 'Must return entityType');
+  assert.ok(detailHandler[0].includes('functionName'), 'Must return functionName');
+  assert.ok(detailHandler[0].includes('attempts'), 'Must return attempts');
+  assert.ok(detailHandler[0].includes('lastError'), 'Must return lastError');
+  assert.ok(detailHandler[0].includes('dependsOn'), 'Must return dependsOn');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PRELOAD COVERAGE — NEW METHODS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test('Preload exposes getCashupSummary, getSyncQueueDetail, and accepts credentials for restoreSession', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'preload', 'index.js'), 'utf-8');
+  assert.ok(content.includes('getCashupSummary:'), 'Must expose getCashupSummary');
+  assert.ok(content.includes('getSyncQueueDetail:'), 'Must expose getSyncQueueDetail');
+  assert.ok(content.includes('restoreSession: (credentials)'), 'restoreSession must accept credentials');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RENDERER — ORDERS VOID/RETURN
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test('Orders screen has void and partial return actions', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'src', 'screens', 'Orders.jsx'), 'utf-8');
+  assert.ok(content.includes('voidOrder'), 'Must call voidOrder IPC');
+  assert.ok(content.includes('partialReturn'), 'Must call partialReturn IPC');
+  assert.ok(content.includes('PINModal'), 'Must have PIN modal');
+  assert.ok(content.includes('ReturnModal'), 'Must have return modal');
+  assert.ok(content.includes('XCircle'), 'Must have void icon');
+  assert.ok(content.includes('RotateCcw'), 'Must have return icon');
+});
+
+test('Orders screen shows Actions column', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'src', 'screens', 'Orders.jsx'), 'utf-8');
+  assert.ok(content.includes('Actions'), 'Must have Actions column header');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RENDERER — CASHUP ALL-METHOD
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test('CashUp screen uses main-process summary and has all-method counted inputs', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'src', 'screens', 'CashUp.jsx'), 'utf-8');
+  assert.ok(content.includes('getCashupSummary'), 'Must call getCashupSummary');
+  assert.ok(content.includes('countedMethods'), 'Must track counted amounts per method');
+  assert.ok(content.includes('PAYMENT_METHODS.map'), 'Must render counted inputs for all methods');
+  assert.ok(content.includes('varianceByMethod'), 'Must compute variance per method');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RENDERER — LOGIN OFFLINE UNLOCK
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test('Login screen has offline unlock button', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'src', 'screens', 'Login.jsx'), 'utf-8');
+  assert.ok(content.includes('Offline Unlock'), 'Must have offline unlock button');
+  assert.ok(content.includes('handleOfflineUnlock'), 'Must have offline unlock handler');
+  assert.ok(content.includes('onOfflineUnlock'), 'Must accept onOfflineUnlock prop');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RENDERER — SYNC QUEUE DETAIL
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test('Sync screen shows queue detail with entity type, operation, attempts, and errors', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'src', 'screens', 'Sync.jsx'), 'utf-8');
+  assert.ok(content.includes('getSyncQueueDetail'), 'Must fetch queue detail');
+  assert.ok(content.includes('queueDetail'), 'Must track queue detail');
+  assert.ok(content.includes('entityType'), 'Must show entity type');
+  assert.ok(content.includes('functionName'), 'Must show function name');
+  assert.ok(content.includes('attempts'), 'Must show attempt count');
+  assert.ok(content.includes('lastError'), 'Must show last error');
+  assert.ok(content.includes('dependsOn'), 'Must show dependency status');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// APP.JSX — OFFLINE UNLOCK
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test('App.jsx passes onOfflineUnlock to Login', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'src', 'App.jsx'), 'utf-8');
+  assert.ok(content.includes('handleOfflineUnlock'), 'Must have offline unlock handler');
+  assert.ok(content.includes('onOfflineUnlock={handleOfflineUnlock}'), 'Must pass handler to Login');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BEHAVIORAL TESTS: QUEUE STABILITY & DEPENDENCIES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test('createQueueItem uses stable ID when id parameter is provided', () => {
+  const item = createQueueItem({
+    functionName: 'test_rpc',
+    payload: {},
+    entityType: 'pos_order',
+    entityId: 'entity-123',
+    id: 'pos_order-entity-123'
+  });
+  assert.equal(item.id, 'pos_order-entity-123');
+});
+
+test('createQueueItem generates entityType-entityId ID when no id provided', () => {
+  const item = createQueueItem({
+    functionName: 'test_rpc',
+    payload: {},
+    entityType: 'pos_order',
+    entityId: 'entity-456'
+  });
+  assert.equal(item.id, 'pos_order-entity-456');
+});
+
+test('isQueueItemReady returns false when dependency is declared but missing from queue', () => {
+  const item = createQueueItem({
+    functionName: 'approve_pos_void_with_pin',
+    payload: {},
+    entityType: 'pos_void',
+    entityId: 'void-1',
+    dependsOn: 'pos_order-missing-order'
+  });
+  assert.equal(isQueueItemReady(item, [item]), false);
+});
+
+test('isQueueItemReady returns true when dependency is synced', () => {
+  const order = createQueueItem({
+    functionName: 'create_pos_order',
+    payload: {},
+    entityType: 'pos_order',
+    entityId: 'order-1'
+  });
+  const syncedOrder = markItemSynced(order);
+  const voidItem = createQueueItem({
+    functionName: 'approve_pos_void_with_pin',
+    payload: {},
+    entityType: 'pos_void',
+    entityId: 'void-1',
+    dependsOn: order.id
+  });
+  assert.equal(isQueueItemReady(voidItem, [syncedOrder, voidItem]), true);
+});
+
+test('isQueueItemReady returns false when dependency is still pending', () => {
+  const order = createQueueItem({
+    functionName: 'create_pos_order',
+    payload: {},
+    entityType: 'pos_order',
+    entityId: 'order-2'
+  });
+  const voidItem = createQueueItem({
+    functionName: 'approve_pos_void_with_pin',
+    payload: {},
+    entityType: 'pos_void',
+    entityId: 'void-2',
+    dependsOn: order.id
+  });
+  assert.equal(isQueueItemReady(voidItem, [order, voidItem]), false);
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BEHAVIORAL TESTS: RPC MUTATION HELPER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test('Main process uses queueOfflineRpcMutation (not queueOfflineConfigMutation)', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
+  assert.ok(content.includes('queueOfflineRpcMutation'), 'Must have queueOfflineRpcMutation');
+  assert.ok(!content.includes('queueOfflineConfigMutation'), 'Must NOT have old queueOfflineConfigMutation');
+});
+
+test('Menu update queue uses exact RPC args {p_id, p_lodge_id, payload}', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
+  assert.ok(content.includes("rpc('update_pos_menu_item', rpcArgs)"), 'Online path must use rpcArgs');
+  assert.ok(content.includes("queueOfflineRpcMutation('update_pos_menu_item', rpcArgs"), 'Offline path must use rpcArgs');
+});
+
+test('Menu delete queue uses exact RPC args {p_id, p_lodge_id}', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
+  assert.ok(content.includes("rpc('delete_pos_menu_item', rpcArgs)"), 'Online path must use rpcArgs');
+  assert.ok(content.includes("queueOfflineRpcMutation('delete_pos_menu_item', rpcArgs"), 'Offline path must use rpcArgs');
+});
+
+test('Tab status queue uses exact RPC args {p_tab_id, p_status}', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
+  assert.ok(content.includes("rpc('update_pos_tab_status', rpcArgs)"), 'Online path must use rpcArgs');
+  assert.ok(content.includes("queueOfflineRpcMutation('update_pos_tab_status', rpcArgs"), 'Offline path must use rpcArgs');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BEHAVIORAL TESTS: PARTIAL RETURN SAFETY
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test('Partial return renderer sends minimal payload with order_id, pin, lines', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'src', 'screens', 'Orders.jsx'), 'utf-8');
+  assert.ok(content.includes('order_id: returnModal.id'), 'Must send order_id');
+  assert.ok(content.includes('pin,'), 'Must send pin');
+  assert.ok(content.includes('lines:'), 'Must send lines array');
+  assert.ok(content.includes('line_id:'), 'Lines must include line_id');
+  assert.ok(content.includes('quantity: item.returnQty'), 'Lines must include quantity');
+});
+
+test('Partial return main process validates PIN via database RPC', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
+  const returnIdx = content.indexOf("ipcMain.handle('pos:partial-return'");
+  const returnSection = content.slice(returnIdx, returnIdx + 3000);
+  assert.ok(returnSection.includes('create_pos_partial_return_with_pin'), 'Must use database-authoritative return RPC');
+  assert.ok(returnSection.includes('pin'), 'Must send PIN to RPC for server-side validation');
+});
+
+test('Partial return uses UUID for return ID (not Date.now)', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
+  const returnIdx = content.indexOf("ipcMain.handle('pos:partial-return'");
+  const returnSection = content.slice(returnIdx, returnIdx + 3000);
+  assert.ok(returnSection.includes("returnId = randomUUID()"), 'Return ID must be UUID');
+  assert.ok(!returnSection.includes('Date.now()'), 'Must not use Date.now for return ID');
+});
+
+test('Partial return depends on parent order when parent is pending', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
+  const returnQueueIdx = content.indexOf('function queueOfflineReturn');
+  const returnQueueSection = content.slice(returnQueueIdx, returnQueueIdx + 1000);
+  assert.ok(returnQueueSection.includes("entityType: 'pos_return'"), 'Return entityType must be pos_return');
+  assert.ok(returnQueueSection.includes('dependsOn'), 'Return must have dependsOn');
+});
+
+test('Partial return does not create prep tickets', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
+  const returnQueueIdx = content.indexOf('function queueOfflineReturn');
+  const returnQueueSection = content.slice(returnQueueIdx, returnQueueIdx + 1500);
+  assert.ok(!returnQueueSection.includes('appendPrepTickets'), 'Must NOT create prep tickets for returns');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BEHAVIORAL TESTS: SHIFT DEPENDENCY
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test('Shift close depends on shift open when both are offline', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
+  assert.ok(content.includes("entityType: status === 'open' ? 'pos_shift_open' : 'pos_shift_close'"), 'Shift entity types must be split');
+  assert.ok(content.includes("dependsOn: status === 'closed' ? `pos_shift_open-${shiftId}` : null"), 'Close must depend on open');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BEHAVIORAL TESTS: CASH-UP VARIANCE RECOMPUTATION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test('Cash-up recomputes variance in main process (ignores renderer values)', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
+  const cashupIdx = content.indexOf("ipcMain.handle('pos:create-cashup'");
+  const cashupSection = content.slice(cashupIdx, cashupIdx + 2000);
+  assert.ok(cashupSection.includes('cashOverShort'), 'Must compute cashOverShort');
+  assert.ok(cashupSection.includes('varianceByMethod'), 'Must compute varianceByMethod');
+  assert.ok(cashupSection.includes("countedCash = Number(countedByMethod.cash) || 0"), 'Must compute countedCash');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BEHAVIORAL TESTS: SYNC QUEUE RICH METADATA
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test('Sync queue detail includes isFinancial, displayName, manualReviewAction, canRetry', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
+  const syncIdx = content.indexOf("ipcMain.handle('pos:get-sync-queue-detail'");
+  const syncSection = content.slice(syncIdx, syncIdx + 2500);
+  assert.ok(syncSection.includes('isFinancial'), 'Must include isFinancial');
+  assert.ok(syncSection.includes('displayName'), 'Must include displayName');
+  assert.ok(syncSection.includes('manualReviewAction'), 'Must include manualReviewAction');
+  assert.ok(syncSection.includes('canRetry'), 'Must include canRetry');
+  assert.ok(syncSection.includes('dependencyState'), 'Must include dependencyState');
+});
+
+test('Sync uses patchLocalCacheState for all entity types', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
+  assert.ok(content.includes('function patchLocalCacheState'), 'Must have patchLocalCacheState');
+  assert.ok(content.includes("entityType === 'pos_menu_item'"), 'Must handle pos_menu_item');
+  assert.ok(content.includes("entityType === 'pos_shift_open'"), 'Must handle pos_shift_open');
+  assert.ok(content.includes("entityType === 'pos_shift_close'"), 'Must handle pos_shift_close');
+  assert.ok(content.includes("entityType === 'pos_return'"), 'Must handle pos_return');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BEHAVIORAL TESTS: AUTH TRUSTED SESSION CHECK
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test('Main process has pos:auth-has-trusted-session IPC handler', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
+  assert.ok(content.includes("'pos:auth-has-trusted-session'"), 'Must have has-trusted-session handler');
+});
+
+test('Preload exposes hasTrustedSession', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'preload', 'index.js'), 'utf-8');
+  assert.ok(content.includes('hasTrustedSession:'), 'Must expose hasTrustedSession');
+});
+
+test('Login.jsx uses hasTrustedSession instead of getSyncStatus', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'src', 'screens', 'Login.jsx'), 'utf-8');
+  assert.ok(content.includes('hasTrustedSession'), 'Must use hasTrustedSession');
+  assert.ok(!content.includes('getSyncStatus'), 'Must NOT use getSyncStatus for session check');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BEHAVIORAL TESTS: PREP TICKET FILTERING
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test('appendPrepTickets filters out negative-quantity items', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
+  const prepIdx = content.indexOf('function appendPrepTickets');
+  const prepSection = content.slice(prepIdx, prepIdx + 800);
+  assert.ok(prepSection.includes('positiveItems'), 'Must filter for positive items');
+  assert.ok(prepSection.includes('(Number(item.quantity) || 0) > 0'), 'Must check quantity > 0');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// P0-1: Migration schema for return_order_id
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test('Migration adds pos_override_log.return_order_id column', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', '..', 'supabase', 'migrations', '20260613020000_legacy_pos_return_and_shift_rpcs.sql'), 'utf-8');
+  assert.ok(content.includes('return_order_id'), 'Migration must add return_order_id column');
+  assert.ok(content.includes('pos_override_log'), 'Migration must reference pos_override_log');
+  assert.ok(content.includes('add column if not exists'), 'Must use IF NOT EXISTS for idempotency');
+});
+
+test('Migration creates pos_return_lines table', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', '..', 'supabase', 'migrations', '20260613020000_legacy_pos_return_and_shift_rpcs.sql'), 'utf-8');
+  assert.ok(content.includes('pos_return_lines'), 'Migration must create pos_return_lines table');
+  assert.ok(content.includes('original_order_item_id'), 'Must track exact original line ID');
+  assert.ok(content.includes('unique'), 'Must have unique constraint for idempotency');
+});
+
+test('Migration adds shift idempotency key indexes', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', '..', 'supabase', 'migrations', '20260613020000_legacy_pos_return_and_shift_rpcs.sql'), 'utf-8');
+  assert.ok(content.includes('idx_pos_shifts_create_idempotency_key'), 'Must have create idempotency index');
+  assert.ok(content.includes('idx_pos_shifts_close_idempotency_key'), 'Must have close idempotency index');
+  assert.ok(content.includes('where create_idempotency_key is not null'), 'Create index must be partial');
+  assert.ok(content.includes('where close_idempotency_key is not null'), 'Close index must be partial');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// P0-2: Return RPC uses pos_return_lines ledger
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test('Return RPC uses pos_return_lines ledger for over-return check', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', '..', 'supabase', 'migrations', '20260613020000_legacy_pos_return_and_shift_rpcs.sql'), 'utf-8');
+  assert.ok(content.includes('pos_return_lines'), 'RPC must query pos_return_lines');
+  assert.ok(content.includes('original_order_item_id'), 'Must query by exact original line ID');
+  assert.ok(!content.includes('item_name like'), 'Must NOT use name-based matching');
+});
+
+test('Return RPC inserts into pos_return_lines ledger', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', '..', 'supabase', 'migrations', '20260613020000_legacy_pos_return_and_shift_rpcs.sql'), 'utf-8');
+  assert.ok(content.includes("insert into public.pos_return_lines"), 'Must insert return line ledger rows');
+  assert.ok(content.includes("on conflict"), 'Must be idempotent via ON CONFLICT');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// P0-3: Return payment breakdown uses negative amounts
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test('Return RPC payment breakdown uses negative amounts', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', '..', 'supabase', 'migrations', '20260613020000_legacy_pos_return_and_shift_rpcs.sql'), 'utf-8');
+  const rpcSection = content.slice(content.indexOf('create_pos_partial_return_with_pin'));
+  assert.ok(rpcSection.includes("'amount', v_total"), 'Payment amount must use v_total (which is negative for returns)');
+  assert.ok(!rpcSection.includes("'amount', abs(v_total)"), 'Must NOT use abs(v_total) for payment amount');
+});
+
+test('Cash-up summarizer applies sign of order total to payment amounts', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
+  assert.ok(content.includes('orderSign'), 'Must calculate order sign');
+  assert.ok(content.includes('signedAmount'), 'Must apply sign to payment amounts');
+  assert.ok(content.includes('orderSign < 0 ? -Math.abs(amount) : Math.abs(amount)'), 'Must negate amounts for negative orders');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// P0-4: Desktop POS uses create_pos_partial_return_with_pin RPC
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test('Desktop POS createPosPartialReturnWithPin calls new RPC', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'main', 'domains', 'pos.js'), 'utf-8');
+  assert.ok(content.includes("create_pos_partial_return_with_pin"), 'Desktop must call create_pos_partial_return_with_pin RPC');
+  assert.ok(content.includes('rpcPayload'), 'Desktop must build rpcPayload');
+  assert.ok(content.includes("state.supabase.rpc('create_pos_partial_return_with_pin'"), 'Desktop must use supabase.rpc for online path');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// P1-2: Offline close shift patches existing row
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test('Offline close shift patches existing cached row', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
+  const closeIdx = content.indexOf("status === 'closed'");
+  const closeSection = content.slice(closeIdx, closeIdx + 500);
+  assert.ok(closeSection.includes('findIndex'), 'Must find existing shift in cache');
+  assert.ok(closeSection.includes('shifts[idx]'), 'Must patch existing row, not insert new');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// P1-3: Inventory selects match desktop fields
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test('Legacy inventory select includes desktop fields', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
+  assert.ok(content.includes('INVENTORY_ITEM_SELECT'), 'Must have primary inventory select');
+  assert.ok(content.includes('reorder_level'), 'Primary select must include reorder_level');
+  assert.ok(content.includes('lodge_id'), 'Primary select must include lodge_id');
+  assert.ok(content.includes('created_at'), 'Primary select must include created_at');
+  assert.ok(content.includes('INVENTORY_ITEM_LEGACY_SELECT'), 'Must have legacy fallback select');
+});
+
+test('pos:get-inventory-diagnostics IPC handler exists', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
+  assert.ok(content.includes('pos:get-inventory-diagnostics'), 'Must have diagnostics IPC');
+});
+
+test('Preload exposes getInventoryDiagnostics', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'preload', 'index.js'), 'utf-8');
+  assert.ok(content.includes('getInventoryDiagnostics'), 'Preload must expose getInventoryDiagnostics');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// P1-4: Lodge name derived from settings
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test('App.jsx derives lodge name from settings', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'src', 'App.jsx'), 'utf-8');
+  assert.ok(content.includes('displayLodgeName'), 'Must have displayLodgeName derived value');
+  assert.ok(content.includes('settings?.lodge_name'), 'Must check settings.lodge_name');
+  assert.ok(content.includes('settings?.company_name'), 'Must fallback to settings.company_name');
+  assert.ok(!content.includes("setLodgeName"), 'Must NOT have separate lodgeName state');
+});
+
+test('Bootstrap returns settingsData for renderer', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
+  assert.ok(content.includes('settingsData'), 'Bootstrap must return settingsData');
+  assert.ok(content.includes("maybeSingle()"), 'Bootstrap settings must use maybeSingle()');
+});
+
+test('Reference data cache fallback is scoped to current lodge', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
+  assert.ok(content.includes('readArrayCacheForCurrentLodge'), 'Must have lodge-scoped array cache helper');
+  assert.ok(content.includes('readObjectCacheForCurrentLodge'), 'Must have lodge-scoped object cache helper');
+  assert.ok(content.includes("readMenuCache()"), 'Menu fallback must use lodge-scoped cache');
+  assert.ok(content.includes("readInventoryCache()"), 'Inventory fallback must use lodge-scoped cache');
+  assert.ok(content.includes("readObjectCacheForCurrentLodge('settings')"), 'Settings fallback must be lodge-scoped');
+  assert.ok(content.includes("select('id, lodge_id, name, type, sort_order')"), 'Outlet query must cache lodge_id');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// P1-5: Full-screen uses fromWebContents
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test('Full-screen IPC uses fromWebContents', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
+  assert.ok(content.includes('BrowserWindow.fromWebContents(event.sender)'), 'Must use fromWebContents for fullscreen');
+  assert.ok(!content.includes("getAllWindows()[0]"), 'Must NOT use getAllWindows for fullscreen');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// P0-1: Migration order - columns before indexes
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test('Migration adds shift idempotency columns before creating indexes', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', '..', 'supabase', 'migrations', '20260613020000_legacy_pos_return_and_shift_rpcs.sql'), 'utf-8');
+  const colIdx = content.indexOf('add column if not exists create_idempotency_key');
+  const idxIdx = content.indexOf('idx_pos_shifts_create_idempotency_key');
+  assert.ok(colIdx > 0, 'Must have ALTER TABLE for create_idempotency_key');
+  assert.ok(idxIdx > 0, 'Must have index for create_idempotency_key');
+  assert.ok(colIdx < idxIdx, 'ALTER TABLE must come before the index');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// P0-2: Multi-line return ledger uses original_order_item_id from built items
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test('Return RPC includes original_order_item_id in built return items', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', '..', 'supabase', 'migrations', '20260613020000_legacy_pos_return_and_shift_rpcs.sql'), 'utf-8');
+  assert.ok(content.includes("'original_order_item_id', v_line_id"), 'Must store original line ID in built item');
+  assert.ok(content.includes("v_line->>'original_order_item_id'"), 'Must extract original line ID from built item in second loop');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// P0-3: Desktop offline return queues create_pos_partial_return_with_pin
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test('Desktop offline return queues create_pos_partial_return_with_pin, not createPosOrder', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'main', 'domains', 'pos.js'), 'utf-8');
+  const returnIdx = content.indexOf("create_pos_partial_return_with_pin', { payload: rpcPayload }");
+  const returnSection = content.slice(returnIdx - 200, returnIdx + 2000);
+  assert.ok(returnSection.includes("queueOperation('rpc', 'create_pos_partial_return_with_pin'"), 'Must queue create_pos_partial_return_with_pin for offline');
+  assert.ok(!returnSection.includes('createPosOrder({'), 'Must NOT fall back to createPosOrder');
+});
+
+test('Desktop FINANCIAL_SYNC_TABLES includes create_pos_partial_return_with_pin', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'shared', 'syncQueue.js'), 'utf-8');
+  assert.ok(content.includes("'create_pos_partial_return_with_pin'"), 'FINANCIAL_SYNC_TABLES must include create_pos_partial_return_with_pin');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// P1-2: Login/offline bootstrap uses settingsData key
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test('App.jsx login and offline unlock use settingsData, not settings', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'src', 'App.jsx'), 'utf-8');
+  assert.ok(content.includes("r?.settingsData"), 'Bootstrap callbacks must check settingsData');
+  assert.ok(!content.includes("r?.settings) setSettings(r.settings)"), 'Must NOT use r.settings for setSettings');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// P1-3: Sync inventory diagnostics UI
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test('Sync screen has inventory diagnostics section', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'src', 'screens', 'Sync.jsx'), 'utf-8');
+  assert.ok(content.includes('Inventory Diagnostics'), 'Must have diagnostics section header');
+  assert.ok(content.includes('inventoryDiag'), 'Must use inventoryDiag state');
+  assert.ok(content.includes('getInventoryDiagnostics'), 'Must call getInventoryDiagnostics');
+  assert.ok(content.includes('showInventoryDiag'), 'Must have toggle state for diagnostics');
+});
+
+test('Sync diagnostics shows remote/bar/cached/outlet counts', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'src', 'screens', 'Sync.jsx'), 'utf-8');
+  assert.ok(content.includes('Remote Inventory'), 'Must show remote count');
+  assert.ok(content.includes('Bar Outlet'), 'Must show bar outlet count');
+  assert.ok(content.includes('Cached Locally'), 'Must show cached count');
+  assert.ok(content.includes('Outlet Access'), 'Must show outlet access count');
+});
+
+test('Sync diagnostics warns when remote returns 0 but cache has data', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'src', 'screens', 'Sync.jsx'), 'utf-8');
+  assert.ok(content.includes('Remote returned 0 items'), 'Must warn about empty remote results');
+  assert.ok(content.includes('Using cached inventory'), 'Must mention cached inventory fallback');
+});
+
+test('Sync diagnostics warns when no bar outlet inventory found', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'src', 'screens', 'Sync.jsx'), 'utf-8');
+  assert.ok(content.includes('No Bar outlet inventory found'), 'Must warn about missing bar outlet');
+  assert.ok(content.includes('correct outlet_id'), 'Must mention outlet_id');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// P1-4: Full-screen icon buttons
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test('App.jsx uses lucide icons for fullscreen toggle', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'src', 'App.jsx'), 'utf-8');
+  assert.ok(content.includes('Maximize2'), 'Must import Maximize2 icon');
+  assert.ok(content.includes('Minimize2'), 'Must import Minimize2 icon');
+  assert.ok(content.includes("isFullscreen ? <Minimize2"), 'Must render Minimize2 when fullscreen');
+  assert.ok(content.includes("<Maximize2"), 'Must render Maximize2 when not fullscreen');
+  assert.ok(!content.includes('>Exit Full<'), 'Must NOT use text Exit Full');
+  assert.ok(content.includes('aria-label'), 'Must have aria-label for accessibility');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// P1-1: Terminal and Menu empty states
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test('MenuManagement shows inventory-aware empty state', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'src', 'screens', 'MenuManagement.jsx'), 'utf-8');
+  assert.ok(content.includes('inventoryItems.length > 0'), 'Must check for loaded inventory items');
+  assert.ok(content.includes('Bar inventory loaded'), 'Must show inventory loaded message');
+  assert.ok(content.includes('but no POS menu items linked'), 'Must show missing link message');
+});
+
+test('POSTerminal shows inventory-aware empty state', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'src', 'screens', 'POSTerminal.jsx'), 'utf-8');
+  assert.ok(content.includes('inventoryItems.length > 0'), 'Must check inventory items');
+  assert.ok(content.includes('Bar inventory loaded but no POS menu items linked'), 'Must show inventory-aware message');
+  assert.ok(content.includes('No items available for the selected outlet/category'), 'Must show outlet-filtered message');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// P1-5: GitHub release auto-update lane
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test('Legacy package config supports GitHub release publishing', () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf-8'));
+  assert.ok(pkg.dependencies['electron-updater'], 'electron-updater dependency must be installed');
+  assert.equal(pkg.build.publish.provider, 'github');
+  assert.equal(pkg.build.publish.owner, 'Rabafi');
+  assert.equal(pkg.build.publish.repo, 'boroko-pos-legacy-releases');
+  assert.ok(pkg.scripts['release:publish'], 'release:publish script must exist');
+  assert.ok(pkg.scripts['dist:publish'], 'dist:publish script must exist');
+});
+
+test('Legacy release script requires GH_TOKEN and publishes with electron-builder', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'release.mjs'), 'utf-8');
+  assert.ok(content.includes('GH_TOKEN'), 'Release script must require GH_TOKEN');
+  assert.ok(content.includes('--publish'), 'Release script must publish through electron-builder');
+  assert.ok(content.includes('releaseNotesFile'), 'Release script must attach release notes');
+});
+
+test('Legacy main process wires auto-updater IPC and install blockers', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
+  assert.ok(content.includes("import autoUpdaterPkg from 'electron-updater'"), 'Must import electron-updater');
+  assert.ok(content.includes('pos:update-check'), 'Must expose update check IPC');
+  assert.ok(content.includes('pos:update-download'), 'Must expose update download IPC');
+  assert.ok(content.includes('pos:update-install'), 'Must expose update install IPC');
+  assert.ok(content.includes('getUpdateInstallSafety'), 'Must compute update install safety');
+  assert.ok(content.includes('open shift(s)'), 'Update install must guard open shifts');
+  assert.ok(content.includes('failed/manual review sync item(s)'), 'Update install must guard failed sync items');
+  assert.ok(content.includes('quitAndInstall(false, true)'), 'Must install downloaded update with restart');
+});
+
+test('Preload exposes update bridge under POS API', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'preload', 'index.js'), 'utf-8');
+  assert.ok(content.includes('updates: {'), 'Must expose updates object');
+  assert.ok(content.includes('pos:update-available'), 'Must expose update event listeners');
+  assert.ok(content.includes('pos:update-get-install-safety'), 'Must expose install safety');
+});
+
+test('Sync screen includes app update controls and blockers', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'src', 'screens', 'Sync.jsx'), 'utf-8');
+  assert.ok(content.includes('App Updates'), 'Must show app update section');
+  assert.ok(content.includes('Check'), 'Must provide update check button');
+  assert.ok(content.includes('Download'), 'Must provide update download button');
+  assert.ok(content.includes('Restart to Install'), 'Must provide install button');
+  assert.ok(content.includes('Finish before restarting'), 'Must show update blockers');
+});
+
+test('Login screen can check/install updates before sign-in', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'src', 'screens', 'Login.jsx'), 'utf-8');
+  assert.ok(content.includes('handleUpdateAction'), 'Login must have update action');
+  assert.ok(content.includes('Check for Updates'), 'Login must show update check button');
+  assert.ok(content.includes('Restart to Install Update'), 'Login must allow ready update install');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// P1-6: Tax display follows desktop VAT setting
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test('POSTerminal only calculates and shows tax when VAT is enabled', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'src', 'screens', 'POSTerminal.jsx'), 'utf-8');
+  assert.ok(content.includes('settings?.vat_enabled === true'), 'Must use VAT enabled setting');
+  assert.ok(content.includes("settings?.vat_rate"), 'Must use VAT rate setting');
+  assert.ok(content.includes('taxEnabled ? Number(taxRate) || 0 : 0'), 'Tax rate must be zero when disabled');
+  assert.ok(content.includes('taxEnabled && Number(cartTotals.tax_total) > 0'), 'Tax total must be hidden when disabled');
+  assert.ok(!content.includes('settings?.default_tax_rate'), 'Must not use legacy default tax rate');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// P1-7: Inventory/menu linkage and virtual stock-backed POS buttons
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test('POSTerminal creates virtual inventory-backed menu buttons', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'src', 'screens', 'POSTerminal.jsx'), 'utf-8');
+  assert.ok(content.includes('virtualInventoryMenuItems'), 'Must build virtual inventory menu items');
+  assert.ok(content.includes('terminalMenuItems'), 'Terminal must use combined menu and inventory items');
+  assert.ok(content.includes("_virtual_inventory_item: true"), 'Virtual items must be marked');
+  assert.ok(content.includes('menu_item_id: item._virtual_inventory_item ? null : item.id'), 'Virtual inventory items must not send fake menu IDs');
+});
+
+test('POSTerminal keeps cart visible by collapsing optional order details', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'src', 'screens', 'POSTerminal.jsx'), 'utf-8');
+  assert.ok(content.includes('detailsExpanded'), 'Optional order detail fields must be collapsible');
+  assert.ok(content.includes('min-h-[220px] flex-1 overflow-y-auto'), 'Cart list must keep usable vertical space');
+  assert.ok(content.includes('max-h-[46vh] overflow-y-auto'), 'Bottom controls must scroll instead of consuming the whole cart panel');
+  assert.ok(content.includes('Order details'), 'Operator must have a clear details toggle');
+});
+
+test('POSTerminal outlet selector filters by effective inventory outlet and protects active cart', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'src', 'screens', 'POSTerminal.jsx'), 'utf-8');
+  assert.ok(content.includes('getEffectiveItemOutletId'), 'Must derive outlet from menu row or linked inventory item');
+  assert.ok(content.includes('itemMatchesOutlet'), 'Must filter sale buttons through outlet matcher');
+  assert.ok(content.includes('inventoryById.get(item.inventory_item_id)?.outlet_id'), 'Must use inventory outlet when menu outlet is missing');
+  assert.ok(content.includes('Clear the current cart before switching outlets'), 'Must block outlet switches while a cart is active');
+  assert.ok(content.includes('setSelectedOutlet(nextOutlet)'), 'Selecting/adding outlet-scoped items must set order outlet context');
+});
+
+test('MenuManagement exposes inventory stock link and depletion quantity', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'src', 'screens', 'MenuManagement.jsx'), 'utf-8');
+  assert.ok(content.includes('Inventory Stock Link'), 'Menu form must expose inventory link');
+  assert.ok(content.includes('depletion_qty'), 'Menu form must expose depletion quantity');
+  assert.ok(content.includes('openCreateFromInventory'), 'Must support creating menu item from inventory');
+  assert.ok(content.includes('Offline changes will be saved locally and queued for sync'), 'Offline menu edits must be allowed and labelled');
+});
+
+test('Inventory diagnostics reports bar outlet names and unlinked bar inventory', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
+  assert.ok(content.includes('bar_outlet_names'), 'Diagnostics must return bar outlet names');
+  assert.ok(content.includes('unlinked_bar_inventory_count'), 'Diagnostics must count unlinked bar inventory');
+  assert.ok(content.includes("text.includes('bar')"), 'Diagnostics must detect bar outlets by name/type');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// P1-8: Drawer and payment terminal setup parity
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test('Hardware screen exposes drawer open and card terminal setup', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'src', 'screens', 'Hardware.jsx'), 'utf-8');
+  assert.ok(content.includes('Open Drawer'), 'Hardware screen must have manual drawer open');
+  assert.ok(content.includes('Card Terminal'), 'Hardware screen must expose card terminal setup');
+  assert.ok(content.includes('payment_terminal_bridge_url'), 'Hardware screen must expose terminal bridge URL');
+  assert.ok(content.includes("handleTest('payment-terminal')"), 'Hardware screen must test payment terminal');
+});
+
+test('Hardware adapter can send payment terminal totals', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'hardware', 'posHardwareAdapter.js'), 'utf-8');
+  assert.ok(content.includes('export async function sendPaymentTerminalTotal'), 'Adapter must export terminal sender');
+  assert.ok(content.includes("type: data.test ? 'test_sale' : 'sale'"), 'Terminal sender must support test and sale payloads');
+  assert.ok(content.includes('Payment terminal is in manual mode'), 'Manual terminal mode must be explicit');
+});
+
+test('POSTerminal can send card total to configured terminal bridge', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'src', 'screens', 'POSTerminal.jsx'), 'utf-8');
+  assert.ok(content.includes('handleSendTerminalTotal'), 'Terminal must have card bridge action');
+  assert.ok(content.includes('sendPaymentTerminalTotal'), 'Terminal must call preload payment terminal bridge');
+  assert.ok(content.includes('Send Total to Card Terminal'), 'Terminal must expose operator button');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// P2-2: Remembered login emails and sensitive field visibility
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test('Legacy login remembers successful emails without storing passwords', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'src', 'screens', 'Login.jsx'), 'utf-8');
+  assert.ok(content.includes('LEGACY_POS_REMEMBERED_EMAILS_KEY'), 'Login must have a scoped remembered email key');
+  assert.ok(content.includes('saveRememberedEmail(loginEmail)'), 'Successful login/offline unlock must remember the email');
+  assert.ok(content.includes('legacy-pos-remembered-emails'), 'Email field must expose remembered email suggestions');
+  assert.ok(!content.includes('localStorage?.setItem(LEGACY_POS_REMEMBERED_EMAILS_KEY, JSON.stringify(password'), 'Must not persist passwords');
+});
+
+test('Legacy login and order PIN prompts have visibility toggles', () => {
+  const login = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'src', 'screens', 'Login.jsx'), 'utf-8');
+  const orders = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'src', 'screens', 'Orders.jsx'), 'utf-8');
+  assert.ok(login.includes("showPassword ? 'text' : 'password'"), 'Login password must be revealable');
+  assert.ok(login.includes("aria-label={showPassword ? 'Hide password' : 'Show password'}"), 'Login password toggle must be labelled');
+  assert.ok(orders.includes('function PinInput'), 'Order approval PINs must use a shared PIN input');
+  assert.ok(orders.includes("showPin ? 'text' : 'password'"), 'PIN prompts must be revealable');
+  assert.ok(orders.includes("aria-label={showPin ? 'Hide PIN' : 'Show PIN'}"), 'PIN toggle must be labelled');
+});
+
+test('Legacy POS explains unconfirmed Supabase Auth accounts clearly', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
+  assert.ok(content.includes('formatAuthLoginError'), 'Auth login errors must be normalized');
+  assert.ok(content.includes('email not confirmed'), 'Must detect Supabase email confirmation failures');
+  assert.ok(content.includes('Reset this staff member password in Boroko Desktop or Command Central'), 'Must tell managers how to repair unconfirmed staff Auth users');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// P2-3: Touchscreen reliability and order history item visibility
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test('Order history displays purchased line items and keeps actions touch-visible', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'src', 'screens', 'Orders.jsx'), 'utf-8');
+  assert.ok(content.includes('function getOrderItems'), 'Order history must normalize order item rows');
+  assert.ok(content.includes('formatOrderItems(order)'), 'Order history must render item summaries');
+  assert.ok(content.includes('Items</th>'), 'Order table must include an items column');
+  assert.ok(content.includes('min-h-10 min-w-10'), 'Void/return actions must have touch-sized targets');
+  assert.ok(content.includes('touch-scroll overflow-auto'), 'Order history must support swipe scrolling in both axes');
+  assert.ok(content.includes('calc(100vh - 220px)'), 'Order history must keep a bounded vertical scroll area');
+  assert.ok(!content.includes('opacity-0 group-hover:opacity-100'), 'Order actions must not be hover-only on touchscreens');
+});
+
+test('Legacy POS installs global touch focus and selection protection', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'src', 'main.jsx'), 'utf-8');
+  const css = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'src', 'index.css'), 'utf-8');
+  const app = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'src', 'App.jsx'), 'utf-8');
+  assert.ok(main.includes('installLegacyTouchFocusFix'), 'Renderer must install legacy touch focus fixes');
+  assert.ok(main.includes('MSPointerUp'), 'Touch fix must support older Windows pointer events');
+  assert.ok(main.includes('activateControlFromTouch'), 'Touch controls must synthesize reliable click activation');
+  assert.ok(main.includes('synthesizingTouchClick'), 'Touch click synthesis must suppress duplicate native clicks');
+  assert.ok(main.includes('scrollSelector'), 'Touch fix must recognize swipe-scroll regions');
+  assert.ok(main.includes('dx > 8 || dy > 8'), 'Touch fix must treat small swipes as scrolling, not taps');
+  assert.ok(main.includes('selectstart'), 'Touch fix must block accidental non-input selection');
+  assert.ok(main.includes('dragstart'), 'Touch fix must block accidental drag selection on controls');
+  assert.ok(css.includes('.touch-scroll'), 'CSS must include a reusable touch scroll helper');
+  assert.ok(css.includes('touch-action: pan-y'), 'CSS must allow vertical swipe scrolling');
+  assert.ok(css.includes('touch-action: pan-x'), 'CSS must allow horizontal swipe scrolling');
+  assert.ok(css.includes('-ms-touch-action: manipulation'), 'CSS must include old Windows touch-action hint');
+  assert.ok(css.includes('user-select: none'), 'Non-input UI must disable accidental text selection');
+  assert.ok(css.includes('user-select: text'), 'Actual text fields must remain editable/selectable');
+  assert.ok(css.includes('min-height: 40px'), 'Touch controls must have a minimum usable touch height');
+  assert.ok(app.includes('flex h-screen flex-col overflow-hidden'), 'App shell must avoid stale viewport sizing glitches');
+});
+
+test('POSTerminal cart and menu regions are swipe-scrollable', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'src', 'screens', 'POSTerminal.jsx'), 'utf-8');
+  assert.ok(content.includes('touch-scroll-x flex gap-2 overflow-x-auto'), 'Category strip must allow horizontal swipes');
+  assert.ok(content.includes('touch-scroll-y flex-1 overflow-y-auto p-4'), 'Menu item grid must allow vertical swipes');
+  assert.ok(content.includes('touch-scroll-y min-h-[220px] flex-1 overflow-y-auto'), 'Cart must allow vertical swipe scrolling');
+  assert.ok(content.includes('touch-scroll-y max-h-[46vh] overflow-y-auto'), 'Order details must allow vertical swipe scrolling');
+});
+
+test('Legacy updater handles old Windows GitHub certificate failures clearly', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
+  assert.ok(content.includes('GITHUB_UPDATE_CERT_HOSTS'), 'Updater certificate compatibility must be scoped to known GitHub hosts');
+  assert.ok(content.includes('github-releases.githubusercontent.com'), 'GitHub release asset host must be trusted for updater checks');
+  assert.ok(content.includes('objects.githubusercontent.com'), 'GitHub object download host must be trusted for updater checks');
+  assert.ok(content.includes('setCertificateVerifyProc'), 'Electron net certificate verification must handle legacy update hosts');
+  assert.ok(content.includes('formatUpdateError'), 'Updater must normalize certificate failures');
+  assert.ok(content.includes('ERR_CERT_AUTHORITY_INVALID'.toLowerCase()), 'Updater must detect invalid certificate authority failures');
+  assert.ok(!content.includes("NODE_TLS_REJECT_UNAUTHORIZED = '0'"), 'Updater must not disable TLS verification globally');
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════

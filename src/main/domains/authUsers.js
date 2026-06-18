@@ -40,6 +40,36 @@ import { normalizeStaffStatus } from '../../shared/accessControl.js';
 
 const AUTH_CONTRACT_VERSION = 2;
 const ADMIN_GUARD_STATUSES = new Set(['active', 'suspended']);
+const SUPABASE_AUTH_USER_PAGE_SIZE = 1000;
+
+function currentUserCanAdministerStaff() {
+  const user = state.currentUser;
+  if (user?.isMasterAdmin) return true;
+  return ['admin', 'super_admin'].includes(normalizeStaffRole(user?.role));
+}
+
+async function hasExistingLodgeUsers() {
+  const lodgeId = normalizeLodgeId(state.lodgeId);
+  if (!lodgeId) return true;
+  if (state.isOnline && state.supabase) {
+    const { data, error } = await state.supabase
+      .from('users')
+      .select('id')
+      .eq('lodge_id', lodgeId)
+      .limit(1);
+    if (!error) return (data || []).length > 0;
+  }
+  return readCache('users')
+    .map(normalizeUserRecord)
+    .filter(Boolean)
+    .some((user) => normalizeLodgeId(user.lodge_id) === lodgeId);
+}
+
+async function requireStaffAdmin({ allowInitialSetup = false } = {}) {
+  if (currentUserCanAdministerStaff()) return;
+  if (allowInitialSetup && !(await hasExistingLodgeUsers())) return;
+  throw new Error('Only an admin can manage staff accounts.');
+}
 
 function authTrace(label, payload = {}) {
   if (process.env.BOROKO_AUTH_TRACE !== '1') return;
@@ -59,6 +89,72 @@ function queueOperationBridge(...args) {
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+async function findSupabaseAuthUserByEmail(adminClient, emailLower) {
+  if (!adminClient || !emailLower) return null;
+  for (let page = 1; page <= 10; page += 1) {
+    const { data, error } = await adminClient.auth.admin.listUsers({
+      page,
+      perPage: SUPABASE_AUTH_USER_PAGE_SIZE
+    });
+    if (error) throw new Error(error.message || 'Could not search Supabase Auth users.');
+    const users = Array.isArray(data?.users) ? data.users : [];
+    const match = users.find((authUser) => normalizeEmail(authUser?.email) === emailLower);
+    if (match) return match;
+    if (users.length < SUPABASE_AUTH_USER_PAGE_SIZE) return null;
+  }
+  return null;
+}
+
+export async function ensureSupabaseAuthStaffUserReady(user, password, options = {}) {
+  const adminClient = options.adminClient || state.adminDb;
+  const lodgeId = normalizeLodgeId(options.lodgeId || user?.lodge_id || state.lodgeId);
+  const emailLower = normalizeEmail(user?.email);
+  if (!state.isOnline || !adminClient || !emailLower || !password) return null;
+
+  const metadata = {
+    lodge_id: lodgeId || null,
+    app_user_id: user?.id || null,
+    app: 'boroko-bookings'
+  };
+
+  let authUserId = user?.auth_user_id || null;
+  if (!authUserId) {
+    const existingAuthUser = await findSupabaseAuthUserByEmail(adminClient, emailLower);
+    authUserId = existingAuthUser?.id || null;
+  }
+
+  if (authUserId) {
+    const { data, error } = await adminClient.auth.admin.updateUserById(authUserId, {
+      password,
+      email_confirm: true,
+      user_metadata: metadata
+    });
+    if (error) throw new Error(error.message || 'Could not update Supabase Auth password.');
+    authUserId = data?.user?.id || authUserId;
+  } else {
+    const { data, error } = await adminClient.auth.admin.createUser({
+      email: emailLower,
+      password,
+      email_confirm: true,
+      user_metadata: metadata
+    });
+    if (error) throw new Error(error.message || 'Could not create confirmed Supabase Auth user.');
+    authUserId = data?.user?.id || null;
+  }
+
+  if (authUserId && user?.id && lodgeId && user.auth_user_id !== authUserId) {
+    const { error } = await adminClient
+      .from('users')
+      .update({ auth_user_id: authUserId })
+      .eq('id', user.id)
+      .eq('lodge_id', lodgeId);
+    if (error) throw new Error(error.message || 'Could not link Supabase Auth user to staff profile.');
+    upsertCachedUser({ ...user, auth_user_id: authUserId });
+  }
+
+  return authUserId;
 }
 
 function isProtectedAdmin(user) {
@@ -234,6 +330,7 @@ export async function runAuthHealthCheck(email = '', options = {}) {
 }
 
 export async function createUser(data) {
+  await requireStaffAdmin({ allowInitialSetup: true });
   await assertCreationWithinUsageLimit('user', { forceRemoteRefresh: state.isOnline });
   const emailLower = data.email.trim().toLowerCase();
   const isSetupRole = ['admin', 'super_admin'].includes(normalizeStaffRole(data.role));
@@ -415,6 +512,7 @@ export async function createUser(data) {
 }
 
 export async function updateUser(id, data) {
+  await requireStaffAdmin();
   const cachedUsers = readCache('users');
   const existingUser = cachedUsers.find((u) => u.id === id);
   if (!existingUser) throw new Error('Staff account not found.');
@@ -473,6 +571,7 @@ export async function updateUser(id, data) {
       });
       if (passwordError) throw new Error(passwordError.message);
       if (!passwordResult?.success) throw new Error(passwordResult?.error || 'Could not update user password');
+      await ensureSupabaseAuthStaffUserReady({ ...existingUser, id, ...update }, data.password);
     }
     if (pwaAccess.requested) {
       const { data: pwaResult, error: pwaError } = await state.supabase.rpc('set_user_pwa_access', {
@@ -549,6 +648,7 @@ export async function updateUser(id, data) {
 }
 
 export async function resetUserPassword(id, password) {
+  await requireStaffAdmin();
   const users = state.isOnline ? await getAllUsers() : readCache('users');
   const existingUser = users.find((u) => u.id === id);
   if (!existingUser) throw new Error('Staff account not found.');
@@ -578,12 +678,7 @@ export async function resetUserPassword(id, password) {
     });
   }
 
-  if (state.isOnline && existingUser.auth_user_id && state.adminDb) {
-    const { error } = await state.adminDb.auth.admin.updateUserById(existingUser.auth_user_id, {
-      password
-    });
-    if (error) throw new Error(error.message || 'Could not update Supabase Auth password.');
-  }
+  await ensureSupabaseAuthStaffUserReady(existingUser, password);
 
   upsertAuthEntry(existingUser.email.trim().toLowerCase(), bcrypt.hashSync(password, 10));
   logActivity('staff_password_reset', `${existingUser.name || existingUser.email} · desktop password updated`);
@@ -653,6 +748,7 @@ export async function getAuthStatus(email = '') {
 }
 
 export async function deleteUser(id) {
+  await requireStaffAdmin();
   const users = state.isOnline ? await getAllUsers() : readCache('users').map(normalizeUserRecord).filter(Boolean);
   const existingUser = users.find((u) => u.id === id);
   if (!existingUser) throw new Error('Staff account not found.');

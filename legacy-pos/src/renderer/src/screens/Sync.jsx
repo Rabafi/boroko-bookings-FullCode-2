@@ -1,15 +1,27 @@
 import { useState, useEffect, useCallback } from 'react';
-import { RefreshCw, Wifi, WifiOff, AlertTriangle, CheckCircle, Clock } from 'lucide-react';
+import { RefreshCw, Wifi, WifiOff, AlertTriangle, CheckCircle, Clock, ChevronDown, ChevronUp, Package, Download, Power } from 'lucide-react';
 
 export default function Sync({ user, isOnline, setIsOnline }) {
   const [syncStatus, setSyncStatus] = useState(null);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
+  const [queueDetail, setQueueDetail] = useState([]);
+  const [showDetail, setShowDetail] = useState(false);
+  const [inventoryDiag, setInventoryDiag] = useState(null);
+  const [showInventoryDiag, setShowInventoryDiag] = useState(false);
+  const [updateInfo, setUpdateInfo] = useState(null);
+  const [updateBusy, setUpdateBusy] = useState('');
 
   const loadStatus = useCallback(async () => {
     try {
       const status = await window.api.pos.getSyncStatus();
       setSyncStatus(status);
+      const detail = await window.api.pos.getSyncQueueDetail();
+      setQueueDetail(detail || []);
+      const diag = await window.api.pos.getInventoryDiagnostics().catch(() => null);
+      setInventoryDiag(diag);
+      const updates = await window.api.pos.updates?.getState?.().catch(() => null);
+      if (updates) setUpdateInfo(updates);
     } catch (e) {
       console.error('Failed to load sync status:', e);
     } finally {
@@ -23,6 +35,20 @@ export default function Sync({ user, isOnline, setIsOnline }) {
     const interval = setInterval(loadStatus, 20000);
     return () => clearInterval(interval);
   }, [loadStatus]);
+
+  useEffect(() => {
+    const updates = window.api.pos.updates;
+    if (!updates) return undefined;
+    const applyInfo = (info) => setUpdateInfo((prev) => ({ ...(prev || {}), ...(info || {}) }));
+    const cleanups = [
+      updates.onAvailable(applyInfo),
+      updates.onNotAvailable(applyInfo),
+      updates.onProgress(applyInfo),
+      updates.onReady(applyInfo),
+      updates.onError(applyInfo)
+    ];
+    return () => cleanups.forEach((cleanup) => cleanup?.());
+  }, []);
 
   const handleToggleOnline = async () => {
     const newOnline = !isOnline;
@@ -56,6 +82,41 @@ export default function Sync({ user, isOnline, setIsOnline }) {
     }
   };
 
+  const handleCheckUpdates = async () => {
+    setUpdateBusy('checking');
+    try {
+      const result = await window.api.pos.updates.check();
+      if (result?.state) setUpdateInfo(result.state);
+      else await loadStatus();
+    } finally {
+      setUpdateBusy('');
+    }
+  };
+
+  const handleDownloadUpdate = async () => {
+    setUpdateBusy('downloading');
+    try {
+      const result = await window.api.pos.updates.download();
+      if (result?.state) setUpdateInfo(result.state);
+    } finally {
+      setUpdateBusy('');
+    }
+  };
+
+  const handleInstallUpdate = async () => {
+    const result = await window.api.pos.updates.install();
+    if (result?.blocked) {
+      setUpdateInfo((prev) => ({ ...(prev || {}), safety: result.safety }));
+      alert(`Finish these before installing:\n${(result.safety?.blockers || []).join('\n')}`);
+    }
+  };
+
+  const activeItems = queueDetail.filter((i) => i.status !== 'synced');
+  const pendingItems = activeItems.filter((i) => i.status === 'pending');
+  const failedItems = activeItems.filter((i) => i.status === 'failed' || i.status === 'manual_review_required');
+  const updatePhase = updateInfo?.phase || 'idle';
+  const updateSafety = updateInfo?.safety || {};
+
   return (
     <div className="p-6">
       <div className="mb-6 flex items-center justify-between">
@@ -68,8 +129,15 @@ export default function Sync({ user, isOnline, setIsOnline }) {
       </div>
 
       {loading ? (
-        <div className="flex py-12 justify-center">
-          <div className="h-8 w-8 animate-spin rounded-full border-4 border-emerald-500 border-t-transparent" />
+        <div className="grid gap-6 lg:grid-cols-2">
+          <div className="rounded-xl border border-slate-200 bg-white p-6 space-y-4">
+            <div className="h-5 w-32 animate-pulse rounded bg-slate-200" />
+            {[1,2,3].map((i) => <div key={i} className="h-10 w-full animate-pulse rounded bg-slate-100" />)}
+          </div>
+          <div className="rounded-xl border border-slate-200 bg-white p-6 space-y-4">
+            <div className="h-5 w-40 animate-pulse rounded bg-slate-200" />
+            {[1,2].map((i) => <div key={i} className="h-10 w-full animate-pulse rounded bg-slate-100" />)}
+          </div>
         </div>
       ) : (
         <div className="grid gap-6 lg:grid-cols-2">
@@ -130,16 +198,168 @@ export default function Sync({ user, isOnline, setIsOnline }) {
             )}
           </div>
 
+          {activeItems.length > 0 && (
+            <div className="rounded-xl border border-slate-200 bg-white p-6 lg:col-span-2">
+              <button onClick={() => setShowDetail(!showDetail)} className="flex items-center gap-2 w-full text-left">
+                <h2 className="font-bold text-slate-800">Queue Detail ({activeItems.length} active)</h2>
+                {showDetail ? <ChevronUp className="h-4 w-4 text-slate-500" /> : <ChevronDown className="h-4 w-4 text-slate-500" />}
+              </button>
+              {showDetail && (
+                <div className="mt-4 space-y-2 max-h-96 overflow-y-auto">
+                  {activeItems.map((item) => (
+                    <div key={item.id} className="rounded-lg border border-slate-100 bg-slate-50 px-4 py-2.5 text-xs">
+                      <div className="flex items-center gap-3">
+                        <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                          item.status === 'manual_review_required' ? 'bg-red-100 text-red-700' :
+                          item.status === 'failed' ? 'bg-amber-100 text-amber-700' :
+                          'bg-blue-100 text-blue-700'
+                        }`}>
+                          {item.status === 'manual_review_required' ? 'REVIEW' : item.status}
+                        </span>
+                        <span className="font-semibold text-slate-700">{item.displayName || item.entityType}</span>
+                        <span className="font-mono text-slate-500">{item.functionName}</span>
+                        {item.isFinancial && <span className="rounded bg-red-50 px-1.5 py-0.5 text-[10px] font-semibold text-red-600">FINANCIAL</span>}
+                        <span className="text-slate-400 ml-auto">{item.attempts} attempt(s)</span>
+                      </div>
+                      {item.dependsOn && (
+                        <div className="mt-1 flex items-center gap-1 text-[10px]">
+                          <Clock className="h-3 w-3 text-amber-500" />
+                          <span className="text-amber-600">
+                            Waiting for dependency
+                            {item.dependencyState ? ` (${item.dependencyState})` : ''}
+                          </span>
+                        </div>
+                      )}
+                      {item.lastError && <p className="mt-1 text-red-500 truncate">{item.lastError}</p>}
+                      {item.status === 'manual_review_required' && item.manualReviewAction && (
+                        <p className="mt-1 text-[10px] font-medium text-slate-500">Action: {item.manualReviewAction}</p>
+                      )}
+                      <p className="text-[10px] text-slate-400 mt-1">{item.createdAt ? new Date(item.createdAt).toLocaleString() : ''}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className="rounded-xl border border-slate-200 bg-white p-6 lg:col-span-2">
+            <h2 className="mb-4 font-bold text-slate-800">App Updates</h2>
+            <div className="grid gap-4 lg:grid-cols-[1fr_auto] lg:items-start">
+              <div className="space-y-2 text-sm text-slate-600">
+                <p>Current version: <span className="font-mono font-semibold text-slate-800">v{updateInfo?.currentVersion || '...'}</span></p>
+                {updateInfo?.version && updateInfo.version !== updateInfo.currentVersion && (
+                  <p>Available version: <span className="font-mono font-semibold text-slate-800">v{updateInfo.version}</span></p>
+                )}
+                <p className={`font-semibold ${
+                  updatePhase === 'ready' ? 'text-emerald-700' :
+                  updatePhase === 'error' || updatePhase === 'offline' ? 'text-red-600' :
+                  updatePhase === 'available' || updatePhase === 'downloading' ? 'text-blue-700' :
+                  'text-slate-500'
+                }`}>
+                  {updatePhase === 'dev' ? 'Update checks are disabled in development builds.' :
+                    updatePhase === 'checking' ? 'Checking for updates...' :
+                    updatePhase === 'available' ? 'Update available.' :
+                    updatePhase === 'downloading' ? `Downloading update${updateInfo?.progress?.percent ? ` (${updateInfo.progress.percent}%)` : '...'}` :
+                    updatePhase === 'ready' ? 'Update downloaded and ready to install.' :
+                    updatePhase === 'uptodate' ? 'This POS is up to date.' :
+                    updatePhase === 'offline' ? 'Internet connection required for updates.' :
+                    updatePhase === 'error' ? (updateInfo?.error || 'Update check failed.') :
+                    'Ready to check for updates.'}
+                </p>
+                {updatePhase === 'ready' && updateSafety.blocked && (
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">
+                    Finish before restarting: {(updateSafety.blockers || []).join(', ')}
+                  </div>
+                )}
+                {updateInfo?.releaseNotes && (
+                  <details className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-xs">
+                    <summary className="cursor-pointer font-semibold text-slate-700">Release notes</summary>
+                    <pre className="mt-2 whitespace-pre-wrap font-sans text-slate-600">{updateInfo.releaseNotes}</pre>
+                  </details>
+                )}
+              </div>
+              <div className="flex flex-wrap gap-2 lg:justify-end">
+                <button onClick={handleCheckUpdates} disabled={!!updateBusy}
+                  className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50">
+                  <RefreshCw className={`mr-1 inline h-4 w-4 ${updateBusy === 'checking' ? 'animate-spin' : ''}`} /> Check
+                </button>
+                {updatePhase === 'available' && (
+                  <button onClick={handleDownloadUpdate} disabled={!!updateBusy}
+                    className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50">
+                    <Download className="mr-1 inline h-4 w-4" /> Download
+                  </button>
+                )}
+                {updatePhase === 'ready' && (
+                  <button onClick={handleInstallUpdate}
+                    className="rounded-lg bg-emerald-600 px-3 py-2 text-sm font-semibold text-white hover:bg-emerald-700">
+                    <Power className="mr-1 inline h-4 w-4" /> Restart to Install
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+
           <div className="rounded-xl border border-slate-200 bg-white p-6 lg:col-span-2">
             <h2 className="mb-4 font-bold text-slate-800">About Offline Mode</h2>
             <div className="space-y-2 text-sm text-slate-600">
               <p className="flex items-start gap-2"><CheckCircle className="mt-0.5 h-4 w-4 shrink-0 text-emerald-500" /> Sales made offline are queued locally and will sync when you reconnect.</p>
               <p className="flex items-start gap-2"><CheckCircle className="mt-0.5 h-4 w-4 shrink-0 text-emerald-500" /> Each sale uses an idempotency key to prevent duplicates on replay.</p>
-              <p className="flex items-start gap-2"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" /> Room folio charges require the booking to be cached locally. If not cached, the sale will be blocked.</p>
-              <p className="flex items-start gap-2"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" /> Voids and cash-ups require online connection in this version.</p>
-              <p className="flex items-start gap-2"><Clock className="mt-0.5 h-4 w-4 shrink-0 text-blue-500" /> Inventory is reserved locally when queued offline. If the RPC rejects due to stock changes, the order enters manual review.</p>
+              <p className="flex items-start gap-2"><CheckCircle className="mt-0.5 h-4 w-4 shrink-0 text-emerald-500" /> Voids, partial returns, shifts, and menu/table/tab changes all work offline and queue for sync.</p>
+              <p className="flex items-start gap-2"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" /> Room folio charges require the booking to be cached locally.</p>
+              <p className="flex items-start gap-2"><Clock className="mt-0.5 h-4 w-4 shrink-0 text-blue-500" /> Inventory is reserved locally when queued offline. Failed sync may require manual review.</p>
+              <p className="flex items-start gap-2"><Clock className="mt-0.5 h-4 w-4 shrink-0 text-blue-500" /> Config changes (menu, tables, modifiers, promotions, floor layout) are cached locally and queue for replay.</p>
             </div>
           </div>
+
+          {inventoryDiag && (
+            <div className="rounded-xl border border-slate-200 bg-white p-6 lg:col-span-2">
+              <button onClick={() => setShowInventoryDiag(!showInventoryDiag)} className="flex items-center gap-2 w-full text-left">
+                <Package className="h-4 w-4 text-slate-500" />
+                <h2 className="font-bold text-slate-800">Inventory Diagnostics</h2>
+                {showInventoryDiag ? <ChevronUp className="h-4 w-4 text-slate-500" /> : <ChevronDown className="h-4 w-4 text-slate-500" />}
+              </button>
+              {showInventoryDiag && (
+                <div className="mt-4 space-y-2 text-sm">
+                  {inventoryDiag.error ? (
+                    <p className="text-red-500">{inventoryDiag.error}</p>
+                  ) : (
+                    <>
+                      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                        <div className="rounded-lg bg-slate-50 p-3 text-center">
+                          <p className="text-lg font-bold text-slate-800">{inventoryDiag.remote_count ?? '—'}</p>
+                          <p className="text-[10px] font-semibold text-slate-500 uppercase">Remote Inventory</p>
+                        </div>
+                        <div className="rounded-lg bg-slate-50 p-3 text-center">
+                          <p className="text-lg font-bold text-slate-800">{inventoryDiag.bar_outlet_count ?? '—'}</p>
+                          <p className="text-[10px] font-semibold text-slate-500 uppercase">Bar Outlet</p>
+                        </div>
+                        <div className="rounded-lg bg-slate-50 p-3 text-center">
+                          <p className="text-lg font-bold text-slate-800">{inventoryDiag.cached_count ?? '—'}</p>
+                          <p className="text-[10px] font-semibold text-slate-500 uppercase">Cached Locally</p>
+                        </div>
+                        <div className="rounded-lg bg-slate-50 p-3 text-center">
+                          <p className="text-lg font-bold text-slate-800">{inventoryDiag.outlet_filter?.length ?? '—'}</p>
+                          <p className="text-[10px] font-semibold text-slate-500 uppercase">Outlet Access</p>
+                        </div>
+                      </div>
+                      {inventoryDiag.remote_count === 0 && inventoryDiag.cached_count > 0 && (
+                        <p className="text-xs text-amber-600">Remote returned 0 items. Using cached inventory. Bar stock may need a sync refresh.</p>
+                      )}
+                      {inventoryDiag.remote_count > 0 && inventoryDiag.bar_outlet_count === 0 && (
+                        <p className="text-xs text-amber-600">No Bar outlet inventory found. Check that inventory items have the correct outlet_id.</p>
+                      )}
+                      {inventoryDiag.bar_outlet_names?.length > 0 && (
+                        <p className="text-xs text-slate-500">Bar outlets: {inventoryDiag.bar_outlet_names.join(', ')}</p>
+                      )}
+                      {Number(inventoryDiag.unlinked_bar_inventory_count || 0) > 0 && (
+                        <p className="text-xs text-amber-600">{inventoryDiag.unlinked_bar_inventory_count} Bar inventory item(s) are not linked to POS menu items.</p>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>

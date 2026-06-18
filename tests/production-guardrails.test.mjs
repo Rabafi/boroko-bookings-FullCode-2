@@ -37,6 +37,9 @@ async function run() {
   const mainIndex = await read('src/main/index.js')
   const databaseFacade = await read('src/main/database.js')
   const database = [databaseFacade, ...(await readTree('src/main/domains'))].join('\n')
+  const surfaceIntelligence = await read('src/renderer/src/components/SurfaceIntelligence.jsx')
+  const adminApi = await read('src/renderer/src/utils/adminApi.js')
+  const legacyPosMain = await read('legacy-pos/src/main/index.js')
   assert.match(mainIndex, /ipcMain\.handle\('reports:snapshot'/)
   assert.match(mainIndex, /ipcMain\.handle\('reports:saveSupportBundle'/)
   assert.match(mainIndex, /function buildReportExportFilename\(/)
@@ -70,7 +73,8 @@ async function run() {
   assert.doesNotMatch(database, /payment_status:\s*depositStatus/)
   assert.doesNotMatch(database, /amount_paid:\s*deposit\s*>\s*0\s*\?\s*deposit\s*:\s*0/)
   assert.doesNotMatch(database, /payment_status:\s*payStatus/)
-  assert.doesNotMatch(database, /cached\[idx\]\s*=\s*\{\s*\.\.\.b,\s*amount_paid:/)
+  assert.match(database, /cached\[idx\]\s*=\s*\{\s*\.\.\.b,\s*amount_paid:\s*newPaid/)
+  assert.match(database, /_pending_payment:\s*true,\s*\/\/ local estimate/)
   assert.match(database, /_pending_payment:\s*deposit\s*>\s*0/)
   assert.match(database, /_pending_payment:\s*true,\s*\/\/ local estimate/)
   assert.match(database, /export async function getUserById\(/)
@@ -309,9 +313,17 @@ async function run() {
   assert.match(sqlUsageHarness, /monthly booking creation limit/)
 
   const adminCentral = await read('src/renderer/src/components/AdminCentral.jsx')
+  const adminDomain = await read('src/main/domains/admin.js')
+  const licensingWorkbench = await read('src/renderer/src/components/LicensingWorkbench.jsx')
   const bookingsUi = await read('src/renderer/src/components/Bookings.jsx')
   const roomsUi = await read('src/renderer/src/components/Rooms.jsx')
   const staffUi = await read('src/renderer/src/components/Staff.jsx')
+  const maintenanceDomain = await read('src/main/domains/maintenance.js')
+  const cacheRefreshDomain = await read('src/main/domains/cacheRefresh.js')
+  const infrastructureDomain = await read('src/main/domains/infrastructure.js')
+  const notificationInbox = await read('src/renderer/src/components/NotificationInbox.jsx')
+  const fleetHealth = await read('src/renderer/src/components/FleetHealth.jsx')
+  const releaseControl = await read('src/renderer/src/components/ReleaseControl.jsx')
   assert.match(adminCentral, /Needs Attention/)
   assert.match(adminCentral, /Near limit/)
   assert.match(adminCentral, /In grace/)
@@ -325,6 +337,73 @@ async function run() {
   assert.match(adminCentral, /lastBookingDate/)
   assert.match(adminCentral, /Last activity/)
   assert.match(adminCentral, /trackUpgradeIntent/)
+  assert.match(adminDomain, /function licenseFromEntitlement\(/)
+  assert.match(adminDomain, /fillMissingLicensesFromEntitlements\(db, normalized\)/)
+  assert.match(adminDomain, /rpc\('get_lodge_entitlement'/)
+  assert.match(adminDomain, /source_license_id/)
+  assert.match(adminDomain, /getAdminEntitlement\(db, targetLodgeId\)/)
+  assert.match(adminDomain, /COMPANY_SETTINGS_LEGACY_SELECT/)
+  assert.match(adminDomain, /COMPANY_SETTINGS_MINIMAL_SELECT/)
+  assert.match(adminDomain, /isSettingsColumnError/)
+  assert.match(adminDomain, /message\.includes\('updated_at'\)/)
+  assert.match(adminDomain, /async function loadCompanySettingsRows\(db\)/)
+  assert.match(adminDomain, /select\('\*'\)\.limit\(1000\)/)
+  assert.doesNotMatch(adminDomain, /eq\('setup_complete',\s*true\)/)
+  assert.doesNotMatch(adminDomain, /company\.setup_complete !== false/)
+  assert.match(adminDomain, /throw new Error\(lastError\?\.message \|\| 'Could not load Command Central companies\.'\)/)
+  assert.match(adminDomain, /LICENSE_LEGACY_SELECT/)
+  assert.match(adminDomain, /isLicenseSchemaCompatibilityError/)
+  assert.match(adminDomain, /const LICENSE_LEGACY_SELECT = 'id, lodge_id, lodge_name, business_type, subscription_plan, payment_status, monthly_fee, currency, issued_at, expires_at, next_due_date, last_payment_date, notes, is_active';/)
+  assert.match(adminDomain, /select\(LICENSE_LEGACY_SELECT\)/)
+  assert.match(adminDomain, /function normalizeLicenseLodgeId\(value\)/)
+  assert.match(adminDomain, /lodge_id: normalizeLicenseLodgeId\(license\.lodge_id\)/)
+  assert.match(adminDomain, /computeSubscriptionState\(\{/)
+  assert.match(adminDomain, /const subscriptionState = storedState && storedState !== 'expired' \? storedState : computedState/)
+  assert.match(adminDomain, /export async function updateLicense\(id, updates\)/)
+  assert.match(adminDomain, /rpc\('update_subscription_contract'/)
+  assert.match(adminDomain, /p_license_id: id/)
+  assert.match(adminDomain, /p_payload: update/)
+  assert.match(adminDomain, /\['licensed', 'active'\]\.includes\(status\)/)
+  assert.match(adminDomain, /\['licensed', 'active', 'trial', 'free', 'grace_period', 'overdue'\]\.includes\(subscriptionState\)/)
+  assert.match(adminDomain, /entitlement\.source_license_id \|\| entitlement\.license_id \|\| entitlement\.id \|\| `entitlement:\$\{lodgeId\}`/)
+  assert.match(maintenanceDomain, /MAINTENANCE_TICKET_LEGACY_SELECT/)
+  assert.match(maintenanceDomain, /isMaintenanceTicketSchemaCompatibilityError/)
+  assert.match(maintenanceDomain, /issue: ticket\.issue \|\| ticket\.title \|\| ''/)
+  assert.match(cacheRefreshDomain, /fetchMaintenanceForRefresh/)
+  assert.match(cacheRefreshDomain, /MAINTENANCE_TICKET_LEGACY_SELECT/)
+  assert.match(cacheRefreshDomain, /issue: row\.issue \|\| row\.title \|\| ''/)
+  assert.match(infrastructureDomain, /Back online - syncing changes\.\.\./)
+  assert.doesNotMatch(infrastructureDomain, /Back online — syncing changes/)
+  const authUsersDomain = await read('src/main/domains/authUsers.js')
+  assert.match(authUsersDomain, /ensureSupabaseAuthStaffUserReady/)
+  assert.match(authUsersDomain, /email_confirm:\s*true/)
+  assert.match(authUsersDomain, /updateUserById\(authUserId,[\s\S]*?email_confirm:\s*true/)
+  assert.match(authUsersDomain, /createUser\(\{[\s\S]*?email_confirm:\s*true/)
+  assert.match(adminDomain, /ensureSupabaseAuthStaffUserReady\(user,\s*password/)
+  assert.match(adminCentral, /raw === 'active' \|\| raw === 'licensed'/)
+  assert.match(adminCentral, /function lodgeKey\(value\)/)
+  assert.match(adminCentral, /function getAssignedLicenseForLodge\(licenses, lodgeId\)/)
+  assert.match(adminCentral, /function getAssignedPlanForLodge\(licenses, lodgeId\)/)
+  assert.match(adminCentral, /const assignedPlan = getAssignedPlanForLodge\(licenses, company\?\.lodge_id\)/)
+  assert.match(adminCentral, /const displayPlan = normalizePlanName\(assignedPlan \|\| rollup\.plan \|\| DEFAULT_PLAN\)/)
+  assert.match(adminCentral, /label: `\$\{assignedPlan\} Licensed`/)
+  assert.match(adminCentral, /getAssignedLicenseForLodge\(licenses, lodgeId\)/)
+  assert.match(adminCentral, /Command Central data could not be fully loaded\./)
+  assert.match(adminCentral, /setLoadError/)
+  assert.match(adminCentral, /return null/)
+  assert.match(adminCentral, /setCompanies\(Array\.isArray\(c\) \? c : \[\]\)/)
+  assert.match(adminCentral, /setLicenses\(Array\.isArray\(l\) \? l : \[\]\)/)
+  assert.doesNotMatch(mainIndex, /admin:getLicenses'[\s\S]{0,160}return \[\]/)
+  assert.match(licensingWorkbench, /raw === 'active' \|\| raw === 'licensed'/)
+  assert.match(licensingWorkbench, /function lodgeKey\(value\)/)
+  assert.match(licensingWorkbench, /function buildAssignedLicenseMap\(licenses = \[\]\)/)
+  assert.match(licensingWorkbench, /function shouldClearStaleExpiry\(license\)/)
+  assert.match(licensingWorkbench, /duration: dur,[\s\S]{0,80}next_due_date: nextVal \|\| f\.next_due_date/)
+  assert.doesNotMatch(licensingWorkbench, /duration: dur,[\s\S]{0,80}expires_at: nextVal/)
+  assert.match(licensingWorkbench, /Clear expiry/)
+  assert.match(licensingWorkbench, /activeLicenses\.get\(lodgeKey\(company\.lodge_id\)\)/)
+  assert.match(licensingWorkbench, /result\?\.license\?\.license_key \|\| result\?\.license_key/)
+  assert.match(licensingWorkbench, /This lodge already has an active assignment/)
 
   const dashboard = await read('src/renderer/src/components/Dashboard.jsx')
   assert.match(dashboard, /Operations Overview/)
@@ -459,6 +538,422 @@ async function run() {
   // Sync-integrity phase: SystemHealthPanel includes customer_drift and room_drift
   assert.match(panel, /customer_drift/)
   assert.match(panel, /room_drift/)
+
+  // ── Phase 0/1 hardening guardrails ──────────────────────────────────────────
+
+  // 1. getTrialInfo() uses safe optional chaining for lodge_id
+  assert.match(adminCentral, /getAssignedPlanForLodge\(licenses, company\?\.lodge_id\)/)
+
+  // 2. Migrations use app_is_service_role() OR app_current_role() (not broken auth.jwt()->>'role' = 'super_admin')
+  const auditSql = await read('supabase/migrations/20260614100000_admin_audit_log.sql')
+  assert.match(auditSql, /app_is_service_role\(\)/)
+  assert.match(auditSql, /app_current_role\(\) = 'super_admin'/)
+  assert.doesNotMatch(auditSql, /auth\.jwt\(\)->>'role'\) != 'super_admin'/)
+
+  const notifSql = await read('supabase/migrations/20260614110000_admin_notification_inbox.sql')
+  assert.match(notifSql, /app_is_service_role\(\)/)
+  assert.match(notifSql, /app_current_role\(\) = 'super_admin'/)
+
+  const fleetSql = await read('supabase/migrations/20260614120000_fleet_health_dashboard.sql')
+  assert.match(fleetSql, /app_is_service_role\(\)/)
+  assert.match(fleetSql, /app_current_role\(\) = 'super_admin'/)
+
+  const releaseSql = await read('supabase/migrations/20260614130000_release_control.sql')
+  assert.match(releaseSql, /app_is_service_role\(\)/)
+  assert.match(releaseSql, /app_current_role\(\) = 'super_admin'/)
+
+  // 3. Notification RLS is not USING (true) WITH CHECK (true)
+  assert.doesNotMatch(notifSql, /USING \(true\)/)
+  assert.match(notifSql, /ENABLE ROW LEVEL SECURITY/)
+
+  // 4. create_admin_notification has role enforcement
+  assert.match(notifSql, /CREATE OR REPLACE FUNCTION public\.create_admin_notification/)
+  assert.match(notifSql, /app_is_service_role\(\)/)
+
+  // 5. Phase 1 UI components show error states (not silent empty catches)
+  assert.match(notificationInbox, /setError/)
+  assert.match(notificationInbox, /err\?\.message/)
+  assert.match(fleetHealth, /setError/)
+  assert.match(fleetHealth, /err\?\.message/)
+  assert.match(releaseControl, /setError/)
+  assert.match(releaseControl, /err\?\.message/)
+
+  // 6. Fleet Health joins settings (not lodge) for lodge names
+  assert.match(fleetSql, /LEFT JOIN public\.settings/)
+
+  // 7. Release Control joins settings (not lodge) for lodge names
+  assert.match(releaseSql, /LEFT JOIN public\.settings/)
+
+  // 8. Fleet Health casts top_fault_types to jsonb
+  assert.match(fleetSql, /to_jsonb\(dh\.top_fault_types\)/)
+
+  // 9. Notification IPC bridge names match database exports
+  assert.match(database, /markNotificationsRead/)
+  assert.match(database, /cleanupNotifications/)
+
+  // 10. PDF export escapes HTML
+  assert.match(mainIndex, /escapeHtml\(c\.header\)/)
+  assert.match(mainIndex, /escapeHtml\(String\(row\[c\.key\]/)
+
+  // 11. Release Control label is honest
+  assert.match(releaseControl, /Feature Release Viewer/)
+  assert.match(adminCentral, /Releases/)
+
+  // 12. Leads has pagination
+  assert.match(adminCentral, /leadPage.*leadTotalPages.*paginatedLeads/)
+  assert.match(adminCentral, /paginatedLeads\.map/)
+
+  // 13. Notification Inbox has pagination
+  assert.match(notificationInbox, /usePagination\(notifications\)/)
+
+  // 14. Fleet Health has pagination or auto-refresh
+  assert.match(fleetHealth, /setInterval/)
+
+  // ── Master Plan G: Notification Automation ──
+  const notificationAutomation = await read('src/renderer/src/components/NotificationAutomation.jsx')
+  assert.match(notificationAutomation, /Notification Automation/)
+  assert.match(notificationAutomation, /evaluateAllRules/)
+  assert.match(notificationAutomation, /getNotificationRules/)
+  assert.match(notificationAutomation, /getNotificationEvents/)
+  assert.match(notificationAutomation, /markEventsDispatched/)
+
+  const automationDomain = await read('src/main/domains/automation.js')
+  assert.match(automationDomain, /getNotificationRules/)
+  assert.match(automationDomain, /upsertNotificationRule/)
+  assert.match(automationDomain, /evaluateRule/)
+  assert.match(automationDomain, /evaluateAllRules/)
+  assert.match(automationDomain, /getNotificationEvents/)
+  assert.match(automationDomain, /getNotificationEventSummary/)
+  assert.match(automationDomain, /markEventsDispatched/)
+  assert.match(automationDomain, /app_get_notification_rules/)
+  assert.match(automationDomain, /app_evaluate_notification_rule/)
+  assert.match(automationDomain, /app_evaluate_all_notification_rules/)
+  assert.match(automationDomain, /app_get_notification_events/)
+  assert.match(automationDomain, /app_get_notification_event_summary/)
+  assert.match(automationDomain, /app_mark_events_dispatched/)
+
+  // ── Master Plan B: Accounting ──
+  const accountingDashboard = await read('src/renderer/src/components/AccountingDashboard.jsx')
+  assert.match(accountingDashboard, /Accounting Overview/)
+  assert.match(accountingDashboard, /getMrrSummary/)
+  assert.match(accountingDashboard, /getRevenueSummary/)
+  assert.match(accountingDashboard, /getLodgeFinancialSummary/)
+
+  const accountingDomain = await read('src/main/domains/accounting.js')
+  assert.match(accountingDomain, /getMrrSummary/)
+  assert.match(accountingDomain, /getRevenueSummary/)
+  assert.match(accountingDomain, /getLodgeFinancialSummary/)
+  assert.match(accountingDomain, /app_get_mrr_summary/)
+  assert.match(accountingDomain, /app_get_revenue_summary/)
+  assert.match(accountingDomain, /app_get_lodge_financial_summary/)
+
+  // ── Master Plan J: Task Center ──
+  const adminToday = await read('src/renderer/src/components/AdminToday.jsx')
+  assert.match(adminToday, /Today's Admin Dashboard/)
+  assert.match(adminToday, /getAdminToday/)
+  assert.match(adminToday, /overdue_bookings/)
+  assert.match(adminToday, /trials_ending/)
+  assert.match(adminToday, /failed_devices/)
+  assert.match(adminToday, /urgent_tickets/)
+  assert.match(adminToday, /lead_followups/)
+
+  // ── Master Plan E: Deep Fleet Health + Version Control ──
+  const versionControl = await read('src/renderer/src/components/VersionControl.jsx')
+  assert.match(versionControl, /Deep Fleet Health/)
+  assert.match(versionControl, /getSyncQueueStatus/)
+  assert.match(versionControl, /pushUpdateNotification/)
+  assert.match(versionControl, /reconciliation_state/)
+  assert.match(versionControl, /failed_queue_count/)
+
+  // ── Master Plan H: Global Search ──
+  const globalSearch = await read('src/renderer/src/components/GlobalSearch.jsx')
+  assert.match(globalSearch, /Global Search/)
+  assert.match(globalSearch, /globalSearch/)
+  assert.match(globalSearch, /ticket/)
+  assert.match(globalSearch, /lead/)
+  assert.match(globalSearch, /device/)
+  // GlobalSearch is generic — renders whatever types the RPC returns (lodge, license, ticket, lead, device)
+
+  // ── Master Plan I: Bulk Actions ──
+  const bulkActions = await read('src/renderer/src/components/BulkActions.jsx')
+  assert.match(bulkActions, /bulkUpdateStatus/)
+  assert.match(bulkActions, /bulkDelete/)
+  assert.match(bulkActions, /bulkNotify/)
+  assert.match(bulkActions, /Confirm/)
+  // Bulk actions should NOT reference invoices
+  assert.ok(!bulkActions.includes("'invoice'"), 'bulk actions must not reference invoice entity type')
+
+  // ── Master Plan F: Release Rollout Control ──
+  const releaseRollout = await read('src/renderer/src/components/ReleaseRollout.jsx')
+  const safeLoad = await read('src/renderer/src/utils/safeLoad.js')
+  const executiveCockpit = await read('src/renderer/src/components/ExecutiveCockpit.jsx')
+  const client360 = await read('src/renderer/src/components/Client360.jsx')
+  const systemHealth = await read('src/renderer/src/components/SystemHealth.jsx')
+  assert.match(releaseRollout, /Release Rollout Control/)
+  assert.match(releaseRollout, /createRelease/)
+  assert.match(releaseRollout, /updateRelease/)
+  assert.match(releaseRollout, /getReleases/)
+  assert.match(releaseRollout, /rollout_pct/)
+  assert.match(releaseRollout, /rolling_out/)
+
+  // ── IPC handlers for all new features ──
+  assert.match(mainIndex, /admin:getNotificationRules/)
+  assert.match(mainIndex, /admin:upsertNotificationRule/)
+  assert.match(mainIndex, /admin:evaluateRule/)
+  assert.match(mainIndex, /admin:evaluateAllRules/)
+  assert.match(mainIndex, /admin:getNotificationEvents/)
+  assert.match(mainIndex, /admin:getNotificationEventSummary/)
+  assert.match(mainIndex, /admin:markEventsDispatched/)
+  assert.match(mainIndex, /admin:getMrrSummary/)
+  assert.match(mainIndex, /admin:getRevenueSummary/)
+  assert.match(mainIndex, /admin:getLodgeFinancialSummary/)
+  assert.match(mainIndex, /admin:getAdminToday/)
+  assert.match(mainIndex, /admin:globalSearch/)
+  assert.match(mainIndex, /admin:bulkUpdateStatus/)
+  assert.match(mainIndex, /admin:bulkDelete/)
+  assert.match(mainIndex, /admin:bulkNotify/)
+  assert.match(mainIndex, /admin:pushUpdateNotification/)
+  assert.match(mainIndex, /admin:getSyncQueueStatus/)
+  assert.match(mainIndex, /admin:createRelease/)
+  assert.match(mainIndex, /admin:updateRelease/)
+  assert.match(mainIndex, /admin:checkUpdateAvailability/)
+  assert.match(mainIndex, /admin:getReleases/)
+
+  // ── Preload bridge for all new features ──
+  assert.match(preload, /getNotificationRules/)
+  assert.match(preload, /upsertNotificationRule/)
+  assert.match(preload, /evaluateRule/)
+  assert.match(preload, /evaluateAllRules/)
+  assert.match(preload, /getNotificationEvents/)
+  assert.match(preload, /getNotificationEventSummary/)
+  assert.match(preload, /markEventsDispatched/)
+  assert.match(preload, /getMrrSummary/)
+  assert.match(preload, /getRevenueSummary/)
+  assert.match(preload, /getLodgeFinancialSummary/)
+  assert.match(preload, /getAdminToday/)
+  assert.match(preload, /globalSearch/)
+  assert.match(preload, /bulkUpdateStatus/)
+  assert.match(preload, /bulkDelete/)
+  assert.match(preload, /bulkNotify/)
+  assert.match(preload, /pushUpdateNotification/)
+  assert.match(preload, /getSyncQueueStatus/)
+  assert.match(preload, /createRelease/)
+  assert.match(preload, /updateRelease/)
+  assert.match(preload, /checkUpdateAvailability/)
+  assert.match(preload, /getReleases/)
+
+  // ── Database facade exports ──
+  assert.match(databaseFacade, /getMrrSummary/)
+  assert.match(databaseFacade, /getRevenueSummary/)
+  assert.match(databaseFacade, /getLodgeFinancialSummary/)
+  assert.match(databaseFacade, /getNotificationRules/)
+  assert.match(databaseFacade, /upsertNotificationRule/)
+  assert.match(databaseFacade, /evaluateRule/)
+  assert.match(databaseFacade, /evaluateAllRules/)
+  assert.match(databaseFacade, /getNotificationEvents/)
+  assert.match(databaseFacade, /getNotificationEventSummary/)
+  assert.match(databaseFacade, /markEventsDispatched/)
+  assert.match(databaseFacade, /getAdminToday/)
+  assert.match(databaseFacade, /globalSearch/)
+  assert.match(databaseFacade, /bulkUpdateStatus/)
+  assert.match(databaseFacade, /bulkDelete/)
+  assert.match(databaseFacade, /bulkNotify/)
+  assert.match(databaseFacade, /pushUpdateNotification/)
+  assert.match(databaseFacade, /getSyncQueueStatus/)
+  assert.match(databaseFacade, /createRelease/)
+  assert.match(databaseFacade, /updateRelease/)
+  assert.match(databaseFacade, /checkUpdateAvailability/)
+  assert.match(databaseFacade, /getReleases/)
+
+  // ── Migrations: schema compatibility guardrails (P2.14) ──
+  const migrationAutomation = await read('supabase/migrations/20260614150000_notification_automation.sql')
+  const migrationAccounting = await read('supabase/migrations/20260614160000_accounting_taskcenter_search_bulk_releases.sql')
+  const allNewMigrations = migrationAutomation + migrationAccounting
+
+  // Must not reference non-existent tables
+  assert.ok(!allNewMigrations.includes('public.lodge'), 'migrations must not reference public.lodge (does not exist)')
+  assert.ok(!allNewMigrations.includes('public.companies'), 'migrations must not reference public.companies (does not exist)')
+  assert.ok(!allNewMigrations.match(/public\.license[^s]/), 'migrations must use public.licenses (plural)')
+
+  // Must use corrected role checks
+  assert.match(migrationAutomation, /app_is_service_role/)
+  assert.match(migrationAutomation, /app_current_role\(\)/)
+  assert.ok(!migrationAutomation.includes("auth.jwt()->>'role' != 'super_admin'"), 'notification_automation must not use stale role check')
+  assert.match(migrationAccounting, /app_is_service_role/)
+  assert.match(migrationAccounting, /app_current_role\(\)/)
+  assert.ok(!migrationAccounting.includes("auth.jwt()->>'role' != 'super_admin'"), 'accounting must not use stale role check')
+
+  // Must not invent invoice financial columns
+  assert.ok(!allNewMigrations.includes('invoices.amount_due'), 'migrations must not reference invoices.amount_due')
+  assert.ok(!allNewMigrations.includes('invoices.amount_paid'), 'migrations must not reference invoices.amount_paid')
+  assert.ok(!allNewMigrations.includes('invoices.payment_status'), 'migrations must not reference invoices.payment_status')
+
+  // Must not reference activity_logs.performed_by
+  assert.ok(!allNewMigrations.includes('activity_logs.performed_by'), 'migrations must not reference activity_logs.performed_by')
+
+  // Must have REVOKE/GRANT on all new RPCs
+  const rpcNames = ['app_get_mrr_summary', 'app_get_revenue_summary', 'app_get_lodge_financial_summary',
+    'app_get_admin_today', 'app_global_search', 'app_bulk_update_status', 'app_bulk_delete', 'app_bulk_notify',
+    'app_get_sync_queue_status', 'app_push_update_notification', 'app_create_release', 'app_update_release',
+    'app_check_update_availability', 'app_get_releases',
+    'app_upsert_notification_rule', 'app_get_notification_rules', 'app_evaluate_notification_rule',
+    'app_evaluate_all_notification_rules', 'app_get_notification_events', 'app_get_notification_event_summary',
+    'app_mark_events_dispatched']
+  for (const rpc of rpcNames) {
+    assert.ok(allNewMigrations.includes(`REVOKE ALL ON FUNCTION public.${rpc}`), `migration must have REVOKE for ${rpc}`)
+    assert.ok(allNewMigrations.includes(`GRANT EXECUTE ON FUNCTION public.${rpc}`), `migration must have GRANT for ${rpc}`)
+  }
+
+  // ── P2.16: Financial guardrails — no direct financial mutations ──
+  assert.ok(!allNewMigrations.includes("SET amount_paid"), 'migrations must not directly set amount_paid')
+  assert.ok(!allNewMigrations.includes("SET payment_status"), 'migrations must not directly set payment_status')
+  assert.ok(!allNewMigrations.includes("UPDATE public.invoices SET"), 'migrations must not directly update invoices')
+
+  // ── P0: sql.row_count is invalid PL/pgSQL — must use GET DIAGNOSTICS ──
+  assert.ok(!allNewMigrations.includes('sql.row_count'), 'migrations must not use sql.row_count (invalid PL/pgSQL); use GET DIAGNOSTICS ... = ROW_COUNT')
+
+  // ── P0: Sales CRM migration must have role checks + REVOKE/GRANT ──
+  const migrationSalesCrm = await read('supabase/migrations/20260614140000_sales_crm_pipeline.sql')
+  assert.match(migrationSalesCrm, /app_is_service_role/, 'update_lead_crm must have DB-side role check')
+  assert.match(migrationSalesCrm, /app_current_role\(\)/, 'update_lead_crm must have DB-side role check')
+  assert.ok(migrationSalesCrm.includes('REVOKE ALL ON FUNCTION public.update_lead_crm'), 'update_lead_crm must have REVOKE')
+  assert.ok(migrationSalesCrm.includes('REVOKE ALL ON FUNCTION public.get_sales_pipeline_summary'), 'get_sales_pipeline_summary must have REVOKE')
+  assert.ok(migrationSalesCrm.includes('GRANT EXECUTE ON FUNCTION public.update_lead_crm'), 'update_lead_crm must have GRANT')
+  assert.ok(migrationSalesCrm.includes('GRANT EXECUTE ON FUNCTION public.get_sales_pipeline_summary'), 'get_sales_pipeline_summary must have GRANT')
+
+  // ── P1: Today IPC fallback must use overdue_bookings, not overdue_invoices ──
+  assert.ok(!mainIndex.includes('overdue_invoices'), 'index.js must not contain stale overdue_invoices fallback')
+  assert.ok(mainIndex.includes('overdue_bookings'), 'index.js getAdminToday fallback must use overdue_bookings')
+
+  // ── Bulk lead delete must set both status AND stage to prevent ghost leads in pipeline ──
+  assert.ok(allNewMigrations.includes("status = 'dropped', stage = 'lost'"), 'bulk lead delete must set both status and stage')
+  // Leads component must filter out dropped/lost leads from active pipeline
+  assert.match(adminCentral, /l\.status !== 'dropped'/, 'Leads must filter out dropped leads')
+  assert.doesNotMatch(adminCentral, /l\.stage !== 'lost'/, 'Lost leads must remain visible in the sales pipeline')
+
+  // ── AdminCentral nav includes all new sections ──
+  assert.match(adminCentral, /Notifications/)
+  assert.match(adminCentral, /Accounting/)
+  assert.match(adminCentral, /Global Search/)
+  assert.match(adminCentral, /Bulk Actions/)
+  assert.match(adminCentral, /Fleet/)
+  assert.match(adminCentral, /Releases/)
+  assert.match(adminCentral, /Today/)
+
+  // ── AdminCentral section rendering includes all new components ──
+  assert.match(adminCentral, /<Notifications/)
+  assert.match(adminCentral, /<AccountingDashboard/)
+  assert.match(adminCentral, /<AdminToday/)
+  assert.match(adminCentral, /<Fleet/)
+  assert.match(adminCentral, /<GlobalSearch/)
+  assert.match(adminCentral, /<BulkActions/)
+  assert.match(adminCentral, /<Releases/)
+  assert.match(adminCentral, /<SystemHealth/)
+
+  // ── Command Central office workflow grouping + finance merge ──
+  assert.match(adminCentral, /const NAV_GROUPS = \[/)
+  assert.match(adminCentral, /Finance Office/)
+  assert.match(adminCentral, /Surface Intelligence/)
+  assert.match(adminCentral, /function FinanceOffice/)
+  assert.match(adminCentral, /section === 'finance' \|\| section === 'bookkeeping' \|\| section === 'accounting'/)
+  assert.doesNotMatch(adminCentral, /selectedBulkIds/)
+  assert.doesNotMatch(adminCentral, /bulkEntityType/)
+
+  // ── Runtime bridge hardening prevents stale preload from blanking tabs ──
+  assert.match(adminApi, /unavailableAdminApiResult/)
+  assert.match(accountingDashboard, /callAdminApi\('getLodgeFinancialSummary'/)
+  assert.match(accountingDashboard, /Unavailable bridge/)
+  assert.match(systemHealth, /getSurfaceIntelligence/)
+  assert.match(bulkActions, /callAdminApi\(entityMeta\.fetchKey/)
+  assert.match(globalSearch, /invoice:\s*'finance'/)
+  assert.match(globalSearch, /lead:\s*'leads'/)
+
+  // ── Cross-surface intelligence is wired end to end ──
+  assert.match(preload, /getSurfaceIntelligence:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('admin:getSurfaceIntelligence'\)/)
+  assert.match(mainIndex, /admin:getSurfaceIntelligence/)
+  assert.match(databaseFacade, /getSurfaceIntelligence/)
+  assert.match(database, /export async function getSurfaceIntelligence\(/)
+  assert.match(surfaceIntelligence, /Desktop, legacy POS, PWA, bookings, marketing, and support/)
+  assert.match(surfaceIntelligence, /getSurfaceIntelligence/)
+
+  const surfaceClientSql = await read('supabase/migrations/20260615121000_surface_intelligence_client_types.sql')
+  assert.match(surfaceClientSql, /legacy_pos/)
+  assert.match(surfaceClientSql, /bookings_site/)
+  assert.match(surfaceClientSql, /marketing_site/)
+  assert.match(surfaceClientSql, /idx_device_health_reports_client_type_reported/)
+
+  // ── Legacy POS update checks and health reports participate in Command Central ──
+  assert.match(legacyPosMain, /function gatePosUpdateCheck\(/)
+  assert.match(legacyPosMain, /app_check_update_availability/)
+  assert.match(legacyPosMain, /function publishLegacyPosDeviceHealth\(/)
+  assert.match(legacyPosMain, /p_client_type:\s*'legacy_pos'/)
+  assert.match(legacyPosMain, /HEALTH_REPORT_INTERVAL_MS/)
+
+  // ── P0.1: Bulk Actions is now a full workbench (self-fetching) ──
+  assert.match(bulkActions, /getSupportTickets|getMarketingLeads/)
+  assert.match(bulkActions, /Select All/)
+  assert.match(bulkActions, /Refresh/)
+  assert.match(bulkActions, /export default function BulkActions\(\)/) // no props required
+
+  // ── P0.2: Release Rollout uses 'retired' not 'rolled_back' ──
+  assert.match(releaseRollout, /retired/)
+  assert.doesNotMatch(releaseRollout, /rolled_back/)
+  assert.match(releaseRollout, /Retire Release/)
+
+  // ── P1.3: Auto-updater gated through RPC ──
+  assert.match(mainIndex, /gateUpdateCheck/)
+  assert.match(mainIndex, /checkUpdateAvailability/)
+  assert.match(mainIndex, /getDesktopDeviceIdForUpdater/)
+
+  // ── P1.4: Notification automation scheduler ──
+  assert.match(mainIndex, /evaluateAllRules/)
+  assert.match(mainIndex, /notification automation/)
+
+  // ── P1.5: Normalized action return shapes ──
+  assert.match(mainIndex, /ok: true, count:.*cleanupNotifications/)
+  assert.match(mainIndex, /ok: true, count:.*expireOverdueFeatures/)
+  assert.match(mainIndex, /ok: false, count: 0, error/)
+
+  // ── P1.6: Partial load failure warnings ──
+  assert.match(safeLoad, /safeLoadAll/)
+  assert.match(safeLoad, /hasPartialFailures/)
+  assert.match(safeLoad, /getFailureSummary/)
+  assert.match(executiveCockpit, /loadWarnings/)
+  assert.match(client360, /loadWarnings/)
+
+  // ── P1.7: Global Search navigates on click ──
+  assert.match(globalSearch, /onNavigate/)
+  assert.match(globalSearch, /TYPE_NAV_MAP/)
+
+  // ── P2.8: Accounting collections queue ──
+  assert.match(accountingDashboard, /collections/)
+  assert.match(accountingDashboard, /getCollectionsQueue/)
+  assert.match(accountingDashboard, /getRevenueByMethod/)
+
+  // ── P2.9: Fleet Health device drawer ──
+  assert.match(versionControl, /DeviceDrawer/)
+  assert.match(versionControl, /selectedDevice/)
+
+  // ── P2.10: Sales CRM lead drawer ──
+  assert.match(adminCentral, /LeadDrawer/)
+  assert.match(adminCentral, /selectedLead/)
+  assert.match(adminCentral, /Activity Timeline/)
+  assert.match(adminCentral, /Quick Actions/)
+
+  // ── P2.11: System Health page ──
+  assert.match(systemHealth, /System Self Check/)
+  assert.match(systemHealth, /Run Checks/)
+
+  // ── Accounting collections queue migration ──
+  const collectionsMig = await read('supabase/migrations/20260615110000_accounting_collections_queue.sql')
+  assert.match(collectionsMig, /app_get_collections_queue/)
+  assert.match(collectionsMig, /app_get_revenue_by_method/)
+  assert.match(collectionsMig, /REVOKE ALL/)
+  assert.match(collectionsMig, /GRANT EXECUTE/)
+
+  // ── Notification idempotency index migration ──
+  const idempMig = await read('supabase/migrations/20260615100000_notification_idempotency_index.sql')
+  assert.match(idempMig, /idx_notification_events_idempotent/)
 
   console.log('production-guardrails: ok')
 }

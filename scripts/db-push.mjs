@@ -1,5 +1,6 @@
 import { execFileSync } from 'child_process'
 import { existsSync, readFileSync } from 'fs'
+import { resolve } from 'path'
 
 const PROJECT_REF = 'oicgpknsmtvcsjacymum'
 
@@ -50,14 +51,17 @@ const connectionLabel = configuredUrl.includes('.pooler.supabase.com') ? 'Supaba
 const supabaseArgs = ['db', 'push', '--yes', '--db-url', dbUrl]
 
 function runSupabaseCli(args) {
+  const localCli = process.platform === 'win32'
+    ? resolve('node_modules', 'supabase', 'bin', 'supabase.exe')
+    : resolve('node_modules', '.bin', 'supabase')
   const candidates = process.platform === 'win32'
     ? [
-        { command: process.env.SUPABASE_CLI_BIN || 'supabase.exe', args },
-        { command: 'npx.cmd', args: ['supabase', ...args] }
+        { command: localCli, args },
+        { command: process.env.SUPABASE_CLI_BIN || 'supabase.exe', args }
       ]
     : [
-        { command: process.env.SUPABASE_CLI_BIN || 'supabase', args },
-        { command: 'npx', args: ['supabase', ...args] }
+        { command: localCli, args },
+        { command: process.env.SUPABASE_CLI_BIN || 'supabase', args }
       ]
 
   let lastError = null

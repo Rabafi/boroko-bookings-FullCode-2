@@ -26,6 +26,12 @@ function isReadOnlySessionTouchError(error) {
   return message.includes('read-only transaction') && message.includes('update');
 }
 
+function isNetworkError(error) {
+  const message = String(error?.message || error || '').toLowerCase();
+  return message.includes('fetch') || message.includes('network') || message.includes('failed to fetch') ||
+    message.includes('ERR_CONNECTION') || message.includes('ECONNREFUSED') || message.includes('ETIMEDOUT');
+}
+
 function buildReadOnlySessionTouchMessage(featureLabel = 'This screen') {
   return `${featureLabel} is hitting an older database read path that still tries to write during a SELECT. Apply the latest session and entitlement read-only SQL fixes in Supabase, then reload the app.`;
 }
@@ -1097,18 +1103,117 @@ export async function createPosPartialReturnWithPin(payload = {}) {
   .filter(Boolean).
   join(' · ');
 
-  const result = await createPosOrder({
-    id: returnId,
-    submit_intent_id: returnId,
-    room_id: originalOrder.room_id || null,
-    booking_id: originalOrder.booking_id || null,
-    walk_in_name: originalOrder.walk_in_name || 'POS return',
-    items: returnLines,
-    notes,
-    payment_method: payment_method || originalOrder.payment_method || 'cash',
+  // P0-4: Use database-authoritative return RPC
+  const rpcPayload = {
+    order_id,
+    lodge_id: state.lodgeId,
+    return_order_id: returnId,
+    return_idempotency_key: `pos-return:${returnId}`,
+    pin: String(pin).trim(),
+    reason: notes,
+    requested_by: cashier_user_id || null,
+    cashier_id: cashier_user_id || null,
+    cashier_name: null,
     outlet_id: outlet_id || originalOrder.outlet_id || null,
-    created_at_client: createdAt
-  });
+    override_log_id: randomUUID(),
+    created_at: createdAt,
+    lines: lines.map((line) => ({
+      line_id: line.line_id || line.id || null,
+      quantity: Math.abs(Number(line.quantity) || 0)
+    }))
+  };
+
+  let result;
+  if (state.isOnline && state.supabase) {
+    try {
+      const { data: rpcResult, error } = await state.supabase.rpc('create_pos_partial_return_with_pin', { payload: rpcPayload });
+      if (error) throw new Error(error.message);
+      if (!rpcResult?.success) return { success: false, error: rpcResult?.error || 'Return failed' };
+      result = { success: true, id: rpcResult.id || returnId, offline: false };
+    } catch (rpcError) {
+      if (isNetworkError(rpcError)) {
+        // P0-3: Queue the same RPC for offline replay, not createPosOrder
+        queueOperation('rpc', 'create_pos_partial_return_with_pin', { payload: rpcPayload }, returnId, {
+          _queue_id: `pos-return-${returnId}`,
+          ...(originalOrder._pending_sync ? { _depends_on: `pos-order-${order_id}` } : {})
+        });
+        const orderRow = {
+          id: returnId,
+          lodge_id: state.lodgeId,
+          order_id,
+          items: returnLines,
+          total,
+          gross_total: total,
+          payment_method: payment_method || originalOrder.payment_method || 'cash',
+          outlet_id: outlet_id || originalOrder.outlet_id || null,
+          walk_in_name: `Return: ${originalOrder.walk_in_name || 'Guest'}`,
+          notes,
+          status: 'completed',
+          created_at: createdAt,
+          _pending_sync: true,
+          _sync_state: 'pending',
+          _sync_created_offline: true,
+          pos_order_items: returnLines.map((line) => ({
+            id: randomUUID(),
+            order_id: returnId,
+            lodge_id: state.lodgeId,
+            ...line,
+            subtotal: Number(line.quantity || 0) * Number(line.unit_price || 0)
+          }))
+        };
+        const cachedOrders = readCache('pos-orders');
+        cachedOrders.unshift(orderRow);
+        writeCache('pos-orders', cachedOrders);
+        restoreOfflinePosInventoryReservation(returnLines.map((line) => ({
+          ...line,
+          quantity: Math.abs(line.quantity),
+          item_name: (line.item_name || '').replace(/^Return: /, '')
+        })));
+        result = { success: true, id: returnId, offline: true };
+      } else {
+        throw rpcError;
+      }
+    }
+  } else {
+    // P0-3: Queue the same RPC for offline replay, not createPosOrder
+    queueOperation('rpc', 'create_pos_partial_return_with_pin', { payload: rpcPayload }, returnId, {
+      _queue_id: `pos-return-${returnId}`,
+      ...(originalOrder._pending_sync ? { _depends_on: `pos-order-${order_id}` } : {})
+    });
+    const orderRow = {
+      id: returnId,
+      lodge_id: state.lodgeId,
+      order_id,
+      items: returnLines,
+      total,
+      gross_total: total,
+      payment_method: payment_method || originalOrder.payment_method || 'cash',
+      outlet_id: outlet_id || originalOrder.outlet_id || null,
+      walk_in_name: `Return: ${originalOrder.walk_in_name || 'Guest'}`,
+      notes,
+      status: 'completed',
+      created_at: createdAt,
+      _pending_sync: true,
+      _sync_state: 'pending',
+      _sync_created_offline: true,
+      pos_order_items: returnLines.map((line) => ({
+        id: randomUUID(),
+        order_id: returnId,
+        lodge_id: state.lodgeId,
+        ...line,
+        subtotal: Number(line.quantity || 0) * Number(line.unit_price || 0)
+      }))
+    };
+    const cachedOrders = readCache('pos-orders');
+    cachedOrders.unshift(orderRow);
+    writeCache('pos-orders', cachedOrders);
+    restoreOfflinePosInventoryReservation(returnLines.map((line) => ({
+      ...line,
+      quantity: Math.abs(line.quantity),
+      item_name: (line.item_name || '').replace(/^Return: /, '')
+    })));
+    result = { success: true, id: returnId, offline: true };
+  }
 
   if (!result?.success) return result;
 
@@ -1148,8 +1253,11 @@ function summarizeCashupOrders(orders = [], { openingFloat = 0 } = {}) {
 
   for (const order of completed) {
     const total = normalizeMoney(order.total);
+    const orderSign = total >= 0 ? 1 : -1;
     for (const payment of getOrderPaymentRows(order)) {
-      byMethod[payment.method] = normalizeMoney((byMethod[payment.method] || 0) + payment.amount);
+      const amount = Number(payment.amount || 0);
+      const signedAmount = orderSign < 0 ? -Math.abs(amount) : Math.abs(amount);
+      byMethod[payment.method] = normalizeMoney((byMethod[payment.method] || 0) + signedAmount);
     }
     if (total >= 0) grossSales = normalizeMoney(grossSales + total);
     else returnTotal = normalizeMoney(returnTotal + Math.abs(total));

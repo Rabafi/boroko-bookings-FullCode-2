@@ -256,6 +256,12 @@ export function validateSyncQueueItem(item) {
     if (!isFiniteNumber(data.p_delta) || Number(data.p_delta) === 0) {
       return { isValid: false, reason: 'adjust_inventory_stock has invalid adjustment quantity' };
     }
+    const queuedAdjustmentId = String(item._queue_id || '').startsWith('inventory-adjust-')
+      ? String(item._queue_id).slice('inventory-adjust-'.length)
+      : '';
+    if (!hasString(data.p_adjustment_id) && !hasString(queuedAdjustmentId)) {
+      return { isValid: false, reason: 'adjust_inventory_stock missing adjustment id' };
+    }
   }
 
   if (item.table === 'upsert_pos_cashup') {

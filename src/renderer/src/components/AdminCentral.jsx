@@ -1,6 +1,24 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useAuth } from '../app-context'
+import { safeLoadAll, hasPartialFailures, getFailureSummary } from '../utils/safeLoad'
+import { timeAgo as sharedTimeAgo, formatMoney, fmtDate } from '../utils/timeAgo'
+import { useToast } from './shared/Toast'
+import { DarkConfirmDialog } from './shared/DarkConfirmDialog'
+import { useTableSort, SortableHeader } from '../hooks/useTableSort'
+import { BarChart, DonutChart, Sparkline, HorizontalBar } from './shared/Charts'
 import LicensingWorkbench from './LicensingWorkbench'
+import ExecutiveCockpit from './ExecutiveCockpit'
+import Client360 from './Client360'
+import AccountingDashboard from './AccountingDashboard'
+import AdminToday from './AdminToday'
+import GlobalSearch from './GlobalSearch'
+import BulkActions from './BulkActions'
+import SystemHealth from './SystemHealth'
+import Notifications from './Notifications'
+import Fleet from './Fleet'
+import Releases from './Releases'
+import SurfaceIntelligence from './SurfaceIntelligence'
+import Pagination, { usePagination } from './shared/Pagination'
 import {
   MONTHLY_USAGE_RESET_COPY,
   SUBSCRIPTION_PLAN_ORDER,
@@ -23,20 +41,13 @@ import {
   Copy, CheckCircle, XCircle, Key, ChevronRight, X, AlertTriangle,
   Clock, TrendingUp, Users, Home, Wrench, DollarSign, Edit3,
   Mail, Send, CheckCircle2, Eye, EyeOff, Receipt, FileText,
-  BarChart3, Filter, Wallet, Printer
+  BarChart3, Filter, Wallet, Printer, Bell, Server, Rocket,
+  Zap, Search, CheckSquare
 } from 'lucide-react'
 import { formatLocalDate, localToday } from '../utils/localDate'
-
-// ── Constants ────────────────────────────────────────────────────────────────
-const BIZ_EMOJI = { lodge: '🏕️', restaurant: '🍽️', retail: '🛒', service_provider: '🔧' }
-const BIZ_LABEL = { lodge: 'Lodge', restaurant: 'Restaurant', retail: 'Retail', service_provider: 'Service Provider' }
-const ALL_FEATURES = ['reports', 'expenses', 'staff', 'pwa', 'audit', 'conference', 'pool', 'import', 'pos', 'inventory', 'supplies']
-const FEAT_LABEL = {
-  reports: 'Reports', expenses: 'Expenses', staff: 'Staff Management',   pwa: 'Manager Mobile App',
-  audit: 'Night Audit', import: 'Data Import',
-  pos: 'POS / Bar', inventory: 'Inventory', supplies: 'Room Supplies',
-  conference: 'Conference', pool: 'Day Use'
-}
+import { TRIAL_LENGTH_DAYS, DEFAULT_TAX_RATE, ACTION_ICON } from '../constants/adminConstants'
+import ErrorBoundary from './shared/ErrorBoundary'
+import { BIZ_EMOJI, BIZ_LABEL, ALL_FEATURES, FEAT_LABEL, INVOICE_CURRENCIES } from '../constants/adminConstants'
 
 // ── Subscription Tiers ────────────────────────────────────────────────────────
 const TIERS = SUBSCRIPTION_PLAN_ORDER
@@ -67,13 +78,52 @@ function normalizePlanName(plan) {
   return normalizeSubscriptionPlan(plan)
 }
 
+function lodgeKey(value) {
+  return String(value || '').trim().toLowerCase()
+}
+
+const UNASSIGNED_LICENSE_STATES = new Set(['cancelled', 'expired', 'superseded', 'deleted', 'inactive'])
+
+function isAssignedLicense(license) {
+  if (!license || !lodgeKey(license.lodge_id) || license.is_active === false) return false
+  const state = String(license.subscription_state || license.payment_status || 'active').toLowerCase()
+  return !UNASSIGNED_LICENSE_STATES.has(state)
+}
+
+function licenseSortTime(license) {
+  const value = license?.updated_at || license?.issued_at || license?.created_at || license?.expires_at || license?.next_due_date
+  const time = value ? new Date(value).getTime() : 0
+  return Number.isFinite(time) ? time : 0
+}
+
+function pickPreferredLicense(current, candidate) {
+  if (!current) return candidate
+  const currentPlanRank = SUBSCRIPTION_PLAN_ORDER.indexOf(normalizePlanName(current.subscription_plan))
+  const candidatePlanRank = SUBSCRIPTION_PLAN_ORDER.indexOf(normalizePlanName(candidate.subscription_plan))
+  if (candidatePlanRank !== currentPlanRank) return candidatePlanRank > currentPlanRank ? candidate : current
+  return licenseSortTime(candidate) >= licenseSortTime(current) ? candidate : current
+}
+
+function getAssignedLicenseForLodge(licenses, lodgeId) {
+  const target = lodgeKey(lodgeId)
+  return (licenses || []).reduce((best, license) => {
+    if (!isAssignedLicense(license) || lodgeKey(license.lodge_id) !== target) return best
+    return pickPreferredLicense(best, license)
+  }, null)
+}
+
+function getAssignedPlanForLodge(licenses, lodgeId) {
+  const activeLicense = getAssignedLicenseForLodge(licenses, lodgeId)
+  return activeLicense ? normalizePlanName(activeLicense.subscription_plan) : null
+}
+
 function getPlanFlags(plan) {
   return { ...(TIER_FLAGS[normalizePlanName(plan)] || TIER_FLAGS[DEFAULT_PLAN]) }
 }
 
 function getLicensePlanForLodge(licenses, lodgeId) {
-  const activeLicense = (licenses || []).find((license) => license.lodge_id === lodgeId && license.is_active !== false)
-  return normalizePlanName(activeLicense?.subscription_plan)
+  const activeLicense = getAssignedLicenseForLodge(licenses, lodgeId)
+  return activeLicense ? normalizePlanName(activeLicense.subscription_plan) : null
 }
 
 function getSubscriptionStatusLabel(license) {
@@ -82,7 +132,7 @@ function getSubscriptionStatusLabel(license) {
 
 function subscriptionStatusTone(license) {
   const raw = String(license?.subscription_state || license?.payment_status || 'active').toLowerCase()
-  if (raw === 'active') return 'bg-green-500/20 text-green-300'
+  if (raw === 'active' || raw === 'licensed') return 'bg-green-500/20 text-green-300'
   if (raw === 'trial' || raw === 'free') return 'bg-blue-500/20 text-blue-300'
   if (raw === 'grace_period' || raw === 'overdue') return 'bg-amber-500/20 text-amber-300'
   if (raw === 'suspended' || raw === 'cancelled' || raw === 'expired') return 'bg-red-500/20 text-red-300'
@@ -154,16 +204,7 @@ function getCompanyUsageRollup(stats = null, licenses = [], company = null) {
 function usagePriorityScore(key = '') {
   return getUsagePriorityScore(key)
 }
-function timeAgo(dt) {
-  if (!dt) return ''
-  const diff = Date.now() - new Date(dt).getTime()
-  const m = Math.floor(diff / 60000)
-  if (m < 1) return 'just now'
-  if (m < 60) return `${m}m ago`
-  const h = Math.floor(m / 60)
-  if (h < 24) return `${h}h ago`
-  return fmt(dt)
-}
+const timeAgo = sharedTimeAgo
 
 function CopyBtn({ text }) {
   const [copied, setCopied] = useState(false)
@@ -178,6 +219,39 @@ function CopyBtn({ text }) {
   )
 }
 
+function ShortcutsModal({ onClose }) {
+  const shortcuts = [
+    { keys: ['Ctrl', 'K'], desc: 'Open Global Search' },
+    { keys: ['?'], desc: 'Show keyboard shortcuts' },
+    { keys: ['1'], desc: 'Go to Dashboard' },
+    { keys: ['2'], desc: 'Go to Executive Cockpit' },
+    { keys: ['3'], desc: 'Go to Companies' },
+    { keys: ['4'], desc: 'Go to Licensing' },
+    { keys: ['5'], desc: 'Go to Finance' },
+    { keys: ['6'], desc: 'Go to Tickets' },
+    { keys: ['7'], desc: 'Go to Activity Log' },
+    { keys: ['8'], desc: 'Go to Fleet' },
+    { keys: ['9'], desc: 'Go to Releases' },
+    { keys: ['Esc'], desc: 'Close modal / drawer' },
+  ]
+  return (
+    <Modal title="Keyboard Shortcuts" onClose={onClose}>
+      <div className="space-y-2">
+        {shortcuts.map(({ keys, desc }) => (
+          <div key={desc} className="flex items-center justify-between py-1.5">
+            <span className="text-sm text-gray-300">{desc}</span>
+            <div className="flex items-center gap-1">
+              {keys.map(k => (
+                <kbd key={k} className="px-2 py-0.5 text-[11px] font-mono text-gray-400 bg-gray-700 border border-gray-600 rounded">{k}</kbd>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </Modal>
+  )
+}
+
 function StatCard({ label, value, color = 'text-white', sub }) {
   return (
     <div className="bg-gray-800 rounded-xl p-4">
@@ -189,10 +263,16 @@ function StatCard({ label, value, color = 'text-white', sub }) {
 }
 
 function Modal({ title, onClose, children, wide }) {
+  useEffect(() => {
+    const handleKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); onClose?.() } }
+    document.addEventListener('keydown', handleKey)
+    return () => document.removeEventListener('keydown', handleKey)
+  }, [onClose])
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onClose}>
       <div
-        className={`bg-gray-900 border border-gray-700 rounded-2xl shadow-2xl p-6 ${wide ? 'w-[640px]' : 'w-[480px]'} max-h-[85vh] overflow-y-auto`}
+        className={`bg-gray-900 border border-gray-700 rounded-2xl shadow-2xl p-6 ${wide ? 'max-w-2xl' : 'max-w-lg'} w-full max-h-[85vh] overflow-y-auto`}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-5">
@@ -223,70 +303,140 @@ const btn = (variant = 'primary') => ({
 
 // ── Trial status helper ───────────────────────────────────────────────────────
 function getTrialInfo(company, licenses) {
-  const hasLicense = licenses.some((license) =>
-    license.lodge_id === company.lodge_id
-    && license.is_active !== false
-    && String(license.payment_status || '').toLowerCase() !== 'cancelled'
-    && (!license.expires_at || new Date(license.expires_at) >= new Date())
-  )
-  if (hasLicense) return { label: 'Licensed', color: 'bg-green-500/20 text-green-300' }
-  if (!company.trial_started_at) return { label: 'In Trial', color: 'bg-blue-500/20 text-blue-300' }
+  const assignedPlan = normalizePlanName(getAssignedPlanForLodge(licenses, company?.lodge_id))
+  if (assignedPlan) return { label: `${assignedPlan} Licensed`, color: 'bg-green-500/20 text-green-300', plan: assignedPlan }
+  if (!company?.trial_started_at) return { label: 'In Trial', color: 'bg-blue-500/20 text-blue-300', plan: null }
   const trialEnd = new Date(company.trial_started_at)
-  trialEnd.setDate(trialEnd.getDate() + 30)
+  trialEnd.setDate(trialEnd.getDate() + TRIAL_LENGTH_DAYS)
   const daysLeft = Math.ceil((trialEnd - new Date()) / 864e5)
-  if (daysLeft > 0) return { label: `Trial: ${daysLeft}d left`, color: daysLeft === 1 ? 'bg-red-500/20 text-red-300' : 'bg-amber-500/20 text-amber-300' }
-  return { label: 'Trial Expired', color: 'bg-red-500/20 text-red-400' }
+  if (daysLeft > 0) return { label: `Trial: ${daysLeft}d left`, color: daysLeft === 1 ? 'bg-red-500/20 text-red-300' : 'bg-amber-500/20 text-amber-300', plan: null }
+  return { label: 'Trial Expired', color: 'bg-red-500/20 text-red-400', plan: null }
 }
 
 // ════════════════════════════════════════════════════════════════════
 // SECTION: Dashboard
 // ════════════════════════════════════════════════════════════════════
-function Dashboard({ companies, licenses, tickets, activityLogs }) {
+function Dashboard({ companies, licenses, tickets, activityLogs, onOpenCompany }) {
   const today = localToday()
   const active = licenses.filter(l => l.is_active).length
   const expiring = licenses.filter(l => l.expires_at && l.is_active && new Date(l.expires_at) > new Date() && (new Date(l.expires_at) - new Date()) < 30 * 864e5).length
   const overdue = licenses.filter(l => l.next_due_date && l.next_due_date < today && l.payment_status !== 'free' && l.is_active).length
+  const activeFinancial = licenses.filter(l => l.is_active && l.payment_status !== 'free')
+  const mrr = activeFinancial.reduce((sum, l) => {
+    const amt = Number(l.amount || 0)
+    if (l.billing_cycle === 'annual') return sum + (amt / 12)
+    return sum + amt
+  }, 0)
   const openTickets = tickets.filter(t => t.status === 'open' || t.status === 'in_progress').length
+  const urgentTickets = tickets.filter(t => t.priority === 'urgent' || t.priority === 'critical').length
   const trialsExpired = companies.filter(c => getTrialInfo(c, licenses).label === 'Trial Expired').length
   const trialsActive = companies.filter(c => getTrialInfo(c, licenses).label.startsWith('Trial:')).length
   const byType = companies.reduce((a, c) => { const t = c.business_type || 'lodge'; a[t] = (a[t] || 0) + 1; return a }, {})
   const recent5 = [...companies].sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at)).slice(0, 5)
-  const recentLogs = activityLogs.slice(0, 15)
+  const recentLogs = activityLogs.slice(0, 8)
 
-  const ACTION_ICON = {
-    user_login: '👤', booking_created: '📅', expense_added: '💸',
-    maintenance_raised: '🔧', default: '📌'
+  const ticketByStatus = tickets.reduce((a, t) => { a[t.status] = (a[t.status] || 0) + 1; return a }, {})
+  const ticketChartData = [
+    { label: 'Open', value: ticketByStatus.open || 0, color: '#f59e0b' },
+    { label: 'In Progress', value: ticketByStatus.in_progress || 0, color: '#3b82f6' },
+    { label: 'Resolved', value: ticketByStatus.resolved || 0, color: '#10b981' },
+    { label: 'Closed', value: ticketByStatus.closed || 0, color: '#6b7280' }
+  ].filter(d => d.value > 0)
+
+  const ACTION_LABELS = {
+    booking_created: 'Booking Created', booking_cancelled: 'Booking Cancelled',
+    payment_received: 'Payment Received', company_archived: 'Company Archived',
+    company_restored: 'Company Restored', company_deleted: 'Company Deleted',
+    license_created: 'License Created', license_updated: 'License Updated',
+    broadcast_created: 'Broadcast Created', ticket_created: 'Ticket Created',
+    ticket_updated: 'Ticket Updated', feature_flag_updated: 'Feature Flag Updated',
+    release_created: 'Release Created', release_status_changed: 'Release Status Changed',
+    admin_audit: 'Admin Audit', default: 'Activity'
   }
 
   return (
     <div className="space-y-6">
-      <h2 className="text-lg font-bold text-white">Dashboard</h2>
-      {/* KPIs */}
-      <div className="grid grid-cols-2 md:grid-cols-7 gap-3">
-        <StatCard label="Registered Companies" value={companies.length} color="text-white" />
-        <StatCard label="Active Licenses" value={active} color="text-green-400" />
-        <StatCard label="In Trial" value={trialsActive} color={trialsActive > 0 ? 'text-blue-400' : 'text-gray-500'} />
-        <StatCard label="Trial Expired" value={trialsExpired} color={trialsExpired > 0 ? 'text-red-400' : 'text-gray-500'} />
-        <StatCard label="Expiring (30 days)" value={expiring} color={expiring > 0 ? 'text-yellow-400' : 'text-gray-500'} />
-        <StatCard label="Overdue Payments" value={overdue} color={overdue > 0 ? 'text-red-400' : 'text-gray-500'} />
-        <StatCard label="Open Tickets" value={openTickets} color={openTickets > 0 ? 'text-orange-400' : 'text-gray-500'} />
+      {/* Quick actions */}
+      <div className="flex items-center gap-2 flex-wrap">
+        <p className="text-[10px] text-gray-500 uppercase tracking-wider font-semibold mr-1">Quick Actions</p>
+        {[
+          { label: 'Companies', section: 'companies', icon: Building2 },
+          { label: 'Tickets', section: 'tickets', icon: LifeBuoy },
+          { label: 'Finance', section: 'finance', icon: DollarSign },
+          { label: 'Broadcasts', section: 'broadcasts', icon: Megaphone },
+        ].map(({ label, section, icon: Icon }) => (
+          <button key={section} onClick={() => window.__adminNavigate?.(section)}
+            className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700 transition-colors border border-gray-700">
+            <Icon size={12} /> {label}
+          </button>
+        ))}
       </div>
 
-      {/* Business types */}
-      {Object.keys(byType).length > 0 && (
-        <div className="bg-gray-800 rounded-xl p-4">
-          <p className="text-xs text-gray-400 uppercase tracking-wider mb-3 font-semibold">Business Types</p>
-          <div className="flex flex-wrap gap-3">
-            {Object.entries(byType).map(([type, count]) => (
-              <div key={type} className="flex items-center gap-2 bg-gray-700 rounded-lg px-3 py-2">
-                <span>{BIZ_EMOJI[type] || '🏢'}</span>
-                <span className="text-sm text-gray-200">{BIZ_LABEL[type] || type}</span>
-                <span className="text-sm font-bold text-white bg-gray-600 rounded-full px-2">{count}</span>
-              </div>
-            ))}
-          </div>
+      {/* Financial KPIs */}
+      <div>
+        <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-2 font-semibold">Financial Health</p>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <StatCard label="Monthly Revenue" value={`$${mrr.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`} color="text-green-400" />
+          <StatCard label="Paying Customers" value={activeFinancial.length} color="text-green-400" />
+          <StatCard label="Overdue Payments" value={overdue} color={overdue > 0 ? 'text-red-400' : 'text-gray-500'} />
+          <StatCard label="Active Licenses" value={active} color="text-green-400" />
         </div>
-      )}
+      </div>
+
+      {/* Operational KPIs */}
+      <div>
+        <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-2 font-semibold">Operations</p>
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+          <StatCard label="Registered Companies" value={companies.length} color="text-white" />
+          <StatCard label="In Trial" value={trialsActive} color={trialsActive > 0 ? 'text-blue-400' : 'text-gray-500'} />
+          <StatCard label="Trial Expired" value={trialsExpired} color={trialsExpired > 0 ? 'text-red-400' : 'text-gray-500'} />
+          <StatCard label="Expiring (30d)" value={expiring} color={expiring > 0 ? 'text-yellow-400' : 'text-gray-500'} />
+          <StatCard label="Open Tickets" value={openTickets} color={openTickets > 0 ? 'text-orange-400' : 'text-gray-500'} />
+        </div>
+      </div>
+
+      {/* Charts */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+        {Object.keys(byType).length > 0 && (
+          <div className="bg-gray-800 rounded-xl p-4">
+            <DonutChart
+              label="Business Types"
+              data={Object.entries(byType).map(([type, count]) => ({
+                label: BIZ_LABEL[type] || type,
+                value: count,
+                color: type === 'lodge' ? '#a855f7' : type === 'hotel' ? '#3b82f6' : '#10b981'
+              }))}
+              size={110}
+            />
+          </div>
+        )}
+        <div className="bg-gray-800 rounded-xl p-4">
+          <BarChart
+            label="License Status"
+            height={140}
+            data={[
+              { label: 'Active', value: active, color: '#10b981' },
+              { label: 'Trial', value: trialsActive, color: '#3b82f6' },
+              { label: 'Expired', value: trialsExpired, color: '#ef4444' },
+              { label: 'Expiring', value: expiring, color: '#f59e0b' },
+              { label: 'Overdue', value: overdue, color: '#f97316' }
+            ]}
+          />
+        </div>
+        <div className="bg-gray-800 rounded-xl p-4">
+          {ticketChartData.length > 0 ? (
+            <BarChart label="Tickets by Status" height={140} data={ticketChartData} />
+          ) : (
+            <div className="flex flex-col items-center justify-center h-[140px] text-gray-500">
+              <LifeBuoy size={24} className="mb-2 opacity-40" />
+              <p className="text-xs">No tickets</p>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Today's Action Items */}
+      <AdminToday />
 
       <div className="grid grid-cols-2 gap-5">
         {/* Recently registered */}
@@ -297,11 +447,11 @@ function Dashboard({ companies, licenses, tickets, activityLogs }) {
           ) : (
             <div className="space-y-3">
               {recent5.map(c => (
-                <div key={c.lodge_id} className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm font-medium text-white">{c.lodge_name || '—'}</p>
+                <div key={c.lodge_id} className="flex items-center justify-between group">
+                  <button onClick={() => onOpenCompany?.(c)} className="text-left">
+                    <p className="text-sm font-medium text-purple-400 group-hover:text-purple-300 transition-colors">{c.lodge_name || '—'}</p>
                     <p className="text-xs text-gray-500">{BIZ_EMOJI[c.business_type] || '🏢'} {BIZ_LABEL[c.business_type] || c.business_type}</p>
-                  </div>
+                  </button>
                   <p className="text-xs text-gray-500">{fmt(c.updated_at)}</p>
                 </div>
               ))}
@@ -320,8 +470,8 @@ function Dashboard({ companies, licenses, tickets, activityLogs }) {
                 <div key={log.id} className="flex items-start gap-2">
                   <span className="text-base leading-none mt-0.5">{ACTION_ICON[log.action] || ACTION_ICON.default}</span>
                   <div className="min-w-0">
-                    <p className="text-xs text-gray-200 truncate">{log.action.replace(/_/g, ' ')}</p>
-                    <p className="text-xs text-gray-500">{log.lodge_name || log.lodge_id?.slice(0, 8)} · {timeAgo(log.created_at)}</p>
+                    <p className="text-xs text-gray-200 truncate">{ACTION_LABELS[log.action] || log.action.replace(/_/g, ' ')}</p>
+                    <p className="text-[10px] text-gray-500">{log.lodge_name || log.lodge_id?.slice(0, 8)} · {timeAgo(log.created_at)}</p>
                   </div>
                 </div>
               ))}
@@ -337,12 +487,15 @@ function Dashboard({ companies, licenses, tickets, activityLogs }) {
 // SECTION: Companies
 // ════════════════════════════════════════════════════════════════════
 function Companies({ companies, licenses, loading, onReload }) {
+  const toast = useToast()
   const [selected, setSelected] = useState(null)
+  const [detailTab, setDetailTab] = useState('overview')
   const [stats, setStats] = useState(null)
   const [statsLoading, setStatsLoading] = useState(false)
   const [usageStatsByLodge, setUsageStatsByLodge] = useState({})
   const [peakBookingUsageByLodge, setPeakBookingUsageByLodge] = useState({})
   const [usageFilter, setUsageFilter] = useState('all')
+  const [companySearch, setCompanySearch] = useState('')
 
   const [showDisabled, setShowDisabled] = useState(false)
   const visibleCompaniesBase = showDisabled
@@ -403,6 +556,7 @@ function Companies({ companies, licenses, loading, onReload }) {
 
   const openDetail = async (company) => {
     setSelected(company)
+    setDetailTab('overview')
     setStats(null)
     setStatsLoading(true)
     const s = await window.api.admin.getCompanyStats(company.lodge_id).catch(() => null)
@@ -455,7 +609,14 @@ function Companies({ companies, licenses, loading, onReload }) {
     if (usageFilter === 'pro') return row.rollup.plan === 'Pro'
     if (usageFilter === 'near_limit') return row.rollup.key === 'near_limit' || row.rollup.key === 'critical'
     return row.rollup.key === usageFilter
-  }).map((row) => row.company)
+  }).map((row) => row.company).filter(c => {
+    if (companySearch && !c.lodge_name?.toLowerCase().includes(companySearch.toLowerCase()) && !c.company_name?.toLowerCase().includes(companySearch.toLowerCase()) && !c.lodge_id?.toLowerCase().includes(companySearch.toLowerCase())) return false
+    return true
+  })
+
+  const { sorted: sortedCompanies, sortKey: companySortKey, sortDir: companySortDir, toggleSort: toggleCompanySort } = useTableSort(visibleCompanies, 'lodge_name')
+
+  const { page: companyPage, setPage: setCompanyPage, totalPages: companyTotalPages, paginated: paginatedCompanies, total: companyTotal } = usePagination(sortedCompanies)
 
   const usageFilterCounts = companyUsageRows.reduce((acc, row) => {
     acc.total += 1
@@ -495,15 +656,15 @@ function Companies({ companies, licenses, loading, onReload }) {
       if (lifecycleMode === 'archive') {
         const res = await window.api.admin.archiveCompany(companyTarget.lodge_id)
         if (res?.success === false) throw new Error(res.error)
-        alert('Company archived successfully')
+        toast.success('Company archived successfully')
       } else if (lifecycleMode === 'restore') {
         const res = await window.api.admin.restoreCompany(companyTarget.lodge_id)
         if (res?.success === false) throw new Error(res.error)
-        alert('Company restored successfully')
+        toast.success('Company restored successfully')
       } else if (lifecycleMode === 'delete') {
         const res = await window.api.admin.permanentlyDeleteCompany(companyTarget.lodge_id)
         if (res?.success === false) throw new Error(res.error)
-        alert(`Company permanently deleted. Removed ${res?.deleted_count || 0} Supabase row(s) and local cache/profile data for this lodge.`)
+        toast.success(`Company permanently deleted. Removed ${res?.deleted_count || 0} row(s).`)
       }
 
       setCompanyTarget(null)
@@ -512,7 +673,7 @@ function Companies({ companies, licenses, loading, onReload }) {
       onReload?.()
     } catch (err) {
       console.error(err)
-      alert(`Action failed: ${err.message || 'Unknown error'}`)
+      toast.error(err.message || 'Action failed')
     } finally {
       setLifecycleLoading(false)
     }
@@ -531,15 +692,15 @@ function Companies({ companies, licenses, loading, onReload }) {
       if (res?.success === false) throw new Error(res.error)
       const repaired = Array.isArray(res?.repaired) ? res.repaired : []
       const removed = repaired.reduce((sum, row) => sum + Number(row.removed_booking_count || 0), 0)
-      alert(removed > 0
+      toast(removed > 0
         ? `Repaired ${repaired.length} event group(s). Removed ${removed} duplicate booking row(s).`
-        : 'No duplicate event booking groups found for this company.'
+        : 'No duplicate event booking groups found.'
       )
       onReload?.()
       if (selected?.lodge_id === company.lodge_id) openDetail(company)
     } catch (err) {
       console.error(err)
-      alert(`Repair failed: ${err.message || 'Unknown error'}`)
+      toast.error(err.message || 'Repair failed')
     } finally {
       setRepairLoading(false)
     }
@@ -619,7 +780,7 @@ function Companies({ companies, licenses, loading, onReload }) {
   const confirmReset = async () => {
     const password = newPassword.trim()
     if (!password || password.length < 6) {
-      alert('Password must be at least 6 characters')
+      toast.warning('Password must be at least 6 characters')
       return
     }
     setResetLoading(true)
@@ -627,7 +788,7 @@ function Companies({ companies, licenses, loading, onReload }) {
       const users = await window.api.admin.getCompanyUsers(resetTarget.lodge_id)
       const admin = users.find(u => u.role === 'admin')
       if (!admin) {
-        alert('No admin user found for this company')
+        toast.error('No admin user found for this company')
         setResetLoading(false)
         return
       }
@@ -635,12 +796,12 @@ function Companies({ companies, licenses, loading, onReload }) {
       if (result?.success === false) {
         throw new Error(result.error || 'Failed to reset password')
       }
-      alert('Admin password reset successfully')
+      toast.success('Admin password reset successfully')
       setResetTarget(null)
       setNewPassword('')
     } catch (err) {
       console.error(err)
-      alert('Failed to reset password')
+      toast.error('Failed to reset password')
     } finally {
       setResetLoading(false)
     }
@@ -649,11 +810,11 @@ function Companies({ companies, licenses, loading, onReload }) {
   const savePwaAccess = async () => {
     if (!pwaTarget || !selectedCompanyUserId) return
     if (pwaPassword && pwaPassword.trim().length < 6) {
-      alert('Manager mobile app password must be at least 6 characters')
+      toast.warning('Manager mobile app password must be at least 6 characters')
       return
     }
     if (pwaEnabled && !pwaPassword.trim() && !activePwaUser?.pwa_password_set_at) {
-      alert('Set a manager mobile app password before enabling access')
+      toast.warning('Set a manager mobile app password before enabling access')
       return
     }
 
@@ -672,10 +833,10 @@ function Companies({ companies, licenses, loading, onReload }) {
         throw new Error(result.error || 'Could not update manager mobile app access')
       }
       await loadCompanyUsers(pwaTarget.lodge_id)
-      alert('Manager mobile app access updated')
+      toast.success('Manager mobile app access updated')
     } catch (err) {
       console.error(err)
-      alert(err.message || 'Failed to update manager mobile app access')
+      toast.error(err.message || 'Failed to update manager mobile app access')
     } finally {
       setPwaSaving(false)
     }
@@ -700,9 +861,82 @@ function Companies({ companies, licenses, loading, onReload }) {
               Archived ({companies.filter(c => c.deleted).length})
             </button>
           </div>
-          <p className="text-[10px] text-gray-500 uppercase tracking-wider">{showDisabled ? 'Archived Companies' : 'Operational Lodges'}</p>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={async () => {
+                const { exportAdminExcel } = await import('../utils/adminExport.js')
+                const cols = [
+                  { key: 'lodge_name', header: 'Lodge' },
+                  { key: 'company_email', header: 'Email' },
+                  { key: 'business_type', header: 'Type' },
+                  { key: 'status_label', header: 'Status' },
+                  { key: 'room_count', header: 'Rooms' },
+                  { key: 'user_count', header: 'Users' },
+                  { key: 'booking_count', header: 'Bookings' },
+                  { key: 'created_at', header: 'Created' }
+                ]
+                const rows = visibleCompanies.map(c => {
+                  const trial = getTrialInfo(c, licenses)
+                  const rollup = getCompanyUsageRollup(usageStatsByLodge[c.lodge_id], licenses, c)
+                  return {
+                    ...c,
+                    status_label: trial.label,
+                    room_count: rollup.stats?.room_count ?? 0,
+                    user_count: rollup.stats?.user_count ?? 0,
+                    booking_count: rollup.stats?.booking_count ?? 0
+                  }
+                })
+                await exportAdminExcel('Companies', rows, { columns: cols })
+              }}
+              className="text-xs px-2 py-1 rounded bg-gray-700 text-gray-300 hover:bg-gray-600 hover:text-white transition-colors"
+            >
+              Excel
+            </button>
+            <button
+              onClick={async () => {
+                const { exportAdminPdf } = await import('../utils/adminExport.js')
+                const cols = [
+                  { key: 'lodge_name', header: 'Lodge' },
+                  { key: 'company_email', header: 'Email' },
+                  { key: 'business_type', header: 'Type' },
+                  { key: 'status_label', header: 'Status' },
+                  { key: 'room_count', header: 'Rooms' },
+                  { key: 'user_count', header: 'Users' },
+                  { key: 'booking_count', header: 'Bookings' }
+                ]
+                const rows = visibleCompanies.map(c => {
+                  const trial = getTrialInfo(c, licenses)
+                  const rollup = getCompanyUsageRollup(usageStatsByLodge[c.lodge_id], licenses, c)
+                  return {
+                    ...c,
+                    status_label: trial.label,
+                    room_count: rollup.stats?.room_count ?? 0,
+                    user_count: rollup.stats?.user_count ?? 0,
+                    booking_count: rollup.stats?.booking_count ?? 0
+                  }
+                })
+                await exportAdminPdf('Companies', rows, { columns: cols })
+              }}
+              className="text-xs px-2 py-1 rounded bg-gray-700 text-gray-300 hover:bg-gray-600 hover:text-white transition-colors"
+            >
+              PDF
+            </button>
+            <p className="text-[10px] text-gray-500 uppercase tracking-wider">{showDisabled ? 'Archived Companies' : 'Operational Lodges'}</p>
+          </div>
         </div>
         <div className="border-b border-gray-700 bg-gray-900/40 px-4 py-3">
+          <div className="flex items-center gap-3 mb-3">
+            <div className="relative flex-1 max-w-xs">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
+              <input
+                type="text"
+                value={companySearch}
+                onChange={e => setCompanySearch(e.target.value)}
+                placeholder="Search companies..."
+                className="w-full bg-gray-800 border border-gray-700 rounded-lg pl-8 pr-3 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500"
+              />
+            </div>
+          </div>
           <div className="flex flex-wrap gap-2">
             {[
               { id: 'all', label: 'All' },
@@ -746,7 +980,10 @@ function Companies({ companies, licenses, loading, onReload }) {
               <p className="text-xs text-gray-500">Current plan · usage · recommendation</p>
             </div>
             <div className="space-y-2">
-              {attentionRows.map(({ company, rollup, currentBookingsUsagePercent, peakBookingsUsagePercent }) => (
+              {attentionRows.map(({ company, rollup, currentBookingsUsagePercent, peakBookingsUsagePercent }) => {
+                const assignedPlan = getAssignedPlanForLodge(licenses, company?.lodge_id)
+                const displayPlan = normalizePlanName(assignedPlan || rollup.plan || DEFAULT_PLAN)
+                return (
                 <button
                   key={company.lodge_id}
                   type="button"
@@ -756,16 +993,17 @@ function Companies({ companies, licenses, loading, onReload }) {
                   <div className="min-w-0">
                     <p className="truncate text-sm font-semibold text-white">{company.lodge_name || '—'}</p>
                     <p className="mt-1 text-xs text-gray-400">
-                      {rollup.plan} · Bookings {currentBookingsUsagePercent}% · Peak {peakBookingsUsagePercent}% · Rooms {rollup.recommendation?.currentUsagePct?.rooms ?? 0}% · Users {rollup.recommendation?.currentUsagePct?.users ?? 0}%
+                      {displayPlan} · Bookings {currentBookingsUsagePercent}% · Peak {peakBookingsUsagePercent}% · Rooms {rollup.recommendation?.currentUsagePct?.rooms ?? 0}% · Users {rollup.recommendation?.currentUsagePct?.users ?? 0}%
                     </p>
                   </div>
                   <div className="shrink-0 text-right">
                     <span className={`inline-flex rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide ${rollup.cls}`}>{rollup.label}</span>
-                    <p className="mt-1 text-xs font-semibold text-emerald-300">{rollup.recommendation?.recommendedPlan || rollup.plan}</p>
+                    <p className="mt-1 text-xs font-semibold text-emerald-300">{rollup.recommendation?.recommendedPlan || displayPlan}</p>
                     <p className="text-[11px] text-gray-500">{rollup.recommendation?.reason || '—'}</p>
                   </div>
                 </button>
-              ))}
+                )
+              })}
             </div>
           </div>
         )}
@@ -773,33 +1011,35 @@ function Companies({ companies, licenses, loading, onReload }) {
           <div className="px-6 py-16 text-center text-gray-500">
             <Building2 size={32} className="mx-auto mb-3 opacity-40" />
             <p>{showDisabled ? 'No companies found.' : 'No active companies found.'}</p>
+            <p className="text-xs text-gray-500 mt-1">Companies appear here once they register or are imported.</p>
           </div>
         ) : (
           <table className="w-full text-sm">
             <thead className="bg-gray-900 text-gray-400 text-xs uppercase">
               <tr>
-                <th className="px-4 py-3 text-left">Business</th>
+                <SortableHeader label="Business" sortKey="lodge_name" currentSortKey={companySortKey} currentSortDir={companySortDir} onToggle={toggleCompanySort} />
                 <th className="px-4 py-3 text-left">Status</th>
                 <th className="px-4 py-3 text-left">Recommendation</th>
-                <th className="px-4 py-3 text-left">Location</th>
-                <th className="px-4 py-3 text-left">Contact</th>
-                <th className="px-4 py-3 text-left">Lodge ID</th>
+                <SortableHeader label="Location" sortKey="city" currentSortKey={companySortKey} currentSortDir={companySortDir} onToggle={toggleCompanySort} />
+                <SortableHeader label="Contact" sortKey="email" currentSortKey={companySortKey} currentSortDir={companySortDir} onToggle={toggleCompanySort} />
+                <SortableHeader label="Lodge ID" sortKey="lodge_id" currentSortKey={companySortKey} currentSortDir={companySortDir} onToggle={toggleCompanySort} />
                 <th className="px-4 py-3 text-left">Last Activity</th>
-                <th className="px-4 py-3 text-left">Updated</th>
+                <SortableHeader label="Updated" sortKey="updated_at" currentSortKey={companySortKey} currentSortDir={companySortDir} onToggle={toggleCompanySort} />
                 <th className="px-4 py-3"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-700">
-              {visibleCompanies.map((c) => (
+              {paginatedCompanies.map((c) => (
                 (() => {
                   const rollup = getCompanyUsageRollup(usageStatsByLodge[c.lodge_id], licenses, c)
-                  const planText = rollup.plan || normalizePlanName(getLicensePlanForLodge(licenses, c.lodge_id))
+                  const assignedPlan = getAssignedPlanForLodge(licenses, c?.lodge_id)
+                  const displayPlan = normalizePlanName(assignedPlan || rollup.plan || DEFAULT_PLAN)
                   const bookingPct = rollup.recommendation?.currentUsagePct?.bookings ?? 0
                   const roomPct = rollup.recommendation?.currentUsagePct?.rooms ?? 0
                   const userPct = rollup.recommendation?.currentUsagePct?.users ?? 0
-                  const bookingUsageText = rollup.plan === 'Pro' ? 'Unlimited' : `${bookingPct}%`
-                  const roomUsageText = rollup.plan === 'Pro' ? 'Unlimited' : `${roomPct}%`
-                  const userUsageText = rollup.plan === 'Pro' ? 'Unlimited' : `${userPct}%`
+                  const bookingUsageText = displayPlan === 'Pro' ? 'Unlimited' : `${bookingPct}%`
+                  const roomUsageText = displayPlan === 'Pro' ? 'Unlimited' : `${roomPct}%`
+                  const userUsageText = displayPlan === 'Pro' ? 'Unlimited' : `${userPct}%`
                   const lastBookingDisplay = rollup.lastBookingDate ? fmt(rollup.lastBookingDate) : 'No bookings yet'
                   return (
                 <tr
@@ -815,7 +1055,7 @@ function Companies({ companies, licenses, loading, onReload }) {
                     <div className="flex flex-wrap gap-1.5">
                       {(() => { const t = getTrialInfo(c, licenses); return <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${t.color}`}>{t.label}</span> })()}
                       <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${rollup.cls}`}>{rollup.label}</span>
-                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-gray-700 text-gray-200 font-semibold">{planText}</span>
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-gray-700 text-gray-200 font-semibold">{displayPlan}</span>
                       {c.deleted && <span className="text-[10px] px-2 py-0.5 rounded bg-red-900/40 text-red-400 font-bold uppercase tracking-tight">Archived</span>}
                     </div>
                     <p className="mt-1 text-[11px] text-gray-400">
@@ -823,7 +1063,7 @@ function Companies({ companies, licenses, loading, onReload }) {
                     </p>
                   </td>
                   <td className="px-4 py-3">
-                    <p className="text-sm font-semibold text-white">{rollup.recommendation?.recommendedPlan || planText}</p>
+                    <p className="text-sm font-semibold text-white">{rollup.recommendation?.recommendedPlan || displayPlan}</p>
                     <p className="mt-1 text-xs text-gray-400">{rollup.recommendation?.reason || rollup.recommendation?.details || '—'}</p>
                   </td>
                   <td className="px-4 py-3 text-gray-400 text-xs">{[c.city, c.country].filter(Boolean).join(', ') || '—'}</td>
@@ -848,6 +1088,7 @@ function Companies({ companies, licenses, loading, onReload }) {
             </tbody>
           </table>
         )}
+        <Pagination page={companyPage} totalPages={companyTotalPages} onPageChange={setCompanyPage} />
       </div>
 
       {/* Detail panel */}
@@ -951,6 +1192,20 @@ function Companies({ companies, licenses, loading, onReload }) {
                 Request via WhatsApp
               </button>
             </div>
+            <div className="flex gap-1 bg-gray-700 rounded-lg p-0.5">
+              {['overview', 'activity'].map(tab => (
+                <button key={tab} onClick={() => setDetailTab(tab)}
+                  className={`flex-1 text-[10px] py-1.5 rounded-md transition-colors capitalize ${detailTab === tab ? 'bg-purple-600 text-white' : 'text-gray-400 hover:text-white'}`}>
+                  {tab}
+                </button>
+              ))}
+              <button onClick={() => setViewClient360(selected)}
+                className="flex-1 text-[10px] py-1.5 rounded-md transition-colors text-purple-400 hover:text-purple-300">
+                Full Profile
+              </button>
+            </div>
+            {detailTab === 'overview' ? (
+              <>
             <div className="flex gap-2">
             {!selected.deleted ? (
               <button
@@ -974,7 +1229,6 @@ function Companies({ companies, licenses, loading, onReload }) {
               Delete
             </button>
           </div>
-          </div>
           <button
             onClick={() => handleRepairDuplicateEvents(selected)}
             disabled={repairLoading}
@@ -982,6 +1236,26 @@ function Companies({ companies, licenses, loading, onReload }) {
           >
             {repairLoading ? 'Repairing Events...' : 'Repair Duplicate Events'}
           </button>
+              </>
+            ) : (
+              <div className="space-y-2 max-h-48 overflow-y-auto">
+                <p className="text-[10px] text-gray-400 uppercase tracking-wider">Recent Activity</p>
+                {activityLogs.filter(log => log.lodge_id === selected.lodge_id).slice(0, 10).length === 0 ? (
+                  <p className="text-xs text-gray-500">No activity for this company</p>
+                ) : (
+                  activityLogs.filter(log => log.lodge_id === selected.lodge_id).slice(0, 10).map(log => (
+                    <div key={log.id} className="flex items-start gap-2 py-1">
+                      <span className="text-xs mt-0.5">{ACTION_ICON[log.action] || '📌'}</span>
+                      <div className="min-w-0">
+                        <p className="text-[11px] text-gray-300 truncate">{log.action.replace(/_/g, ' ')}</p>
+                        <p className="text-[10px] text-gray-500">{timeAgo(log.created_at)}{log.actor_email ? ` · ${log.actor_email}` : ''}</p>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
         </div>
       )}
 
@@ -1240,520 +1514,52 @@ function parseUpgradeRequest(description = '') {
 }
 
 // ════════════════════════════════════════════════════════════════════
-// SECTION: Licenses & Billing
+// SECTION: Feature Flags
 // ════════════════════════════════════════════════════════════════════
-const INVOICE_CURRENCIES = ['USD', 'BWP', 'ZAR', 'EUR', 'GBP', 'N$', 'ZK']
-
-function LicenseBilling({ licenses, companies, onRefresh }) {
-  const [showForm, setShowForm] = useState(false)
-  const [form, setForm] = useState({ lodge_id: '', lodge_name: '', business_type: 'lodge', expires_at: '', notes: '', subscription_plan: DEFAULT_PLAN })
-  const today = localToday()
-  const [selectedCompany, setSelectedCompany] = useState('')
-  const [selectedPeriod, setSelectedPeriod] = useState(null) // '3d'|'7d'|'paid'
-  const [duration, setDuration] = useState('') // 'monthly'|'quarterly'|'half_year'|'yearly'
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
-  const [invoiceForm, setInvoiceForm] = useState({ package_name: DEFAULT_PLAN, amount: '', currency: 'BWP', paid_date: today, description: '', billing_cycle: 'monthly' })
-  const [billingModal, setBillingModal] = useState(null) // license to edit billing
-  const [billingForm, setBillingForm] = useState({})
-  const [emailStatus, setEmailStatus] = useState({}) // { [licenseId]: 'sending'|'sent'|'error' }
-  const requiresInvoice = selectedPeriod && selectedPeriod !== '3d' && selectedPeriod !== '7d'
-
-  const sendEmail = async (lic) => {
-    const company = companies.find(c => c.lodge_id === lic.lodge_id)
-    const to = company?.email
-    setEmailStatus(s => ({ ...s, [lic.id]: 'sending' }))
-    try {
-      const r = await window.api.email.sendLicense({
-        to,
-        licenseKey: lic.license_key,
-        lodgeName: lic.lodge_name,
-        plan: lic.subscription_plan,
-        expiresAt: lic.expires_at,
-        lodgeId: lic.lodge_id,
-        notes: lic.notes
-      })
-      setEmailStatus(s => ({ ...s, [lic.id]: r.success ? 'sent' : 'error' }))
-      if (!r.success) {
-        alert(`Email failed: ${r.error}`)
-      }
-    } catch (e) {
-      setEmailStatus(s => ({ ...s, [lic.id]: 'error' }))
-      alert(`Email error: ${e.message}`)
-    }
-    setTimeout(() => setEmailStatus(s => { const n = { ...s }; delete n[lic.id]; return n }), 4000)
-  }
-
-  const handleCreate = async (e) => {
-    e.preventDefault(); setError(''); setSaving(true)
-    if (requiresInvoice && (!invoiceForm.amount || isNaN(Number(invoiceForm.amount)) || Number(invoiceForm.amount) <= 0)) {
-      setError('Please enter a valid amount for this paid license.')
-      setSaving(false); return
-    }
-    const companyLodgeId = form.lodge_id
-    const selectedPlan = normalizePlanName(form.subscription_plan || invoiceForm.package_name)
-    const r = await window.api.admin.issueSubscriptionContract({
-      license: {
-        ...form,
-        lodge_id: companyLodgeId || null,
-        subscription_plan: selectedPlan,
-        billing_cycle: invoiceForm.billing_cycle || 'monthly',
-        expires_at: form.expires_at || null,
-        notes: form.notes || null,
-        payment_status: requiresInvoice ? 'active' : 'free',
-        monthly_fee: requiresInvoice ? Number(invoiceForm.amount || 0) : 0,
-        currency: invoiceForm.currency || 'BWP',
-        next_due_date: form.expires_at || null,
-        last_payment_date: requiresInvoice ? (invoiceForm.paid_date || null) : null
-      },
-      invoice: requiresInvoice
-        ? {
-          lodge_id: companyLodgeId,
-          lodge_name: form.lodge_name,
-          package_name: selectedPlan,
-          amount: Number(invoiceForm.amount),
-          currency: invoiceForm.currency,
-          status: 'paid',
-          issued_date: invoiceForm.paid_date,
-          paid_date: invoiceForm.paid_date,
-          description: invoiceForm.description || null
-        }
-        : null
-    }).catch(e => ({ error: e.message }))
-    const issuedLicense = r?.license_key ? r : r?.license || null
-    const issuedInvoice = r?.invoice || null
-    if (issuedLicense?.id || issuedLicense?.license_key) {
-      setShowForm(false)
-      setForm({ lodge_id: '', lodge_name: '', business_type: 'lodge', expires_at: '', notes: '', subscription_plan: DEFAULT_PLAN })
-      setSelectedCompany('')
-      setSelectedPeriod(null)
-      setDuration('')
-      setInvoiceForm({ package_name: DEFAULT_PLAN, amount: '', currency: 'BWP', paid_date: today, description: '' })
-      onRefresh()
-      // Auto-send email if company has a registered email
-      const company = companies.find(c => c.lodge_id === companyLodgeId)
-      if (company?.email) {
-        const emailPayload = {
-          to: company.email,
-          licenseKey: issuedLicense.license_key,
-          lodgeName: form.lodge_name,
-          plan: selectedPlan,
-          billingCycle: invoiceForm.billing_cycle || 'monthly',
-          expiresAt: form.expires_at || null,
-          lodgeId: companyLodgeId,
-          notes: form.notes || null,
-          invoice: issuedInvoice || null
-        }
-        window.api.email.sendLicense(emailPayload).then(res => {
-          if (!res.success) console.warn('[Email] License email failed:', res.error)
-        })
-      }
-    } else setError(r?.error || 'Failed to issue license. Please try again.')
-    setSaving(false)
-  }
-
-  const openBilling = (lic) => {
-    setBillingModal(lic)
-    setBillingForm({
-      subscription_plan: normalizePlanName(lic.subscription_plan),
-      monthly_fee: lic.monthly_fee || 0,
-      currency: lic.currency || 'USD',
-      payment_status: lic.payment_status || 'active',
-      last_payment_date: lic.last_payment_date || '',
-      next_due_date: lic.next_due_date || ''
-    })
-  }
-
-  const saveBilling = async () => {
-    await window.api.admin.updateLicenseBilling(billingModal.id, {
-      ...billingForm,
-      subscription_plan: normalizePlanName(billingForm.subscription_plan)
-    }).catch(() => { })
-    setBillingModal(null); onRefresh()
-  }
-
+function FeatureFlagSearch({ companies, selectedLodge, onSelect }) {
+  const [search, setSearch] = useState('')
+  const filtered = search
+    ? companies.filter(c => c.lodge_name?.toLowerCase().includes(search.toLowerCase()) || c.lodge_id?.toLowerCase().includes(search.toLowerCase()))
+    : companies
   return (
-    <div className="space-y-4">
-      <div className="flex justify-between items-center">
-        <p className="text-gray-400 text-sm">Manage license keys and subscription billing</p>
-        <button onClick={() => setShowForm(true)} className={`flex items-center gap-2 ${btn()} px-4 py-2 rounded-lg text-sm font-medium transition-colors`}>
-          <Plus size={15} /> Generate License
-        </button>
+    <>
+      <div className="px-3 py-2 border-b border-gray-700">
+        <input type="text" value={search} onChange={e => setSearch(e.target.value)} placeholder="Search companies..."
+          className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500" />
       </div>
-
-      {showForm && (
-        <div className="bg-gray-800 border border-gray-700 rounded-xl p-5">
-          <h3 className="font-semibold text-white mb-4 flex items-center gap-2"><Key size={16} className="text-purple-400" /> New License</h3>
-          <form onSubmit={handleCreate} className="space-y-4">
-            {error && <div className="bg-red-900/50 border border-red-700 text-red-300 rounded-lg px-4 py-3 text-sm">{error}</div>}
-            <div className="space-y-4">
-              <Field label="Company *">
-                <select
-                  className={inp}
-                  value={selectedCompany}
-                  onChange={e => {
-                    const lodgeId = e.target.value
-                    setSelectedCompany(lodgeId)
-                    if (lodgeId) {
-                      const c = companies.find(c => c.lodge_id === lodgeId)
-                      if (c) setForm(f => ({ ...f, lodge_id: c.lodge_id, lodge_name: c.lodge_name || c.company_name || '', business_type: c.business_type || 'lodge' }))
-                    } else {
-                      setForm(f => ({ ...f, lodge_id: '', lodge_name: '', business_type: 'lodge' }))
-                    }
-                  }}
-                  required
-                >
-                  <option value="">— Select a company —</option>
-                  {[...(companies || [])].sort((a, b) => (a.lodge_name || '').localeCompare(b.lodge_name || '')).map(c => (
-                    <option key={c.lodge_id} value={c.lodge_id}>{c.lodge_name || c.company_name || c.lodge_id}</option>
-                  ))}
-                </select>
-              </Field>
-              {selectedCompany && (
-                <div className="bg-gray-900/60 border border-gray-700 rounded-lg px-3 py-2 text-xs text-gray-400 font-mono">
-                  ID: {form.lodge_id}
-                </div>
-              )}
-              <Field label="Subscription Plan">
-                <div className="grid grid-cols-3 gap-2">
-                  {TIERS.map((tier) => (
-                    <button
-                      key={tier}
-                      type="button"
-                      onClick={() => {
-                        setForm((f) => ({ ...f, subscription_plan: tier }))
-                        setInvoiceForm((f) => ({ ...f, package_name: tier }))
-                      }}
-                      className={`p-3 rounded-lg border-2 text-left transition-all ${normalizePlanName(form.subscription_plan) === tier
-                          ? 'border-purple-500 bg-purple-500/10'
-                          : 'border-gray-600 hover:border-gray-500'
-                        }`}
-                    >
-                      <p className="text-sm font-bold text-white">{tier}</p>
-                      <p className="text-xs text-gray-400 mt-0.5 leading-tight">{TIER_DESC[tier]}</p>
-                    </button>
-                  ))}
-                </div>
-              </Field>
-              <Field label="License Period">
-                <div className="space-y-3">
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-[10px] text-gray-500 uppercase tracking-wider mb-1">Duration</label>
-                      <select
-                        className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
-                        value={duration}
-                        onChange={e => {
-                          const dur = e.target.value
-                          setDuration(dur)
-                          if (!dur) {
-                            setForm({ ...form, expires_at: '' })
-                            setSelectedPeriod(null)
-                            return
-                          }
-                          const d = new Date()
-                          if (dur === '3d') d.setDate(d.getDate() + 3)
-                          else if (dur === '7d') d.setDate(d.getDate() + 7)
-                          else if (dur === 'monthly') d.setMonth(d.getMonth() + 1)
-                          else if (dur === 'quarterly') d.setMonth(d.getMonth() + 3)
-                          else if (dur === 'half_year') d.setMonth(d.getMonth() + 6)
-                          else if (dur === 'yearly') d.setFullYear(d.getFullYear() + 1)
-
-                          const val = formatLocalDate(d)
-                          setForm({ ...form, expires_at: val })
-                          setSelectedPeriod(dur === '3d' || dur === '7d' ? dur : 'paid')
-                        }}
-                      >
-                        <option value="">— Select Duration —</option>
-                        <option value="3d">Trial: 3 Days</option>
-                        <option value="7d">Trial: 7 Days</option>
-                        <option value="monthly">1 Month (Monthly)</option>
-                        <option value="quarterly">3 Months (Quarterly)</option>
-                        <option value="half_year">6 Months (Half-Year)</option>
-                        <option value="yearly">1 Year (Yearly)</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-[10px] text-gray-500 uppercase tracking-wider mb-1">Custom Expiry</label>
-                      <input
-                        type="date"
-                        className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
-                        value={form.expires_at}
-                        onChange={e => {
-                          setForm({ ...form, expires_at: e.target.value })
-                          setSelectedPeriod(e.target.value ? 'paid' : null)
-                          setDuration('')
-                        }}
-                      />
-                    </div>
-                  </div>
-                  {form.expires_at && (
-                    <div className="bg-gray-900/40 rounded-lg p-2 flex items-center justify-between border border-gray-700">
-                      <p className="text-xs text-gray-300">
-                        <span className="text-gray-500 uppercase text-[10px] mr-2">Expires</span>
-                        {new Date(form.expires_at + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}
-                      </p>
-                      <button type="button" onClick={() => { setForm({ ...form, expires_at: '' }); setSelectedPeriod(null); setDuration('') }} className="text-red-400 hover:text-red-300 text-xs font-medium">Clear</button>
-                    </div>
-                  )}
-                </div>
-              </Field>
-
-              {/* Invoice fields — required for paid periods (not 3-day or 7-day) */}
-              {requiresInvoice && (
-                <div className="border border-yellow-600/40 bg-yellow-900/10 rounded-xl p-4 space-y-3">
-                  <p className="text-xs font-semibold text-yellow-400 flex items-center gap-1.5"><Receipt size={13} /> Invoice Required for Paid License</p>
-                  <div className="grid grid-cols-2 gap-3">
-                    <Field label="Package *">
-                      <select
-                        className={inp}
-                        value={invoiceForm.package_name}
-                        onChange={e => {
-                          setInvoiceForm({ ...invoiceForm, package_name: e.target.value })
-                          setForm((f) => ({ ...f, subscription_plan: e.target.value }))
-                        }}
-                        required={requiresInvoice}
-                      >
-                        {TIERS.map((planName) => (
-                          <option key={planName} value={planName}>
-                            {planName} - {getSubscriptionPlan(planName).headline}
-                          </option>
-                        ))}
-                      </select>
-                    </Field>
-                    <Field label="Payment Date *">
-                      <input type="date" className={inp} value={invoiceForm.paid_date} onChange={e => setInvoiceForm({ ...invoiceForm, paid_date: e.target.value })} required={requiresInvoice} />
-                    </Field>
-                  </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    <Field label="Amount Paid *">
-                      <input type="number" step="0.01" min="0.01" className={inp} placeholder="0.00" value={invoiceForm.amount} onChange={e => setInvoiceForm({ ...invoiceForm, amount: e.target.value })} required={requiresInvoice} />
-                    </Field>
-                    <Field label="Currency">
-                      <select className={inp} value={invoiceForm.currency} onChange={e => setInvoiceForm({ ...invoiceForm, currency: e.target.value })}>
-                        {INVOICE_CURRENCIES.map(c => <option key={c} value={c}>{c}</option>)}
-                      </select>
-                    </Field>
-                  </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    <Field label="Billing Cycle">
-                      <select className={inp} value={invoiceForm.billing_cycle} onChange={e => setInvoiceForm({ ...invoiceForm, billing_cycle: e.target.value })}>
-                        <option value="monthly">Monthly</option>
-                        <option value="quarterly">Quarterly</option>
-                        <option value="half_year">Half-Year</option>
-                        <option value="yearly">Yearly</option>
-                      </select>
-                    </Field>
-                    <Field label="Description (optional)">
-                      <input className={inp} placeholder="e.g. Annual subscription payment" value={invoiceForm.description} onChange={e => setInvoiceForm({ ...invoiceForm, description: e.target.value })} />
-                    </Field>
-                  </div>
-                </div>
-              )}
-            </div>
-            <Field label="Notes">
-              <input className={inp} placeholder="Annual license..." value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} />
-            </Field>
-            <div className="flex gap-3 pt-1">
-              <button
-                type="button"
-                onClick={() => {
-                  setShowForm(false)
-                  setSelectedCompany('')
-                  setSelectedPeriod(null)
-                  setForm({ lodge_id: '', lodge_name: '', business_type: 'lodge', expires_at: '', notes: '', subscription_plan: DEFAULT_PLAN })
-                  setInvoiceForm({ package_name: DEFAULT_PLAN, amount: '', currency: 'BWP', paid_date: localToday(), description: '' })
-                }}
-                className={`flex-1 ${btn('ghost')} py-2 rounded-lg text-sm transition-colors`}
-              >
-                Cancel
-              </button>
-              <button type="submit" disabled={saving} className={`flex-1 ${btn()} py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-60`}>
-                {saving ? 'Generating…' : '🔑 Generate Key'}
-              </button>
-            </div>
-          </form>
-        </div>
-      )}
-
-      <div className="bg-gray-800 rounded-xl overflow-hidden">
-        {licenses.length === 0 ? (
-          <div className="px-6 py-16 text-center text-gray-500"><Key size={32} className="mx-auto mb-3 opacity-40" /><p>No licenses yet.</p></div>
-        ) : (
-          <table className="w-full text-sm">
-            <thead className="bg-gray-900 text-gray-400 text-xs uppercase">
-              <tr>
-                <th className="px-4 py-3 text-left">Key</th>
-                <th className="px-4 py-3 text-left">Business</th>
-                <th className="px-4 py-3 text-left">Plan</th>
-                <th className="px-4 py-3 text-left">Payment</th>
-                <th className="px-4 py-3 text-left">Next Due</th>
-                <th className="px-4 py-3 text-left">Expires</th>
-                <th className="px-4 py-3 text-center">Active</th>
-                <th className="px-4 py-3"></th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-700">
-              {licenses.map(lic => {
-                const expired = lic.expires_at && new Date(lic.expires_at) < new Date()
-                const overdue = ['grace_period', 'suspended', 'overdue'].includes(String(lic.subscription_state || lic.payment_status || '').toLowerCase())
-                return (
-                  <tr key={lic.id} className={`hover:bg-gray-700 transition-colors ${!lic.is_active ? 'opacity-50' : ''} ${overdue ? 'bg-red-950/30' : ''}`}>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-1">
-                        <span className="font-mono text-purple-300 text-xs font-bold">{lic.license_key}</span>
-                        <CopyBtn text={lic.license_key} />
-                      </div>
-                    </td>
-                    <td className="px-4 py-3">
-                      <p className="text-white font-medium text-xs">{lic.lodge_name || '—'}</p>
-                      <p className="text-xs text-gray-500">{BIZ_EMOJI[lic.business_type]} {BIZ_LABEL[lic.business_type] || lic.business_type}</p>
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${lic.subscription_plan === 'Pro' ? 'bg-purple-500/20 text-purple-300' :
-                          lic.subscription_plan === 'Standard' ? 'bg-blue-500/20 text-blue-300' :
-                            lic.subscription_plan === 'Starter' ? 'bg-gray-500/20 text-gray-300' :
-                              'bg-gray-600/20 text-gray-400'
-                        }`}>{lic.subscription_plan || 'Starter'}</span>
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className={`text-xs px-2 py-0.5 rounded-full ${subscriptionStatusTone(lic)}`}>
-                        {getSubscriptionStatusLabel(lic)}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-xs">
-                      {lic.next_due_date ? (
-                        <span className={overdue ? 'text-red-400 font-medium' : 'text-gray-300'}>{fmt(lic.next_due_date)}{overdue ? ' ⚠' : ''}</span>
-                      ) : <span className="text-gray-600">—</span>}
-                    </td>
-                    <td className="px-4 py-3 text-xs">
-                      {lic.expires_at ? <span className={expired ? 'text-red-400' : 'text-gray-300'}>{fmt(lic.expires_at)}{expired ? ' ✕' : ''}</span> : <span className="text-gray-600">None</span>}
-                    </td>
-                    <td className="px-4 py-3 text-center">
-                      <button onClick={async () => { await window.api.admin.updateLicense(lic.id, { is_active: !lic.is_active }); onRefresh() }}>
-                        {lic.is_active ? <CheckCircle size={16} className="text-green-400 mx-auto" /> : <XCircle size={16} className="text-red-400 mx-auto" />}
-                      </button>
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2">
-                        <button onClick={() => openBilling(lic)} className="p-1 text-gray-400 hover:text-purple-400 transition-colors" title="Edit billing"><Edit3 size={13} /></button>
-                        {(() => {
-                          const st = emailStatus[lic.id]
-                          const company = companies.find(c => c.lodge_id === lic.lodge_id)
-                          if (!company?.email) return null
-                          return (
-                            <button
-                              onClick={() => sendEmail(lic)}
-                              disabled={st === 'sending'}
-                              title={st === 'sent' ? 'Email sent!' : st === 'error' ? 'Email failed' : `Send key to ${company.email}`}
-                              className={`p-1 transition-colors ${st === 'sent' ? 'text-green-400' :
-                                  st === 'error' ? 'text-red-400' :
-                                    'text-gray-400 hover:text-blue-400'
-                                }`}
-                            >
-                              {st === 'sent' ? <CheckCircle2 size={13} /> : <Send size={13} className={st === 'sending' ? 'animate-pulse' : ''} />}
-                            </button>
-                          )
-                        })()}
-                        <button onClick={async () => { if (!confirm(`Delete ${lic.license_key}?`)) return; await window.api.admin.deleteLicense(lic.id); onRefresh() }} className="p-1 text-red-500 hover:text-red-400"><Trash2 size={13} /></button>
-                      </div>
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        )}
+      <div className="divide-y divide-gray-700 max-h-[420px] overflow-y-auto">
+        {filtered.map(c => (
+          <button key={c.lodge_id} onClick={() => onSelect(c)}
+            className={`w-full px-4 py-3 text-left text-sm transition-colors ${selectedLodge?.lodge_id === c.lodge_id ? 'bg-purple-600/20 text-purple-300' : 'text-gray-300 hover:bg-gray-700'}`}>
+            <p className="font-medium truncate">{c.lodge_name || '—'}</p>
+            <p className="text-xs text-gray-500">{BIZ_EMOJI[c.business_type]} {BIZ_LABEL[c.business_type]}</p>
+          </button>
+        ))}
+        {filtered.length === 0 && <p className="px-4 py-6 text-sm text-gray-500 text-center">No companies match</p>}
       </div>
-
-      {billingModal && (
-        <Modal title={`Edit Billing — ${billingModal.lodge_name || billingModal.license_key}`} onClose={() => setBillingModal(null)} wide>
-          <div className="space-y-4">
-            {/* Tier selector */}
-            <Field label="Subscription Plan">
-              <div className="grid grid-cols-3 gap-2 mt-1">
-                {TIERS.map(tier => (
-                  <button
-                    key={tier}
-                    type="button"
-                    onClick={() => setBillingForm({ ...billingForm, subscription_plan: tier })}
-                    className={`p-3 rounded-lg border-2 text-left transition-all ${billingForm.subscription_plan === tier
-                        ? 'border-purple-500 bg-purple-500/10'
-                        : 'border-gray-600 hover:border-gray-500'
-                      }`}
-                  >
-                    <p className="text-sm font-bold text-white">{tier}</p>
-                    <p className="text-xs text-gray-400 mt-0.5 leading-tight">{TIER_DESC[tier]}</p>
-                  </button>
-                ))}
-              </div>
-            </Field>
-
-            {/* Feature preview for selected tier */}
-            {TIER_FLAGS[billingForm.subscription_plan] && (
-              <div className="bg-gray-800/60 border border-gray-700 rounded-lg p-3">
-                <p className="text-xs text-gray-400 mb-2 font-medium uppercase tracking-wider">Features included with this plan before overrides</p>
-                <div className="flex flex-wrap gap-1.5">
-                  {ALL_FEATURES.map(f => {
-                    const on = TIER_FLAGS[billingForm.subscription_plan][f] !== false
-                    return (
-                      <span key={f} className={`text-xs px-2 py-0.5 rounded-full font-medium ${on ? 'bg-green-500/20 text-green-300' : 'bg-gray-700 text-gray-500 line-through'}`}>
-                        {FEAT_LABEL[f]}
-                      </span>
-                    )
-                  })}
-                </div>
-              </div>
-            )}
-
-            <div className="grid grid-cols-2 gap-4">
-              <Field label="Monthly Fee">
-                <input type="number" className={inp} value={billingForm.monthly_fee} onChange={e => setBillingForm({ ...billingForm, monthly_fee: e.target.value })} />
-              </Field>
-              <Field label="Currency">
-                <input className={inp} value={billingForm.currency} onChange={e => setBillingForm({ ...billingForm, currency: e.target.value })} placeholder="USD" />
-              </Field>
-              <Field label="Payment Status">
-                <select className={inp} value={billingForm.payment_status} onChange={e => setBillingForm({ ...billingForm, payment_status: e.target.value })}>
-                  {['active', 'overdue', 'suspended', 'free', 'cancelled'].map(s => <option key={s} value={s}>{s}</option>)}
-                </select>
-              </Field>
-              <Field label="Last Payment Date">
-                <input type="date" className={inp} value={billingForm.last_payment_date} onChange={e => setBillingForm({ ...billingForm, last_payment_date: e.target.value })} />
-              </Field>
-              <Field label="Next Due Date" >
-                <input type="date" className={inp} value={billingForm.next_due_date} onChange={e => setBillingForm({ ...billingForm, next_due_date: e.target.value })} />
-              </Field>
-            </div>
-            <div className="flex gap-3 pt-2">
-              <button onClick={() => setBillingModal(null)} className={`flex-1 ${btn('ghost')} py-2 rounded-lg text-sm`}>Cancel</button>
-              <button onClick={saveBilling} className={`flex-1 ${btn()} py-2 rounded-lg text-sm font-medium`}>Save Billing</button>
-            </div>
-          </div>
-        </Modal>
-      )}
-    </div>
+    </>
   )
 }
 
-// ════════════════════════════════════════════════════════════════════
-// SECTION: Feature Flags
-// ════════════════════════════════════════════════════════════════════
 function FeatureFlags({ companies, licenses }) {
+  const toast = useToast()
   const [selectedLodge, setSelectedLodge] = useState(null)
   const [selectedPlan, setSelectedPlan] = useState(DEFAULT_PLAN)
   const [baseFlags, setBaseFlags] = useState(getPlanFlags(DEFAULT_PLAN))
   const [flags, setFlags] = useState({})
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [loading, setLoading] = useState(false)
 
   const loadFlags = async (lodgeId, planName = DEFAULT_PLAN) => {
+    setLoading(true)
     const data = await window.api.admin.getLodgeFeatures(lodgeId).catch(() => [])
     const map = getPlanFlags(planName)
     data.forEach(r => { map[r.feature_name] = r.enabled })
     setSelectedPlan(normalizePlanName(planName))
     setBaseFlags(getPlanFlags(planName))
     setFlags(map)
+    setLoading(false)
   }
 
   const selectLodge = (c) => {
@@ -1768,15 +1574,20 @@ function FeatureFlags({ companies, licenses }) {
   const saveFlags = async () => {
     if (!selectedLodge) return
     setSaving(true)
-    await Promise.all(ALL_FEATURES.map((featureName) => {
-      const isBaseValue = flags[featureName] === baseFlags[featureName]
-      if (isBaseValue) {
-        return window.api.admin.clearLodgeFeature(selectedLodge.lodge_id, featureName).catch(() => { })
-      }
-      return window.api.admin.setLodgeFeature(selectedLodge.lodge_id, featureName, flags[featureName] !== false).catch(() => { })
+    const errors = []
+    await Promise.all(ALL_FEATURES.map(async (featureName) => {
+      try {
+        const isBaseValue = flags[featureName] === baseFlags[featureName]
+        if (isBaseValue) {
+          await window.api.admin.clearLodgeFeature(selectedLodge.lodge_id, featureName)
+        } else {
+          await window.api.admin.setLodgeFeature(selectedLodge.lodge_id, featureName, flags[featureName] !== false)
+        }
+      } catch (e) { errors.push(featureName) }
     }))
-    setSaving(false); setSaved(true)
-    setTimeout(() => setSaved(false), 2000)
+    setSaving(false)
+    if (errors.length) { console.error('Feature flags save failed:', errors); toast.error('Some feature flags failed to save') }
+    else { setSaved(true); toast.success('Feature flags saved'); setTimeout(() => setSaved(false), 2000) }
   }
 
   return (
@@ -1784,19 +1595,7 @@ function FeatureFlags({ companies, licenses }) {
       {/* Company list */}
       <div className="w-56 shrink-0 bg-gray-800 rounded-xl overflow-hidden">
         <p className="px-4 py-3 text-xs text-gray-400 uppercase tracking-wider border-b border-gray-700">Select Company</p>
-        <div className="divide-y divide-gray-700 max-h-[500px] overflow-y-auto">
-          {companies.map(c => (
-            <button
-              key={c.lodge_id}
-              onClick={() => selectLodge(c)}
-              className={`w-full px-4 py-3 text-left text-sm transition-colors ${selectedLodge?.lodge_id === c.lodge_id ? 'bg-purple-600/20 text-purple-300' : 'text-gray-300 hover:bg-gray-700'}`}
-            >
-              <p className="font-medium truncate">{c.lodge_name || '—'}</p>
-              <p className="text-xs text-gray-500">{BIZ_EMOJI[c.business_type]} {BIZ_LABEL[c.business_type]}</p>
-            </button>
-          ))}
-          {companies.length === 0 && <p className="px-4 py-6 text-sm text-gray-500 text-center">No companies</p>}
-        </div>
+        <FeatureFlagSearch companies={companies} selectedLodge={selectedLodge} onSelect={selectLodge} />
       </div>
 
       {/* Toggles */}
@@ -1808,6 +1607,10 @@ function FeatureFlags({ companies, licenses }) {
           </div>
         ) : (
           <div className="bg-gray-800 rounded-xl p-5 space-y-4">
+            {loading ? (
+              <div className="py-12 text-center text-gray-500 animate-pulse">Loading feature flags...</div>
+            ) : (
+              <>
             <div className="flex items-center justify-between">
               <div>
                 <h3 className="font-semibold text-white">{selectedLodge.lodge_name}</h3>
@@ -1881,6 +1684,8 @@ function FeatureFlags({ companies, licenses }) {
                 </div>
               ))}
             </div>
+              </>
+            )}
           </div>
         )}
       </div>
@@ -1892,26 +1697,43 @@ function FeatureFlags({ companies, licenses }) {
 // SECTION: Broadcasts
 // ════════════════════════════════════════════════════════════════════
 function Broadcasts() {
+  const toast = useToast()
   const [broadcasts, setBroadcasts] = useState([])
   const [showForm, setShowForm] = useState(false)
   const [form, setForm] = useState({ title: '', message: '', expires_at: '' })
   const [saving, setSaving] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [confirmState, setConfirmState] = useState(null)
 
   const load = useCallback(async () => {
+    setLoading(true)
     const data = await window.api.admin.getBroadcasts().catch(() => [])
     setBroadcasts(data)
+    setLoading(false)
   }, [])
 
   useEffect(() => { load() }, [load])
 
   const handleCreate = async (e) => {
     e.preventDefault(); setSaving(true)
-    await window.api.admin.createBroadcast({ ...form, expires_at: form.expires_at || null }).catch(() => { })
-    setForm({ title: '', message: '', expires_at: '' }); setShowForm(false); setSaving(false); load()
+    try {
+      const r = await window.api.admin.createBroadcast({ ...form, expires_at: form.expires_at || null })
+      if (r?.error) { console.error('Broadcast create failed:', r.error); toast.error('Failed to create broadcast: ' + r.error); setSaving(false); return }
+      setForm({ title: '', message: '', expires_at: '' }); setShowForm(false); setSaving(false); load(); toast.success('Announcement posted successfully')
+    } catch (e) { console.error('Broadcast create error:', e); toast.error('Failed to create broadcast'); setSaving(false) }
   }
 
-  const toggle = async (b) => { await window.api.admin.updateBroadcast(b.id, { is_active: !b.is_active }); load() }
-  const del = async (b) => { if (!confirm('Delete broadcast?')) return; await window.api.admin.deleteBroadcast(b.id); load() }
+  const toggle = async (b) => {
+    try { await window.api.admin.updateBroadcast(b.id, { is_active: !b.is_active }); load() }
+    catch (e) { console.error('Broadcast toggle error:', e); toast.error('Failed to toggle broadcast') }
+  }
+  const del = (b) => setConfirmState({ type: 'broadcast', item: b })
+  const confirmDeleteBroadcast = async () => {
+    if (!confirmState?.item) return
+    try { await window.api.admin.deleteBroadcast(confirmState.item.id); load() }
+    catch (e) { toast.error('Failed to delete broadcast') }
+    setConfirmState(null)
+  }
 
   const isActive = (b) => b.is_active && (!b.expires_at || new Date(b.expires_at) > new Date())
 
@@ -1945,8 +1767,10 @@ function Broadcasts() {
       )}
 
       <div className="bg-gray-800 rounded-xl overflow-hidden">
-        {broadcasts.length === 0 ? (
-          <div className="px-6 py-16 text-center text-gray-500"><Megaphone size={32} className="mx-auto mb-3 opacity-40" /><p>No announcements yet.</p></div>
+        {loading ? (
+          <div className="px-6 py-16 text-center text-gray-500 animate-pulse">Loading announcements...</div>
+        ) : broadcasts.length === 0 ? (
+          <div className="px-6 py-16 text-center text-gray-500"><Megaphone size={32} className="mx-auto mb-3 opacity-40" /><p>No announcements yet.</p><p className="text-xs text-gray-600 mt-1">Click "New Announcement" to create your first broadcast.</p></div>
         ) : (
           <div className="divide-y divide-gray-700">
             {broadcasts.map(b => {
@@ -1981,10 +1805,12 @@ function Broadcasts() {
   )
 }
 
+
 // ════════════════════════════════════════════════════════════════════
 // SECTION: Support Tickets
 // ════════════════════════════════════════════════════════════════════
-function SupportTickets({ companies }) {
+function SupportTickets({ companies, onOpenCompany }) {
+  const toast = useToast()
   const [tickets, setTickets] = useState([])
   const [filter, setFilter] = useState({ status: '', priority: '', q: '' })
   const [detail, setDetail] = useState(null)
@@ -1992,6 +1818,7 @@ function SupportTickets({ companies }) {
   const [newStatus, setNewStatus] = useState('')
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState('')
+  const [confirmState, setConfirmState] = useState(null)
 
   const load = useCallback(async () => {
     const data = await window.api.admin.getSupportTickets({}).catch(() => [])
@@ -2023,7 +1850,13 @@ function SupportTickets({ companies }) {
     }
   }
 
-  const del = async (t) => { if (!confirm('Delete ticket?')) return; await window.api.admin.deleteSupportTicket(t.id); load() }
+  const del = (t) => setConfirmState({ type: 'ticket', item: t })
+  const confirmDeleteTicket = async () => {
+    if (!confirmState?.item) return
+    await window.api.admin.deleteSupportTicket(confirmState.item.id)
+    load()
+    setConfirmState(null)
+  }
 
   const filtered = tickets.filter(t => {
     if (filter.status && t.status !== filter.status) return false
@@ -2033,6 +1866,10 @@ function SupportTickets({ companies }) {
   })
 
   const openCount = tickets.filter(t => ['open', 'acknowledged', 'in_progress'].includes(t.status)).length
+
+  const { sorted: sortedTickets, sortKey: ticketSortKey, sortDir: ticketSortDir, toggleSort: toggleTicketSort } = useTableSort(filtered, 'created_at', 'desc')
+
+  const { page: ticketPage, setPage: setTicketPage, totalPages: ticketTotalPages, paginated: paginatedTickets } = usePagination(sortedTickets)
 
   return (
     <div className="space-y-4">
@@ -2051,6 +1888,40 @@ function SupportTickets({ companies }) {
             <option value="">All Priority</option>
             {['Low', 'Normal', 'High', 'Urgent'].map(p => <option key={p} value={p}>{p}</option>)}
           </select>
+          <button
+            onClick={async () => {
+              const { exportAdminExcel } = await import('../utils/adminExport.js')
+              const cols = [
+                { key: 'lodge_name', header: 'Lodge' },
+                { key: 'title', header: 'Title' },
+                { key: 'category', header: 'Category' },
+                { key: 'priority', header: 'Priority' },
+                { key: 'status', header: 'Status' },
+                { key: 'created_at', header: 'Created' }
+              ]
+              await exportAdminExcel('Support Tickets', filtered, { columns: cols })
+            }}
+            className="text-xs px-2 py-1 rounded bg-gray-700 text-gray-300 hover:bg-gray-600 hover:text-white transition-colors"
+          >
+            Excel
+          </button>
+          <button
+            onClick={async () => {
+              const { exportAdminPdf } = await import('../utils/adminExport.js')
+              const cols = [
+                { key: 'lodge_name', header: 'Lodge' },
+                { key: 'title', header: 'Title' },
+                { key: 'category', header: 'Category' },
+                { key: 'priority', header: 'Priority' },
+                { key: 'status', header: 'Status' },
+                { key: 'created_at', header: 'Created' }
+              ]
+              await exportAdminPdf('Support Tickets', filtered, { columns: cols })
+            }}
+            className="text-xs px-2 py-1 rounded bg-gray-700 text-gray-300 hover:bg-gray-600 hover:text-white transition-colors"
+          >
+            PDF
+          </button>
         </div>
       </div>
 
@@ -2061,19 +1932,21 @@ function SupportTickets({ companies }) {
           <table className="w-full text-sm">
             <thead className="bg-gray-900 text-gray-400 text-xs uppercase">
               <tr>
-                <th className="px-4 py-3 text-left">Lodge</th>
-                <th className="px-4 py-3 text-left">Title</th>
-                <th className="px-4 py-3 text-left">Category</th>
-                <th className="px-4 py-3 text-left">Priority</th>
-                <th className="px-4 py-3 text-left">Status</th>
-                <th className="px-4 py-3 text-left">Created</th>
+                <SortableHeader label="Lodge" sortKey="lodge_name" currentSortKey={ticketSortKey} currentSortDir={ticketSortDir} onToggle={toggleTicketSort} />
+                <SortableHeader label="Title" sortKey="title" currentSortKey={ticketSortKey} currentSortDir={ticketSortDir} onToggle={toggleTicketSort} />
+                <SortableHeader label="Category" sortKey="category" currentSortKey={ticketSortKey} currentSortDir={ticketSortDir} onToggle={toggleTicketSort} />
+                <SortableHeader label="Priority" sortKey="priority" currentSortKey={ticketSortKey} currentSortDir={ticketSortDir} onToggle={toggleTicketSort} />
+                <SortableHeader label="Status" sortKey="status" currentSortKey={ticketSortKey} currentSortDir={ticketSortDir} onToggle={toggleTicketSort} />
+                <SortableHeader label="Created" sortKey="created_at" currentSortKey={ticketSortKey} currentSortDir={ticketSortDir} onToggle={toggleTicketSort} />
                 <th className="px-4 py-3"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-700">
-              {filtered.map(t => (
+              {paginatedTickets.map(t => (
                 <tr key={t.id} className="hover:bg-gray-700 transition-colors cursor-pointer" onClick={() => openDetail(t)}>
-                  <td className="px-4 py-3 text-xs text-gray-400">{t.lodge_name || t.lodge_id?.slice(0, 8)}</td>
+                  <td className="px-4 py-3 text-xs">
+                    <button onClick={(e) => { e.stopPropagation(); const c = companies.find(co => co.lodge_id === t.lodge_id); if (c && onOpenCompany) onOpenCompany(c) }} className="text-purple-400 hover:text-purple-300 hover:underline truncate max-w-[120px] block">{t.lodge_name || t.lodge_id?.slice(0, 8)}</button>
+                  </td>
                   <td className="px-4 py-3">
                     <p className="font-medium text-white">{t.title}</p>
                     {t.category === 'Upgrade Request' && (() => {
@@ -2106,6 +1979,7 @@ function SupportTickets({ companies }) {
             </tbody>
           </table>
         )}
+        <Pagination page={ticketPage} totalPages={ticketTotalPages} onPageChange={setTicketPage} />
       </div>
 
       {detail && (
@@ -2222,6 +2096,7 @@ function SupportTickets({ companies }) {
           })()}
         </Modal>
       )}
+      <DarkConfirmDialog open={!!confirmState?.type === 'ticket'} title="Delete ticket?" message="This cannot be undone." confirmLabel="Delete" onConfirm={confirmDeleteTicket} onCancel={() => setConfirmState(null)} />
     </div>
   )
 }
@@ -2229,22 +2104,55 @@ function SupportTickets({ companies }) {
 // ════════════════════════════════════════════════════════════════════
 // SECTION: Activity Log
 // ════════════════════════════════════════════════════════════════════
-function ActivityLog({ companies }) {
+function ActivityLog({ companies, onOpenCompany }) {
   const [logs, setLogs] = useState([])
+  const [summary, setSummary] = useState([])
   const [filter, setFilter] = useState({ lodge_id: '', start: '', end: '' })
   const [limit, setLimit] = useState(100)
+  const [logSearch, setLogSearch] = useState('')
 
   const load = useCallback(async () => {
-    const data = await window.api.admin.getActivityLogs({ ...filter, limit }).catch(() => [])
+    const [data, sum] = await Promise.all([
+      window.api.admin.getActivityLogs({ ...filter, limit }).catch(() => []),
+      window.api.admin.getAuditSummary({ start: filter.start || null, end: filter.end || null }).catch(() => [])
+    ])
     setLogs(data)
+    setSummary(sum)
   }, [filter, limit])
 
   useEffect(() => { load() }, [load])
 
-  const ACTION_ICON = { user_login: '👤', booking_created: '📅', expense_added: '💸', maintenance_raised: '🔧' }
+  const { page: logPage, setPage: setLogPage, totalPages: logTotalPages, paginated: paginatedLogs } = usePagination(logs)
+
+  const filteredLogs = logSearch
+    ? paginatedLogs.filter(log =>
+        log.action?.toLowerCase().includes(logSearch.toLowerCase()) ||
+        log.actor_email?.toLowerCase().includes(logSearch.toLowerCase()) ||
+        log.lodge_name?.toLowerCase().includes(logSearch.toLowerCase()) ||
+        log.entity_type?.toLowerCase().includes(logSearch.toLowerCase())
+      )
+    : paginatedLogs
 
   return (
     <div className="space-y-4">
+      {/* Audit summary cards */}
+      {summary.length > 0 && (
+        <div className="bg-gray-800 rounded-xl p-4">
+          <p className="text-xs text-gray-400 uppercase tracking-wider mb-3 font-semibold">Audit Summary</p>
+          <div className="flex flex-wrap gap-2">
+            {summary.map(s => (
+              <div key={s.action} className="flex items-center gap-2 bg-gray-700 rounded-lg px-3 py-2">
+                <span className="text-base">{ACTION_ICON[s.action] || '📌'}</span>
+                <div>
+                  <p className="text-sm text-gray-200">{s.action.replace(/_/g, ' ')}</p>
+                  <p className="text-[10px] text-gray-500">{s.count}× &middot; last {timeAgo(s.last_at)}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="flex items-center gap-3 flex-wrap">
         <select
           className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-300 focus:outline-none"
@@ -2258,14 +2166,61 @@ function ActivityLog({ companies }) {
         <span className="text-gray-600 text-sm">to</span>
         <input type="date" className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-300 focus:outline-none" value={filter.end} onChange={e => setFilter({ ...filter, end: e.target.value })} />
         <button onClick={() => setFilter({ lodge_id: '', start: '', end: '' })} className="text-xs text-gray-500 hover:text-gray-300">Reset</button>
+        <button
+          onClick={async () => {
+            const { exportAdminExcel } = await import('../utils/adminExport.js')
+            const cols = [
+              { key: 'created_at', header: 'Time' },
+              { key: 'action', header: 'Action' },
+              { key: 'actor_email', header: 'Actor' },
+              { key: 'entity_type', header: 'Entity Type' },
+              { key: 'entity_id', header: 'Entity ID' },
+              { key: 'lodge_name', header: 'Lodge' },
+              { key: 'lodge_id', header: 'Lodge ID' },
+              { key: 'details', header: 'Details' }
+            ]
+            await exportAdminExcel('Admin Audit Log', logs, { columns: cols })
+          }}
+          className="text-xs px-2 py-1 rounded bg-gray-700 text-gray-300 hover:bg-gray-600 hover:text-white transition-colors"
+        >
+          Excel
+        </button>
+        <button
+          onClick={async () => {
+            const { exportAdminPdf } = await import('../utils/adminExport.js')
+            const cols = [
+              { key: 'created_at', header: 'Time' },
+              { key: 'action', header: 'Action' },
+              { key: 'actor_email', header: 'Actor' },
+              { key: 'entity_type', header: 'Entity Type' },
+              { key: 'lodge_name', header: 'Lodge' },
+              { key: 'details', header: 'Details' }
+            ]
+            await exportAdminPdf('Admin Audit Log', logs, { columns: cols })
+          }}
+          className="text-xs px-2 py-1 rounded bg-gray-700 text-gray-300 hover:bg-gray-600 hover:text-white transition-colors"
+        >
+          PDF
+        </button>
+      </div>
+
+      <div className="relative max-w-xs">
+        <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
+        <input
+          type="text"
+          value={logSearch}
+          onChange={e => setLogSearch(e.target.value)}
+          placeholder="Search actions, actors..."
+          className="w-full bg-gray-800 border border-gray-700 rounded-lg pl-8 pr-3 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500"
+        />
       </div>
 
       <div className="bg-gray-800 rounded-xl overflow-hidden">
         {logs.length === 0 ? (
-          <div className="px-6 py-16 text-center text-gray-500"><Activity size={32} className="mx-auto mb-3 opacity-40" /><p>No activity logged yet.</p></div>
+          <div className="px-6 py-16 text-center text-gray-500"><Activity size={32} className="mx-auto mb-3 opacity-40" /><p>No audit entries yet.</p></div>
         ) : (
           <div className="divide-y divide-gray-700">
-            {logs.map(log => (
+            {filteredLogs.map(log => (
               <div key={log.id} className="flex items-start gap-3 px-5 py-3">
                 <span className="text-base mt-0.5">{ACTION_ICON[log.action] || '📌'}</span>
                 <div className="flex-1 min-w-0">
@@ -2273,9 +2228,17 @@ function ActivityLog({ companies }) {
                     <p className="text-sm text-gray-200">{log.action.replace(/_/g, ' ')}</p>
                     <p className="text-xs text-gray-500 shrink-0 ml-3">{timeAgo(log.created_at)}</p>
                   </div>
-                  <p className="text-xs text-gray-500">{log.lodge_name || log.lodge_id?.slice(0, 16)}</p>
+                  <div className="flex items-center gap-2 mt-0.5">
+                    <button onClick={() => { const c = companies.find(co => co.lodge_id === log.lodge_id); if (c && onOpenCompany) onOpenCompany(c) }} className="text-xs text-purple-400 hover:text-purple-300 hover:underline">{log.lodge_name || log.lodge_id?.slice(0, 16)}</button>
+                    {log.actor_email && (
+                      <span className="text-[10px] text-purple-400 bg-purple-500/10 px-1.5 py-0.5 rounded">by {log.actor_email}</span>
+                    )}
+                    {log.entity_type && (
+                      <span className="text-[10px] text-blue-400 bg-blue-500/10 px-1.5 py-0.5 rounded">{log.entity_type}{log.entity_id ? `#${log.entity_id?.slice(0, 8)}` : ''}</span>
+                    )}
+                  </div>
                   {log.details && Object.keys(log.details).length > 0 && (
-                    <p className="text-xs text-gray-600 font-mono mt-0.5">{JSON.stringify(log.details).slice(0, 80)}</p>
+                    <p className="text-xs text-gray-600 font-mono mt-0.5">{JSON.stringify(log.details).slice(0, 120)}</p>
                   )}
                 </div>
               </div>
@@ -2283,14 +2246,10 @@ function ActivityLog({ companies }) {
           </div>
         )}
       </div>
-      {logs.length >= limit && (
-        <button onClick={() => setLimit(l => l + 100)} className="w-full py-2 text-sm text-gray-400 hover:text-white bg-gray-800 rounded-xl transition-colors">
-          Load more…
-        </button>
-      )}
     </div>
   )
 }
+
 
 // ════════════════════════════════════════════════════════════════════
 // SECTION: Email / Notification Settings
@@ -2465,8 +2424,12 @@ function EmailSettings() {
 // ════════════════════════════════════════════════════════════════════
 // SECTION: Bookkeeping
 // ════════════════════════════════════════════════════════════════════
-function InvoicePreview({ invoice, onClose }) {
+function InvoicePreview({ invoice, onClose, taxRate = DEFAULT_TAX_RATE }) {
   if (!invoice) return null
+
+  const subtotal = Number(invoice.amount) || 0
+  const taxAmount = subtotal * (taxRate / 100)
+  const total = subtotal + taxAmount
 
   return (
     <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 overflow-y-auto">
@@ -2533,8 +2496,8 @@ function InvoicePreview({ invoice, onClose }) {
                     <p className="text-xs text-gray-500 mt-1">Boroko Bookings Cloud License Fee</p>
                   </td>
                   <td className="py-5 text-right">1</td>
-                  <td className="py-5 text-right">{invoice.currency} {Number(invoice.amount).toFixed(2)}</td>
-                  <td className="py-5 text-right font-bold">{invoice.currency} {Number(invoice.amount).toFixed(2)}</td>
+                  <td className="py-5 text-right">{invoice.currency} {subtotal.toFixed(2)}</td>
+                  <td className="py-5 text-right font-bold">{invoice.currency} {subtotal.toFixed(2)}</td>
                 </tr>
               </tbody>
             </table>
@@ -2544,15 +2507,15 @@ function InvoicePreview({ invoice, onClose }) {
             <div className="w-64 space-y-3">
               <div className="flex justify-between text-sm">
                 <span className="text-gray-500">Subtotal:</span>
-                <span className="font-semibold text-gray-900">{invoice.currency} {Number(invoice.amount).toFixed(2)}</span>
+                <span className="font-semibold text-gray-900">{invoice.currency} {subtotal.toFixed(2)}</span>
               </div>
               <div className="flex justify-between text-sm">
-                <span className="text-gray-500">Tax (0%):</span>
-                <span className="font-semibold text-gray-900">{invoice.currency} 0.00</span>
+                <span className="text-gray-500">Tax ({taxRate}%):</span>
+                <span className="font-semibold text-gray-900">{invoice.currency} {taxAmount.toFixed(2)}</span>
               </div>
               <div className="flex justify-between pt-3 border-t-2 border-gray-900">
                 <span className="font-black uppercase tracking-tighter text-gray-900">Total Amount:</span>
-                <span className="font-black text-xl text-purple-900">{invoice.currency} {Number(invoice.amount).toFixed(2)}</span>
+                <span className="font-black text-xl text-purple-900">{invoice.currency} {total.toFixed(2)}</span>
               </div>
             </div>
           </div>
@@ -2582,6 +2545,7 @@ const STATUS_COLORS = {
 }
 
 function Bookkeeping({ companies }) {
+  const toast = useToast()
   const [subTab, setSubTab] = useState('invoices')
   const [invoices, setInvoices] = useState([])
   const [loading, setLoading] = useState(true)
@@ -2613,6 +2577,7 @@ function Bookkeeping({ companies }) {
     vendor: ''
   })
   const [viewingInvoice, setViewingInvoice] = useState(null)
+  const [confirmState, setConfirmState] = useState(null)
 
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -2635,6 +2600,13 @@ function Bookkeeping({ companies }) {
     return true
   })
 
+  const { sorted: sortedInvoices, sortKey: invSortKey, sortDir: invSortDir, toggleSort: toggleInvSort } = useTableSort(filtered, 'issued_date', 'desc')
+
+  const { page: invPage, setPage: setInvPage, totalPages: invTotalPages, paginated: paginatedInvoices } = usePagination(sortedInvoices)
+  const { sorted: sortedExpenses, sortKey: expSortKey, sortDir: expSortDir, toggleSort: toggleExpSort } = useTableSort(expenses, 'date', 'desc')
+
+  const { page: expPage, setPage: setExpPage, totalPages: expTotalPages, paginated: paginatedExpenses } = usePagination(sortedExpenses)
+
   const handleCreateInvoice = async (e) => {
     e.preventDefault(); setCreateError(''); setCreateSaving(true)
     if (!createForm.amount || Number(createForm.amount) <= 0) { setCreateError('Enter a valid amount.'); setCreateSaving(false); return }
@@ -2650,25 +2622,31 @@ function Bookkeeping({ companies }) {
 
   const handleSaveEdit = async () => {
     if (!editInvoice) return
-    await window.api.admin.updateInvoice(editInvoice.id, {
-      package_name: editInvoice.package_name, amount: Number(editInvoice.amount),
-      currency: editInvoice.currency, status: editInvoice.status,
-      paid_date: editInvoice.paid_date || null, due_date: editInvoice.due_date || null,
-      description: editInvoice.description || null, notes: editInvoice.notes || null
-    }).catch(() => { })
-    setEditInvoice(null); loadData()
+    try {
+      await window.api.admin.updateInvoice(editInvoice.id, {
+        package_name: editInvoice.package_name, amount: Number(editInvoice.amount),
+        currency: editInvoice.currency, status: editInvoice.status,
+        paid_date: editInvoice.paid_date || null, due_date: editInvoice.due_date || null,
+        description: editInvoice.description || null, notes: editInvoice.notes || null
+      })
+      setEditInvoice(null); loadData()
+    } catch (e) { console.error('Invoice update error:', e); toast.error('Failed to update invoice') }
   }
 
-  const handleDelete = async (id) => {
-    if (!confirm('Delete this invoice?')) return
-    await window.api.admin.deleteInvoice(id).catch(() => { })
-    loadData()
+  const handleDelete = (id) => setConfirmState({ type: 'invoice', id })
+  const confirmDeleteInvoice = async () => {
+    if (!confirmState?.id) return
+    try {
+      await window.api.admin.deleteInvoice(confirmState.id)
+      loadData()
+    } catch (e) { toast.error('Failed to delete invoice') }
+    setConfirmState(null)
   }
 
   const handleSendEmail = async (inv) => {
     const company = companies.find(c => c.lodge_id === inv.lodge_id)
     const to = company?.email
-    if (!to) { alert('No email address found for this company.'); return }
+    if (!to) { toast.warning('No email address found for this company.'); return }
     setSendingEmail(s => ({ ...s, [inv.id]: true }))
     const r = await window.api.admin.sendInvoiceEmail({ to, invoice: inv, lodgeName: inv.lodge_name }).catch(e => ({ success: false, error: e.message }))
     setSendingEmail(s => ({ ...s, [inv.id]: false }))
@@ -2679,7 +2657,7 @@ function Bookkeeping({ companies }) {
         await window.api.admin.updateInvoice(inv.id, { status: 'sent' }).catch(() => { })
         loadData()
       }
-    } else alert(`Email failed: ${r.error}`)
+    } else toast.error('Email failed: ' + r.error)
   }
 
   const thisMonth = new Date().toISOString().slice(0, 7)
@@ -2689,16 +2667,34 @@ function Bookkeeping({ companies }) {
   const handleCreateExpense = async (e) => {
     e.preventDefault()
     if (!expenseForm.amount || Number(expenseForm.amount) <= 0) return
-    await window.api.admin.createExpense(expenseForm)
-    setExpenseForm({ date: localToday(), category: 'Infrastructure', amount: '', currency: 'BWP', description: '', vendor: '' })
-    setShowCreateExpense(false)
-    loadData()
+    try {
+      await window.api.admin.createExpense(expenseForm)
+      setExpenseForm({ date: localToday(), category: 'Infrastructure', amount: '', currency: 'BWP', description: '', vendor: '' })
+      setShowCreateExpense(false)
+      loadData()
+    } catch (e) { console.error('Expense create error:', e); toast.error('Failed to create expense') }
   }
 
-  const handleDeleteExpense = async (id) => {
-    if (!confirm('Delete this expense?')) return
-    await window.api.admin.deleteExpense(id)
-    loadData()
+  const handleDeleteExpense = (id) => setConfirmState({ type: 'expense', id })
+  const confirmDeleteExpense = async () => {
+    if (!confirmState?.id) return
+    try {
+      await window.api.admin.deleteExpense(confirmState.id)
+      loadData()
+    } catch (e) { toast.error('Failed to delete expense') }
+    setConfirmState(null)
+  }
+
+  const handleSaveEditExpense = async () => {
+    if (!editExpense) return
+    try {
+      await window.api.admin.updateExpense(editExpense.id, {
+        date: editExpense.date, category: editExpense.category,
+        amount: Number(editExpense.amount), currency: editExpense.currency,
+        description: editExpense.description, vendor: editExpense.vendor
+      })
+      setEditExpense(null); loadData()
+    } catch (e) { console.error('Expense update error:', e); toast.error('Failed to update expense') }
   }
 
   return (
@@ -2731,6 +2727,45 @@ function Bookkeeping({ companies }) {
               <option value="">All Statuses</option>
               {['draft', 'sent', 'paid', 'overdue', 'cancelled'].map(s => <option key={s} value={s} className="capitalize">{s.charAt(0).toUpperCase() + s.slice(1)}</option>)}
             </select>
+            <button
+              onClick={async () => {
+                const { exportAdminExcel } = await import('../utils/adminExport.js')
+                const cols = [
+                  { key: 'invoice_number', header: 'Invoice #' },
+                  { key: 'lodge_name', header: 'Company' },
+                  { key: 'package_name', header: 'Plan' },
+                  { key: 'amount', header: 'Amount' },
+                  { key: 'currency', header: 'Currency' },
+                  { key: 'status', header: 'Status' },
+                  { key: 'issued_date', header: 'Issued' },
+                  { key: 'due_date', header: 'Due' }
+                ]
+                const rows = filtered
+                await exportAdminExcel('Invoices', rows, { columns: cols })
+              }}
+              className="text-xs px-2 py-1 rounded bg-gray-700 text-gray-300 hover:bg-gray-600 hover:text-white transition-colors"
+            >
+              Excel
+            </button>
+            <button
+              onClick={async () => {
+                const { exportAdminPdf } = await import('../utils/adminExport.js')
+                const cols = [
+                  { key: 'invoice_number', header: 'Invoice #' },
+                  { key: 'lodge_name', header: 'Company' },
+                  { key: 'package_name', header: 'Plan' },
+                  { key: 'amount', header: 'Amount' },
+                  { key: 'currency', header: 'Currency' },
+                  { key: 'status', header: 'Status' },
+                  { key: 'issued_date', header: 'Issued' }
+                ]
+                const rows = filtered
+                await exportAdminPdf('Invoices', rows, { columns: cols })
+              }}
+              className="text-xs px-2 py-1 rounded bg-gray-700 text-gray-300 hover:bg-gray-600 hover:text-white transition-colors"
+            >
+              PDF
+            </button>
             <button onClick={() => setShowCreate(v => !v)} className={`flex items-center gap-1.5 ${btn()} px-3 py-2 rounded-lg text-xs font-medium transition-colors whitespace-nowrap`}>
               <Plus size={13} /> New Invoice
             </button>
@@ -2805,22 +2840,22 @@ function Bookkeeping({ companies }) {
             {loading ? (
               <div className="p-8 text-center text-gray-500 text-sm">Loading invoices…</div>
             ) : filtered.length === 0 ? (
-              <div className="p-8 text-center text-gray-500"><Receipt size={28} className="mx-auto mb-2 opacity-40" /><p className="text-sm">No invoices found.</p></div>
+              <div className="p-8 text-center text-gray-500"><Receipt size={28} className="mx-auto mb-2 opacity-40" /><p className="text-sm">No invoices found.</p><p className="text-xs text-gray-500 mt-1">Create an invoice using the button above.</p></div>
             ) : (
               <table className="w-full text-sm">
                 <thead>
                   <tr className="text-xs text-gray-500 border-b border-gray-700">
-                    <th className="px-4 py-3 text-left font-medium">Invoice #</th>
-                    <th className="px-4 py-3 text-left font-medium">Company</th>
-                    <th className="px-4 py-3 text-left font-medium">Package</th>
-                    <th className="px-4 py-3 text-right font-medium">Amount</th>
-                    <th className="px-4 py-3 text-left font-medium">Status</th>
-                    <th className="px-4 py-3 text-left font-medium">Date</th>
+                    <SortableHeader label="Invoice #" sortKey="invoice_number" currentSortKey={invSortKey} currentSortDir={invSortDir} onToggle={toggleInvSort} />
+                    <SortableHeader label="Company" sortKey="lodge_name" currentSortKey={invSortKey} currentSortDir={invSortDir} onToggle={toggleInvSort} />
+                    <SortableHeader label="Package" sortKey="package_name" currentSortKey={invSortKey} currentSortDir={invSortDir} onToggle={toggleInvSort} />
+                    <SortableHeader label="Amount" sortKey="amount" currentSortKey={invSortKey} currentSortDir={invSortDir} onToggle={toggleInvSort} />
+                    <SortableHeader label="Status" sortKey="status" currentSortKey={invSortKey} currentSortDir={invSortDir} onToggle={toggleInvSort} />
+                    <SortableHeader label="Date" sortKey="issued_date" currentSortKey={invSortKey} currentSortDir={invSortDir} onToggle={toggleInvSort} />
                     <th className="px-4 py-3 text-center font-medium">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {filtered.map((inv, i) => (
+                  {paginatedInvoices.map((inv, i) => (
                     <tr key={inv.id} className={`border-t border-gray-700 hover:bg-gray-750 transition-colors ${i % 2 === 1 ? 'bg-gray-800/60' : ''}`}>
                       <td className="px-4 py-3 font-mono text-xs text-purple-300">{inv.invoice_number}</td>
                       <td className="px-4 py-3 text-gray-200 text-xs max-w-32 truncate">{inv.lodge_name || inv.lodge_id}</td>
@@ -2855,6 +2890,7 @@ function Bookkeeping({ companies }) {
                 </tbody>
               </table>
             )}
+            <Pagination page={invPage} totalPages={invTotalPages} onPageChange={setInvPage} />
           </div>
         </div>
       )}
@@ -2867,9 +2903,45 @@ function Bookkeeping({ companies }) {
               <Wallet className="text-purple-400" size={18} />
               <h2 className="text-white font-semibold">Operational Expenses</h2>
             </div>
-            <button onClick={() => setShowCreateExpense(v => !v)} className={`flex items-center gap-1.5 ${btn()} px-3 py-2 rounded-lg text-xs font-medium transition-colors whitespace-nowrap`}>
-              <Plus size={13} /> Add Expense
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={async () => {
+                  const { exportAdminExcel } = await import('../utils/adminExport.js')
+                  const cols = [
+                    { key: 'date', header: 'Date' },
+                    { key: 'category', header: 'Category' },
+                    { key: 'vendor', header: 'Vendor' },
+                    { key: 'description', header: 'Description' },
+                    { key: 'amount', header: 'Amount' },
+                    { key: 'currency', header: 'Currency' }
+                  ]
+                  await exportAdminExcel('Expenses', expenses, { columns: cols })
+                }}
+                className="text-xs px-2 py-1 rounded bg-gray-700 text-gray-300 hover:bg-gray-600 hover:text-white transition-colors"
+              >
+                Excel
+              </button>
+              <button
+                onClick={async () => {
+                  const { exportAdminPdf } = await import('../utils/adminExport.js')
+                  const cols = [
+                    { key: 'date', header: 'Date' },
+                    { key: 'category', header: 'Category' },
+                    { key: 'vendor', header: 'Vendor' },
+                    { key: 'description', header: 'Description' },
+                    { key: 'amount', header: 'Amount' },
+                    { key: 'currency', header: 'Currency' }
+                  ]
+                  await exportAdminPdf('Expenses', expenses, { columns: cols })
+                }}
+                className="text-xs px-2 py-1 rounded bg-gray-700 text-gray-300 hover:bg-gray-600 hover:text-white transition-colors"
+              >
+                PDF
+              </button>
+              <button onClick={() => setShowCreateExpense(v => !v)} className={`flex items-center gap-1.5 ${btn()} px-3 py-2 rounded-lg text-xs font-medium transition-colors whitespace-nowrap`}>
+                <Plus size={13} /> Add Expense
+              </button>
+            </div>
           </div>
 
           {showCreateExpense && (
@@ -2910,16 +2982,16 @@ function Bookkeeping({ companies }) {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="text-xs text-gray-500 border-b border-gray-700">
-                    <th className="px-4 py-3 text-left font-medium">Date</th>
-                    <th className="px-4 py-3 text-left font-medium">Category</th>
-                    <th className="px-4 py-3 text-left font-medium">Vendor</th>
-                    <th className="px-4 py-3 text-left font-medium">Description</th>
-                    <th className="px-4 py-3 text-right font-medium">Amount</th>
+                    <SortableHeader label="Date" sortKey="date" currentSortKey={expSortKey} currentSortDir={expSortDir} onToggle={toggleExpSort} />
+                    <SortableHeader label="Category" sortKey="category" currentSortKey={expSortKey} currentSortDir={expSortDir} onToggle={toggleExpSort} />
+                    <SortableHeader label="Vendor" sortKey="vendor" currentSortKey={expSortKey} currentSortDir={expSortDir} onToggle={toggleExpSort} />
+                    <SortableHeader label="Description" sortKey="description" currentSortKey={expSortKey} currentSortDir={expSortDir} onToggle={toggleExpSort} />
+                    <SortableHeader label="Amount" sortKey="amount" currentSortKey={expSortKey} currentSortDir={expSortDir} onToggle={toggleExpSort} />
                     <th className="px-4 py-3 text-center font-medium">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {expenses.map(exp => (
+                  {paginatedExpenses.map(exp => (
                     <tr key={exp.id} className="border-t border-gray-700 hover:bg-gray-750">
                       <td className="px-4 py-3 text-gray-400 text-xs">{fmt(exp.date)}</td>
                       <td className="px-4 py-3 text-purple-300 text-xs">{exp.category}</td>
@@ -2927,15 +2999,21 @@ function Bookkeeping({ companies }) {
                       <td className="px-4 py-3 text-gray-300 text-xs">{exp.description}</td>
                       <td className="px-4 py-3 text-right font-semibold text-white text-xs">{exp.currency} {Number(exp.amount).toFixed(2)}</td>
                       <td className="px-4 py-3 text-center">
-                        <button onClick={() => handleDeleteExpense(exp.id)} className="p-1.5 rounded hover:bg-gray-700 text-gray-400 hover:text-red-400 transition-colors">
-                          <Trash2 size={14} />
-                        </button>
+                        <div className="flex items-center justify-center gap-1">
+                          <button title="Edit" onClick={() => setEditExpense({ ...exp })} className="p-1.5 rounded hover:bg-gray-700 text-gray-400 hover:text-purple-400 transition-colors">
+                            <Edit3 size={14} />
+                          </button>
+                          <button onClick={() => handleDeleteExpense(exp.id)} className="p-1.5 rounded hover:bg-gray-700 text-gray-400 hover:text-red-400 transition-colors">
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             )}
+            <Pagination page={expPage} totalPages={expTotalPages} onPageChange={setExpPage} />
           </div>
         </div>
       )}
@@ -3030,7 +3108,7 @@ function Bookkeeping({ companies }) {
 
       {/* Edit invoice modal */}
       {editInvoice && (
-        <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4" onKeyDown={(e) => { if (e.key === 'Escape') setEditInvoice(null) }} tabIndex={-1} autoFocus>
           <div className="bg-gray-900 rounded-2xl p-6 w-full max-w-md space-y-3 border border-gray-700">
             <div className="flex justify-between items-center">
               <h3 className="text-white font-semibold">Edit Invoice {editInvoice.invoice_number}</h3>
@@ -3079,6 +3157,50 @@ function Bookkeeping({ companies }) {
           </div>
         </div>
       )}
+
+      {/* Edit expense modal */}
+      {editExpense && (
+        <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4" onKeyDown={(e) => { if (e.key === 'Escape') setEditExpense(null) }} tabIndex={-1} autoFocus>
+          <div className="bg-gray-900 rounded-2xl p-6 w-full max-w-md space-y-3 border border-gray-700">
+            <div className="flex justify-between items-center">
+              <h3 className="text-white font-semibold">Edit Expense</h3>
+              <button onClick={() => setEditExpense(null)} className="text-gray-400 hover:text-white"><X size={18} /></button>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Date">
+                <input type="date" className={inp} value={editExpense.date} onChange={e => setEditExpense(v => ({ ...v, date: e.target.value }))} />
+              </Field>
+              <Field label="Category">
+                <select className={inp} value={editExpense.category} onChange={e => setEditExpense(v => ({ ...v, category: e.target.value }))}>
+                  {['Infrastructure', 'Development', 'Marketing', 'Legal', 'Payroll', 'Other'].map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </Field>
+              <Field label="Amount">
+                <input type="number" step="0.01" className={inp} value={editExpense.amount} onChange={e => setEditExpense(v => ({ ...v, amount: e.target.value }))} />
+              </Field>
+              <Field label="Currency">
+                <select className={inp} value={editExpense.currency} onChange={e => setEditExpense(v => ({ ...v, currency: e.target.value }))}>
+                  {INVOICE_CURRENCIES.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </Field>
+              <Field label="Vendor">
+                <input className={inp} value={editExpense.vendor} onChange={e => setEditExpense(v => ({ ...v, vendor: e.target.value }))} />
+              </Field>
+            </div>
+            <Field label="Description">
+              <input className={inp} value={editExpense.description} onChange={e => setEditExpense(v => ({ ...v, description: e.target.value }))} />
+            </Field>
+            <div className="flex gap-2 pt-1">
+              <button onClick={() => setEditExpense(null)} className={`flex-1 ${btn('ghost')} py-2 rounded-lg text-sm`}>Cancel</button>
+              <button onClick={handleSaveEditExpense} className={`flex-1 ${btn()} py-2 rounded-lg text-sm`}>Save Changes</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <DarkConfirmDialog open={confirmState?.type === 'invoice'} title="Delete invoice?" message="This action cannot be undone." confirmLabel="Delete" onConfirm={confirmDeleteInvoice} onCancel={() => setConfirmState(null)} />
+      <DarkConfirmDialog open={confirmState?.type === 'expense'} title="Delete expense?" message="This action cannot be undone." confirmLabel="Delete" onConfirm={confirmDeleteExpense} onCancel={() => setConfirmState(null)} />
+
       <InvoicePreview invoice={viewingInvoice} onClose={() => setViewingInvoice(null)} />
     </div>
   )
@@ -3087,18 +3209,79 @@ function Bookkeeping({ companies }) {
 // ════════════════════════════════════════════════════════════════════
 // MAIN: AdminCentral
 // ════════════════════════════════════════════════════════════════════
-const NAV_ITEMS = [
-  { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { id: 'companies', label: 'Companies', icon: Building2 },
-  { id: 'licensing', label: 'Licensing', icon: CreditCard },
-  { id: 'test-reset', label: 'Test Reset', icon: Trash2 },
-  { id: 'bookkeeping', label: 'Bookkeeping', icon: Receipt },
-  { id: 'broadcasts', label: 'Broadcasts', icon: Megaphone },
-  { id: 'tickets', label: 'Support Tickets', icon: LifeBuoy },
-  { id: 'activity', label: 'Activity Log', icon: Activity },
-  { id: 'notifications', label: 'Email Alerts', icon: Mail },
-  { id: 'leads', label: 'Marketing Leads', icon: Users },
+const NAV_GROUPS = [
+  {
+    label: 'Overview',
+    items: [
+      { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, tip: 'Business metrics, charts, and company overview' },
+      { id: 'cockpit', label: 'Executive Cockpit', icon: BarChart3, tip: 'High-level business intelligence and KPIs' },
+      { id: 'health', label: 'System Health', icon: Shield, tip: 'System status checks and connectivity diagnostics' },
+      { id: 'surfaces', label: 'Surface Intelligence', icon: Activity, tip: 'Cross-device sync health and network topology' },
+    ]
+  },
+  {
+    label: 'Clients & Money',
+    items: [
+      { id: 'companies', label: 'Companies', icon: Building2, tip: 'Manage lodge and hotel accounts' },
+      { id: 'licensing', label: 'Licensing', icon: CreditCard, tip: 'Manage plans, trials, and license keys' },
+      { id: 'finance', label: 'Finance Office', icon: DollarSign, tip: 'Revenue reports, invoices, and bookkeeping' },
+      { id: 'leads', label: 'Marketing Leads', icon: Users, tip: 'Sales CRM pipeline and follow-ups' },
+    ]
+  },
+  {
+    label: 'Operations',
+    items: [
+      { id: 'tickets', label: 'Support Tickets', icon: LifeBuoy, tip: 'Customer support requests and responses' },
+      { id: 'broadcasts', label: 'Broadcasts', icon: Megaphone, tip: 'Announcements shown as banners to all users' },
+      { id: 'activity', label: 'Activity Log', icon: Activity, tip: 'Audit trail of all admin actions' },
+    ]
+  },
+  {
+    label: 'Fleet & Releases',
+    items: [
+      { id: 'notifications', label: 'Notifications', icon: Bell, tip: 'Automated alerts and notification rules' },
+      { id: 'fleet', label: 'Fleet', icon: Server, tip: 'Device health, sync status, and push updates' },
+      { id: 'releases', label: 'Releases', icon: Rocket, tip: 'App version rollout and feature flags' },
+    ]
+  },
+  {
+    label: 'Configuration',
+    items: [
+      { id: 'email-alerts', label: 'Email Config', icon: Mail, tip: 'SMTP settings for email delivery' },
+    ]
+  },
+  {
+    label: 'Developer Tools',
+    items: [
+      { id: 'search', label: 'Global Search', icon: Search, tip: 'Search across all entities (Ctrl+K)' },
+      { id: 'bulk', label: 'Bulk Actions', icon: CheckSquare, tip: 'Batch operations on tickets and leads' },
+      { id: 'test-reset', label: 'Test Reset', icon: Trash2, tip: 'Reset test data — destructive, use with caution' },
+    ]
+  }
 ]
+
+function FinanceOffice({ companies }) {
+  const [tab, setTab] = useState('accounting')
+  return (
+    <div className="space-y-4">
+      <div className="flex gap-1 rounded-lg bg-gray-800 p-1">
+        <button
+          onClick={() => setTab('accounting')}
+          className={`flex-1 rounded-md py-2 text-xs font-medium transition-colors ${tab === 'accounting' ? 'bg-purple-600 text-white' : 'text-gray-400 hover:text-white'}`}
+        >
+          Accounting
+        </button>
+        <button
+          onClick={() => setTab('bookkeeping')}
+          className={`flex-1 rounded-md py-2 text-xs font-medium transition-colors ${tab === 'bookkeeping' ? 'bg-purple-600 text-white' : 'text-gray-400 hover:text-white'}`}
+        >
+          Bookkeeping
+        </button>
+      </div>
+      {tab === 'accounting' ? <AccountingDashboard /> : <Bookkeeping companies={companies} />}
+    </div>
+  )
+}
 
 function TestResetMaintenance({ companies }) {
   const [selectedLodge, setSelectedLodge] = useState(null)
@@ -3421,129 +3604,420 @@ function TestResetMaintenance({ companies }) {
 }
 
 // ════════════════════════════════════════════════════════════════════
-// Leads panel
+// Sales CRM — pipeline view
 // ════════════════════════════════════════════════════════════════════
+const STAGES = [
+  { id: 'new', label: 'New', color: 'bg-blue-500/20 text-blue-300', dot: 'bg-blue-400' },
+  { id: 'contacted', label: 'Contacted', color: 'bg-amber-500/20 text-amber-300', dot: 'bg-amber-400' },
+  { id: 'demo_scheduled', label: 'Demo Scheduled', color: 'bg-purple-500/20 text-purple-300', dot: 'bg-purple-400' },
+  { id: 'proposal_sent', label: 'Proposal Sent', color: 'bg-cyan-500/20 text-cyan-300', dot: 'bg-cyan-400' },
+  { id: 'won', label: 'Won', color: 'bg-green-500/20 text-green-300', dot: 'bg-green-400' },
+  { id: 'lost', label: 'Lost', color: 'bg-red-500/20 text-red-300', dot: 'bg-red-400' }
+]
+
+function LeadDrawer({ lead, onClose, onUpdate }) {
+  if (!lead) return null
+  const stage = lead.stage || lead.status || 'new'
+  const stageObj = STAGES.find(s => s.id === stage)
+  const isOverdue = lead.follow_up_at && new Date(lead.follow_up_at) < new Date() && !['won', 'lost'].includes(stage)
+
+  const activityTimeline = [
+    lead.created_at && { time: lead.created_at, action: 'Lead created', detail: `from ${lead.source || 'website'}` },
+    lead.updated_at && lead.updated_at !== lead.created_at && { time: lead.updated_at, action: 'Last updated', detail: lead.sales_notes ? 'notes added' : 'details changed' },
+    lead.follow_up_at && { time: lead.follow_up_at, action: isOverdue ? 'Follow-up overdue' : 'Follow-up scheduled', detail: new Date(lead.follow_up_at).toLocaleDateString() },
+  ].filter(Boolean).sort((a, b) => new Date(b.time) - new Date(a.time))
+
+  const quickActions = [
+    { label: 'Mark Contacted', stage: 'contacted', hidden: stage !== 'new' },
+    { label: 'Schedule Demo', stage: 'demo_scheduled', hidden: !['new', 'contacted'].includes(stage) },
+    { label: 'Send Proposal', stage: 'proposal_sent', hidden: !['demo_scheduled'].includes(stage) },
+    { label: 'Mark Won', stage: 'won', hidden: ['won', 'lost'].includes(stage) },
+    { label: 'Mark Lost', stage: 'lost', hidden: ['won', 'lost'].includes(stage) },
+  ].filter(a => !a.hidden)
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={onClose} onKeyDown={(e) => { if (e.key === 'Escape') onClose() }} tabIndex={-1} autoFocus>
+      <div className="bg-gray-800 rounded-xl w-full max-w-lg max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-4 py-3 border-b border-gray-700">
+          <div>
+            <h3 className="text-white font-semibold text-sm">{lead.contact_name}</h3>
+            <p className="text-[11px] text-gray-400">{lead.lodge_name} | {lead.email || 'No email'}</p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-white"><X size={16} /></button>
+        </div>
+        <div className="p-4 space-y-4">
+          {/* Stage + Value */}
+          <div className="grid grid-cols-3 gap-2">
+            <div className={`rounded-lg p-2 text-center border ${stageObj?.color?.split(' ')[0] || 'bg-gray-750'} border-gray-700`}>
+              <p className="text-[10px] text-gray-400 uppercase">Stage</p>
+              <p className={`text-xs font-semibold ${stageObj?.color?.split(' ')[1] || 'text-white'}`}>{stageObj?.label || stage}</p>
+            </div>
+            <div className="bg-gray-750 border border-gray-700 rounded-lg p-2 text-center">
+              <p className="text-[10px] text-gray-400 uppercase">Value</p>
+              <p className="text-xs font-bold text-white">{lead.estimated_value ? `$${Number(lead.estimated_value).toLocaleString()}` : '—'}</p>
+            </div>
+            <div className="bg-gray-750 border border-gray-700 rounded-lg p-2 text-center">
+              <p className="text-[10px] text-gray-400 uppercase">Probability</p>
+              <p className="text-xs font-bold text-white">{lead.probability || 0}%</p>
+            </div>
+          </div>
+
+          {/* Quick Actions */}
+          {quickActions.length > 0 && (
+            <div>
+              <p className="text-[10px] text-gray-500 uppercase mb-2">Quick Actions</p>
+              <div className="flex flex-wrap gap-2">
+                {quickActions.map(a => (
+                  <button key={a.stage} onClick={() => onUpdate(lead.id, a.stage)}
+                    className="text-[11px] px-3 py-1.5 rounded-lg bg-purple-600/20 text-purple-300 hover:bg-purple-600/40 transition-colors border border-purple-500/30">
+                    {a.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Contact info */}
+          <div className="border-t border-gray-700 pt-3">
+            <p className="text-[10px] text-gray-500 uppercase mb-2">Contact Details</p>
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <div><span className="text-gray-500">Phone:</span> <span className="text-white">{lead.phone || '—'}</span></div>
+              <div><span className="text-gray-500">Source:</span> <span className="text-white">{lead.source || 'website'}</span></div>
+              <div><span className="text-gray-500">Interest:</span> <span className="text-white">{lead.interest || '—'}</span></div>
+              <div><span className="text-gray-500">Country:</span> <span className="text-white">{lead.country || '—'}</span></div>
+            </div>
+          </div>
+
+          {/* Sales notes */}
+          {lead.sales_notes && (
+            <div className="border-t border-gray-700 pt-3">
+              <p className="text-[10px] text-gray-500 uppercase mb-1">Sales Notes</p>
+              <p className="text-xs text-gray-300 bg-gray-750 rounded-lg p-2 whitespace-pre-wrap">{lead.sales_notes}</p>
+            </div>
+          )}
+
+          {/* Lost reason */}
+          {lead.lost_reason && (
+            <div className="bg-red-950/30 border border-red-900/40 rounded-lg p-3">
+              <p className="text-[10px] text-red-400 uppercase mb-1">Lost Reason</p>
+              <p className="text-xs text-red-300">{lead.lost_reason}</p>
+            </div>
+          )}
+
+          {/* Activity Timeline */}
+          <div className="border-t border-gray-700 pt-3">
+            <p className="text-[10px] text-gray-500 uppercase mb-2">Activity Timeline</p>
+            <div className="space-y-2">
+              {activityTimeline.map((item, i) => (
+                <div key={i} className="flex items-start gap-2 text-xs">
+                  <div className="w-1.5 h-1.5 rounded-full bg-purple-400 mt-1.5 shrink-0" />
+                  <div>
+                    <p className="text-white font-medium">{item.action}</p>
+                    <p className="text-[10px] text-gray-500">{item.detail} | {new Date(item.time).toLocaleDateString()}</p>
+                  </div>
+                </div>
+              ))}
+              {activityTimeline.length === 0 && (
+                <p className="text-[11px] text-gray-500">No activity recorded yet.</p>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function Leads() {
   const [leads, setLeads] = useState([])
   const [loading, setLoading] = useState(false)
-  const [filterStatus, setFilterStatus] = useState('')
+  const [error, setError] = useState(null)
+  const [filterStage, setFilterStage] = useState('')
   const [filterInterest, setFilterInterest] = useState('')
   const [updating, setUpdating] = useState(null)
+  const [viewMode, setViewMode] = useState('table') // table | pipeline
+  const [editingLead, setEditingLead] = useState(null)
+  const [editForm, setEditForm] = useState({})
+  const [selectedLead, setSelectedLead] = useState(null)
 
   const load = useCallback(async () => {
     setLoading(true)
-    const filters = {}
-    if (filterStatus) filters.status = filterStatus
-    if (filterInterest) filters.interest = filterInterest
-    const result = await window.api.admin.getMarketingLeads(filters).catch(() => ({ leads: [] }))
-    setLeads(Array.isArray(result) ? result : (result?.leads || []))
+    setError(null)
+    try {
+      const filters = {}
+      if (filterStage) filters.stage = filterStage
+      if (filterInterest) filters.interest = filterInterest
+      const result = await window.api.admin.getMarketingLeads(filters)
+      const allLeads = Array.isArray(result) ? result : (result?.leads || [])
+      setLeads(allLeads.filter(l => l.status !== 'dropped'))
+    } catch (e) { setError(e?.message || 'Failed to load leads') }
     setLoading(false)
-  }, [filterStatus, filterInterest])
+  }, [filterStage, filterInterest])
 
   useEffect(() => { load() }, [load])
 
-  const updateStatus = async (id, status) => {
+  const { sorted: sortedLeads, sortKey: leadSortKey, sortDir: leadSortDir, toggleSort: toggleLeadSort } = useTableSort(leads, 'created_at', 'desc')
+
+  const { page: leadPage, setPage: setLeadPage, totalPages: leadTotalPages, paginated: paginatedLeads } = usePagination(sortedLeads)
+
+  const updateStage = async (id, stage) => {
     setUpdating(id)
     try {
-      await window.api.admin.updateMarketingLeadStatus(id, status)
+      await window.api.admin.updateLeadCrm(id, { stage })
       await load()
-    } finally {
-      setUpdating(null)
-    }
+    } finally { setUpdating(null) }
   }
 
-  const statusColor = (s) => {
-    if (s === 'new') return 'bg-blue-100 text-blue-700'
-    if (s === 'contacted') return 'bg-yellow-100 text-yellow-700'
-    if (s === 'converted') return 'bg-green-100 text-green-700'
-    if (s === 'dropped') return 'bg-red-100 text-red-700'
-    return 'bg-gray-100 text-gray-700'
+  const saveCrm = async () => {
+    if (!editingLead) return
+    setUpdating(editingLead.id)
+    try {
+      await window.api.admin.updateLeadCrm(editingLead.id, editForm)
+      setEditingLead(null)
+      setEditForm({})
+      await load()
+    } finally { setUpdating(null) }
   }
+
+  const startEdit = (lead) => {
+    setEditingLead(lead)
+    setEditForm({
+      stage: lead.stage || lead.status || 'new',
+      follow_up_at: lead.follow_up_at ? new Date(lead.follow_up_at).toISOString().slice(0, 16) : '',
+      sales_notes: lead.sales_notes || '',
+      estimated_value: lead.estimated_value || 0,
+      probability: lead.probability || 0,
+      lost_reason: lead.lost_reason || ''
+    })
+  }
+
+  const stageColor = (s) => STAGES.find(st => st.id === s)?.color || 'bg-gray-500/20 text-gray-300'
+
+  const overdueFollowUps = leads.filter(l => l.follow_up_at && new Date(l.follow_up_at) < new Date() && !['won', 'lost'].includes(l.stage || l.status))
 
   return (
-    <div>
-      <h2 className="text-2xl font-bold text-white mb-4">Marketing Leads</h2>
-      <div className="flex flex-wrap gap-3 mb-4">
-        <select
-          className="bg-gray-800 border border-gray-700 text-white text-sm rounded-lg px-3 py-2"
-          value={filterStatus}
-          onChange={(e) => setFilterStatus(e.target.value)}
-        >
-          <option value="">All statuses</option>
-          <option value="new">New</option>
-          <option value="contacted">Contacted</option>
-          <option value="converted">Converted</option>
-          <option value="dropped">Dropped</option>
-        </select>
-        <select
-          className="bg-gray-800 border border-gray-700 text-white text-sm rounded-lg px-3 py-2"
-          value={filterInterest}
-          onChange={(e) => setFilterInterest(e.target.value)}
-        >
-          <option value="">All interests</option>
-          <option value="Starter">Starter</option>
-          <option value="Standard">Standard</option>
-          <option value="Pro">Pro</option>
-          <option value="Not sure yet">Not sure yet</option>
-        </select>
-        <button
-          className="bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-lg px-3 py-2"
-          onClick={load}
-        >
-          Refresh
-        </button>
-      </div>
-      {loading && <p className="text-gray-400">Loading leads...</p>}
-      {!loading && leads.length === 0 && (
-        <p className="text-gray-400">No leads found. Submissions from the website will appear here.</p>
-      )}
-      {!loading && leads.length > 0 && (
-        <div className="overflow-x-auto">
-          <table className="min-w-full text-sm text-left">
-            <thead className="bg-gray-800 text-gray-300 uppercase text-xs">
-              <tr>
-                <th className="px-4 py-3 rounded-tl-lg">Lodge</th>
-                <th className="px-4 py-3">Contact</th>
-                <th className="px-4 py-3">Email</th>
-                <th className="px-4 py-3">Phone</th>
-                <th className="px-4 py-3">Interest</th>
-                <th className="px-4 py-3">Status</th>
-                <th className="px-4 py-3">Date</th>
-                <th className="px-4 py-3 rounded-tr-lg">Notes</th>
-              </tr>
-            </thead>
-            <tbody>
-              {leads.map((lead) => (
-                <tr key={lead.id} className="border-b border-gray-700 hover:bg-gray-800/50">
-                  <td className="px-4 py-3 font-medium text-white">{lead.lodge_name}</td>
-                  <td className="px-4 py-3 text-gray-300">{lead.contact_name}</td>
-                  <td className="px-4 py-3 text-gray-300">
-                    <a href={`mailto:${lead.email}`} className="text-blue-400 hover:underline">{lead.email}</a>
-                  </td>
-                  <td className="px-4 py-3 text-gray-300">{lead.phone || '—'}</td>
-                  <td className="px-4 py-3 text-gray-300">{lead.interest || '—'}</td>
-                  <td className="px-4 py-3">
-                    <select
-                      className={`text-xs font-semibold px-2 py-1 rounded-full border-0 cursor-pointer ${statusColor(lead.status)} ${updating === lead.id ? 'opacity-50' : ''}`}
-                      value={lead.status}
-                      disabled={updating === lead.id}
-                      onChange={(e) => updateStatus(lead.id, e.target.value)}
-                    >
-                      <option value="new">New</option>
-                      <option value="contacted">Contacted</option>
-                      <option value="converted">Converted</option>
-                      <option value="dropped">Dropped</option>
-                    </select>
-                  </td>
-                  <td className="px-4 py-3 text-gray-400 whitespace-nowrap">
-                    {new Date(lead.created_at).toLocaleDateString()}
-                  </td>
-                  <td className="px-4 py-3 text-gray-400 max-w-xs truncate" title={lead.notes}>{lead.notes || '—'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <TrendingUp className="text-purple-400" size={20} />
+          <h2 className="text-white font-semibold text-lg">Sales Pipeline</h2>
         </div>
+        <div className="flex items-center gap-2">
+          <button onClick={() => setViewMode(v => v === 'table' ? 'pipeline' : 'table')}
+            className="text-xs px-3 py-1.5 rounded-lg bg-gray-700 text-gray-300 hover:bg-gray-600 hover:text-white transition-colors">
+            {viewMode === 'table' ? 'Pipeline View' : 'Table View'}
+          </button>
+          <button onClick={load} className="text-xs px-3 py-1.5 rounded-lg bg-gray-700 text-gray-300 hover:bg-gray-600 hover:text-white transition-colors">
+            Refresh
+          </button>
+        </div>
+      </div>
+
+      {error && (
+        <div className="bg-red-950/30 border border-red-900/40 rounded-xl p-3 flex items-center gap-3">
+          <AlertCircle size={14} className="text-red-400 shrink-0" />
+          <p className="text-red-300 text-xs flex-1">{error}</p>
+          <button onClick={load} className="text-xs text-red-400 hover:text-white underline">Retry</button>
+        </div>
+      )}
+
+      {/* Overdue follow-ups */}
+      {overdueFollowUps.length > 0 && (
+        <div className="bg-amber-950/30 border border-amber-900/40 rounded-xl p-3">
+          <p className="text-xs font-semibold text-amber-400 mb-1">{overdueFollowUps.length} overdue follow-up(s)</p>
+          <p className="text-[11px] text-amber-300/70">{overdueFollowUps.map(l => l.contact_name || l.lodge_name).join(', ')}</p>
+        </div>
+      )}
+
+      {/* Pipeline summary cards */}
+      {viewMode === 'pipeline' && (
+        <div className="grid grid-cols-3 md:grid-cols-6 gap-2">
+          {STAGES.map(s => {
+            const stageLeads = leads.filter(l => (l.stage || l.status) === s.id)
+            const totalVal = stageLeads.reduce((sum, l) => sum + (Number(l.estimated_value) || 0), 0)
+            return (
+              <div key={s.id} className={`rounded-xl p-3 ${s.color.split(' ')[0]} border border-transparent`}>
+                <p className="text-[10px] uppercase font-semibold">{s.label}</p>
+                <p className="text-xl font-bold">{stageLeads.length}</p>
+                {totalVal > 0 && <p className="text-[10px] opacity-70">${totalVal.toLocaleString()}</p>}
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {/* Filters */}
+      <div className="flex flex-wrap gap-2">
+        <button onClick={() => setFilterStage('')}
+          className={`text-xs px-3 py-1.5 rounded-lg transition-colors ${!filterStage ? 'bg-purple-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'}`}>
+          All ({leads.length})
+        </button>
+        {STAGES.map(s => (
+          <button key={s.id} onClick={() => setFilterStage(s.id)}
+            className={`text-xs px-3 py-1.5 rounded-lg transition-colors ${filterStage === s.id ? 'bg-purple-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'}`}>
+            {s.label} ({leads.filter(l => (l.stage || l.status) === s.id).length})
+          </button>
+        ))}
+      </div>
+
+      {/* Table view */}
+      {viewMode === 'table' && (
+        <div className="bg-gray-800 rounded-xl overflow-hidden">
+          {loading ? (
+            <div className="px-6 py-16 text-center text-gray-500 animate-pulse">Loading pipeline...</div>
+          ) : paginatedLeads.length === 0 ? (
+            <div className="px-6 py-16 text-center text-gray-500">
+              <TrendingUp size={32} className="mx-auto mb-3 opacity-40" />
+              <p>No leads found.</p>
+              <p className="text-xs text-gray-500 mt-1">Leads are created from upgrade requests or imported manually.</p>
+            </div>
+          ) : (
+            <table className="w-full text-sm">
+              <thead className="bg-gray-900 text-gray-400 text-xs uppercase">
+                <tr>
+                  <SortableHeader label="Contact" sortKey="contact_name" currentSortKey={leadSortKey} currentSortDir={leadSortDir} onToggle={toggleLeadSort} />
+                  <SortableHeader label="Lodge" sortKey="lodge_name" currentSortKey={leadSortKey} currentSortDir={leadSortDir} onToggle={toggleLeadSort} />
+                  <SortableHeader label="Stage" sortKey="stage" currentSortKey={leadSortKey} currentSortDir={leadSortDir} onToggle={toggleLeadSort} />
+                  <SortableHeader label="Value" sortKey="estimated_value" currentSortKey={leadSortKey} currentSortDir={leadSortDir} onToggle={toggleLeadSort} />
+                  <SortableHeader label="Follow-up" sortKey="follow_up_at" currentSortKey={leadSortKey} currentSortDir={leadSortDir} onToggle={toggleLeadSort} />
+                  <SortableHeader label="Interest" sortKey="interest" currentSortKey={leadSortKey} currentSortDir={leadSortDir} onToggle={toggleLeadSort} />
+                  <SortableHeader label="Source" sortKey="source" currentSortKey={leadSortKey} currentSortDir={leadSortDir} onToggle={toggleLeadSort} />
+                  <th className="px-4 py-3 text-left">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-700">
+                {paginatedLeads.map(lead => {
+                  const stage = lead.stage || lead.status || 'new'
+                  return (
+                    <tr key={lead.id} className="hover:bg-gray-750 cursor-pointer" onClick={() => setSelectedLead(lead)}>
+                      <td className="px-4 py-3">
+                        <p className="text-white font-medium">{lead.contact_name}</p>
+                        <p className="text-[10px] text-gray-500">{lead.email}</p>
+                      </td>
+                      <td className="px-4 py-3 text-xs text-gray-300">{lead.lodge_name}</td>
+                      <td className="px-4 py-3">
+                        <select className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border-0 cursor-pointer ${stageColor(stage)} ${updating === lead.id ? 'opacity-50' : ''}`}
+                          value={stage} disabled={updating === lead.id}
+                          onChange={(e) => updateStage(lead.id, e.target.value)}>
+                          {STAGES.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
+                        </select>
+                      </td>
+                      <td className="px-4 py-3 text-xs text-gray-300">{lead.estimated_value ? `$${Number(lead.estimated_value).toLocaleString()}` : '—'}</td>
+                      <td className="px-4 py-3 text-xs">
+                        {lead.follow_up_at ? (
+                          <span className={new Date(lead.follow_up_at) < new Date() ? 'text-red-400' : 'text-gray-300'}>
+                            {new Date(lead.follow_up_at).toLocaleDateString()}
+                          </span>
+                        ) : <span className="text-gray-600">—</span>}
+                      </td>
+                      <td className="px-4 py-3 text-xs text-gray-400">{lead.interest || '—'}</td>
+                      <td className="px-4 py-3 text-[10px] text-gray-500">{lead.source || 'website'}</td>
+                      <td className="px-4 py-3">
+                        <button onClick={() => startEdit(lead)} className="text-xs text-purple-400 hover:text-purple-300">Edit</button>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+
+      {/* Pipeline (kanban) view */}
+      {viewMode === 'pipeline' && (
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+          {STAGES.map(s => {
+            const stageLeads = leads.filter(l => (l.stage || l.status) === s.id)
+            return (
+              <div key={s.id} className="bg-gray-800 rounded-xl p-3">
+                <p className={`text-xs font-semibold uppercase mb-2 ${s.color.split(' ')[1]}`}>{s.label} ({stageLeads.length})</p>
+                <div className="space-y-2 max-h-96 overflow-y-auto">
+                  {stageLeads.map(lead => (
+                    <div key={lead.id} className="bg-gray-750 border border-gray-700 rounded-lg p-2 cursor-pointer hover:border-gray-600" onClick={() => startEdit(lead)}>
+                      <p className="text-xs text-white font-medium truncate">{lead.contact_name}</p>
+                      <p className="text-[10px] text-gray-500 truncate">{lead.lodge_name}</p>
+                      {lead.estimated_value > 0 && <p className="text-[10px] text-green-400 mt-1">${Number(lead.estimated_value).toLocaleString()}</p>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      <Pagination page={leadPage} totalPages={leadTotalPages} onPageChange={setLeadPage} />
+
+      {/* Edit modal */}
+      {editingLead && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setEditingLead(null)}>
+          <div className="bg-gray-900 border border-gray-700 rounded-2xl shadow-2xl p-6 w-[480px] max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-5">
+              <h3 className="text-base font-semibold text-white">Edit Lead: {editingLead.contact_name}</h3>
+              <button onClick={() => setEditingLead(null)} className="text-gray-500 hover:text-gray-300"><X size={16} /></button>
+            </div>
+            <div className="space-y-4">
+              <div>
+                <label className="text-xs text-gray-400 block mb-1">Stage</label>
+                <select className="w-full bg-gray-800 border border-gray-700 text-white text-sm rounded-lg px-3 py-2"
+                  value={editForm.stage} onChange={e => setEditForm(f => ({ ...f, stage: e.target.value }))}>
+                  {STAGES.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs text-gray-400 block mb-1">Follow-up Date</label>
+                <input type="datetime-local" className="w-full bg-gray-800 border border-gray-700 text-white text-sm rounded-lg px-3 py-2"
+                  value={editForm.follow_up_at} onChange={e => setEditForm(f => ({ ...f, follow_up_at: e.target.value }))} />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs text-gray-400 block mb-1">Estimated Value ($)</label>
+                  <input type="number" className="w-full bg-gray-800 border border-gray-700 text-white text-sm rounded-lg px-3 py-2"
+                    value={editForm.estimated_value} onChange={e => setEditForm(f => ({ ...f, estimated_value: Number(e.target.value) }))} />
+                </div>
+                <div>
+                  <label className="text-xs text-gray-400 block mb-1">Probability (%)</label>
+                  <input type="number" min="0" max="100" className="w-full bg-gray-800 border border-gray-700 text-white text-sm rounded-lg px-3 py-2"
+                    value={editForm.probability} onChange={e => setEditForm(f => ({ ...f, probability: Number(e.target.value) }))} />
+                </div>
+              </div>
+              <div>
+                <label className="text-xs text-gray-400 block mb-1">Sales Notes</label>
+                <textarea className="w-full bg-gray-800 border border-gray-700 text-white text-sm rounded-lg px-3 py-2 h-20"
+                  value={editForm.sales_notes} onChange={e => setEditForm(f => ({ ...f, sales_notes: e.target.value }))} />
+              </div>
+              {editForm.stage === 'lost' && (
+                <div>
+                  <label className="text-xs text-gray-400 block mb-1">Lost Reason</label>
+                  <input type="text" className="w-full bg-gray-800 border border-gray-700 text-white text-sm rounded-lg px-3 py-2"
+                    value={editForm.lost_reason} onChange={e => setEditForm(f => ({ ...f, lost_reason: e.target.value }))} />
+                </div>
+              )}
+              <div className="flex gap-2 pt-2">
+                <button onClick={saveCrm} disabled={!!updating}
+                  className="flex-1 bg-purple-600 hover:bg-purple-500 text-white text-sm font-medium py-2 rounded-lg transition-colors disabled:opacity-50">
+                  {updating ? 'Saving...' : 'Save'}
+                </button>
+                <button onClick={() => setEditingLead(null)}
+                  className="px-4 bg-gray-700 hover:bg-gray-600 text-gray-300 text-sm py-2 rounded-lg transition-colors">
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {selectedLead && (
+        <LeadDrawer lead={selectedLead} onClose={() => setSelectedLead(null)}
+          onUpdate={async (id, stage) => {
+            setUpdating(id)
+            await window.api.admin.updateLeadCrm(id, { stage })
+            setSelectedLead(null)
+            await load()
+            setUpdating(null)
+          }} />
       )}
     </div>
   )
@@ -3557,23 +4031,76 @@ export default function AdminCentral() {
   const [tickets, setTickets] = useState([])
   const [activityLogs, setActivityLogs] = useState([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState(null)
+  const [loadWarnings, setLoadWarnings] = useState(null)
+  const [viewClient360, setViewClient360] = useState(null)
+  const [showShortcuts, setShowShortcuts] = useState(false)
+  const [connected, setConnected] = useState(true)
+  // Expose navigate for Dashboard quick actions
+  useEffect(() => { window.__adminNavigate = (s) => setSection(s); return () => { delete window.__adminNavigate } }, [])
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handleKey = (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+        e.preventDefault()
+        setSection('search')
+        return
+      }
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return
+      if (e.key === '?') { e.preventDefault(); setShowShortcuts(true); return }
+      const sectionMap = { '1': 'dashboard', '2': 'cockpit', '3': 'companies', '4': 'licensing', '5': 'finance', '6': 'tickets', '7': 'activity', '8': 'fleet', '9': 'releases' }
+      if (sectionMap[e.key]) { e.preventDefault(); setSection(sectionMap[e.key]) }
+    }
+    document.addEventListener('keydown', handleKey)
+    return () => document.removeEventListener('keydown', handleKey)
+  }, [])
 
   const loadAll = useCallback(async () => {
     setLoading(true)
-    const [c, l, t, a] = await Promise.all([
-      window.api.admin.getCompanies().catch(() => []),
-      window.api.admin.getLicenses().catch(() => []),
-      window.api.admin.getSupportTickets({}).catch(() => []),
-      window.api.admin.getActivityLogs({ limit: 200 }).catch(() => [])
-    ])
-    setCompanies(c); setLicenses(l); setTickets(t); setActivityLogs(a)
-    setLoading(false)
+    setLoadError(null)
+    setLoadWarnings(null)
+    try {
+      const { data, errors } = await safeLoadAll(
+        window.api.admin.getCompanies(),
+        window.api.admin.getLicenses(),
+        window.api.admin.getSupportTickets({}),
+        window.api.admin.getActivityLogs({ limit: 200 })
+      )
+      const [c, l, t, a] = data
+      setCompanies(Array.isArray(c) ? c : [])
+      setLicenses(Array.isArray(l) ? l : [])
+      setTickets(Array.isArray(t) ? t : [])
+      setActivityLogs(Array.isArray(a) ? a : [])
+      if (hasPartialFailures(errors)) {
+        setLoadWarnings(getFailureSummary(errors, ['Companies', 'Licenses', 'Tickets', 'Activity Logs']))
+      }
+    } catch (err) {
+      console.error('Command Central load failed:', err)
+      setLoadError('Command Central data could not be fully loaded.')
+    } finally {
+      setLoading(false)
+    }
   }, [])
 
   useEffect(() => { loadAll() }, [loadAll])
 
+  // Connection status ping
+  useEffect(() => {
+    const ping = async () => {
+      try { await window.api.admin.getCompanies(); setConnected(true) }
+      catch { setConnected(false) }
+    }
+    ping()
+    const interval = setInterval(ping, 30000)
+    return () => clearInterval(interval)
+  }, [])
+
   const openTickets = tickets.filter(t => t.status === 'open' || t.status === 'in_progress').length
   const upgradeCount = tickets.filter(t => t.category === 'Upgrade Request' && (t.status === 'open' || t.status === 'in_progress')).length
+  const today = localToday()
+  const overdueCount = licenses.filter(l => l.next_due_date && l.next_due_date < today && l.payment_status !== 'free' && l.is_active).length
+  const expiringCount = licenses.filter(l => l.expires_at && l.is_active && new Date(l.expires_at) > new Date() && (new Date(l.expires_at) - new Date()) < 7 * 864e5).length
 
   return (
     <div className="min-h-screen bg-gray-950 text-white flex flex-col print:bg-white print:text-black print:min-h-0">
@@ -3589,6 +4116,13 @@ export default function AdminCentral() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <span className="flex items-center gap-1.5 text-[10px] text-gray-500" title={connected ? 'Supabase connected' : 'Supabase unreachable'}>
+            <span className={`w-1.5 h-1.5 rounded-full ${connected ? 'bg-green-500' : 'bg-red-500 animate-pulse'}`} />
+            {connected ? 'Live' : 'Offline'}
+          </span>
+          <button onClick={() => setShowShortcuts(true)} className="text-gray-600 hover:text-gray-400 text-xs px-2 py-1 rounded hover:bg-gray-800 transition-colors" title="Keyboard shortcuts (?)">
+            <kbd className="font-mono text-[10px]">?</kbd>
+          </button>
           <button onClick={loadAll} className="flex items-center gap-2 text-gray-400 hover:text-white text-xs px-3 py-1.5 rounded-lg hover:bg-gray-800 transition-colors">
             <RefreshCw size={13} className={loading ? 'animate-spin' : ''} /> Refresh
           </button>
@@ -3598,49 +4132,102 @@ export default function AdminCentral() {
         </div>
       </div>
 
+      {loadError && (
+        <div className="bg-red-900/40 border-b border-red-700 px-6 py-3 flex items-center gap-3 print:hidden">
+          <AlertTriangle size={16} className="text-red-400 shrink-0" />
+          <p className="text-sm text-red-300 flex-1">{loadError}</p>
+          <button onClick={loadAll} className="text-xs text-red-400 hover:text-red-300 underline">Retry</button>
+        </div>
+      )}
+
+      {loadWarnings && !loadError && (
+        <div className="bg-amber-900/40 border-b border-amber-700 px-6 py-3 flex items-center gap-3 print:hidden">
+          <AlertTriangle size={16} className="text-amber-400 shrink-0" />
+          <p className="text-sm text-amber-300 flex-1">{loadWarnings}</p>
+          <button onClick={loadAll} className="text-xs text-amber-400 hover:text-amber-300 underline">Retry</button>
+        </div>
+      )}
+
       <div className="flex flex-1 min-h-0 print:block">
         {/* Sidebar */}
-        <div className="w-52 shrink-0 bg-gray-900 border-r border-gray-800 flex flex-col py-4 gap-1 px-2 print:hidden">
-          {NAV_ITEMS.map(({ id, label, icon: Icon }) => {
-            // Badge logic: support ticket count (orange) + upgrade request count (purple)
-            const ticketBadge = id === 'tickets' && openTickets > 0 ? openTickets : null
-            const upgradeBadge = id === 'tickets' && upgradeCount > 0 ? upgradeCount : null
-            return (
-              <button
-                key={id}
-                onClick={() => setSection(id)}
-                className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors w-full text-left ${section === id ? 'bg-purple-600 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-800'
-                  }`}
-              >
-                <Icon size={16} className="shrink-0" />
-                <span className="flex-1 truncate">{label}</span>
-                {upgradeBadge && (
-                  <span className="bg-purple-500 text-white text-xs font-bold px-1.5 py-0.5 rounded-full" title={`${upgradeBadge} upgrade request(s)`}>
-                    🆙{upgradeBadge}
-                  </span>
-                )}
-                {ticketBadge && !upgradeBadge && (
-                  <span className="bg-orange-500 text-white text-xs font-bold px-1.5 py-0.5 rounded-full">{ticketBadge}</span>
-                )}
-              </button>
-            )
-          })}
+        <div className="w-60 shrink-0 bg-gray-900 border-r border-gray-800 flex flex-col py-4 gap-4 px-2 print:hidden overflow-y-auto">
+          {NAV_GROUPS.map((group) => (
+            <div key={group.label} className="space-y-1">
+              <p className="px-3 text-[10px] font-semibold uppercase tracking-wide text-gray-600">{group.label}</p>
+              {group.items.map(({ id, label, icon: Icon, tip }) => {
+                const ticketBadge = id === 'tickets' && openTickets > 0 ? openTickets : null
+                const upgradeBadge = id === 'tickets' && upgradeCount > 0 ? upgradeCount : null
+                const overdueBadge = id === 'finance' && overdueCount > 0 ? overdueCount : null
+                const expiringBadge = id === 'licensing' && expiringCount > 0 ? expiringCount : null
+                const activeBadge = ticketBadge || upgradeBadge || overdueBadge || expiringBadge
+                return (
+                  <button
+                    key={id}
+                    onClick={() => setSection(id)}
+                    className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors w-full text-left ${section === id ? 'bg-purple-600 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-800'
+                      }`}
+                  >
+                    <Icon size={16} className="shrink-0" />
+                    <span className="flex-1 truncate" title={tip}>{label}</span>
+                    {upgradeBadge && (
+                      <span className="bg-purple-500 text-white text-xs font-bold px-1.5 py-0.5 rounded-full" title={`${upgradeBadge} upgrade request(s)`}>
+                        {upgradeBadge}
+                      </span>
+                    )}
+                    {ticketBadge && !upgradeBadge && (
+                      <span className="bg-orange-500 text-white text-xs font-bold px-1.5 py-0.5 rounded-full">{ticketBadge}</span>
+                    )}
+                    {overdueBadge && !ticketBadge && !upgradeBadge && (
+                      <span className="bg-red-500 text-white text-xs font-bold px-1.5 py-0.5 rounded-full" title={`${overdueBadge} overdue payment(s)`}>
+                        {overdueBadge}
+                      </span>
+                    )}
+                    {expiringBadge && !ticketBadge && !upgradeBadge && !overdueBadge && (
+                      <span className="bg-yellow-500 text-white text-xs font-bold px-1.5 py-0.5 rounded-full" title={`${expiringBadge} license(s) expiring soon`}>
+                        {expiringBadge}
+                      </span>
+                    )}
+                  </button>
+                )
+              })}
+            </div>
+          ))}
         </div>
 
         {/* Main content */}
         <div className="flex-1 min-w-0 p-6 overflow-y-auto print:p-0 print:overflow-visible print:block">
-          {section === 'dashboard' && <Dashboard companies={companies} licenses={licenses} tickets={tickets} activityLogs={activityLogs} />}
-          {section === 'companies' && <Companies companies={companies} licenses={licenses} loading={loading} onReload={loadAll} />}
-          {section === 'licensing' && <LicensingWorkbench companies={companies} licenses={licenses} tickets={tickets} onRefresh={loadAll} />}
-          {section === 'test-reset' && <TestResetMaintenance companies={companies} />}
-          {section === 'bookkeeping' && <Bookkeeping companies={companies} />}
-          {section === 'broadcasts' && <Broadcasts />}
-          {section === 'tickets' && <SupportTickets companies={companies} />}
-          {section === 'activity' && <ActivityLog companies={companies} />}
-          {section === 'notifications' && <EmailSettings />}
-          {section === 'leads' && <Leads />}
+          {loading && companies.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-full text-gray-500 animate-pulse space-y-3">
+              <RefreshCw size={28} className="animate-spin text-purple-400" />
+              <p className="text-sm">Loading Command Central…</p>
+            </div>
+          ) : viewClient360 ? (
+            <ErrorBoundary><Client360 company={viewClient360} licenses={licenses} onBack={() => setViewClient360(null)} /></ErrorBoundary>
+          ) : (
+          <>
+          {section === 'dashboard' && <ErrorBoundary><Dashboard companies={companies} licenses={licenses} tickets={tickets} activityLogs={activityLogs} onOpenCompany={(company) => setViewClient360(company)} /></ErrorBoundary>}
+          {section === 'cockpit' && <ErrorBoundary><ExecutiveCockpit companies={companies} licenses={licenses} tickets={tickets} activityLogs={activityLogs} /></ErrorBoundary>}
+          {section === 'companies' && <ErrorBoundary><Companies companies={companies} licenses={licenses} loading={loading} onReload={loadAll} /></ErrorBoundary>}
+          {section === 'licensing' && <ErrorBoundary><LicensingWorkbench companies={companies} licenses={licenses} tickets={tickets} onRefresh={loadAll} /></ErrorBoundary>}
+          {section === 'test-reset' && <ErrorBoundary><TestResetMaintenance companies={companies} /></ErrorBoundary>}
+          {(section === 'finance' || section === 'bookkeeping' || section === 'accounting') && <ErrorBoundary><FinanceOffice companies={companies} /></ErrorBoundary>}
+          {section === 'broadcasts' && <ErrorBoundary><Broadcasts /></ErrorBoundary>}
+          {section === 'email-alerts' && <ErrorBoundary><EmailSettings /></ErrorBoundary>}
+          {section === 'tickets' && <ErrorBoundary><SupportTickets companies={companies} onOpenCompany={(company) => setViewClient360(company)} /></ErrorBoundary>}
+          {section === 'activity' && <ErrorBoundary><ActivityLog companies={companies} onOpenCompany={(company) => setViewClient360(company)} /></ErrorBoundary>}
+          {section === 'notifications' && <ErrorBoundary><Notifications onOpenCompany={(company) => setViewClient360(company)} companies={companies} /></ErrorBoundary>}
+          {section === 'fleet' && <ErrorBoundary><Fleet onOpenCompany={(company) => setViewClient360(company)} companies={companies} /></ErrorBoundary>}
+          {section === 'releases' && <ErrorBoundary><Releases /></ErrorBoundary>}
+          {section === 'leads' && <ErrorBoundary><Leads /></ErrorBoundary>}
+          {section === 'health' && <ErrorBoundary><SystemHealth /></ErrorBoundary>}
+          {section === 'surfaces' && <ErrorBoundary><SurfaceIntelligence /></ErrorBoundary>}
+          {section === 'search' && <ErrorBoundary><GlobalSearch onNavigate={(s) => setSection(s)} onOpenCompany={(company) => setViewClient360(company)} companies={companies} /></ErrorBoundary>}
+          {section === 'bulk' && <ErrorBoundary><BulkActions /></ErrorBoundary>}
+          </>
+          )}
         </div>
       </div>
+      {showShortcuts && <ShortcutsModal onClose={() => setShowShortcuts(false)} />}
     </div>
   )
 }

@@ -57,7 +57,7 @@ function fmtDate(value) {
 
 function statusTone(status) {
   const raw = String(status || '').toLowerCase()
-  if (raw === 'active') return 'bg-green-500/15 text-green-300'
+  if (raw === 'active' || raw === 'licensed') return 'bg-green-500/15 text-green-300'
   if (raw === 'trial') return 'bg-blue-500/15 text-blue-300'
   if (raw === 'grace_period') return 'bg-amber-500/15 text-amber-300'
   if (raw === 'overdue') return 'bg-amber-500/15 text-amber-300'
@@ -68,6 +68,56 @@ function statusTone(status) {
 
 function getLicenseStatusLabel(license) {
   return String(license?.subscription_state || license?.payment_status || 'active').replace(/_/g, ' ')
+}
+
+function lodgeKey(value) {
+  return String(value || '').trim().toLowerCase()
+}
+
+const UNASSIGNED_LICENSE_STATES = new Set(['cancelled', 'expired', 'superseded', 'deleted', 'inactive'])
+
+function isAssignedLicense(license) {
+  if (!license || !lodgeKey(license.lodge_id) || license.is_active === false) return false
+  const state = String(license.subscription_state || license.payment_status || 'active').toLowerCase()
+  return !UNASSIGNED_LICENSE_STATES.has(state)
+}
+
+function licenseSortTime(license) {
+  const value = license?.updated_at || license?.issued_at || license?.created_at || license?.expires_at || license?.next_due_date
+  const time = value ? new Date(value).getTime() : 0
+  return Number.isFinite(time) ? time : 0
+}
+
+function pickPreferredLicense(current, candidate) {
+  if (!current) return candidate
+  const currentPlanRank = SUBSCRIPTION_PLAN_ORDER.indexOf(normalizePlanName(current.subscription_plan))
+  const candidatePlanRank = SUBSCRIPTION_PLAN_ORDER.indexOf(normalizePlanName(candidate.subscription_plan))
+  if (candidatePlanRank !== currentPlanRank) return candidatePlanRank > currentPlanRank ? candidate : current
+  return licenseSortTime(candidate) >= licenseSortTime(current) ? candidate : current
+}
+
+function buildAssignedLicenseMap(licenses = []) {
+  const map = new Map()
+  ;(licenses || []).forEach((license) => {
+    if (!isAssignedLicense(license)) return
+    const key = lodgeKey(license.lodge_id)
+    map.set(key, pickPreferredLicense(map.get(key), license))
+  })
+  return map
+}
+
+function isPastDate(value) {
+  if (!value) return false
+  const time = new Date(value).getTime()
+  return Number.isFinite(time) && time < Date.now()
+}
+
+function shouldClearStaleExpiry(license) {
+  if (!license || !isPastDate(license.expires_at)) return false
+  const state = String(license.subscription_state || license.payment_status || 'active').toLowerCase()
+  const paymentStatus = String(license.payment_status || '').toLowerCase()
+  return ['active', 'licensed', 'trial', 'free', 'grace_period', 'overdue'].includes(state) ||
+    ['active', 'trial', 'free', 'overdue'].includes(paymentStatus)
 }
 
 function parseUpgradeRequest(description = '') {
@@ -84,8 +134,9 @@ function parseUpgradeRequest(description = '') {
 function PlanCatalog({ licenses }) {
   const countsByPlan = useMemo(() => {
     return (licenses || []).reduce((accumulator, license) => {
+      if (!isAssignedLicense(license)) return accumulator
       const plan = normalizePlanName(license.subscription_plan)
-      accumulator[plan] = (accumulator[plan] || 0) + (license.is_active === false ? 0 : 1)
+      accumulator[plan] = (accumulator[plan] || 0) + 1
       return accumulator
     }, {})
   }, [licenses])
@@ -164,19 +215,15 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
   }, [prefill, clearPrefill])
 
   const companyById = useMemo(() => {
-    return new Map((companies || []).map((company) => [company.lodge_id, company]))
+    return new Map((companies || []).map((company) => [lodgeKey(company.lodge_id), company]))
   }, [companies])
 
   const currentAssignments = useMemo(() => {
-    const activeLicenses = new Map()
-      ; (licenses || []).forEach((license) => {
-        if (license.is_active === false) return
-        if (!activeLicenses.has(license.lodge_id)) activeLicenses.set(license.lodge_id, license)
-      })
+    const activeLicenses = buildAssignedLicenseMap(licenses)
 
     return (companies || []).map((company) => ({
       company,
-      license: activeLicenses.get(company.lodge_id) || null
+      license: activeLicenses.get(lodgeKey(company.lodge_id)) || null
     })).filter(({ company, license }) => {
       const needle = filter.trim().toLowerCase()
       if (!needle) return true
@@ -205,10 +252,11 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
   }
 
   const startEdit = (license) => {
-    const company = companyById.get(license.lodge_id)
+    const company = companyById.get(lodgeKey(license.lodge_id))
+    const clearStaleExpiry = shouldClearStaleExpiry(license)
     setEditingLicense(license)
     setError('')
-    setNotice('')
+    setNotice(clearStaleExpiry ? 'This active assignment had an expired hard expiry date. Saving will clear that stale expiry and keep billing on the next due date.' : '')
     setForm({
       lodge_id: license.lodge_id || '',
       lodge_name: license.lodge_name || company?.lodge_name || '',
@@ -217,7 +265,7 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
       payment_status: license.payment_status || 'active',
       monthly_fee: license.monthly_fee ?? '',
       currency: license.currency || 'BWP',
-      expires_at: license.expires_at ? String(license.expires_at).slice(0, 10) : '',
+      expires_at: clearStaleExpiry ? '' : license.expires_at ? String(license.expires_at).slice(0, 10) : '',
       next_due_date: license.next_due_date ? String(license.next_due_date).slice(0, 10) : '',
       notes: license.notes || '',
       duration: ''
@@ -231,6 +279,9 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
     setSaving(true)
     try {
       if (editingLicense) {
+        if (String(editingLicense.id || '').startsWith('entitlement:')) {
+          throw new Error('This assignment was recovered from entitlement data but no editable license row was returned. Refresh licenses, then open Supabase if this still appears.')
+        }
         const result = await window.api.admin.updateLicense(editingLicense.id, {
           lodge_id: form.lodge_id,
           lodge_name: form.lodge_name,
@@ -245,6 +296,11 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
         if (!result?.success) throw new Error(result?.error || 'Could not update license assignment')
         setNotice('License assignment updated.')
       } else {
+        const existing = buildAssignedLicenseMap(licenses).get(lodgeKey(form.lodge_id))
+        if (existing) {
+          startEdit(existing)
+          throw new Error('This lodge already has an active assignment. I opened the existing license for editing instead.')
+        }
         const result = await window.api.admin.issueSubscriptionContract({
           license: {
             lodge_id: form.lodge_id,
@@ -260,7 +316,8 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
           }
         })
         if (!result?.success) throw new Error(result?.error || 'Could not generate license')
-        setNotice(`Generated ${form.subscription_plan} license${result?.license?.license_key ? `: ${result.license.license_key}` : '.'}`)
+        const issuedKey = result?.license?.license_key || result?.license_key
+        setNotice(`Generated ${form.subscription_plan} license${issuedKey ? `: ${issuedKey}` : '.'}`)
       }
       setEditingLicense(null)
       startCreate(null)
@@ -341,7 +398,7 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
             className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-sm text-white"
             value={form.lodge_id}
             onChange={(event) => {
-              const company = companyById.get(event.target.value)
+              const company = companyById.get(lodgeKey(event.target.value))
               setForm((current) => ({
                 ...current,
                 lodge_id: company?.lodge_id || '',
@@ -402,7 +459,6 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
                 setForm(f => ({
                   ...f,
                   duration: dur,
-                  expires_at: nextVal || f.expires_at,
                   next_due_date: nextVal || f.next_due_date
                 }))
               }}
@@ -421,6 +477,15 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
           <div>
             <label className="text-xs text-gray-400 block mb-1">Expiry date</label>
             <input type="date" className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-sm text-white" value={form.expires_at} onChange={(event) => setForm((current) => ({ ...current, expires_at: event.target.value, duration: '' }))} />
+            {form.expires_at && (
+              <button
+                type="button"
+                onClick={() => setForm((current) => ({ ...current, expires_at: '' }))}
+                className="mt-1 text-xs text-gray-400 hover:text-gray-200"
+              >
+                Clear expiry
+              </button>
+            )}
           </div>
         </div>
 
@@ -455,15 +520,10 @@ function OverrideDesk({ companies, licenses }) {
   const [overrideReviewAt, setOverrideReviewAt] = useState('')
 
   const activeLicenseByLodge = useMemo(() => {
-    const map = new Map()
-      ; (licenses || []).forEach((license) => {
-        if (license.is_active === false) return
-        map.set(license.lodge_id, license)
-      })
-    return map
+    return buildAssignedLicenseMap(licenses)
   }, [licenses])
 
-  const selectedPlan = useMemo(() => normalizePlanName(activeLicenseByLodge.get(selectedLodge)?.subscription_plan), [activeLicenseByLodge, selectedLodge])
+  const selectedPlan = useMemo(() => normalizePlanName(activeLicenseByLodge.get(lodgeKey(selectedLodge))?.subscription_plan), [activeLicenseByLodge, selectedLodge])
 
   useEffect(() => {
     if (!selectedLodge) return
@@ -624,12 +684,12 @@ function OverrideDesk({ companies, licenses }) {
 
 function ClientHealthDesk({ companies, licenses, tickets, onApprove }) {
   const today = new Date()
-  const activeLicenses = (licenses || []).filter((license) => license.is_active !== false)
-  const assignedLodgeIds = new Set(activeLicenses.map((license) => license.lodge_id))
+  const activeLicenses = Array.from(buildAssignedLicenseMap(licenses).values())
+  const assignedLodgeIds = new Set(activeLicenses.map((license) => lodgeKey(license.lodge_id)))
 
   const expiringSoon = activeLicenses.filter((license) => license.expires_at && new Date(license.expires_at) > today && (new Date(license.expires_at) - today) < 30 * 864e5)
   const overdue = activeLicenses.filter((license) => ['overdue', 'grace_period', 'suspended'].includes(String(license.subscription_state || license.payment_status || '').toLowerCase()))
-  const unlicensed = (companies || []).filter((company) => !assignedLodgeIds.has(company.lodge_id))
+  const unlicensed = (companies || []).filter((company) => !assignedLodgeIds.has(lodgeKey(company.lodge_id)))
   const openUpgrades = (tickets || []).filter((ticket) => ticket.status !== 'resolved' && ticket.category === 'Upgrade Request')
 
   return (

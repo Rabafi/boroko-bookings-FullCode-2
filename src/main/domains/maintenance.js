@@ -3,12 +3,22 @@ import { readCache, refreshCache, writeCache, dedupePromise } from './infrastruc
 
 // ─── MAINTENANCE TICKETS ──────────────────────────────────────────────────────
 
+const MAINTENANCE_TICKET_SELECT = 'id, room_id, title, issue, description, status, priority, reported_date, labour_cost, parts_cost, total_cost, vendor_name, cost_notes, completed_at, created_at, updated_at, rooms(room_number, room_type)';
+const MAINTENANCE_TICKET_LEGACY_SELECT = 'id, room_id, title, description, status, priority, reported_date, labour_cost, parts_cost, total_cost, vendor_name, cost_notes, created_at, rooms(room_number, room_type)';
+
+function isMaintenanceTicketSchemaCompatibilityError(error) {
+  return /column maintenance_tickets\.(issue|completed_at|updated_at) does not exist/i.test(String(error?.message || ''));
+}
+
 function normalizeMaintenanceTicketRow(ticket = {}) {
   if (!ticket || typeof ticket !== 'object') return ticket;
   return {
     ...ticket,
     title: ticket.title || ticket.issue || '',
+    issue: ticket.issue || ticket.title || '',
     description: ticket.description || ticket.notes || '',
+    completed_at: ticket.completed_at || null,
+    updated_at: ticket.updated_at || ticket.created_at || null,
     room_number: ticket.rooms?.room_number,
     room_type: ticket.rooms?.room_type,
     labour_cost: Number(ticket.labour_cost || 0),
@@ -17,16 +27,30 @@ function normalizeMaintenanceTicketRow(ticket = {}) {
   };
 }
 
-async function _getMaintenanceTickets() {
-  if (state.isOnline) {
-    const { data } = await state.supabase.
+async function fetchMaintenanceTickets() {
+  const primary = await state.supabase.
     from('maintenance_tickets').
-    select('id, room_id, title, issue, description, status, priority, reported_date, labour_cost, parts_cost, total_cost, vendor_name, cost_notes, completed_at, created_at, updated_at, rooms(room_number, room_type)').
+    select(MAINTENANCE_TICKET_SELECT).
     eq('lodge_id', state.lodgeId).
     order('created_at', { ascending: false }).
     limit(200);
+  if (!primary.error || !isMaintenanceTicketSchemaCompatibilityError(primary.error)) {
+    return primary;
+  }
+  return state.supabase.
+    from('maintenance_tickets').
+    select(MAINTENANCE_TICKET_LEGACY_SELECT).
+    eq('lodge_id', state.lodgeId).
+    order('created_at', { ascending: false }).
+    limit(200);
+}
+
+async function _getMaintenanceTickets() {
+  if (state.isOnline) {
+    const { data, error } = await fetchMaintenanceTickets();
+    if (error) throw new Error(error.message);
     const rows = (data || []).map(normalizeMaintenanceTicketRow);
-    writeCache('maintenance', data || [], { source: 'remote' });
+    writeCache('maintenance', rows, { source: 'remote' });
     return rows;
   }
   return readCache('maintenance').map(normalizeMaintenanceTicketRow);

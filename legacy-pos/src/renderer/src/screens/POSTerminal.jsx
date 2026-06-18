@@ -12,7 +12,7 @@ const PAYMENT_METHODS = [
   { value: 'orange_money', label: 'Orange Money' },
   { value: 'myzaka', label: 'MyZaka' },
   { value: 'smega', label: 'SMEGA' },
-  { value: 'bank_transfer', label: 'Bank Transfer' },
+  { value: 'bank_transfer', label: 'Ewallet/PaytoCell' },
   { value: 'folio', label: 'Room Folio' },
   { value: 'other', label: 'Other' }
 ];
@@ -80,6 +80,8 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
   const [paymentMode, setPaymentMode] = useState('single');
   const [paymentMethod, setPaymentMethod] = useState('cash');
   const [paymentReference, setPaymentReference] = useState('');
+  const [terminalSending, setTerminalSending] = useState(false);
+  const [terminalMessage, setTerminalMessage] = useState('');
   const [splitPayments, setSplitPayments] = useState([{ method: 'cash', amount: '', reference: '' }]);
   const [customerType, setCustomerType] = useState('walkin');
   const [walkInName, setWalkInName] = useState('');
@@ -89,7 +91,7 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
   const [orderNotes, setOrderNotes] = useState('');
   const [discountValue, setDiscountValue] = useState('');
   const [discountReason, setDiscountReason] = useState('');
-  const [taxRate, setTaxRate] = useState(settings?.default_tax_rate || '');
+  const [taxRate, setTaxRate] = useState('');
   const [tipAmount, setTipAmount] = useState('');
   const [serviceMode, setServiceMode] = useState('takeaway');
   const [tableName, setTableName] = useState('');
@@ -99,6 +101,7 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
   const [error, setError] = useState('');
   const [barcodeFlash, setBarcodeFlash] = useState(null);
   const currency = settings?.currency || CURRENCY;
+  const taxEnabled = settings?.vat_enabled === true;
 
   // Outlet state
   const [outlets, setOutlets] = useState([]);
@@ -132,6 +135,7 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
 
   // Staged data loading: rooms/bookings loaded on demand
   const [roomsLoaded, setRoomsLoaded] = useState(false);
+  const [detailsExpanded, setDetailsExpanded] = useState(false);
 
   const searchRef = useRef(null);
   const barcodeBufferRef = useRef('');
@@ -150,6 +154,57 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
   const inventoryById = useMemo(
     () => new Map((inventoryItems || []).map((item) => [item.id, item])),
     [inventoryItems]
+  );
+
+  const outletById = useMemo(
+    () => new Map((outlets || []).filter((outlet) => outlet?.id).map((outlet) => [outlet.id, outlet])),
+    [outlets]
+  );
+
+  const allowedOutlets = useMemo(() => {
+    const selectableOutlets = (outlets || []).filter((outlet) => outlet?.id);
+    if (!Array.isArray(outletFilter) || outletFilter.length === 0) return selectableOutlets;
+    return selectableOutlets.filter((outlet) => outletFilter.includes(outlet.id));
+  }, [outletFilter, outlets]);
+
+  const getEffectiveItemOutletId = useCallback((item) => {
+    if (!item) return null;
+    return item.outlet_id || inventoryById.get(item.inventory_item_id)?.outlet_id || null;
+  }, [inventoryById]);
+
+  const itemMatchesOutlet = useCallback((item) => {
+    const itemOutletId = getEffectiveItemOutletId(item);
+    if (selectedOutlet?.id) return itemOutletId === selectedOutlet.id;
+    if (Array.isArray(outletFilter) && outletFilter.length > 0) {
+      return !itemOutletId || outletFilter.includes(itemOutletId);
+    }
+    return true;
+  }, [getEffectiveItemOutletId, outletFilter, selectedOutlet]);
+
+  const virtualInventoryMenuItems = useMemo(() => {
+    const linkedInventoryIds = new Set((menuItems || []).map((item) => item.inventory_item_id).filter(Boolean));
+    return (inventoryItems || [])
+      .filter((item) => item?.id && item.is_active !== false && !linkedInventoryIds.has(item.id))
+      .filter(itemMatchesOutlet)
+      .map((item) => ({
+        id: `virtual-inventory-${item.id}`,
+        inventory_item_id: item.id,
+        depletion_qty: 1,
+        name: item.name,
+        item_name: item.name,
+        category: item.category || 'Drinks',
+        price: Number(item.selling_price || item.price || 0),
+        barcode: item.barcode || null,
+        is_available: true,
+        outlet_id: item.outlet_id || null,
+        template_kind: 'inventory_virtual',
+        _virtual_inventory_item: true
+      }));
+  }, [inventoryItems, itemMatchesOutlet, menuItems]);
+
+  const terminalMenuItems = useMemo(
+    () => [...(menuItems || []), ...virtualInventoryMenuItems],
+    [menuItems, virtualInventoryMenuItems]
   );
 
   const orderStockIssues = useMemo(() => {
@@ -230,10 +285,13 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
 
   useEffect(() => { loadCoreData(); }, [loadCoreData]);
 
-  useEffect(() => { menuItemsRef.current = menuItems; }, [menuItems]);
+  useEffect(() => { menuItemsRef.current = terminalMenuItems; }, [terminalMenuItems]);
   useEffect(() => { selectedOutletRef.current = selectedOutlet; }, [selectedOutlet]);
   useEffect(() => { outletsRef.current = outlets; }, [outlets]);
   useEffect(() => { inventoryItemsRef.current = inventoryItems; }, [inventoryItems]);
+  useEffect(() => {
+    setTaxRate(taxEnabled ? String(settings?.vat_rate || '') : '');
+  }, [taxEnabled, settings?.vat_rate]);
 
   useEffect(() => {
     const handleKeyDown = (event) => {
@@ -252,8 +310,9 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
         const found = (menuItemsRef.current || []).find((item) => String(item.barcode || '') === code && item.is_available !== false);
         if (!found) {
           setBarcodeFlash({ ok: false, message: `Barcode not found: ${code}` });
-        } else if (found.outlet_id && selectedOutletRef.current?.id && found.outlet_id !== selectedOutletRef.current.id) {
-          const outletName = (outletsRef.current || []).find((o) => o.id === found.outlet_id)?.name || 'another outlet';
+        } else if ((found.outlet_id || currentInventoryMap.get(found.inventory_item_id)?.outlet_id) && selectedOutletRef.current?.id && (found.outlet_id || currentInventoryMap.get(found.inventory_item_id)?.outlet_id) !== selectedOutletRef.current.id) {
+          const foundOutletId = found.outlet_id || currentInventoryMap.get(found.inventory_item_id)?.outlet_id;
+          const outletName = (outletsRef.current || []).find((o) => o.id === foundOutletId)?.name || 'another outlet';
           setBarcodeFlash({ ok: false, message: `${found.name} belongs to ${outletName}` });
         } else if (!isOrderableMenuItem(found, currentInventoryMap)) {
           setBarcodeFlash({ ok: false, message: `${found.name} is sold out` });
@@ -283,17 +342,17 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
   }, [customerType, roomsLoaded, loadRoomData]);
 
   const categories = useMemo(() => {
-    const cats = [...new Set(menuItems.map((i) => i.category || 'Other'))];
+    const cats = [...new Set(terminalMenuItems.filter(itemMatchesOutlet).map((i) => i.category || 'Other'))];
     return ['All', ...cats];
-  }, [menuItems]);
+  }, [terminalMenuItems, itemMatchesOutlet]);
+
+  useEffect(() => {
+    if (!categories.includes(activeCategory)) setActiveCategory('All');
+  }, [activeCategory, categories]);
 
   const filteredItems = useMemo(() => {
-    let items = menuItems.filter((i) => i.is_available !== false);
-    if (selectedOutlet) {
-      items = items.filter((i) => !i.outlet_id || i.outlet_id === selectedOutlet.id);
-    } else if (Array.isArray(outletFilter) && outletFilter.length > 0) {
-      items = items.filter((i) => !i.outlet_id || outletFilter.includes(i.outlet_id));
-    }
+    let items = terminalMenuItems.filter((i) => i.is_available !== false);
+    items = items.filter(itemMatchesOutlet);
     if (search) {
       const q = search.toLowerCase();
       items = items.filter((i) =>
@@ -303,7 +362,18 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
     }
     if (activeCategory !== 'All') items = items.filter((i) => (i.category || 'Other') === activeCategory);
     return items;
-  }, [menuItems, search, activeCategory, selectedOutlet, outletFilter]);
+  }, [terminalMenuItems, itemMatchesOutlet, search, activeCategory]);
+
+  const handleOutletChange = (outletId) => {
+    const nextOutlet = outletById.get(outletId) || null;
+    if ((selectedOutlet?.id || '') === (nextOutlet?.id || '')) return;
+    if (cart.length > 0) {
+      setError('Clear the current cart before switching outlets.');
+      return;
+    }
+    setSelectedOutlet(nextOutlet);
+    setError('');
+  };
 
   // ── Cart Operations ────────────────────────────────────────────────────────
   const addToCart = (item) => {
@@ -311,12 +381,23 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
       setError(`${item.name} is sold out on the latest synced stock.`);
       return;
     }
+    const itemOutletId = getEffectiveItemOutletId(item);
+    if (selectedOutlet?.id && itemOutletId && itemOutletId !== selectedOutlet.id) {
+      const outletName = outletById.get(itemOutletId)?.name || 'another outlet';
+      setError(`${item.name} belongs to ${outletName}. Clear the cart and switch outlets first.`);
+      return;
+    }
+    if (!selectedOutlet?.id && itemOutletId) {
+      const nextOutlet = outletById.get(itemOutletId);
+      if (nextOutlet) setSelectedOutlet(nextOutlet);
+    }
+    const itemKey = item._virtual_inventory_item ? `inventory:${item.inventory_item_id}` : `menu:${item.id}`;
     setCart((prev) => {
-      const existing = prev.find((c) => c.menu_item_id === item.id);
+      const existing = prev.find((c) => c._cart_key === itemKey || (!c._cart_key && c.menu_item_id === item.id));
       const candidate = existing
-        ? prev.map((c) => c.menu_item_id === item.id ? { ...c, quantity: c.quantity + 1 } : c)
+        ? prev.map((c) => (c._cart_key === itemKey || (!c._cart_key && c.menu_item_id === item.id)) ? { ...c, quantity: c.quantity + 1 } : c)
         : [...prev, {
-        menu_item_id: item.id, inventory_item_id: item.inventory_item_id || null,
+        _cart_key: itemKey, menu_item_id: item._virtual_inventory_item ? null : item.id, inventory_item_id: item.inventory_item_id || null,
         depletion_qty: item.depletion_qty || 1, item_name: item.name, category: item.category || 'Other',
         quantity: 1, unit_price: item.price || 0, modifiers: [], item_notes: null
       }];
@@ -396,10 +477,10 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
     }
     return buildPosTotals(cartForTotals, {
       discount_total: discount,
-      tax_rate: Number(taxRate) || 0,
+      tax_rate: taxEnabled ? Number(taxRate) || 0 : 0,
       tip_total: Number(tipAmount) || 0
     });
-  }, [cartForTotals, discountValue, taxRate, tipAmount, appliedPromo, applicablePromo]);
+  }, [cartForTotals, discountValue, taxEnabled, taxRate, tipAmount, appliedPromo, applicablePromo]);
 
   const effectivePaymentMethod = customerType === 'room'
     ? 'folio'
@@ -439,6 +520,36 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
 
   const removeSplitPayment = (idx) => {
     setSplitPayments((prev) => prev.length <= 1 ? prev : prev.filter((_, i) => i !== idx));
+  };
+
+  const handleSendTerminalTotal = async () => {
+    setTerminalSending(true);
+    setTerminalMessage('');
+    try {
+      const hw = await window.api.pos.getHardwareSettings().catch(() => ({}));
+      const result = await window.api.pos.sendPaymentTerminalTotal({
+        settings: hw,
+        amount: cartTotals.total,
+        currency: settings?.currency_code || 'BWP',
+        reference: submitIntentRef.current.intentId || `POS-${Date.now()}`,
+        metadata: {
+          cashier_id: selectedStaff?.id || null,
+          outlet_id: selectedOutlet?.id || null,
+          service_mode: serviceMode
+        }
+      });
+      if (result?.success) {
+        const ref = result.approval_code || result.reference || '';
+        if (ref) setPaymentReference(ref);
+        setTerminalMessage(result.message || 'Payment approved by terminal.');
+      } else {
+        setTerminalMessage(result?.error || 'Terminal did not approve the payment.');
+      }
+    } catch (e) {
+      setTerminalMessage(e?.message || 'Could not reach the payment terminal.');
+    } finally {
+      setTerminalSending(false);
+    }
   };
 
   useEffect(() => {
@@ -523,8 +634,8 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
         booking_id: bookingId,
         notes: orderNotes,
         discount_total: Number(discountValue) || 0,
-        tax_rate: Number(taxRate) || 0,
-        tax_total: cartTotals.tax_total,
+        tax_rate: taxEnabled ? Number(taxRate) || 0 : 0,
+        tax_total: taxEnabled ? cartTotals.tax_total : 0,
         tip_total: Number(tipAmount) || 0,
         service_mode: serviceMode,
         table_name: tableName || null,
@@ -567,25 +678,43 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
   };
 
   if (loading) return (
-    <div className="flex min-h-[60vh] items-center justify-center">
-      <div className="h-8 w-8 animate-spin rounded-full border-4 border-emerald-500 border-t-transparent" />
+    <div className="flex h-full min-h-[520px] bg-slate-100">
+      <div className="flex flex-1 flex-col border-r border-slate-200 bg-white p-4 space-y-4">
+        <div className="flex gap-3">
+          <div className="h-11 w-32 animate-pulse rounded-lg bg-slate-200" />
+          <div className="h-11 w-32 animate-pulse rounded-lg bg-slate-200" />
+        </div>
+        <div className="h-12 w-full animate-pulse rounded-lg bg-slate-200" />
+        <div className="flex gap-2">
+          {[1,2,3,4].map((i) => <div key={i} className="h-11 w-20 animate-pulse rounded-lg bg-slate-200" />)}
+        </div>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 flex-1">
+          {[1,2,3,4,5,6,7,8].map((i) => (
+            <div key={i} className="h-28 animate-pulse rounded-lg bg-slate-200" />
+          ))}
+        </div>
+      </div>
+      <div className="w-[440px] bg-slate-50 p-4 space-y-3">
+        <div className="h-12 w-full animate-pulse rounded-lg bg-slate-200" />
+        {[1,2,3].map((i) => <div key={i} className="h-20 w-full animate-pulse rounded-lg bg-slate-200" />)}
+      </div>
     </div>
   );
 
   return (
-    <div className="flex h-[calc(100vh-56px)] bg-slate-100">
+    <div className="flex h-full min-h-[520px] bg-slate-100 overflow-hidden">
       {/* Menu Panel */}
       <div className="flex flex-1 flex-col border-r border-slate-200 bg-white">
         <div className="flex items-center gap-3 border-b border-slate-100 px-4 py-3">
-          <select value={selectedOutlet?.id || ''} onChange={(e) => {
-            const o = outlets.find((x) => x.id === e.target.value);
-            setSelectedOutlet(o || null);
-          }} className="min-h-11 rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold">
+          <select value={selectedOutlet?.id || ''} onChange={(e) => handleOutletChange(e.target.value)} className="min-h-11 rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold">
             <option value="">{outlets.length === 0 ? 'No outlets' : 'All outlets'}</option>
-            {outlets.filter((o) => !outletFilter || outletFilter === null || outletFilter.includes(o.id)).map((o) => (
+            {allowedOutlets.map((o) => (
               <option key={o.id} value={o.id}>{o.name}</option>
             ))}
           </select>
+          <span className="hidden rounded-full bg-slate-100 px-2 py-1 text-[11px] font-bold text-slate-500 xl:inline-flex">
+            {filteredItems.length} shown
+          </span>
           <select value={selectedStaff?.id || ''} onChange={(e) => {
             const s = posStaff.find((x) => x.id === e.target.value);
             setSelectedStaff(s || null);
@@ -612,17 +741,28 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
             </div>
           )}
         </div>
-        <div className="flex gap-2 overflow-x-auto border-b border-slate-100 px-4 py-3">
-          {categories.map((cat) => (
-            <button key={cat} onClick={() => setActiveCategory(cat)}
-              className={`min-h-11 whitespace-nowrap rounded-lg px-4 text-sm font-semibold transition-colors ${activeCategory === cat ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>
-              {cat}
-            </button>
-          ))}
+        <div className="relative border-b border-slate-100">
+          <div className="touch-scroll-x flex gap-2 overflow-x-auto px-4 py-3 scrollbar-hide" style={{ scrollbarWidth: 'none' }}>
+            {categories.map((cat) => (
+              <button key={cat} onClick={() => setActiveCategory(cat)}
+                className={`min-h-11 whitespace-nowrap rounded-lg px-4 text-sm font-semibold transition-colors ${activeCategory === cat ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>
+                {cat}
+              </button>
+            ))}
+          </div>
+          <div className="pointer-events-none absolute right-0 top-0 bottom-0 w-8 bg-gradient-to-l from-white to-transparent" />
         </div>
-        <div className="flex-1 overflow-y-auto p-4">
+        <div className="touch-scroll-y flex-1 overflow-y-auto p-4">
           {filteredItems.length === 0 ? (
-            <p className="py-12 text-center text-sm text-slate-400">No items found</p>
+            <div className="py-12 text-center space-y-2">
+              {menuItems.length > 0 ? (
+                <p className="text-sm text-slate-400">No items available for the selected outlet/category.</p>
+              ) : inventoryItems.length > 0 ? (
+                <p className="text-sm text-amber-600 font-medium">Bar inventory loaded but no POS menu items linked.</p>
+              ) : (
+                <p className="text-sm text-slate-400">No items found. Add menu items in Menu Management.</p>
+              )}
+            </div>
           ) : (
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
               {filteredItems.map((item) => {
@@ -648,15 +788,16 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
       </div>
 
       {/* Cart Panel */}
-      <div className="flex w-[430px] flex-col bg-slate-50">
+      <div className="flex min-h-0 w-[440px] flex-col bg-slate-50">
         <div className="flex items-center justify-between border-b border-slate-200 bg-white px-4 py-3">
           <div className="flex items-center gap-2">
             <ShoppingCart className="h-5 w-5 text-emerald-600" />
             <span className="font-bold text-slate-800">Order ({cart.length})</span>
           </div>
-          {cart.length > 0 && <button onClick={() => setCart([])} className="min-h-10 rounded-lg px-3 text-sm font-semibold text-red-500 hover:bg-red-50 hover:text-red-700">Clear All</button>}
+          {cart.length > 0 && <button onClick={() => setCart([])} className="min-h-10 rounded-lg px-3 text-xs font-semibold text-red-400 hover:bg-red-50 hover:text-red-600 transition-colors">Clear All</button>}
         </div>
-        <div className="flex-1 overflow-y-auto px-4 py-3">
+        <div className="touch-scroll-y min-h-[220px] flex-1 overflow-y-auto">
+          <div className="px-4 py-3">
           {cart.length === 0 ? (
             <p className="py-8 text-center text-sm text-slate-400">No items in cart</p>
           ) : (
@@ -671,7 +812,7 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
                         <p className="mt-1 text-xs font-medium text-amber-700">{item.modifiers.map((m) => `${m.name}${Number(m.price || 0) ? ` +${currency} ${fmt(m.price)}` : ''}`).join(', ')}</p>
                       )}
                     </div>
-                    <button onClick={() => removeFromCart(idx)} className="flex h-10 w-10 items-center justify-center rounded-lg text-slate-400 hover:bg-red-50 hover:text-red-500"><X className="h-5 w-5" /></button>
+                    <button onClick={() => removeFromCart(idx)} className="flex h-8 w-8 items-center justify-center rounded-md text-slate-300 hover:bg-red-50 hover:text-red-500 transition-colors"><X className="h-4 w-4" /></button>
                   </div>
                   <div className="mt-3 flex items-center justify-between">
                     <div className="flex items-center gap-2">
@@ -688,10 +829,10 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
               ))}
             </div>
           )}
-        </div>
+          </div>
 
-        {/* Order Config */}
-        <div className="space-y-3 border-t border-slate-200 bg-white px-4 py-3">
+        {/* Order Config - scrolls with items */}
+        <div className="touch-scroll-y max-h-[46vh] overflow-y-auto border-t border-slate-200 bg-white px-4 py-3 space-y-2">
           <div className="flex gap-2">
             <select value={customerType} onChange={(e) => setCustomerType(e.target.value)} className="min-h-11 flex-1 rounded-lg border border-slate-200 px-3 text-sm font-semibold">
               <option value="walkin">Walk-in</option>
@@ -703,8 +844,18 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
               <option value="room">Room Service</option>
             </select>
           </div>
-          {customerType === 'walkin' && (
-            <input type="text" value={walkInName} onChange={(e) => setWalkInName(e.target.value)} placeholder="Guest name (optional)" className="min-h-11 w-full rounded-lg border border-slate-200 px-3 text-sm" />
+          <button
+            type="button"
+            onClick={() => setDetailsExpanded((value) => !value)}
+            className="flex min-h-10 w-full items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm font-bold text-slate-700 hover:bg-slate-100"
+          >
+            <span>Order details</span>
+            <span className="text-xs text-slate-400">
+              {detailsExpanded ? 'Hide' : [walkInName, orderNotes, discountValue && `Discount ${currency} ${discountValue}`, tipAmount && `Tip ${currency} ${tipAmount}`].filter(Boolean).join(' · ') || 'Add notes, guest, discount, tip'}
+            </span>
+          </button>
+          {detailsExpanded && customerType === 'walkin' && (
+            <input type="text" value={walkInName} onChange={(e) => setWalkInName(e.target.value)} placeholder="Guest name (optional)" className="min-h-10 w-full rounded-lg border border-slate-200 px-3 text-sm" />
           )}
           {customerType === 'room' && (
             <select value={selectedRoom} onChange={(e) => setSelectedRoom(e.target.value)} className="min-h-11 w-full rounded-lg border border-slate-200 px-3 text-sm">
@@ -715,32 +866,34 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
               })}
             </select>
           )}
-          {serviceMode === 'table' && (
-            <input type="text" value={tableName} onChange={(e) => setTableName(e.target.value)} placeholder="Table name/number" className="min-h-11 w-full rounded-lg border border-slate-200 px-3 text-sm" />
+          {detailsExpanded && serviceMode === 'table' && (
+            <input type="text" value={tableName} onChange={(e) => setTableName(e.target.value)} placeholder="Table name/number" className="min-h-10 w-full rounded-lg border border-slate-200 px-3 text-sm" />
           )}
           {/* Waiter Selection */}
-          {serviceMode === 'table' && waiters.length > 0 && (
+          {detailsExpanded && serviceMode === 'table' && waiters.length > 0 && (
             <select value={selectedWaiter?.id || ''} onChange={(e) => { const w = waiters.find((x) => x.id === e.target.value); setSelectedWaiter(w || null); }}
-              className="min-h-11 w-full rounded-lg border border-slate-200 px-3 text-sm">
+              className="min-h-10 w-full rounded-lg border border-slate-200 px-3 text-sm">
               <option value="">Select waiter...</option>
               {waiters.map((w) => <option key={w.id} value={w.id}>{w.name || w.email}</option>)}
             </select>
           )}
-          <input type="text" value={orderNotes} onChange={(e) => setOrderNotes(e.target.value)} placeholder="Order notes..." className="min-h-11 w-full rounded-lg border border-slate-200 px-3 text-sm" />
-          <div className="grid grid-cols-2 gap-2">
+          {detailsExpanded && <input type="text" value={orderNotes} onChange={(e) => setOrderNotes(e.target.value)} placeholder="Order notes..." className="min-h-10 w-full rounded-lg border border-slate-200 px-3 text-sm" />}
+          {detailsExpanded && <div className={`grid gap-2 ${taxEnabled ? 'grid-cols-2' : 'grid-cols-1'}`}>
             <div>
               <label className="text-xs font-semibold text-slate-500">Discount ({currency})</label>
-              <input type="number" value={discountValue} onChange={(e) => setDiscountValue(e.target.value)} placeholder="0" className="min-h-11 w-full rounded-lg border border-slate-200 px-3 text-sm" min="0" />
+              <input type="number" value={discountValue} onChange={(e) => setDiscountValue(e.target.value)} placeholder="0" className="min-h-10 w-full rounded-lg border border-slate-200 px-3 text-sm" min="0" />
             </div>
-            <div>
-              <label className="text-xs font-semibold text-slate-500">Tax Rate (%)</label>
-              <input type="number" value={taxRate} onChange={(e) => setTaxRate(e.target.value)} placeholder="0" className="min-h-11 w-full rounded-lg border border-slate-200 px-3 text-sm" min="0" max="100" />
-            </div>
-          </div>
-          <div>
+            {taxEnabled && (
+              <div>
+                <label className="text-xs font-semibold text-slate-500">Tax/VAT Rate (%)</label>
+                <input type="number" value={taxRate} onChange={(e) => setTaxRate(e.target.value)} placeholder="0" className="min-h-10 w-full rounded-lg border border-slate-200 px-3 text-sm" min="0" max="100" />
+              </div>
+            )}
+          </div>}
+          {detailsExpanded && <div>
             <label className="text-xs font-semibold text-slate-500">Tip ({currency})</label>
-            <input type="number" value={tipAmount} onChange={(e) => setTipAmount(e.target.value)} placeholder="0" className="min-h-11 w-full rounded-lg border border-slate-200 px-3 text-sm" min="0" />
-          </div>
+            <input type="number" value={tipAmount} onChange={(e) => setTipAmount(e.target.value)} placeholder="0" className="min-h-10 w-full rounded-lg border border-slate-200 px-3 text-sm" min="0" />
+          </div>}
           {applicablePromo && (
             <button onClick={() => setAppliedPromo(appliedPromo ? null : applicablePromo)}
               className={`min-h-11 w-full rounded-lg border px-3 text-sm font-semibold ${appliedPromo ? 'border-emerald-300 bg-emerald-50 text-emerald-700' : 'border-amber-300 bg-amber-50 text-amber-700'}`}>
@@ -748,13 +901,14 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
             </button>
           )}
         </div>
+        </div>
 
-        {/* Totals & Payment */}
-        <div className="space-y-3 border-t border-slate-200 bg-white px-4 py-3">
+        {/* Totals & Payment - Fixed at bottom */}
+        <div className="shrink-0 space-y-3 border-t border-slate-200 bg-white px-4 py-3">
           {Number(cartTotals.discount_total) > 0 && (
             <div className="flex justify-between text-xs text-emerald-600"><span>Discount</span><span>-{currency} {fmt(cartTotals.discount_total)}</span></div>
           )}
-          {Number(cartTotals.tax_total) > 0 && (
+          {taxEnabled && Number(cartTotals.tax_total) > 0 && (
             <div className="flex justify-between text-xs text-slate-500"><span>Tax ({cartTotals.tax_rate}%)</span><span>{currency} {fmt(cartTotals.tax_total)}</span></div>
           )}
           {Number(cartTotals.tip_total) > 0 && (
@@ -778,16 +932,25 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
               </div>
               {paymentMode === 'single' ? (
                 <>
-                  <div className="grid grid-cols-3 gap-2">
+                  <div className="grid grid-cols-3 gap-1.5">
                     {QUICK_PAYMENT_METHODS.map((m) => (
                       <button key={m.value} onClick={() => setPaymentMethod(m.value)}
-                        className={`min-h-12 rounded-lg border px-2 text-xs font-black ${paymentMethod === m.value ? 'border-emerald-600 bg-emerald-50 text-emerald-700' : 'border-slate-200 bg-white text-slate-700'}`}>
+                        className={`min-h-12 rounded-lg border px-2 py-2 text-[11px] font-bold transition-all ${paymentMethod === m.value ? 'border-emerald-600 bg-emerald-50 text-emerald-700 shadow-sm' : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300'}`}>
                         {m.label}
                       </button>
                     ))}
                   </div>
                   {(paymentMethod === 'card' || paymentMethod === 'bank_transfer' || paymentMethod === 'other') && (
                     <input type="text" value={paymentReference} onChange={(e) => setPaymentReference(e.target.value)} placeholder="Reference / approval code" className="min-h-11 w-full rounded-lg border border-slate-200 px-3 text-sm" />
+                  )}
+                  {paymentMethod === 'card' && (
+                    <div className="space-y-1">
+                      <button onClick={handleSendTerminalTotal} disabled={terminalSending || cart.length === 0}
+                        className="min-h-11 w-full rounded-lg border border-blue-200 bg-blue-50 px-3 text-sm font-bold text-blue-700 hover:bg-blue-100 disabled:opacity-50">
+                        {terminalSending ? 'Sending to terminal...' : 'Send Total to Card Terminal'}
+                      </button>
+                      {terminalMessage && <p className="text-xs font-medium text-slate-500">{terminalMessage}</p>}
+                    </div>
                   )}
                 </>
               ) : (
@@ -830,7 +993,7 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
             <button onClick={() => window.api.pos.openCashDrawer(settings)} className="flex h-14 w-14 items-center justify-center rounded-lg border border-slate-200 bg-slate-100 text-slate-600 hover:bg-slate-200" title="Open Cash Drawer">
               <Banknote className="h-5 w-5" />
             </button>
-            <button onClick={handleSubmitOrder} disabled={submitting || cart.length === 0 || !selectedStaff || orderStockIssues.length > 0}
+            <button onClick={handleSubmitOrder} disabled={submitting || cart.length === 0 || orderStockIssues.length > 0}
               className="min-h-14 flex-1 rounded-lg bg-emerald-600 px-4 text-lg font-black text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50">
               {submitting ? 'Processing...' : `Pay ${currency} ${fmt(cartTotals.total)}`}
             </button>

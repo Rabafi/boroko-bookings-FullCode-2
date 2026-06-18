@@ -396,17 +396,17 @@ export async function getAllInventoryPurchases() {
   }
 }
 
-export async function adjustInventoryStock(itemId, delta, notes) {
+export async function adjustInventoryStock(itemId, delta, notes, operationId = null) {
   const numericDelta = Number(delta);
   if (!Number.isFinite(numericDelta) || numericDelta === 0) {
     return { success: false, error: 'Enter a non-zero stock adjustment.' };
   }
+  const adjustmentId = operationId || randomUUID();
   const cached = readCache('inventory-items');
   const existing = cached.find((row) => row.id === itemId);
 
   if (!state.isOnline) {
     if (!existing) return { success: false, error: 'Inventory item not found on this computer.' };
-    const adjustmentId = randomUUID();
     const newStock = Math.max(0, normalizeStockNumber(existing.current_stock) + numericDelta);
     writeCache('inventory-items', cached.map((row) => row.id === itemId ?
     {
@@ -435,7 +435,8 @@ export async function adjustInventoryStock(itemId, delta, notes) {
       p_item_id: itemId,
       p_lodge_id: state.lodgeId,
       p_delta: numericDelta,
-      p_notes: notes || null
+      p_notes: notes || null,
+      p_adjustment_id: adjustmentId
     }, null, {
       _queue_id: `inventory-adjust-${adjustmentId}`
     });
@@ -446,7 +447,8 @@ export async function adjustInventoryStock(itemId, delta, notes) {
     p_item_id: itemId,
     p_lodge_id: state.lodgeId,
     p_delta: numericDelta,
-    p_notes: notes || null
+    p_notes: notes || null,
+    p_adjustment_id: adjustmentId
   });
   if (error) throw new Error(error.message);
   if (!result?.success) throw new Error(result?.error || 'Could not adjust inventory stock');
@@ -461,6 +463,7 @@ export async function adjustInventoryStock(itemId, delta, notes) {
     // Continue anyway — the backend state is correct, cache is secondary
   }
   upsertLocalInventoryMovement({
+    id: adjustmentId,
     item_id: itemId,
     movement_type: numericDelta >= 0 ? 'adjustment_increase' : 'adjustment_decrease',
     quantity: numericDelta,
@@ -468,7 +471,7 @@ export async function adjustInventoryStock(itemId, delta, notes) {
     total_cost: numericDelta * Number(existing?.latest_unit_cost || 0),
     notes: notes || null,
     reference_type: 'inventory_adjustment',
-    reference_id: result?.id || null,
+    reference_id: adjustmentId,
     source: 'adjustment'
   });
   return { success: true, new_stock: result?.new_stock };

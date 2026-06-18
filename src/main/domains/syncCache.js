@@ -69,7 +69,11 @@ export function patchCachedBookingSyncState(bookingId, patch = {}) {
   }
 
   const existing = cachedBookings[index] || {};
-  if (existing._sync_state === 'synced' && patch._sync_state !== 'sync_failed') {
+  if (
+    existing._sync_state === 'synced' &&
+    !['failed', 'sync_failed', 'manual_review_required'].includes(patch._sync_state) &&
+    patch._pending_sync !== true
+  ) {
     return false;
   }
 

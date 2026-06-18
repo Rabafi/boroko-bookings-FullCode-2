@@ -195,7 +195,7 @@ const api = {
     get: () => ipcRenderer.invoke('settings:get'),
     save: (data) => ipcRenderer.invoke('settings:save', data),
     getDiagnostics: (expectedLodgeId) => ipcRenderer.invoke('settings:getDiagnostics', expectedLodgeId),
-    getSystemHealth: () => ipcRenderer.invoke('settings:getSystemHealth'),
+    getSystemHealth: (options) => ipcRenderer.invoke('settings:getSystemHealth', options),
     relinkLodge: (lodgeId) => ipcRenderer.invoke('settings:relinkLodge', lodgeId),
     resetToNewLodge: () => ipcRenderer.invoke('settings:resetToNewLodge')
   },
@@ -310,7 +310,7 @@ const api = {
     deleteItem: (id) => ipcRenderer.invoke('inventory:deleteItem', id),
     addPurchase: (data) => ipcRenderer.invoke('inventory:addPurchase', data),
     getPurchases: (itemId) => ipcRenderer.invoke('inventory:getPurchases', itemId),
-    adjustStock: (itemId, delta, notes, managerPin) => ipcRenderer.invoke('inventory:adjustStock', itemId, delta, notes, managerPin),
+    adjustStock: (itemId, delta, notes, managerPin, adjustmentId) => ipcRenderer.invoke('inventory:adjustStock', itemId, delta, notes, managerPin, adjustmentId),
     getMovements: (filters) => ipcRenderer.invoke('inventory:getMovements', filters),
     getLowStock: () => ipcRenderer.invoke('inventory:getLowStock'),
     getStocktakes: (limit) => ipcRenderer.invoke('inventory:getStocktakes', limit),
@@ -382,6 +382,7 @@ const api = {
     deleteSupportTicket: (id) => ipcRenderer.invoke('admin:deleteSupportTicket', id),
     // Activity logs
     getActivityLogs: (filters) => ipcRenderer.invoke('admin:getActivityLogs', filters),
+    getAuditSummary: (filters) => ipcRenderer.invoke('admin:getAuditSummary', filters),
     // Company stats
     getCompanyStats: (lodgeId) => ipcRenderer.invoke('admin:getCompanyStats', lodgeId),
     // Billing
@@ -411,7 +412,51 @@ const api = {
     updateExpense: (id, data) => ipcRenderer.invoke('admin:updateExpense', id, data),
     deleteExpense: (id) => ipcRenderer.invoke('admin:deleteExpense', id),
     getMarketingLeads: (filters) => ipcRenderer.invoke('admin:getMarketingLeads', filters),
-    updateMarketingLeadStatus: (id, status) => ipcRenderer.invoke('admin:updateMarketingLeadStatus', id, status)
+    updateMarketingLeadStatus: (id, status) => ipcRenderer.invoke('admin:updateMarketingLeadStatus', id, status),
+    updateLeadCrm: (id, fields) => ipcRenderer.invoke('admin:updateLeadCrm', id, fields),
+    getSalesPipelineSummary: () => ipcRenderer.invoke('admin:getSalesPipelineSummary'),
+    exportExcel: (payload) => ipcRenderer.invoke('admin:exportExcel', payload),
+    exportPdf: (payload) => ipcRenderer.invoke('admin:exportPdf', payload),
+    createNotification: (payload) => ipcRenderer.invoke('admin:createNotification', payload),
+    getNotifications: (filters) => ipcRenderer.invoke('admin:getNotifications', filters),
+    getUnreadCount: () => ipcRenderer.invoke('admin:getUnreadCount'),
+    markNotificationsRead: (ids) => ipcRenderer.invoke('admin:markNotificationsRead', ids),
+    cleanupNotifications: (days) => ipcRenderer.invoke('admin:cleanupNotifications', days),
+    getFleetHealthRollup: () => ipcRenderer.invoke('admin:getFleetHealthRollup'),
+    getFleetHealthSummary: () => ipcRenderer.invoke('admin:getFleetHealthSummary'),
+    getScheduledReleases: () => ipcRenderer.invoke('admin:getScheduledReleases'),
+    expireOverdueFeatures: () => ipcRenderer.invoke('admin:expireOverdueFeatures'),
+    // Notification Automation
+    getNotificationRules: () => ipcRenderer.invoke('admin:getNotificationRules'),
+    upsertNotificationRule: (rule) => ipcRenderer.invoke('admin:upsertNotificationRule', rule),
+    evaluateRule: (ruleKey) => ipcRenderer.invoke('admin:evaluateRule', ruleKey),
+    evaluateAllRules: () => ipcRenderer.invoke('admin:evaluateAllRules'),
+    getNotificationEvents: (opts) => ipcRenderer.invoke('admin:getNotificationEvents', opts),
+    getNotificationEventSummary: () => ipcRenderer.invoke('admin:getNotificationEventSummary'),
+    markEventsDispatched: (eventIds) => ipcRenderer.invoke('admin:markEventsDispatched', eventIds),
+    // Accounting
+    getMrrSummary: () => ipcRenderer.invoke('admin:getMrrSummary'),
+    getRevenueSummary: (days) => ipcRenderer.invoke('admin:getRevenueSummary', days),
+    getLodgeFinancialSummary: () => ipcRenderer.invoke('admin:getLodgeFinancialSummary'),
+    getCollectionsQueue: () => ipcRenderer.invoke('admin:getCollectionsQueue'),
+    getRevenueByMethod: (days) => ipcRenderer.invoke('admin:getRevenueByMethod', days),
+    // Task Center
+    getAdminToday: () => ipcRenderer.invoke('admin:getAdminToday'),
+    // Global Search
+    globalSearch: (query, limit) => ipcRenderer.invoke('admin:globalSearch', query, limit),
+    // Bulk Actions
+    bulkUpdateStatus: (entityType, entityIds, newStatus) => ipcRenderer.invoke('admin:bulkUpdateStatus', entityType, entityIds, newStatus),
+    bulkDelete: (entityType, entityIds) => ipcRenderer.invoke('admin:bulkDelete', entityType, entityIds),
+    bulkNotify: (entityType, entityIds, message) => ipcRenderer.invoke('admin:bulkNotify', entityType, entityIds, message),
+    // Deep Fleet Health + App Update Control
+    pushUpdateNotification: (version, message, force) => ipcRenderer.invoke('admin:pushUpdateNotification', version, message, force),
+    getSyncQueueStatus: () => ipcRenderer.invoke('admin:getSyncQueueStatus'),
+    // Release Rollout Control
+    createRelease: (release) => ipcRenderer.invoke('admin:createRelease', release),
+    updateRelease: (version, updates) => ipcRenderer.invoke('admin:updateRelease', version, updates),
+    checkUpdateAvailability: (currentVersion, deviceId) => ipcRenderer.invoke('admin:checkUpdateAvailability', currentVersion, deviceId),
+    getReleases: () => ipcRenderer.invoke('admin:getReleases'),
+    getSurfaceIntelligence: () => ipcRenderer.invoke('admin:getSurfaceIntelligence')
   },
   conference: {
     getAll: (start, end) => ipcRenderer.invoke('conference:getAll', start, end),

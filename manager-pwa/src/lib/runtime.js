@@ -7,6 +7,8 @@ const NOTIFICATION_LIMIT = 40
 const DISMISSED_NOTIFICATION_LIMIT = 120
 const SEEN_NOTIFICATION_VERSION_LIMIT = 250
 const TRUSTED_DEVICE_DAYS = 365
+const DEFAULT_ONLINE_CACHE_MAX_AGE_MS = 60_000
+const PWA_HEALTH_PUBLISH_MIN_MS = 10 * 60_000
 
 function normalizeNotificationPart(value) {
   return String(value ?? '')
@@ -141,8 +143,18 @@ export function mutateCachedList(lodgeId, key, updater, fallback = []) {
   return next
 }
 
-export async function queryWithCache({ lodgeId, key, fetcher, fallback = [], forceFresh = false }) {
+function cacheAgeMs(entry) {
+  const updatedAtMs = Date.parse(entry?.updatedAt || '')
+  return Number.isFinite(updatedAtMs) ? Date.now() - updatedAtMs : Infinity
+}
+
+export async function queryWithCache({ lodgeId, key, fetcher, fallback = [], forceFresh = false, maxAgeMs = DEFAULT_ONLINE_CACHE_MAX_AGE_MS }) {
   const cached = readCacheEntry(lodgeId, key, null)
+  const onlineCacheMs = Math.max(Number(maxAgeMs) || 0, 0)
+
+  if (!forceFresh && cached && onlineCacheMs > 0 && cacheAgeMs(cached) <= onlineCacheMs) {
+    return cached.data
+  }
 
   if (!forceFresh && typeof navigator !== 'undefined' && navigator.onLine === false && cached) {
     return cached.data
@@ -513,7 +525,13 @@ function getPwaDeviceId() {
 export async function publishPwaHealth(lodgeId, supabase, summary) {
   if (!lodgeId || !supabase) return
   try {
+    const metaKey = scoped(META_PREFIX, lodgeId, 'last-pwa-health-publish')
+    const previous = readLocalJson(metaKey, null)
+    const previousAtMs = Date.parse(previous?.at || '')
+    if (Number.isFinite(previousAtMs) && Date.now() - previousAtMs < PWA_HEALTH_PUBLISH_MIN_MS) return
+
     const deviceId = getPwaDeviceId()
+    writeLocalJson(metaKey, { at: new Date().toISOString() })
     await supabase.rpc('upsert_device_health', {
       p_lodge_id: lodgeId,
       p_device_id: deviceId,

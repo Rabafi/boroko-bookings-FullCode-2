@@ -163,12 +163,19 @@ export default function Control() {
   useEffect(() => {
     if (pwaDisabled) return undefined
     load()
-    const interval = window.setInterval(load, 60_000)
+    const interval = window.setInterval(() => {
+      if (document.visibilityState !== 'hidden') load()
+    }, 5 * 60_000)
+    const handleVisible = () => {
+      if (document.visibilityState === 'visible') load()
+    }
     const unsubscribe = subscribeRuntimeEvent('boroko:pwa-queue', load)
     const unsubscribeNotif = subscribeRuntimeEvent('boroko:pwa-notification-settings', setNotifications)
     const unsubscribeIssues = subscribeRuntimeEvent('boroko:pwa-issues', load)
+    document.addEventListener('visibilitychange', handleVisible)
     return () => {
       window.clearInterval(interval)
+      document.removeEventListener('visibilitychange', handleVisible)
       unsubscribe?.()
       unsubscribeNotif?.()
       unsubscribeIssues?.()

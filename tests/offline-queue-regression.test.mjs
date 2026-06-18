@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict'
-import { readFile, readdir } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+import { state } from '../src/main/state.js'
+import { writeSyncQueue } from '../src/main/domains/syncStore.js'
 
 async function read(path) {
   try {
@@ -27,6 +31,34 @@ async function readTree(path) {
 }
 
 async function run() {
+  const originalCacheDir = state.cacheDir
+  const durabilityRoot = await mkdtemp(path.join(os.tmpdir(), 'boroko-sync-durability-'))
+  try {
+    state.cacheDir = durabilityRoot
+    writeSyncQueue([{ type: 'rpc', table: 'update_booking_payment', data: { p_idempotency_key: 'test-payment-key' } }])
+    const savedQueue = JSON.parse(await readFile(path.join(durabilityRoot, 'sync-queue.json'), 'utf8'))
+    assert.equal(savedQueue.length, 1)
+    assert.equal(savedQueue[0].data.p_idempotency_key, 'test-payment-key')
+
+    const invalidCacheRoot = path.join(durabilityRoot, 'not-a-directory')
+    await writeFile(invalidCacheRoot, 'block directory creation', 'utf8')
+    state.cacheDir = invalidCacheRoot
+    const originalConsoleError = console.error
+    console.error = () => {}
+    try {
+      assert.throws(
+        () => writeSyncQueue([]),
+        /Sync queue write failed:/,
+        'queue persistence failures must propagate to the caller'
+      )
+    } finally {
+      console.error = originalConsoleError
+    }
+  } finally {
+    state.cacheDir = originalCacheDir
+    await rm(durabilityRoot, { recursive: true, force: true })
+  }
+
   const database = [
     await read('src/main/database.js'),
     ...(await readTree('src/main/domains'))
@@ -55,10 +87,10 @@ async function run() {
   assert.match(database, /failed:\s*failed\.length/)
   assert.match(database, /syncInProgress/)
   assert.match(database, /replayAuthReady/)
-  assert.match(database, /const CONNECTIVITY_CHECK_INTERVAL_MS = 3000/)
+  assert.match(database, /const CONNECTIVITY_CHECK_INTERVAL_MS = 60000/)
   assert.match(database, /const CONNECTIVITY_PROBE_TIMEOUT_MS = 10000/)
   assert.match(database, /const CONNECTIVITY_OFFLINE_FAILURE_THRESHOLD = 3/)
-  assert.match(database, /const PERIODIC_SYNC_INTERVAL_MS = 15000/)
+  assert.match(database, /const PERIODIC_SYNC_INTERVAL_MS = 120000/)
   assert.match(database, /setTimeout\(\(\) => ctrl\.abort\(\), CONNECTIVITY_PROBE_TIMEOUT_MS\)/)
   assert.match(database, /connectivityCheckInProgress/)
   assert.match(database, /hasPendingSync/)
@@ -118,7 +150,7 @@ async function run() {
   assert.match(bookingsUi, /Pending Sync/)
   assert.match(bookingsUi, /Sync Failed/)
   assert.match(bookingsUi, /Changes are queued and will sync when the app is online\./)
-  assert.match(bookingsUi, /Payment saved locally — will sync when online/)
+  assert.match(bookingsUi, /Displayed balance is an estimate until Supabase confirms the payment/)
   assert.match(bookingsUi, /const fmtBkNum = \(b\) => b\.invoice_number \|\| b\._local_invoice_number \|\| \(b\._pending_sync \? 'PENDING' : '—'\)/)
   assert.match(bookingsUi, /const isOfflineCreatedPendingBooking = booking\?\._pending_sync && booking\?\._sync_created_offline/)
   assert.match(bookingsUi, /status === 'cancelled' && isFinanciallySyncBlocked\(id\) && !isOfflineCreatedPendingBooking/)

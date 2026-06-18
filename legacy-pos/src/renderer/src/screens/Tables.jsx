@@ -65,8 +65,10 @@ export default function Tables({ user, settings, isOnline }) {
       </div>
 
       {loading ? (
-        <div className="flex py-12 justify-center">
-          <div className="h-8 w-8 animate-spin rounded-full border-4 border-emerald-500 border-t-transparent" />
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+          {[1,2,3,4,5,6].map((i) => (
+            <div key={i} className="h-24 animate-pulse rounded-xl border-2 border-slate-200 bg-white" />
+          ))}
         </div>
       ) : (
         <div className="space-y-6">

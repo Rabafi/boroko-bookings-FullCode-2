@@ -1,6 +1,6 @@
 {
   "name": "boroko-pos-legacy",
-  "version": "1.0.0",
+  "version": "1.0.3",
   "type": "module",
   "description": "Boroko POS Legacy for Windows Embedded POSReady 7",
   "author": {
@@ -14,6 +14,14 @@
     "preview": "electron-vite preview",
     "dist": "npm run build && electron-builder --win nsis --publish never",
     "dist:dir": "npm run build && electron-builder --win dir --publish never",
+    "dist:publish": "npm run build && electron-builder --win nsis --publish always",
+    "version:patch": "npm version patch --no-git-tag-version",
+    "version:minor": "npm version minor --no-git-tag-version",
+    "version:major": "npm version major --no-git-tag-version",
+    "release:patch": "node ./scripts/release.mjs patch",
+    "release:minor": "node ./scripts/release.mjs minor",
+    "release:major": "node ./scripts/release.mjs major",
+    "release:publish": "node ./scripts/release.mjs publish",
     "test": "node ./tests/legacy-pos-regression.test.mjs",
     "db:probe": "node ./scripts/probe-database-contract.mjs"
   },
@@ -22,11 +30,12 @@
     "bcryptjs": "^2.4.3",
     "cross-fetch": "^3.2.0",
     "dotenv": "^17.4.2",
+    "electron-updater": "^6.8.9",
     "lucide-react": "^0.344.0",
     "react": "18.2.0",
     "react-dom": "18.2.0",
     "react-router-dom": "^6.22.0",
-    "ws": "^8.18.0"
+    "ws": "^8.21.0"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.2.0",
@@ -44,6 +53,11 @@
     "asar": true,
     "artifactName": "Boroko-POS-Legacy-${version}-${arch}.${ext}",
     "icon": "src/main/assets/icon.ico",
+    "publish": {
+      "provider": "github",
+      "owner": "Rabafi",
+      "repo": "boroko-pos-legacy-releases"
+    },
     "win": {
       "target": [
         {

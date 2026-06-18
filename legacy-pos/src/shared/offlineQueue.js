@@ -13,9 +13,10 @@ export function createQueueItem({
   payload,
   entityType,
   entityId,
-  dependsOn = null
+  dependsOn = null,
+  id: stableId = null
 }) {
-  const id = `pos-${entityType}-${entityId || randomUUID()}`;
+  const id = stableId || `${entityType}-${entityId || randomUUID()}`;
   return {
     id,
     type: 'rpc',
@@ -35,7 +36,7 @@ export function createQueueItem({
 export function isQueueItemReady(item, allItems) {
   if (!item.dependsOn) return true;
   const dependency = allItems.find((i) => i.id === item.dependsOn);
-  if (!dependency) return true;
+  if (!dependency) return false;
   return dependency.status === 'synced';
 }
 

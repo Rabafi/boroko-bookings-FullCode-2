@@ -9,6 +9,7 @@ export const FINANCIAL_SYNC_TABLES = new Set([
   'delete_booking_charge',
   'approve_booking_refund',
   'create_pos_order',
+  'create_pos_partial_return_with_pin',
   'void_pos_order',
   'approve_pos_void_with_pin',
   'upsert_pos_cashup',

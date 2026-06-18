@@ -1,5 +1,7 @@
 node_modules
 dist
+legacy-pos/dist-locked/
+legacy-pos/dist-auth-session-fix-local/
 out
 .env
 .env.local

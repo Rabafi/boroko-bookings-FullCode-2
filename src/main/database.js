@@ -3,7 +3,9 @@ export {
   getSupportBundle,
   getOfflineSafetyData,
   publishDeviceHealth,
-  getDeviceHealthRollup
+  getDeviceHealthRollup,
+  getFleetHealthRollup,
+  getFleetHealthSummary
 } from './domains/health.js'
 
 // FACADE ONLY.
@@ -326,12 +328,57 @@ export {
   addSupportTicketMessage,
   deleteSupportTicket,
   getActivityLogs,
+  getAuditSummary,
+  logAdminActivity,
+  getScheduledReleases,
+  expireOverdueFeatures,
   getCompanyStats,
   updateLicenseBilling,
   getOverdueLicenses,
   getMarketingLeads,
-  updateMarketingLeadStatus
+  updateMarketingLeadStatus,
+  updateLeadCrm,
+  getSalesPipelineSummary
 } from './domains/admin.js'
+export {
+  createNotification,
+  getNotifications,
+  getUnreadCount,
+  markRead as markNotificationsRead,
+  cleanup as cleanupNotifications
+} from './domains/notifications.js'
+export {
+  getMrrSummary,
+  getRevenueSummary,
+  getLodgeFinancialSummary
+} from './domains/accounting.js'
+export {
+  getCollectionsQueue,
+  getRevenueByMethod
+} from './domains/accounting.js'
+export {
+  getNotificationRules,
+  upsertNotificationRule,
+  evaluateRule,
+  evaluateAllRules,
+  getNotificationEvents,
+  getNotificationEventSummary,
+  markEventsDispatched
+} from './domains/automation.js'
+export {
+  getAdminToday,
+  globalSearch,
+  bulkUpdateStatus,
+  bulkDelete,
+  bulkNotify,
+  pushUpdateNotification,
+  getSyncQueueStatus,
+  createRelease,
+  updateRelease,
+  checkUpdateAvailability,
+  getReleases,
+  getSurfaceIntelligence
+} from './domains/taskcenter.js'
 export {
   getFinancialAuditLog,
   getFinancialReconciliation,

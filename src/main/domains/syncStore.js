@@ -20,6 +20,45 @@ function quarantineBadJsonFile(filePath, reason = 'corrupt JSON') {
   }
 }
 
+function replaceFileSync(tmpPath, filePath, label = 'file') {
+  let lastError = null;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      fs.renameSync(tmpPath, filePath);
+      return;
+    } catch (renameError) {
+      lastError = renameError;
+      try {
+        fs.copyFileSync(tmpPath, filePath);
+        const destinationFd = fs.openSync(filePath, 'r');
+        try {
+          fs.fsyncSync(destinationFd);
+        } finally {
+          fs.closeSync(destinationFd);
+        }
+        try {fs.unlinkSync(tmpPath);} catch {/* keep recovery copy if unlink is blocked */}
+        return;
+      } catch (copyError) {
+        lastError = copyError;
+      }
+    }
+  }
+  throw new Error(`${label} replace failed: ${lastError?.message || 'unknown error'}`);
+}
+
+function writeJsonFileDurable(filePath, value, label) {
+  const tmpPath = filePath + '.tmp';
+  const serialized = JSON.stringify(value, null, 2);
+  const tmpFd = fs.openSync(tmpPath, 'w');
+  try {
+    fs.writeFileSync(tmpFd, serialized, 'utf-8');
+    fs.fsyncSync(tmpFd);
+  } finally {
+    fs.closeSync(tmpFd);
+  }
+  replaceFileSync(tmpPath, filePath, label);
+}
+
 function normalizeQueueRows(parsed, scope = 'sync-queue') {
   const rows = Array.isArray(parsed) ?
   parsed :
@@ -61,13 +100,10 @@ export function readSyncQueue() {
   // a crash-interrupted renameSync. Prefer it — it may contain queued financial
   // operations (payments, bookings) that would otherwise be lost permanently.
   if (fs.existsSync(tmpPath)) {
+    let tmpData;
     try {
-      const tmpData = JSON.parse(fs.readFileSync(tmpPath, 'utf-8'));
-      fs.renameSync(tmpPath, filePath);
-      console.warn('[Sync Queue] Crash-recovery: promoted sync-queue.tmp to main file');
-      return normalizeQueueRows(tmpData, 'sync-queue');
+      tmpData = JSON.parse(fs.readFileSync(tmpPath, 'utf-8'));
     } catch (error) {
-      // .tmp is corrupt — discard it and fall through to main file
       appendHealthFault({
         type: 'queue_corrupt',
         scope: 'sync-queue',
@@ -75,6 +111,22 @@ export function readSyncQueue() {
         at: new Date().toISOString()
       });
       try {fs.unlinkSync(tmpPath);} catch {/* ignore */}
+    }
+    if (tmpData !== undefined) {
+      try {
+      replaceFileSync(tmpPath, filePath, 'sync-queue crash recovery');
+      console.warn('[Sync Queue] Crash-recovery: promoted sync-queue.tmp to main file');
+      return normalizeQueueRows(tmpData, 'sync-queue');
+      } catch (error) {
+        appendHealthFault({
+          type: 'queue_write_failed',
+          scope: 'sync-queue',
+          severity: 'error',
+          message: `sync-queue.json.tmp is valid but could not be promoted. The recovery copy was kept. Error: ${error.message}`,
+          at: new Date().toISOString()
+        });
+        return normalizeQueueRows(tmpData, 'sync-queue');
+      }
     }
   }
   try {
@@ -97,15 +149,15 @@ export function readSyncQueue() {
 }
 
 export function writeSyncQueue(queue) {
-  if (!state.cacheDir) return;
+  if (!state.cacheDir) {
+    throw new Error('Sync queue write failed: cache directory is not initialized');
+  }
   const filePath = path.join(state.cacheDir, 'sync-queue.json');
-  const tmpPath = filePath + '.tmp';
   try {
-    fs.writeFileSync(tmpPath, JSON.stringify(Array.isArray(queue) ? queue : [], null, 2), 'utf-8');
-    fs.renameSync(tmpPath, filePath);
+    writeJsonFileDurable(filePath, Array.isArray(queue) ? queue : [], 'sync queue');
   } catch (e) {
     console.error('Sync queue write failed:', e);
-    try {fs.unlinkSync(tmpPath);} catch {/* ignore */}
+    throw new Error(`Sync queue write failed: ${e.message}`, { cause: e });
   }
 }
 
@@ -114,11 +166,9 @@ export function readFailedSyncQueue() {
   const filePath = path.join(state.cacheDir, 'sync-failed.json');
   const tmpPath = filePath + '.tmp';
   if (fs.existsSync(tmpPath)) {
+    let tmpData;
     try {
-      const tmpData = JSON.parse(fs.readFileSync(tmpPath, 'utf-8'));
-      fs.renameSync(tmpPath, filePath);
-      console.warn('[Sync Queue] Crash-recovery: promoted sync-failed.tmp to main file');
-      return normalizeQueueRows(tmpData, 'sync-failed');
+      tmpData = JSON.parse(fs.readFileSync(tmpPath, 'utf-8'));
     } catch (error) {
       appendHealthFault({
         type: 'queue_corrupt',
@@ -127,6 +177,22 @@ export function readFailedSyncQueue() {
         at: new Date().toISOString()
       });
       try {fs.unlinkSync(tmpPath);} catch {/* ignore */}
+    }
+    if (tmpData !== undefined) {
+      try {
+      replaceFileSync(tmpPath, filePath, 'sync-failed crash recovery');
+      console.warn('[Sync Queue] Crash-recovery: promoted sync-failed.tmp to main file');
+      return normalizeQueueRows(tmpData, 'sync-failed');
+      } catch (error) {
+        appendHealthFault({
+          type: 'queue_write_failed',
+          scope: 'sync-failed',
+          severity: 'error',
+          message: `sync-failed.json.tmp is valid but could not be promoted. The recovery copy was kept. Error: ${error.message}`,
+          at: new Date().toISOString()
+        });
+        return normalizeQueueRows(tmpData, 'sync-failed');
+      }
     }
   }
 
@@ -148,15 +214,15 @@ export function readFailedSyncQueue() {
 }
 
 export function writeFailedSyncQueue(items) {
-  if (!state.cacheDir) return;
+  if (!state.cacheDir) {
+    throw new Error('Failed sync queue write failed: cache directory is not initialized');
+  }
   const filePath = path.join(state.cacheDir, 'sync-failed.json');
-  const tmpPath = filePath + '.tmp';
   try {
-    fs.writeFileSync(tmpPath, JSON.stringify(Array.isArray(items) ? items : [], null, 2), 'utf-8');
-    fs.renameSync(tmpPath, filePath);
+    writeJsonFileDurable(filePath, Array.isArray(items) ? items : [], 'sync failed queue');
   } catch (e) {
     console.error('[Sync] Failed-queue write failed:', e);
-    try {fs.unlinkSync(tmpPath);} catch {/* ignore */}
+    throw new Error(`Failed sync queue write failed: ${e.message}`, { cause: e });
   }
 }
 
@@ -173,22 +239,18 @@ export function readSyncMeta() {
 export function writeSyncMeta(updates = {}) {
   if (!state.cacheDir) return;
   const filePath = path.join(state.cacheDir, SYNC_META_FILE);
-  const tmpPath = filePath + '.tmp';
   try {
     const current = readSyncMeta();
     const next = { ...current, ...updates };
-    fs.writeFileSync(tmpPath, JSON.stringify(next, null, 2), 'utf-8');
-    fs.renameSync(tmpPath, filePath);
+    writeJsonFileDurable(filePath, next, 'sync meta');
   } catch (e) {
     console.error('[Sync Meta] Write failed:', e);
-    try {fs.unlinkSync(tmpPath);} catch {/* ignore */}
   }
 }
 
 export function appendHealthFault(fault = {}) {
   if (!state.cacheDir) return;
   const filePath = path.join(state.cacheDir, HEALTH_FAULTS_FILE);
-  const tmpPath = filePath + '.tmp';
   try {
     let existing = [];
     try {existing = JSON.parse(fs.readFileSync(filePath, 'utf-8'));} catch {/* start fresh */}
@@ -209,12 +271,10 @@ export function appendHealthFault(fault = {}) {
     );
     if (isDuplicate) return;
     const next = [entry, ...existing].slice(0, 50);
-    fs.writeFileSync(tmpPath, JSON.stringify(next, null, 2), 'utf-8');
-    fs.renameSync(tmpPath, filePath);
+    writeJsonFileDurable(filePath, next, 'health faults');
     console.error('[Health Fault]', entry);
   } catch (e) {
     console.error('[Health Fault] Write failed:', e);
-    try {fs.unlinkSync(tmpPath);} catch {/* ignore */}
   }
 }
 

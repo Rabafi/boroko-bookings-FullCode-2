@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Monitor, Save, TestTube } from 'lucide-react';
+import { Monitor, Save, TestTube, CreditCard, Banknote } from 'lucide-react';
 
 const HARDWARE_FIELDS = [
   { key: 'receipt_printer_name', label: 'Receipt Printer', type: 'text', placeholder: 'Default printer name' },
@@ -20,6 +20,11 @@ const HARDWARE_FIELDS = [
   { key: 'escpos_printer_path', label: 'Printer Path', type: 'text', placeholder: '\\\\server\\printer or COM1' },
   { key: 'escpos_codepage', label: 'Codepage', type: 'select', options: ['cp437', 'cp850', 'cp858', 'cp860', 'cp863', 'cp865'] },
   { key: 'escpos_timeout_ms', label: 'Timeout (ms)', type: 'number', min: 1500, max: 60000 },
+  { key: 'payment_terminal_provider', label: 'Terminal Provider', type: 'text', placeholder: 'Local provider name' },
+  { key: 'payment_terminal_name', label: 'Terminal Name', type: 'text', placeholder: 'Front bar terminal' },
+  { key: 'payment_terminal_mode', label: 'Terminal Mode', type: 'select', options: ['manual', 'local_bridge', 'provider_api'] },
+  { key: 'payment_terminal_bridge_url', label: 'Bridge/API URL', type: 'text', placeholder: 'http://127.0.0.1:PORT/sale' },
+  { key: 'payment_terminal_timeout_ms', label: 'Terminal Timeout (ms)', type: 'number', min: 1500, max: 60000 },
   { key: 'customer_display_enabled', label: 'Customer Display', type: 'checkbox' }
 ];
 
@@ -68,14 +73,29 @@ export default function Hardware({ user, settings, isOnline }) {
     }
   };
 
+  const handleOpenDrawer = async () => {
+    setTestKind('open-drawer');
+    setTestResult('');
+    try {
+      const result = await window.api.pos.openCashDrawer(hwSettings);
+      setTestResult(result?.success ? (result?.message || 'Cash drawer opened.') : (result?.error || 'Cash drawer did not open.'));
+    } catch (e) {
+      setTestResult(e?.message || 'Cash drawer did not open.');
+    } finally {
+      setTestKind('');
+    }
+  };
+
   const updateField = (key, value) => {
     setHwSettings((prev) => ({ ...prev, [key]: value }));
   };
 
   if (loading) {
     return (
-      <div className="flex py-12 justify-center">
-        <div className="h-8 w-8 animate-spin rounded-full border-4 border-emerald-500 border-t-transparent" />
+      <div className="p-6 space-y-4">
+        {[1,2,3,4].map((i) => (
+          <div key={i} className="h-32 animate-pulse rounded-xl border border-slate-200 bg-white" />
+        ))}
       </div>
     );
   }
@@ -171,6 +191,36 @@ export default function Hardware({ user, settings, isOnline }) {
                 )}
               </div>
             ))}
+            <button onClick={handleOpenDrawer} disabled={!!testKind}
+              className="w-full rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700 hover:bg-emerald-100 disabled:opacity-50">
+              <Banknote className="mr-1 inline h-3 w-3" /> Open Drawer
+            </button>
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-slate-200 bg-white p-5">
+          <h2 className="mb-4 font-bold text-slate-800">Card Terminal</h2>
+          <div className="space-y-3">
+            {HARDWARE_FIELDS.filter((f) => f.key.startsWith('payment_terminal_')).map((field) => (
+              <div key={field.key}>
+                <label className="text-xs font-medium text-slate-500">{field.label}</label>
+                {field.type === 'select' ? (
+                  <select value={hwSettings[field.key] || ''} onChange={(e) => updateField(field.key, e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm">
+                    {field.options.map((o) => <option key={o} value={o}>{o}</option>)}
+                  </select>
+                ) : (
+                  <input type={field.type} value={hwSettings[field.key] || ''} placeholder={field.placeholder || ''}
+                    min={field.min} max={field.max}
+                    onChange={(e) => updateField(field.key, field.type === 'number' ? Number(e.target.value) : e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" />
+                )}
+              </div>
+            ))}
+            <button onClick={() => handleTest('payment-terminal')} disabled={!!testKind}
+              className="w-full rounded-lg border border-slate-200 px-3 py-2 text-xs font-medium hover:bg-slate-50 disabled:opacity-50">
+              <CreditCard className="mr-1 inline h-3 w-3" /> Test Terminal
+            </button>
           </div>
         </div>
 

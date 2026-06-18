@@ -3,10 +3,11 @@ import { Plus, Pencil, Trash2, X, Package } from 'lucide-react';
 
 export default function MenuManagement({ user, settings, isOnline }) {
   const [menuItems, setMenuItems] = useState([]);
+  const [inventoryItems, setInventoryItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [editingItem, setEditingItem] = useState(null);
-  const [form, setForm] = useState({ name: '', category: 'Food', price: '', barcode: '', is_available: true, outlet_id: '' });
+  const [form, setForm] = useState({ name: '', category: 'Food', price: '', barcode: '', inventory_item_id: '', depletion_qty: '1', is_available: true, outlet_id: '' });
   const [outlets, setOutlets] = useState([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -15,20 +16,54 @@ export default function MenuManagement({ user, settings, isOnline }) {
 
   const loadMenu = useCallback(async () => {
     try {
-      const [items, outs] = await Promise.all([
+      const [items, outs, inv] = await Promise.all([
         window.api.pos.getMenuItems().catch(() => []),
-        window.api.pos.getOutlets().catch(() => [])
+        window.api.pos.getOutlets().catch(() => []),
+        window.api.pos.getInventory().catch(() => [])
       ]);
       setMenuItems(items || []);
       setOutlets(outs || []);
+      setInventoryItems(inv || []);
     } catch (e) { console.error('Failed to load menu:', e); }
     finally { setLoading(false); }
   }, []);
 
   useEffect(() => { loadMenu(); }, [loadMenu]);
 
-  const openCreate = () => { setEditingItem(null); setForm({ name: '', category: 'Food', price: '', barcode: '', is_available: true, outlet_id: '' }); setShowForm(true); setError(''); };
-  const openEdit = (item) => { setEditingItem(item); setForm({ name: item.name || '', category: item.category || 'Food', price: item.price || '', barcode: item.barcode || '', is_available: item.is_available !== false, outlet_id: item.outlet_id || '' }); setShowForm(true); setError(''); };
+  const emptyForm = { name: '', category: 'Food', price: '', barcode: '', inventory_item_id: '', depletion_qty: '1', is_available: true, outlet_id: '' };
+  const inventoryCategory = (item) => String(item?.category || '').toLowerCase().includes('bar') ? 'Drinks' : (item?.category || 'Drinks');
+  const inventoryPrice = (item) => item?.selling_price || item?.price || item?.unit_price || '';
+  const openCreate = () => { setEditingItem(null); setForm(emptyForm); setShowForm(true); setError(''); };
+  const openCreateFromInventory = (inventoryItem) => {
+    setEditingItem(null);
+    setForm({
+      ...emptyForm,
+      name: inventoryItem.name || '',
+      category: inventoryCategory(inventoryItem),
+      price: inventoryPrice(inventoryItem),
+      barcode: inventoryItem.barcode || '',
+      inventory_item_id: inventoryItem.id || '',
+      depletion_qty: '1',
+      outlet_id: inventoryItem.outlet_id || ''
+    });
+    setShowForm(true);
+    setError('');
+  };
+  const openEdit = (item) => {
+    setEditingItem(item);
+    setForm({
+      name: item.name || '',
+      category: item.category || 'Food',
+      price: item.price || '',
+      barcode: item.barcode || '',
+      inventory_item_id: item.inventory_item_id || '',
+      depletion_qty: item.depletion_qty || '1',
+      is_available: item.is_available !== false,
+      outlet_id: item.outlet_id || ''
+    });
+    setShowForm(true);
+    setError('');
+  };
 
   const handleSave = async () => {
     if (!form.name || !form.price) { setError('Name and price are required.'); return; }
@@ -63,25 +98,50 @@ export default function MenuManagement({ user, settings, isOnline }) {
       <div className="mb-6 flex items-center justify-between">
         <h1 className="text-xl font-bold text-slate-800">Menu Management</h1>
         <div className="flex gap-2">
-          {isOnline && (
-            <>
-              <button onClick={() => setShowPackTemplate(true)} className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium hover:bg-slate-50">
-                <Package className="mr-1 inline h-4 w-4" /> Bar Packs
-              </button>
-              <button onClick={openCreate} className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700">
-                <Plus className="mr-1 inline h-4 w-4" /> Add Item
-              </button>
-            </>
-          )}
+          <button onClick={() => setShowPackTemplate(true)} className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium hover:bg-slate-50">
+            <Package className="mr-1 inline h-4 w-4" /> Bar Packs
+          </button>
+          <button onClick={openCreate} className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700">
+            <Plus className="mr-1 inline h-4 w-4" /> Add Item
+          </button>
         </div>
       </div>
 
-      {!isOnline && <div className="mb-4 rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-sm text-amber-700">Menu management requires online connection.</div>}
+      {!isOnline && <div className="mb-4 rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-sm text-amber-700">Offline changes will be saved locally and queued for sync.</div>}
 
       {loading ? (
-        <div className="flex py-12 justify-center"><div className="h-8 w-8 animate-spin rounded-full border-4 border-emerald-500 border-t-transparent" /></div>
+        <div className="space-y-3">
+          {[1,2,3,4,5].map((i) => (
+            <div key={i} className="flex items-center gap-4 rounded-xl border border-slate-200 bg-white p-4">
+              <div className="h-10 w-10 animate-pulse rounded-lg bg-slate-200" />
+              <div className="flex-1 space-y-2">
+                <div className="h-4 w-48 animate-pulse rounded bg-slate-200" />
+                <div className="h-3 w-24 animate-pulse rounded bg-slate-100" />
+              </div>
+              <div className="h-8 w-20 animate-pulse rounded bg-slate-100" />
+            </div>
+          ))}
+        </div>
       ) : menuItems.length === 0 ? (
-        <p className="py-12 text-center text-sm text-slate-400">No menu items. Add your first item to get started.</p>
+        <div className="py-12 text-center space-y-2">
+          {inventoryItems.length > 0 ? (
+            <>
+              <p className="text-sm text-amber-600 font-medium">Bar inventory loaded ({inventoryItems.length} items) but no POS menu items linked.</p>
+              <p className="text-xs text-slate-400">Add a new menu item and link it to a Bar inventory item, or use the Bar Packs template.</p>
+              <div className="mx-auto mt-4 grid max-w-3xl gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                {inventoryItems.slice(0, 9).map((item) => (
+                  <button key={item.id} onClick={() => openCreateFromInventory(item)}
+                    className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-left text-xs shadow-sm hover:border-emerald-300 hover:bg-emerald-50">
+                    <span className="block truncate font-bold text-slate-800">{item.name}</span>
+                    <span className="block text-slate-500">Create linked menu item</span>
+                  </button>
+                ))}
+              </div>
+            </>
+          ) : (
+            <p className="text-sm text-slate-400">No menu items. Add your first item to get started.</p>
+          )}
+        </div>
       ) : (
         <div className="space-y-4">
           {categories.map((cat) => (
@@ -94,6 +154,7 @@ export default function MenuManagement({ user, settings, isOnline }) {
                       <th className="px-4 py-2 text-left text-xs font-semibold text-slate-500">Name</th>
                       <th className="px-4 py-2 text-right text-xs font-semibold text-slate-500">Price</th>
                       <th className="px-4 py-2 text-left text-xs font-semibold text-slate-500">Barcode</th>
+                      <th className="px-4 py-2 text-left text-xs font-semibold text-slate-500">Inventory Link</th>
                       <th className="px-4 py-2 text-left text-xs font-semibold text-slate-500">Outlet</th>
                       <th className="px-4 py-2 text-center text-xs font-semibold text-slate-500">Status</th>
                       <th className="px-4 py-2 text-right text-xs font-semibold text-slate-500">Actions</th>
@@ -102,11 +163,13 @@ export default function MenuManagement({ user, settings, isOnline }) {
                   <tbody className="divide-y divide-slate-50">
                     {menuItems.filter((i) => (i.category || 'Other') === cat).map((item) => {
                       const outlet = outlets.find((o) => o.id === item.outlet_id);
+                      const inventory = inventoryItems.find((inv) => inv.id === item.inventory_item_id);
                       return (
                         <tr key={item.id} className="hover:bg-slate-50">
                           <td className="px-4 py-2.5 font-semibold text-slate-800">{item.name}</td>
                           <td className="px-4 py-2.5 text-right font-bold text-emerald-700">P {Number(item.price || 0).toFixed(2)}</td>
                           <td className="px-4 py-2.5 text-xs text-slate-500 font-mono">{item.barcode || '-'}</td>
+                          <td className="px-4 py-2.5 text-xs text-slate-500">{inventory?.name || (item.inventory_item_id ? 'Linked item' : '-')}</td>
                           <td className="px-4 py-2.5 text-xs text-slate-500">{outlet?.name || 'All'}</td>
                           <td className="px-4 py-2.5 text-center">
                             <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold ${item.is_available !== false ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
@@ -158,6 +221,28 @@ export default function MenuManagement({ user, settings, isOnline }) {
                 <input type="text" value={form.barcode} onChange={(e) => setForm({ ...form, barcode: e.target.value })} className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" />
               </div>
               <div>
+                <label className="text-xs font-medium text-slate-500">Inventory Stock Link</label>
+                <select value={form.inventory_item_id} onChange={(e) => setForm({ ...form, inventory_item_id: e.target.value, depletion_qty: e.target.value ? form.depletion_qty || '1' : '' })}
+                  className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm">
+                  <option value="">No stock link</option>
+                  {inventoryItems.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.name}{item.outlet_id ? ` (${outlets.find((o) => o.id === item.outlet_id)?.name || 'Outlet'})` : ''}{item.current_stock !== undefined ? ` - ${item.current_stock} in stock` : ''}
+                    </option>
+                  ))}
+                </select>
+                {inventoryItems.length === 0 && (
+                  <p className="mt-1 text-xs text-amber-600">No inventory items loaded yet. Sync inventory first, or save without a stock link.</p>
+                )}
+              </div>
+              {form.inventory_item_id && (
+                <div>
+                  <label className="text-xs font-medium text-slate-500">Stock Used Per Sale</label>
+                  <input type="number" value={form.depletion_qty} onChange={(e) => setForm({ ...form, depletion_qty: e.target.value })}
+                    className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" min="0.001" step="0.001" />
+                </div>
+              )}
+              <div>
                 <label className="text-xs font-medium text-slate-500">Outlet</label>
                 <select value={form.outlet_id} onChange={(e) => setForm({ ...form, outlet_id: e.target.value })} className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm">
                   <option value="">All outlets</option>
@@ -189,10 +274,16 @@ export default function MenuManagement({ user, settings, isOnline }) {
               <select value={packTemplate.inventory_item_id} onChange={(e) => setPackTemplate({ ...packTemplate, inventory_item_id: e.target.value })}
                 className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm">
                 <option value="">Select item...</option>
-                {menuItems.filter((i) => i.inventory_item_id).map((i) => (
-                  <option key={i.inventory_item_id} value={i.inventory_item_id}>{i.name}</option>
+                {inventoryItems.map((i) => (
+                  <option key={i.id} value={i.id}>{i.name}{i.outlet_id ? ` (${outlets.find((o) => o.id === i.outlet_id)?.name || 'Bar'})` : ''}</option>
+                ))}
+                {inventoryItems.length === 0 && menuItems.filter((i) => i.inventory_item_id).map((i) => (
+                  <option key={i.inventory_item_id} value={i.inventory_item_id}>{i.name} (via menu)</option>
                 ))}
               </select>
+              {inventoryItems.length === 0 && (
+                <p className="mt-1 text-xs text-amber-600">No inventory items loaded. Bar inventory may need to be synced first.</p>
+              )}
             </div>
             <div>
               <label className="text-xs font-medium text-slate-500">Pack Size</label>

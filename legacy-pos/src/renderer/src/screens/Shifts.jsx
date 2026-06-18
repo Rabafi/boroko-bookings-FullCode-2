@@ -57,7 +57,11 @@ export default function Shifts({ user, settings, isOnline }) {
       </div>
 
       {loading ? (
-        <div className="flex py-12 justify-center"><div className="h-8 w-8 animate-spin rounded-full border-4 border-emerald-500 border-t-transparent" /></div>
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {[1,2,3].map((i) => (
+            <div key={i} className="h-32 animate-pulse rounded-xl border-2 border-slate-200 bg-white" />
+          ))}
+        </div>
       ) : (
         <div className="space-y-6">
           {openShifts.length > 0 && (

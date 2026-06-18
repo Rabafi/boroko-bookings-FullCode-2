@@ -17,6 +17,10 @@ const INVENTORY_ITEM_SELECT = 'id, name, category, unit, current_stock, reorder_
 const INVENTORY_ITEM_LEGACY_SELECT = 'id, name, category, unit, current_stock, reorder_level, selling_price, outlet_id, latest_unit_cost, lodge_id, created_at';
 const INVENTORY_PURCHASE_SELECT = 'id, item_id, quantity_purchased, unit_cost, total_cost, supplier, date, notes, lodge_id, created_at, updated_at';
 const POOL_DAY_USE_SELECT = 'id, date, resource_key, resource_name, start_time, end_time, status, total, adults, children, notes, created_at, updated_at, deposit_amount, balance_due, fee_per_adult, fee_per_child, flat_fee, hourly_rate, package_fee, pricing_mode, created_by';
+const MAINTENANCE_TICKET_SELECT = 'id, room_id, title, issue, description, status, priority, reported_date, labour_cost, parts_cost, total_cost, vendor_name, cost_notes, completed_at, created_at, updated_at, rooms(room_number, room_type)';
+const MAINTENANCE_TICKET_LEGACY_SELECT = 'id, room_id, title, description, status, priority, reported_date, labour_cost, parts_cost, total_cost, vendor_name, cost_notes, created_at, rooms(room_number, room_type)';
+const BOOKING_PAGE_SIZE = 1000;
+const BOOKING_REFRESH_MAX_ROWS = 10000;
 
 function uniqueSyncNames(names = []) {
   return [...new Set((names || []).filter(Boolean))];
@@ -67,6 +71,21 @@ function isMissingInventoryCompatibilityColumnError(error) {
   return /column\s+inventory_items\.(barcode|is_active|sku|updated_at)\s+does\s+not\s+exist/i.test(String(error?.message || ''));
 }
 
+function isMaintenanceTicketSchemaCompatibilityError(error) {
+  return /column maintenance_tickets\.(issue|completed_at|updated_at) does not exist/i.test(String(error?.message || ''));
+}
+
+function normalizeMaintenanceTicketRowForCache(row = {}) {
+  return {
+    ...row,
+    title: row.title || row.issue || '',
+    issue: row.issue || row.title || '',
+    description: row.description || row.notes || '',
+    completed_at: row.completed_at || null,
+    updated_at: row.updated_at || row.created_at || null
+  };
+}
+
 async function fetchUsersForRefresh() {
   const primary = await state.supabase
     .from('users')
@@ -101,6 +120,46 @@ async function fetchInventoryItemsForRefresh() {
   };
 }
 
+async function fetchMaintenanceForRefresh() {
+  const primary = await state.supabase
+    .from('maintenance_tickets')
+    .select(MAINTENANCE_TICKET_SELECT)
+    .eq('lodge_id', state.lodgeId)
+    .order('created_at', { ascending: false })
+    .limit(200);
+  if (!primary.error || !isMaintenanceTicketSchemaCompatibilityError(primary.error)) {
+    return primary;
+  }
+  const legacy = await state.supabase
+    .from('maintenance_tickets')
+    .select(MAINTENANCE_TICKET_LEGACY_SELECT)
+    .eq('lodge_id', state.lodgeId)
+    .order('created_at', { ascending: false })
+    .limit(200);
+  return legacy.error ? legacy : {
+    data: (legacy.data || []).map(normalizeMaintenanceTicketRowForCache),
+    error: null
+  };
+}
+
+async function fetchBookingsForRefresh() {
+  const rows = [];
+  for (let from = 0; from < BOOKING_REFRESH_MAX_ROWS; from += BOOKING_PAGE_SIZE) {
+    const to = Math.min(from + BOOKING_PAGE_SIZE - 1, BOOKING_REFRESH_MAX_ROWS - 1);
+    const { data, error } = await state.supabase
+      .from('bookings')
+      .select(`${BOOKING_LIST_SELECT}, customers(name, phone, email), rooms(room_number, room_type, rate_per_night)`)
+      .eq('lodge_id', state.lodgeId)
+      .order('check_in', { ascending: false })
+      .range(from, to);
+    if (error) return { data: rows, error };
+    const page = data || [];
+    rows.push(...page);
+    if (page.length < to - from + 1) break;
+  }
+  return { data: rows, error: null };
+}
+
 async function refreshCacheStrict(...names) {
   if (!state.lodgeId) return;
   if (!state.replayAuthReady && !state.backendSession?.token && !state.currentUser?.isMasterAdmin) {
@@ -111,13 +170,8 @@ async function refreshCacheStrict(...names) {
     users: () => fetchUsersForRefresh(),
     rooms: () => state.supabase.from('rooms').select('id, room_number, room_type, rate_per_night, max_occupancy, status, amenities, description, photo, photos, lodge_id, created_at, updated_at, housekeeping_status, housekeeping_notes').eq('lodge_id', state.lodgeId).order('room_number').limit(200),
     customers: () => state.supabase.from('customers').select('id, name, email, phone, id_number, nationality, created_at, updated_at, is_blacklisted, blacklist_reason, lodge_id').eq('lodge_id', state.lodgeId).order('name').limit(500),
-    bookings: () => state.supabase.from('bookings').select(`${BOOKING_LIST_SELECT}, customers(name, phone, email), rooms(room_number, room_type, rate_per_night)`).eq('lodge_id', state.lodgeId).order('check_in', { ascending: false }).limit(500),
-    maintenance: () => state.supabase.
-    from('maintenance_tickets').
-    select('id, room_id, title, issue, description, status, priority, reported_date, labour_cost, parts_cost, total_cost, vendor_name, cost_notes, completed_at, created_at, updated_at, rooms(room_number, room_type)').
-    eq('lodge_id', state.lodgeId).
-    order('created_at', { ascending: false }).
-    limit(200),
+    bookings: () => fetchBookingsForRefresh(),
+    maintenance: () => fetchMaintenanceForRefresh(),
     'inventory-items': () => fetchInventoryItemsForRefresh(),
     'inventory-purchases': () => state.supabase.from('inventory_purchases').select(INVENTORY_PURCHASE_SELECT).eq('lodge_id', state.lodgeId).order('date', { ascending: false }).limit(500),
     quotations: () => state.supabase.from('quotations').select('id, customer_id, customer_name, customer_phone, room_id, room_name, check_in, check_out, adults, children, subtotal, tax_amount, total_amount, currency, notes, status, valid_until, quotation_number, created_at, updated_at, created_by, lodge_id, parent_quotation_id, converted_booking_id').eq('lodge_id', state.lodgeId).order('created_at', { ascending: false }).limit(200),
