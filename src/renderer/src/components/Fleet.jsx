@@ -129,7 +129,7 @@ function OverviewTab({ onOpenDevice }) {
         <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
           <StatCard label="Total" value={summary.total_devices} icon={Server} />
           <StatCard label="Healthy" value={summary.healthy_devices} icon={CheckCircle} color="text-green-400" />
-          <StatCard label="Stale (>10m)" value={summary.stale_devices} icon={AlertTriangle} color="text-amber-400" />
+          <StatCard label="Stale (>24h)" value={summary.stale_devices} icon={AlertTriangle} color="text-amber-400" />
           <StatCard label="Failed" value={summary.failed_devices} icon={WifiOff} color="text-red-400" />
           <StatCard label="Lodges" value={summary.total_lodges} icon={Monitor} color="text-blue-400" />
         </div>

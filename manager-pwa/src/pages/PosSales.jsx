@@ -203,7 +203,7 @@ export default function PosSales() {
   useEffect(() => {
     const interval = window.setInterval(() => {
       if (document.visibilityState === 'visible') load({ silent: true })
-    }, 60_000)
+    }, 90_000)
     return () => window.clearInterval(interval)
   }, [load])
 

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Building2, CreditCard, LifeBuoy, Activity, Server, FileText, Clock, CheckCircle, AlertTriangle, AlertCircle, XCircle, RefreshCw, Mail, Phone, MapPin, Calendar, TrendingUp, Users, ArrowLeft } from 'lucide-react'
+import { Building2, CreditCard, LifeBuoy, Activity, Server, FileText, Clock, CheckCircle, AlertTriangle, AlertCircle, XCircle, RefreshCw, Mail, Phone, MapPin, Calendar, TrendingUp, Users, ArrowLeft, Banknote } from 'lucide-react'
 import { safeLoadAll, hasPartialFailures, getFailureSummary } from '../utils/safeLoad'
 
 function fmt(dt) {
@@ -7,9 +7,9 @@ function fmt(dt) {
   return new Date(dt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
 }
 
-function fmtMoney(n) {
+function fmtMoney(n, currency = 'BWP') {
   if (n == null) return '—'
-  return Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  return `${currency || 'BWP'} ${Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
 function Section({ title, icon: Icon, children, error, onRetry }) {
@@ -50,6 +50,7 @@ export default function Client360({ company, licenses, onBack }) {
   const [tickets, setTickets] = useState([])
   const [activityLogs, setActivityLogs] = useState([])
   const [devices, setDevices] = useState([])
+  const [financialSummary, setFinancialSummary] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [loadWarnings, setLoadWarnings] = useState(null)
@@ -64,18 +65,23 @@ export default function Client360({ company, licenses, onBack }) {
     setLoadWarnings(null)
     try {
       const { data, errors } = await safeLoadAll(
-        window.api.admin.getInvoices?.({ lodge_id: lodgeId }) || Promise.resolve([]),
+        window.api.admin.getInvoicesByLodge?.(lodgeId) || Promise.reject(new Error('Booking invoice API is unavailable. Restart or update the desktop app.')),
         window.api.admin.getSupportTickets?.({ lodge_id: lodgeId }) || Promise.resolve([]),
         window.api.admin.getActivityLogs?.({ lodge_id: lodgeId, limit: 50 }) || Promise.resolve([]),
-        window.api.admin.getFleetHealthRollup?.() || Promise.resolve([])
+        window.api.admin.getFleetHealthRollup?.() || Promise.resolve([]),
+        window.api.admin.getLodgeFinancialSummary?.() || Promise.reject(new Error('Financial summary API is unavailable. Restart or update the desktop app.'))
       )
-      const [invData, ticketData, logData, deviceData] = data
+      const [invData, ticketData, logData, deviceData, financialData] = data
       setInvoices(Array.isArray(invData) ? invData : [])
       setTickets(Array.isArray(ticketData) ? ticketData : [])
       setActivityLogs(Array.isArray(logData) ? logData : [])
       setDevices((Array.isArray(deviceData) ? deviceData : []).filter(d => d.lodge_id === lodgeId))
+      setFinancialSummary(financialData?.lodges?.find(row => String(row.lodge_id) === String(lodgeId)) || null)
+      if (financialData?.ok === false) {
+        errors[4] = financialData.error || 'Financial summary query failed'
+      }
       if (hasPartialFailures(errors)) {
-        setLoadWarnings(getFailureSummary(errors, ['Invoices', 'Tickets', 'Activity Logs', 'Fleet Health']))
+        setLoadWarnings(getFailureSummary(errors, ['Booking Invoices', 'Tickets', 'Activity Logs', 'Fleet Health', 'Financial Summary']))
       }
     } catch (err) {
       setError(err?.message || 'Failed to load client data')
@@ -92,15 +98,15 @@ export default function Client360({ company, licenses, onBack }) {
   const planColor = plan === 'Pro' ? 'bg-green-500/20 text-green-300' : plan === 'Standard' ? 'bg-blue-500/20 text-blue-300' : 'bg-gray-500/20 text-gray-300'
 
   const overdueInvoices = invoices.filter(i => i.status === 'overdue' || i.status === 'unpaid')
-  const paidInvoices = invoices.filter(i => i.status === 'paid')
-  const totalOwed = overdueInvoices.reduce((s, i) => s + (Number(i.amount) || 0), 0)
-  const totalPaid = paidInvoices.reduce((s, i) => s + (Number(i.amount) || 0), 0)
+  const totalOwed = Number(financialSummary?.total_outstanding || 0)
+  const currency = invoices[0]?.currency || 'BWP'
 
   const openTickets = tickets.filter(t => t.status === 'open' || t.status === 'in_progress')
   const urgentTickets = openTickets.filter(t => t.priority === 'urgent' || t.priority === 'high')
 
   const staleDevices = devices.filter(d => d.stale)
   const failedDevices = devices.filter(d => d.failed_queue > 0)
+  const healthyDevices = devices.filter(d => !d.stale && !(d.failed_queue > 0))
 
   // ── Risk assessment ──────────────────────────────────────────────────────
   const risks = []
@@ -186,11 +192,11 @@ export default function Client360({ company, licenses, onBack }) {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <div className="bg-gray-800 rounded-xl p-3 text-center">
           <p className="text-lg font-bold text-white">{invoices.length}</p>
-          <p className="text-[10px] text-gray-500">Invoices</p>
+          <p className="text-[10px] text-gray-500">Booking Invoices</p>
         </div>
         <div className="bg-gray-800 rounded-xl p-3 text-center">
-          <p className={`text-lg font-bold ${overdueInvoices.length > 0 ? 'text-red-400' : 'text-green-400'}`}>{overdueInvoices.length}</p>
-          <p className="text-[10px] text-gray-500">Overdue</p>
+          <p className={`text-lg font-bold ${Number(financialSummary?.unpaid_count || 0) > 0 ? 'text-red-400' : 'text-green-400'}`}>{financialSummary?.unpaid_count || 0}</p>
+          <p className="text-[10px] text-gray-500">Unpaid Bookings</p>
         </div>
         <div className="bg-gray-800 rounded-xl p-3 text-center">
           <p className={`text-lg font-bold ${openTickets.length > 0 ? 'text-amber-400' : 'text-green-400'}`}>{openTickets.length}</p>
@@ -229,12 +235,14 @@ export default function Client360({ company, licenses, onBack }) {
             )}
           </Section>
 
-          <Section title="Financial Summary" icon={DollarSign}>
+          <Section title="Financial Summary" icon={Banknote}>
             <div className="space-y-2 text-xs">
-              <div className="flex justify-between"><span className="text-gray-400">Total Paid</span><span className="text-green-400 font-semibold">${fmtMoney(totalPaid)}</span></div>
-              <div className="flex justify-between"><span className="text-gray-400">Total Outstanding</span><span className={`font-semibold ${totalOwed > 0 ? 'text-red-400' : 'text-white'}`}>${fmtMoney(totalOwed)}</span></div>
-              <div className="flex justify-between"><span className="text-gray-400">Paid Invoices</span><span className="text-white">{paidInvoices.length}</span></div>
-              <div className="flex justify-between"><span className="text-gray-400">Overdue</span><span className={overdueInvoices.length > 0 ? 'text-red-400' : 'text-white'}>{overdueInvoices.length}</span></div>
+              <div className="flex justify-between"><span className="text-gray-400">Total Revenue</span><span className="text-white font-semibold">{fmtMoney(financialSummary?.total_revenue || 0, currency)}</span></div>
+              <div className="flex justify-between"><span className="text-gray-400">Total Collected</span><span className="text-green-400 font-semibold">{fmtMoney(financialSummary?.total_collected || 0, currency)}</span></div>
+              <div className="flex justify-between"><span className="text-gray-400">Total Outstanding</span><span className={`font-semibold ${totalOwed > 0 ? 'text-red-400' : 'text-white'}`}>{fmtMoney(totalOwed, currency)}</span></div>
+              <div className="flex justify-between"><span className="text-gray-400">Paid Bookings</span><span className="text-white">{financialSummary?.paid_count || 0}</span></div>
+              <div className="flex justify-between"><span className="text-gray-400">Partially Paid</span><span className="text-amber-400">{financialSummary?.partial_count || 0}</span></div>
+              <div className="flex justify-between"><span className="text-gray-400">Unpaid</span><span className={Number(financialSummary?.unpaid_count || 0) > 0 ? 'text-red-400' : 'text-white'}>{financialSummary?.unpaid_count || 0}</span></div>
             </div>
           </Section>
 
@@ -249,7 +257,7 @@ export default function Client360({ company, licenses, onBack }) {
           <Section title="App Health" icon={Server}>
             <div className="space-y-2 text-xs">
               <div className="flex justify-between"><span className="text-gray-400">Devices</span><span className="text-white">{devices.length}</span></div>
-              <div className="flex justify-between"><span className="text-gray-400">Healthy</span><span className="text-green-400">{devices.length - staleDevices.length - failedDevices.length}</span></div>
+              <div className="flex justify-between"><span className="text-gray-400">Healthy</span><span className="text-green-400">{healthyDevices.length}</span></div>
               <div className="flex justify-between"><span className="text-gray-400">Stale</span><span className={staleDevices.length > 0 ? 'text-amber-400' : 'text-white'}>{staleDevices.length}</span></div>
               <div className="flex justify-between"><span className="text-gray-400">Failed</span><span className={failedDevices.length > 0 ? 'text-red-400' : 'text-white'}>{failedDevices.length}</span></div>
             </div>
@@ -270,7 +278,7 @@ export default function Client360({ company, licenses, onBack }) {
                     <span className="text-gray-500 ml-2">{fmt(inv.issued_date || inv.created_at)}</span>
                   </div>
                   <div className="flex items-center gap-3">
-                    <span className="text-white font-semibold">${fmtMoney(inv.amount)}</span>
+                    <span className="text-white font-semibold">{fmtMoney(inv.amount, inv.currency)}</span>
                     <Badge
                       label={inv.status}
                       color={inv.status === 'paid' ? 'bg-green-500/20 text-green-300' : inv.status === 'overdue' ? 'bg-red-500/20 text-red-300' : 'bg-amber-500/20 text-amber-300'}
@@ -330,7 +338,7 @@ export default function Client360({ company, licenses, onBack }) {
                   <div className="flex items-center gap-4 text-gray-500">
                     <span>Pending: {d.pending_queue || 0}</span>
                     <span>Failed: {d.failed_queue || 0}</span>
-                    <span>Last sync: {d.last_sync_at ? new Date(d.last_sync_at).toLocaleString() : 'never'}</span>
+                    <span>Heartbeat: {d.reported_at ? new Date(d.reported_at).toLocaleString() : 'never'}</span>
                   </div>
                 </div>
               ))}

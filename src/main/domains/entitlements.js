@@ -16,7 +16,8 @@ import {
 } from './subscriptionState.js';
 
 const _entitlementCache = new Map()
-const ENTITLEMENT_CACHE_TTL_MS = 10_000
+const _entitlementRequests = new Map()
+const ENTITLEMENT_CACHE_TTL_MS = 2 * 60_000
 
 export function isMissingEntitlementRpcError(error) {
   const message = String(error?.message || '');
@@ -249,17 +250,32 @@ async function getLegacyEntitlement(targetLodgeId) {
   return buildTrialEntitlement(settings?.trial_started_at || null);
 }
 
-export async function getTrialStatus(lodgeId) {
+export async function getTrialStatus(lodgeId, options = {}) {
   const targetLodgeId = lodgeId || await getActiveProfileLodgeId();
   if (!targetLodgeId) {
     return buildTrialEntitlement(null);
   }
 
   const cached = _entitlementCache.get(targetLodgeId)
-  if (cached && Date.now() - cached.cachedAt < ENTITLEMENT_CACHE_TTL_MS) {
+  if (options.forceFresh !== true && cached && Date.now() - cached.cachedAt < ENTITLEMENT_CACHE_TTL_MS) {
     return cached.result
   }
 
+  const existingRequest = _entitlementRequests.get(targetLodgeId)
+  if (existingRequest) return existingRequest
+
+  const request = loadTrialStatus(targetLodgeId)
+  _entitlementRequests.set(targetLodgeId, request)
+  try {
+    return await request
+  } finally {
+    if (_entitlementRequests.get(targetLodgeId) === request) {
+      _entitlementRequests.delete(targetLodgeId)
+    }
+  }
+}
+
+async function loadTrialStatus(targetLodgeId) {
   const onlineCheck = checkOnline();
   const checkTimeout = new Promise((r) => setTimeout(() => r('timeout'), 3000));
   const checkResult = await Promise.race([onlineCheck, checkTimeout]);

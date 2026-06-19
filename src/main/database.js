@@ -394,6 +394,7 @@ export {
   createInvoice,
   getInvoices,
   getInvoicesByLodge,
+  getClientBookingInvoices,
   updateInvoice,
   deleteInvoice,
   getInvoiceSummary

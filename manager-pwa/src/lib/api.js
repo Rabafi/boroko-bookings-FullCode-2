@@ -13,8 +13,7 @@ import {
   mutateCachedList,
   queryWithCache,
   setOfflineQueue,
-  setRuntimeMeta,
-  writeCacheEntry
+  setRuntimeMeta
 } from './runtime'
 
 function isOfflineMode() {
@@ -40,6 +39,7 @@ export const FRONT_DESK_ONLY_MESSAGE = 'This action is only available in the Fro
 const READ_ONLY_MANAGER_MESSAGE = 'This screen is view only in the manager mobile app. Use the front desk for changes.'
 const MAX_FINANCIAL_AMOUNT = 1000000
 const queueFlushLocks = new Map()
+const ENTITLEMENT_CACHE_MAX_AGE_MS = 5 * 60_000
 
 const BLOCKED_PWA_MUTATION_TYPES = new Set([
   'booking/create',
@@ -778,35 +778,42 @@ async function getSettings(lodgeId) {
   })
 }
 
-export async function getEntitlement(lodgeId) {
-  try {
-    const entitlement = await fetchEntitlementRpc(lodgeId)
-    if (entitlement) {
-      storeEntitlement(lodgeId, entitlement)
-      writeCacheEntry(lodgeId, 'entitlement', entitlement)
-      return entitlement
-    }
-  } catch {
-    // Fallback below.
-  }
+export async function getEntitlement(lodgeId, options = {}) {
+  return queryWithCache({
+    lodgeId,
+    key: 'entitlement',
+    fallback: getStoredEntitlement(lodgeId),
+    forceFresh: options.forceFresh === true,
+    maxAgeMs: ENTITLEMENT_CACHE_MAX_AGE_MS,
+    fetcher: async () => {
+      try {
+        const entitlement = await fetchEntitlementRpc(lodgeId)
+        if (entitlement) {
+          storeEntitlement(lodgeId, entitlement)
+          return entitlement
+        }
+      } catch {
+        // Fallback below.
+      }
 
-  const settings = await getSettings(lodgeId).catch(() => null)
-  const features = await fetchFeatureOverrides(lodgeId).catch(() => ({}))
-  const fallback = {
-    success: true,
-    status: 'active',
-    expired: false,
-    plan: 'Starter',
-    lodge_id: lodgeId,
-    lodge_name: settings?.lodge_name || settings?.company_name || 'Your Lodge',
-    effective_features: {
-      ...STARTER_FEATURE_FLAGS,
-      ...features
+      const settings = await getSettings(lodgeId).catch(() => null)
+      const features = await fetchFeatureOverrides(lodgeId).catch(() => ({}))
+      const fallback = {
+        success: true,
+        status: 'active',
+        expired: false,
+        plan: 'Starter',
+        lodge_id: lodgeId,
+        lodge_name: settings?.lodge_name || settings?.company_name || 'Your Lodge',
+        effective_features: {
+          ...STARTER_FEATURE_FLAGS,
+          ...features
+        }
+      }
+      storeEntitlement(lodgeId, fallback)
+      return fallback
     }
-  }
-  storeEntitlement(lodgeId, fallback)
-  writeCacheEntry(lodgeId, 'entitlement', fallback)
-  return fallback
+  })
 }
 
 export async function getDashboardSnapshot(lodgeId) {

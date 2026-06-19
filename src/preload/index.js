@@ -397,6 +397,7 @@ const api = {
     createInvoice: (data) => ipcRenderer.invoke('admin:createInvoice', data),
     getInvoices: (filters) => ipcRenderer.invoke('admin:getInvoices', filters),
     getInvoicesByLodge: (lodgeId) => ipcRenderer.invoke('admin:getInvoicesByLodge', lodgeId),
+    getClientBookingInvoices: (lodgeId) => ipcRenderer.invoke('admin:getClientBookingInvoices', lodgeId),
     updateInvoice: (id, data) => ipcRenderer.invoke('admin:updateInvoice', id, data),
     deleteInvoice: (id) => ipcRenderer.invoke('admin:deleteInvoice', id),
     getInvoiceSummary: () => ipcRenderer.invoke('admin:getInvoiceSummary'),

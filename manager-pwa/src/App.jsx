@@ -7,7 +7,7 @@ import { getSubscriptionPlan, normalizeSubscriptionPlan } from '@shared/subscrip
 import { supabase } from './lib/supabase'
 import BottomNav from './components/BottomNav'
 import { flushOfflineQueue, getQueueStatus, getSupportRequests, markSupportRequestRead } from './lib/api'
-import { dismissPwaNotification, getNotificationSettings, getRuntimeMeta, getUnreadPwaNotificationCount, listPwaNotifications, markPwaNotificationRead, setRuntimeMeta, subscribeRuntimeEvent } from './lib/runtime'
+import { dismissPwaNotification, getNotificationSettings, getPwaQueueHealth, getRuntimeMeta, getUnreadPwaNotificationCount, listPwaNotifications, markPwaNotificationRead, publishPwaHealth, setRuntimeMeta, subscribeRuntimeEvent } from './lib/runtime'
 import { shortDateTime } from './lib/format'
 import { normalizeSupportMessages, supportMessageSide, supportSenderMeta, supportSenderName } from '@shared/supportThreads'
 import { upsertFrontDeskNotification } from './lib/frontDeskNotifications'
@@ -1104,6 +1104,7 @@ function AppShell() {
 
   return (
     <FeaturesProvider>
+      <DeviceHealthHeartbeat lodgeId={user.lodge_id} />
       <AuthenticatedShell
         alertCount={alertCount}
         dark={dark}
@@ -1114,6 +1115,29 @@ function AppShell() {
       />
     </FeaturesProvider>
   )
+}
+
+function DeviceHealthHeartbeat({ lodgeId }) {
+  useEffect(() => {
+    if (!lodgeId) return undefined
+
+    const publish = () => {
+      if (navigator.onLine === false || document.visibilityState === 'hidden') return
+      publishPwaHealth(lodgeId, supabase, getPwaQueueHealth(lodgeId))
+    }
+
+    publish()
+    const interval = window.setInterval(publish, 5 * 60_000)
+    document.addEventListener('visibilitychange', publish)
+    window.addEventListener('online', publish)
+    return () => {
+      window.clearInterval(interval)
+      document.removeEventListener('visibilitychange', publish)
+      window.removeEventListener('online', publish)
+    }
+  }, [lodgeId])
+
+  return null
 }
 
 export default function App() {

@@ -98,7 +98,9 @@ export default function Money() {
     const handleVisible = () => {
       if (document.visibilityState === 'visible') load(true)
     }
-    const interval = window.setInterval(() => load(true), 60_000)
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === 'visible') load(true)
+    }, 2 * 60_000)
     document.addEventListener('visibilitychange', handleVisible)
     return () => {
       cancelled = true

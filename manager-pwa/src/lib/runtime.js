@@ -9,6 +9,7 @@ const SEEN_NOTIFICATION_VERSION_LIMIT = 250
 const TRUSTED_DEVICE_DAYS = 365
 const DEFAULT_ONLINE_CACHE_MAX_AGE_MS = 60_000
 const PWA_HEALTH_PUBLISH_MIN_MS = 10 * 60_000
+const inFlightQueries = new Map()
 
 function normalizeNotificationPart(value) {
   return String(value ?? '')
@@ -151,6 +152,7 @@ function cacheAgeMs(entry) {
 export async function queryWithCache({ lodgeId, key, fetcher, fallback = [], forceFresh = false, maxAgeMs = DEFAULT_ONLINE_CACHE_MAX_AGE_MS }) {
   const cached = readCacheEntry(lodgeId, key, null)
   const onlineCacheMs = Math.max(Number(maxAgeMs) || 0, 0)
+  const requestKey = scoped(CACHE_PREFIX, lodgeId, key)
 
   if (!forceFresh && cached && onlineCacheMs > 0 && cacheAgeMs(cached) <= onlineCacheMs) {
     return cached.data
@@ -160,14 +162,27 @@ export async function queryWithCache({ lodgeId, key, fetcher, fallback = [], for
     return cached.data
   }
 
-  try {
-    const data = await fetcher()
-    writeCacheEntry(lodgeId, key, data)
-    return data
-  } catch (error) {
-    if (cached) return cached.data
-    throw error
-  }
+  const existingRequest = inFlightQueries.get(requestKey)
+  if (existingRequest) return existingRequest
+
+  let request
+  request = (async () => {
+    try {
+      const data = await fetcher()
+      writeCacheEntry(lodgeId, key, data)
+      return data
+    } catch (error) {
+      if (cached) return cached.data
+      throw error
+    } finally {
+      if (inFlightQueries.get(requestKey) === request) {
+        inFlightQueries.delete(requestKey)
+      }
+    }
+  })()
+  inFlightQueries.set(requestKey, request)
+
+  return request
 }
 
 export function getOfflineQueue(lodgeId) {

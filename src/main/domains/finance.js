@@ -115,14 +115,53 @@ export async function getInvoices(filters = {}) {
 }
 
 export async function getInvoicesByLodge(lodgeId) {
-  if (!state.isOnline) return [];
-  const { data } = await state.supabase.
-  from('invoices').
-  select('id, booking_id, lodge_id, invoice_number, issued_at, due_date, notes, status, amount, currency, package_name, created_at').
-  eq('lodge_id', lodgeId).
-  order('issued_at', { ascending: false }).
-  limit(500);
-  return data || [];
+  return getClientBookingInvoices(lodgeId);
+}
+
+export async function getClientBookingInvoices(lodgeId) {
+  if (!state.isOnline) throw new Error('Requires internet connection');
+  if (!lodgeId) throw new Error('A lodge is required to load booking invoices');
+
+  const db = requireAdmin();
+  const [bookingsResult, settingsResult] = await Promise.all([
+    db.
+    from('bookings').
+    select('id, lodge_id, invoice_number, created_at, check_in, total_amount, amount_paid, payment_status, status').
+    eq('lodge_id', lodgeId).
+    not('invoice_number', 'is', null).
+    neq('status', 'cancelled').
+    order('created_at', { ascending: false }).
+    limit(500),
+    db.
+    from('settings').
+    select('currency').
+    eq('lodge_id', lodgeId).
+    maybeSingle()
+  ]);
+
+  if (bookingsResult.error) {
+    throw new Error(`Failed to load booking invoices: ${bookingsResult.error.message}`);
+  }
+  if (settingsResult.error) {
+    throw new Error(`Failed to load lodge currency: ${settingsResult.error.message}`);
+  }
+
+  const currency = settingsResult.data?.currency || 'BWP';
+  return (bookingsResult.data || []).map((booking) => ({
+    id: booking.id,
+    booking_id: booking.id,
+    lodge_id: booking.lodge_id,
+    invoice_number: booking.invoice_number,
+    issued_at: booking.created_at,
+    issued_date: booking.created_at,
+    check_in: booking.check_in,
+    amount: booking.total_amount,
+    amount_paid: booking.amount_paid,
+    payment_status: booking.payment_status,
+    status: booking.payment_status,
+    booking_status: booking.status,
+    currency
+  }));
 }
 
 export async function updateInvoice(id, updates) {

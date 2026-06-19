@@ -819,8 +819,13 @@ export async function loginUser(email, password) {
       if (online.source !== 'supabase_auth') {
         await createSupabaseAuthUserForStaff(emailLower, password);
       }
-      await refreshAllCaches();
       await cacheSuccessfulLogin(online.user, emailLower, password);
+      // Authentication is complete once the trusted session is cached.
+      // Refreshing every operational table can be expensive for larger lodges,
+      // so do it in the background instead of delaying or timing out login.
+      refreshAllCaches().catch((error) => {
+        console.warn('[AUTH] background cache refresh delayed:', error?.message || error);
+      });
       const result = {
         user: online.user,
         mode: 'online',

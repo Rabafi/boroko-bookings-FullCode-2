@@ -3325,6 +3325,10 @@ app.whenReady().then(async () => {
     try { requireRole('super_admin'); return await db.getInvoicesByLodge(lodgeId) }
     catch { return [] }
   })
+  ipcMain.handle('admin:getClientBookingInvoices', async (_, lodgeId) => {
+    try { requireRole('super_admin'); return await db.getClientBookingInvoices(lodgeId) }
+    catch (e) { throw new Error(e.message) }
+  })
   ipcMain.handle('admin:updateInvoice', async (_, id, data) => {
     try { requireRole('super_admin'); return await db.updateInvoice(id, data) }
     catch (e) { return { error: e.message } }
@@ -6128,6 +6132,19 @@ app.whenReady().then(async () => {
       console.error('Scheduled financial validation check failed:', error?.message || error)
     })
   }, 6 * 60 * 60 * 1000)
+
+  // Keep Command Central fleet health current while this desktop app is active.
+  setTimeout(() => {
+    db.publishDeviceHealth().catch((error) => {
+      console.warn('Initial device health heartbeat failed:', error?.message || error)
+    })
+  }, 60_000)
+
+  setInterval(() => {
+    db.publishDeviceHealth().catch((error) => {
+      console.warn('Scheduled device health heartbeat failed:', error?.message || error)
+    })
+  }, 5 * 60_000)
 
   // ── Notification Automation Scheduler ──────────────────────────────────────
   setTimeout(() => {

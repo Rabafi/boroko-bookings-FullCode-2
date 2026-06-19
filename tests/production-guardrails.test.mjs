@@ -724,12 +724,22 @@ async function run() {
   const executiveCockpit = await read('src/renderer/src/components/ExecutiveCockpit.jsx')
   const client360 = await read('src/renderer/src/components/Client360.jsx')
   const systemHealth = await read('src/renderer/src/components/SystemHealth.jsx')
+  assert.match(systemHealth, /CONCURRENCY = 3/)
+  assert.match(systemHealth, /status: ms >= SLOW_MS \? 'slow' : 'healthy'/)
+  assert.match(systemHealth, /Retry/)
+  assert.match(systemHealth, /does not alter business data/)
   assert.match(releaseRollout, /Release Rollout Control/)
   assert.match(releaseRollout, /createRelease/)
   assert.match(releaseRollout, /updateRelease/)
   assert.match(releaseRollout, /getReleases/)
   assert.match(releaseRollout, /rollout_pct/)
   assert.match(releaseRollout, /rolling_out/)
+  assert.match(client360, /getInvoicesByLodge/)
+  assert.match(client360, /getLodgeFinancialSummary/)
+  assert.match(client360, /total_collected/)
+  assert.ok(!client360.includes("getInvoices?.({ lodge_id: lodgeId })"), 'Client 360 must not read financial totals from invoice metadata')
+  assert.match(client360, /healthyDevices/)
+  assert.match(client360, /Heartbeat:/)
 
   // ── IPC handlers for all new features ──
   assert.match(mainIndex, /admin:getNotificationRules/)
@@ -884,6 +894,9 @@ async function run() {
   assert.match(adminCentral, /<BulkActions/)
   assert.match(adminCentral, /<Releases/)
   assert.match(adminCentral, /<SystemHealth/)
+  assert.match(adminCentral, /Math\.min\(3, targets\.length\)/)
+  assert.match(adminCentral, /return changed \? next : current/)
+  assert.match(database, /CACHE_REFRESH_CONCURRENCY = 3/)
 
   // ── Command Central office workflow grouping + finance merge ──
   assert.match(adminCentral, /const NAV_GROUPS = \[/)
@@ -978,8 +991,8 @@ async function run() {
   assert.match(adminCentral, /Quick Actions/)
 
   // ── P2.11: System Health page ──
-  assert.match(systemHealth, /System Self Check/)
-  assert.match(systemHealth, /Run Checks/)
+  assert.match(systemHealth, /Command Central Diagnostics/)
+  assert.match(systemHealth, /Run All/)
 
   // ── Accounting collections queue migration ──
   const collectionsMig = await read('supabase/migrations/20260615110000_accounting_collections_queue.sql')
@@ -987,6 +1000,9 @@ async function run() {
   assert.match(collectionsMig, /app_get_revenue_by_method/)
   assert.match(collectionsMig, /REVOKE ALL/)
   assert.match(collectionsMig, /GRANT EXECUTE/)
+  const collectionsGuestRepair = await read('supabase/migrations/20260619190000_fix_collections_queue_guest_name.sql')
+  assert.match(collectionsGuestRepair, /LEFT JOIN public\.customers c/)
+  assert.ok(!collectionsGuestRepair.includes('b.guest_name'), 'collections queue must resolve guest names from customers')
 
   // ── Notification idempotency index migration ──
   const idempMig = await read('supabase/migrations/20260615100000_notification_idempotency_index.sql')

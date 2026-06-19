@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useMemo } from 'react'
 import { useAuth } from '../app-context'
 import { safeLoadAll, hasPartialFailures, getFailureSummary } from '../utils/safeLoad'
 import { timeAgo as sharedTimeAgo, formatMoney, fmtDate } from '../utils/timeAgo'
@@ -498,9 +498,10 @@ function Companies({ companies, licenses, loading, onReload }) {
   const [companySearch, setCompanySearch] = useState('')
 
   const [showDisabled, setShowDisabled] = useState(false)
-  const visibleCompaniesBase = showDisabled
-    ? companies.filter(c => c.deleted)
-    : companies.filter(c => !c.deleted)
+  const visibleCompaniesBase = useMemo(
+    () => showDisabled ? companies.filter(c => c.deleted) : companies.filter(c => !c.deleted),
+    [companies, showDisabled]
+  )
 
   // ─── Lifecycle (Archive/Restore/Delete) ─────────────────────────────────────
   const [lifecycleMode, setLifecycleMode] = useState('archive') // 'archive' | 'restore' | 'delete'
@@ -524,8 +525,14 @@ function Companies({ companies, licenses, loading, onReload }) {
   const [pwaDisabledReason, setPwaDisabledReason] = useState('')
   const [showPwaPassword, setShowPwaPassword] = useState(false)
 
-  const eligibleUsers = companyUsers.filter((user) => user.role === 'manager' || user.role === 'admin')
-  const activePwaUser = eligibleUsers.find((user) => user.id === selectedCompanyUserId) || null
+  const eligibleUsers = useMemo(
+    () => companyUsers.filter((user) => user.role === 'manager' || user.role === 'admin'),
+    [companyUsers]
+  )
+  const activePwaUser = useMemo(
+    () => eligibleUsers.find((user) => user.id === selectedCompanyUserId) || null,
+    [eligibleUsers, selectedCompanyUserId]
+  )
 
   const applyPwaUser = (user) => {
     setSelectedCompanyUserId(user?.id || '')
@@ -568,10 +575,23 @@ function Companies({ companies, licenses, loading, onReload }) {
     let active = true
     const targets = visibleCompaniesBase.filter((company) => !usageStatsByLodge[company.lodge_id])
     if (!targets.length) return () => { active = false }
-    Promise.all(targets.map(async (company) => [
-      company.lodge_id,
-      await window.api.admin.getCompanyStats(company.lodge_id).catch(() => null)
-    ])).then((entries) => {
+
+    const loadWithLimit = async () => {
+      const entries = []
+      let nextIndex = 0
+      const worker = async () => {
+        while (active && nextIndex < targets.length) {
+          const company = targets[nextIndex]
+          nextIndex += 1
+          const companyStats = await window.api.admin.getCompanyStats(company.lodge_id).catch(() => null)
+          entries.push([company.lodge_id, companyStats])
+        }
+      }
+      await Promise.all(Array.from({ length: Math.min(3, targets.length) }, worker))
+      return entries
+    }
+
+    loadWithLimit().then((entries) => {
       if (!active) return
       setUsageStatsByLodge((current) => ({ ...current, ...Object.fromEntries(entries) }))
     }).catch(() => {})
@@ -581,16 +601,21 @@ function Companies({ companies, licenses, loading, onReload }) {
   useEffect(() => {
     setPeakBookingUsageByLodge((current) => {
       const next = { ...current }
+      let changed = false
       visibleCompaniesBase.forEach((company) => {
         const currentUsage = Number(usageStatsByLodge[company.lodge_id]?.usage_status?.bookings?.percentUsed ?? 0)
         const previous = Number(current[company.lodge_id] ?? 0)
-        next[company.lodge_id] = Math.max(previous, currentUsage)
+        const peak = Math.max(previous, currentUsage)
+        if (peak !== previous || current[company.lodge_id] === undefined) {
+          next[company.lodge_id] = peak
+          changed = true
+        }
       })
-      return next
+      return changed ? next : current
     })
   }, [usageStatsByLodge, visibleCompaniesBase])
 
-  const companyUsageRows = visibleCompaniesBase.map((company) => {
+  const companyUsageRows = useMemo(() => visibleCompaniesBase.map((company) => {
     const statsForCompany = usageStatsByLodge[company.lodge_id] || null
     const rollup = getCompanyUsageRollup(statsForCompany, licenses, company)
     const currentBookingsUsagePercent = Number(rollup.recommendation?.currentUsagePct?.bookings ?? 0)
@@ -602,9 +627,9 @@ function Companies({ companies, licenses, loading, onReload }) {
       currentBookingsUsagePercent,
       peakBookingsUsagePercent
     }
-  })
+  }), [visibleCompaniesBase, usageStatsByLodge, licenses, peakBookingUsageByLodge])
 
-  const visibleCompanies = companyUsageRows.filter((row) => {
+  const visibleCompanies = useMemo(() => companyUsageRows.filter((row) => {
     if (usageFilter === 'all') return true
     if (usageFilter === 'pro') return row.rollup.plan === 'Pro'
     if (usageFilter === 'near_limit') return row.rollup.key === 'near_limit' || row.rollup.key === 'critical'
@@ -612,13 +637,13 @@ function Companies({ companies, licenses, loading, onReload }) {
   }).map((row) => row.company).filter(c => {
     if (companySearch && !c.lodge_name?.toLowerCase().includes(companySearch.toLowerCase()) && !c.company_name?.toLowerCase().includes(companySearch.toLowerCase()) && !c.lodge_id?.toLowerCase().includes(companySearch.toLowerCase())) return false
     return true
-  })
+  }), [companyUsageRows, usageFilter, companySearch])
 
   const { sorted: sortedCompanies, sortKey: companySortKey, sortDir: companySortDir, toggleSort: toggleCompanySort } = useTableSort(visibleCompanies, 'lodge_name')
 
   const { page: companyPage, setPage: setCompanyPage, totalPages: companyTotalPages, paginated: paginatedCompanies, total: companyTotal } = usePagination(sortedCompanies)
 
-  const usageFilterCounts = companyUsageRows.reduce((acc, row) => {
+  const usageFilterCounts = useMemo(() => companyUsageRows.reduce((acc, row) => {
     acc.total += 1
     acc[row.rollup.key] = (acc[row.rollup.key] || 0) + 1
     if (row.rollup.key === 'critical') {
@@ -628,12 +653,12 @@ function Companies({ companies, licenses, loading, onReload }) {
     if (row.rollup.plan === 'Pro') acc.pro += 1
     if (row.rollup.recommendation?.recommendedPlan && row.rollup.recommendation.recommendedPlan !== row.rollup.plan) acc.upgradeOpportunities += 1
     return acc
-  }, { total: 0, near_limit: 0, critical: 0, in_grace: 0, blocked: 0, above_plan: 0, pro: 0, upgradeOpportunities: 0 })
+  }, { total: 0, near_limit: 0, critical: 0, in_grace: 0, blocked: 0, above_plan: 0, pro: 0, upgradeOpportunities: 0 }), [companyUsageRows])
 
-  const attentionRows = [...companyUsageRows]
+  const attentionRows = useMemo(() => [...companyUsageRows]
     .sort((a, b) => usagePriorityScore(b.rollup.key) - usagePriorityScore(a.rollup.key) || (b.rollup.recommendation?.currentUsagePct?.bookings || 0) - (a.rollup.recommendation?.currentUsagePct?.bookings || 0))
     .filter((row) => row.rollup.key !== 'normal' && row.rollup.key !== 'pro' && row.rollup.key !== 'unknown')
-    .slice(0, 5)
+    .slice(0, 5), [companyUsageRows])
   const selectedPeakBookingPercent = selected
     ? Number(peakBookingUsageByLodge[selected.lodge_id] ?? stats?.usage_status?.bookings?.percentUsed ?? 0)
     : 0
@@ -4087,13 +4112,31 @@ export default function AdminCentral() {
 
   // Connection status ping
   useEffect(() => {
+    let active = true
+    let inFlight = false
     const ping = async () => {
-      try { await window.api.admin.getCompanies(); setConnected(true) }
-      catch { setConnected(false) }
+      if (!active || inFlight || document.visibilityState === 'hidden') return
+      inFlight = true
+      try {
+        await window.api.admin.getCompanies()
+        if (active) setConnected(true)
+      } catch {
+        if (active) setConnected(false)
+      } finally {
+        inFlight = false
+      }
     }
     ping()
-    const interval = setInterval(ping, 30000)
-    return () => clearInterval(interval)
+    const interval = setInterval(ping, 120000)
+    const handleVisible = () => {
+      if (document.visibilityState === 'visible') ping()
+    }
+    document.addEventListener('visibilitychange', handleVisible)
+    return () => {
+      active = false
+      clearInterval(interval)
+      document.removeEventListener('visibilitychange', handleVisible)
+    }
   }, [])
 
   const openTickets = tickets.filter(t => t.status === 'open' || t.status === 'in_progress').length

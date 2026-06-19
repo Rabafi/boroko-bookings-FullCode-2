@@ -457,17 +457,17 @@ export async function getDeviceHealthRollup() {
 
 // ── Fleet Health (cross-lodge) ────────────────────────────────────────────────
 export async function getFleetHealthRollup() {
-  if (!state.isOnline) return []
-  if (!state.adminDb) return []
+  if (!state.isOnline) throw new Error('Fleet health requires an internet connection')
+  if (!state.adminDb) throw new Error('Command Central admin access is unavailable')
   const { data, error } = await state.adminDb.rpc('get_fleet_health_rollup')
-  if (error) return []
+  if (error) throw new Error(error.message)
   return data || []
 }
 
 export async function getFleetHealthSummary() {
-  if (!state.isOnline) return null
-  if (!state.adminDb) return null
+  if (!state.isOnline) throw new Error('Fleet health requires an internet connection')
+  if (!state.adminDb) throw new Error('Command Central admin access is unavailable')
   const { data, error } = await state.adminDb.rpc('get_fleet_health_summary')
-  if (error) return null
+  if (error) throw new Error(error.message)
   return data?.[0] || null
 }

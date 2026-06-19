@@ -21,6 +21,7 @@ const MAINTENANCE_TICKET_SELECT = 'id, room_id, title, issue, description, statu
 const MAINTENANCE_TICKET_LEGACY_SELECT = 'id, room_id, title, description, status, priority, reported_date, labour_cost, parts_cost, total_cost, vendor_name, cost_notes, created_at, rooms(room_number, room_type)';
 const BOOKING_PAGE_SIZE = 1000;
 const BOOKING_REFRESH_MAX_ROWS = 10000;
+const CACHE_REFRESH_CONCURRENCY = 3;
 
 function uniqueSyncNames(names = []) {
   return [...new Set((names || []).filter(Boolean))];
@@ -188,52 +189,63 @@ async function refreshCacheStrict(...names) {
     outlets: () => state.supabase.from('outlets').select('id, name, type, sort_order, is_active').eq('lodge_id', state.lodgeId).order('sort_order').limit(100)
   };
 
-  await Promise.all(names.map(async (name) => {
-    if (!fetchers[name]) return;
-    const { data, error } = await fetchers[name]();
-    if (error) throw error;
-    if (!data) return;
-    if (Array.isArray(data) && data.length === 0) {
-      const cachedRows = readCache(name);
-      if (Array.isArray(cachedRows) && cachedRows.length > 0) {
-        if (name === 'outlets') {
-          writeCache(name, cachedRows, { source: 'cache' });
-          return;
-        }
-        markSyncRefreshStale([name], 'Live refresh returned no rows; keeping cached data.');
-        return;
-      }
-    }
-    if (name === 'users') {
-      const normalizedUsers = data.map(normalizeUserRecord).filter(Boolean);
-      writeCache(name, normalizedUsers, { source: 'remote' });
-      if (state.currentUser && !state.currentUser.isMasterAdmin) {
-        const refreshedUser = normalizedUsers.find((entry) =>
-        state.currentUser.id && entry.id === state.currentUser.id ||
-        !state.currentUser.id && state.currentUser.email && entry.email === state.currentUser.email
-        );
-        if (refreshedUser) {
-          state.currentUser = mergeSessionUserScope(state.currentUser, refreshedUser);
+  const targetNames = uniqueSyncNames(names).filter((name) => fetchers[name]);
+  let nextIndex = 0;
+  const worker = async () => {
+    while (nextIndex < targetNames.length) {
+      const name = targetNames[nextIndex];
+      nextIndex += 1;
+      const { data, error } = await fetchers[name]();
+      if (error) throw error;
+      if (!data) continue;
+      if (Array.isArray(data) && data.length === 0) {
+        const cachedRows = readCache(name);
+        if (Array.isArray(cachedRows) && cachedRows.length > 0) {
+          if (name === 'outlets') {
+            writeCache(name, cachedRows, { source: 'cache' });
+            continue;
+          }
+          markSyncRefreshStale([name], 'Live refresh returned no rows; keeping cached data.');
+          continue;
         }
       }
-      return;
+      if (name === 'users') {
+        const normalizedUsers = data.map(normalizeUserRecord).filter(Boolean);
+        writeCache(name, normalizedUsers, { source: 'remote' });
+        if (state.currentUser && !state.currentUser.isMasterAdmin) {
+          const refreshedUser = normalizedUsers.find((entry) =>
+          state.currentUser.id && entry.id === state.currentUser.id ||
+          !state.currentUser.id && state.currentUser.email && entry.email === state.currentUser.email
+          );
+          if (refreshedUser) {
+            state.currentUser = mergeSessionUserScope(state.currentUser, refreshedUser);
+          }
+        }
+        continue;
+      }
+      if (name === 'bookings') {
+        writeCache(name, mergeRemoteBookingsWithLocalState(data || []), { source: 'remote' });
+        continue;
+      }
+      if (name === 'inventory-items') {
+        // Merge with local state so pending-sync offline creations are preserved
+        const liveRows = applyQueuedDayUseInventoryReservations(applyQueuedPosInventoryReservations(data || []));
+        writeCache(name, mergeRemoteInventoryWithLocalState(liveRows), { source: 'remote' });
+        continue;
+      }
+      if (name === 'pos-orders') {
+        writeCache(name, mergeRemotePosOrdersWithLocalState(data || []), { source: 'remote' });
+        continue;
+      }
+      writeCache(name, data, { source: 'remote' });
     }
-    if (name === 'bookings') {
-      writeCache(name, mergeRemoteBookingsWithLocalState(data || []), { source: 'remote' });
-      return;
-    }
-    if (name === 'inventory-items') {
-      // Merge with local state so pending-sync offline creations are preserved
-      const liveRows = applyQueuedDayUseInventoryReservations(applyQueuedPosInventoryReservations(data || []));
-      writeCache(name, mergeRemoteInventoryWithLocalState(liveRows), { source: 'remote' });
-      return;
-    }
-    if (name === 'pos-orders') {
-      writeCache(name, mergeRemotePosOrdersWithLocalState(data || []), { source: 'remote' });
-      return;
-    }
-    writeCache(name, data, { source: 'remote' });
-  }));
+  };
+  await Promise.all(
+    Array.from(
+      { length: Math.min(CACHE_REFRESH_CONCURRENCY, targetNames.length) },
+      worker
+    )
+  );
 }
 
 function scheduleSyncRefreshRetry(names = [], reason = 'Background refresh failed.') {
