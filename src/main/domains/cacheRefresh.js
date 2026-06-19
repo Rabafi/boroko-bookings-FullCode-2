@@ -274,13 +274,21 @@ function scheduleSyncRefreshRetry(names = [], reason = 'Background refresh faile
 export async function refreshCachesAfterSync(...names) {
   const targetNames = uniqueSyncNames(names);
   if (targetNames.length === 0) return;
-  try {
-    await refreshCacheStrict(...targetNames);
-    clearSyncRefreshStale(targetNames);
-  } catch (error) {
-    console.error('[Sync] Post-sync cache refresh failed:', error);
-    markSyncRefreshStale(targetNames, error?.message || 'Post-sync cache refresh failed.');
-    scheduleSyncRefreshRetry(targetNames, error?.message || 'Post-sync cache refresh failed.');
+  const failures = [];
+  for (const name of targetNames) {
+    try {
+      await refreshCacheStrict(name);
+      clearSyncRefreshStale([name]);
+    } catch (error) {
+      console.error(`[Sync] Post-sync cache refresh failed for ${name}:`, error);
+      failures.push({ name, error });
+    }
+  }
+  if (failures.length > 0) {
+    const failedNames = failures.map((entry) => entry.name);
+    const reason = failures[0]?.error?.message || 'Post-sync cache refresh failed.';
+    markSyncRefreshStale(failedNames, reason);
+    scheduleSyncRefreshRetry(failedNames, reason);
   }
 }
 

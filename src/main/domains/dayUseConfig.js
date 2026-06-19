@@ -12,10 +12,20 @@ import {
 const CACHE_KEY = 'day_use_config';
 
 function normalizeConfig(config = {}) {
+  const templateRows = Array.isArray(config.templates)
+    ? config.templates
+    : Array.isArray(config.day_use_templates)
+      ? config.day_use_templates
+      : DEFAULT_DAY_USE_TEMPLATES;
+  const resourceRows = Array.isArray(config.resources)
+    ? config.resources
+    : Array.isArray(config.day_use_resources)
+      ? config.day_use_resources
+      : DEFAULT_DAY_USE_RESOURCES;
   return {
     lodge_id: state.lodgeId || config.lodge_id || null,
-    templates: resolveDayUseTemplates({ day_use_templates: config.templates || config.day_use_templates || DEFAULT_DAY_USE_TEMPLATES }),
-    resources: resolveDayUseResources({ day_use_resources: config.resources || config.day_use_resources || DEFAULT_DAY_USE_RESOURCES }),
+    templates: resolveDayUseTemplates({ day_use_templates: templateRows }),
+    resources: resolveDayUseResources({ day_use_resources: resourceRows }),
     updated_at: config.updated_at || null
   };
 }

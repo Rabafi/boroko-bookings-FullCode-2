@@ -28,6 +28,11 @@ import {
 } from './emailNotifications.js'
 import { createLocalLock, releaseLocalLock } from './domains/mesh/meshLocks.js'
 import {
+  connectManualMeshPeer,
+  refreshMeshDiscovery
+} from './domains/mesh/meshDiscovery.js'
+import { getMeshHealthSnapshot } from './domains/mesh/meshState.js'
+import {
   normalizePosHardwareSettings,
   openCashDrawer,
   printEscPosReceipt,
@@ -1215,6 +1220,9 @@ function getDesktopDeviceIdForUpdater() {
 async function gateUpdateCheck() {
   try {
     const res = await db.checkUpdateAvailability(app.getVersion(), getDesktopDeviceIdForUpdater())
+    if (!res?.ok) {
+      throw new Error(res?.error || 'Command Central update gate was unavailable')
+    }
     if (res?.update_available) {
       console.log(`[Updater] RPC gate: update to v${res.latest_version} allowed (force=${res.force_update})`)
       return true
@@ -6198,6 +6206,23 @@ app.whenReady().then(async () => {
       return { success: released };
     } catch (e) {
       return { success: false, error: e.message };
+    }
+  })
+  ipcMain.handle('mesh:getDiagnostics', () => getMeshHealthSnapshot())
+  ipcMain.handle('mesh:refreshDiscovery', async () => {
+    try {
+      await refreshMeshDiscovery()
+      return { success: true, mesh: getMeshHealthSnapshot() }
+    } catch (e) {
+      return { success: false, error: e.message, mesh: getMeshHealthSnapshot() }
+    }
+  })
+  ipcMain.handle('mesh:connectManualPeer', async (_, address, port) => {
+    try {
+      const result = await connectManualMeshPeer(address, port)
+      return { ...result, mesh: getMeshHealthSnapshot() }
+    } catch (e) {
+      return { success: false, error: e.message, mesh: getMeshHealthSnapshot() }
     }
   })
   ipcMain.handle('app:logRendererError', async (_, payload) => appendRendererErrorLog(payload || {}))

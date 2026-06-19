@@ -222,6 +222,9 @@ const api = {
   mesh: {
     lockRoom: (roomId, startDate, endDate) => ipcRenderer.invoke('mesh:lockRoom', roomId, startDate, endDate),
     unlockRoom: (lockId) => ipcRenderer.invoke('mesh:unlockRoom', lockId),
+    getDiagnostics: () => ipcRenderer.invoke('mesh:getDiagnostics'),
+    refreshDiscovery: () => ipcRenderer.invoke('mesh:refreshDiscovery'),
+    connectManualPeer: (address, port) => ipcRenderer.invoke('mesh:connectManualPeer', address, port || null),
     onConflictDetected: (cb) => {
       const listener = (_, payload) => cb(payload)
       ipcRenderer.on('mesh:conflict-detected', listener)

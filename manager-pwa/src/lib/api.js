@@ -396,10 +396,11 @@ async function buildReportsSnapshotLegacy(lodgeId, today = formatDate(new Date()
   const reportCashStart = `${lastMonthStart}T00:00:00`
   const reportCashEnd = `${monthEnd}T23:59:59`
 
-  const [rooms, bookings, payments, expenses, posOrders, conferenceBookings, poolDayUse] = await Promise.all([
+  const [rooms, bookings, payments, refundApprovals, expenses, posOrders, conferenceBookings, poolDayUse] = await Promise.all([
     safeSelect(supabase.from('rooms').select('id').eq('lodge_id', lodgeId), []),
     safeSelectPaged(() => supabase.from('bookings').select('id, check_in, check_out, total_amount, charges_total, amount_paid, payment_status, status').eq('lodge_id', lodgeId), []),
     safeSelect(supabase.from('payments').select('booking_id, amount, paid_at, type').eq('lodge_id', lodgeId).gte('paid_at', reportCashStart).lte('paid_at', reportCashEnd), []),
+    safeSelect(supabase.from('refund_approval_log').select('booking_id, retained_amount, created_at').eq('lodge_id', lodgeId).gte('created_at', reportCashStart).lte('created_at', reportCashEnd), []),
     safeSelect(supabase.from('expenses').select('amount, date').eq('lodge_id', lodgeId).gte('date', monthStart).lte('date', monthEnd), []),
     safeSelect(supabase.from('pos_orders').select('total, created_at').eq('lodge_id', lodgeId).gte('created_at', monthStart).neq('status', 'voided'), []),
     safeSelect(supabase.from('conference_bookings').select('total_amount, payment_status').eq('lodge_id', lodgeId).gte('booking_date', monthStart).lte('booking_date', monthEnd).neq('payment_status', 'cancelled'), []),
@@ -420,26 +421,21 @@ async function buildReportsSnapshotLegacy(lodgeId, today = formatDate(new Date()
       return paidAt >= start && paidAt <= end && Number(payment.amount || 0) < 0
     })
     .reduce((sum, payment) => sum + Math.abs(Number(payment.amount || 0)), 0)
-  const cancelledBookingIds = new Set(
-    bookings
-      .filter((booking) => String(booking.status || '') === 'cancelled')
-      .map((booking) => booking.id)
-      .filter(Boolean)
-  )
   const retainedForPeriod = (start, end) => {
     let retained = 0
     let count = 0
     const seenBookingIds = new Set()
-    for (const payment of payments) {
-      const paidAt = String(payment.paid_at || '').slice(0, 10)
-      if (paidAt < start || paidAt > end) continue
-      const amount = Number(payment.amount || 0)
+    const rows = refundApprovals.length > 0
+      ? refundApprovals
+      : payments.filter((payment) => String(payment.type || '').toLowerCase() === 'retention_fee')
+    for (const row of rows) {
+      const recognizedAt = String(row.created_at || row.paid_at || '').slice(0, 10)
+      if (recognizedAt < start || recognizedAt > end) continue
+      const amount = Math.max(0, Number(row.retained_amount ?? row.amount ?? 0))
       if (amount <= 0) continue
-      if (String(payment.type || '').toLowerCase() === 'refund') continue
-      if (!cancelledBookingIds.has(payment.booking_id)) continue
       retained += amount
-      if (payment.booking_id && !seenBookingIds.has(payment.booking_id)) {
-        seenBookingIds.add(payment.booking_id)
+      if (row.booking_id && !seenBookingIds.has(row.booking_id)) {
+        seenBookingIds.add(row.booking_id)
         count += 1
       }
     }

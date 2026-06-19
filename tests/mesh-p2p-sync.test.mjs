@@ -720,6 +720,19 @@ async function runTests() {
     assert.deepEqual(nonRpcQueueCalls, [], 'All offline mutations must be RPC operations');
   });
 
+  await runTest('Extender-resilient discovery and firewall-friendly ports are configured', async () => {
+    const discovery = await fs.readFile(path.join(workspaceRoot, 'src', 'main', 'domains', 'mesh', 'meshDiscovery.js'), 'utf8');
+    const server = await fs.readFile(path.join(workspaceRoot, 'src', 'main', 'domains', 'mesh', 'meshServer.js'), 'utf8');
+    const stateSource = await fs.readFile(path.join(workspaceRoot, 'src', 'main', 'domains', 'mesh', 'meshState.js'), 'utf8');
+    assert.match(discovery, /os\.networkInterfaces\(\)/, 'Discovery must inspect each active network adapter');
+    assert.match(discovery, /entry\.broadcast/, 'Discovery must use adapter-specific broadcast addresses');
+    assert.match(discovery, /connectManualMeshPeer/, 'Manual IP fallback must be available');
+    assert.match(discovery, /probeRememberedMeshPeers/, 'Previously seen peers must be retried directly');
+    assert.match(server, /MESH_HTTP_PORT_START = 53536/);
+    assert.match(server, /MESH_HTTP_PORT_END = 53545/);
+    assert.match(stateSource, /mesh-peers\.json/, 'Remembered peers must survive restart');
+  });
+
   console.log('----------------------------------------------------');
   console.log(`📊 P2P sync mesh tests completed: Passed ${passed}/${passed + failed}, Failed ${failed}`);
   console.log('----------------------------------------------------');

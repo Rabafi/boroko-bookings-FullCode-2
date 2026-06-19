@@ -145,7 +145,10 @@ export async function updateRelease(version, updates = {}) {
 
 export async function checkUpdateAvailability(currentVersion, deviceId = null) {
   try {
-    const { data, error } = await adminRpc('app_check_update_availability', {
+    if (!state.supabase) {
+      throw new Error('The client update service is not initialized')
+    }
+    const { data, error } = await state.supabase.rpc('app_check_update_availability', {
       p_current_version: currentVersion,
       ...(deviceId ? { p_device_id: deviceId } : {})
     })

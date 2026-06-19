@@ -1677,6 +1677,13 @@ function getQuotationNights(checkIn, checkOut) {
   return Math.ceil((end - start) / (1000 * 60 * 60 * 24));
 }
 
+function normalizeQuotationCurrency(value, fallback = 'BWP') {
+  const candidate = String(value || '').trim();
+  if (candidate && candidate.length <= 8 && !/\d/.test(candidate)) return candidate;
+  const safeFallback = String(fallback || 'BWP').trim();
+  return safeFallback && safeFallback.length <= 8 && !/\d/.test(safeFallback) ? safeFallback : 'BWP';
+}
+
 function buildQuotationEventNotes(quotation, roomCount) {
   const groupId = `evt-quotation-${quotation.id}`;
   const notes = [
@@ -1718,7 +1725,7 @@ function buildQuotationRecord(data, overrides = {}) {
     subtotal,
     tax_amount,
     total_amount,
-    currency: data.currency || 'BWP',
+    currency: normalizeQuotationCurrency(data.currency),
     notes: data.notes || '',
     status: 'draft',
     valid_until: data.valid_until || null,
@@ -1762,7 +1769,7 @@ function normalizeQuotationForDisplay(q, { customer = null, room = null, convert
     subtotal,
     tax_amount: taxAmount,
     total_amount: totalAmount,
-    currency: q.currency || 'BWP',
+    currency: normalizeQuotationCurrency(q.currency),
     notes: q.notes || '',
     valid_until: q.valid_until || null,
     created_at: q.created_at || q.updated_at || new Date(0).toISOString(),

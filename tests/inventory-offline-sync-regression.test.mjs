@@ -12,11 +12,13 @@ import {
 import {
   computeDayUseBaseTotal,
   computeDayUseEndTime,
+  DEFAULT_DAY_USE_RESOURCES,
   findDayUseResourceConflict,
   normalizeDayUseExtraPreset,
   normalizeDayUsePricingMode,
   normalizeDayUseStatus,
-  normalizeDayUseTemplate
+  normalizeDayUseTemplate,
+  resolveDayUseResources
 } from '../src/shared/dayUseConfig.js'
 import { patchQueuedDayUseEntryPayload } from '../src/main/domains/dayUseDrafts.js'
 
@@ -236,6 +238,11 @@ function testDayUseReportRichFields() {
   assert.equal(row.serviceNotes, 'Set up chairs')
 }
 
+function testEmptyDayUseResourcesStayDeleted() {
+  assert.deepEqual(resolveDayUseResources({ day_use_resources: [] }), [])
+  assert.equal(resolveDayUseResources({}).length, DEFAULT_DAY_USE_RESOURCES.length)
+}
+
 function run() {
   testQueuedDraftPatch()
   testQueuedDraftPatchMiss()
@@ -247,6 +254,7 @@ function run() {
   testDayUsePricingHelpers()
   testDayUseTemplateBundlesAndConflictHelpers()
   testDayUseReportRichFields()
+  testEmptyDayUseResourcesStayDeleted()
   console.log('\x1b[32m%s\x1b[0m', '✓ Inventory draft sync and day-use reporting checks passed!')
 }
 

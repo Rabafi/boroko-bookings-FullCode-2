@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import dgram from 'dgram';
 import fs from 'fs';
 import http from 'http';
+import os from 'os';
 import path from 'path';
 import { URL } from 'url';
 
@@ -9,6 +10,8 @@ const DISCOVERY_PORT = 53535;
 const MULTICAST_ADDRESS = '239.255.0.1';
 const REQUEST_TOLERANCE_MS = 30_000;
 const PEER_STALE_MS = 75_000;
+const MESH_HTTP_PORT_START = 53536;
+const MESH_HTTP_PORT_END = 53545;
 const SHAREABLE_POS_OPERATIONS = new Set([
   'create_pos_order_v3',
   'finalize_pos_shift_cashup_v2',
@@ -94,6 +97,72 @@ function readOrCreateNodeId(cacheDir) {
   return nodeId;
 }
 
+function ipv4ToInt(address) {
+  return address.split('.').reduce((value, part) => ((value << 8) | Number(part)) >>> 0, 0);
+}
+
+function intToIpv4(value) {
+  return [24, 16, 8, 0].map((shift) => (value >>> shift) & 255).join('.');
+}
+
+function isPrivateIpv4(address) {
+  const parts = String(address || '').split('.').map(Number);
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return false;
+  return parts[0] === 10 ||
+    (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) ||
+    (parts[0] === 192 && parts[1] === 168) ||
+    parts[0] === 127;
+}
+
+function getLocalInterfaces() {
+  const rows = [];
+  for (const [name, addresses] of Object.entries(os.networkInterfaces())) {
+    for (const entry of addresses || []) {
+      if (entry.family !== 'IPv4' || entry.internal || !entry.address || !entry.netmask || !isPrivateIpv4(entry.address)) continue;
+      const addressInt = ipv4ToInt(entry.address);
+      const maskInt = ipv4ToInt(entry.netmask);
+      const networkInt = addressInt & maskInt;
+      rows.push({
+        name,
+        address: entry.address,
+        netmask: entry.netmask,
+        network: intToIpv4(networkInt),
+        broadcast: intToIpv4((networkInt | (~maskInt >>> 0)) >>> 0)
+      });
+    }
+  }
+  return rows;
+}
+
+function readRememberedPeers(cacheDir) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(cacheDir, 'legacy-mesh-peers.json'), 'utf8'));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function rememberPeer(cacheDir, peer) {
+  const existing = readRememberedPeers(cacheDir);
+  const next = [
+    {
+      nodeId: peer.nodeId,
+      address: peer.address,
+      httpPort: peer.httpPort,
+      manual: peer.manual === true,
+      lastSeenAt: new Date().toISOString()
+    },
+    ...existing.filter((entry) =>
+      entry.nodeId !== peer.nodeId &&
+      `${entry.address}:${entry.httpPort}` !== `${peer.address}:${peer.httpPort}`
+    )
+  ].slice(0, 12);
+  try {
+    fs.writeFileSync(path.join(cacheDir, 'legacy-mesh-peers.json'), JSON.stringify(next, null, 2), 'utf8');
+  } catch {}
+}
+
 export function createLegacyMeshController({
   cacheDir,
   getLodgeId,
@@ -113,11 +182,15 @@ export function createLegacyMeshController({
     peers: new Map(),
     nonces: new Map(),
     lastMergeAt: null,
-    lastError: ''
+    lastError: '',
+    localInterfaces: [],
+    discoveryTargets: [],
+    lastBeaconAt: null
   };
   let beaconTimer = null;
   let syncTimer = null;
   let ensureTimer = null;
+  let rememberedTimer = null;
 
   const status = () => {
     const now = Date.now();
@@ -128,8 +201,23 @@ export function createLegacyMeshController({
       running: mesh.running,
       nodeId: mesh.nodeId,
       peerCount: mesh.peers.size,
+      peers: [...mesh.peers.values()],
       lastMergeAt: mesh.lastMergeAt,
-      lastError: mesh.lastError
+      lastError: mesh.lastError,
+      httpPort: mesh.httpPort,
+      localInterfaces: mesh.localInterfaces,
+      discoveryTargets: mesh.discoveryTargets,
+      rememberedPeerCount: readRememberedPeers(cacheDir).length,
+      lastBeaconAt: mesh.lastBeaconAt,
+      warnings: [
+        ...(mesh.localInterfaces.length === 0 ? ['No active private lodge network was found.'] : []),
+        ...(mesh.running && mesh.peers.size === 0
+          ? ['No nearby Boroko devices found. Check extender client isolation, Windows Firewall, or add the other device IP manually.']
+          : []),
+        ...[...mesh.peers.values()]
+          .filter((peer) => peer.sameSubnet === false)
+          .map((peer) => `${peer.address} is on a different subnet.`)
+      ]
     };
   };
   const publishStatus = () => onStatus?.(status());
@@ -199,16 +287,33 @@ export function createLegacyMeshController({
         res.end(JSON.stringify({ error: 'Route not found' }));
       });
     });
-    mesh.server.listen(0, '0.0.0.0', () => {
-      mesh.httpPort = mesh.server.address().port;
-      mesh.running = true;
-      publishStatus();
-      broadcastBeacon();
-    });
-    mesh.server.on('error', (error) => {
+    const runtimeError = (error) => {
       mesh.lastError = error.message;
       publishStatus();
-    });
+    };
+    const tryPort = (port) => {
+      const onError = (error) => {
+        mesh.server.removeListener('listening', onListening);
+        if (error?.code === 'EADDRINUSE' && port < MESH_HTTP_PORT_END) {
+          tryPort(port + 1);
+          return;
+        }
+        runtimeError(error);
+      };
+      const onListening = () => {
+        mesh.server.removeListener('error', onError);
+        mesh.httpPort = port;
+        mesh.running = true;
+        mesh.lastError = '';
+        mesh.server.on('error', runtimeError);
+        publishStatus();
+        broadcastBeacon();
+      };
+      mesh.server.once('error', onError);
+      mesh.server.once('listening', onListening);
+      mesh.server.listen(port, '0.0.0.0');
+    };
+    tryPort(MESH_HTTP_PORT_START);
   }
 
   async function signedRequest(peer, requestPath) {
@@ -235,13 +340,28 @@ export function createLegacyMeshController({
     }
   }
 
-  async function handshake(nodeId, address, httpPort) {
+  function sameSubnet(address) {
+    const target = ipv4ToInt(address);
+    return mesh.localInterfaces.some((entry) =>
+      (target & ipv4ToInt(entry.netmask)) === ipv4ToInt(entry.network)
+    );
+  }
+
+  async function handshake(nodeId, address, httpPort, metadata = {}) {
     const peer = { nodeId, address, httpPort, lastSeenAt: Date.now() };
     const hello = await signedRequest(peer, '/mesh/hello');
-    if (hello?.nodeId !== nodeId || hello?.lodgeId !== mesh.lodgeId) throw new Error('Mesh handshake identity mismatch');
-    mesh.peers.set(nodeId, peer);
+    if (hello?.nodeId === mesh.nodeId || (nodeId && hello?.nodeId !== nodeId) || hello?.lodgeId !== mesh.lodgeId) {
+      throw new Error('Mesh handshake identity mismatch');
+    }
+    peer.nodeId = hello.nodeId;
+    peer.manual = metadata.manual === true;
+    peer.discoverySource = metadata.discoverySource || 'broadcast';
+    peer.sameSubnet = sameSubnet(address);
+    mesh.peers.set(peer.nodeId, peer);
+    rememberPeer(cacheDir, peer);
     publishStatus();
     await syncQueues();
+    return peer;
   }
 
   function broadcastBeacon() {
@@ -253,8 +373,10 @@ export function createLegacyMeshController({
       httpPort: mesh.httpPort,
       clientType: 'legacy-pos'
     }));
-    mesh.socket.send(payload, DISCOVERY_PORT, MULTICAST_ADDRESS, () => {});
-    mesh.socket.send(payload, DISCOVERY_PORT, '255.255.255.255', () => {});
+    for (const target of mesh.discoveryTargets) {
+      mesh.socket.send(payload, DISCOVERY_PORT, target, () => {});
+    }
+    mesh.lastBeaconAt = new Date().toISOString();
   }
 
   function startDiscovery() {
@@ -268,7 +390,7 @@ export function createLegacyMeshController({
           existing.lastSeenAt = Date.now();
           return;
         }
-        handshake(hello.nodeId, remote.address, Number(hello.httpPort)).catch((error) => {
+        handshake(hello.nodeId, remote.address, Number(hello.httpPort), { discoverySource: 'broadcast' }).catch((error) => {
           mesh.lastError = error.message;
           publishStatus();
         });
@@ -282,10 +404,53 @@ export function createLegacyMeshController({
       mesh.socket.setBroadcast(true);
       mesh.socket.setMulticastLoopback(true);
       mesh.socket.setMulticastTTL(4);
-      mesh.socket.addMembership(MULTICAST_ADDRESS);
+      for (const entry of mesh.localInterfaces) {
+        try { mesh.socket.addMembership(MULTICAST_ADDRESS, entry.address); } catch {}
+      }
+      if (mesh.localInterfaces.length === 0) {
+        try { mesh.socket.addMembership(MULTICAST_ADDRESS); } catch {}
+      }
       broadcastBeacon();
     });
     beaconTimer = setInterval(broadcastBeacon, 30_000);
+  }
+
+  async function scanAddress(address, metadata = {}) {
+    if (!isPrivateIpv4(address)) throw new Error('Enter a private lodge-network IP such as 192.168.1.25.');
+    const attempts = [];
+    for (let port = MESH_HTTP_PORT_START; port <= MESH_HTTP_PORT_END; port += 1) {
+      attempts.push(handshake(null, address, port, metadata));
+    }
+    try {
+      return await Promise.any(attempts);
+    } catch (error) {
+      const messages = Array.isArray(error?.errors)
+        ? error.errors.map((entry) => String(entry?.message || entry || ''))
+        : [];
+      if (messages.some((message) => /timestamp drift|clock/i.test(message))) {
+        throw new Error(`The clock on ${address} differs too much. Correct the date and time on both computers, then try again.`);
+      }
+      throw new Error(`No Boroko device responded at ${address}. Check Windows Firewall and extender client isolation.`);
+    }
+  }
+
+  async function probeRememberedPeers() {
+    if (!mesh.running) return;
+    await Promise.all(readRememberedPeers(cacheDir).map(async (peer) => {
+      try {
+        await handshake(peer.nodeId || null, peer.address, Number(peer.httpPort), {
+          manual: peer.manual === true,
+          discoverySource: 'remembered'
+        });
+      } catch {
+        try {
+          await scanAddress(peer.address, {
+            manual: peer.manual === true,
+            discoverySource: 'remembered-port-scan'
+          });
+        } catch {}
+      }
+    }));
   }
 
   async function syncQueues() {
@@ -331,8 +496,10 @@ export function createLegacyMeshController({
   function stopRuntime() {
     clearInterval(beaconTimer);
     clearInterval(syncTimer);
+    clearInterval(rememberedTimer);
     beaconTimer = null;
     syncTimer = null;
+    rememberedTimer = null;
     try { mesh.socket?.close(); } catch {}
     try { mesh.server?.close(); } catch {}
     mesh.socket = null;
@@ -356,9 +523,17 @@ export function createLegacyMeshController({
     mesh.lodgeId = lodgeId;
     mesh.secret = secret;
     mesh.lastError = '';
+    mesh.localInterfaces = getLocalInterfaces();
+    mesh.discoveryTargets = [
+      MULTICAST_ADDRESS,
+      '255.255.255.255',
+      ...new Set(mesh.localInterfaces.map((entry) => entry.broadcast))
+    ];
     startServer();
     startDiscovery();
     syncTimer = setInterval(syncQueues, 15_000);
+    rememberedTimer = setInterval(probeRememberedPeers, 45_000);
+    setTimeout(() => probeRememberedPeers().catch(() => {}), 1000);
   }
 
   return {
@@ -372,6 +547,26 @@ export function createLegacyMeshController({
       stopRuntime();
     },
     syncNow: syncQueues,
+    refreshDiscovery: async () => {
+      mesh.localInterfaces = getLocalInterfaces();
+      mesh.discoveryTargets = [
+        MULTICAST_ADDRESS,
+        '255.255.255.255',
+        ...new Set(mesh.localInterfaces.map((entry) => entry.broadcast))
+      ];
+      broadcastBeacon();
+      await probeRememberedPeers();
+      publishStatus();
+      return status();
+    },
+    connectManual: async (address) => {
+      const peer = await scanAddress(String(address || '').trim(), {
+        manual: true,
+        discoverySource: 'manual'
+      });
+      publishStatus();
+      return { success: true, peer, status: status() };
+    },
     getStatus: status
   };
 }

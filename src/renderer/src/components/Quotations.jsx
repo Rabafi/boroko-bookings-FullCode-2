@@ -111,7 +111,9 @@ function isFinanciallyLocked(q) {
 }
 
 function fmt(amount, currency) {
-  return `${currency || 'BWP'} ${Number(amount || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  const safeCurrency = String(currency || 'BWP').trim()
+  const currencyLabel = safeCurrency.length <= 8 && !/\d/.test(safeCurrency) ? safeCurrency : 'BWP'
+  return `${currencyLabel} ${Number(amount || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
 function quotationNights(checkIn, checkOut) {
@@ -601,7 +603,7 @@ export default function Quotations() {
   function openCreate() {
     setPageError('')
     setEditingId(null)
-    setForm(emptyForm)
+    setForm({ ...emptyForm, currency })
     setFormError('')
     setFinancialLocked(false)
     setUseNewCustomer(true)
@@ -1306,10 +1308,10 @@ export default function Quotations() {
                 </label>
                 <input
                   type="text"
-                  disabled={financialLocked}
-                  className={`input ${financialLocked ? 'opacity-50 cursor-not-allowed' : ''}`}
-                  value={form.currency}
-                  onChange={e => setForm(f => ({ ...f, currency: e.target.value }))}
+                  disabled
+                  className="input opacity-70 cursor-not-allowed"
+                  value={currency}
+                  readOnly
                 />
               </div>
             </div>

@@ -2816,6 +2816,13 @@ function registerIpcHandlers() {
     await legacyMeshController?.syncNow?.();
     return { ...state.meshStatus };
   });
+  ipcMain.handle('pos:mesh-refresh-discovery', async () => {
+    const next = await legacyMeshController?.refreshDiscovery?.();
+    return next || { ...state.meshStatus };
+  });
+  ipcMain.handle('pos:mesh-connect-manual', async (_event, address) => {
+    return legacyMeshController?.connectManual?.(address);
+  });
 
   ipcMain.handle('pos:update-get-state', () => ({
     ...updateState,

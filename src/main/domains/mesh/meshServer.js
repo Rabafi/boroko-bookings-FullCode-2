@@ -6,6 +6,9 @@ import { readSyncQueue } from '../syncStore.js';
 import { registerRemoteLock, releaseRemoteLock } from './meshLocks.js';
 import { getQueueItemBodyHash, isMeshShareableQueueItem } from './meshQueueMerge.js';
 
+export const MESH_HTTP_PORT_START = 53536;
+export const MESH_HTTP_PORT_END = 53545;
+
 /**
  * Starts the P2P dynamic local HTTP server.
  */
@@ -143,7 +146,7 @@ export function startMeshServer(lodgeMeshSecret) {
           const idsParam = parsedUrl.query.ids || '';
           const requestedIds = new Set(idsParam.split(',').map((id) => id.trim()).filter(Boolean));
 
-          const queue = readSyncQueue();
+          const queue = readSyncQueue().filter(isMeshShareableQueueItem);
           const matchedItems = queue.filter((item) => requestedIds.has(item._queue_id));
 
           res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -162,20 +165,36 @@ export function startMeshServer(lodgeMeshSecret) {
     });
   });
 
-  // Bind to a dynamic local port on standard local interfaces
-  server.listen(0, '0.0.0.0', () => {
-    const address = server.address();
-    meshState.httpPort = address.port;
-    meshState.server = server;
-    meshState.running = true;
-    console.log(`[MeshServer] P2P HTTP Server successfully bound to dynamic port: ${address.port}`);
-  });
-
-  server.on('error', (err) => {
+  const handleRuntimeError = (err) => {
     console.error('[MeshServer] P2P HTTP Server experienced an error:', err);
     meshState.lastError = err.message;
     meshState.running = false;
-  });
+  };
+
+  const tryPort = (port) => {
+    const onBindError = (error) => {
+      server.removeListener('listening', onListening);
+      if (error?.code === 'EADDRINUSE' && port < MESH_HTTP_PORT_END) {
+        tryPort(port + 1);
+        return;
+      }
+      handleRuntimeError(error);
+    };
+    const onListening = () => {
+      server.removeListener('error', onBindError);
+      meshState.httpPort = port;
+      meshState.server = server;
+      meshState.running = true;
+      meshState.lastError = null;
+      server.on('error', handleRuntimeError);
+      console.log(`[MeshServer] P2P HTTP Server bound to predictable port ${port}`);
+    };
+    server.once('error', onBindError);
+    server.once('listening', onListening);
+    server.listen(port, '0.0.0.0');
+  };
+
+  tryPort(MESH_HTTP_PORT_START);
 }
 
 /**

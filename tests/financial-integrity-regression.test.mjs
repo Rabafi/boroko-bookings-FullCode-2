@@ -31,6 +31,10 @@ async function run() {
   const baselineSql = await read('supabase/migrations/20260526101632_baseline_20260526_remote_schema.sql')
   const paymentSql = await read('supabase/migrations/20260612193000_legacy_pos_database_contract.sql')
   const poolMeshSql = await read('supabase/migrations/20260618211000_pool_day_use_mesh_contract.sql')
+  const retainedFeeReportingSql = await read('supabase/migrations/20260619120000_fix_refund_retained_fee_reporting.sql')
+  const clientUpdateGateSql = await read('supabase/migrations/20260619133000_client_safe_update_gate.sql')
+  const reports = await read('src/main/domains/reports.js')
+  const packageJson = JSON.parse(await read('package.json'))
 
   const createBooking = functionSection(
     bookings,
@@ -137,6 +141,27 @@ async function run() {
   assert.match(baselineSql, /insert into public\.invoice_sequences[\s\S]*on conflict \(lodge_id, year\)[\s\S]*do update/)
   assert.match(baselineSql, /CREATE UNIQUE INDEX invoices_lodge_id_invoice_number_key/)
   assert.match(paymentSql, /from public\.bookings[\s\S]*for update/)
+  assert.match(retainedFeeReportingSql, /from public\.refund_approval_log/)
+  assert.match(retainedFeeReportingSql, /sum\(greatest\(coalesce\(r\.retained_amount, 0\), 0\)\)/)
+  assert.doesNotMatch(
+    retainedFeeReportingSql,
+    /cb\.id is not null[\s\S]*pw\.amount > 0/,
+    'retained fee reporting must not reinterpret original cancelled-booking payments as fees'
+  )
+  assert.doesNotMatch(
+    reports,
+    /cancelledBookingIds\.has\(payment\.booking_id\)[\s\S]*retained \+= amount/,
+    'desktop fallback must not count the original payment as a retained fee'
+  )
+  assert.doesNotMatch(
+    pwaApi,
+    /cancelledBookingIds\.has\(payment\.booking_id\)[\s\S]*retained \+= amount/,
+    'PWA fallback must not count the original payment as a retained fee'
+  )
+  assert.match(clientUpdateGateSql, /grant execute on function public\.app_check_update_availability\(text, text\)[\s\S]*to anon, authenticated, service_role/)
+  assert.equal(packageJson.build.nsis.allowToChangeInstallationDirectory, false)
+  assert.equal(packageJson.build.nsis.perMachine, false)
+  assert.equal(packageJson.build.nsis.deleteAppDataOnUninstall, false)
 
   console.log('financial-integrity-regression: ok')
 }

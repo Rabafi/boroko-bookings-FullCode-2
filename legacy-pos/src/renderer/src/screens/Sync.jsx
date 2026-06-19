@@ -12,6 +12,8 @@ export default function Sync({ user, isOnline, setIsOnline }) {
   const [updateInfo, setUpdateInfo] = useState(null);
   const [updateBusy, setUpdateBusy] = useState('');
   const [meshStatus, setMeshStatus] = useState(null);
+  const [manualMeshIp, setManualMeshIp] = useState('');
+  const [meshBusy, setMeshBusy] = useState(false);
 
   const loadStatus = useCallback(async () => {
     try {
@@ -202,7 +204,7 @@ export default function Sync({ user, isOnline, setIsOnline }) {
           </div>
 
           <div className="rounded-xl border border-slate-200 bg-white p-6 lg:col-span-2">
-            <div className="flex items-center justify-between gap-3">
+            <div className="flex items-start justify-between gap-3">
               <div>
                 <h2 className="font-bold text-slate-800">Local Lodge Mesh</h2>
                 <p className="mt-1 text-sm text-slate-600">
@@ -213,17 +215,82 @@ export default function Sync({ user, isOnline, setIsOnline }) {
                 {meshStatus?.lastMergeAt && (
                   <p className="mt-1 text-xs text-slate-400">Last local exchange: {new Date(meshStatus.lastMergeAt).toLocaleString()}</p>
                 )}
+                <p className="mt-1 text-xs text-slate-400">
+                  Listening port: {meshStatus?.httpPort || 'starting'} · Remembered devices: {meshStatus?.rememberedPeerCount || 0}
+                </p>
               </div>
               <button
                 onClick={async () => {
-                  const next = await window.api.pos.mesh?.syncNow?.();
-                  if (next) setMeshStatus(next);
+                  setMeshBusy(true);
+                  try {
+                    const next = await window.api.pos.mesh?.refreshDiscovery?.();
+                    if (next) setMeshStatus(next);
+                  } finally {
+                    setMeshBusy(false);
+                  }
                 }}
-                disabled={!meshStatus?.running}
+                disabled={!meshStatus?.running || meshBusy}
+                className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50">
+                Search Again
+              </button>
+            </div>
+            <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+              <input
+                value={manualMeshIp}
+                onChange={(event) => setManualMeshIp(event.target.value)}
+                placeholder="Other device IP, e.g. 192.168.1.25"
+                className="min-w-0 flex-1 rounded-lg border border-slate-200 px-3 py-2 text-sm"
+              />
+              <button
+                onClick={async () => {
+                  if (!manualMeshIp.trim()) return;
+                  setMeshBusy(true);
+                  try {
+                    const result = await window.api.pos.mesh?.connectManual?.(manualMeshIp.trim());
+                    if (result?.success) {
+                      setMeshStatus(result.status);
+                      setManualMeshIp('');
+                    } else {
+                      alert(result?.error || 'Could not reach that Boroko device.');
+                    }
+                  } catch (error) {
+                    alert(error?.message || 'Could not reach that Boroko device.');
+                  } finally {
+                    setMeshBusy(false);
+                  }
+                }}
+                disabled={meshBusy || !manualMeshIp.trim()}
+                className="rounded-lg bg-emerald-600 px-3 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-50">
+                Connect IP
+              </button>
+              <button
+                onClick={async () => {
+                  setMeshBusy(true);
+                  try {
+                    const next = await window.api.pos.mesh?.syncNow?.();
+                    if (next) setMeshStatus(next);
+                  } finally {
+                    setMeshBusy(false);
+                  }
+                }}
+                disabled={!meshStatus?.running || meshBusy}
                 className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50">
                 Exchange Now
               </button>
             </div>
+            {Array.isArray(meshStatus?.localInterfaces) && meshStatus.localInterfaces.length > 0 && (
+              <p className="mt-3 text-xs text-slate-500">
+                Network: {meshStatus.localInterfaces.map((entry) => `${entry.name} ${entry.address}`).join(' · ')}
+              </p>
+            )}
+            <p className="mt-2 text-xs text-slate-500">
+              Different Wi-Fi names are okay when the extender uses Bridge/AP mode and Windows Firewall allows Boroko on Private networks.
+            </p>
+            {Array.isArray(meshStatus?.warnings) && meshStatus.warnings.map((warning) => (
+              <div key={warning} className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                {warning}
+              </div>
+            ))}
           </div>
 
           {activeItems.length > 0 && (

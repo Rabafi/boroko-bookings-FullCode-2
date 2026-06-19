@@ -130,7 +130,9 @@ const posAPI = {
   },
   mesh: {
     getStatus: () => ipcRenderer.invoke('pos:get-mesh-status'),
-    syncNow: () => ipcRenderer.invoke('pos:mesh-sync-now')
+    syncNow: () => ipcRenderer.invoke('pos:mesh-sync-now'),
+    refreshDiscovery: () => ipcRenderer.invoke('pos:mesh-refresh-discovery'),
+    connectManual: (address) => ipcRenderer.invoke('pos:mesh-connect-manual', address)
   },
 
   // Bootstrap & Window

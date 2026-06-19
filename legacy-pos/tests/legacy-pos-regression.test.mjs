@@ -1831,8 +1831,15 @@ test('Legacy POS participates in the authenticated local lodge mesh', () => {
   assert.ok(mesh.includes('finalize_pos_shift_cashup_v2'), 'Legacy mesh must exchange atomic cash-ups');
   assert.ok(mesh.includes('hasMachineBoundSecret'), 'Machine-bound approval secrets must not leave their origin device');
   assert.ok(mesh.includes('createHmac'), 'Mesh requests must be authenticated');
+  assert.ok(mesh.includes('os.networkInterfaces()'), 'Legacy mesh must inspect each network adapter');
+  assert.ok(mesh.includes('entry.broadcast'), 'Legacy mesh must send adapter-specific broadcasts');
+  assert.ok(mesh.includes('MESH_HTTP_PORT_START = 53536'), 'Legacy mesh must use the predictable firewall port range');
+  assert.ok(mesh.includes('connectManual'), 'Legacy POS must support manual IP fallback');
+  assert.ok(mesh.includes('legacy-mesh-peers.json'), 'Legacy POS must remember successful peers');
   assert.ok(preload.includes('pos:get-mesh-status'), 'Renderer must be able to inspect mesh health');
   assert.ok(syncScreen.includes('Local Lodge Mesh'), 'Operators must be shown local mesh status');
+  assert.ok(syncScreen.includes('Connect IP'), 'Operators must have a manual IP fallback');
+  assert.ok(syncScreen.includes('Bridge/AP mode'), 'Extender setup guidance must be visible');
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════

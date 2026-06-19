@@ -104,8 +104,13 @@ async function getRevenueReportLocal(startDate, endDate) {
   );
   let bookings = [];
   let paymentEvents = [];
+  let refundApprovals = [];
   try {
-    const [{ data: bookingRows, error: bookingError }, { data: paymentRows, error: paymentError }] = await Promise.all([
+    const [
+      { data: bookingRows, error: bookingError },
+      { data: paymentRows, error: paymentError },
+      { data: refundRows, error: refundError }
+    ] = await Promise.all([
     state.supabase.
     from('bookings').
     select('id, total_amount, charges_total, amount_paid, status, payment_status, check_in, check_out, is_exclusive_event, notes, event_daily_rate, vat_enabled, vat_rate').
@@ -117,7 +122,13 @@ async function getRevenueReportLocal(startDate, endDate) {
     select('booking_id, amount, method, type, paid_at').
     eq('lodge_id', state.lodgeId).
     gte('paid_at', paymentWindowStart).
-    lte('paid_at', paymentWindowEnd)]
+    lte('paid_at', paymentWindowEnd),
+    state.supabase.
+    from('refund_approval_log').
+    select('booking_id, retained_amount, created_at').
+    eq('lodge_id', state.lodgeId).
+    gte('created_at', paymentWindowStart).
+    lte('created_at', paymentWindowEnd)]
     );
     if (bookingError) throw bookingError;
     if (paymentError) throw paymentError;
@@ -125,9 +136,11 @@ async function getRevenueReportLocal(startDate, endDate) {
     cachedBookingsInRange :
     bookingRows || [];
     paymentEvents = paymentRows || [];
+    refundApprovals = refundError ? [] : refundRows || [];
   } catch {
     bookings = cachedBookingsInRange;
     paymentEvents = [];
+    refundApprovals = [];
   }
 
   // Exclude cancelled bookings from all revenue aggregations.
@@ -136,18 +149,15 @@ async function getRevenueReportLocal(startDate, endDate) {
   const cancelledCount = bookings.filter((b) => (b.status || '') === 'cancelled').length;
   // Exclude both cancelled and pending: pending online requests are not financial commitments
   const revenueBookings = bookings.filter((b) => !['cancelled', 'pending'].includes(b.status || ''));
-  const cancelledBookingIds = new Set(
-    bookings.
-    filter((booking) => (booking.status || '') === 'cancelled').
-    map((booking) => booking.id).
-    filter(Boolean)
+  const explicitRetentionFees = paymentEvents.filter(
+    (payment) => String(payment?.type || '').toLowerCase() === 'retention_fee' && Number(payment?.amount || 0) > 0
   );
-  const cancelledRetainedPayments = paymentEvents.filter((payment) => {
-    if (!cancelledBookingIds.has(payment?.booking_id)) return false;
-    return String(payment?.type || '').toLowerCase() !== 'refund';
-  });
-  const retainedRevenue = cancelledRetainedPayments.reduce((sum, payment) => sum + (Number(payment?.amount) || 0), 0);
-  const cancelledRetained = Array.from(new Set(cancelledRetainedPayments.map((payment) => payment.booking_id).filter(Boolean)));
+  const retainedRows = refundApprovals.length > 0 ? refundApprovals : explicitRetentionFees;
+  const retainedRevenue = roundMoney(retainedRows.reduce(
+    (sum, row) => sum + Math.max(0, Number(row?.retained_amount ?? row?.amount ?? 0)),
+    0
+  ));
+  const cancelledRetained = Array.from(new Set(retainedRows.map((row) => row.booking_id).filter(Boolean)));
 
   // Split revenue-eligible bookings into regular vs exclusive-event room-rows.
   // allUnits is derived from revenueBookings ONLY — cancelled bookings must not affect
@@ -541,12 +551,6 @@ export async function getReportsSnapshot(today = getLocalDateKey(new Date(), LOC
   const refundsInRange = (start, end) => payments.
   filter((payment) => inRange(payment.paid_at, start, end) && (Number(payment.amount || 0) < 0 || String(payment.type || '').toLowerCase() === 'refund')).
   reduce((sum, payment) => sum + Math.abs(Number(payment.amount || 0)), 0);
-  const cancelledBookingIds = new Set(
-    bookings.
-    filter((booking) => String(booking?.status || '') === 'cancelled').
-    map((booking) => booking.id).
-    filter(Boolean)
-  );
   const retainedForRange = (start, end) => {
     let retained = 0;
     let count = 0;
@@ -555,8 +559,7 @@ export async function getReportsSnapshot(today = getLocalDateKey(new Date(), LOC
       if (!inRange(payment.paid_at, start, end)) continue;
       const amount = Number(payment.amount || 0);
       if (amount <= 0) continue;
-      if (String(payment.type || '').toLowerCase() === 'refund') continue;
-      if (!cancelledBookingIds.has(payment.booking_id)) continue;
+      if (String(payment.type || '').toLowerCase() !== 'retention_fee') continue;
       retained += amount;
       if (payment.booking_id && !seenBookingIds.has(payment.booking_id)) {
         seenBookingIds.add(payment.booking_id);

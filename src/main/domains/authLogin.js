@@ -745,16 +745,8 @@ export async function loginUser(email, password) {
         if (!authenticatedLodgeId) {
           throw new Error('The server authenticated this user but did not return a lodge ID.');
         }
-        if (state.lodgeId && authenticatedLodgeId !== normalizeLodgeId(state.lodgeId)) {
-          return {
-            user: null,
-            code: 'wrong_lodge',
-            error: 'This staff account belongs to a different lodge. Switch lodge profiles, then sign in again.'
-          };
-        }
-
         authContext = await getLodgeAuthContext(authenticatedLodgeId);
-        if (!state.lodgeId) {
+        if (!state.lodgeId || authenticatedLodgeId !== normalizeLodgeId(state.lodgeId)) {
           ensureReadyProfileForLodge(authenticatedLodgeId, {
             label: authContext?.lodge_display_name || online.user?.name || 'Existing Lodge'
           });

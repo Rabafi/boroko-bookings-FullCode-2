@@ -1,6 +1,6 @@
 {
   "name": "boroko-bookings",
-  "version": "1.5.0",
+  "version": "1.5.2",
   "type": "module",
   "description": "Boroko Lodge Booking Management System",
   "author": {
@@ -120,7 +120,12 @@
     "compression": "maximum",
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
+      "allowToChangeInstallationDirectory": false,
+      "perMachine": false,
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
+      "shortcutName": "Boroko Bookings",
+      "uninstallDisplayName": "Boroko Bookings",
       "deleteAppDataOnUninstall": false,
       "installerIcon": "src/main/assets/boroko-bookings-icon.ico",
       "uninstallerIcon": "src/main/assets/boroko-bookings-icon.ico",

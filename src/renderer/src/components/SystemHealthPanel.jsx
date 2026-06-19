@@ -270,6 +270,7 @@ export default function SystemHealthPanel() {
   const [rooms, setRooms]                 = useState([])
   const [customers, setCustomers]         = useState([])
   const [meshStatus, setMeshStatus]       = useState({ enabled: false, running: false, peerCount: 0, activeLocks: [] })
+  const [manualMeshIp, setManualMeshIp]   = useState('')
   // Track current pending count so post-sync polling can detect when items drain
   const pendingCountRef = useRef(0)
 
@@ -489,6 +490,38 @@ export default function SystemHealthPanel() {
     }
   }
 
+  const refreshLocalMesh = async () => {
+    setActionBusy('mesh-refresh')
+    try {
+      const result = await window.api.mesh.refreshDiscovery().catch((e) => ({ success: false, error: e.message }))
+      if (result?.mesh) setMeshStatus(result.mesh)
+      pushFlash(result?.success === false ? 'error' : 'success', result?.error || 'Nearby-device search refreshed.')
+    } finally {
+      setActionBusy('')
+    }
+  }
+
+  const connectManualMeshPeer = async () => {
+    const address = manualMeshIp.trim()
+    if (!address) {
+      pushFlash('error', 'Enter the other Boroko computer’s local IP address.')
+      return
+    }
+    setActionBusy('mesh-connect')
+    try {
+      const result = await window.api.mesh.connectManualPeer(address).catch((e) => ({ success: false, error: e.message }))
+      if (result?.mesh) setMeshStatus(result.mesh)
+      if (result?.success === false) {
+        pushFlash('error', result.error || 'Could not reach that Boroko device.')
+        return
+      }
+      setManualMeshIp('')
+      pushFlash('success', `Connected to Boroko device at ${address}.`)
+    } finally {
+      setActionBusy('')
+    }
+  }
+
   const sendReportToCommandCentral = async () => {
     setActionBusy('send-report')
     try {
@@ -604,6 +637,8 @@ export default function SystemHealthPanel() {
   const meshLastError          = String(meshStatus?.lastError || '').trim()
   const meshAutoStandby        = /missing lodge_mesh_secret/i.test(meshLastError)
   const meshStateLabel         = meshStatus?.running ? 'Running' : meshStatus?.enabled ? 'Starting' : meshAutoStandby ? 'Standby' : meshLastError ? 'Needs setup' : 'Off'
+  const meshWarnings           = Array.isArray(meshStatus?.warnings) ? meshStatus.warnings : []
+  const meshInterfaces         = Array.isArray(meshStatus?.localInterfaces) ? meshStatus.localInterfaces : []
   const criticalIssueCount     = criticalErrors.filter(isImportantIssueCritical).length
   const warningIssueCount      = Math.max(0, criticalErrors.length - criticalIssueCount)
 
@@ -1146,6 +1181,55 @@ export default function SystemHealthPanel() {
               <span key={peer.nodeId} className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-800">
                 {String(peer.nodeId).slice(0, 8)} · {formatTs(peer.lastSeenAt)}
               </span>
+            ))}
+          </div>
+        )}
+        <div className="mt-4 grid gap-3 lg:grid-cols-[1fr_auto]">
+          <div>
+            <label className="text-xs font-semibold text-gray-700">Add nearby device by local IP</label>
+            <input
+              value={manualMeshIp}
+              onChange={(event) => setManualMeshIp(event.target.value)}
+              placeholder="Example: 192.168.1.25"
+              className="mt-1 w-full rounded-xl border border-gray-200 px-3 py-2 text-sm outline-none focus:border-emerald-500"
+            />
+          </div>
+          <div className="flex items-end gap-2">
+            <button
+              onClick={refreshLocalMesh}
+              disabled={Boolean(actionBusy)}
+              className="rounded-xl border border-gray-200 px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-50">
+              Search again
+            </button>
+            <button
+              onClick={connectManualMeshPeer}
+              disabled={Boolean(actionBusy)}
+              className="rounded-xl bg-emerald-600 px-3 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-50">
+              Connect IP
+            </button>
+          </div>
+        </div>
+        <div className="mt-3 grid gap-2 text-xs text-gray-600 sm:grid-cols-2">
+          <div className="rounded-xl bg-gray-50 px-3 py-2">
+            Listening port: <span className="font-semibold text-gray-900">{meshStatus?.httpPort || 'Starting'}</span>
+          </div>
+          <div className="rounded-xl bg-gray-50 px-3 py-2">
+            Network: <span className="font-semibold text-gray-900">
+              {meshInterfaces.length > 0
+                ? meshInterfaces.map((entry) => `${entry.name} ${entry.address}`).join(' · ')
+                : 'No private network detected'}
+            </span>
+          </div>
+        </div>
+        <p className="mt-2 text-xs text-gray-500">
+          Wi-Fi names may differ. Devices can still connect when the extender uses Bridge/AP mode and Windows Firewall allows Boroko on Private networks.
+        </p>
+        {meshWarnings.length > 0 && (
+          <div className="mt-3 space-y-2">
+            {meshWarnings.map((warning) => (
+              <div key={warning} className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                {warning}
+              </div>
             ))}
           </div>
         )}

@@ -17,8 +17,58 @@ export const meshState = {
   server: null, // HTTP server instance
   discoverySocket: null, // UDP Socket
   serverNonceCache: new Set(), // Received nonces (HMAC replay protection)
-  lastQueueMergeAt: null
+  lastQueueMergeAt: null,
+  localInterfaces: [],
+  discoveryTargets: [],
+  lastBeaconAt: null,
+  lastPeerSeenAt: null,
+  lastDiscoveryError: null
 };
+
+const REMEMBERED_PEERS_FILE = 'mesh-peers.json';
+
+function rememberedPeersPath() {
+  return state.cacheDir ? path.join(state.cacheDir, REMEMBERED_PEERS_FILE) : null;
+}
+
+export function readRememberedMeshPeers() {
+  const filePath = rememberedPeersPath();
+  if (!filePath) return [];
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    return Array.isArray(parsed) ? parsed.filter((peer) =>
+      peer && typeof peer.address === 'string' && Number.isInteger(Number(peer.httpPort))
+    ) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function rememberMeshPeer(peer = {}) {
+  const filePath = rememberedPeersPath();
+  if (!filePath || !peer.address || !Number.isInteger(Number(peer.httpPort))) return;
+  const existing = readRememberedMeshPeers();
+  const key = peer.nodeId || `${peer.address}:${peer.httpPort}`;
+  const nextPeer = {
+    nodeId: peer.nodeId || null,
+    address: peer.address,
+    httpPort: Number(peer.httpPort),
+    manual: peer.manual === true,
+    lastSeenAt: peer.lastSeenAt || new Date().toISOString()
+  };
+  const next = [
+    nextPeer,
+    ...existing.filter((entry) =>
+      (entry.nodeId || `${entry.address}:${entry.httpPort}`) !== key &&
+      `${entry.address}:${entry.httpPort}` !== `${nextPeer.address}:${nextPeer.httpPort}`
+    )
+  ].slice(0, 12);
+  try {
+    fs.writeFileSync(filePath, JSON.stringify(next, null, 2), 'utf8');
+  } catch (error) {
+    console.warn('[MeshState] Could not remember peer:', error?.message || error);
+  }
+}
 
 /**
  * Returns a stable local nodeId per profile, persisted in the profile cache directory.
@@ -86,7 +136,10 @@ export function getMeshHealthSnapshot() {
         address: peer.address,
         httpPort: peer.httpPort,
         lastSeenAt: peer.lastSeenAt,
-        clockOffsetMs: peer.clockOffsetMs ?? 0
+        clockOffsetMs: peer.clockOffsetMs ?? 0,
+        manual: peer.manual === true,
+        discoverySource: peer.discoverySource || 'broadcast',
+        sameSubnet: peer.sameSubnet ?? null
       });
     }
   }
@@ -100,21 +153,48 @@ export function getMeshHealthSnapshot() {
     activeLockCount: meshState.activeLocks.length,
     activeLocks: meshState.activeLocks,
     lastQueueMergeAt: meshState.lastQueueMergeAt ? meshState.lastQueueMergeAt.toISOString() : null,
-    lastError: meshState.lastError
+    lastError: meshState.lastError,
+    lastDiscoveryError: meshState.lastDiscoveryError,
+    lastBeaconAt: meshState.lastBeaconAt,
+    lastPeerSeenAt: meshState.lastPeerSeenAt,
+    httpPort: meshState.httpPort,
+    localInterfaces: meshState.localInterfaces,
+    discoveryTargets: meshState.discoveryTargets,
+    rememberedPeerCount: readRememberedMeshPeers().length,
+    warnings: [
+      ...(meshState.localInterfaces.length === 0 ? ['No active private IPv4 network adapter was found.'] : []),
+      ...(meshState.running && peersArray.length === 0
+        ? ['No nearby Boroko devices found. If another device is online, check extender AP/client isolation or add its IP manually.']
+        : []),
+      ...(meshState.lastDiscoveryError ? [meshState.lastDiscoveryError] : []),
+      ...peersArray
+        .filter((peer) => Math.abs(Number(peer.clockOffsetMs || 0)) > 15000)
+        .map((peer) => `Clock differs by more than 15 seconds from ${peer.address}.`),
+      ...peersArray
+        .filter((peer) => peer.sameSubnet === false)
+        .map((peer) => `${peer.address} is on a different subnet; automatic discovery may depend on router/extender settings.`)
+    ]
   };
 }
 
 /**
  * Registers/updates a peer in the local mesh registry.
  */
-export function registerPeer(nodeId, address, httpPort, clockOffsetMs = 0) {
-  meshState.peers.set(nodeId, {
+export function registerPeer(nodeId, address, httpPort, clockOffsetMs = 0, metadata = {}) {
+  const peer = {
     nodeId,
     address,
     httpPort,
     lastSeenAt: new Date().toISOString(),
-    clockOffsetMs
-  });
+    clockOffsetMs,
+    manual: metadata.manual === true,
+    discoverySource: metadata.discoverySource || 'broadcast',
+    sameSubnet: metadata.sameSubnet ?? null
+  };
+  meshState.peers.set(nodeId, peer);
+  meshState.lastPeerSeenAt = peer.lastSeenAt;
+  meshState.lastDiscoveryError = null;
+  rememberMeshPeer(peer);
   broadcastSyncStatus();
 }
 

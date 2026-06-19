@@ -418,6 +418,7 @@ function UpdateBanner() {
 // ── Broadcast Banner ──────────────────────────────────────────────────────────
 function BroadcastBanner() {
   const [broadcasts, setBroadcasts] = useState([])
+  const [minimized, setMinimized] = useState(false)
 
   useEffect(() => {
     if (!window.api?.admin?.getActiveBroadcasts) return
@@ -435,9 +436,29 @@ function BroadcastBanner() {
   }
 
   if (broadcasts.length === 0) return null
+  if (minimized) {
+    return (
+      <button
+        type="button"
+        onClick={() => setMinimized(false)}
+        className="fixed top-2 left-1/2 z-[9998] -translate-x-1/2 rounded-full bg-purple-700 px-3 py-2 text-xs font-semibold text-white shadow-lg"
+      >
+        <ChevronDown size={13} className="mr-1 inline rotate-180" />
+        {broadcasts.length} announcement{broadcasts.length === 1 ? '' : 's'}
+      </button>
+    )
+  }
 
   return (
     <div className="fixed top-0 left-0 right-0 z-[9998] space-y-px pointer-events-none">
+      <button
+        type="button"
+        onClick={() => setMinimized(true)}
+        className="pointer-events-auto absolute right-10 top-1 rounded p-1 text-purple-100 hover:bg-white/10"
+        aria-label="Minimize announcement banners"
+      >
+        <ChevronDown size={15} />
+      </button>
       {broadcasts.map(b => (
         <div key={b.id} className="bg-purple-700 text-white text-sm flex items-center justify-between px-4 py-2 shadow-lg pointer-events-auto">
           <div className="flex items-center gap-2">
@@ -455,6 +476,8 @@ function BroadcastBanner() {
 function SyncFailBanner() {
   const navigate = useNavigate()
   const [syncStatus, setSyncStatus] = useState({ failed: 0, cacheStale: { active: false, names: [] } })
+  const [minimized, setMinimized] = useState(false)
+  const [dismissedSignature, setDismissedSignature] = useState('')
 
   useEffect(() => {
     if (!window.api?.sync?.getStatus || !window.api?.sync?.onStatusChanged) return
@@ -485,8 +508,15 @@ function SyncFailBanner() {
   const meshAutoStandby = /missing lodge_mesh_secret/i.test(meshLastError)
   const hasMeshSignal = Boolean(meshLastError) && !meshAutoStandby
   const isGlobalOffline = syncStatus?.isOnline === false
+  const signature = JSON.stringify({
+    failedCount,
+    staleNames,
+    meshLastError,
+    lastError: syncStatus?.cacheStale?.lastError || ''
+  })
 
   if (failedCount === 0 && !hasStaleCache && !hasMeshSignal) return null
+  if (dismissedSignature === signature) return null
 
   const staleLabel = staleNames.join(', ')
   const tone = failedCount > 0 ? 'bg-amber-500 shadow-amber-500/20' : isGlobalOffline && meshPeerCount > 0 ? 'bg-emerald-700 shadow-emerald-700/20' : 'bg-sky-600 shadow-sky-600/20'
@@ -509,7 +539,23 @@ function SyncFailBanner() {
           ? 'Nearby front-desk computers can share locks and offline work'
           : hasMeshSignal
             ? `${meshPeerCount} peer${meshPeerCount === 1 ? '' : 's'} · ${Number(mesh.activeLockCount || 0)} active lock${Number(mesh.activeLockCount || 0) === 1 ? '' : 's'}`
-            : 'Reviewing status in System Health'
+            : syncStatus?.cacheStale?.lastError || 'Reviewing status in System Health'
+
+  if (minimized) {
+    return (
+      <div className="fixed top-[52px] left-1/2 -translate-x-1/2 z-[9996] pointer-events-none">
+        <button
+          type="button"
+          onClick={() => setMinimized(false)}
+          className={`${tone} pointer-events-auto inline-flex items-center gap-2 rounded-full px-3 py-2 text-xs font-semibold text-white shadow-xl`}
+          aria-label="Expand data status banner"
+        >
+          <ChevronUp size={14} />
+          {failedCount > 0 ? `${failedCount} sync issue${failedCount === 1 ? '' : 's'}` : 'Data refresh notice'}
+        </button>
+      </div>
+    )
+  }
 
   return (
     <div className="fixed top-[52px] left-1/2 -translate-x-1/2 z-[9996] pointer-events-none w-full max-w-md px-4">
@@ -537,8 +583,29 @@ function SyncFailBanner() {
             </p>
           </div>
         </div>
-        <div className="bg-white/20 px-2.5 py-1.5 rounded-lg font-bold uppercase tracking-wider text-[10px]">
-          {failedCount > 0 ? 'Review' : 'Open'}
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation()
+              setMinimized(true)
+            }}
+            className="rounded-lg bg-white/15 p-1.5 transition hover:bg-white/25"
+            aria-label="Minimize data status banner"
+          >
+            <ChevronDown size={14} />
+          </button>
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation()
+              setDismissedSignature(signature)
+            }}
+            className="rounded-lg bg-white/15 p-1.5 transition hover:bg-white/25"
+            aria-label="Dismiss data status banner"
+          >
+            <X size={14} />
+          </button>
         </div>
       </div>
     </div>
@@ -564,6 +631,8 @@ function importantIssueMessage(entry) {
 function FinancialHealthBanner() {
   const navigate = useNavigate()
   const [errors, setErrors] = useState([])
+  const [minimized, setMinimized] = useState(false)
+  const [dismissedSignature, setDismissedSignature] = useState('')
 
   useEffect(() => {
     let mounted = true
@@ -597,11 +666,25 @@ function FinancialHealthBanner() {
   const label = isTrulyCritical ? 'critical error' : 'system warning'
   const dotTone = isTrulyCritical ? 'bg-rose-500' : 'bg-amber-500 animate-pulse'
   const firstMessage = importantIssueMessage(errors[0])
+  const signature = errors.map((entry) => entry?.id || entry?.detected_at || importantIssueMessage(entry)).join('|')
+  if (dismissedSignature === signature) return null
+
+  if (minimized) {
+    return (
+      <button
+        type="button"
+        onClick={() => setMinimized(false)}
+        className={`${tone} fixed top-[72px] right-4 z-[9995] rounded-full border p-2 shadow-lg`}
+        aria-label="Expand system warning banner"
+      >
+        <ChevronUp size={14} />
+      </button>
+    )
+  }
 
   return (
     <div className="fixed top-[72px] right-4 z-[9995] pointer-events-none">
-      <button
-        type="button"
+      <div
         className={`${tone} pointer-events-auto inline-flex items-center gap-3 rounded-full border px-3 py-2 text-xs shadow-lg backdrop-blur-sm transition-colors`}
         onClick={() => navigate('/settings', { state: { activeTab: 'system' } })}
       >
@@ -609,7 +692,9 @@ function FinancialHealthBanner() {
         <span className="font-semibold">{count} {label}{count === 1 ? '' : 's'}</span>
         <span className="hidden max-w-[320px] text-[11px] font-medium opacity-80 sm:inline leading-tight">{firstMessage}</span>
         <span className="text-[11px] font-medium opacity-75">Open Health</span>
-      </button>
+        <button type="button" onClick={(event) => { event.stopPropagation(); setMinimized(true) }} aria-label="Minimize system warning banner"><ChevronDown size={13} /></button>
+        <button type="button" onClick={(event) => { event.stopPropagation(); setDismissedSignature(signature) }} aria-label="Dismiss system warning banner"><X size={13} /></button>
+      </div>
     </div>
   )
 }
@@ -673,6 +758,17 @@ function BookingSyncConflictNotification() {
           <span className="font-semibold">
             {conflict.mesh ? 'Local mesh conflict' : 'Booking sync failed'}: {conflict.error} — Open Bookings to fix it.
           </span>
+          <button
+            type="button"
+            className="ml-3 rounded p-1 hover:bg-white/15"
+            onClick={(event) => {
+              event.stopPropagation()
+              setConflicts((prev) => prev.filter((item) => item.bookingId !== conflict.bookingId))
+            }}
+            aria-label="Dismiss booking conflict banner"
+          >
+            <X size={14} />
+          </button>
         </div>
       ))}
     </div>

@@ -360,12 +360,9 @@ export async function createUser(data) {
   const hash = bcrypt.hashSync(data.password, 10);
   const pwaAccess = resolvePwaAccessUpdate({}, data);
   const id = randomUUID();
-  const authUserId = state.isOnline ?
-  await createSupabaseAuthUserForStaff(emailLower, data.password) :
-  null;
   const user = {
     id,
-    auth_user_id: authUserId,
+    auth_user_id: null,
     name: data.name,
     email: emailLower,
     password_hash: hash,
@@ -405,6 +402,23 @@ export async function createUser(data) {
         result?.error || 'Supabase did not return the new staff account after insert.',
         { email: emailLower, lodge_id: state.lodgeId }
       );
+    }
+    try {
+      if (state.adminDb) {
+        await ensureSupabaseAuthStaffUserReady(
+          { ...user, id: result.id, auth_user_id: null },
+          data.password
+        );
+      } else {
+        await createSupabaseAuthUserForStaff(emailLower, data.password);
+      }
+    } catch (authError) {
+      console.error('[AUTH] Staff profile was created but Supabase Auth preparation failed:', {
+        email: emailLower,
+        lodge_id: state.lodgeId,
+        user_id: result.id,
+        message: authError?.message || 'unknown_error'
+      });
     }
     if (pwaAccess.requested) {
       const { data: pwaResult, error: pwaError } = await state.supabase.rpc('set_user_pwa_access', {

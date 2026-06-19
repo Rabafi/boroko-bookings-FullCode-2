@@ -12,6 +12,7 @@ async function run() {
   const email = await read('src/main/emailNotifications.js')
   const pwaApi = await read('manager-pwa/src/lib/api.js')
   const pwaPage = await read('manager-pwa/src/pages/Quotations.jsx')
+  const currencyGuardrail = await read('supabase/migrations/20260619160000_quotation_currency_guardrail.sql')
 
   assert.match(migration, /add column if not exists quotation_type text not null default 'room'/)
   assert.match(migration, /check \(quotation_type in \('room', 'exclusive_event'\)\)/)
@@ -41,7 +42,17 @@ async function run() {
   assert.match(desktop, /event_daily_rate/)
   assert.match(desktop, /Reserve Full Lodge/)
   assert.match(desktop, /Booking queued offline/)
+  assert.match(desktop, /safeCurrency\.length <= 8 && !\/\\d\/\.test\(safeCurrency\)/)
+  assert.match(desktop, /setForm\(\{ \.\.\.emptyForm, currency \}\)/)
+  assert.match(desktop, /value=\{currency\}[\s\S]{0,80}readOnly/)
   assert.match(email, /exclusive event and full-lodge reservation/)
+  assert.match(bookings, /function normalizeQuotationCurrency/)
+  assert.match(bookings, /currency:\s*normalizeQuotationCurrency\(data\.currency\)/)
+
+  assert.match(currencyGuardrail, /create trigger trg_guard_quotation_currency/i)
+  assert.match(currencyGuardrail, /v_currency ~ '\[0-9\]'/)
+  assert.match(currencyGuardrail, /from public\.settings s/)
+  assert.match(currencyGuardrail, /update public\.quotations q/)
 
   assert.match(pwaApi, /quotation_type, event_name, event_daily_rate/)
   assert.match(pwaPage, /quotation\.quotation_type === 'exclusive_event'/)

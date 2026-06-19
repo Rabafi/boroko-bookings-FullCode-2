@@ -140,14 +140,14 @@ export function normalizeDayUseResource(resource = {}) {
 }
 
 export function resolveDayUseTemplates(settings = {}) {
-  const rows = Array.isArray(settings?.day_use_templates) && settings.day_use_templates.length > 0
+  const rows = Array.isArray(settings?.day_use_templates)
     ? settings.day_use_templates
     : DEFAULT_DAY_USE_TEMPLATES
   return rows.map(normalizeDayUseTemplate)
 }
 
 export function resolveDayUseResources(settings = {}) {
-  const rows = Array.isArray(settings?.day_use_resources) && settings.day_use_resources.length > 0
+  const rows = Array.isArray(settings?.day_use_resources)
     ? settings.day_use_resources
     : DEFAULT_DAY_USE_RESOURCES
   return rows.map(normalizeDayUseResource)

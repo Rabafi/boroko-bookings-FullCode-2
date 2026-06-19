@@ -27,6 +27,21 @@ async function readTree(path) {
   return sources
 }
 
+async function readSqlTree(path) {
+  const root = new URL(`../${path}/`, import.meta.url)
+  const entries = await readdir(root, { withFileTypes: true })
+  const sources = []
+  for (const entry of entries) {
+    const childPath = `${path}/${entry.name}`
+    if (entry.isDirectory()) {
+      sources.push(...await readSqlTree(childPath))
+    } else if (entry.isFile() && entry.name.endsWith('.sql')) {
+      sources.push({ path: childPath, source: await read(childPath) })
+    }
+  }
+  return sources
+}
+
 async function run() {
   const preload = await read('src/preload/index.js')
   assert.match(preload, /snapshot:\s*\(today\)\s*=>\s*ipcRenderer\.invoke\('reports:snapshot', today\)/)
@@ -171,7 +186,8 @@ async function run() {
   assert.match(database, /export async function getInventoryPurchases\(itemId\)\s*\{[\s\S]*?getInventoryPurchases received empty live result; using cached purchases instead/)
   assert.match(database, /getInventoryPurchases falling back to cache:/)
   assert.match(database, /export async function getLowStockItems\(\)\s*\{[\s\S]*?getInventoryItems\(\)\.catch\(\(\) => readCache\('inventory-items'\)\)/)
-  assert.match(database, /if \(name === 'outlets'\)[\s\S]{0,140}writeCache\(name, cachedRows, \{ source: 'cache' \}\)/)
+  assert.match(database, /if \(name === 'outlets'\)[\s\S]{0,400}writeCache\(name, cachedRows, \{ source: 'cache' \}\)/)
+  assert.match(database, /for \(const name of targetNames\)[\s\S]*refreshCacheStrict\(name\)/)
   assert.match(database, /const mergedLiveRows = mergeRemotePosOrdersWithLocalState\(data \|\| \[\], cachedOrders\)/)
   assert.match(mainIndex, /inventory:getItems failed:/)
   assert.match(mainIndex, /Could not load inventory items right now\./)
@@ -379,6 +395,25 @@ async function run() {
   assert.match(authUsersDomain, /email_confirm:\s*true/)
   assert.match(authUsersDomain, /updateUserById\(authUserId,[\s\S]*?email_confirm:\s*true/)
   assert.match(authUsersDomain, /createUser\(\{[\s\S]*?email_confirm:\s*true/)
+  assert.match(authUsersDomain, /auth_user_id:\s*null/)
+  assert.match(authUsersDomain, /id:\s*result\.id,\s*auth_user_id:\s*null/)
+
+  const authIdentityGuardrails = await read('supabase/migrations/20260619150000_auth_identity_link_guardrails.sql')
+  assert.match(authIdentityGuardrails, /create trigger users_validate_auth_identity/i)
+  assert.match(authIdentityGuardrails, /Supabase Auth identity email does not match the staff profile email/)
+  assert.match(authIdentityGuardrails, /for update;/i)
+  assert.match(authIdentityGuardrails, /u\.auth_user_id is distinct from v_auth_user_id/i)
+  assert.match(authIdentityGuardrails, /lower\(btrim\(u\.email\)\) = v_email/i)
+  assert.match(authIdentityGuardrails, /A stale local lodge selection must not strand a uniquely identified account/)
+  assert.match(authLogin, /authenticatedLodgeId !== normalizeLodgeId\(state\.lodgeId\)[\s\S]*ensureReadyProfileForLodge/)
+  const activeSqlMigrations = await readSqlTree('supabase/migrations')
+  for (const migration of activeSqlMigrations) {
+    assert.doesNotMatch(
+      migration.source,
+      /select\s+session_token\s*,\s*session_expires_at\s+from\s+public\.issue_app_session/i,
+      `${migration.path} must qualify issue_app_session result columns`
+    )
+  }
   assert.match(adminDomain, /ensureSupabaseAuthStaffUserReady\(user,\s*password/)
   assert.match(adminCentral, /raw === 'active' \|\| raw === 'licensed'/)
   assert.match(adminCentral, /function lodgeKey\(value\)/)
@@ -903,6 +938,8 @@ async function run() {
   // ── P1.3: Auto-updater gated through RPC ──
   assert.match(mainIndex, /gateUpdateCheck/)
   assert.match(mainIndex, /checkUpdateAvailability/)
+  assert.match(mainIndex, /if \(!res\?\.ok\)[\s\S]*throw new Error/)
+  assert.match(mainIndex, /RPC gate check failed, allowing fallback/)
   assert.match(mainIndex, /getDesktopDeviceIdForUpdater/)
 
   // ── P1.4: Notification automation scheduler ──

@@ -67,32 +67,35 @@ export async function sendSignedMeshRequest(peerAddress, peerPort, method, pathn
  * Performs a P2P security handshake with a newly discovered peer.
  * Sends a signed GET /mesh/hello request, validates response, and measures clock drift.
  */
-export async function performPeerHandshake(nodeId, address, httpPort) {
+export async function performPeerHandshake(nodeId, address, httpPort, metadata = {}) {
   try {
     const result = await sendSignedMeshRequest(address, httpPort, 'GET', '/mesh/hello');
     
-    if (!result || result.nodeId !== nodeId || result.lodgeId !== meshState.lodgeId) {
+    if (!result || result.nodeId === meshState.nodeId || (nodeId && result.nodeId !== nodeId) || result.lodgeId !== meshState.lodgeId) {
       throw new Error('Handshake details mismatch or unauthorized');
     }
+    const resolvedNodeId = result.nodeId;
 
     // Calculate clock offset to coordinate lock durations and timestamps accurately
     const remoteTime = new Date(result.serverTime).getTime();
     const clockOffsetMs = remoteTime - Date.now();
 
-    console.log(`[MeshClient] Handshake completed successfully with Peer ${nodeId}. Clock Offset: ${clockOffsetMs}ms`);
+    console.log(`[MeshClient] Handshake completed successfully with Peer ${resolvedNodeId}. Clock Offset: ${clockOffsetMs}ms`);
 
     // Register active peer with computed clock drift
-    registerPeer(nodeId, address, httpPort, clockOffsetMs);
+    registerPeer(resolvedNodeId, address, httpPort, clockOffsetMs, metadata);
 
     // Trigger immediate P2P sync queue reconciliation
     import('./meshQueueMerge.js')
       .then((m) => m.syncMeshQueues())
       .catch((err) => console.error('[MeshClient] Failed to trigger syncMeshQueues:', err));
 
-    return true;
+    return { success: true, nodeId: resolvedNodeId, address, httpPort, clockOffsetMs };
   } catch (err) {
-    console.warn(`[MeshClient] Handshake failed for peer candidate ${nodeId} at ${address}:${httpPort}:`, err.message);
-    removePeer(nodeId);
+    if (metadata.silent !== true) {
+      console.warn(`[MeshClient] Handshake failed for peer candidate ${nodeId || 'unknown'} at ${address}:${httpPort}:`, err.message);
+    }
+    if (nodeId) removePeer(nodeId);
     throw err;
   }
 }
