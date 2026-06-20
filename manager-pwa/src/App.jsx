@@ -3,14 +3,16 @@ import { HashRouter, Navigate, Route, Routes, useLocation } from 'react-router-d
 import { Bell, Download, Moon, RefreshCw, Sun, X } from 'lucide-react'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { FeaturesProvider, useFeatures } from './contexts/FeaturesContext'
+import { InboxProvider, useInbox } from './contexts/InboxContext'
 import { getSubscriptionPlan, normalizeSubscriptionPlan } from '@shared/subscriptionPlans'
 import { supabase } from './lib/supabase'
 import BottomNav from './components/BottomNav'
-import { flushOfflineQueue, getQueueStatus, getSupportRequests, markSupportRequestRead } from './lib/api'
-import { dismissPwaNotification, getNotificationSettings, getPwaQueueHealth, getRuntimeMeta, getUnreadPwaNotificationCount, listPwaNotifications, markPwaNotificationRead, publishPwaHealth, setRuntimeMeta, subscribeRuntimeEvent } from './lib/runtime'
+import { flushOfflineQueue, getQueueStatus } from './lib/api'
+import { dismissPwaNotification, getNotificationSettings, getPwaQueueHealth, getRuntimeMeta, getUnreadOperationalNotificationCount, listPwaNotifications, markPwaNotificationRead, publishPwaHealth, subscribeRuntimeEvent } from './lib/runtime'
 import { shortDateTime } from './lib/format'
 import { normalizeSupportMessages, supportMessageSide, supportSenderMeta, supportSenderName } from '@shared/supportThreads'
-import { upsertFrontDeskNotification } from './lib/frontDeskNotifications'
+import { playNotificationSound, vibratePulse } from './lib/notificationSound'
+
 
 import Login from './pages/Login'
 import ResetPassword from './pages/ResetPassword'
@@ -576,26 +578,54 @@ function NotificationCenter({ notificationCount, setNotificationCount }) {
   const { showToast } = useToast()
   const [notifications, setNotifications] = useState([])
   const lastAnnouncedRef = useRef(null)
-  const initialBatchRef = useRef(true)
+  const readyRef = useRef(false)
   const [activeNotification, setActiveNotification] = useState(null)
-  const [inboxOpen, setInboxOpen] = useState(false)
+  const [sheetOpen, setSheetOpen] = useState(false)
+
+  useEffect(() => {
+    if (!user?.lodge_id) return undefined
+    const current = listPwaNotifications(user.lodge_id, 6)
+    const latestUnread = current.find((n) => !n.readAt && n.category !== 'frontDeskRequest')
+    if (latestUnread) {
+      lastAnnouncedRef.current = `${latestUnread.id}:${latestUnread.updatedAt || latestUnread.createdAt || ''}`
+    }
+    readyRef.current = true
+  }, [user?.lodge_id])
 
   useEffect(() => {
     if (!user?.lodge_id) return undefined
     const refresh = (detail) => {
       const next = listPwaNotifications(user.lodge_id, 6)
       setNotifications(next)
-      setNotificationCount(getUnreadPwaNotificationCount(user.lodge_id))
+      setNotificationCount(getUnreadOperationalNotificationCount(user.lodge_id))
+      if (!readyRef.current) return
       const latest = detail?.latest
       const announcementId = latest ? `${latest.id}:${latest.updatedAt || latest.createdAt || ''}` : ''
+      const isNewEvent = detail?.isNew || detail?.frontDeskUpdated
       if (
         latest &&
-        (detail?.isNew || detail?.frontDeskUpdated) &&
+        isNewEvent &&
         announcementId !== lastAnnouncedRef.current &&
-        !latest.readAt &&
-        !initialBatchRef.current
+        !latest.readAt
       ) {
-        lastAnnouncedRef.current = announcementId
+        const isFrontDesk = latest.category === 'frontDeskRequest'
+        if (isFrontDesk) {
+          const messages = latest.meta?.messages
+          if (Array.isArray(messages) && messages.length > 0) {
+            const lastMsg = messages[messages.length - 1]
+            if (lastMsg?.sender_user_id && lastMsg.sender_user_id === user.id) return
+            if (supportMessageSide(lastMsg) === 'manager') return
+          }
+        }
+        const prefs = getNotificationSettings()
+        if (isFrontDesk && !prefs.frontDeskReplies) return
+        const isUrgent = latest.tone === 'error' || latest.tone === 'warn'
+        const vibrateType = isFrontDesk ? 'reply' : isUrgent ? 'urgent' : 'ordinary'
+        if (!prefs.urgentOnly || isUrgent) {
+          lastAnnouncedRef.current = announcementId
+          playNotificationSound(prefs)
+          vibratePulse(vibrateType, prefs)
+        }
         showToast({
           title: latest.title,
           message: latest.message,
@@ -610,56 +640,7 @@ function NotificationCenter({ notificationCount, setNotificationCount }) {
     refresh({})
     const unsubscribe = subscribeRuntimeEvent('boroko:pwa-notifications', refresh)
     return () => unsubscribe?.()
-  }, [setNotificationCount, showToast, user?.lodge_id])
-
-  useEffect(() => {
-    if (!user?.lodge_id) return undefined
-    let cancelled = false
-
-    const upsertFrontDeskReply = (request) => {
-      if (getNotificationSettings().frontDeskRequests === false) return
-      const lastScan = getRuntimeMeta(user.lodge_id, 'frontdesk-last-scan-at', null)
-      const updatedAt = request?.updated_at || request?.created_at || null
-      const isNewSinceLastScan = lastScan && updatedAt && new Date(updatedAt).getTime() > new Date(lastScan).getTime()
-      const hasServerUnreadState = typeof request?.manager_has_unread === 'boolean'
-      upsertFrontDeskNotification(user.lodge_id, request, {
-        quiet: hasServerUnreadState ? false : initialBatchRef.current && !isNewSinceLastScan
-      })
-    }
-
-    const loadFrontDeskReplies = async () => {
-      try {
-        const rows = await getSupportRequests(user.lodge_id, 12)
-        if (cancelled) return
-        ;(Array.isArray(rows) ? rows : []).forEach(upsertFrontDeskReply)
-        setRuntimeMeta(user.lodge_id, 'frontdesk-last-scan-at', new Date().toISOString())
-      } catch {
-        // Best-effort notification watcher.
-      } finally {
-        initialBatchRef.current = false
-      }
-    }
-
-    loadFrontDeskReplies()
-    const interval = window.setInterval(() => {
-      if (document.visibilityState !== 'hidden') loadFrontDeskReplies()
-    }, 2 * 60_000)
-    const handleVisible = () => {
-      if (document.visibilityState === 'visible') loadFrontDeskReplies()
-    }
-    document.addEventListener('visibilitychange', handleVisible)
-    return () => {
-      cancelled = true
-      window.clearInterval(interval)
-      document.removeEventListener('visibilitychange', handleVisible)
-    }
-  }, [user?.lodge_id])
-
-  useEffect(() => {
-    if (activeNotification && !notifications.some((item) => item.id === activeNotification.id)) {
-      setActiveNotification(null)
-    }
-  }, [activeNotification, notifications])
+  }, [setNotificationCount, showToast, user?.lodge_id, user?.id])
 
   useEffect(() => {
     if (!activeNotification) return
@@ -670,42 +651,30 @@ function NotificationCenter({ notificationCount, setNotificationCount }) {
   }, [activeNotification, notifications])
 
   const clearNotification = (item) => {
-    const requestId = item?.meta?.requestId
-    if (requestId) {
-      const messages = normalizeSupportMessages({ messages: item?.meta?.messages || [] })
-      const latestDeskMessage = [...messages].reverse().find((message) => supportMessageSide(message) === 'desk')
-      markSupportRequestRead(user.lodge_id, requestId, 'manager', latestDeskMessage?.id || null).catch(() => {})
-    }
     dismissPwaNotification(user.lodge_id, item.sourceKey || item.id)
     if (activeNotification?.id === item.id) {
       setActiveNotification(null)
     }
   }
 
-  if (!notifications.length) return null
-
   return (
     <>
       <button
         type="button"
-        onClick={() => setInboxOpen(true)}
-        className="fixed right-4 z-50 flex h-12 w-12 items-center justify-center rounded-full border border-white/10 bg-gray-900/95 text-white shadow-2xl backdrop-blur"
-        style={{ bottom: 'calc(env(safe-area-inset-bottom) + 5.5rem)' }}
-        aria-label="Open notification inbox"
-        title="Inbox"
+        onClick={() => setSheetOpen(true)}
+        className="relative p-2 rounded-full bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700 transition-colors"
+        aria-label="Notifications"
       >
-        <span className="relative">
-          <Bell size={17} />
-          {notificationCount > 0 && (
-            <span className="absolute -right-1.5 -top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold text-white">
-              {notificationCount > 9 ? '9+' : notificationCount}
-            </span>
-          )}
-        </span>
+        <Bell size={17} />
+        {notificationCount > 0 && (
+          <span className="absolute -top-0.5 -right-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-red-500 px-1 text-[8px] font-bold text-white">
+            {notificationCount > 9 ? '9+' : notificationCount}
+          </span>
+        )}
       </button>
 
-      {inboxOpen && (
-        <div className="fixed inset-0 z-[70] flex items-end bg-black/55 backdrop-blur-sm" onClick={() => setInboxOpen(false)}>
+      {sheetOpen && (
+        <div className="fixed inset-0 z-[70] flex items-end bg-black/55 backdrop-blur-sm" onClick={() => setSheetOpen(false)}>
           <div
             className="w-full max-h-[82vh] overflow-y-auto overscroll-contain rounded-t-[28px] border border-white/10 bg-gray-950 px-4 pb-8 pt-4 shadow-[0_-24px_90px_rgba(0,0,0,0.45)]"
             onClick={(event) => event.stopPropagation()}
@@ -713,38 +682,36 @@ function NotificationCenter({ notificationCount, setNotificationCount }) {
             <div className="mx-auto mb-4 h-1.5 w-12 rounded-full bg-gray-700" />
             <div className="mb-3 flex items-start justify-between gap-3">
               <div>
-                <p className="text-lg font-bold text-white">Inbox</p>
-                <p className="mt-1 text-xs text-gray-400">Front desk replies and lodge alerts. Swipe left to clear an item.</p>
+                <p className="text-lg font-bold text-white">Notifications</p>
+                <p className="mt-1 text-xs text-gray-400">Lodge alerts and operational updates. Swipe left to clear.</p>
               </div>
               <div className="flex items-center gap-2">
                 <span className="rounded-full bg-white/10 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-white/80">
                   {notificationCount} unread
                 </span>
-                <button onClick={() => setInboxOpen(false)} className="rounded-full bg-white/5 p-2 text-gray-300">
+                <button onClick={() => setSheetOpen(false)} className="rounded-full bg-white/5 p-2 text-gray-300">
                   <X size={18} />
                 </button>
               </div>
             </div>
 
-            <div className="space-y-2">
-              {notifications.slice(0, 8).map((item) => (
-                <NotificationCard
-                  key={item.id}
-                  item={item}
-                  onOpen={(notification) => {
-                    markPwaNotificationRead(user.lodge_id, notification.id)
-                    const requestId = notification?.meta?.requestId
-                    if (requestId) {
-                      const messages = normalizeSupportMessages({ messages: notification?.meta?.messages || [] })
-                      const latestDeskMessage = [...messages].reverse().find((message) => supportMessageSide(message) === 'desk')
-                      markSupportRequestRead(user.lodge_id, requestId, 'manager', latestDeskMessage?.id || null).catch(() => {})
-                    }
-                    setActiveNotification(notification)
-                  }}
-                  onClear={clearNotification}
-                />
-              ))}
-            </div>
+            {notifications.length === 0 ? (
+              <div className="py-8 text-center text-sm text-gray-500">No notifications right now.</div>
+            ) : (
+              <div className="space-y-2">
+                {notifications.filter((item) => item.category !== 'frontDeskRequest').slice(0, 8).map((item) => (
+                  <NotificationCard
+                    key={item.id}
+                    item={item}
+                    onOpen={(notification) => {
+                      markPwaNotificationRead(user.lodge_id, notification.id)
+                      setActiveNotification(notification)
+                    }}
+                    onClear={clearNotification}
+                  />
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -849,7 +816,7 @@ function GlobalStatusFooter() {
     '/rooms': 'Rooms',
     '/money': 'Money',
     '/alerts': 'Alerts',
-    '/more': 'More tools',
+    '/more': 'Menu',
     '/control': 'Inbox'
   }
   const pageLabel = pageLabels[location.pathname] || location.pathname.replace('/', '').replace('-', ' ')
@@ -908,11 +875,10 @@ function ManagerPwaPlanLocked() {
   )
 }
 
-function AuthenticatedShell({ alertCount, dark, setDark, setAlertCount, notificationCount, setNotificationCount }) {
+function AuthenticatedShell({ alertCount, dark, setAlertCount, notificationCount, setNotificationCount }) {
   const { user } = useAuth()
   const { entitlement, features, loading: entitlementLoading } = useFeatures()
   const lastUserRef = useRef(null)
-  const logoSrc = dark ? borokoLogoDark : borokoLogoLight
 
   useEffect(() => {
     if (user) {
@@ -1014,31 +980,32 @@ function AuthenticatedShell({ alertCount, dark, setDark, setAlertCount, notifica
     return <ManagerPwaPlanLocked />
   }
 
+  return <AuthenticatedApp alertCount={alertCount} dark={dark} setAlertCount={setAlertCount} notificationCount={notificationCount} setNotificationCount={setNotificationCount} />
+}
+
+function AuthenticatedApp({ alertCount, dark, setAlertCount, notificationCount, setNotificationCount }) {
+  const { user } = useAuth()
+  const { features } = useFeatures()
+  const { unreadCount: inboxUnreadCount } = useInbox()
+  const logoSrc = dark ? borokoLogoDark : borokoLogoLight
+
   return (
     <div className="flex flex-col min-h-screen bg-gray-950 app-bg">
-      <div className="flex items-center justify-between gap-3 px-4 pt-3 pb-1">
-        <div className="flex items-center gap-3">
-          <div className="flex h-14 w-44 items-center">
+      <div className="flex items-center justify-between gap-3 px-3 pt-2 pb-1">
+        <div className="flex items-center gap-2.5">
+          <div className="flex h-10 w-36 items-center">
             <img src={logoSrc} alt="Boroko Manager" className="max-h-full max-w-full object-contain" draggable="false" />
           </div>
           <div className="min-w-0">
-            <p className="text-xs uppercase tracking-[0.2em] text-gray-500">Boroko</p>
-            <p className="truncate text-sm font-semibold text-white">Manager Mobile App</p>
+            <p className="truncate text-xs font-semibold text-white">{user.lodge_display_name || 'Manager'}</p>
           </div>
         </div>
-        <button
-          onClick={() => setDark((value) => !value)}
-          className="p-2 rounded-full bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700 transition-colors"
-          title={dark ? 'Switch to light mode' : 'Switch to dark mode'}
-        >
-          {dark ? <Sun size={16} /> : <Moon size={16} />}
-        </button>
+        <NotificationCenter notificationCount={notificationCount} setNotificationCount={setNotificationCount} />
       </div>
 
       <PwaLifecyclePrompts />
       <SyncBanner />
       <BroadcastBanners />
-      <NotificationCenter notificationCount={notificationCount} setNotificationCount={setNotificationCount} />
 
       <div className="flex-1 pwa-page-shell">
         <Routes>
@@ -1064,7 +1031,7 @@ function AuthenticatedShell({ alertCount, dark, setDark, setAlertCount, notifica
         </Routes>
       </div>
       <GlobalStatusFooter />
-      <BottomNav alertCount={alertCount} notificationCount={notificationCount} inboxEnabled={Object.keys(features).length > 0 && features.pwa === true} />
+      <BottomNav alertCount={alertCount} inboxUnreadCount={inboxUnreadCount} inboxEnabled={Object.keys(features).length > 0 && features.pwa === true} />
     </div>
   )
 }
@@ -1104,15 +1071,16 @@ function AppShell() {
 
   return (
     <FeaturesProvider>
-      <DeviceHealthHeartbeat lodgeId={user.lodge_id} />
-      <AuthenticatedShell
-        alertCount={alertCount}
-        dark={dark}
-        notificationCount={notificationCount}
-        setAlertCount={setAlertCount}
-        setDark={setDark}
-        setNotificationCount={setNotificationCount}
-      />
+      <InboxProvider>
+        <DeviceHealthHeartbeat lodgeId={user.lodge_id} />
+        <AuthenticatedShell
+          alertCount={alertCount}
+          dark={dark}
+          notificationCount={notificationCount}
+          setAlertCount={setAlertCount}
+          setNotificationCount={setNotificationCount}
+        />
+      </InboxProvider>
     </FeaturesProvider>
   )
 }

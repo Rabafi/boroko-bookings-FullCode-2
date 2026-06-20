@@ -1,65 +1,64 @@
-# Boroko Bookings System
+# Boroko Bookings
 
-A full booking management system with desktop (Electron), web dashboard (React), and backend (Supabase).
+Boroko Bookings is a financial-grade hospitality operations platform built around Supabase.
 
-## Architecture
+## Applications
 
-- Electron App → Main booking system
-- React Renderer → UI layer
-- Manager PWA → Admin dashboard
-- Supabase → Backend & functions
+- `src/` — main Electron front-desk and administration application.
+- `src/main/domains/` — desktop business logic behind the `database.js` facade.
+- `manager-pwa/` — manager mobile/web operations application.
+- `legacy-pos/` — separate Windows POSReady 7-compatible Electron POS.
+- `booking-site/` — public online booking site.
+- `marketing-site/` — public product website.
+- `supabase/` — database migrations, RPCs, RLS, and backend contracts.
 
-## Features
-
-- Booking management
-- Admin dashboard
-- Reports & analytics
-- Push notifications
-- Offline-ready PWA
-
-## Project Structure
-
-- /src → Electron + main app
-- /manager-pwa → Progressive Web App
-- /supabase → backend functions
+See [PROJECT_STATE.md](PROJECT_STATE.md) for the dated implementation state and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for execution paths.
 
 ## Setup
 
-npm install  
+```powershell
+npm install
 npm run dev
+```
 
-## Critical Release Gate
+Install web or Legacy POS dependencies separately when working on those applications:
 
-Before shipping changes, this repo requires:
+```powershell
+npm run manager:install
+npm run booking:install
+npm run legacy-pos:install
+```
 
-- `npm test`
-- `npm run test:offline-queue-critical`
-- `npm run test:offline-pos-critical`
-- `npm run test:inventory-offline-sync`
-- `npm run test:import-critical`
-- `npm run audit:prod`
-- `npm run build`
-- `npm run manager:lint`
-- `npm run manager:build`
-- `npm run booking:build`
+## Verification
 
-The same core gate runs automatically in GitHub Actions on every push and pull request through `.github/workflows/offline-queue-critical.yml`.
+Core desktop and web checks:
 
-See [docs/SHIP_READY_RUNBOOK.md](</C:/Users/Botswapelo Studios/Documents/Work/Boroko Bookings/docs/SHIP_READY_RUNBOOK.md>) for the full operator release checklist.
+```powershell
+npm test
+npm run test:offline-queue-critical
+npm run test:offline-pos-critical
+npm run test:financial-integrity
+npm run test:inventory-offline-sync
+npm run test:import-critical
+npm run audit:prod
+npm run build
+npm run manager:lint
+npm run manager:build
+npm run booking:build
+```
 
-## Desktop Release Publish
+Run feature-specific scripts listed in `package.json` when their area changes. Run `npm run legacy-pos:test` and `npm run legacy-pos:build` for Legacy POS changes.
 
-Desktop releases can now be published from GitHub Actions through [publish-desktop-release.yml](</C:/Users/Botswapelo Studios/Documents/Work/Boroko Bookings/.github/workflows/publish-desktop-release.yml>).
+GitHub Actions currently runs the production guardrails, critical queue/POS suites, dependency audit, desktop build, Manager PWA lint/build, and booking-site build through `.github/workflows/offline-queue-critical.yml`. Local release verification is broader; see [docs/SHIP_READY_RUNBOOK.md](docs/SHIP_READY_RUNBOOK.md).
 
-Before using it once, add a repository secret named `BOROKO_RELEASES_TOKEN` in the code repo:
+## Releases
 
-- create a GitHub personal access token with `repo` access to `Rabafi/boroko-bookings-releases`
-- save it in `Settings` -> `Secrets and variables` -> `Actions`
+- Desktop package version: `1.5.2`.
+- Desktop releases publish to `Rabafi/boroko-bookings-releases`.
+- Legacy POS package version: `1.1.0`.
+- Legacy POS releases publish separately to `Rabafi/boroko-pos-legacy-releases`.
+- Manager PWA, public booking site, and database migrations have independent deployment lifecycles.
 
-Release flow:
+The desktop GitHub workflow is `.github/workflows/publish-desktop-release.yml`.
 
-1. Push the commit you want to release.
-2. Confirm `Offline Queue Critical` is green for that commit.
-3. Open `Actions` -> `Publish Desktop Release` -> `Run workflow`.
-4. Choose `latest` or `beta`, and whether the GitHub release should stay draft.
-5. The workflow will run the offline queue regression suite, build the Windows installer, and upload the `.exe`, `.blockmap`, and `.yml` assets to `Rabafi/boroko-bookings-releases`.
+Never infer that a migration is deployed merely because it exists locally.

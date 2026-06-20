@@ -704,14 +704,15 @@ export async function createPosOrder(data) {
     entry?.check_out > today
     );
     let bookingId = cachedBooking?.id || data.booking_id || null;
+    const eventBookingId = data.event_booking_id || null;
 
-    if ((data.payment_method || 'cash') === 'folio' && !bookingId && data.room_id && state.isOnline) {
+    if ((data.payment_method || 'cash') === 'folio' && !bookingId && !eventBookingId && data.room_id && state.isOnline) {
       const liveBooking = await getActiveBookingForRoom(data.room_id).catch(() => null);
       bookingId = liveBooking?.id || null;
     }
 
-    if ((data.payment_method || 'cash') === 'folio' && !bookingId) {
-      throw new Error('Room folio charge requires an active booking for the selected room.');
+    if ((data.payment_method || 'cash') === 'folio' && !bookingId && !eventBookingId) {
+      throw new Error('Folio charge requires an active booking or an active event.');
     }
 
     // Offline path: queue v3 payload (server resolves prices from catalog on replay)
@@ -721,8 +722,8 @@ export async function createPosOrder(data) {
         throw new Error(`Booking ${data.booking_id} not found locally. Sync the latest bookings and try again.`);
       }
       // For folio charges, ensure we have a valid booking (same as online check above, but explicit)
-      if ((data.payment_method || 'cash') === 'folio' && !bookingId) {
-        throw new Error('Room folio charge requires an active booking for the selected room.');
+      if ((data.payment_method || 'cash') === 'folio' && !bookingId && !eventBookingId) {
+        throw new Error('Folio charge requires an active booking or an active event.');
       }
       if (!data.shift_id) {
         throw new Error('shift_id is mandatory. Open a shift before creating orders.');
@@ -768,6 +769,7 @@ export async function createPosOrder(data) {
         walk_in_name: data.walk_in_name || null,
         room_id: data.room_id || null,
         booking_id: bookingId || null,
+        event_booking_id: eventBookingId || null,
         notes: data.notes || null,
         payment_method: paymentMethod,
         payment_breakdown: paymentBreakdown,
@@ -796,6 +798,7 @@ export async function createPosOrder(data) {
         lodge_id: state.lodgeId,
         room_id: data.room_id || null,
         booking_id: bookingId,
+        event_booking_id: eventBookingId || null,
         walk_in_name: data.walk_in_name || null,
         outlet_id: data.outlet_id || null,
         notes: data.notes || null,
@@ -891,6 +894,7 @@ export async function createPosOrder(data) {
       walk_in_name: data.walk_in_name || null,
       room_id: data.room_id || null,
       booking_id: bookingIdForRpc || null,
+      event_booking_id: eventBookingId || null,
       notes: data.notes || null,
       payment_method: paymentMethod,
       payment_breakdown: paymentBreakdown,

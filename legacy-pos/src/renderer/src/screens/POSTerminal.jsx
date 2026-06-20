@@ -56,9 +56,10 @@ const normalizeSubmitItem = (item = {}) => ({
   unit_price: Number(item.unit_price || 0),
   modifiers: item.modifiers || []
 });
-const buildSubmitSignature = ({ cart, customerType, selectedRoom, walkInName, paymentMethod, paymentBreakdown, outletId, totals, serviceMode, tableName }) => JSON.stringify({
+const buildSubmitSignature = ({ cart, customerType, selectedRoom, selectedEventId, walkInName, paymentMethod, paymentBreakdown, outletId, totals, serviceMode, tableName }) => JSON.stringify({
   customerType,
   selectedRoom: customerType === 'room' ? selectedRoom || null : null,
+  selectedEventId: customerType === 'event' ? selectedEventId || null : null,
   walkInName: customerType === 'walkin' ? String(walkInName || '').trim() : null,
   paymentMethod,
   paymentBreakdown,
@@ -88,6 +89,9 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
   const [selectedRoom, setSelectedRoom] = useState('');
   const [rooms, setRooms] = useState([]);
   const [bookings, setBookings] = useState([]);
+  const [events, setEvents] = useState([]);
+  const [selectedEventId, setSelectedEventId] = useState('');
+  const [eventsLoaded, setEventsLoaded] = useState(false);
   const [orderNotes, setOrderNotes] = useState('');
   const [discountValue, setDiscountValue] = useState('');
   const [discountReason, setDiscountReason] = useState('');
@@ -132,6 +136,7 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
 
   // Shift state
   const [currentShift, setCurrentShift] = useState(null);
+  const [openShifts, setOpenShifts] = useState([]);
 
   // Staged data loading: rooms/bookings loaded on demand
   const [roomsLoaded, setRoomsLoaded] = useState(false);
@@ -181,31 +186,14 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
     return true;
   }, [getEffectiveItemOutletId, outletFilter, selectedOutlet]);
 
-  const virtualInventoryMenuItems = useMemo(() => {
+  const unlinkedInventoryItems = useMemo(() => {
     const linkedInventoryIds = new Set((menuItems || []).map((item) => item.inventory_item_id).filter(Boolean));
     return (inventoryItems || [])
       .filter((item) => item?.id && item.is_active !== false && !linkedInventoryIds.has(item.id))
-      .filter(itemMatchesOutlet)
-      .map((item) => ({
-        id: `virtual-inventory-${item.id}`,
-        inventory_item_id: item.id,
-        depletion_qty: 1,
-        name: item.name,
-        item_name: item.name,
-        category: item.category || 'Drinks',
-        price: Number(item.selling_price || item.price || 0),
-        barcode: item.barcode || null,
-        is_available: true,
-        outlet_id: item.outlet_id || null,
-        template_kind: 'inventory_virtual',
-        _virtual_inventory_item: true
-      }));
+      .filter(itemMatchesOutlet);
   }, [inventoryItems, itemMatchesOutlet, menuItems]);
 
-  const terminalMenuItems = useMemo(
-    () => [...(menuItems || []), ...virtualInventoryMenuItems],
-    [menuItems, virtualInventoryMenuItems]
-  );
+  const terminalMenuItems = menuItems || [];
 
   const orderStockIssues = useMemo(() => {
     const usage = buildOrderStockUsage(cart);
@@ -245,17 +233,21 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
       setModifierGroups(modGroups || []);
       setPromotions(promos || []);
 
-      const openShift = (shifts || []).find((s) => s.status === 'open' && s.cashier_id === user.id);
-      setCurrentShift(openShift || null);
+      const availableShifts = (shifts || []).filter((s) => s.status === 'open' && s.cashier_id === user.id);
+      setOpenShifts(availableShifts);
 
       const access = await window.api.pos.getUserPosAccess();
       setOutletFilter(access.outletFilter);
       const allowed = access.outletFilter;
       if (Array.isArray(allowed) && allowed.length === 1) {
         const match = (out || []).find((o) => o.id === allowed[0]);
-        if (match) setSelectedOutlet(match);
+        if (match) {
+          setSelectedOutlet(match);
+          setCurrentShift(availableShifts.find((shift) => shift.outlet_id === match.id) || null);
+        }
       } else if (allowed === null && (out || []).length === 1) {
         setSelectedOutlet(out[0]);
+        setCurrentShift(availableShifts.find((shift) => shift.outlet_id === out[0].id) || null);
       }
 
       const cashierStaff = (staff || []).filter((s) => ['cashier', 'supervisor'].includes(String(s.role || '').toLowerCase()));
@@ -282,6 +274,17 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
       console.error('Failed to load room data:', e);
     }
   }, [roomsLoaded]);
+
+  const loadEventData = useCallback(async () => {
+    if (eventsLoaded) return;
+    try {
+      const rows = await window.api.pos.getEvents().catch(() => []);
+      setEvents(rows || []);
+      setEventsLoaded(true);
+    } catch (e) {
+      console.error('Failed to load event data:', e);
+    }
+  }, [eventsLoaded]);
 
   useEffect(() => { loadCoreData(); }, [loadCoreData]);
 
@@ -339,7 +342,8 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
   // Load rooms when customer type switches to 'room'
   useEffect(() => {
     if (customerType === 'room' && !roomsLoaded) loadRoomData();
-  }, [customerType, roomsLoaded, loadRoomData]);
+    if (customerType === 'event' && !eventsLoaded) loadEventData();
+  }, [customerType, roomsLoaded, eventsLoaded, loadRoomData, loadEventData]);
 
   const categories = useMemo(() => {
     const cats = [...new Set(terminalMenuItems.filter(itemMatchesOutlet).map((i) => i.category || 'Other'))];
@@ -372,6 +376,9 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
       return;
     }
     setSelectedOutlet(nextOutlet);
+    setCurrentShift(nextOutlet
+      ? openShifts.find((shift) => shift.outlet_id === nextOutlet.id) || null
+      : null);
     setError('');
   };
 
@@ -391,13 +398,13 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
       const nextOutlet = outletById.get(itemOutletId);
       if (nextOutlet) setSelectedOutlet(nextOutlet);
     }
-    const itemKey = item._virtual_inventory_item ? `inventory:${item.inventory_item_id}` : `menu:${item.id}`;
+    const itemKey = `menu:${item.id}`;
     setCart((prev) => {
       const existing = prev.find((c) => c._cart_key === itemKey || (!c._cart_key && c.menu_item_id === item.id));
       const candidate = existing
         ? prev.map((c) => (c._cart_key === itemKey || (!c._cart_key && c.menu_item_id === item.id)) ? { ...c, quantity: c.quantity + 1 } : c)
         : [...prev, {
-        _cart_key: itemKey, menu_item_id: item._virtual_inventory_item ? null : item.id, inventory_item_id: item.inventory_item_id || null,
+        _cart_key: itemKey, menu_item_id: item.id, inventory_item_id: item.inventory_item_id || null,
         depletion_qty: item.depletion_qty || 1, item_name: item.name, category: item.category || 'Other',
         quantity: 1, unit_price: item.price || 0, modifiers: [], item_notes: null
       }];
@@ -482,14 +489,14 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
     });
   }, [cartForTotals, discountValue, taxEnabled, taxRate, tipAmount, appliedPromo, applicablePromo]);
 
-  const effectivePaymentMethod = customerType === 'room'
+  const effectivePaymentMethod = customerType === 'room' || customerType === 'event'
     ? 'folio'
     : paymentMode === 'split'
       ? 'split'
       : paymentMethod;
 
   const paymentBreakdown = useMemo(() => {
-    if (customerType === 'room') {
+    if (customerType === 'room' || customerType === 'event') {
       return [{ method: 'folio', amount: cartTotals.total, reference: null }];
     }
     if (paymentMode !== 'split') {
@@ -576,11 +583,12 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
     if (!selectedStaff) { setError('Select a cashier/operator first.'); return; }
     if (cart.length === 0) { setError('Add items to the cart first.'); return; }
     if (customerType === 'room' && !selectedRoom) { setError('Select a room for folio charge.'); return; }
+    if (customerType === 'event' && !selectedEventId) { setError('Select an event for folio charge.'); return; }
     if (orderStockIssues.length > 0) {
       setError(`${orderStockIssues[0].itemName} no longer has enough synced stock for this order.`);
       return;
     }
-    if (customerType !== 'room' && paymentMode === 'split' && Math.abs(paymentBalance) > 0.01) {
+    if (!['room', 'event'].includes(customerType) && paymentMode === 'split' && Math.abs(paymentBalance) > 0.01) {
       setError(`Split payments must match the total. Balance: ${currency} ${fmt(paymentBalance)}`);
       return;
     }
@@ -593,6 +601,13 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
         return;
       }
     }
+    if (customerType === 'event' && !isOnline) {
+      const activeEvent = events.find((event) => event.id === selectedEventId && !['cancelled', 'completed'].includes(String(event.status || '').toLowerCase()));
+      if (!activeEvent) {
+        setError('Event folio charge requires an active event cached locally. Go online first or sync events.');
+        return;
+      }
+    }
 
     setError('');
     setSubmitting(true);
@@ -601,6 +616,7 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
         cart: cartForTotals,
         customerType,
         selectedRoom,
+        selectedEventId,
         walkInName,
         paymentMethod: effectivePaymentMethod,
         paymentBreakdown,
@@ -632,6 +648,7 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
         walk_in_name: customerType === 'walkin' ? walkInName : null,
         room_id: customerType === 'room' ? selectedRoom : null,
         booking_id: bookingId,
+        event_booking_id: customerType === 'event' ? selectedEventId : null,
         notes: orderNotes,
         discount_total: Number(discountValue) || 0,
         tax_rate: taxEnabled ? Number(taxRate) || 0 : 0,
@@ -768,8 +785,10 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
             <div className="py-12 text-center space-y-2">
               {menuItems.length > 0 ? (
                 <p className="text-sm text-slate-400">No items available for the selected outlet/category.</p>
-              ) : inventoryItems.length > 0 ? (
-                <p className="text-sm text-amber-600 font-medium">Bar inventory loaded but no POS menu items linked.</p>
+              ) : unlinkedInventoryItems.length > 0 ? (
+                <p className="text-sm text-amber-600 font-medium">
+                  {unlinkedInventoryItems.length} inventory item(s) need to be linked to the published POS menu before they can be sold.
+                </p>
               ) : (
                 <p className="text-sm text-slate-400">No items found. Add menu items in Menu Management.</p>
               )}
@@ -848,6 +867,7 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
             <select value={customerType} onChange={(e) => setCustomerType(e.target.value)} className="min-h-11 flex-1 rounded-lg border border-slate-200 px-3 text-sm font-semibold">
               <option value="walkin">Walk-in</option>
               <option value="room">Room Folio</option>
+              <option value="event">Event Folio</option>
             </select>
             <select value={serviceMode} onChange={(e) => setServiceMode(e.target.value)} className="min-h-11 flex-1 rounded-lg border border-slate-200 px-3 text-sm font-semibold">
               <option value="takeaway">Takeaway</option>
@@ -875,6 +895,16 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
                 const booking = bookings.find((b) => b.room_id === room.id && ['confirmed', 'checked_in'].includes(String(b.status || '').toLowerCase()));
                 return <option key={room.id} value={room.id}>{room.name || room.number || room.id}{booking ? ` (${booking.guest_name})` : ''}</option>;
               })}
+            </select>
+          )}
+          {customerType === 'event' && (
+            <select value={selectedEventId} onChange={(e) => setSelectedEventId(e.target.value)} className="min-h-11 w-full rounded-lg border border-slate-200 px-3 text-sm">
+              <option value="">Select event...</option>
+              {events.map((event) => (
+                <option key={event.id} value={event.id}>
+                  {event.event_name || event.client_name || 'Event'} — {event.booking_date} {event.start_time || ''}
+                </option>
+              ))}
             </select>
           )}
           {detailsExpanded && serviceMode === 'table' && (
@@ -929,7 +959,7 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
             <span className="text-base font-bold text-slate-800">Total</span>
             <span className="text-2xl font-black text-emerald-700">{currency} {fmt(cartTotals.total)}</span>
           </div>
-          {customerType !== 'room' && (
+          {!['room', 'event'].includes(customerType) && (
             <div className="space-y-2">
               <div className="grid grid-cols-2 gap-2">
                 <button onClick={() => setPaymentMode('single')}

@@ -106,7 +106,17 @@ const api = {
     getPayments: (bookingId) => ipcRenderer.invoke('bookings:getPayments', bookingId),
     refund: (bookingId, payload) => ipcRenderer.invoke('bookings:refund', bookingId, payload),
     createEvent: (data) => ipcRenderer.invoke('bookings:createEvent', data),
-    getPendingOnline: () => ipcRenderer.invoke('bookings:getPendingOnline')
+    getPendingOnline: () => ipcRenderer.invoke('bookings:getPendingOnline'),
+    reschedule: (bookingId, data) => ipcRenderer.invoke('bookings:reschedule', bookingId, data)
+  },
+  customerCredit: {
+    getBalance: (customerId) => ipcRenderer.invoke('customerCredit:getBalance', customerId),
+    getHistory: (customerId, limit, offset) => ipcRenderer.invoke('customerCredit:getHistory', customerId, limit, offset),
+    getSummary: (search, limit, offset) => ipcRenderer.invoke('customerCredit:getSummary', search, limit, offset),
+    record: (data) => ipcRenderer.invoke('customerCredit:record', data),
+    applyToBooking: (data) => ipcRenderer.invoke('customerCredit:applyToBooking', data),
+    refund: (data) => ipcRenderer.invoke('customerCredit:refund', data),
+    reverse: (data) => ipcRenderer.invoke('customerCredit:reverse', data)
   },
   invoices: {
     getBookingInvoices: () => ipcRenderer.invoke('invoices:getBookingInvoices'),
@@ -131,6 +141,8 @@ const api = {
     savePDF: (payload) => ipcRenderer.invoke('reports:savePDF', payload),
     printCurrent: () => ipcRenderer.invoke('reports:printCurrent'),
     saveExcel: (data) => ipcRenderer.invoke('reports:saveExcel', data),
+    exportDetailedExcel: (payload) => ipcRenderer.invoke('reports:exportDetailedExcel', payload),
+    exportDetailedPDF: (payload) => ipcRenderer.invoke('reports:exportDetailedPDF', payload),
     posSales: (start, end, outletId) => ipcRenderer.invoke('reports:posSales', start, end, outletId),
     inventorySpend: (start, end, outletId) => ipcRenderer.invoke('reports:inventorySpend', start, end, outletId),
     supplySpend: (start, end) => ipcRenderer.invoke('reports:supplySpend', start, end),
@@ -305,7 +317,8 @@ const api = {
     listDisplays: () => ipcRenderer.invoke('pos:listDisplays'),
     sendPaymentTerminalTotal: (data) => ipcRenderer.invoke('pos:sendPaymentTerminalTotal', data),
     getAuditLog: (limit) => ipcRenderer.invoke('pos:getAuditLog', limit),
-    getActiveBookingForRoom: (roomId) => ipcRenderer.invoke('pos:getActiveBookingForRoom', roomId)
+    getActiveBookingForRoom: (roomId) => ipcRenderer.invoke('pos:getActiveBookingForRoom', roomId),
+    getActiveEvents: () => ipcRenderer.invoke('pos:getActiveEvents')
   },
   inventory: {
     getItems: () => ipcRenderer.invoke('inventory:getItems'),
@@ -469,6 +482,18 @@ const api = {
     update: (id, data) => ipcRenderer.invoke('conference:update', id, data),
     delete: (id) => ipcRenderer.invoke('conference:delete', id),
     updatePayment: (id, amount, method, intentKey) => ipcRenderer.invoke('conference:updatePayment', id, amount, method, intentKey)
+  },
+  events: {
+    getAll: (start, end) => ipcRenderer.invoke('events:getAll', start, end),
+    getById: (id) => ipcRenderer.invoke('events:getById', id),
+    getDetails: (id) => ipcRenderer.invoke('events:getDetails', id),
+    create: (data) => ipcRenderer.invoke('events:create', data),
+    update: (id, data) => ipcRenderer.invoke('events:update', id, data),
+    cancel: (id, reason, cancelLinkedRooms) => ipcRenderer.invoke('events:cancel', id, reason, cancelLinkedRooms),
+    addLineItem: (data) => ipcRenderer.invoke('events:addLineItem', data),
+    voidLineItem: (lineItemId, reason) => ipcRenderer.invoke('events:voidLineItem', lineItemId, reason),
+    updatePayment: (id, amount, method, type, intentKey) => ipcRenderer.invoke('events:updatePayment', id, amount, method, type, intentKey),
+    checkAvailability: (resourceKey, startAt, endAt, excludeEventId) => ipcRenderer.invoke('events:checkAvailability', resourceKey, startAt, endAt, excludeEventId)
   },
   ai: {
     turn: (payload) => ipcRenderer.invoke('ai:turn', payload),

@@ -36,6 +36,6 @@ test('Manager PWA exposes POS snapshot and transaction history', async () => {
   assert.match(page, /Top items/)
   assert.match(app, /path="\/pos"/)
   assert.match(app, /capability="pos\.reports"/)
-  assert.match(menu, /to: '\/pos'/)
+  assert.match(menu, /to="\/pos"/)
   assert.match(dashboard, /to="\/pos"/)
 })

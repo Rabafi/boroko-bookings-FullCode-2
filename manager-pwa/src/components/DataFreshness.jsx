@@ -18,15 +18,20 @@ function useOnlineStatus() {
   return online
 }
 
-export default function DataFreshness({ updatedAt, loading = false, error = '', className = '' }) {
+export default function DataFreshness({ updatedAt, loading = false, error = '', realtimeActive = false, className = '' }) {
   const online = useOnlineStatus()
+
   const label = loading
-    ? 'Refreshing data'
-    : !online
-      ? `Offline cache${updatedAt ? ` - ${shortDateTime(updatedAt)}` : ''}`
-      : updatedAt
-        ? `Updated ${shortDateTime(updatedAt)}`
-        : 'Live data'
+    ? 'Updating\u2026'
+    : error
+      ? `Update failed \u2022 showing ${updatedAt ? shortDateTime(updatedAt) : 'no data'}`
+      : !online
+        ? `Offline \u2022 cached ${updatedAt ? shortDateTime(updatedAt) : ''}`
+        : realtimeActive
+          ? 'Live'
+          : updatedAt
+            ? `Updated ${shortDateTime(updatedAt)}`
+            : 'Loading\u2026'
 
   return (
     <p className={`text-[11px] ${error ? 'text-red-300' : online ? 'text-gray-500' : 'text-amber-300'} ${className}`}>

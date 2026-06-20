@@ -10,11 +10,11 @@ This repo has two GitHub targets:
 From the project root:
 
 ```powershell
-cd "C:\Users\Botswapelo Studios\Documents\Work\Boroko Bookings"
+cd "C:\path\to\Boroko Bookings"
 git status
 git add .
 git commit -m "Describe the change"
-git push -u origin backend-refactor
+git push -u origin <branch-name>
 ```
 
 After the branch already exists on GitHub, future pushes can be:
@@ -26,7 +26,7 @@ git push
 ## Deploy Manager PWA
 
 ```powershell
-cd "C:\Users\Botswapelo Studios\Documents\Work\Boroko Bookings"
+cd "C:\path\to\Boroko Bookings"
 npm run pwa:deploy
 ```
 
@@ -39,7 +39,7 @@ https://boroko-bookings.vercel.app
 ## Build Desktop Installer Locally
 
 ```powershell
-cd "C:\Users\Botswapelo Studios\Documents\Work\Boroko Bookings"
+cd "C:\path\to\Boroko Bookings"
 npm run release:build
 ```
 

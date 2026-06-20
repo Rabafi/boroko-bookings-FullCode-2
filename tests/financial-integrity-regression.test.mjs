@@ -163,6 +163,29 @@ async function run() {
   assert.equal(packageJson.build.nsis.perMachine, false)
   assert.equal(packageJson.build.nsis.deleteAppDataOnUninstall, false)
 
+  // ── Customer Credit & Reschedule integrity ──────────────────────────────
+  const customerCreditSql = await read('supabase/migrations/20260620100000_customer_credit_and_booking_reschedule.sql')
+  const customerCreditJs = await read('src/main/domains/customerCredit.js')
+
+  // Customer credit ledger must use idempotency keys
+  assert.match(customerCreditSql, /customer_credit_ledger_lodge_idempotency_uidx/, 'Customer credit must have idempotency unique index')
+  assert.match(customerCreditJs, /p_idempotency_key/, 'Customer credit RPC calls must include idempotency keys')
+
+  // Customer credit must not have direct table mutations in Electron
+  assert.doesNotMatch(customerCreditJs, /\.from\('customer_credit_ledger'\)\.insert/, 'Must not insert directly into customer_credit_ledger')
+  assert.doesNotMatch(customerCreditJs, /\.from\('customer_credit_ledger'\)\.update/, 'Must not update customer_credit_ledger directly')
+
+  // Reschedule must use RPC
+  assert.match(bookings, /\.rpc\('reschedule_booking'/, 'Reschedule must use RPC')
+  assert.doesNotMatch(
+    bookings,
+    /rescheduleBooking[\s\S]*?\.from\('bookings'\)[\s\S]*?\.update\(/,
+    'Reschedule must not directly update bookings table'
+  )
+
+  // Customer credit allocation must be atomic (single RPC call)
+  assert.match(customerCreditJs, /\.rpc\('apply_customer_credit_to_booking'/, 'Credit allocation must use atomic RPC')
+
   console.log('financial-integrity-regression: ok')
 }
 

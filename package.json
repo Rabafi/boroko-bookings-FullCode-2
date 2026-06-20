@@ -17,6 +17,7 @@
     "test:offline-pos-critical": "node .\\tests\\offline-pos-regression.test.mjs",
     "test:offline-queue-critical": "node .\\tests\\offline-queue-regression.test.mjs",
     "test:financial-integrity": "node .\\tests\\financial-integrity-regression.test.mjs",
+    "test:customer-credit-reschedule": "node .\\tests\\customer-credit-reschedule-regression.test.mjs",
     "test:inventory-offline-sync": "node .\\tests\\inventory-offline-sync-regression.test.mjs",
     "test:import-critical": "node .\\tests\\import-system-regression.test.mjs",
     "test:pos-hardware-adapter": "node .\\tests\\pos-hardware-adapter.test.mjs",

@@ -52,6 +52,7 @@ const posAPI = {
   // Rooms & Bookings
   getRooms: () => ipcRenderer.invoke('pos:get-rooms'),
   getBookings: () => ipcRenderer.invoke('pos:get-bookings'),
+  getEvents: () => ipcRenderer.invoke('pos:get-events'),
 
   // Tables & Tabs
   getTables: () => ipcRenderer.invoke('pos:get-tables'),

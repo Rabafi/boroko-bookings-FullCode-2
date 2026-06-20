@@ -163,6 +163,7 @@ function formatElapsed(startedAt, now = Date.now()) {
 function buildPosSubmitSignature({
   customerType,
   selectedRoom,
+  selectedEventId,
   walkInName,
   orderNotes,
   paymentMethod,
@@ -181,9 +182,10 @@ function buildPosSubmitSignature({
   return JSON.stringify({
     customerType: customerType || 'walkin',
     room_id: customerType === 'room' ? (selectedRoom || null) : null,
+    event_booking_id: customerType === 'event' ? (selectedEventId || null) : null,
     walk_in_name: customerType === 'walkin' ? String(walkInName || '').trim() : null,
     notes: String(orderNotes || '').trim(),
-    payment_method: customerType === 'room' ? 'folio' : (paymentMethod || 'cash'),
+    payment_method: (customerType === 'room' || customerType === 'event') ? 'folio' : (paymentMethod || 'cash'),
     payment_breakdown: paymentBreakdown || [],
     tax_total: Number(taxTotal || 0),
     tip_total: Number(tipTotal || 0),
@@ -242,9 +244,11 @@ export default function POS() {
 
   // Current order (terminal)
   const [orderItems, setOrderItems] = useState([])
-  const [customerType, setCustomerType] = useState('walkin') // walkin | room
+  const [customerType, setCustomerType] = useState('walkin') // walkin | room | event
   const [rooms, setRooms] = useState([])
   const [selectedRoom, setSelectedRoom] = useState('')
+  const [activeEvents, setActiveEvents] = useState([])
+  const [selectedEventId, setSelectedEventId] = useState('')
   const [walkInName, setWalkInName] = useState('')
   const [orderNotes, setOrderNotes] = useState('')
   const [paymentMethod, setPaymentMethod] = useState('cash')
@@ -497,6 +501,11 @@ export default function POS() {
     setRooms((data || []).filter((r) => r.status !== 'maintenance'))
   }, [])
 
+  const loadEvents = useCallback(async () => {
+    const data = await window.api.pos.getActiveEvents().catch(() => [])
+    setActiveEvents(data || [])
+  }, [])
+
   const loadOrders = useCallback(async () => {
     setOrdersError(null)
     try {
@@ -606,6 +615,7 @@ export default function POS() {
   useEffect(() => {
     loadMenu()
     loadRooms()
+    loadEvents()
     loadInventoryItems()
     // Load outlets for order tagging and menu filtering
     setOutletsLoading(true)
@@ -858,7 +868,7 @@ export default function POS() {
         amount: Number(row.amount || 0),
         reference: row.reference || null
       })).filter((row) => row.amount > 0)
-    : [{ method: customerType === 'room' ? 'folio' : paymentMethod, amount: orderTotal, reference: paymentReference || null }]
+    : [{ method: (customerType === 'room' || customerType === 'event') ? 'folio' : paymentMethod, amount: orderTotal, reference: paymentReference || null }]
   const splitPaidTotal = normalizedPaymentBreakdown.reduce((sum, row) => sum + Number(row.amount || 0), 0)
   const splitBalance = Math.round((orderTotal - splitPaidTotal) * 100) / 100
   const menuMutationsDisabled = offlineMode || menuSaving || !!barTemplateSavingKey
@@ -905,6 +915,7 @@ export default function POS() {
     if (orderItems.length === 0) return
     if (outletsError || !selectedOutlet) { alert('No outlet is selected. Select Kitchen or Bar before completing the order.'); return }
     if (customerType === 'room' && !selectedRoom) { alert('Select a room first.'); return }
+    if (customerType === 'event' && !selectedEventId) { alert('Select an event first.'); return }
     if (serviceMode === 'table') {
       if (!tableName.trim()) { alert('Select a table first.'); return }
       if (tableServiceMode === 'waiter' && !selectedWaiterStaff?.id && !waiterName.trim()) { alert('Select the waiter for this table.'); return }
@@ -927,6 +938,7 @@ export default function POS() {
       const submitSignature = buildPosSubmitSignature({
         customerType,
         selectedRoom,
+        selectedEventId,
         walkInName,
         orderNotes,
         paymentMethod,
@@ -986,10 +998,11 @@ export default function POS() {
         submit_intent_id: submitIntentId,
         room_id: customerType === 'room' ? selectedRoom : null,
         booking_id: customerType === 'room' ? selectedBookingId : null,
+        event_booking_id: customerType === 'event' ? selectedEventId : null,
         walk_in_name: customerType === 'walkin' ? (walkInName.trim() || 'Walk-in') : null,
         items: orderItemsForSubmit,
         notes: orderNotes.trim() || null,
-        payment_method: customerType === 'room' ? 'folio' : splitPaymentsEnabled ? 'split' : paymentMethod,
+        payment_method: (customerType === 'room' || customerType === 'event') ? 'folio' : splitPaymentsEnabled ? 'split' : paymentMethod,
         payment_breakdown: normalizedPaymentBreakdown,
         gross_total: orderSubtotal,
         discount_total: orderDiscountAmount,
@@ -2252,6 +2265,8 @@ export default function POS() {
                 <p className="mt-1 text-[11px] text-emerald-800">
                   {customerType === 'room'
                     ? 'Charges will be staged against the selected room folio.'
+                    : customerType === 'event'
+                      ? 'Charges will be staged against the selected event folio.'
                     : `${formatPaymentMethod(paymentMethod)} will be used for this walk-in sale.`}
                 </p>
               </div>
@@ -2271,6 +2286,12 @@ export default function POS() {
               >
                 Charge to Room
               </button>
+              <button
+                onClick={() => setCustomerType('event')}
+                className={`flex-1 transition-colors ${touchMode ? 'py-2' : 'py-1.5'} ${customerType === 'event' ? 'bg-green-600 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
+              >
+                Event Folio
+              </button>
             </div>
 
             {customerType === 'room' ? (
@@ -2283,6 +2304,19 @@ export default function POS() {
                 {rooms.map((r) => (
                   <option key={r.id} value={r.id}>
                     Room {r.room_number} — {r.room_type}
+                  </option>
+                ))}
+              </select>
+            ) : customerType === 'event' ? (
+                <select
+                className={`input mb-1.5 shrink-0 ${touchInputClass}`}
+                value={selectedEventId}
+                onChange={(e) => setSelectedEventId(e.target.value)}
+              >
+                <option value="">Select event...</option>
+                {activeEvents.map((ev) => (
+                  <option key={ev.id} value={ev.id}>
+                    {ev.event_name || 'Event'} — {ev.booking_date} ({ev.event_type || 'event'})
                   </option>
                 ))}
               </select>
@@ -2761,6 +2795,19 @@ export default function POS() {
                     ) : (
                       <p className="text-xs text-green-600 mt-1">
                         Will be added to room booking folio
+                      </p>
+                    )
+                  ) : customerType === 'event' && selectedEventId ? (
+                    offlineMode ? (
+                      <div className="mt-1.5 rounded-xl border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs text-amber-900">
+                        <p className="font-semibold">Offline event folio charge</p>
+                        <p className="mt-1">
+                          This event charge is only being staged on this machine for now. It will reach the event folio after sync succeeds when internet returns.
+                        </p>
+                      </div>
+                    ) : (
+                      <p className="text-xs text-green-600 mt-1">
+                        Will be added to event folio
                       </p>
                     )
                   ) : customerType === 'walkin' && (

@@ -1,5 +1,7 @@
 # Boroko Bookings Marketing Website Audit and Implementation Plan
 
+> **Status: historical planning snapshot dated 2026-06-11.** It does not describe the current implementation or deployment state. Re-audit the live marketing surface before applying recommendations.
+
 Date: 2026-06-11
 
 Scope:
@@ -701,4 +703,3 @@ Packages:
 6. Clarify trial/download flow.
 7. Add stronger trust and migration reassurance.
 8. Add social proof when available.
-

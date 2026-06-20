@@ -1,5 +1,7 @@
 # DB Refactor Rules (DO NOT BREAK)
 
+> **Scope warning:** These rules belong to the historical database-module extraction/refactor and are not universal instructions for all current feature work. Current business logic lives under `src/main/domains/`; follow [../AGENTS.md](../AGENTS.md) for repository-wide rules.
+
 ## FORBIDDEN
 
 * Do NOT rename functions

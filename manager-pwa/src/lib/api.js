@@ -146,7 +146,7 @@ const INVENTORY_ITEM_SELECT = 'id, name, category, unit, current_stock, reorder_
 const INVENTORY_ITEM_LEGACY_SELECT = 'id, name, category, unit, current_stock, reorder_level, selling_price, outlet_id, latest_unit_cost, lodge_id, created_at'
 const DAY_USE_LIST_SELECT = 'id, date, resource_key, resource_name, start_time, end_time, status, total, adults, children, notes, created_at, updated_at, deposit_amount, balance_due, fee_per_adult, fee_per_child, flat_fee, hourly_rate, package_fee, pricing_mode, created_by'
 const BOOKING_LIST_SELECT = 'id, customer_id, room_id, check_in, check_out, adults, children, total_amount, status, payment_status, amount_paid, charges_total, deposit_amount, notes, is_exclusive_event, invoice_number, created_at, updated_at, created_by, payment_method, source, quotation_id, event_daily_rate, customer:customers(name), room:rooms(room_number)'
-const CONFERENCE_BOOKING_SELECT = 'id, booking_date, start_time, end_time, client_name, company, attendees, setup_type, room_name, includes_catering, catering_notes, total_amount, deposit_paid, payment_status, payment_method, notes, created_at, lodge_id'
+const CONFERENCE_BOOKING_SELECT = 'id, booking_date, start_time, end_time, client_name, company, attendees, setup_type, room_name, includes_catering, catering_notes, total_amount, deposit_paid, payment_status, payment_method, notes, created_at, lodge_id, event_name, event_type, reservation_scope, status, adults, children, amount_paid, balance_due, currency'
 const QUOTATION_SELECT = 'id, customer_id, customer_name, customer_phone, quotation_type, event_name, event_daily_rate, room_id, room_name, check_in, check_out, adults, children, subtotal, tax_amount, total_amount, currency, notes, status, valid_until, quotation_number, created_at, updated_at, created_by, lodge_id, parent_quotation_id, converted_booking_id'
 const QUOTATION_LEGACY_SELECT = 'id, customer_id, customer_name, customer_phone, room_id, room_name, check_in, check_out, adults, children, subtotal, tax_amount, total_amount, currency, notes, status, valid_until, quotation_number, created_at, updated_at, created_by, lodge_id, parent_quotation_id, converted_booking_id'
 
@@ -281,10 +281,15 @@ async function buildDashboardSnapshotLegacy(lodgeId, today = formatDate(new Date
   const nextWeek = formatDate(addDays(today, 7))
   const previousWeek = Array.from({ length: 7 }, (_, index) => formatDate(addDays(today, index - 6)))
 
-  const [rooms, bookings, payments, expenses, maintenance, inventory, quotations, conference, dayUse] = await Promise.all([
+  const [rooms, bookings, payments, creditCashFlows, expenses, maintenance, inventory, quotations, conference, dayUse] = await Promise.all([
     safeSelect(supabase.from('rooms').select('id, room_number, room_type, rate_per_night, max_occupancy, status, amenities, description, photo, photos, lodge_id, created_at, updated_at, housekeeping_status, housekeeping_notes').eq('lodge_id', lodgeId).order('room_number').limit(200)),
     listBookings(lodgeId, { forceFresh: true }),
-    safeSelect(supabase.from('payments').select('amount, paid_at').eq('lodge_id', lodgeId).gte('paid_at', monthStart).lt('paid_at', monthEndExclusive), []),
+    safeSelect(supabase.from('payments').select('amount, paid_at, method, type').eq('lodge_id', lodgeId).gte('paid_at', monthStart).lt('paid_at', monthEndExclusive), []),
+    safeSelect(supabase.rpc('get_customer_credit_cash_flow', {
+      p_lodge_id: lodgeId,
+      p_start_at: `${monthStart}T00:00:00`,
+      p_end_at: `${monthEndExclusive}T00:00:00`
+    }), []),
     safeSelect(supabase.from('expenses').select('id, amount, date, category, description').eq('lodge_id', lodgeId).gte('date', monthStart).limit(200)),
     listMaintenanceTickets(lodgeId, { forceFresh: true }),
     safeInventorySelect(lodgeId),
@@ -326,22 +331,36 @@ async function buildDashboardSnapshotLegacy(lodgeId, today = formatDate(new Date
   const monthExpenses = expenses.reduce((sum, expense) => sum + Number(expense.amount || 0), 0)
   const monthPayments = payments.filter((payment) => {
     const paidAt = String(payment.paid_at || '').slice(0, 10)
-    return paidAt >= monthStart && paidAt < monthEndExclusive
+    return paidAt >= monthStart &&
+      paidAt < monthEndExclusive &&
+      !['customer_credit', 'customer_credit_transfer'].includes(String(payment.method || '').toLowerCase())
   })
+  const monthCreditReceipts = creditCashFlows
+    .filter((entry) => entry.entry_type === 'receipt')
+    .reduce((sum, entry) => sum + Number(entry.amount || 0), 0)
+  const monthCreditRefunds = creditCashFlows
+    .filter((entry) => entry.entry_type === 'refund')
+    .reduce((sum, entry) => sum + Number(entry.amount || 0), 0)
   const monthGrossCollected = monthPayments
     .filter((payment) => Number(payment.amount || 0) > 0)
-    .reduce((sum, payment) => sum + Number(payment.amount || 0), 0)
+    .reduce((sum, payment) => sum + Number(payment.amount || 0), monthCreditReceipts)
   const monthRefunds = monthPayments
     .filter((payment) => Number(payment.amount || 0) < 0)
-    .reduce((sum, payment) => sum + Math.abs(Number(payment.amount || 0)), 0)
+    .reduce((sum, payment) => sum + Math.abs(Number(payment.amount || 0)), monthCreditRefunds)
   const monthRevenue = monthGrossCollected - monthRefunds
   const maintenanceCosts = maintenanceCostsForRange(maintenance, monthStart, monthEnd)
 
   const revenueTrend = previousWeek.map((day) => {
     const amount = payments
-      .filter((payment) => String(payment.paid_at || '').slice(0, 10) === day)
+      .filter((payment) =>
+        String(payment.paid_at || '').slice(0, 10) === day &&
+        !['customer_credit', 'customer_credit_transfer'].includes(String(payment.method || '').toLowerCase())
+      )
       .reduce((sum, payment) => sum + Number(payment.amount || 0), 0)
-    return { day, amount }
+    const creditAmount = creditCashFlows
+      .filter((entry) => String(entry.created_at || '').slice(0, 10) === day)
+      .reduce((sum, entry) => sum + (entry.entry_type === 'receipt' ? Number(entry.amount || 0) : -Number(entry.amount || 0)), 0)
+    return { day, amount: amount + creditAmount }
   })
 
   const occupancyTrend = previousWeek.map((day) => {
@@ -396,13 +415,18 @@ async function buildReportsSnapshotLegacy(lodgeId, today = formatDate(new Date()
   const reportCashStart = `${lastMonthStart}T00:00:00`
   const reportCashEnd = `${monthEnd}T23:59:59`
 
-  const [rooms, bookings, payments, refundApprovals, expenses, posOrders, conferenceBookings, poolDayUse] = await Promise.all([
+  const [rooms, bookings, payments, creditCashFlows, refundApprovals, expenses, posOrders, conferenceBookings, poolDayUse] = await Promise.all([
     safeSelect(supabase.from('rooms').select('id').eq('lodge_id', lodgeId), []),
     safeSelectPaged(() => supabase.from('bookings').select('id, check_in, check_out, total_amount, charges_total, amount_paid, payment_status, status').eq('lodge_id', lodgeId), []),
-    safeSelect(supabase.from('payments').select('booking_id, amount, paid_at, type').eq('lodge_id', lodgeId).gte('paid_at', reportCashStart).lte('paid_at', reportCashEnd), []),
+    safeSelect(supabase.from('payments').select('booking_id, amount, paid_at, type, method').eq('lodge_id', lodgeId).gte('paid_at', reportCashStart).lte('paid_at', reportCashEnd), []),
+    safeSelect(supabase.rpc('get_customer_credit_cash_flow', {
+      p_lodge_id: lodgeId,
+      p_start_at: reportCashStart,
+      p_end_at: reportCashEnd
+    }), []),
     safeSelect(supabase.from('refund_approval_log').select('booking_id, retained_amount, created_at').eq('lodge_id', lodgeId).gte('created_at', reportCashStart).lte('created_at', reportCashEnd), []),
     safeSelect(supabase.from('expenses').select('amount, date').eq('lodge_id', lodgeId).gte('date', monthStart).lte('date', monthEnd), []),
-    safeSelect(supabase.from('pos_orders').select('total, created_at').eq('lodge_id', lodgeId).gte('created_at', monthStart).neq('status', 'voided'), []),
+    safeSelect(supabase.from('pos_orders').select('total, created_at, payment_method, event_booking_id, booking_id').eq('lodge_id', lodgeId).gte('created_at', monthStart).neq('status', 'voided'), []),
     safeSelect(supabase.from('conference_bookings').select('total_amount, payment_status').eq('lodge_id', lodgeId).gte('booking_date', monthStart).lte('booking_date', monthEnd).neq('payment_status', 'cancelled'), []),
     safeSelect(supabase.from('pool_day_use').select('total').eq('lodge_id', lodgeId).gte('date', monthStart).lte('date', monthEnd), [])
   ])
@@ -411,16 +435,31 @@ async function buildReportsSnapshotLegacy(lodgeId, today = formatDate(new Date()
   const revForPeriod = (start, end) => payments
     .filter((payment) => {
       const paidAt = String(payment.paid_at || '').slice(0, 10)
-      return paidAt >= start && paidAt <= end
+      return paidAt >= start &&
+        paidAt <= end &&
+        !['customer_credit', 'customer_credit_transfer'].includes(String(payment.method || '').toLowerCase())
     })
-    .reduce((sum, payment) => sum + Number(payment.amount || 0), 0)
+    .reduce((sum, payment) => sum + Number(payment.amount || 0), creditCashFlows
+      .filter((entry) => {
+        const createdAt = String(entry.created_at || '').slice(0, 10)
+        return createdAt >= start && createdAt <= end
+      })
+      .reduce((sum, entry) => sum + (entry.entry_type === 'receipt' ? Number(entry.amount || 0) : -Number(entry.amount || 0)), 0))
 
   const refundsForPeriod = (start, end) => payments
     .filter((payment) => {
       const paidAt = String(payment.paid_at || '').slice(0, 10)
-      return paidAt >= start && paidAt <= end && Number(payment.amount || 0) < 0
+      return paidAt >= start &&
+        paidAt <= end &&
+        Number(payment.amount || 0) < 0 &&
+        String(payment.method || '').toLowerCase() !== 'customer_credit_transfer'
     })
-    .reduce((sum, payment) => sum + Math.abs(Number(payment.amount || 0)), 0)
+    .reduce((sum, payment) => sum + Math.abs(Number(payment.amount || 0)), creditCashFlows
+      .filter((entry) => {
+        const createdAt = String(entry.created_at || '').slice(0, 10)
+        return entry.entry_type === 'refund' && createdAt >= start && createdAt <= end
+      })
+      .reduce((sum, entry) => sum + Number(entry.amount || 0), 0))
   const retainedForPeriod = (start, end) => {
     let retained = 0
     let count = 0
@@ -473,7 +512,9 @@ async function buildReportsSnapshotLegacy(lodgeId, today = formatDate(new Date()
     unpaidTotal: unpaidBookings.reduce((sum, booking) => sum + Math.max(0, Number(booking.total_amount || 0) + Number(booking.charges_total || 0) - Number(booking.amount_paid || 0)), 0),
     unpaidCount: unpaidBookings.length,
     monthExpenses: expenses.reduce((sum, expense) => sum + Number(expense.amount || 0), 0),
-    posRevenue: posOrders.reduce((sum, order) => sum + Number(order.total || 0), 0),
+    posRevenue: posOrders
+      .filter((order) => String(order.payment_method || '').toLowerCase() !== 'folio')
+      .reduce((sum, order) => sum + Number(order.total || 0), 0),
     conferenceRevenue: conferenceBookings.reduce((sum, booking) => sum + Number(booking.total_amount || 0), 0),
     poolRevenue: poolDayUse.reduce((sum, entry) => sum + Number(entry.total || 0), 0)
   }
@@ -482,10 +523,15 @@ async function buildReportsSnapshotLegacy(lodgeId, today = formatDate(new Date()
 async function buildNightAuditLegacy(lodgeId, date) {
   const dayStart = `${date}T00:00:00`
   const dayEnd = `${date}T23:59:59`
-  const [bookings, posOrders, payments, expenses] = await Promise.all([
+  const [bookings, posOrders, payments, creditCashFlows, expenses] = await Promise.all([
     listBookings(lodgeId, { forceFresh: true }),
     safeSelect(supabase.from('pos_orders').select('*, pos_order_items(*)').eq('lodge_id', lodgeId).eq('status', 'completed').gte('created_at', dayStart).lte('created_at', dayEnd).order('created_at', { ascending: false }), []),
-    safeSelect(supabase.from('payments').select('amount, paid_at, type').eq('lodge_id', lodgeId).gte('paid_at', dayStart).lte('paid_at', dayEnd), []),
+    safeSelect(supabase.from('payments').select('amount, paid_at, type, method').eq('lodge_id', lodgeId).gte('paid_at', dayStart).lte('paid_at', dayEnd), []),
+    safeSelect(supabase.rpc('get_customer_credit_cash_flow', {
+      p_lodge_id: lodgeId,
+      p_start_at: dayStart,
+      p_end_at: dayEnd
+    }), []),
     safeSelect(supabase.from('expenses').select('amount, date').eq('lodge_id', lodgeId).gte('date', date).lte('date', date), [])
   ])
   const checkIns = bookings
@@ -505,11 +551,11 @@ async function buildNightAuditLegacy(lodgeId, date) {
     .sort((left, right) => String(left.check_in || '').localeCompare(String(right.check_in || '')))
 
   const grossCollected = payments
-    .filter((payment) => Number(payment.amount || 0) > 0)
-    .reduce((sum, payment) => sum + Number(payment.amount || 0), 0)
+    .filter((payment) => Number(payment.amount || 0) > 0 && !['customer_credit', 'customer_credit_transfer'].includes(String(payment.method || '').toLowerCase()))
+    .reduce((sum, payment) => sum + Number(payment.amount || 0), creditCashFlows.filter((entry) => entry.entry_type === 'receipt').reduce((sum, entry) => sum + Number(entry.amount || 0), 0))
   const refundsIssued = payments
-    .filter((payment) => Number(payment.amount || 0) < 0 || String(payment.type || '').toLowerCase() === 'refund')
-    .reduce((sum, payment) => sum + Math.abs(Number(payment.amount || 0)), 0)
+    .filter((payment) => (Number(payment.amount || 0) < 0 || String(payment.type || '').toLowerCase() === 'refund') && String(payment.method || '').toLowerCase() !== 'customer_credit_transfer')
+    .reduce((sum, payment) => sum + Math.abs(Number(payment.amount || 0)), creditCashFlows.filter((entry) => entry.entry_type === 'refund').reduce((sum, entry) => sum + Number(entry.amount || 0), 0))
   const expensesTotal = expenses.reduce((sum, expense) => sum + Number(expense.amount || 0), 0)
 
   return {
@@ -1084,6 +1130,28 @@ export async function getGuestHistory(lodgeId, customerId) {
   return rows.map(normalizeBookingRelations)
 }
 
+export async function getGuestLifetimeSummary(lodgeId, { search = '', limit = 50, offset = 0 } = {}) {
+  assertCapability('guests.view')
+  const { data, error } = await supabase.rpc('get_guest_lifetime_summary', {
+    p_lodge_id: lodgeId,
+    p_search: search || null,
+    p_limit: Math.min(Math.max(Number(limit) || 50, 1), 100),
+    p_offset: Math.max(Number(offset) || 0, 0)
+  })
+  if (error) throw new Error(friendlyErrorMessage(error, 'Could not load guest summaries.'))
+  return Array.isArray(data) ? data : []
+}
+
+export async function getGuestLifetimeCount(lodgeId, { search = '' } = {}) {
+  assertCapability('guests.view')
+  const { data, error } = await supabase.rpc('get_guest_lifetime_count', {
+    p_lodge_id: lodgeId,
+    p_search: search || null
+  })
+  if (error) throw new Error(friendlyErrorMessage(error, 'Could not count guests.'))
+  return Number(data || 0)
+}
+
 export async function listStaff(lodgeId) {
   assertCapability('staff.view')
   return queryWithCache({
@@ -1255,6 +1323,18 @@ export async function getRefundHistory(lodgeId, limit = 20) {
     p_limit: Math.min(Math.max(Number(limit) || 20, 1), 100)
   })
   if (error) throw new Error(friendlyErrorMessage(error, 'Could not load refund history.'))
+  return Array.isArray(data) ? data : []
+}
+
+export async function getCustomerCreditSummaryPwa(lodgeId, search = '', limit = 50, offset = 0) {
+  assertCapability('invoices.view')
+  const { data, error } = await supabase.rpc('get_customer_credit_summary', {
+    p_lodge_id: lodgeId,
+    p_search: search || null,
+    p_limit: Math.min(Math.max(Number(limit) || 50, 1), 100),
+    p_offset: Math.max(Number(offset) || 0, 0)
+  })
+  if (error) throw new Error(friendlyErrorMessage(error, 'Could not load customer credit summary.'))
   return Array.isArray(data) ? data : []
 }
 

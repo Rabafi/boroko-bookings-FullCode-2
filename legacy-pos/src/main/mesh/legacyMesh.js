@@ -19,7 +19,6 @@ const SHAREABLE_POS_OPERATIONS = new Set([
   'update_pos_tab_status',
   'upsert_pos_table',
   'open_pos_shift_with_id',
-  'close_pos_shift_with_id',
   'create_pos_menu_item',
   'update_pos_menu_item',
   'delete_pos_menu_item',

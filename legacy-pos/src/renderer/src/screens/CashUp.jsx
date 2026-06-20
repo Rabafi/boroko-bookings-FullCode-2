@@ -14,18 +14,27 @@ export default function CashUp({ user, settings, isOnline }) {
   const [submitting, setSubmitting] = useState(false);
   const [cashups, setCashups] = useState([]);
   const [summary, setSummary] = useState(null);
+  const [openShifts, setOpenShifts] = useState([]);
   const [currentShift, setCurrentShift] = useState(null);
   const currency = settings?.currency || CURRENCY;
+  const canFinalize = ['supervisor', 'manager', 'admin', 'super_admin', 'administrator', 'superadmin']
+    .includes(String(user?.role || '').toLowerCase());
 
   const loadOrders = useCallback(async () => {
     setLoading(true);
     try {
       const shifts = await window.api.pos.getShifts();
-      const openShift = (shifts || []).find((shift) => shift.status === 'open') || null;
+      const available = (shifts || []).filter((shift) => shift.status === 'open');
+      setOpenShifts(available);
+      const openShift = available.find((shift) => shift.id === currentShift?.id)
+        || available.find((shift) => shift.cashier_id === user?.id)
+        || available[0]
+        || null;
       setCurrentShift(openShift);
+      setOpeningFloat(openShift ? String(Number(openShift.opening_float) || 0) : '');
       const s = await window.api.pos.getCashupSummary({
         date,
-        openingFloat: Number(openingFloat) || 0,
+        openingFloat: Number(openShift?.opening_float) || 0,
         shiftId: openShift?.id || null
       });
       setSummary(s);
@@ -36,7 +45,7 @@ export default function CashUp({ user, settings, isOnline }) {
     } finally {
       setLoading(false);
     }
-  }, [date, openingFloat]);
+  }, [date, currentShift?.id, user?.id]);
 
   useEffect(() => { loadOrders(); }, [loadOrders]);
 
@@ -68,6 +77,18 @@ export default function CashUp({ user, settings, isOnline }) {
   }, [varianceByMethod]);
 
   const handleSubmitCashup = async () => {
+    if (!currentShift) {
+      alert('Select an open shift first.');
+      return;
+    }
+    if (!canFinalize) {
+      alert('A supervisor or manager must finalize the cash-up.');
+      return;
+    }
+    if (!isOnline) {
+      alert('Reconnect and sync all sales before finalizing the cash-up.');
+      return;
+    }
     setSubmitting(true);
     try {
       const payload = {
@@ -119,6 +140,32 @@ export default function CashUp({ user, settings, isOnline }) {
             <RefreshCw className="inline h-4 w-4" />
           </button>
         </div>
+      </div>
+
+      <div className="mb-5 rounded-xl border border-slate-200 bg-white p-4">
+        <label className="text-xs font-bold uppercase tracking-wide text-slate-500">Shift to reconcile</label>
+        <select
+          value={currentShift?.id || ''}
+          onChange={(event) => {
+            const shift = openShifts.find((row) => row.id === event.target.value) || null;
+            setCurrentShift(shift);
+            setOpeningFloat(shift ? String(Number(shift.opening_float) || 0) : '');
+          }}
+          className="mt-2 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold"
+        >
+          <option value="">Select an open shift</option>
+          {openShifts.map((shift) => (
+            <option key={shift.id} value={shift.id}>
+              {shift.cashier_name || 'Unknown cashier'} · opened {shift.opened_at ? new Date(shift.opened_at).toLocaleString('en-GB') : 'unknown'}
+            </option>
+          ))}
+        </select>
+        {!canFinalize && (
+          <p className="mt-2 text-xs font-semibold text-amber-700">A supervisor or manager login is required to finalize a cash-up.</p>
+        )}
+        {!isOnline && (
+          <p className="mt-2 text-xs font-semibold text-red-600">Cash-up cannot close a shift offline. Reconnect and sync first.</p>
+        )}
       </div>
 
       {loading ? (
@@ -180,14 +227,9 @@ export default function CashUp({ user, settings, isOnline }) {
               <div className="space-y-3">
                 <div>
                   <label className="text-xs font-medium text-slate-500">Opening Float ({currency})</label>
-                  <input
-                    type="number"
-                    value={openingFloat}
-                    onChange={(e) => setOpeningFloat(e.target.value)}
-                    placeholder="0.00"
-                    className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
-                    min="0"
-                  />
+                  <p className="mt-1 rounded-lg bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700">
+                    {currency} {fmt(openingFloat)}
+                  </p>
                 </div>
                 {PAYMENT_METHODS.map((m) => {
                   const expected = m === 'cash'
@@ -240,7 +282,7 @@ export default function CashUp({ user, settings, isOnline }) {
                 </div>
                 <button
                   onClick={handleSubmitCashup}
-                  disabled={submitting}
+                  disabled={submitting || !currentShift || !canFinalize || !isOnline}
                   className="w-full rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-emerald-700 disabled:opacity-50"
                 >
                   {submitting ? 'Saving...' : 'Submit Cash-Up'}

@@ -17,7 +17,8 @@ import {
   ReceiptText,
   History,
   MessageCircle,
-  Mail
+  Mail,
+  CalendarClock
 } from 'lucide-react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { StatusBadge } from './shared/StatusBadge'
@@ -253,6 +254,15 @@ export default function Bookings() {
   const [eventForm, setEventForm] = useState({ event_name: '', contact_phone: '', contact_email: '', check_in: '', check_out: '', event_daily_rate: '', deposit_amount: '', payment_method: 'cash', notes: '' })
   const [eventLoading, setEventLoading] = useState(false)
   const [eventResult, setEventResult] = useState(null) // success result
+
+  // Reschedule modal
+  const [rescheduleBookingState, setRescheduleBookingState] = useState(null)
+  const [rescheduleForm, setRescheduleForm] = useState({ new_check_in: '', new_check_out: '', new_room_id: '', reason: '', overpayment_action: 'reject' })
+  const [rescheduleLoading, setRescheduleLoading] = useState(false)
+  const [rescheduleError, setRescheduleError] = useState('')
+
+  // Customer credit allocation (used in payment modal)
+  const [creditAllocation, setCreditAllocation] = useState({ enabled: false, amount: '' })
 
   // Payment modal
   const [paymentBooking, setPaymentBooking] = useState(null)
@@ -622,6 +632,7 @@ export default function Bookings() {
     setPaymentBooking(null)
     setPaymentIntentKey(null)
     setPayError('')
+    setCreditAllocation({ enabled: false, amount: '' })
   }
 
   const getPaymentAttemptSignature = (bookingId, paymentStatus, amount) => {
@@ -759,10 +770,43 @@ export default function Bookings() {
     setPayLoading(true)
     setPayError('')
 
-    // Compute the delta amount to pay
+    // Customer credit is an ALTERNATIVE payment source — never combine both in one submit
+    if (creditAllocation.enabled && creditAllocation.amount) {
+      const creditAmount = Number(creditAllocation.amount)
+      if (creditAmount <= 0) {
+        setPayError('Credit amount must be greater than zero.')
+        setPayLoading(false)
+        return
+      }
+      const creditResult = await window.api.customerCredit.applyToBooking({
+        bookingId: paymentBooking.id,
+        customerId: paymentBooking.customer_id,
+        amount: creditAmount,
+        expectedBookingUpdatedAt: paymentBooking.updated_at || null
+      })
+      if (creditResult?.success === false) {
+        setPayError(creditResult.error || 'Credit allocation failed.')
+        setPayLoading(false)
+        return
+      }
+      paymentIntentCacheRef.current.delete(paymentBooking.id)
+      closePaymentModal()
+      loadAll()
+      const newPaid = Number(creditResult?.amount_paid || 0)
+      const totalOwed = Number(paymentBooking.total_amount || 0) + Number(paymentBooking.charges_total || 0)
+      const remaining = Math.max(0, totalOwed - newPaid)
+      showSuccess(
+        remaining > 0
+          ? `Credit applied. ${currency} ${remaining.toFixed(2)} remains outstanding.`
+          : 'Credit applied and the booking is now settled in full.'
+      )
+      setPayLoading(false)
+      return
+    }
+
+    // Normal payment path
     let amountToPay = 0
     if (payForm.payment_status === 'paid') {
-      // Canonical balance = room total + charges; || 0 guards against null charges_total
       amountToPay = Math.max(0, Number(paymentBooking.total_amount || 0) + Number(paymentBooking.charges_total || 0) - Number(paymentBooking.amount_paid || 0))
     } else if (payForm.payment_status === 'partial') {
       amountToPay = Number(payForm.amount_paid) || 0
@@ -775,7 +819,6 @@ export default function Bookings() {
     )
     setPaymentIntentKey(resolvedIntentKey)
 
-    // Reuse the same key for the same booking+amount even across modal reopen.
     const result = await window.api.bookings.updatePayment(
       paymentBooking.id,
       amountToPay,
@@ -784,7 +827,6 @@ export default function Bookings() {
     )
 
     if (result?.success === false) {
-      // Do NOT clear paymentIntentKey — retry must reuse the same key for safe deduplication
       setPayError(result.error || 'Payment failed. Please try again.')
       setPayLoading(false)
       return
@@ -880,6 +922,50 @@ export default function Bookings() {
       setError(err.message || 'Failed to create event booking')
     }
     setEventLoading(false)
+  }
+
+  const openReschedule = (b) => {
+    setRescheduleBookingState(b)
+    setRescheduleForm({
+      new_check_in: b.check_in,
+      new_check_out: b.check_out,
+      new_room_id: b.room_id,
+      reason: '',
+      overpayment_action: 'reject'
+    })
+    setRescheduleError('')
+  }
+
+  const closeRescheduleModal = () => {
+    setRescheduleBookingState(null)
+    setRescheduleError('')
+  }
+
+  const handleRescheduleSave = async (e) => {
+    e.preventDefault()
+    if (!rescheduleBookingState) return
+    setRescheduleLoading(true)
+    setRescheduleError('')
+    try {
+      const res = await window.api.bookings.reschedule(rescheduleBookingState.id, {
+        new_check_in: rescheduleForm.new_check_in,
+        new_check_out: rescheduleForm.new_check_out,
+        new_room_id: rescheduleForm.new_room_id || rescheduleBookingState.room_id,
+        reason: rescheduleForm.reason,
+        overpayment_action: rescheduleForm.overpayment_action
+      })
+      if (res?.success === false) throw new Error(res.error || 'Failed to reschedule booking')
+      closeRescheduleModal()
+      loadAll()
+      showSuccess('Booking rescheduled successfully.')
+    } catch (err) {
+      setRescheduleError(err.message || 'Failed to reschedule booking')
+    }
+    setRescheduleLoading(false)
+  }
+
+  const handleCreditAllocationToggle = () => {
+    setCreditAllocation(prev => ({ ...prev, enabled: !prev.enabled, amount: '' }))
   }
 
   // Show PENDING for offline-queued bookings without a server-assigned invoice number.
@@ -1504,6 +1590,7 @@ export default function Bookings() {
                         onCheckOut={() => handleStatusChange(b.id, 'checked_out')}
                         onCancel={() => handleStatusChange(b.id, 'cancelled')}
                         onEdit={() => openEdit(b)}
+                        onReschedule={() => openReschedule(b)}
                         onPayment={() => openPayment(b)}
                         onExtras={() => openCharges(b)}
                         onReceipt={() => setReceiptBooking(b)}
@@ -1765,6 +1852,35 @@ export default function Bookings() {
               </p>
             </F>
 
+            {payForm.payment_status !== 'paid' && outstandingBeforePayment > 0 && (
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={creditAllocation.enabled}
+                    onChange={handleCreditAllocationToggle}
+                    className="rounded"
+                  />
+                  <span className="text-sm font-medium text-slate-700">Apply customer credit</span>
+                </label>
+                {creditAllocation.enabled && (
+                  <div className="mt-2">
+                    <input
+                      type="number"
+                      min="0.01"
+                      step="0.01"
+                      max={outstandingBeforePayment}
+                      value={creditAllocation.amount}
+                      onChange={(e) => setCreditAllocation(prev => ({ ...prev, amount: e.target.value }))}
+                      placeholder={`Max: ${currency} ${outstandingBeforePayment.toFixed(2)}`}
+                      className="input w-full"
+                    />
+                    <p className="mt-1 text-xs text-slate-400">Enter the credit amount to allocate from the customer's credit balance.</p>
+                  </div>
+                )}
+              </div>
+            )}
+
             {payForm.payment_status === 'partial' && (
               <F label={`Amount Paid (${currency})`}>
                 <input
@@ -1975,6 +2091,98 @@ export default function Bookings() {
           booking={historyBooking}
           onClose={() => { setShowHistory(false); setHistoryBooking(null) }}
         />
+      )}
+
+      {/* Reschedule Modal */}
+      {rescheduleBookingState && (
+        <Modal
+          title="Reschedule Booking"
+          onClose={closeRescheduleModal}
+          size="sm"
+        >
+          <form onSubmit={handleRescheduleSave} className="space-y-4">
+            <div className="rounded-xl bg-slate-50 p-3 text-sm">
+              <p className="font-semibold text-slate-800">{rescheduleBookingState.customer_name}</p>
+              <p className="text-slate-500">{rescheduleBookingState.room_name} &middot; {rescheduleBookingState.invoice_number}</p>
+              <p className="mt-1 text-xs text-slate-400">Current: {rescheduleBookingState.check_in} → {rescheduleBookingState.check_out}</p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">New Check-in</label>
+                <input
+                  type="date"
+                  required
+                  value={rescheduleForm.new_check_in}
+                  min={localToday()}
+                  onChange={(e) => setRescheduleForm({ ...rescheduleForm, new_check_in: e.target.value })}
+                  className="input w-full"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">New Check-out</label>
+                <input
+                  type="date"
+                  required
+                  value={rescheduleForm.new_check_out}
+                  min={rescheduleForm.new_check_in || localToday()}
+                  onChange={(e) => setRescheduleForm({ ...rescheduleForm, new_check_out: e.target.value })}
+                  className="input w-full"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Room</label>
+              <select
+                value={rescheduleForm.new_room_id}
+                onChange={(e) => setRescheduleForm({ ...rescheduleForm, new_room_id: e.target.value })}
+                className="input w-full"
+              >
+                {rooms.filter(r => r.status !== 'maintenance').map(r => (
+                  <option key={r.id} value={r.id}>{r.name}{r.room_type ? ` (${r.room_type})` : ''}</option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Reason</label>
+              <input
+                type="text"
+                required
+                value={rescheduleForm.reason}
+                onChange={(e) => setRescheduleForm({ ...rescheduleForm, reason: e.target.value })}
+                placeholder="Guest request, maintenance, etc."
+                className="input w-full"
+              />
+            </div>
+
+            {rescheduleBookingState.payment_status === 'paid' && (
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">If new total is lower (overpayment)</label>
+                <select
+                  value={rescheduleForm.overpayment_action}
+                  onChange={(e) => setRescheduleForm({ ...rescheduleForm, overpayment_action: e.target.value })}
+                  className="input w-full"
+                >
+                  <option value="reject">Reject — keep original dates</option>
+                  <option value="transfer_to_customer_credit">Issue customer credit for the difference</option>
+                </select>
+              </div>
+            )}
+
+            {rescheduleError && (
+              <div className="rounded-xl bg-red-50 px-4 py-2.5 text-sm text-red-600">{rescheduleError}</div>
+            )}
+
+            <div className="flex gap-3 pt-1">
+              <button type="button" onClick={closeRescheduleModal} className="btn-secondary flex-1">Cancel</button>
+              <button type="submit" disabled={rescheduleLoading} className="btn-primary flex-1 bg-indigo-600 hover:bg-indigo-700">
+                {rescheduleLoading ? 'Rescheduling…' : 'Confirm Reschedule'}
+              </button>
+            </div>
+          </form>
+        </Modal>
       )}
 
       {/* Booking Modal */}
@@ -2386,7 +2594,7 @@ function BookingHistoryModal({ booking, onClose }) {
   )
 }
 
-function BookingMenu({ b, isOpen, onToggle, onClose, onCheckIn, onCheckOut, onCancel, onEdit, onPayment, onExtras, onReceipt, onHistory, settings }) {
+function BookingMenu({ b, isOpen, onToggle, onClose, onCheckIn, onCheckOut, onCancel, onEdit, onReschedule, onPayment, onExtras, onReceipt, onHistory, settings }) {
   const ref = useRef(null)
   useEffect(() => {
     if (!isOpen) return
@@ -2429,6 +2637,9 @@ function BookingMenu({ b, isOpen, onToggle, onClose, onCheckIn, onCheckOut, onCa
             <>
               <MenuItem icon={Edit3} onClick={() => { onEdit(); onClose() }}>
                 Edit booking
+              </MenuItem>
+              <MenuItem icon={CalendarClock} onClick={() => { onReschedule(); onClose() }}>
+                Reschedule
               </MenuItem>
               <MenuItem
                 icon={LogIn}

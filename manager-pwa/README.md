@@ -1,6 +1,6 @@
 # Boroko Manager PWA
 
-The Manager PWA is the mobile operations surface for lodge managers and admins. It is designed for dashboard visibility, alerts, approvals, reports, maintenance, inventory checks, and light operational actions.
+The Manager PWA is the mobile operations surface for lodge managers and admins. It provides dashboards, bookings visibility, alerts, reports, POS reporting, maintenance, inventory, expenses, day-use, conference, quotation, guest intelligence, audit visibility, and support inbox workflows.
 
 ## Local Checks
 
@@ -19,7 +19,9 @@ Or run inside this folder:
 ## Production Notes
 
 - The app uses Supabase Auth plus Boroko app-session validation.
-- High-risk booking, payment, quotation, conference, and financial mutations are blocked from the PWA and must be handled in the Front Desk desktop app.
+- The PWA is not globally read-only. Approved operational changes use Supabase RPCs and capability checks.
+- High-risk payment, refund, customer-credit allocation, booking-reschedule, and similar financial actions remain desktop-only unless a dedicated server-authorized PWA contract explicitly permits them.
+- Some approved operational actions can be queued in the PWA's device-local queue. Pending local state is not authoritative financial state.
 - Offline queue health shown in the PWA is device-local only. It does not replace the desktop System Health panel.
 - Keep service-role keys out of this app. It must use only public browser-safe environment values.
 
@@ -27,6 +29,6 @@ Or run inside this folder:
 
 - Lint and build pass.
 - Login works for an enabled manager user.
-- Dashboard, alerts, bookings, money, control, and more screens load without console errors.
+- Dashboard, rooms, bookings, reports, alerts, money, quotations, invoices, expenses, audit, guests, staff, conference, day-use, inventory, POS reporting, inbox/control, and more screens load without console errors for authorized users.
 - The service worker cache is refreshed after deploy.
 - The production site points at the intended Supabase project.

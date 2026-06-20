@@ -1502,6 +1502,172 @@ export async function getActiveBookingForRoom(roomId) {
   }
 }
 
+export async function rescheduleBooking(bookingId, {
+  newRoomId,
+  newCheckIn,
+  newCheckOut,
+  reason,
+  overpaymentAction = 'reject',
+  allowTotalOverride = false,
+  overrideTotal = null
+}) {
+  try {
+    if (!bookingId) throw new Error('Booking ID is required');
+    if (!newRoomId) throw new Error('New room is required');
+    if (!newCheckIn || !newCheckOut) throw new Error('New check-in and check-out dates are required');
+    if (!reason || !reason.trim()) throw new Error('A reason is required for rescheduling');
+    if (newCheckOut <= newCheckIn) throw new Error('Check-out must be after check-in');
+    if (!['reject', 'transfer_to_customer_credit'].includes(overpaymentAction)) {
+      throw new Error('overpayment_action must be reject or transfer_to_customer_credit');
+    }
+
+    const currentBooking = readCache('bookings').find((b) => b.id === bookingId) || null;
+    const expectedUpdatedAt = currentBooking?.updated_at || null;
+
+    const idempotencyKey = `reschedule:${bookingId}:${newRoomId}:${newCheckIn}:${newCheckOut}:${Date.now()}`;
+
+    if (state.isOnline) {
+      const { data: result, error } = await state.supabase.rpc('reschedule_booking', {
+        p_booking_id: bookingId,
+        p_lodge_id: state.lodgeId,
+        p_new_room_id: newRoomId,
+        p_new_check_in: newCheckIn,
+        p_new_check_out: newCheckOut,
+        p_reason: reason,
+        p_idempotency_key: idempotencyKey,
+        p_overpayment_action: overpaymentAction,
+        p_allow_total_override: allowTotalOverride,
+        p_override_total: overrideTotal,
+        p_expected_updated_at: expectedUpdatedAt,
+        p_actor_id: state.currentUser?.id || null
+      });
+      if (error) throw new Error(error.message);
+      if (!result?.success) throw new Error(result?.error || 'Could not reschedule booking');
+
+      await refreshCache('bookings');
+      const bk = readCache('bookings').find((b) => b.id === bookingId);
+      const _c = readCache('customers').find((c) => c.id === bk?.customer_id);
+      const _r = readCache('rooms').find((r) => r.id === newRoomId);
+      logActivity(
+        'booking_rescheduled',
+        `Rescheduled · ${_c?.name || 'Guest'} · Room ${_r?.room_number || ''} · ${newCheckIn} → ${newCheckOut}`
+      );
+      createBackup();
+
+      return {
+        success: true,
+        new_total: result.new_total,
+        amount_paid: result.amount_paid,
+        payment_status: result.payment_status,
+        overpayment_transferred: result.overpayment_transferred,
+        additional_due: result.additional_due,
+        offline: false
+      };
+    } else {
+      const cached = readCache('bookings');
+      const idx = cached.findIndex((b) => b.id === bookingId);
+      if (idx < 0) throw new Error('Booking not found in local cache');
+
+      const b = cached[idx];
+      if (!['pending', 'confirmed'].includes(b.status)) {
+        throw new Error(`Cannot reschedule a booking in status "${b.status}"`);
+      }
+
+      const room = readCache('rooms').find((r) => r.id === newRoomId);
+      if (!room) throw new Error('Room not found');
+      if (room.status === 'maintenance') throw new Error('Selected room is under maintenance');
+
+      const conflict = readCache('bookings').find((bk) =>
+        bk.room_id === newRoomId &&
+        bk.status !== 'cancelled' &&
+        bk.id !== bookingId &&
+        bk.check_in < newCheckOut &&
+        bk.check_out > newCheckIn
+      );
+      if (conflict) throw new Error('Room is already booked for these dates');
+
+      const eventConflict = readCache('bookings').find((bk) =>
+        bk.is_exclusive_event &&
+        bk.status !== 'cancelled' &&
+        bk.check_in < newCheckOut &&
+        bk.check_out > newCheckIn
+      );
+      if (eventConflict) throw new Error('The lodge is fully reserved for an exclusive event on these dates');
+
+      const nights = Math.ceil((new Date(newCheckOut) - new Date(newCheckIn)) / (1000 * 60 * 60 * 24));
+      const newTotal = room.rate_per_night * nights;
+      const amountPaid = Number(b.amount_paid) || 0;
+      const chargesTotal = Number(b.charges_total) || 0;
+      const newOwed = newTotal + chargesTotal;
+      const overpayment = Math.max(0, amountPaid - newOwed);
+
+      if (overpayment > 0 && overpaymentAction === 'reject') {
+        throw new Error(`Reschedule creates an overpayment of ${overpayment.toFixed(2)}. Use transfer_to_customer_credit or cancel.`);
+      }
+
+      let finalPaid = amountPaid;
+      if (overpayment > 0 && overpaymentAction === 'transfer_to_customer_credit') {
+        finalPaid = Math.max(0, amountPaid - overpayment);
+      }
+
+      const paymentStatus = finalPaid >= newOwed && newOwed > 0 ? 'paid' : finalPaid > 0 ? 'partial' : 'unpaid';
+
+      queueOperation('rpc', 'reschedule_booking', {
+        p_booking_id: bookingId,
+        p_lodge_id: state.lodgeId,
+        p_new_room_id: newRoomId,
+        p_new_check_in: newCheckIn,
+        p_new_check_out: newCheckOut,
+        p_reason: reason,
+        p_idempotency_key: idempotencyKey,
+        p_overpayment_action: overpaymentAction,
+        p_allow_total_override: allowTotalOverride,
+        p_override_total: overrideTotal,
+        p_expected_updated_at: expectedUpdatedAt,
+        p_actor_id: state.currentUser?.id || null
+      }, null, { _queue_id: `reschedule-${bookingId}` });
+
+      cached[idx] = {
+        ...b,
+        room_id: newRoomId,
+        check_in: newCheckIn,
+        check_out: newCheckOut,
+        total_amount: newTotal,
+        amount_paid: finalPaid,
+        payment_status: paymentStatus,
+        _pending_sync: true,
+        updated_at: new Date().toISOString()
+      };
+      writeCache('bookings', cached);
+
+      logActivity(
+        'booking_rescheduled',
+        `Rescheduled (offline) · Room ${room.room_number || ''} · ${newCheckIn} → ${newCheckOut}`
+      );
+      createBackup();
+
+      return {
+        success: true,
+        new_total: newTotal,
+        amount_paid: finalPaid,
+        payment_status: paymentStatus,
+        overpayment_transferred: overpayment,
+        additional_due: Math.max(0, newOwed - finalPaid),
+        offline: true,
+        queued: true
+      };
+    }
+  } catch (error) {
+    recordCriticalError('booking.reschedule', error, {
+      booking_id: bookingId,
+      new_room_id: newRoomId,
+      new_check_in: newCheckIn,
+      new_check_out: newCheckOut
+    });
+    throw error;
+  }
+}
+
 async function getNextBookingInvoiceNumber() {
   if (state.isOnline) {
     const { data, error } = await state.supabase.rpc('get_next_invoice_number', { p_lodge_id: state.lodgeId });

@@ -19,7 +19,8 @@ import {
   Presentation,
   Briefcase,
   Database,
-  FileText
+  FileText,
+  Banknote
 } from 'lucide-react'
 
 export const ALL_NAV = [
@@ -69,6 +70,15 @@ export const ALL_NAV = [
     keywords: ['billing', 'payments', 'receipts']
   },
   {
+    to: '/prepayments',
+    label: 'Prepayments',
+    icon: Banknote,
+    types: ['lodge'],
+    group: 'Front Desk',
+    capability: 'invoices.view',
+    keywords: ['customer credit', 'advance payment', 'deposit without dates', 'held money']
+  },
+  {
     to: '/roomgrid',
     label: 'Room Board',
     icon: Grid3X3,
@@ -97,14 +107,14 @@ export const ALL_NAV = [
   },
   {
     to: '/conference',
-    label: 'Conference',
+    label: 'Events & Venues',
     icon: Presentation,
     types: ['lodge'],
     group: 'Front Desk',
     feature: 'conference',
     tier: 'Standard',
     capability: 'conference.view',
-    keywords: ['events', 'meetings', 'banquet']
+    keywords: ['events', 'venues', 'meetings', 'banquet', 'weddings', 'parties', 'conference']
   },
   {
     to: '/dayuse',

@@ -1,3 +1,7 @@
+# Historical Fixes Summary
+
+> Historical snapshot. This document records a completed point-in-time change and is not a current task list. See [PROJECT_STATE.md](PROJECT_STATE.md).
+
 ## Fixes Applied
 
 ### 1. Missing lodge information on booking site

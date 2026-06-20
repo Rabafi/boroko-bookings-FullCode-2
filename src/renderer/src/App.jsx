@@ -51,6 +51,7 @@ const DayUse      = lazy(() => import('./components/DayUse'))
 const DataManagement = lazy(() => import('./components/DataManagement'))
 const Quotations     = lazy(() => import('./components/Quotations'))
 const BookingInvoices = lazy(() => import('./components/BookingInvoices'))
+const Prepayments = lazy(() => import('./components/Prepayments'))
 const OpsAi = lazy(() => import('./components/OpsAi'))
 
 // ── Loading fallback for lazy routes ─────────────────────────────────────────
@@ -1483,6 +1484,7 @@ export default function App() {
                 <Route path="bookings"    element={<Lazy><Bookings /></Lazy>} />
                 <Route path="quotations" element={<Lazy><Quotations /></Lazy>} />
                 <Route path="invoices" element={<Lazy><BookingInvoices /></Lazy>} />
+                <Route path="prepayments" element={<Lazy><Prepayments /></Lazy>} />
                 {/* Always available — lazy */}
                 <Route path="calendar"    element={<Lazy><Calendar /></Lazy>} />
                 <Route path="roomgrid"    element={<Lazy><RoomGrid /></Lazy>} />

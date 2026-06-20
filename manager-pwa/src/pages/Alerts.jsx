@@ -4,7 +4,7 @@ import { useAuth } from '../contexts/AuthContext'
 import { useFeatures } from '../contexts/FeaturesContext'
 import { supabase } from '../lib/supabase'
 import { normalizeMaintenanceTicket } from '../lib/maintenance'
-import { RefreshCw, AlertTriangle, Wrench, CreditCard, Package, Check, XCircle, Menu } from 'lucide-react'
+import { RefreshCw, AlertTriangle, Wrench, CreditCard, Package, Check, XCircle, MessageSquare } from 'lucide-react'
 import { listBookings, listInventory, listMaintenanceTickets } from '../lib/api'
 import { money, shortDateTime } from '../lib/format'
 import { sendFrontDeskRequest } from '../lib/frontDeskRequests'
@@ -31,14 +31,15 @@ function balanceForBooking(booking) {
   return Math.max(0, Number(booking.total_amount || 0) + Number(booking.charges_total || 0) - Number(booking.amount_paid || 0))
 }
 
-function AlertCard({ icon: Icon, iconColor, title, sub, badge, badgeColor = 'bg-orange-500', action, actionLabel, actionColor = 'bg-orange-700 hover:bg-orange-600' }) {
+function AlertRow({ icon: Icon, iconColor, title, sub, badge, badgeColor = 'bg-orange-500', onFollowUp, followUpLabel = 'Ask front desk', disabled }) {
   const [loading, setLoading] = useState(false)
   const [done, setDone] = useState(false)
 
   const handleAction = async () => {
+    if (!onFollowUp) return
     setLoading(true)
     try {
-      const result = await action()
+      const result = await onFollowUp()
       if (result !== false) setDone(true)
     } finally {
       setLoading(false)
@@ -46,25 +47,28 @@ function AlertCard({ icon: Icon, iconColor, title, sub, badge, badgeColor = 'bg-
   }
 
   return (
-    <div className="bg-gray-800 rounded-2xl p-4">
-      <div className="flex items-start gap-3">
-        <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${iconColor}`}>
-          <Icon size={18} />
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-start justify-between gap-2">
-            <p className="text-sm font-semibold text-white">{title}</p>
-            {badge && <span className={`${badgeColor} text-white text-xs px-2 py-0.5 rounded-full shrink-0`}>{badge}</span>}
-          </div>
-          {sub && <p className="text-xs text-gray-400 mt-0.5">{sub}</p>}
-        </div>
+    <div className="flex items-start gap-2.5 rounded-xl bg-gray-900 px-3 py-2.5">
+      <div className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${iconColor}`}>
+        <Icon size={15} />
       </div>
-      {action && !done && (
-        <button onClick={handleAction} disabled={loading} className={`w-full mt-3 ${actionColor} text-white py-2 rounded-xl text-xs font-semibold disabled:opacity-60`}>
-          {loading ? 'Working…' : actionLabel}
+      <div className="min-w-0 flex-1">
+        <div className="flex items-start justify-between gap-2">
+          <p className="text-sm font-semibold text-white truncate">{title}</p>
+          {badge && <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider ${badgeColor} text-white`}>{badge}</span>}
+        </div>
+        {sub && <p className="mt-0.5 text-[11px] text-gray-400 line-clamp-2">{sub}</p>}
+      </div>
+      {onFollowUp && !done && (
+        <button
+          onClick={handleAction}
+          disabled={loading || disabled}
+          className="shrink-0 mt-0.5 p-1.5 rounded-lg bg-green-700/80 text-white hover:bg-green-600 disabled:opacity-50"
+          aria-label={followUpLabel}
+        >
+          <MessageSquare size={14} />
         </button>
       )}
-      {done && <p className="text-green-400 text-xs mt-2 text-center">✓ Done</p>}
+      {done && <span className="shrink-0 mt-0.5 text-green-400 text-xs">✓</span>}
     </div>
   )
 }
@@ -229,7 +233,6 @@ export default function Alerts({ onCountChange }) {
     }
   }, [showToast, user])
 
-  // Group blocked demand attempts by room_id
   const blockedByRoom = data.blockedDemand.reduce((acc, attempt) => {
     const key = attempt.room_id || 'unknown'
     if (!acc[key]) acc[key] = []
@@ -237,27 +240,121 @@ export default function Alerts({ onCountChange }) {
     return acc
   }, {})
 
+  const allAlerts = useMemo(() => {
+    const alerts = []
+    data.overdue.forEach((b) => {
+      alerts.push({
+        id: `overdue-${b.id}`,
+        section: 'overdue',
+        icon: AlertTriangle,
+        iconColor: 'bg-red-900/60 text-red-400',
+        title: b.guest_name || 'Guest',
+        sub: `Checkout due: ${b.check_out}`,
+        badge: 'Overdue',
+        badgeColor: 'bg-red-600',
+        sort: 0,
+        followUp: () => requestFollowUp({
+          kind: 'overdue-checkout', referenceId: b.id, title: 'Overdue checkout follow-up',
+          description: `Please follow up ${b.guest_name || 'this guest'}. Checkout was due on ${b.check_out}.`, priority: 'High'
+        })
+      })
+    })
+    data.maintenance.forEach((m) => {
+      alerts.push({
+        id: `maint-${m.id}`,
+        section: 'maintenance',
+        icon: Wrench,
+        iconColor: 'bg-orange-900/60 text-orange-400',
+        title: m.title,
+        sub: `Raised: ${new Date(m.created_at).toLocaleDateString()}`,
+        badge: m.priority,
+        badgeColor: m.priority === 'urgent' ? 'bg-red-600' : 'bg-orange-600',
+        sort: m.priority === 'urgent' ? 0 : 1,
+        followUp: () => requestFollowUp({
+          kind: 'maintenance', referenceId: m.id, title: 'Maintenance follow-up request',
+          description: `Please follow up maintenance ticket "${m.title || m.issue || 'Maintenance'}".`, priority: m.priority === 'urgent' ? 'High' : 'Normal'
+        })
+      })
+    })
+    data.unpaid.slice(0, 5).forEach((b) => {
+      const balance = balanceForBooking(b)
+      alerts.push({
+        id: `unpaid-${b.id}`,
+        section: 'balances',
+        icon: CreditCard,
+        iconColor: 'bg-yellow-900/60 text-yellow-400',
+        title: b.guest_name || 'Guest',
+        sub: `Balance: P ${balance.toLocaleString()} \u2022 Check-in: ${b.check_in}`,
+        badge: b.payment_status,
+        badgeColor: 'bg-yellow-700',
+        sort: 2,
+        followUp: () => requestFollowUp({
+          kind: 'unpaid-balance', referenceId: b.id, title: 'Balance follow-up request',
+          description: `Please follow up ${b.guest_name || 'this guest'} about the outstanding balance of ${money(balance)}.`, priority: 'High'
+        })
+      })
+    })
+    data.lowStock.forEach((item) => {
+      alerts.push({
+        id: `stock-${item.id}`,
+        section: 'stock',
+        icon: Package,
+        iconColor: 'bg-blue-900/60 text-blue-400',
+        title: item.name,
+        sub: `Stock: ${item.current_stock ?? item.quantity ?? 0} (reorder at ${item.reorder_level})`,
+        badge: 'Low Stock',
+        badgeColor: 'bg-blue-700',
+        sort: 3,
+        followUp: () => requestFollowUp({
+          kind: 'low-stock', referenceId: item.id, title: 'Low stock follow-up request',
+          description: `Please check stock for "${item.name}". Current stock is ${item.current_stock ?? item.quantity ?? 0}.`, priority: 'Normal'
+        })
+      })
+    })
+    Object.entries(blockedByRoom).forEach(([roomId, attempts]) => {
+      const latest = attempts[0]
+      const attemptCount = attempts.length
+      alerts.push({
+        id: `demand-${roomId}`,
+        section: 'demand',
+        icon: XCircle,
+        iconColor: 'bg-purple-900/60 text-purple-400',
+        title: latest.guest_name ? `Last attempt: ${latest.guest_name}` : `Room blocked \u2022 ${attemptCount} attempts`,
+        sub: `${attemptCount} blocked attempt${attemptCount === 1 ? '' : 's'} \u2022 Latest: ${shortDateTime(latest.attempted_at)}`,
+        badge: 'Under Maintenance',
+        badgeColor: 'bg-purple-700',
+        sort: 4,
+        followUp: () => requestFollowUp({
+          kind: 'blocked-demand', referenceId: roomId, title: 'Blocked online demand follow-up',
+          description: `Please review Room ${roomId}. It has ${attemptCount} blocked online booking attempts while under maintenance.`, priority: 'High'
+        })
+      })
+    })
+    return alerts.sort((a, b) => a.sort - b.sort)
+  }, [data, blockedByRoom, requestFollowUp])
+
+  const filteredAlerts = useMemo(() => {
+    if (activeFilter === 'all') return allAlerts
+    return allAlerts.filter((a) => a.section === activeFilter)
+  }, [allAlerts, activeFilter])
+
   return (
     <div className="flex flex-col min-h-screen bg-gray-950 pb-24">
-      <div className="bg-gray-900 px-4 pt-12 pb-4 flex items-center justify-between">
-        <div>
+      <div className="bg-gray-900 px-4 pt-2 pb-3">
+        <div className="flex items-center justify-between">
           <h1 className="text-lg font-bold text-white">Alerts</h1>
-          <p className="text-xs text-gray-400">Items needing attention</p>
-          <DataFreshness updatedAt={lastUpdated} loading={loading} error={loadError} className="mt-1" />
-        </div>
-        <div className="flex items-center gap-2">
-          <Link to="/more" className="p-2 text-gray-400 hover:text-white" aria-label="More tools"><Menu size={18} /></Link>
           <button onClick={load} className="p-2 text-gray-400 hover:text-white"><RefreshCw size={18} className={loading ? 'animate-spin' : ''} /></button>
         </div>
+        <DataFreshness updatedAt={lastUpdated} loading={loading} error={loadError} className="mt-0.5" />
       </div>
 
-      <div className="flex-1 px-4 py-4 space-y-3">
-        <div className="flex gap-2 overflow-x-auto pb-1">
+      <div className="flex-1 px-4 py-3 space-y-3">
+        <div className="flex gap-1.5 overflow-x-auto pb-1">
           {FILTERS.map(([id, label]) => (
             <button
               key={id}
               onClick={() => changeFilter(id)}
-              className={`shrink-0 rounded-xl px-3 py-1.5 text-xs font-medium transition-colors ${activeFilter === id ? 'bg-green-700 text-white' : 'bg-gray-800 text-gray-400'}`}
+              className={`shrink-0 rounded-full px-3 py-1 text-xs font-medium transition-colors ${activeFilter === id ? 'bg-green-700 text-white' : 'bg-gray-800 text-gray-400'}`}
             >
               {label}
               <span className="ml-1 opacity-70">{sectionCounts[id] || 0}</span>
@@ -274,185 +371,32 @@ export default function Alerts({ onCountChange }) {
             icon={Check}
             title="All clear"
             message="No overdue checkouts, unpaid balances, urgent maintenance, low stock, or blocked demand needs manager attention right now."
-            action={<Link to="/more" className="rounded-xl bg-green-700 px-4 py-2 text-xs font-semibold text-white">Open More tools</Link>}
+            action={<Link to="/more" className="rounded-xl bg-green-700 px-4 py-2 text-xs font-semibold text-white">Open Menu</Link>}
           />
         ) : (
-          <>
-            {showSection('maintenance') && data.maintenance.length > 0 && (
-              <div className="bg-gray-800 rounded-2xl p-4">
-                <p className="text-sm font-semibold text-white mb-3">Maintenance Priority Board</p>
-                <div className="grid grid-cols-3 gap-2">
-                  {[
-                    ['Urgent', data.maintenance.filter((m) => m.priority === 'urgent').length, 'text-red-300'],
-                    ['High', data.maintenance.filter((m) => m.priority === 'high').length, 'text-orange-300'],
-                    ['Open', data.maintenance.filter((m) => m.status === 'open').length, 'text-yellow-300']
-                  ].map(([label, value, tone]) => (
-                    <div key={label} className="bg-gray-900 rounded-xl px-3 py-3">
-                      <p className="text-xs text-gray-400">{label}</p>
-                      <p className={`text-lg font-bold mt-1 ${tone}`}>{value}</p>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Overdue checkouts */}
-            {showSection('overdue') && data.overdue.length > 0 && (
-              <div>
-                <p className="text-xs text-red-400 font-semibold uppercase tracking-wide mb-2">⚠️ Overdue Checkouts ({data.overdue.length})</p>
-                {data.overdue.map(b => (
-                  <AlertCard
-                    key={b.id}
-                    icon={AlertTriangle}
-                    iconColor="bg-red-900/60 text-red-400"
-                    title={b.guest_name || 'Guest'}
-                    sub={`Should have checked out: ${b.check_out}`}
-                    badge="Overdue"
-                    badgeColor="bg-red-600"
-                    action={() => requestFollowUp({
-                      kind: 'overdue-checkout',
-                      referenceId: b.id,
-                      title: 'Overdue checkout follow-up',
-                      description: `Please follow up ${b.guest_name || 'this guest'}. Checkout was due on ${b.check_out}. Confirm whether the guest has left, needs an extension, or needs billing updated.`,
-                      priority: 'High'
-                    })}
-                    actionLabel="Ask front desk to follow up"
-                    actionColor="bg-red-700 hover:bg-red-600"
-                  />
-                ))}
-              </div>
-            )}
-
-            {/* Open Maintenance */}
-            {showSection('maintenance') && data.maintenance.length > 0 && (
-              <div>
-                <p className="text-xs text-orange-400 font-semibold uppercase tracking-wide mb-2">🔧 Open Maintenance ({data.maintenance.length})</p>
-                {data.maintenance.map(m => (
-                  <AlertCard
-                    key={m.id}
-                    icon={Wrench}
-                    iconColor="bg-orange-900/60 text-orange-400"
-                    title={m.title}
-                    sub={`Raised: ${new Date(m.created_at).toLocaleDateString()}`}
-                    badge={m.priority}
-                    badgeColor={m.priority === 'urgent' ? 'bg-red-600' : 'bg-orange-600'}
-                    action={() => requestFollowUp({
-                      kind: 'maintenance',
-                      referenceId: m.id,
-                      title: 'Maintenance follow-up request',
-                      description: `Please follow up maintenance ticket "${m.title || m.issue || 'Maintenance'}". Priority is ${m.priority || 'normal'}. Confirm room impact, next action, and whether the room should stay blocked.`,
-                      priority: m.priority === 'urgent' ? 'High' : 'Normal'
-                    })}
-                    actionLabel="Ask front desk for status"
-                  />
-                ))}
-              </div>
-            )}
-
-            {/* Unpaid bookings */}
-            {showSection('balances') && data.unpaid.length > 0 && (
-              <div>
-                <p className="text-xs text-yellow-400 font-semibold uppercase tracking-wide mb-2">💰 Unpaid Bookings ({data.unpaid.length})</p>
-                {data.unpaid.slice(0, 5).map(b => {
-                  const balance = balanceForBooking(b)
-                  return (
-                    <AlertCard
-                      key={b.id}
-                      icon={CreditCard}
-                      iconColor="bg-yellow-900/60 text-yellow-400"
-                      title={b.guest_name || 'Guest'}
-                      sub={`Balance owed: P ${balance.toLocaleString()} · Check-in: ${b.check_in}`}
-                      badge={b.payment_status}
-                      badgeColor="bg-yellow-700"
-                      action={() => requestFollowUp({
-                        kind: 'unpaid-balance',
-                        referenceId: b.id,
-                        title: 'Balance follow-up request',
-                        description: `Please follow up ${b.guest_name || 'this guest'} about the outstanding balance of ${money(balance)}. Check-in date: ${b.check_in}. Confirm collection plan or update invoice notes on desktop.`,
-                        priority: 'High'
-                      })}
-                      actionLabel="Ask front desk to collect"
-                      actionColor="bg-yellow-700 hover:bg-yellow-600"
-                    />
-                  )
-                })}
-                {data.unpaid.length > 5 && (
-                  <p className="text-xs text-gray-500 text-center mt-2">
-                    +{data.unpaid.length - 5} more - <Link to="/money?focus=outstanding" className="text-green-400">open Money</Link>
-                  </p>
-                )}
-              </div>
-            )}
-
-            {/* Low stock */}
-            {showSection('stock') && isEnabled('inventory') && data.lowStock.length > 0 && (
-              <div>
-                <p className="text-xs text-blue-400 font-semibold uppercase tracking-wide mb-2">📦 Low Stock ({data.lowStock.length})</p>
-                {data.lowStock.map(item => (
-                  <AlertCard
-                    key={item.id}
-                    icon={Package}
-                    iconColor="bg-blue-900/60 text-blue-400"
-                    title={item.name}
-                    sub={`Stock: ${item.current_stock ?? item.quantity ?? 0} (reorder at ${item.reorder_level})`}
-                    badge="Low Stock"
-                    badgeColor="bg-blue-700"
-                    action={() => requestFollowUp({
-                      kind: 'low-stock',
-                      referenceId: item.id,
-                      title: 'Low stock follow-up request',
-                      description: `Please check stock for "${item.name}". Current stock is ${item.current_stock ?? item.quantity ?? 0}; reorder level is ${item.reorder_level}. Add any purchase or adjustment on desktop.`,
-                      priority: 'Normal'
-                    })}
-                    actionLabel="Ask front desk to check stock"
-                    actionColor="bg-blue-700 hover:bg-blue-600"
-                  />
-                ))}
-              </div>
-            )}
-
-            {/* Blocked online booking attempts (maintenance) — last 7 days */}
-            {showSection('demand') && data.blockedDemand.length > 0 && (
-              <div>
-                <p className="text-xs text-purple-400 font-semibold uppercase tracking-wide mb-2">🚫 Blocked Demand — Under Maintenance ({data.blockedDemand.length} attempt{data.blockedDemand.length === 1 ? '' : 's'}, last 7 days)</p>
-                {Object.entries(blockedByRoom).map(([roomId, attempts]) => {
-                  const latest = attempts[0]
-                  const attemptCount = attempts.length
-                  const latestDate = new Date(latest.attempted_at).toLocaleDateString()
-                  const latestTime = new Date(latest.attempted_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-                  return (
-                    <AlertCard
-                      key={roomId}
-                      icon={XCircle}
-                      iconColor="bg-purple-900/60 text-purple-400"
-                      title={latest.guest_name ? `Last attempt: ${latest.guest_name}` : `Room blocked — ${attemptCount} attempt${attemptCount === 1 ? '' : 's'}`}
-                      sub={`${attemptCount} blocked attempt${attemptCount === 1 ? '' : 's'} · Latest: ${latestDate} ${latestTime}${latest.check_in ? ` · Requested: ${latest.check_in} → ${latest.check_out}` : ''}`}
-                      badge="Under Maintenance"
-                      badgeColor="bg-purple-700"
-                      action={() => requestFollowUp({
-                        kind: 'blocked-demand',
-                        referenceId: roomId,
-                        title: 'Blocked online demand follow-up',
-                        description: `Please review Room ${roomId}. It has ${attemptCount} blocked online booking attempt${attemptCount === 1 ? '' : 's'} while under maintenance. Latest attempt was ${shortDateTime(latest.attempted_at)}${latest.check_in ? ` for ${latest.check_in} to ${latest.check_out}` : ''}. Confirm whether maintenance should remain blocking online requests.`,
-                        priority: 'High'
-                      })}
-                      actionLabel="Ask front desk to review room"
-                      actionColor="bg-purple-700 hover:bg-purple-600"
-                    />
-                  )
-                })}
-              </div>
-            )}
-            {sectionCounts[activeFilter] === 0 && activeFilter !== 'all' && (
+          <div className="space-y-1.5">
+            {filteredAlerts.map((alert) => (
+              <AlertRow
+                key={alert.id}
+                icon={alert.icon}
+                iconColor={alert.iconColor}
+                title={alert.title}
+                sub={alert.sub}
+                badge={alert.badge}
+                badgeColor={alert.badgeColor}
+                onFollowUp={alert.followUp}
+              />
+            ))}
+            {filteredAlerts.length === 0 && activeFilter !== 'all' && (
               <EmptyState
                 icon={Check}
                 title="No alerts in this filter"
-                message="Switch back to all alerts or use More tools for reports, guests, staff, inventory, and support."
+                message="Switch back to all alerts or use Menu for reports, guests, staff, inventory, and support."
                 action={<button type="button" onClick={() => changeFilter('all')} className="rounded-xl bg-green-700 px-4 py-2 text-xs font-semibold text-white">Show all alerts</button>}
-                secondary={<Link to="/more" className="rounded-xl bg-gray-800 px-4 py-2 text-xs font-semibold text-white">More tools</Link>}
+                secondary={<Link to="/more" className="rounded-xl bg-gray-800 px-4 py-2 text-xs font-semibold text-white">Menu</Link>}
               />
             )}
-          </>
+          </div>
         )}
         {!loading && !loadError && (
           <MobileBoundaryNotice compact>

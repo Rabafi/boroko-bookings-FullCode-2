@@ -29,8 +29,8 @@ test('PWA and desktop both persist inbox acknowledgements through the RPC', asyn
 
   assert.match(pwaApi, /mark_lodge_support_ticket_read/)
   assert.match(pwaNotifications, /request\?\.manager_has_unread/)
-  assert.match(pwaApp, /markSupportRequestRead\(user\.lodge_id, requestId, 'manager'/)
   assert.match(pwaControl, /markSupportRequestRead\(user\.lodge_id, activeRequest\.id, 'manager'/)
+  assert.doesNotMatch(pwaApp, /markSupportRequestRead.*requestId.*manager/, 'App.jsx should not mark inbox read — only Control (Inbox) may')
   assert.match(desktopDomain, /markLodgeSupportTicketRead/)
   assert.match(desktopLayout, /row\.front_desk_has_unread === true/)
   assert.match(desktopLayout, /window\.api\.requests\.markRead/)

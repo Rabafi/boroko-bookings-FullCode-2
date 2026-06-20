@@ -1,5 +1,7 @@
 # Boroko Bookings — Command Central Overhaul Report
 
+> Historical implementation report dated 2026-06-14. Use it as background, not as the current whole-application state. See [PROJECT_STATE.md](PROJECT_STATE.md).
+
 **Date:** 14 June 2026
 **Scope:** Phase 0 (stabilization) + Phase 1 (admin audit, notifications, fleet health, release control)
 **Build status:** All 3 build targets pass (main, preload, renderer)

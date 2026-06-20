@@ -1,213 +1,92 @@
-# AGENTS.md
+# Boroko Bookings Agent Guide
 
-## 🧠 Project Overview
+Last reviewed: 2026-06-20
 
-**Boroko Bookings** is a hospitality operations system designed to manage:
+This file contains durable engineering rules. It is not a task tracker.
 
-* Room bookings
-* Customer data
-* Payments and balances
-* POS (food, services)
-* Inventory
-* Reporting
+Before changing the system, read:
 
-This system must behave as a **financial-grade, real-world business system**, not a simple CRUD app.
+- [PROJECT_STATE.md](PROJECT_STATE.md) for the dated implementation state and current worktree caveats.
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for application surfaces and execution paths.
+- [docs/SHIP_READY_RUNBOOK.md](docs/SHIP_READY_RUNBOOK.md) before releases.
 
----
+Historical audits and implementation plans are evidence from a point in time, not current instructions unless the user explicitly activates them.
 
-## 🏗️ Architecture
+## Product standard
 
-### Core Stack
+Boroko Bookings is a financial-grade hospitality operations system. It manages bookings, customers, payments, customer credit, POS, inventory, maintenance, reporting, quotations, events, and operational administration.
 
-* **Electron Desktop App**
+Correctness means preserving financial and operational truth under concurrency, retries, offline operation, and partial failure.
 
-  * Uses `database.js` as backend logic layer
-  * Handles offline sync and IPC communication
+## Current application surfaces
 
-* **Manager PWA (React)**
+- Desktop Electron app: renderer -> preload/IPC -> `src/main/database.js` facade -> `src/main/domains/*` -> Supabase.
+- Manager PWA: React browser app -> Supabase RPCs and read queries. It has a device-local queue for approved operational actions.
+- Legacy POS: separate Electron 22 application under `legacy-pos/`, with its own cache, offline queue, mesh behavior, release lifecycle, and database contract.
+- Public booking site: browser app under `booking-site/` using public, server-enforced booking APIs/RPCs.
+- Command Central: privileged administration within the desktop application.
+- Supabase: PostgreSQL, RLS, RPCs, audit data, and authoritative business rules.
 
-  * Connects directly to Supabase
-  * Does NOT use `database.js`
+Do not assume a change has only one caller. Trace every relevant desktop, PWA, Legacy POS, public-site, offline-replay, reporting, and migration path.
 
-* **Backend**
+## Non-negotiable financial rules
 
-  * Supabase (PostgreSQL + RPC functions)
+1. Financial mutations must use authoritative Supabase RPCs.
+2. Never write `bookings.amount_paid` directly from a client.
+3. Never author `payment_status` in React, Electron renderer code, or offline estimates.
+4. Payments are delta-based ledger entries; authoritative totals come from the database.
+5. Offline replay must invoke the same RPC contract and preserve the same stable operation or idempotency key.
+6. Never replace an ambiguous timeout with a new idempotency key.
+7. POS orders, returns, voids, cash-up, booking charges, refunds, customer credit, and inventory movements must remain atomic and auditable.
+8. Database/RPC results are authoritative. Local cache values may be labelled estimates but must not silently become financial truth.
 
-* **Sync System**
+## Database and concurrency rules
 
-  * Custom offline queue (Electron only)
+- Prefer one atomic RPC over client-side read-modify-write sequences.
+- Lock affected rows where concurrent mutation can change the answer.
+- Enforce lodge, outlet, actor, capability, and booking ownership server-side.
+- Validate idempotency-key reuse against the original operation payload.
+- Preserve audit before/after context for financially meaningful changes.
+- Treat later migrations as capable of superseding earlier migrations and old audit reports.
+- Verify the linked schema when deployment state matters; migration files alone do not prove production deployment.
+- Do not expose service-role credentials to desktop renderers, PWAs, POS clients, or public sites.
 
----
+## Offline and sync rules
 
-### Execution Paths (CRITICAL)
+- Queue operations, not an invented second business model.
+- Store RPC name, payload, stable operation ID/idempotency key, dependencies, and retry state.
+- Replaying an operation must not duplicate its financial or inventory effect.
+- Do not silently discard failed financial work.
+- Distinguish pending local estimates from server-confirmed records.
+- Preserve legacy queue compatibility when changing a payload contract.
+- Check both the main desktop queue and the separate Legacy POS queue.
+- The Manager PWA also has a limited device-local operational queue; do not describe offline queuing as Electron-only.
 
-There are TWO independent data mutation paths:
+## Manager PWA boundaries
 
-1. **Electron Path**
-   UI → IPC → `database.js` → Supabase
+The PWA connects directly to Supabase and does not use `database.js`.
 
-2. **PWA Path**
-   UI → Supabase مباشرة (direct)
+It is not globally read-only: it supports selected RPC-backed operational actions such as maintenance, expenses, inventory, day-use, conference, quotation, and support/inbox workflows. High-risk financial capabilities must remain explicitly capability-gated and server-enforced. Do not infer permission from a visible button.
 
-⚠️ Any fix must consider BOTH paths.
+## Implementation workflow
 
----
+1. Inspect the current working tree and preserve unrelated user changes.
+2. Treat bug reports and old audits as hypotheses; verify them against current code, later migrations, tests, and, when relevant, the linked database.
+3. Trace reads, writes, offline replay, reporting, and authorization before editing.
+4. Implement the smallest complete cross-surface fix.
+5. Add focused regression coverage for the contract being changed.
+6. Run the real scripts from `package.json`; do not invent test names.
+7. Update [PROJECT_STATE.md](PROJECT_STATE.md) when a change materially alters architecture, active risks, release state, or deployment assumptions.
 
-## 🔒 Core Engineering Rules (NON-NEGOTIABLE)
+## Definition of done
 
-1. **ALL financial mutations MUST go through Supabase RPCs**
-2. **NEVER update `amount_paid` directly**
-3. **NEVER calculate `payment_status` in frontend**
-4. **Offline sync MUST replay the exact same RPC calls**
-5. **NO raw inserts for critical operations (bookings, payments, inventory)**
-6. **Backend (DB/RPC) is the single source of truth**
+A critical change is not done until:
 
----
-
-## 💰 Financial System Rules
-
-* Payments are **incremental (delta-based)**
-* `amount_paid = SUM(all payments)`
-* `payment_status` is derived:
-
-  * `unpaid` → 0 paid
-  * `partial` → 0 < paid < total
-  * `paid` → paid ≥ total
-
----
-
-### Deposit Handling (CRITICAL)
-
-* Deposits MUST NOT be written directly to `amount_paid`
-* Deposits MUST be processed via:
-
-```js
-supabase.rpc('update_booking_payment', ...)
-```
-
----
-
-## ⚠️ Known Issues (Current)
-
-* Deposit during booking creation is not consistently recorded
-* Offline booking sync may bypass RPC (risk of double booking)
-* No idempotency for sync operations (duplicate replay risk)
-* POS is not fully linked to bookings (revenue leakage risk)
-* Inventory updates are not atomic
-
----
-
-## 🎯 Current Priorities
-
-1. Fix **deposit → payment RPC flow**
-2. Fix **offline booking sync (prevent double bookings)**
-3. Implement **idempotency for sync queue**
-4. Link **POS charges to bookings**
-5. Add **financial audit logging**
-
----
-
-## 🧱 Design Principles
-
-* System must handle **real-world operational pressure**
-* Must support **concurrent users safely**
-* Must maintain **financial accuracy at all times**
-* Prefer **database-enforced logic over frontend logic**
-* Avoid duplication of business logic across layers
-
----
-
-## ⚙️ Backend Patterns
-
-### ✅ Preferred
-
-* Supabase RPC (PL/pgSQL)
-* Row-level locking (`FOR UPDATE`)
-* Atomic updates
-* Server-side validation
-
----
-
-### ❌ Forbidden
-
-* Direct `.update()` on financial fields
-* Frontend-derived totals
-* Multi-step read → modify → write patterns
-* Silent overwrites
-
----
-
-## 🔁 Offline Sync Rules
-
-* Queue must store **operations**, not raw data
-
-* Use:
-
-  * `type: 'rpc'`
-  * function name
-  * payload
-
-* Replay must call:
-
-```js
-supabase.rpc(...)
-```
-
----
-
-## 🧾 Future Requirements
-
-* Transaction/audit log table
-* Idempotency keys for all critical operations
-* Booking charges ledger (POS integration)
-* Financial reporting consistency (cash vs system)
-
----
-
-## 🧠 Instructions for Codex
-
-When modifying this system:
-
-* Always prioritize **data integrity over convenience**
-* Assume **multiple users acting concurrently**
-* Prefer **RPC-based solutions**
-* Do NOT introduce shortcuts that bypass backend logic
-* Ensure fixes work for BOTH:
-
-  * Electron (via `database.js`)
-  * PWA (direct Supabase)
-
-If unsure:
-→ choose the **safer, more atomic approach**
-
----
-
-## 🚨 Critical Warning
-
-This system manages real financial data.
-
-Any incorrect implementation may cause:
-
-* Revenue loss
-* Incorrect balances
-* Broken reports
-
-Always validate:
-
-* concurrency safety
-* atomicity
-* correctness of totals
-
----
-
-## ✅ Definition of “Correct”
-
-A solution is ONLY correct if:
-
-* It is **atomic**
-* It is **concurrency-safe**
-* It uses **RPC or database-level enforcement**
-* It does NOT rely on frontend calculations
-* It preserves **financial truth under all conditions**
-
----
+- database behavior is atomic and concurrency-safe;
+- retries are idempotent;
+- authorization and lodge/outlet isolation are enforced server-side;
+- desktop and every other applicable surface use the same authoritative contract;
+- offline replay preserves that contract;
+- reports and audit history remain financially consistent;
+- focused tests and affected builds pass;
+- deployment status is stated accurately rather than inferred.

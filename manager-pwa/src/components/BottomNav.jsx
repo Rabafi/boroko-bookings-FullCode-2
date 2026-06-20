@@ -10,7 +10,7 @@ const NAV = [
   { to: '/more', label: 'Menu', icon: Menu }
 ]
 
-export default function BottomNav({ notificationCount = 0, inboxEnabled = true }) {
+export default function BottomNav({ alertCount = 0, inboxUnreadCount = 0, inboxEnabled = true }) {
   const location = useLocation()
   const navItems = NAV.filter((item) => item.to !== '/control' || inboxEnabled)
   const secondaryRoutes = new Set([
@@ -54,9 +54,14 @@ export default function BottomNav({ notificationCount = 0, inboxEnabled = true }
           >
             <div className="relative">
               <Icon size={21} />
-              {label === 'Inbox' && notificationCount > 0 && (
+              {label === 'Inbox' && inboxUnreadCount > 0 && (
                 <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[10px] font-bold w-4 h-4 rounded-full flex items-center justify-center">
-                  {notificationCount > 9 ? '9+' : notificationCount}
+                  {inboxUnreadCount > 9 ? '9+' : inboxUnreadCount}
+                </span>
+              )}
+              {label === 'Alerts' && alertCount > 0 && (
+                <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[10px] font-bold w-4 h-4 rounded-full flex items-center justify-center">
+                  {alertCount > 9 ? '9+' : alertCount}
                 </span>
               )}
             </div>

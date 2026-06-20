@@ -1,3 +1,16 @@
+## Boroko Bookings 1.5.2
+
+### Highlights
+- Mesh synchronization, authentication, and offline queue hardening
+- Quotation currency guardrails
+- Improved system-health and client update reporting
+- Manager PWA cache refresh and health-reporting improvements
+
+### Operator Notes
+- Update the desktop application in place using the normal installer.
+- Confirm devices reconnect and pending work synchronizes after restart.
+- Database-backed features require their corresponding Supabase migrations.
+
 ## Boroko Bookings 1.5.0
 
 ### Highlights

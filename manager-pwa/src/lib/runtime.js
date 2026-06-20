@@ -275,7 +275,11 @@ export function getNotificationSettings() {
     refunds: true,
     balances: true,
     maintenance: true,
-    frontDeskRequests: true
+    frontDeskRequests: true,
+    sound: false,
+    vibration: false,
+    urgentOnly: false,
+    frontDeskReplies: true
   })
 }
 
@@ -384,6 +388,10 @@ export function listPwaNotifications(lodgeId, limit = NOTIFICATION_LIMIT) {
 
 export function getUnreadPwaNotificationCount(lodgeId) {
   return listPwaNotifications(lodgeId).filter((item) => !item?.readAt).length
+}
+
+export function getUnreadOperationalNotificationCount(lodgeId) {
+  return listPwaNotifications(lodgeId).filter((item) => !item?.readAt && item?.category !== 'frontDeskRequest').length
 }
 
 export function upsertPwaNotification(lodgeId, notification) {

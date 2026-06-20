@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { ArrowRight, FileText, HandCoins, ReceiptText, RefreshCw, ScrollText, X } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
-import { getNightAudit, getRefundHistory, listExpenses, listInvoices, listQuotations } from '../lib/api'
-import { money, paymentStatusClass, shortDate, shortDateTime, titleCase } from '../lib/format'
+import { getNightAudit, getRefundHistory, listExpenses, listInvoices, listQuotations, getCustomerCreditSummaryPwa } from '../lib/api'
+import { money, shortDate, shortDateTime } from '../lib/format'
 import { sendFrontDeskRequest } from '../lib/frontDeskRequests'
 import { readCacheEntry } from '../lib/runtime'
 import DataFreshness from '../components/DataFreshness'
@@ -11,18 +11,18 @@ import EmptyState from '../components/EmptyState'
 import MobileBoundaryNotice from '../components/MobileBoundaryNotice'
 import { useToast } from '../App'
 
-function RouteCard({ to, title, value, sub, icon: Icon }) {
+function RouteLink({ to, title, value, sub, icon: Icon }) {
   return (
-    <Link to={to} className="bg-gray-800 rounded-2xl p-4 flex items-center gap-3 active:scale-[0.98] transition-transform">
-      <div className="w-11 h-11 rounded-2xl bg-green-900/40 text-green-300 flex items-center justify-center">
-        <Icon size={20} />
+    <Link to={to} className="bg-gray-800 rounded-2xl p-3 flex items-center gap-3 active:scale-[0.98] transition-transform">
+      <div className="w-10 h-10 rounded-xl bg-green-900/40 text-green-300 flex items-center justify-center shrink-0">
+        <Icon size={18} />
       </div>
       <div className="flex-1 min-w-0">
         <p className="text-sm font-semibold text-white">{title}</p>
-        <p className="text-xl font-bold text-white mt-0.5">{value}</p>
-        <p className="text-xs text-gray-400 mt-0.5">{sub}</p>
+        <p className="text-lg font-bold text-white mt-0.5">{value}</p>
+        <p className="text-[11px] text-gray-400 mt-0.5">{sub}</p>
       </div>
-      <ArrowRight size={18} className="text-gray-500" />
+      <ArrowRight size={16} className="text-gray-500 shrink-0" />
     </Link>
   )
 }
@@ -48,8 +48,6 @@ export default function Money() {
   const [searchParams] = useSearchParams()
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
-  const [sendingRequest, setSendingRequest] = useState('')
-  const [requestNote, setRequestNote] = useState('')
   const [lastUpdated, setLastUpdated] = useState(null)
   const [sheet, setSheet] = useState(null)
   const balancesRef = useRef(null)
@@ -59,7 +57,8 @@ export default function Money() {
     invoices: [],
     expenses: [],
     refunds: [],
-    audit: null
+    audit: null,
+    customerCredits: []
   })
 
   useEffect(() => {
@@ -70,15 +69,16 @@ export default function Money() {
       const today = new Date().toISOString().slice(0, 10)
       const monthStart = `${today.slice(0, 7)}-01`
       try {
-        const [quotations, invoices, expenses, refunds, audit] = await Promise.all([
+        const [quotations, invoices, expenses, refunds, audit, customerCredits] = await Promise.all([
           listQuotations(user.lodge_id).catch(() => []),
           listInvoices(user.lodge_id, { forceFresh: true }),
           listExpenses(user.lodge_id, monthStart, today, { forceFresh: true }).catch(() => []),
           getRefundHistory(user.lodge_id, 6).catch(() => []),
-          getNightAudit(user.lodge_id, today).catch(() => null)
+          getNightAudit(user.lodge_id, today).catch(() => null),
+          getCustomerCreditSummaryPwa(user.lodge_id).catch(() => [])
         ])
         if (cancelled) return
-        setSnapshot({ quotations, invoices, expenses, refunds, audit })
+        setSnapshot({ quotations, invoices, expenses, refunds, audit, customerCredits })
         const expenseCacheKey = `expenses:${monthStart}:${today}`
         const cacheTimes = [
           readCacheEntry(user.lodge_id, 'invoice_summary_v2', null)?.updatedAt,
@@ -102,6 +102,7 @@ export default function Money() {
       if (document.visibilityState === 'visible') load(true)
     }, 2 * 60_000)
     document.addEventListener('visibilitychange', handleVisible)
+    window.addEventListener('online', () => load(true))
     return () => {
       cancelled = true
       window.clearInterval(interval)
@@ -111,22 +112,10 @@ export default function Money() {
 
   const currency = 'P'
   const outstanding = snapshot.invoices.reduce((sum, invoice) => sum + Number(invoice.balance_due || 0), 0)
-  const monthExpenses = snapshot.expenses.reduce((sum, expense) => sum + Number(expense.amount || 0), 0)
-  const activeQuotes = snapshot.quotations.filter((item) => ['draft', 'sent', 'accepted'].includes(item.status)).length
-  const expenseCategories = useMemo(() => {
-    const grouped = new Map()
-    snapshot.expenses.forEach((expense) => {
-      const key = expense.category || 'Other'
-      grouped.set(key, (grouped.get(key) || 0) + Number(expense.amount || 0))
-    })
-    return [...grouped.entries()]
-      .map(([category, amount]) => ({ category, amount }))
-      .sort((left, right) => right.amount - left.amount)
-      .slice(0, 6)
-  }, [snapshot.expenses])
   const topBalances = [...snapshot.invoices]
     .sort((left, right) => Number(right.balance_due || 0) - Number(left.balance_due || 0))
-    .slice(0, 5)
+    .slice(0, 3)
+  const totalCustomerCredit = snapshot.customerCredits.reduce((sum, c) => sum + Number(c.balance || 0), 0)
 
   useEffect(() => {
     const focus = searchParams.get('focus')
@@ -136,47 +125,20 @@ export default function Money() {
     window.setTimeout(() => balancesRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' }), 120)
   }, [loading, searchParams])
 
-  async function sendRequest(type) {
-    setSendingRequest(type)
-    const templates = {
-      balance: {
-        title: 'Balance follow-up request',
-        description: 'Please check the top outstanding balances and confirm today’s collection plan.',
-        category: 'Front Desk Request',
-        priority: 'High'
-      },
-      refund: {
-        title: 'Refund clarification request',
-        description: 'Please review the latest refund activity and confirm guest communication is complete.',
-        category: 'Front Desk Request',
-        priority: 'Normal'
-      },
-      expense: {
-        title: 'Expense clarification request',
-        description: 'Please review today’s main expense entries and add any missing notes or receipts on the desktop.',
-        category: 'Front Desk Request',
-        priority: 'Normal'
-      }
-    }
+  async function sendFollowUp(invoice) {
     try {
-      const note = requestNote.trim()
-      const description = note
-        ? `${templates[type].description}\n\nAdded note: ${note}`
-        : templates[type].description
       const result = await sendFrontDeskRequest({
         user,
-        title: templates[type].title,
-        description,
-        category: templates[type].category,
-        priority: templates[type].priority,
-        context: { kind: `money-${type}` }
+        title: 'Balance follow-up request',
+        description: `Please follow up ${invoice.customer_name || 'this guest'} about the outstanding balance of ${money(invoice.balance_due)}. Invoice: ${invoice.invoice_number}.`,
+        priority: 'High',
+        context: { kind: 'money-balance', referenceId: invoice.booking_id }
       })
-      if (!result?.queued) setRequestNote('')
       showToast({
         title: result?.queued ? 'Request saved offline' : 'Request sent',
         message: result?.queued
           ? 'It will reach front desk automatically when the device reconnects.'
-          : 'Front desk can now review this request on the desktop dashboard.',
+          : 'Front desk can now review this request on desktop.',
         tone: result?.queued ? 'queued' : 'success'
       })
     } catch (error) {
@@ -185,19 +147,16 @@ export default function Money() {
         message: error?.message || 'Please try again.',
         tone: 'error'
       })
-    } finally {
-      setSendingRequest('')
     }
   }
 
   return (
     <div className="min-h-screen bg-gray-950 pb-24">
-      <div className="bg-gray-900 px-4 pt-12 pb-4">
+      <div className="bg-gray-900 px-4 pt-2 pb-3">
         <div className="flex items-start justify-between gap-3">
           <div>
             <h1 className="text-lg font-bold text-white">Money</h1>
-            <p className="text-xs text-gray-400">Watch cash, refunds, balances, and spend without changing financial records from mobile</p>
-            <DataFreshness updatedAt={lastUpdated} loading={loading} error={loadError} className="mt-1" />
+            <DataFreshness updatedAt={lastUpdated} loading={loading} error={loadError} className="mt-0.5" />
           </div>
           <button
             onClick={async () => {
@@ -221,17 +180,9 @@ export default function Money() {
                 ].filter(Boolean).sort().at(-1) || null
                 setLastUpdated(cacheTimes)
                 setLoadError('')
-                showToast({
-                  title: 'Money view refreshed',
-                  message: 'Latest bookings, invoices, refunds, and expenses were reloaded.',
-                  tone: 'success'
-                })
+                showToast({ title: 'Money view refreshed', tone: 'success' })
               } catch (error) {
-                showToast({
-                  title: 'Money view could not refresh',
-                  message: error?.message || 'Please try again.',
-                  tone: 'error'
-                })
+                showToast({ title: 'Money view could not refresh', message: error?.message, tone: 'error' })
               } finally {
                 setLoading(false)
               }
@@ -243,182 +194,78 @@ export default function Money() {
         </div>
       </div>
 
-      <div className="px-4 py-4 space-y-3">
+      <div className="px-4 py-3 space-y-3">
         {loadError && <p className="text-sm text-red-400">{loadError}</p>}
-        <div className="grid grid-cols-1 gap-3">
-          <RouteCard to="/quotations" title="Quotations" value={loading ? '…' : activeQuotes} sub="Open offers and booking conversions" icon={ScrollText} />
-          <RouteCard to="/invoices" title="Invoices" value={loading ? '…' : money(outstanding, currency)} sub="Outstanding guest balances" icon={ReceiptText} />
-          <RouteCard to="/expenses" title="Expenses" value={loading ? '…' : money(monthExpenses, currency)} sub="This month’s operating spend" icon={HandCoins} />
-          <RouteCard to="/audit" title="Night Audit" value="Daily close" sub="End-of-day summary and payment follow-up" icon={FileText} />
+
+        <div ref={balancesRef} className="bg-gray-800 rounded-2xl p-3">
+          <div className="grid grid-cols-2 gap-2">
+            <button onClick={() => setSheet('shift')} className="bg-gray-900 rounded-xl px-3 py-2.5 text-left">
+              <p className="text-[11px] text-gray-400">Gross collected</p>
+              <p className="text-lg font-bold text-white mt-0.5">{money(snapshot.audit?.gross_collected)}</p>
+            </button>
+            <button onClick={() => setSheet('refunds')} className="bg-gray-900 rounded-xl px-3 py-2.5 text-left">
+              <p className="text-[11px] text-gray-400">Refunds today</p>
+              <p className="text-lg font-bold text-rose-300 mt-0.5">{money(snapshot.audit?.refunds_issued)}</p>
+            </button>
+            <button onClick={() => setSheet('expenses')} className="bg-gray-900 rounded-xl px-3 py-2.5 text-left">
+              <p className="text-[11px] text-gray-400">Expenses today</p>
+              <p className="text-lg font-bold text-red-300 mt-0.5">{money(snapshot.audit?.expenses_total)}</p>
+            </button>
+            <button onClick={() => setSheet('balances')} className="bg-gray-900 rounded-xl px-3 py-2.5 text-left">
+              <p className="text-[11px] text-gray-400">Outstanding</p>
+              <p className="text-lg font-bold text-yellow-300 mt-0.5">{money(snapshot.audit?.outstanding_total)}</p>
+            </button>
+          </div>
+          {totalCustomerCredit > 0 && (
+            <button onClick={() => setSheet('customerCredit')} className="w-full bg-gray-900 rounded-xl px-3 py-2.5 text-left mt-2">
+              <p className="text-[11px] text-gray-400">Customer Credit Outstanding</p>
+              <p className="text-lg font-bold text-cyan-300 mt-0.5">{money(totalCustomerCredit)}</p>
+              <p className="text-[11px] text-gray-500 mt-0.5">{snapshot.customerCredits.length} customer{snapshot.customerCredits.length !== 1 ? 's' : ''} with credit</p>
+            </button>
+          )}
         </div>
 
-        <div ref={balancesRef} className="bg-gray-800 rounded-2xl p-4">
-          <div className="flex items-center justify-between mb-3">
-            <p className="text-sm font-semibold text-white">Shift Snapshot</p>
-            <Link to="/audit" className="text-xs text-green-400">Full audit</Link>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <button onClick={() => setSheet('shift')} className="bg-gray-900 rounded-xl px-3 py-3 text-left">
-              <p className="text-xs text-gray-400">Gross collected</p>
-              <p className="text-lg font-bold text-white mt-1">{money(snapshot.audit?.gross_collected)}</p>
-            </button>
-            <button onClick={() => setSheet('refunds')} className="bg-gray-900 rounded-xl px-3 py-3 text-left">
-              <p className="text-xs text-gray-400">Refunds today</p>
-              <p className="text-lg font-bold text-rose-300 mt-1">{money(snapshot.audit?.refunds_issued)}</p>
-            </button>
-            <button onClick={() => setSheet('expenses')} className="bg-gray-900 rounded-xl px-3 py-3 text-left">
-              <p className="text-xs text-gray-400">Expenses today</p>
-              <p className="text-lg font-bold text-red-300 mt-1">{money(snapshot.audit?.expenses_total)}</p>
-            </button>
-            <button onClick={() => setSheet('balances')} className="bg-gray-900 rounded-xl px-3 py-3 text-left">
-              <p className="text-xs text-gray-400">Outstanding</p>
-              <p className="text-lg font-bold text-yellow-300 mt-1">{money(snapshot.audit?.outstanding_total)}</p>
-            </button>
-          </div>
-        </div>
-
-        <div className="bg-gray-800 rounded-2xl p-4">
-          <div className="flex items-center justify-between mb-3">
-            <p className="text-sm font-semibold text-white">Front Desk Requests</p>
-            <span className="text-xs text-gray-500">Lightweight only</span>
-          </div>
-          <p className="mb-3 text-xs text-gray-500">These requests appear on the front-desk desktop dashboard so the team can reply without giving mobile access to money-changing actions.</p>
-          <textarea
-            className="mb-3 w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-3 text-white text-sm h-24 resize-none"
-            placeholder="Optional note for front desk"
-            value={requestNote}
-            onChange={(event) => setRequestNote(event.target.value)}
-            maxLength={500}
-          />
-          <div className="grid grid-cols-1 gap-2">
-            <button onClick={() => sendRequest('balance')} disabled={sendingRequest !== ''} className="bg-gray-900 text-white rounded-xl px-3 py-3 text-sm font-medium text-left disabled:opacity-60">
-              {sendingRequest === 'balance' ? 'Sending…' : 'Ask front desk to follow up outstanding balances'}
-            </button>
-            <button onClick={() => sendRequest('refund')} disabled={sendingRequest !== ''} className="bg-gray-900 text-white rounded-xl px-3 py-3 text-sm font-medium text-left disabled:opacity-60">
-              {sendingRequest === 'refund' ? 'Sending…' : 'Ask for a refund clarification'}
-            </button>
-            <button onClick={() => sendRequest('expense')} disabled={sendingRequest !== ''} className="bg-gray-900 text-white rounded-xl px-3 py-3 text-sm font-medium text-left disabled:opacity-60">
-              {sendingRequest === 'expense' ? 'Sending…' : 'Ask for an expense clarification'}
-            </button>
-          </div>
-        </div>
-
-        <div className="bg-gray-800 rounded-2xl p-4">
-          <div className="flex items-center justify-between mb-3">
-            <p className="text-sm font-semibold text-white">Open Invoices</p>
-            <Link to="/invoices" className="text-xs text-green-400">View all</Link>
-          </div>
-          <div className="space-y-2">
-            {snapshot.invoices.slice(0, 5).map((invoice) => (
-              <div key={invoice.booking_id} className="bg-gray-900 rounded-xl px-3 py-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="min-w-0">
+        {topBalances.length > 0 && (
+          <div className="bg-gray-800 rounded-2xl p-3">
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-sm font-semibold text-white">Top Balances</p>
+              <Link to="/invoices" className="text-xs text-green-400">Invoices</Link>
+            </div>
+            <div className="space-y-1.5">
+              {topBalances.map((invoice) => (
+                <div key={invoice.booking_id} className="bg-gray-900 rounded-xl px-3 py-2.5 flex items-center justify-between gap-2">
+                  <div className="min-w-0 flex-1">
                     <p className="text-sm font-semibold text-white truncate">{invoice.customer_name || 'Guest'}</p>
-                    <p className="text-xs text-gray-400">{invoice.invoice_number} • {shortDate(invoice.issued_at)}</p>
+                    <p className="text-[11px] text-gray-400">{invoice.invoice_number} \u2022 {shortDate(invoice.check_in)}</p>
                   </div>
-                  <span className={`text-xs px-2 py-0.5 rounded-full ${paymentStatusClass(invoice.payment_status)}`}>
-                    {titleCase(invoice.payment_status)}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between text-xs mt-2">
-                  <span className="text-gray-400">Balance</span>
-                  <span className="text-yellow-300 font-semibold">{money(invoice.balance_due, currency)}</span>
-                </div>
-              </div>
-            ))}
-            {!loading && snapshot.invoices.length === 0 && (
-              <EmptyState
-                embedded
-                icon={ReceiptText}
-                title="No open invoices"
-                message="There are no invoices cached on this device. Refresh Money or ask front desk if an expected balance is missing."
-              />
-            )}
-          </div>
-        </div>
-
-        <div className="bg-gray-800 rounded-2xl p-4">
-          <div className="flex items-center justify-between mb-3">
-            <p className="text-sm font-semibold text-white">Recent Refunds</p>
-            <Link to="/invoices" className="text-xs text-green-400">Invoices</Link>
-          </div>
-          <div className="space-y-2">
-            {snapshot.refunds.map((refund) => (
-              <div key={refund.id} className="bg-gray-900 rounded-xl px-3 py-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <p className="text-sm font-semibold text-white">{refund.invoice_number || 'Invoice'}</p>
-                    <p className="text-xs text-gray-400 mt-1">{refund.approved_by_name || 'Approver pending'} • {shortDateTime(refund.created_at)}</p>
+                  <div className="flex items-center gap-2">
+                    <p className="text-sm font-semibold text-yellow-300">{money(invoice.balance_due)}</p>
+                    <button
+                      onClick={() => sendFollowUp(invoice)}
+                      className="shrink-0 p-1.5 rounded-lg bg-green-700/80 text-white hover:bg-green-600"
+                      aria-label="Ask front desk to follow up"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                    </button>
                   </div>
-                  <p className="text-sm font-bold text-rose-300">{money(refund.refund_amount)}</p>
                 </div>
-                <p className="text-xs text-gray-500 mt-2">Retained {money(refund.retained_amount)} • {Number(refund.retained_percent || 0)}%</p>
-              </div>
-            ))}
-            {!loading && snapshot.refunds.length === 0 && (
-              <EmptyState
-                embedded
-                icon={FileText}
-                title="No recent refunds"
-                message="Refund activity will appear here after it is recorded on desktop."
-              />
-            )}
+              ))}
+            </div>
           </div>
-        </div>
+        )}
 
-        <div className="bg-gray-800 rounded-2xl p-4">
-          <div className="flex items-center justify-between mb-3">
-            <p className="text-sm font-semibold text-white">Expense Categories</p>
-            <Link to="/expenses" className="text-xs text-green-400">Expenses</Link>
-          </div>
-          <div className="space-y-2">
-            {expenseCategories.map((entry) => (
-              <div key={entry.category} className="bg-gray-900 rounded-xl px-3 py-3 flex items-center justify-between gap-3">
-                <p className="text-sm text-white">{entry.category}</p>
-                <p className="text-sm font-semibold text-red-300">{money(entry.amount)}</p>
-              </div>
-            ))}
-            {!loading && expenseCategories.length === 0 && (
-              <EmptyState
-                embedded
-                icon={HandCoins}
-                title="No expense categories yet"
-                message="This month’s spend will appear here after front desk or desktop records expenses."
-              />
-            )}
-          </div>
-        </div>
-
-        <div className="bg-gray-800 rounded-2xl p-4">
-          <div className="flex items-center justify-between mb-3">
-            <p className="text-sm font-semibold text-white">Top Balances</p>
-            <Link to="/invoices" className="text-xs text-green-400">Invoices</Link>
-          </div>
-          <div className="space-y-2">
-            {topBalances.map((invoice) => (
-              <div key={invoice.booking_id} className="bg-gray-900 rounded-xl px-3 py-3 flex items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="text-sm font-semibold text-white truncate">{invoice.customer_name || 'Guest'}</p>
-                  <p className="text-xs text-gray-400 mt-1">{invoice.invoice_number} • {shortDate(invoice.check_in)}</p>
-                </div>
-                <p className="text-sm font-semibold text-yellow-300">{money(invoice.balance_due)}</p>
-              </div>
-            ))}
-            {!loading && topBalances.length === 0 && (
-              <EmptyState
-                embedded
-                icon={ReceiptText}
-                title="No outstanding balances"
-                message="Nothing needs collection follow-up from the Money view right now."
-              />
-            )}
-          </div>
+        <div className="grid grid-cols-2 gap-2">
+          <RouteLink to="/quotations" title="Quotations" value={loading ? '\u2026' : snapshot.quotations.filter((q) => ['draft', 'sent', 'accepted'].includes(q.status)).length} sub="Open offers" icon={ScrollText} />
+          <RouteLink to="/invoices" title="Invoices" value={loading ? '\u2026' : money(outstanding, currency)} sub="Outstanding" icon={ReceiptText} />
+          <RouteLink to="/expenses" title="Expenses" value={loading ? '\u2026' : money(snapshot.expenses.reduce((s, e) => s + Number(e.amount || 0), 0), currency)} sub="This month" icon={HandCoins} />
+          <RouteLink to="/audit" title="Night Audit" value="Daily close" sub="End-of-day summary" icon={FileText} />
         </div>
 
         <MobileBoundaryNotice compact>
           Money is review-and-request on mobile. Front desk or desktop completes payments, invoices, refunds, and expense changes.
         </MobileBoundaryNotice>
       </div>
+
       {sheet === 'shift' && (
         <Sheet title="Shift Snapshot" onClose={() => setSheet(null)}>
           <div className="space-y-2">
@@ -454,27 +301,60 @@ export default function Money() {
       {sheet === 'expenses' && (
         <Sheet title="Expense Categories" onClose={() => setSheet(null)}>
           <div className="space-y-2">
-            {expenseCategories.map((entry) => (
-              <div key={entry.category} className="bg-gray-800 rounded-xl px-3 py-3 flex items-center justify-between gap-3">
-                <p className="text-sm text-white">{entry.category}</p>
-                <p className="text-sm font-semibold text-red-300">{money(entry.amount)}</p>
-              </div>
-            ))}
+            {(() => {
+              const grouped = new Map()
+              snapshot.expenses.forEach((expense) => {
+                const key = expense.category || 'Other'
+                grouped.set(key, (grouped.get(key) || 0) + Number(expense.amount || 0))
+              })
+              return [...grouped.entries()]
+                .map(([category, amount]) => ({ category, amount }))
+                .sort((a, b) => b.amount - a.amount)
+                .slice(0, 6)
+                .map((entry) => (
+                  <div key={entry.category} className="bg-gray-800 rounded-xl px-3 py-3 flex items-center justify-between gap-3">
+                    <p className="text-sm text-white">{entry.category}</p>
+                    <p className="text-sm font-semibold text-red-300">{money(entry.amount)}</p>
+                  </div>
+                ))
+            })()}
           </div>
         </Sheet>
       )}
       {sheet === 'balances' && (
         <Sheet title="Top Outstanding Balances" onClose={() => setSheet(null)}>
           <div className="space-y-2">
-            {topBalances.map((invoice) => (
-              <div key={invoice.booking_id} className="bg-gray-800 rounded-xl px-3 py-3 flex items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="text-sm font-semibold text-white truncate">{invoice.customer_name || 'Guest'}</p>
-                  <p className="text-xs text-gray-400 mt-1">{invoice.invoice_number}</p>
+            {[...snapshot.invoices]
+              .sort((a, b) => Number(b.balance_due || 0) - Number(a.balance_due || 0))
+              .slice(0, 5)
+              .map((invoice) => (
+                <div key={invoice.booking_id} className="bg-gray-800 rounded-xl px-3 py-3 flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-white truncate">{invoice.customer_name || 'Guest'}</p>
+                    <p className="text-xs text-gray-400 mt-1">{invoice.invoice_number}</p>
+                  </div>
+                  <p className="text-sm font-semibold text-yellow-300">{money(invoice.balance_due)}</p>
                 </div>
-                <p className="text-sm font-semibold text-yellow-300">{money(invoice.balance_due)}</p>
-              </div>
-            ))}
+              ))}
+          </div>
+        </Sheet>
+      )}
+      {sheet === 'customerCredit' && (
+        <Sheet title="Customer Credit Balances" onClose={() => setSheet(null)}>
+          <div className="space-y-2">
+            {snapshot.customerCredits.length > 0 ? (
+              snapshot.customerCredits.map((entry) => (
+                <div key={entry.customer_id} className="bg-gray-800 rounded-xl px-3 py-3 flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-white truncate">{entry.customer_name || 'Guest'}</p>
+                    {entry.customer_email && <p className="text-xs text-gray-400 mt-0.5">{entry.customer_email}</p>}
+                  </div>
+                  <p className="text-sm font-semibold text-cyan-300">{money(entry.balance)}</p>
+                </div>
+              ))
+            ) : (
+              <p className="text-sm text-gray-500">No customer credit balances.</p>
+            )}
           </div>
         </Sheet>
       )}

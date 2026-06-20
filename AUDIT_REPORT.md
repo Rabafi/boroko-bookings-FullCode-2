@@ -1,4 +1,7 @@
 # Boroko Bookings - Comprehensive Security & UX Audit Report
+
+> Historical snapshot — generated 2026-04-10. This is not the current project status or active issue list. Several findings and recommendations were superseded by later migrations and releases. Start with [PROJECT_STATE.md](PROJECT_STATE.md) and verify every claim against current code.
+
 **Generated:** April 10, 2026  
 **Audit Type:** Combined Security, Performance, and UX Analysis  
 **Status:** All Critical (P0) and High Priority (P1) Issues RESOLVED ✅

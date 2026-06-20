@@ -8,6 +8,7 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import autoUpdaterPkg from 'electron-updater'
 const { autoUpdater } = autoUpdaterPkg
 import * as db from './database.js'
+import { state } from './state.js'
 import { readCache } from './domains/cacheStore.js'
 import { createAiOrchestrator, writeAiAuditLog } from './ai/aiOrchestrator.js'
 import { buildCapabilitySnapshot, normalizeAppRole } from '../shared/accessControl.js'
@@ -671,6 +672,247 @@ async function renderHtmlToPdfBuffer(html, pdfOptions = {}, waitOptions = {}) {
   } finally {
     if (!pdfWindow.isDestroyed()) pdfWindow.destroy()
   }
+}
+
+function buildDetailedReportPdfHtml({ lodgeName, companyName, reportType, startDate, endDate, currency, generatedAt, data, reconciliation, outletLabel, extraData = {} }) {
+  const sym = currency || 'P'
+  const title = {
+    bookings: 'Booking Register Report',
+    payments: 'Payment Transactions Report',
+    outstanding: 'Outstanding Balances Report',
+    cancelled: 'Cancelled Bookings Report',
+    refunds: 'Refunds Report',
+    quotations: 'Quotations Report',
+    invoices: 'Invoice Register Report',
+    exceptions: 'Financial Exceptions Report',
+    reconciliation: 'Reconciliation Controls Report',
+    expenses: 'Expenses Report',
+    pos: 'POS Sales Report',
+    costs: 'Stock Costs Report',
+    pl: 'Profit & Loss Statement'
+  }[reportType] || 'Detailed Report'
+
+  function money(v) { return `${sym} ${Number(v || 0).toFixed(2)}` }
+
+  function table(headers, rows) {
+    const ths = headers.map((h) => `<th style="padding:6px 10px;text-align:left;border-bottom:2px solid #333;font-size:11px;white-space:nowrap;background:#f8fafc">${escapeHtml(h)}</th>`).join('')
+    const trs = rows.map((row) => {
+      const tds = row.map((cell, i) => {
+        const isMoney = typeof cell === 'number'
+        return `<td style="padding:5px 10px;border-bottom:1px solid #e2e8f0;font-size:11px;${isMoney ? 'text-align:right;font-variant-numeric:tabular-nums' : ''}">${isMoney ? money(cell) : escapeHtml(String(cell ?? ''))}</td>`
+      }).join('')
+      return `<tr>${tds}</tr>`
+    }).join('')
+    return `<table style="width:100%;border-collapse:collapse;margin:16px 0;font-family:system-ui,sans-serif"><thead><tr>${ths}</tr></thead><tbody>${trs}</tbody></table>`
+  }
+
+  let bodyContent = ''
+
+  // Report Info Header
+  bodyContent += `
+    <div style="margin-bottom:24px;padding-bottom:12px;border-bottom:2px solid #166534">
+      <h1 style="font-size:18px;font-weight:700;color:#166534;margin:0">${escapeHtml(title)}</h1>
+      <p style="font-size:12px;color:#666;margin:4px 0 0">${escapeHtml(lodgeName)}${companyName ? ' — ' + escapeHtml(companyName) : ''}</p>
+      <p style="font-size:11px;color:#888;margin:4px 0 0">Period: ${escapeHtml(startDate)} to ${escapeHtml(endDate)}</p>
+      ${outletLabel ? `<p style="font-size:11px;color:#888;margin:2px 0 0">Outlet: ${escapeHtml(outletLabel)}</p>` : ''}
+      <p style="font-size:10px;color:#999;margin:4px 0 0">Generated: ${escapeHtml(generatedAt)} | Currency: ${escapeHtml(sym)} | Data: Server-authoritative</p>
+    </div>`
+
+  // Date Basis
+  const DATE_BASIS = {
+    bookings: 'Booking check-in date within the selected period.',
+    payments: 'Payment paid_at timestamp within the selected period.',
+    cancelled: 'Booking cancelled_at timestamp within the selected period.',
+    refunds: 'Refund approval created_at timestamp within the selected period.',
+    outstanding: 'Current snapshot, limited by booking check-in period rule.',
+    quotations: 'Quotation created_at timestamp within the selected period.',
+    invoices: 'Invoice issued_at timestamp within the selected period.',
+    exceptions: 'Detected across the selected period.',
+    reconciliation: 'Summary of financial totals across the selected period.',
+    expenses: 'Expense date within the selected period.',
+    pos: 'POS order completion timestamp within the selected period.',
+    costs: 'Purchase date within the selected period.',
+    pl: 'Profit & Loss for the selected period.'
+  }
+  if (DATE_BASIS[reportType]) {
+    bodyContent += `<p style="font-size:10px;color:#555;margin:0 0 16px;font-style:italic">Date basis: ${escapeHtml(DATE_BASIS[reportType])}</p>`
+  }
+
+  // Report-specific content
+  if (reportType === 'bookings' && data.bookings.length > 0) {
+    bodyContent += table(
+      ['Booking #', 'Invoice #', 'Guest', 'Room', 'Type', 'Check-In', 'Check-Out', 'Nights', 'Status', 'Payment Status', `Gross (${sym})`, `Paid (${sym})`, `Balance (${sym})`, 'Method'],
+      data.bookings.map((b) => [b.booking_number, b.invoice_number, b.guest_name, `${b.room_number || ''} (${b.room_type || ''})`, b.booking_type, b.check_in, b.check_out, b.nights, b.booking_status, b.payment_status, b.gross_total, b.lifetime_amount_paid, b.balance_due, b.payment_method_summary])
+    )
+  } else if (reportType === 'payments' && data.payments.length > 0) {
+    bodyContent += table(
+      ['Timestamp', 'Booking #', 'Invoice #', 'Guest', 'Type', 'Method', `Amount (${sym})`, 'Recorded By'],
+      data.payments.map((p) => [p.paid_at, p.booking_number, p.invoice_number, p.guest_name, p.transaction_type, p.payment_method, p.amount, p.recorded_by])
+    )
+  } else if (reportType === 'outstanding' && data.outstanding.length > 0) {
+    bodyContent += table(
+      ['Booking #', 'Invoice #', 'Guest', 'Room', 'Check-Out', `Gross (${sym})`, `Paid (${sym})`, `Balance (${sym})`, 'Status', 'Days Overdue', 'Aging'],
+      data.outstanding.map((o) => [o.booking_number, o.invoice_number, o.guest_name, o.room_number, o.check_out, o.gross_total, o.amount_paid, o.balance_due, o.payment_status, o.days_overdue, o.aging_bucket])
+    )
+  } else if (reportType === 'cancelled' && data.cancelled.length > 0) {
+    bodyContent += table(
+      ['Booking #', 'Guest', 'Room', 'Original Dates', 'Nights', `Original (${sym})`, `Paid (${sym})`, 'Cancelled At', 'Reason', `Refund (${sym})`, `Retained (${sym})`, 'State'],
+      data.cancelled.map((c) => [c.booking_number, c.guest_name, c.room_number, `${c.original_check_in} to ${c.original_check_out}`, c.nights, c.original_total, c.amount_paid_before, c.cancelled_at, c.cancellation_reason, c.refund_amount, c.retained_amount, c.final_state])
+    )
+  } else if (reportType === 'refunds' && data.refunds.length > 0) {
+    bodyContent += table(
+      ['Timestamp', 'Booking #', 'Guest', `Refund (${sym})`, `Retained (${sym})`, 'Retained %', 'Method', 'Approved By', 'Proof'],
+      data.refunds.map((r) => [r.refund_timestamp, r.booking_number, r.guest_name, r.refund_amount, r.retained_amount, `${r.retained_percentage}%`, r.refund_method, r.approved_by, r.proof_reference])
+    )
+  } else if (reportType === 'quotations' && data.quotations.length > 0) {
+    bodyContent += table(
+      ['Quotation #', 'Guest', 'Type', 'Event / Group', 'Room', 'Check-In', 'Check-Out', 'Nights', `Daily Rate (${sym})`, `Total (${sym})`, 'Status', 'Created'],
+      data.quotations.map((q) => [q.quotation_number, q.guest_name, q.quotation_type === 'exclusive_event' ? 'Event' : 'Room', q.event_group_name || '', q.room_number, q.check_in, q.check_out, q.nights, q.event_daily_rate || '', q.total, q.status, q.created_at])
+    )
+  } else if (reportType === 'invoices' && data.invoices.length > 0) {
+    bodyContent += table(
+      ['Invoice #', 'Booking #', 'Guest', 'Room', 'Check-In', 'Check-Out', `Gross (${sym})`, `Paid (${sym})`, `Balance (${sym})`, 'Payment Status', 'Delivery'],
+      data.invoices.map((i) => [i.invoice_number, i.booking_number, i.guest_name, i.room_number, i.check_in, i.check_out, i.gross_total, i.amount_paid, i.balance_due, i.payment_status, i.delivery_status])
+    )
+  } else if (reportType === 'exceptions' && data.exceptions.length > 0) {
+    bodyContent += table(
+      ['Type', 'Severity', 'Entity', 'Number', 'Description', 'Expected', 'Actual', 'Variance'],
+      data.exceptions.map((e) => [e.exception_type, e.severity, e.entity_type, e.entity_number, e.description, e.expected_value, e.actual_value, e.variance])
+    )
+  } else if (reportType === 'reconciliation') {
+    const reconRows = [
+      ['Gross Booking Value', money(reconciliation.grossBookingValue)],
+      ['Gross Positive Receipts', money(reconciliation.positiveReceipts)],
+      ['Refunds Issued', money(reconciliation.refundsIssued)],
+      ['Net Cash Movement', money(reconciliation.netCash)],
+      ['Retained Fees', money(reconciliation.retainedFees)],
+      ['Outstanding Balances', money(reconciliation.outstandingBalances)],
+      ['Payment Ledger Total', money(reconciliation.paymentLedgerTotal)],
+      ['Booking Amount Paid Snapshot', money(reconciliation.bookingAmountPaidTotal)],
+      ['Ledger vs Net Cash Variance', money(reconciliation.ledgerVariance)],
+      ['Reconciliation Status', reconciliation.reconciliationStatus]
+    ]
+    bodyContent += table(['Metric', 'Value'], reconRows)
+  } else if (reportType === 'expenses') {
+    const expenses = extraData.expenses || []
+    const maintenanceRows = extraData.maintenanceRows || []
+    if (expenses.length > 0) {
+      bodyContent += '<h2 style="font-size:14px;color:#166534;margin:0 0 8px">Expenses</h2>'
+      bodyContent += table(
+        ['Date', 'Category', 'Description', `Amount (${sym})`],
+        expenses.map((e) => [e.date || '', e.category || '', e.description || '', Number(e.amount || 0)])
+      )
+    }
+    if (maintenanceRows.length > 0) {
+      bodyContent += '<h2 style="font-size:14px;color:#166534;margin:16px 0 8px">Maintenance Costs</h2>'
+      bodyContent += table(
+        ['Date', 'Ticket', 'Description', `Estimated (${sym})`, `Actual (${sym})`],
+        maintenanceRows.map((m) => [m.date || '', m.ticket_number || '', m.description || '', Number(m.estimated_cost || 0), Number(m.actual_cost || 0)])
+      )
+    }
+    if (expenses.length === 0 && maintenanceRows.length === 0) {
+      bodyContent += '<p style="color:#888;font-style:italic">No expense records for this period.</p>'
+    }
+  } else if (reportType === 'pos') {
+    const posOrders = extraData.posOrders || []
+    const posRevenue = extraData.posRevenue
+    if (posRevenue) {
+      bodyContent += '<h2 style="font-size:14px;color:#166534;margin:0 0 8px">POS Revenue Summary</h2>'
+      bodyContent += table(
+        ['Metric', 'Value'],
+        [
+          ['Total Revenue', posRevenue.total_revenue || 0],
+          ['Total Orders', posRevenue.total_orders || 0],
+          ['Avg Order Value', posRevenue.avg_order || 0]
+        ]
+      )
+    }
+    if (posOrders.length > 0) {
+      bodyContent += '<h2 style="font-size:14px;color:#166534;margin:16px 0 8px">POS Orders</h2>'
+      bodyContent += table(
+        ['Order #', 'Date', 'Status', `Total (${sym})`, 'Payment', 'Items'],
+        posOrders.map((o) => [o.order_number || o.id || '', o.created_at || '', o.status || '', Number(o.total || 0), o.payment_method || '', (o.pos_order_items || o.items || []).length])
+      )
+    }
+    if (posOrders.length === 0 && !posRevenue) {
+      bodyContent += '<p style="color:#888;font-style:italic">No POS records for this period.</p>'
+    }
+  } else if (reportType === 'costs') {
+    const invPurchases = extraData.inventoryPurchases || []
+    const supPurchases = extraData.supplyPurchases || []
+    if (invPurchases.length > 0) {
+      bodyContent += '<h2 style="font-size:14px;color:#166534;margin:0 0 8px">Inventory Purchases</h2>'
+      bodyContent += table(
+        ['Date', 'Item', 'Category', `Qty`, `Unit Cost (${sym})`, `Total (${sym})`],
+        invPurchases.map((p) => [p.date || '', p.item_name || p.inventory_items?.name || '', p.category || p.inventory_items?.category || '', p.quantity_purchased || 0, Number(p.unit_cost || 0), Number(p.total_cost || p.quantity_purchased * p.unit_cost || 0)])
+      )
+    }
+    if (supPurchases.length > 0) {
+      bodyContent += '<h2 style="font-size:14px;color:#166534;margin:16px 0 8px">Room Supply Purchases</h2>'
+      bodyContent += table(
+        ['Date', 'Item', `Qty`, `Unit Cost (${sym})`, `Total (${sym})`],
+        supPurchases.map((p) => [p.date || '', p.item_name || p.supply_items?.name || '', p.quantity_purchased || 0, Number(p.unit_cost || 0), Number(p.total_cost || p.quantity_purchased * p.unit_cost || 0)])
+      )
+    }
+    if (invPurchases.length === 0 && supPurchases.length === 0) {
+      bodyContent += '<p style="color:#888;font-style:italic">No purchase records for this period.</p>'
+    }
+  } else if (reportType === 'pl') {
+    const pl = extraData.profitLoss
+    if (pl) {
+      bodyContent += '<h2 style="font-size:14px;color:#166534;margin:0 0 8px">Profit & Loss Statement</h2>'
+      bodyContent += table(
+        ['Line Item', `Amount (${sym})`],
+        [
+          ['Booking Revenue', Number(pl.bookingRevenue || 0)],
+          ['Fees Kept From Refunds', Number(pl.retainedRevenue || 0)],
+          ['POS Revenue', Number(pl.posRevenue || 0)],
+          ['Total Revenue', Number(pl.totalRevenue || 0)],
+          [],
+          ['Operating Expenses', Number(pl.totalExpenses || 0)],
+          ['Inventory Purchases', Number(pl.invCosts || 0)],
+          ['Room Supplies', Number(pl.supCosts || 0)],
+          ['Maintenance Repairs', Number(pl.maintenanceCosts || 0)],
+          ['Total Costs', Number(pl.totalCosts || 0)],
+          [],
+          ['GROSS PROFIT', Number(pl.grossProfit || 0)],
+          ['Net Profit', Number(pl.netProfit || 0)]
+        ].filter((r) => r.length > 0)
+      )
+    } else {
+      bodyContent += '<p style="color:#888;font-style:italic">No P&L data available for this period.</p>'
+    }
+  } else {
+    bodyContent += '<p style="color:#888;font-style:italic">No data available for this report in the selected period.</p>'
+  }
+
+  // Reconciliation footer
+  bodyContent += `
+    <div style="margin-top:32px;padding-top:12px;border-top:2px solid #e2e8f0;font-size:10px;color:#888">
+      <p style="margin:0"><strong>Reconciliation:</strong> ${escapeHtml(reconciliation.reconciliationStatus)} | Ledger variance: ${money(reconciliation.ledgerVariance)}</p>
+      <p style="margin:4px 0 0">Server as-of: ${escapeHtml(reconciliation.asOf)} | Generated by: Boroko Bookings Desktop v${escapeHtml('2.0')}</p>
+      <p style="margin:4px 0 0;font-style:italic">Confidential — For internal use only. This report is server-authoritative.</p>
+    </div>`
+
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>${escapeHtml(title)} - ${escapeHtml(lodgeName)}</title>
+  <style>
+    @page { size: A4; margin: 15mm; }
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, -apple-system, sans-serif; font-size: 12px; color: #1e293b; line-height: 1.4; margin: 0; padding: 20px; }
+    table { page-break-inside: auto; }
+    tr { page-break-inside: avoid; }
+    thead { display: table-header-group; }
+    @media print { .no-print { display: none; } }
+  </style>
+</head>
+<body>
+  ${bodyContent}
+</body>
+</html>`
 }
 
 function parseMaybeJsonArray(value) {
@@ -3895,6 +4137,82 @@ app.whenReady().then(async () => {
       return { success: false, error: e.message }
     }
   })
+  ipcMain.handle('bookings:reschedule', async (_, bookingId, data) => {
+    try {
+      await requireCapability('bookings.manage')
+      await assertResourceBelongsToCurrentLodge('Booking', bookingId, db.getBookingById)
+      return await db.rescheduleBooking(bookingId, {
+        newRoomId: data.new_room_id || data.newRoomId,
+        newCheckIn: data.new_check_in || data.newCheckIn,
+        newCheckOut: data.new_check_out || data.newCheckOut,
+        reason: data.reason,
+        overpaymentAction: data.overpayment_action || data.overpaymentAction || 'reject',
+        allowTotalOverride: data.allow_total_override || data.allowTotalOverride || false,
+        overrideTotal: data.override_total || data.overrideTotal || null
+      })
+    } catch (e) {
+      return { success: false, error: e.message }
+    }
+  })
+
+  // ── Customer Credit ──────────────────────────────────────────────────────
+  ipcMain.handle('customerCredit:getBalance', async (_, customerId) => {
+    try {
+      await requireCapability('invoices.view')
+      return await db.getCustomerCreditBalance(customerId)
+    } catch (e) {
+      return { success: false, error: e.message }
+    }
+  })
+  ipcMain.handle('customerCredit:getHistory', async (_, customerId, limit, offset) => {
+    try {
+      await requireCapability('invoices.view')
+      return await db.getCustomerCreditHistory(customerId, limit, offset)
+    } catch (e) {
+      return { success: false, error: e.message }
+    }
+  })
+  ipcMain.handle('customerCredit:getSummary', async (_, search, limit, offset) => {
+    try {
+      await requireCapability('invoices.view')
+      return await db.getCustomerCreditSummary(search, limit, offset)
+    } catch (e) {
+      return { success: false, error: e.message }
+    }
+  })
+  ipcMain.handle('customerCredit:record', async (_, data) => {
+    try {
+      await requireCapability('payments.record')
+      return await db.recordCustomerCredit(data)
+    } catch (e) {
+      return { success: false, error: e.message }
+    }
+  })
+  ipcMain.handle('customerCredit:applyToBooking', async (_, data) => {
+    try {
+      await requireCapability('payments.record')
+      if (data.bookingId) await assertResourceBelongsToCurrentLodge('Booking', data.bookingId, db.getBookingById)
+      return await db.applyCustomerCreditToBooking(data)
+    } catch (e) {
+      return { success: false, error: e.message }
+    }
+  })
+  ipcMain.handle('customerCredit:refund', async (_, data) => {
+    try {
+      await requireCapability('payments.refund')
+      return await db.refundCustomerCredit(data)
+    } catch (e) {
+      return { success: false, error: e.message }
+    }
+  })
+  ipcMain.handle('customerCredit:reverse', async (_, data) => {
+    try {
+      await requireCapability('payments.refund')
+      return await db.reverseCustomerCreditEntry(data)
+    } catch (e) {
+      return { success: false, error: e.message }
+    }
+  })
 
   // ── Quotations ────────────────────────────────────────────────────────────
   ipcMain.handle('quotations:getAll', async () => {
@@ -4284,9 +4602,427 @@ app.whenReady().then(async () => {
         XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(plRows), 'P&L')
       }
 
-      XLSX.writeFile(wb, filePath)
-      return { success: true, filePath }
+      const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' })
+      fs.mkdirSync(dirname(filePath), { recursive: true })
+      fs.writeFileSync(filePath, buffer)
+      if (!fs.existsSync(filePath) || fs.statSync(filePath).size === 0) {
+        throw new Error('File was not written successfully')
+      }
+      return { success: true, filePath, size: fs.statSync(filePath).size }
     } catch (e) {
+      if (e.code === 'EBUSY' || e.code === 'EACCES') {
+        return { success: false, error: `Cannot save file: ${e.code === 'EBUSY' ? 'the destination file is open or locked' : 'permission denied'}. Please close the file and try again.` }
+      }
+      return { success: false, error: e.message }
+    }
+  })
+
+  // ── Detailed Reports Export (Server-Authoritative Excel) ────────────────────
+  ipcMain.handle('reports:exportDetailedExcel', async (event, payload = {}) => {
+    await requireCapability('reports.view')
+    const win = BrowserWindow.fromWebContents(event.sender)
+    const {
+      startDate = '',
+      endDate = '',
+      currency = 'P',
+      lodgeName = '',
+      companyName = '',
+      outletLabel = '',
+      activeTab = 'bookings'
+    } = payload || {}
+    if (!startDate || !endDate) return { success: false, error: 'Date range is required.' }
+    const period = `${startDate}-to-${endDate}`
+    const { filePath, canceled } = await dialog.showSaveDialog(win, {
+      title: 'Export Detailed Reports to Excel',
+      defaultPath: buildReportExportFilename({ prefix: 'boroko', reportTitle: 'detailed-reports', period, extension: 'xlsx' }),
+      filters: [{ name: 'Excel Files', extensions: ['xlsx'] }]
+    })
+    if (canceled || !filePath) return { success: false, canceled: true }
+    try {
+      const data = await db.loadDetailedReportData(state.lodgeId, startDate, endDate, outletLabel)
+      const reconciliation = db.computeReconciliation(data)
+      const generatedAt = new Date().toLocaleString()
+      const sym = currency || 'P'
+      const resolvedLodge = lodgeName || companyName || 'Boroko Lodge'
+      const wb = XLSX.utils.book_new()
+
+      const sharedMeta = { lodgeName: resolvedLodge, companyName, periodLabel: `${startDate} to ${endDate}`, currency: sym, outletLabel, generatedAt, asOf: reconciliation.asOf, reconciliationStatus: reconciliation.reconciliationStatus, exportVersion: db.EXPORT_VERSION }
+
+      function addSheetWithFormatting(sheetName, aoa, opts = {}) {
+        const sheet = XLSX.utils.aoa_to_sheet(aoa)
+        const numCols = aoa.reduce((max, r) => Math.max(max, Array.isArray(r) ? r.length : 0), 0)
+        const headerRow = Number.isInteger(opts.headerRow)
+          ? opts.headerRow
+          : aoa.findIndex((row) => Array.isArray(row) && row.length >= 3)
+        const widths = Array.from({ length: numCols }, (_, i) => {
+          let maxLen = 10
+          for (const row of aoa.slice(0, 50)) {
+            if (!Array.isArray(row)) continue
+            const cell = row[i]
+            if (cell != null) maxLen = Math.max(maxLen, Math.min(String(cell).length + 2, 60))
+          }
+          return { wch: maxLen }
+        })
+        sheet['!cols'] = widths
+        if (headerRow >= 0 && aoa.length > headerRow + 1) {
+          sheet['!freeze'] = { xSplit: 0, ySplit: headerRow + 1 }
+        }
+        if (opts.filter !== false && headerRow >= 0 && aoa.length > headerRow + 1) {
+          sheet['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: headerRow, c: 0 }, e: { r: aoa.length - 1, c: numCols - 1 } }) }
+        }
+        if (headerRow >= 0) {
+          const headers = aoa[headerRow] || []
+          for (let c = 0; c < headers.length; c++) {
+            const header = String(headers[c] || '')
+            const isDate = /(date|timestamp|check-in|check-out|created|cancelled|issued|due|last payment)/i.test(header)
+            const isMoney = header.includes(`(${sym})`) || /(amount|balance|gross|subtotal|tax|cost|revenue|refund|retained|paid|variance)/i.test(header)
+            for (let r = headerRow + 1; r < aoa.length; r++) {
+              const cell = sheet[XLSX.utils.encode_cell({ r, c })]
+              if (!cell) continue
+              if (isDate && typeof cell.v === 'string' && /^\d{4}-\d{2}-\d{2}(?:[T\s].*)?$/.test(cell.v)) {
+                const parsed = new Date(cell.v)
+                if (!Number.isNaN(parsed.getTime())) {
+                  cell.t = 'd'
+                  cell.v = parsed
+                  cell.z = parsed.getUTCHours() || parsed.getUTCMinutes() ? 'yyyy-mm-dd hh:mm' : 'yyyy-mm-dd'
+                }
+              } else if (isMoney && typeof cell.v === 'number') {
+                cell.z = '#,##0.00;[Red]-#,##0.00'
+              }
+            }
+          }
+        }
+        XLSX.utils.book_append_sheet(wb, sheet, db.safeSheetName(sheetName))
+      }
+
+      function addEmptySheet(sheetName, meta, headers) {
+        const aoa = [
+          ...meta,
+          headers,
+          ['No records for this period']
+        ]
+        addSheetWithFormatting(sheetName, aoa, { filter: false })
+      }
+
+      function money(v) { return `${sym} ${Number(v || 0).toFixed(2)}` }
+
+      // 1. Report Information sheet
+      const infoRows = [
+        ...db.buildExportMetaRows(sharedMeta),
+        ['REPORT DATE RULES'],
+        ['Booking Register', db.DATE_BASIS.bookings],
+        ['Payment Transactions', db.DATE_BASIS.payments],
+        ['Cancelled Bookings', db.DATE_BASIS.cancellations],
+        ['Refunds', db.DATE_BASIS.refunds],
+        ['Outstanding Balances', db.DATE_BASIS.outstanding],
+        ['Quotations', db.DATE_BASIS.quotations],
+        ['Invoice Register', db.DATE_BASIS.invoices],
+        [],
+        ['RECONCILIATION CONTROLS'],
+        ['Per-booking ledger', reconciliation.controls?.perBooking?.status || 'N/A', reconciliation.controls?.perBooking?.variance != null ? money(reconciliation.controls.perBooking.variance) : ''],
+        ['Cash reconciliation', reconciliation.controls?.cash?.status || 'N/A', reconciliation.controls?.cash?.variance != null ? money(reconciliation.controls.cash.variance) : ''],
+        ['Outstanding reconciliation', reconciliation.controls?.outstanding?.status || 'N/A'],
+        ['Refund reconciliation', reconciliation.controls?.refund?.status || 'N/A', reconciliation.controls?.refund?.variance != null ? money(reconciliation.controls.refund.variance) : ''],
+        ['Register gross reconciliation', reconciliation.controls?.register?.status || 'N/A'],
+        [],
+        ['RECONCILIATION SUMMARY'],
+        ['Gross Booking Value', money(reconciliation.grossBookingValue)],
+        ['Gross Positive Receipts', money(reconciliation.positiveReceipts)],
+        ['Refunds Issued', money(reconciliation.refundsIssued)],
+        ['Net Cash Movement', money(reconciliation.netCash)],
+        ['Retained Fees', money(reconciliation.retainedFees)],
+        ['Outstanding Balances', money(reconciliation.outstandingBalances)],
+        ['Payment Ledger Total', money(reconciliation.paymentLedgerTotal)],
+        ['Booking Amount Paid Snapshot', money(reconciliation.bookingAmountPaidTotal)],
+        ['Ledger vs Net Cash Variance', money(reconciliation.ledgerVariance)],
+        ['Reconciliation Status', reconciliation.reconciliationStatus]
+      ]
+      addSheetWithFormatting('Report Info', db.sanitizeRow(infoRows), { filter: false })
+
+      // 2. Booking Register (always create)
+      {
+        const bkHeaders = ['Booking Number', 'Invoice Number', 'Guest Name', 'Guest Phone', 'Guest Email', 'Room Number', 'Room Type', 'Booking Type', 'Booking Source', 'Quotation Number', 'Check-In', 'Check-Out', 'Nights', 'Adults', 'Children', 'Booking Status', 'Payment Status', 'Payment Method Summary', `Accommodation (${sym})`, `Folio Charges (${sym})`, `Gross Total (${sym})`, `Lifetime Paid (${sym})`, `Balance Due (${sym})`, 'VAT Rate', `VAT Amount (${sym})`, `Net Excl VAT (${sym})`, 'Created At', 'Created By', 'Notes']
+        const bkRows = data.bookings.map((b) => [
+          b.booking_number || '', b.invoice_number || '', b.guest_name || '', b.guest_phone || '', b.guest_email || '',
+          b.room_number || '', b.room_type || '', b.booking_type || '', b.booking_source || '', b.quotation_number || '',
+          b.check_in || '', b.check_out || '', b.nights || 0, b.adults || 0, b.children || 0,
+          b.booking_status || '', b.payment_status || '', b.payment_method_summary || 'None',
+          Number(b.accommodation_amount || 0), Number(b.folio_charges || 0), Number(b.gross_total || 0),
+          Number(b.lifetime_amount_paid || 0), Number(b.balance_due || 0),
+          Number(b.vat_rate || 0), Number(b.vat_amount || 0), Number(b.net_excluding_vat || 0),
+          b.created_at || '', b.created_by || '', b.notes || ''
+        ])
+        const aoa = [...db.buildExportMetaRows(sharedMeta), bkHeaders, ...bkRows.map(db.sanitizeRow)]
+        if (bkRows.length === 0) aoa.push(['No records for this period'])
+        addSheetWithFormatting('Booking Register', aoa)
+      }
+
+      // 3. Payment Transactions (always create)
+      {
+        const ptHeaders = ['Payment ID', 'Timestamp', 'Booking Number', 'Invoice Number', 'Guest', 'Transaction Type', 'Payment Method', `Amount (${sym})`, 'Recorded By', 'Idempotency Key', 'Notes']
+        const ptRows = data.payments.map((p) => [
+          p.payment_id || '', p.paid_at || '', p.booking_number || '', p.invoice_number || '',
+          p.guest_name || '', p.transaction_type || '', p.payment_method || '',
+          Number(p.amount || 0), p.recorded_by || '', p.idempotency_key || '', p.notes || ''
+        ])
+        const aoa = [...db.buildExportMetaRows(sharedMeta), ptHeaders, ...ptRows.map(db.sanitizeRow)]
+        if (ptRows.length === 0) aoa.push(['No records for this period'])
+        addSheetWithFormatting('Payment Transactions', aoa)
+      }
+
+      // 4. Outstanding Balances (always create)
+      {
+        const obHeaders = ['Booking Number', 'Invoice Number', 'Guest', 'Room', 'Check-In', 'Check-Out', `Gross Total (${sym})`, `Amount Paid (${sym})`, `Balance Due (${sym})`, 'Payment Status', 'Booking Status', 'Due Date', 'Days Overdue', 'Aging Bucket', 'Last Payment Date', 'Last Payment Method']
+        const obRows = data.outstanding.map((o) => [
+          o.booking_number || '', o.invoice_number || '', o.guest_name || '', o.room_number || '',
+          o.check_in || '', o.check_out || '', Number(o.gross_total || 0), Number(o.amount_paid || 0),
+          Number(o.balance_due || 0), o.payment_status || '', o.booking_status || '',
+          o.due_date || '', o.days_overdue || 0, o.aging_bucket || '',
+          o.last_payment_date || '', o.last_payment_method || ''
+        ])
+        const aoa = [...db.buildExportMetaRows(sharedMeta), obHeaders, ...obRows.map(db.sanitizeRow)]
+        if (obRows.length === 0) aoa.push(['No records for this period'])
+        addSheetWithFormatting('Outstanding Balances', aoa)
+      }
+
+      // 5. Cancelled Bookings (always create)
+      {
+        const cbHeaders = ['Booking Number', 'Invoice Number', 'Guest', 'Room', 'Original Check-In', 'Original Check-Out', 'Nights', `Original Total (${sym})`, `Amount Paid Before (${sym})`, 'Cancelled At', 'Cancellation Reason', 'Cancelled By', `Refund Amount (${sym})`, `Retained Amount (${sym})`, 'Final State', 'Booking Source', 'Notes']
+        const cbRows = data.cancelled.map((c) => [
+          c.booking_number || '', c.invoice_number || '', c.guest_name || '', c.room_number || '',
+          c.original_check_in || '', c.original_check_out || '', c.nights || 0,
+          Number(c.original_total || 0), Number(c.amount_paid_before || 0),
+          c.cancelled_at || '', c.cancellation_reason || '', c.cancelled_by || '',
+          Number(c.refund_amount || 0), Number(c.retained_amount || 0),
+          c.final_state || '', c.booking_source || '', c.notes || ''
+        ])
+        const aoa = [...db.buildExportMetaRows(sharedMeta), cbHeaders, ...cbRows.map(db.sanitizeRow)]
+        if (cbRows.length === 0) aoa.push(['No records for this period'])
+        addSheetWithFormatting('Cancelled Bookings', aoa)
+      }
+
+      // 6. Refunds (always create)
+      {
+        const rfHeaders = ['Refund ID', 'Refund Timestamp', 'Booking Number', 'Invoice Number', 'Guest', `Amount Paid Before (${sym})`, `Refund Amount (${sym})`, `Retained Amount (${sym})`, 'Retained %', 'Refund Method', 'Requested By', 'Approved By', 'Proof Reference', 'Approval Note', 'Notes', 'Related Payment ID']
+        const rfRows = data.refunds.map((r) => [
+          r.refund_id || '', r.refund_timestamp || '', r.booking_number || '', r.invoice_number || '',
+          r.guest_name || '', Number(r.amount_paid_before || 0), Number(r.refund_amount || 0),
+          Number(r.retained_amount || 0), Number(r.retained_percentage || 0),
+          r.refund_method || '', r.requested_by || '', r.approved_by || '',
+          r.proof_reference || '', r.approval_note || '', r.general_notes || '',
+          r.related_payment_id || ''
+        ])
+        const aoa = [...db.buildExportMetaRows(sharedMeta), rfHeaders, ...rfRows.map(db.sanitizeRow)]
+        if (rfRows.length === 0) aoa.push(['No records for this period'])
+        addSheetWithFormatting('Refunds', aoa)
+      }
+
+      // 7. Quotations (always create)
+      {
+        const qtHeaders = ['Quotation Number', 'Guest', 'Phone', 'Email', 'Type', 'Event/Group Name', 'Daily Rate', 'Room', 'Check-In', 'Check-Out', 'Nights', 'Adults', 'Children', `Subtotal (${sym})`, `Tax (${sym})`, `Total (${sym})`, 'Currency', 'Status', 'Valid Until', 'Created At', 'Created By', 'Parent Quotation', 'Converted Booking', 'Converted Invoice', 'Notes']
+        const qtRows = data.quotations.map((q) => [
+          q.quotation_number || '', q.guest_name || '', q.guest_phone || '', q.guest_email || '',
+          q.quotation_type === 'exclusive_event' ? 'Event' : (q.quotation_type || 'Room'), q.event_group_name || '', Number(q.event_daily_rate || 0),
+          q.room_number || '',
+          q.check_in || '', q.check_out || '', q.nights || 0, q.adults || 0, q.children || 0,
+          Number(q.subtotal || 0), Number(q.tax || 0), Number(q.total || 0),
+          q.currency || '', q.status || '', q.valid_until || '', q.created_at || '',
+          q.created_by || '', q.parent_quotation_number || '',
+          q.converted_booking_number || '', q.converted_invoice_number || '', q.notes || ''
+        ])
+        const aoa = [...db.buildExportMetaRows(sharedMeta), qtHeaders, ...qtRows.map(db.sanitizeRow)]
+        if (qtRows.length === 0) aoa.push(['No records for this period'])
+        addSheetWithFormatting('Quotations', aoa)
+      }
+
+      // 8. Invoice Register (always create)
+      {
+        const ivHeaders = ['Invoice Number', 'Booking Number', 'Guest', 'Room', 'Check-In', 'Check-Out', 'Nights', 'Issued Date', 'Due Date', `Accommodation (${sym})`, `Folio Charges (${sym})`, `Gross Total (${sym})`, `Amount Paid (${sym})`, `Balance Due (${sym})`, 'Payment Status', 'Booking Status', 'Payment Count', 'Last Payment Date', 'Delivery Status']
+        const ivRows = data.invoices.map((i) => [
+          i.invoice_number || '', i.booking_number || '', i.guest_name || '', i.room_number || '',
+          i.check_in || '', i.check_out || '', i.nights || 0, i.issued_date || '',
+          i.due_date || '', Number(i.accommodation_amount || 0), Number(i.folio_charges || 0),
+          Number(i.gross_total || 0), Number(i.amount_paid || 0), Number(i.balance_due || 0),
+          i.payment_status || '', i.booking_status || '', Number(i.payment_count || 0),
+          i.last_payment_date || '', i.delivery_status || ''
+        ])
+        const aoa = [...db.buildExportMetaRows(sharedMeta), ivHeaders, ...ivRows.map(db.sanitizeRow)]
+        if (ivRows.length === 0) aoa.push(['No records for this period'])
+        addSheetWithFormatting('Invoice Register', aoa)
+      }
+
+      // 9. Financial Exceptions (always create)
+      {
+        const feHeaders = ['Exception Type', 'Severity', 'Entity Type', 'Entity ID', 'Entity Number', 'Description', 'Expected Value', 'Actual Value', 'Variance', 'Detected At']
+        const feRows = data.exceptions.map((e) => [
+          e.exception_type || '', e.severity || '', e.entity_type || '', e.entity_id || '',
+          e.entity_number || '', e.description || '',
+          e.expected_value != null ? Number(e.expected_value) : '',
+          e.actual_value != null ? Number(e.actual_value) : '',
+          e.variance != null ? Number(e.variance) : '',
+          e.detected_at || ''
+        ])
+        const aoa = [...db.buildExportMetaRows(sharedMeta), feHeaders, ...feRows.map(db.sanitizeRow)]
+        if (feRows.length === 0) aoa.push(['No records for this period'])
+        addSheetWithFormatting('Financial Exceptions', aoa)
+      }
+
+      // 10. Reconciliation Controls (always create)
+      {
+        const rcHeaders = ['Control', 'Status', `Variance (${sym})`, 'Notes']
+        const rcRows = [
+          ['Per-booking ledger reconciliation', reconciliation.controls?.perBooking?.status || 'N/A', Number(reconciliation.controls?.perBooking?.variance || 0), 'Sum of |booking.amount_paid - signed payment ledger|'],
+          ['Cash reconciliation', reconciliation.controls?.cash?.status || 'N/A', Number(reconciliation.controls?.cash?.variance || 0), 'Signed payment ledger total vs gross receipts minus refunds'],
+          ['Outstanding reconciliation', reconciliation.controls?.outstanding?.status || 'N/A', Number(reconciliation.controls?.outstanding?.variance || 0), 'Base booking balance total vs Outstanding Balances report output'],
+          ['Refund reconciliation', reconciliation.controls?.refund?.status || 'N/A', Number(reconciliation.controls?.refund?.variance || 0), 'Refund approval total vs absolute refund payment total'],
+          ['Booking register gross', reconciliation.controls?.register?.status || 'N/A', Number(reconciliation.controls?.register?.variance || 0), 'Booking Register gross total vs server booking summary']
+        ]
+        const rcAoa = [
+          ...db.buildExportMetaRows(sharedMeta),
+          ['OVERALL STATUS', reconciliation.reconciliationStatus],
+          [],
+          rcHeaders,
+          ...rcRows.map(db.sanitizeRow),
+          [],
+          ['SUMMARY METRICS'],
+          ['Gross Booking Value', 'info', Number(reconciliation.grossBookingValue), ''],
+          ['Gross Positive Receipts', 'info', Number(reconciliation.positiveReceipts), ''],
+          ['Refunds Issued', 'info', Number(reconciliation.refundsIssued), ''],
+          ['Net Cash Movement', 'info', Number(reconciliation.netCash), ''],
+          ['Retained Fees', 'info', Number(reconciliation.retainedFees), ''],
+          ['Outstanding Balances', 'info', Number(reconciliation.outstandingBalances), ''],
+          ['Payment Ledger Total', 'info', Number(reconciliation.paymentLedgerTotal), ''],
+          ['Booking Amount Paid Snapshot', 'info', Number(reconciliation.bookingAmountPaidTotal), '']
+        ]
+        addSheetWithFormatting('Reconciliation', rcAoa)
+      }
+
+      const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' })
+      fs.mkdirSync(dirname(filePath), { recursive: true })
+      fs.writeFileSync(filePath, buffer)
+      if (!fs.existsSync(filePath) || fs.statSync(filePath).size === 0) {
+        throw new Error('File was not written successfully')
+      }
+
+      // Verify workbook by reopening
+      try {
+        const verifyWb = XLSX.read(buffer, { type: 'buffer' })
+        const requiredSheets = ['Report Info', 'Booking Register', 'Payment Transactions', 'Outstanding Balances', 'Cancelled Bookings', 'Refunds', 'Quotations', 'Invoice Register', 'Financial Exceptions', 'Reconciliation']
+        for (const name of requiredSheets) {
+          if (!verifyWb.SheetNames.includes(name)) {
+            throw new Error(`Workbook verification failed: missing sheet "${name}"`)
+          }
+        }
+      } catch (verifyErr) {
+        if (verifyErr.message?.includes('verification failed')) throw verifyErr
+      }
+
+      return { success: true, filePath, size: fs.statSync(filePath).size, reconciliationStatus: reconciliation.reconciliationStatus }
+    } catch (e) {
+      if (e.code === 'EBUSY' || e.code === 'EACCES') {
+        return { success: false, error: `Cannot save file: ${e.code === 'EBUSY' ? 'the destination file is open or locked' : 'permission denied'}. Please close the file and try again.` }
+      }
+      return { success: false, error: e.message }
+    }
+  })
+
+  // ── Detailed Reports PDF Export ─────────────────────────────────────────────
+  ipcMain.handle('reports:exportDetailedPDF', async (event, payload = {}) => {
+    await requireCapability('reports.view')
+    const win = BrowserWindow.fromWebContents(event.sender)
+    const {
+      startDate = '',
+      endDate = '',
+      currency = 'P',
+      lodgeName = '',
+      companyName = '',
+      outletLabel = '',
+      reportType = 'bookings'
+    } = payload || {}
+    if (!startDate || !endDate) return { success: false, error: 'Date range is required.' }
+    const period = `${startDate}-to-${endDate}`
+    const result = await dialog.showSaveDialog(win, {
+      title: 'Save Detailed Report as PDF',
+      defaultPath: buildReportExportFilename({ prefix: 'boroko', reportTitle: `${reportType}-report`, period, extension: 'pdf' }),
+      filters: [{ name: 'PDF Files', extensions: ['pdf'] }]
+    })
+    if (result.canceled || !result.filePath) return { success: false, canceled: true }
+    try {
+      const data = await db.loadDetailedReportData(state.lodgeId, startDate, endDate, outletLabel)
+      const reconciliation = db.computeReconciliation(data)
+      const sym = currency || 'P'
+      const resolvedLodge = lodgeName || companyName || 'Boroko Lodge'
+      const generatedAt = new Date().toLocaleString()
+
+      // For tabs that need additional data, load it from existing report functions
+      let extraData = {}
+      if (reportType === 'expenses') {
+        try {
+          const [expenses, maintenanceRows] = await Promise.all([
+            db.getExpenses(startDate, endDate, outletLabel || 'all'),
+            db.getMaintenanceRowsForPeriod(startDate, endDate)
+          ])
+          extraData = { expenses: expenses || [], maintenanceRows: maintenanceRows || [] }
+        } catch {}
+      } else if (reportType === 'pos') {
+        try {
+          const [posOrders, posRevenue] = await Promise.all([
+            db.getPosOrders(startDate, endDate, outletLabel || null),
+            db.getPosRevenueSummary(startDate, endDate, outletLabel || 'all')
+          ])
+          extraData = { posOrders: posOrders || [], posRevenue: posRevenue || null }
+        } catch {}
+      } else if (reportType === 'costs') {
+        try {
+          const [invPurchases, supPurchases] = await Promise.all([
+            db.getAllInventoryPurchases().catch(() => []),
+            db.getAllSupplyPurchases().catch(() => [])
+          ])
+          const invFiltered = (invPurchases || []).filter((p) => p.date >= startDate && p.date <= endDate)
+          const supFiltered = (supPurchases || []).filter((p) => p.date >= startDate && p.date <= endDate)
+          extraData = { inventoryPurchases: invFiltered, supplyPurchases: supFiltered }
+        } catch {}
+      } else if (reportType === 'pl') {
+        try {
+          const profitLoss = await db.getProfitLoss(startDate, endDate)
+          extraData = { profitLoss: profitLoss || null }
+        } catch {}
+      }
+
+      const html = buildDetailedReportPdfHtml({
+        lodgeName: resolvedLodge,
+        companyName,
+        reportType,
+        startDate,
+        endDate,
+        currency: sym,
+        generatedAt,
+        data,
+        reconciliation,
+        outletLabel,
+        extraData
+      })
+
+      const pdfBuffer = await renderHtmlToPdfBuffer(html, {
+        pageSize: 'A4',
+        landscape: true,
+        printBackground: true,
+        displayHeaderFooter: true,
+        headerTemplate: '<div></div>',
+        footerTemplate: '<div style="width:100%;font-size:8px;color:#64748b;text-align:center">Page <span class="pageNumber"></span> of <span class="totalPages"></span></div>',
+        margins: { marginType: 'default' }
+      }, { minTextLength: 20 })
+
+      fs.mkdirSync(dirname(result.filePath), { recursive: true })
+      fs.writeFileSync(result.filePath, pdfBuffer)
+      if (!fs.existsSync(result.filePath) || fs.statSync(result.filePath).size === 0) {
+        throw new Error('PDF was not written successfully')
+      }
+      return { success: true, filePath: result.filePath, reconciliationStatus: reconciliation.reconciliationStatus }
+    } catch (e) {
+      if (e.code === 'EBUSY' || e.code === 'EACCES') {
+        return { success: false, error: `Cannot save PDF: ${e.code === 'EBUSY' ? 'the destination file is open or locked' : 'permission denied'}. Please close the file and try again.` }
+      }
       return { success: false, error: e.message }
     }
   })
@@ -5193,6 +5929,22 @@ app.whenReady().then(async () => {
     try { await requireCapability('pos.view'); await assertResourceBelongsToCurrentLodge('Room', roomId, db.getRoomById); return await db.getActiveBookingForRoom(roomId).catch(() => null) }
     catch { return null }
   })
+  ipcMain.handle('pos:getActiveEvents', async () => {
+    try {
+      await requireCapability('pos.view');
+      const lodgeId = getCurrentLodgeId();
+      const { data, error } = await require('electron').app.supabase
+        .from('conference_bookings')
+        .select('id, event_name, event_type, booking_date, start_time, end_time, status, amount_paid, total_amount, balance_due, currency')
+        .eq('lodge_id', lodgeId)
+        .in('status', ['reserved', 'confirmed', 'active'])
+        .order('booking_date', { ascending: true })
+        .limit(100);
+      if (error) throw new Error(error.message);
+      return data || [];
+    }
+    catch { return [] }
+  })
 
   // ── Outlets ────────────────────────────────────────────────────────────────
   ipcMain.handle('outlets:getAll', async () => {
@@ -5614,6 +6366,51 @@ app.whenReady().then(async () => {
     await requireCapability('payments.record')
     await assertResourceBelongsToCurrentLodge('Conference booking', id, db.getConferenceBookingById)
     return await db.updateConferenceBookingPayment(id, amount, method, 'payment', null, intentKey)
+  })
+
+  // ── Events & Venues ─────────────────────────────────────────────────────
+  ipcMain.handle('events:getAll', async (_, start, end) => {
+    try { await requireCapability('conference.view'); return await db.getEventBookings(start, end).catch(() => []) }
+    catch { return [] }
+  })
+  ipcMain.handle('events:getById', async (_, id) => {
+    await requireCapability('conference.view')
+    return await db.getEventBookingById(id)
+  })
+  ipcMain.handle('events:getDetails', async (_, id) => {
+    await requireCapability('conference.view')
+    return await db.getEventBookingDetails(id)
+  })
+  ipcMain.handle('events:create', async (_, data) => {
+    await requireCapability('conference.manage')
+    return await db.createEventVenueBooking(data)
+  })
+  ipcMain.handle('events:update', async (_, id, data) => {
+    await requireCapability('conference.manage')
+    await assertResourceBelongsToCurrentLodge('Event booking', id, db.getEventBookingById)
+    return await db.updateEventBooking(id, data)
+  })
+  ipcMain.handle('events:cancel', async (_, id, reason, cancelLinkedRooms) => {
+    await requireCapability('conference.manage')
+    await assertResourceBelongsToCurrentLodge('Event booking', id, db.getEventBookingById)
+    return await db.cancelEventBooking(id, reason, cancelLinkedRooms)
+  })
+  ipcMain.handle('events:addLineItem', async (_, data) => {
+    await requireCapability('conference.manage')
+    return await db.addEventLineItem(data)
+  })
+  ipcMain.handle('events:voidLineItem', async (_, lineItemId, reason) => {
+    await requireCapability('payments.record')
+    return await db.voidEventLineItem(lineItemId, reason)
+  })
+  ipcMain.handle('events:updatePayment', async (_, id, amount, method, type, intentKey) => {
+    await requireCapability('payments.record')
+    await assertResourceBelongsToCurrentLodge('Event booking', id, db.getEventBookingById)
+    return await db.updateEventPayment(id, amount, method, type, intentKey)
+  })
+  ipcMain.handle('events:checkAvailability', async (_, resourceKey, startAt, endAt, excludeEventId) => {
+    await requireCapability('conference.view')
+    return await db.checkEventResourceAvailability(resourceKey, startAt, endAt, excludeEventId)
   })
 
   // ── Day Use Entries ───────────────────────────────────────────────────────

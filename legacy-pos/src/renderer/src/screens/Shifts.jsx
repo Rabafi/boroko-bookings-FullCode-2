@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Clock, Plus, Lock, Unlock } from 'lucide-react';
+import { Plus, Unlock } from 'lucide-react';
 
 const CURRENCY = 'P';
 const fmt = (v) => Number(v || 0).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -9,7 +9,8 @@ export default function Shifts({ user, settings, isOnline }) {
   const [loading, setLoading] = useState(true);
   const [showOpen, setShowOpen] = useState(false);
   const [float, setFloat] = useState('');
-  const [closingCash, setClosingCash] = useState('');
+  const [outlets, setOutlets] = useState([]);
+  const [selectedOutletId, setSelectedOutletId] = useState('');
   const [saving, setSaving] = useState(false);
   const currency = settings?.currency || CURRENCY;
 
@@ -22,25 +23,33 @@ export default function Shifts({ user, settings, isOnline }) {
   }, []);
 
   useEffect(() => { loadShifts(); }, [loadShifts]);
+  useEffect(() => {
+    Promise.all([
+      window.api.pos.getOutlets().catch(() => []),
+      window.api.pos.getUserPosAccess().catch(() => ({ outletFilter: [] }))
+    ]).then(([rows, access]) => {
+      const allowed = access?.outletFilter;
+      const visible = allowed === null
+        ? (rows || [])
+        : (rows || []).filter((outlet) => Array.isArray(allowed) && allowed.includes(outlet.id));
+      setOutlets(visible.filter((outlet) => outlet?.id));
+      if (visible.filter((outlet) => outlet?.id).length === 1) {
+        setSelectedOutletId(visible.find((outlet) => outlet?.id)?.id || '');
+      }
+    });
+  }, []);
 
   const openShift = async () => {
+    if (!selectedOutletId) {
+      alert('Select an outlet first.');
+      return;
+    }
     setSaving(true);
     try {
-      await window.api.pos.openShift({ opening_float: Number(float) || 0 });
+      await window.api.pos.openShift({ opening_float: Number(float) || 0, outlet_id: selectedOutletId });
       setFloat(''); setShowOpen(false);
       await loadShifts();
     } catch (e) { alert(e?.message || 'Failed to open shift.'); }
-    finally { setSaving(false); }
-  };
-
-  const closeShift = async (shiftId) => {
-    if (!closingCash) { alert('Enter closing cash amount.'); return; }
-    setSaving(true);
-    try {
-      await window.api.pos.closeShift({ shiftId, closing_cash: Number(closingCash) || 0 });
-      setClosingCash('');
-      await loadShifts();
-    } catch (e) { alert(e?.message || 'Failed to close shift.'); }
     finally { setSaving(false); }
   };
 
@@ -76,18 +85,12 @@ export default function Shifts({ user, settings, isOnline }) {
                     </div>
                     <div className="space-y-1 text-sm">
                       <div className="flex justify-between"><span className="text-slate-500">Opened</span><span>{shift.opened_at ? new Date(shift.opened_at).toLocaleString('en-GB') : '-'}</span></div>
+                      <div className="flex justify-between"><span className="text-slate-500">Outlet</span><span>{outlets.find((outlet) => outlet.id === shift.outlet_id)?.name || 'Unknown'}</span></div>
                       <div className="flex justify-between"><span className="text-slate-500">Float</span><span className="font-semibold">{currency} {fmt(shift.opening_float)}</span></div>
                     </div>
-                    <div className="mt-4">
-                      <label className="text-xs font-medium text-slate-500">Closing Cash ({currency})</label>
-                      <div className="mt-1 flex gap-2">
-                        <input type="number" value={closingCash} onChange={(e) => setClosingCash(e.target.value)} placeholder="0.00" className="flex-1 rounded-lg border border-slate-200 px-3 py-1.5 text-sm" min="0" />
-                        <button onClick={() => closeShift(shift.id)} disabled={saving}
-                          className="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-red-700 disabled:opacity-50">
-                          Close
-                        </button>
-                      </div>
-                    </div>
+                    <p className="mt-4 rounded-lg bg-white/80 px-3 py-2 text-xs font-semibold text-slate-600">
+                      Complete Cash-Up to reconcile and close this shift.
+                    </p>
                   </div>
                 ))}
               </div>
@@ -132,6 +135,17 @@ export default function Shifts({ user, settings, isOnline }) {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
           <div className="w-full max-w-sm rounded-2xl bg-white shadow-2xl p-6 space-y-4">
             <h2 className="font-bold text-slate-800">Open Shift</h2>
+            <div>
+              <label className="text-xs font-medium text-slate-500">Outlet</label>
+              <select
+                value={selectedOutletId}
+                onChange={(event) => setSelectedOutletId(event.target.value)}
+                className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+              >
+                <option value="">Select outlet</option>
+                {outlets.map((outlet) => <option key={outlet.id} value={outlet.id}>{outlet.name}</option>)}
+              </select>
+            </div>
             <div>
               <label className="text-xs font-medium text-slate-500">Opening Float ({currency})</label>
               <input type="number" value={float} onChange={(e) => setFloat(e.target.value)} placeholder="0.00" className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" min="0" />

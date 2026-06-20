@@ -1,5 +1,5 @@
 import dotenv from 'dotenv';
-import { app, BrowserWindow, ipcMain, session } from 'electron';
+import { app, BrowserWindow, ipcMain, session, safeStorage } from 'electron';
 import autoUpdaterPkg from 'electron-updater';
 import fetch, { Headers, Request, Response } from 'cross-fetch';
 import WebSocket from 'ws';
@@ -170,6 +170,26 @@ function summarizeCashupOrders(orders = [], { openingFloat = 0 } = {}) {
   };
 }
 
+function computeCashupVariances(expectedByMethod = {}, countedByMethod = {}, expectedCashDrawer = 0) {
+  const normalizedExpected = expectedByMethod && typeof expectedByMethod === 'object' ? expectedByMethod : {};
+  const normalizedCounted = countedByMethod && typeof countedByMethod === 'object' ? countedByMethod : {};
+  const methods = new Set([...Object.keys(normalizedExpected), ...Object.keys(normalizedCounted), 'cash']);
+  const varianceByMethod = {};
+
+  for (const method of methods) {
+    const counted = normalizeMoney(normalizedCounted[method] || 0);
+    const expected = method === 'cash'
+      ? normalizeMoney(expectedCashDrawer)
+      : normalizeMoney(normalizedExpected[method] || 0);
+    varianceByMethod[method] = normalizeMoney(counted - expected);
+  }
+
+  const countedCash = Number(normalizedCounted.cash) || 0;
+  const cashOverShort = normalizeMoney(countedCash - normalizeMoney(expectedCashDrawer));
+  varianceByMethod.cash = cashOverShort;
+  return { countedCash, cashOverShort, varianceByMethod };
+}
+
 // ── Offline Session Helpers ─────────────────────────────────────────────────
 function getTrustedSessionsPath() {
   return path.join(app.getPath('userData'), 'trusted-sessions.json');
@@ -183,6 +203,30 @@ function writeTrustedSessions(sessions) {
   try { fs.writeFileSync(getTrustedSessionsPath(), JSON.stringify(sessions, null, 2), 'utf-8'); } catch {}
 }
 
+function protectSessionSecret(value) {
+  if (!value) return null;
+  try {
+    if (!safeStorage.isEncryptionAvailable()) return null;
+    return {
+      encrypted: true,
+      value: safeStorage.encryptString(String(value)).toString('base64')
+    };
+  } catch {
+    return null;
+  }
+}
+
+function resolveSessionSecret(value) {
+  if (!value) return null;
+  if (typeof value === 'string') return value; // Backward compatibility; rewritten after next online login.
+  try {
+    if (value.encrypted !== true || !safeStorage.isEncryptionAvailable()) return null;
+    return safeStorage.decryptString(Buffer.from(value.value, 'base64'));
+  } catch {
+    return null;
+  }
+}
+
 function buildTrustedSessionRecord(user, session, passwordHash, borokoSession = null) {
   const appSession = normalizeBorokoSession(borokoSession);
   return {
@@ -194,11 +238,11 @@ function buildTrustedSessionRecord(user, session, passwordHash, borokoSession = 
     lodge_name: user.lodge_name || null,
     allowed_outlet_ids: user.allowed_outlet_ids || [],
     capability_overrides: user.capability_overrides || null,
-    session_token: session?.access_token || null,
-    session_access_token: session?.access_token || null,
-    session_refresh_token: session?.refresh_token || null,
+    session_token: null,
+    session_access_token: protectSessionSecret(session?.access_token),
+    session_refresh_token: protectSessionSecret(session?.refresh_token),
     session_expires_at: session?.expires_at || null,
-    boroko_session_token: appSession?.token || null,
+    boroko_session_token: protectSessionSecret(appSession?.token),
     boroko_session_expires_at: appSession?.expires_at || null,
     offline_password_hash: passwordHash,
     createdAt: new Date().toISOString()
@@ -208,7 +252,7 @@ function buildTrustedSessionRecord(user, session, passwordHash, borokoSession = 
 function restoreTrustedSession(email, password) {
   const sessions = readTrustedSessions();
   const now = Date.now();
-  const maxAge = 60 * 24 * 60 * 60 * 1000;
+  const maxAge = 14 * 24 * 60 * 60 * 1000;
   const candidates = sessions.filter((s) => {
     if (now - new Date(s.createdAt).getTime() > maxAge) return false;
     return String(s.email || '').toLowerCase() === String(email || '').toLowerCase();
@@ -233,15 +277,17 @@ function restoreTrustedSession(email, password) {
     allowed_outlet_ids: session.allowed_outlet_ids || [],
     capability_overrides: session.capability_overrides || null
   };
-  const authSession = session.session_access_token || session.session_refresh_token
+  const accessToken = resolveSessionSecret(session.session_access_token || session.session_token);
+  const refreshToken = resolveSessionSecret(session.session_refresh_token);
+  const authSession = accessToken || refreshToken
     ? {
-        access_token: session.session_access_token || session.session_token || '',
-        refresh_token: session.session_refresh_token || '',
+        access_token: accessToken || '',
+        refresh_token: refreshToken || '',
         expires_at: session.session_expires_at || null
       }
     : null;
   const borokoSession = normalizeBorokoSession({
-    session_token: session.boroko_session_token,
+    session_token: resolveSessionSecret(session.boroko_session_token),
     session_expires_at: session.boroko_session_expires_at
   });
   return { user: restoredUser, code: 'ok', authSession, borokoSession };
@@ -1382,7 +1428,7 @@ function registerIpcHandlers() {
     if (!email) return false;
     const sessions = readTrustedSessions();
     const now = Date.now();
-    const maxAge = 60 * 24 * 60 * 60 * 1000;
+    const maxAge = 14 * 24 * 60 * 60 * 1000;
     return sessions.some((s) => {
       if (now - new Date(s.createdAt).getTime() > maxAge) return false;
       return String(s.email || '').toLowerCase() === String(email || '').toLowerCase();
@@ -1583,6 +1629,9 @@ function registerIpcHandlers() {
   ipcMain.handle('pos:create-order', async (_event, data) => {
     const lodgeId = requireLodgeContext();
     if (!data.shift_id) throw new Error('Open a shift before creating an order.');
+    if (!(data.items || []).every((item) => normalizeUuid(item?.menu_item_id))) {
+      throw new Error('Every sold item must be linked to a published POS menu item. Refresh or link inventory before selling it.');
+    }
     const catalog = state.isOnline
       ? await getActiveLegacyCatalog(data.outlet_id || null)
       : getCachedLegacyCatalog(data.outlet_id || null);
@@ -1599,17 +1648,22 @@ function registerIpcHandlers() {
     });
     const estimates = buildPosTotals(data.items || [], data);
 
-    // Offline folio guard: block if no cached booking
-    if (payload.payment_method === 'folio' && !payload.booking_id && !state.isOnline) {
-      throw new Error('Room folio charge requires an active booking. Go online first or ensure the booking is cached locally.');
+    // Offline folio guard: require the cached room or event target to be
+    // explicit. The server will revalidate it when the queued RPC replays.
+    if (payload.payment_method === 'folio' && !payload.booking_id && !payload.event_booking_id && !state.isOnline) {
+      throw new Error('Folio charge requires an active room booking or event cached locally.');
     }
 
     const queueProvisionalOrder = () => {
+      const pendingShift = readCache('pos-shifts').find((shift) =>
+        shift.id === payload.shift_id && shift._pending_sync
+      );
       const queueItem = createQueueItem({
         functionName: 'create_pos_order_v3',
         payload: { payload },
         entityType: 'pos_order',
-        entityId: payload.id
+        entityId: payload.id,
+        dependsOn: pendingShift ? `pos_shift_open-${payload.shift_id}` : null
       });
       enqueueLegacyQueueItem(queueItem);
 
@@ -1890,6 +1944,19 @@ function registerIpcHandlers() {
   ipcMain.handle('pos:create-cashup', async (_event, payload) => {
     const lodgeId = requireLodgeContext();
     if (!payload.shift_id) throw new Error('An open shift is required for cash-up.');
+    const role = String(state.currentUser?.role || '').toLowerCase();
+    if (!['supervisor', 'manager', 'admin', 'super_admin', 'administrator', 'superadmin'].includes(role)) {
+      throw new Error('A supervisor or manager must finalize the cash-up.');
+    }
+    if (!state.isOnline || !state.supabase) {
+      throw new Error('Cash-up finalization requires an internet connection. Keep the shift open and sync all sales first.');
+    }
+    const unresolvedFinancialItems = readSyncQueue().filter((item) =>
+      isFinancialQueueItem(item) && item.status !== 'synced'
+    );
+    if (unresolvedFinancialItems.length > 0) {
+      throw new Error(`Sync or resolve ${unresolvedFinancialItems.length} financial queue item(s) before finalizing the cash-up.`);
+    }
     const outletFilter = getUserOutletFilter();
     const date = payload.date || new Date().toISOString().slice(0, 10);
 
@@ -1908,14 +1975,11 @@ function registerIpcHandlers() {
     const openingFloat = Number(payload.opening_float) || 0;
     const countedByMethod = payload.counted_by_method || {};
     const expectedCashDrawer = computed.expected_cash_drawer;
-    const countedCash = Number(countedByMethod.cash) || 0;
-    const cashOverShort = normalizeMoney(countedCash - expectedCashDrawer);
-    const varianceByMethod = {};
-    for (const [method, expected] of Object.entries(computed.by_method)) {
-      const counted = Number(countedByMethod[method]) || 0;
-      varianceByMethod[method] = normalizeMoney(counted - expected);
-    }
-    varianceByMethod.cash = cashOverShort;
+    const { countedCash, cashOverShort, varianceByMethod } = computeCashupVariances(
+      computed.by_method,
+      countedByMethod,
+      expectedCashDrawer
+    );
 
     const cashupPayload = buildFinalizeCashupPayloadV2({
       cashup_id: payload.id || randomUUID(),
@@ -1950,20 +2014,6 @@ function registerIpcHandlers() {
       created_at: new Date().toISOString()
     };
 
-    if (!state.isOnline || !state.supabase) {
-      const queueItem = createQueueItem({
-        functionName: 'finalize_pos_shift_cashup_v2',
-        payload: { payload: cashupPayload },
-        entityType: 'pos_cashup',
-        entityId: cashupPayload.cashup_id
-      });
-      enqueueLegacyQueueItem(queueItem);
-      const cashups = readCache('pos-cashups');
-      cashups.unshift({ ...localCashup, _pending_sync: true, _sync_state: 'pending' });
-      writeCache('pos-cashups', cashups);
-      return { success: true, id: cashupPayload.cashup_id, offline: true, provisional: true };
-    }
-
     try {
       const { data: result, error } = await state.supabase.rpc('finalize_pos_shift_cashup_v2', { payload: cashupPayload });
       if (error) throw new Error(error.message);
@@ -1984,17 +2034,7 @@ function registerIpcHandlers() {
       return result;
     } catch (rpcError) {
       if (isNetworkError(rpcError)) {
-        const queueItem = createQueueItem({
-          functionName: 'finalize_pos_shift_cashup_v2',
-          payload: { payload: cashupPayload },
-          entityType: 'pos_cashup',
-          entityId: cashupPayload.cashup_id
-        });
-        enqueueLegacyQueueItem(queueItem);
-        const cashups = readCache('pos-cashups');
-        cashups.unshift({ ...localCashup, _pending_sync: true, _sync_state: 'pending' });
-        writeCache('pos-cashups', cashups);
-        return { success: true, id: cashupPayload.cashup_id, offline: true, provisional: true };
+        throw new Error('Connection was lost before the cash-up was confirmed. The shift remains open; reconnect, sync, and try again.');
       }
       throw rpcError;
     }
@@ -2166,6 +2206,26 @@ function registerIpcHandlers() {
       return rows;
     }
     return readCache('bookings');
+  });
+
+  ipcMain.handle('pos:get-events', async () => {
+    if (state.isOnline && state.supabase && hasLodgeContext()) {
+      const lodgeId = requireLodgeContext();
+      const today = new Date().toISOString().slice(0, 10);
+      const { data, error } = await state.supabase.from('conference_bookings')
+        .select('id, event_name, event_type, booking_date, start_time, end_time, status, client_name, balance_due')
+        .eq('lodge_id', lodgeId)
+        .in('status', ['reserved', 'confirmed', 'active'])
+        .gte('booking_date', today)
+        .order('booking_date', { ascending: true })
+        .order('start_time', { ascending: true })
+        .limit(state.lowResource.ordersLimit);
+      if (error) throw new Error(error.message);
+      const rows = data || [];
+      writeCache('event-bookings', rows);
+      return rows;
+    }
+    return readCache('event-bookings');
   });
 
   // ── Tables & Tabs ──────────────────────────────────────────────────────────
@@ -2394,11 +2454,14 @@ function registerIpcHandlers() {
 
   ipcMain.handle('pos:open-shift', async (_event, data) => {
     const lodgeId = requireLodgeContext();
+    const outletId = normalizeUuid(data?.outlet_id);
+    if (!outletId) throw new Error('Select an outlet before opening a shift.');
     const shiftId = data.shift_id || randomUUID();
     const idempotencyKey = `pos-shift-open:${shiftId}`;
     const rpcPayload = {
       shift_id: shiftId,
       lodge_id: lodgeId,
+      outlet_id: outletId,
       cashier_id: state.currentUser?.id,
       cashier_name: state.currentUser?.name || state.currentUser?.email,
       opening_float: Number(data.opening_float) || 0,
@@ -2426,34 +2489,10 @@ function registerIpcHandlers() {
   });
 
   ipcMain.handle('pos:close-shift', async (_event, { shiftId, closing_cash, notes }) => {
-    const lodgeId = requireLodgeContext();
-    const idempotencyKey = `pos-shift-close:${shiftId}:${Date.now()}`;
-    const rpcPayload = {
-      shift_id: shiftId,
-      lodge_id: lodgeId,
-      closing_cash: Number(closing_cash) || 0,
-      notes: notes || null,
-      close_idempotency_key: idempotencyKey
-    };
-
-    if (state.isOnline && state.supabase) {
-      try {
-        const { data: result, error } = await state.supabase.rpc('close_pos_shift_with_id', { payload: rpcPayload });
-        if (error) throw new Error(error.message);
-        if (!result?.success) throw new Error(result?.error || 'Could not close shift');
-        const shifts = readCache('pos-shifts');
-        const idx = shifts.findIndex((s) => s.id === shiftId);
-        if (idx >= 0) shifts[idx] = { ...shifts[idx], ...result.shift, status: 'closed', closed_at: new Date().toISOString() };
-        writeCache('pos-shifts', shifts);
-        return result.shift || shifts[idx];
-      } catch (rpcError) {
-        if (isNetworkError(rpcError)) {
-          return queueOfflineShiftMutation('close_pos_shift_with_id', rpcPayload, shiftId, 'closed');
-        }
-        throw rpcError;
-      }
-    }
-    return queueOfflineShiftMutation('close_pos_shift_with_id', rpcPayload, shiftId, 'closed');
+    void shiftId;
+    void closing_cash;
+    void notes;
+    throw new Error('Shifts can only be closed by completing the server-authoritative Cash-Up.');
   });
 
   function queueOfflineShiftMutation(functionName, payload, shiftId, status, data) {

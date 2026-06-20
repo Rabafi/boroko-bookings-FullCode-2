@@ -57,6 +57,7 @@ async function run() {
   assert.match(database, /modifier_option_ids: Array\.isArray\(i\.modifier_option_ids\)/)
   assert.match(database, /catalog_snapshot_id: offlineCatalogSnapshotId/)
   assert.match(database, /source_device_id: getDesktopPosDeviceId\(\)/)
+  assert.match(database, /event_booking_id: eventBookingId \|\| null/)
   assert.match(database, /queueItemNeedsInventoryRefresh\(item\)[\s\S]*resolveQueuedPosInventoryLink/)
 
   // The reconnect crash fix must stay imported in the sync badge.

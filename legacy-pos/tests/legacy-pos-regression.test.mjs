@@ -225,7 +225,7 @@ test('Main process has no direct .from().insert() for forbidden tables', () => {
 
 test('All critical mutations use RPC', () => {
   const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
-  for (const rpc of ['create_pos_order_v3', 'approve_pos_void_with_pin', 'finalize_pos_shift_cashup_v2', 'create_pos_menu_item', 'update_pos_menu_item', 'delete_pos_menu_item', 'set_bar_pos_pack_template', 'update_pos_prep_ticket_status', 'open_pos_shift_with_id', 'close_pos_shift_with_id', 'get_pos_shifts', 'create_pos_return_v3']) {
+  for (const rpc of ['create_pos_order_v3', 'approve_pos_void_with_pin', 'finalize_pos_shift_cashup_v2', 'create_pos_menu_item', 'update_pos_menu_item', 'delete_pos_menu_item', 'set_bar_pos_pack_template', 'update_pos_prep_ticket_status', 'open_pos_shift_with_id', 'get_pos_shifts', 'create_pos_return_v3']) {
     assert.ok(content.includes(`.rpc('${rpc}'`), `${rpc} must use RPC`);
   }
 });
@@ -1242,10 +1242,12 @@ test('Partial return does not create prep tickets', () => {
 // BEHAVIORAL TESTS: SHIFT DEPENDENCY
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test('Shift close depends on shift open when both are offline', () => {
+test('Direct shift close is blocked in favor of atomic cash-up finalization', () => {
   const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
-  assert.ok(content.includes("entityType: status === 'open' ? 'pos_shift_open' : 'pos_shift_close'"), 'Shift entity types must be split');
-  assert.ok(content.includes("dependsOn: status === 'closed' ? `pos_shift_open-${shiftId}` : null"), 'Close must depend on open');
+  const closeIdx = content.indexOf("ipcMain.handle('pos:close-shift'");
+  const closeSection = content.slice(closeIdx, closeIdx + 500);
+  assert.ok(closeSection.includes('server-authoritative Cash-Up'), 'Direct close must direct operators to atomic cash-up');
+  assert.ok(!closeSection.includes("rpc('close_pos_shift_with_id'"), 'Direct close must not bypass cash-up');
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1255,10 +1257,13 @@ test('Shift close depends on shift open when both are offline', () => {
 test('Cash-up recomputes variance in main process (ignores renderer values)', () => {
   const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
   const cashupIdx = content.indexOf("ipcMain.handle('pos:create-cashup'");
-  const cashupSection = content.slice(cashupIdx, cashupIdx + 2000);
+  const cashupSection = content.slice(cashupIdx, cashupIdx + 4000);
+  assert.ok(content.includes('function computeCashupVariances'), 'Must centralize main-process variance calculation');
+  assert.ok(cashupSection.includes('computeCashupVariances('), 'Cash-up handler must use main-process variance calculation');
   assert.ok(cashupSection.includes('cashOverShort'), 'Must compute cashOverShort');
   assert.ok(cashupSection.includes('varianceByMethod'), 'Must compute varianceByMethod');
-  assert.ok(cashupSection.includes("countedCash = Number(countedByMethod.cash) || 0"), 'Must compute countedCash');
+  assert.ok(content.includes("countedCash = Number(normalizedCounted.cash) || 0"), 'Must compute countedCash from normalized counted values');
+  assert.ok(!cashupSection.includes('payload.variance_by_method'), 'Must ignore renderer-supplied variance');
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1393,12 +1398,13 @@ test('Desktop POS createPosPartialReturnWithPin calls v3 RPC', () => {
 // P1-2: Offline close shift patches existing row
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test('Offline close shift patches existing cached row', () => {
+test('Cash-up finalization requires online supervisor authority and a clean financial queue', () => {
   const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
-  const closeIdx = content.indexOf("status === 'closed'");
-  const closeSection = content.slice(closeIdx, closeIdx + 500);
-  assert.ok(closeSection.includes('findIndex'), 'Must find existing shift in cache');
-  assert.ok(closeSection.includes('shifts[idx]'), 'Must patch existing row, not insert new');
+  const cashupIdx = content.indexOf("ipcMain.handle('pos:create-cashup'");
+  const cashupSection = content.slice(cashupIdx, cashupIdx + 3000);
+  assert.ok(cashupSection.includes('A supervisor or manager must finalize the cash-up'), 'Cash-up must enforce local authority before RPC');
+  assert.ok(cashupSection.includes('Cash-up finalization requires an internet connection'), 'Cash-up must not be provisionally finalized offline');
+  assert.ok(cashupSection.includes('unresolvedFinancialItems'), 'Cash-up must block while financial operations remain unresolved');
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1571,8 +1577,8 @@ test('MenuManagement shows inventory-aware empty state', () => {
 
 test('POSTerminal shows inventory-aware empty state', () => {
   const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'src', 'screens', 'POSTerminal.jsx'), 'utf-8');
-  assert.ok(content.includes('inventoryItems.length > 0'), 'Must check inventory items');
-  assert.ok(content.includes('Bar inventory loaded but no POS menu items linked'), 'Must show inventory-aware message');
+  assert.ok(content.includes('unlinkedInventoryItems.length > 0'), 'Must check unlinked inventory items');
+  assert.ok(content.includes('need to be linked to the published POS menu before they can be sold'), 'Must explain the required catalog linkage');
   assert.ok(content.includes('No items available for the selected outlet/category'), 'Must show outlet-filtered message');
 });
 
@@ -1646,15 +1652,15 @@ test('POSTerminal only calculates and shows tax when VAT is enabled', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// P1-7: Inventory/menu linkage and virtual stock-backed POS buttons
+// P1-7: Inventory/menu linkage and catalog-safe POS buttons
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test('POSTerminal creates virtual inventory-backed menu buttons', () => {
+test('POSTerminal never sells virtual inventory rows outside the published catalog', () => {
   const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'src', 'screens', 'POSTerminal.jsx'), 'utf-8');
-  assert.ok(content.includes('virtualInventoryMenuItems'), 'Must build virtual inventory menu items');
-  assert.ok(content.includes('terminalMenuItems'), 'Terminal must use combined menu and inventory items');
-  assert.ok(content.includes("_virtual_inventory_item: true"), 'Virtual items must be marked');
-  assert.ok(content.includes('menu_item_id: item._virtual_inventory_item ? null : item.id'), 'Virtual inventory items must not send fake menu IDs');
+  assert.ok(content.includes('unlinkedInventoryItems'), 'Must identify unlinked inventory rows');
+  assert.ok(content.includes('const terminalMenuItems = menuItems || []'), 'Terminal must sell published menu rows only');
+  assert.ok(!content.includes('_virtual_inventory_item: true'), 'Must not synthesize sellable catalog items');
+  assert.ok(content.includes('menu_item_id: item.id'), 'Every cart line must preserve a real menu item ID');
 });
 
 test('POSTerminal keeps cart visible by collapsing optional order details', () => {

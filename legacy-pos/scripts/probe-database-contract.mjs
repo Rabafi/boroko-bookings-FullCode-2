@@ -43,9 +43,22 @@ const tables = [
 ];
 
 const rpcProbes = [
-  ['create_pos_order', { payload: {} }],
+  ['get_active_pos_catalog_snapshot', {
+    p_lodge_id: '00000000-0000-0000-0000-000000000000',
+    p_outlet_id: null
+  }],
+  ['publish_pos_catalog_snapshot', {
+    p_lodge_id: '00000000-0000-0000-0000-000000000000',
+    p_outlet_id: null
+  }],
+  ['create_pos_order_v3', { payload: {} }],
+  ['create_pos_return_v3', { payload: {} }],
+  ['get_pos_shift_cashup_preview_v2', {
+    p_shift_id: '00000000-0000-0000-0000-000000000000',
+    p_lodge_id: '00000000-0000-0000-0000-000000000000'
+  }],
+  ['finalize_pos_shift_cashup_v2', { payload: {} }],
   ['approve_pos_void_with_pin', { payload: {} }],
-  ['upsert_pos_cashup', { payload: {} }],
   ['create_pos_menu_item', { payload: {} }],
   ['update_pos_menu_item', { p_id: '00000000-0000-0000-0000-000000000000', p_lodge_id: '00000000-0000-0000-0000-000000000000', payload: {} }],
   ['delete_pos_menu_item', { p_id: '00000000-0000-0000-0000-000000000000', p_lodge_id: '00000000-0000-0000-0000-000000000000' }],
@@ -54,7 +67,7 @@ const rpcProbes = [
   ['upsert_pos_tab', { payload: {} }],
   ['update_pos_tab_status', { p_tab_id: '00000000-0000-0000-0000-000000000000', p_status: 'closed', p_notes: null }],
   ['open_pos_shift', { p_lodge_id: '00000000-0000-0000-0000-000000000000', p_cashier_id: '00000000-0000-0000-0000-000000000000', p_cashier_name: 'probe', p_opening_float: 0, p_notes: null }],
-  ['close_pos_shift', { p_shift_id: '00000000-0000-0000-0000-000000000000', p_lodge_id: '00000000-0000-0000-0000-000000000000', p_closing_cash: 0, p_notes: null }],
+  ['open_pos_shift_with_id', { payload: {} }],
   ['get_pos_shifts', { p_lodge_id: '00000000-0000-0000-0000-000000000000' }],
   ['update_pos_prep_ticket_status', { p_ticket_id: '00000000-0000-0000-0000-000000000000', p_status: 'ready', p_lodge_id: '00000000-0000-0000-0000-000000000000' }],
   ['upsert_pos_modifier_groups', { payload: {} }],

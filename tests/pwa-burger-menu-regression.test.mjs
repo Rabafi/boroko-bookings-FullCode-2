@@ -18,7 +18,7 @@ test('PWA menu lists the previously hidden manager pages', async () => {
   const menu = await read('manager-pwa/src/pages/More.jsx')
 
   for (const route of ['/quotations', '/invoices', '/expenses', '/audit', '/reports', '/guests', '/staff', '/conference', '/day-use', '/inventory']) {
-    assert.match(menu, new RegExp(`to: '${route.replace('/', '\\/')}'`))
+    assert.match(menu, new RegExp(`to="${route.replace('/', '\\/')}"`))
   }
   assert.match(menu, />Menu<\/h1>/)
   assert.match(menu, /All manager pages in one place/)

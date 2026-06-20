@@ -334,14 +334,22 @@ export async function getTodayBookingPaymentMix(dateValue = null) {
     };
   }
 
-  const { data, error } = await state.supabase.
+  const [{ data, error }, { data: creditRows, error: creditError }] = await Promise.all([
+  state.supabase.
   from('payments').
   select('amount, method, type, paid_at').
   eq('lodge_id', state.lodgeId).
   gte('paid_at', dayStart.toISOString()).
-  lte('paid_at', dayEnd.toISOString());
+  lte('paid_at', dayEnd.toISOString()),
+  state.supabase.rpc('get_customer_credit_cash_flow', {
+    p_lodge_id: state.lodgeId,
+    p_start_at: dayStart.toISOString(),
+    p_end_at: dayEnd.toISOString()
+  })
+  ]);
 
   if (error) throw new Error(error.message);
+  if (creditError) throw new Error(creditError.message);
 
   const byMethod = {};
   let totalCollected = 0;
@@ -351,8 +359,12 @@ export async function getTodayBookingPaymentMix(dateValue = null) {
 
   for (const payment of data || []) {
     const type = String(payment?.type || 'payment');
+    const method = String(payment?.method || 'unknown');
     const amount = Number(payment?.amount || 0);
     if (!Number.isFinite(amount) || amount === 0) continue;
+    // Allocation settles a booking but is not fresh cash. A reschedule transfer
+    // is an internal liability movement, not an external refund.
+    if (method === 'customer_credit' || method === 'customer_credit_transfer') continue;
     paymentCount += 1;
     totalCollected += amount;
 
@@ -361,9 +373,23 @@ export async function getTodayBookingPaymentMix(dateValue = null) {
       continue;
     }
 
-    const method = String(payment?.method || 'unknown');
     byMethod[method] = Math.round(((byMethod[method] || 0) + amount) * 100) / 100;
     grossCollected += amount;
+  }
+
+  for (const entry of creditRows || []) {
+    const amount = Number(entry?.amount || 0);
+    if (!Number.isFinite(amount) || amount <= 0) continue;
+    const method = String(entry?.method || 'unknown');
+    paymentCount += 1;
+    if (entry.entry_type === 'refund') {
+      totalCollected -= amount;
+      refundsIssued += amount;
+      continue;
+    }
+    totalCollected += amount;
+    grossCollected += amount;
+    byMethod[method] = Math.round(((byMethod[method] || 0) + amount) * 100) / 100;
   }
 
   return {
@@ -602,7 +628,9 @@ export async function getReportsSnapshot(today = getLocalDateKey(new Date(), LOC
     unpaidCount: unpaidBookings.length,
     monthExpenses: expenses.filter((expense) => inRange(expense.date, monthStart, monthEnd)).reduce((sum, expense) => sum + Number(expense.amount || 0), 0),
     maintenanceCosts,
-    posRevenue: posOrders.filter((order) => order?.status !== 'voided' && inRange(order.created_at, monthStart, monthEnd)).reduce((sum, order) => sum + Number(order.total || 0), 0),
+    posRevenue: posOrders
+      .filter((order) => order?.status !== 'voided' && String(order?.payment_method || '').toLowerCase() !== 'folio' && inRange(order.created_at, monthStart, monthEnd))
+      .reduce((sum, order) => sum + Number(order.total || 0), 0),
     conferenceRevenue: conferenceBookings.filter((booking) => String(booking?.payment_status || '').toLowerCase() !== 'cancelled' && inRange(booking.booking_date, monthStart, monthEnd)).reduce((sum, booking) => sum + Number(booking.total_amount || 0), 0),
     poolRevenue: poolDayUse.filter((entry) => inRange(entry.date, monthStart, monthEnd)).reduce((sum, entry) => sum + Number(entry.total || 0), 0),
     source: state.isOnline ? 'fallback' : 'offline',

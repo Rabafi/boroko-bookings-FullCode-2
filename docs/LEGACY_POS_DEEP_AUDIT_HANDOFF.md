@@ -1,5 +1,7 @@
 # Legacy POS Verification And Fix Handoff
 
+> **Status: historical and substantially superseded.** This handoff records the 2026-06-13 state. Later POS v3 migrations, Legacy POS updater/release work, mesh changes, and regression work changed many items below. Do not implement its remaining-fix list without re-verifying current code. See [../PROJECT_STATE.md](../PROJECT_STATE.md).
+
 Date: 2026-06-13
 
 Scope: verification of the latest legacy Windows POS offline-first work, compared against the finished desktop POS and Boroko's financial-grade rules.

@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { useFeatures } from '../contexts/FeaturesContext'
 import { getReportsSnapshot, getDashboardSnapshot, listBookings, listRooms, listStaff } from '../lib/api'
-import { RefreshCw, Lock, TrendingUp, TrendingDown, Percent, DollarSign } from 'lucide-react'
+import { RefreshCw, Lock } from 'lucide-react'
 import { format } from 'date-fns'
 import { readCacheEntry } from '../lib/runtime'
 import { shortDateTime } from '../lib/format'
@@ -25,6 +25,84 @@ function Section({ title, children }) {
     <div className="bg-gray-800 rounded-2xl p-4 mb-3">
       <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">{title}</p>
       {children}
+    </div>
+  )
+}
+
+function ComparisonBar({ current, previous, label, formatValue, accent = 'green' }) {
+  const max = Math.max(Math.abs(current || 0), Math.abs(previous || 0), 1)
+  const currentPct = Math.min(((current || 0) / max) * 100, 100)
+  const previousPct = Math.min(((previous || 0) / max) * 100, 100)
+  const diff = (current || 0) - (previous || 0)
+  const diffPct = previous ? Math.round((diff / Math.abs(previous)) * 100) : null
+  const trendUp = diff > 0
+  const trendDown = diff < 0
+  const accentColors = {
+    green: { bar: 'bg-green-500', track: 'bg-green-900/40', text: 'text-green-400' },
+    blue: { bar: 'bg-blue-500', track: 'bg-blue-900/40', text: 'text-blue-400' },
+    red: { bar: 'bg-red-500', track: 'bg-red-900/40', text: 'text-red-400' },
+    amber: { bar: 'bg-amber-500', track: 'bg-amber-900/40', text: 'text-amber-400' },
+    cyan: { bar: 'bg-cyan-500', track: 'bg-cyan-900/40', text: 'text-cyan-400' },
+    indigo: { bar: 'bg-indigo-500', track: 'bg-indigo-900/40', text: 'text-indigo-400' }
+  }
+  const colors = accentColors[accent] || accentColors.green
+
+  return (
+    <div className="mb-3 last:mb-0">
+      <div className="flex items-center justify-between mb-1">
+        <p className="text-sm text-gray-300">{label}</p>
+        <div className="flex items-center gap-2">
+          <span className={`text-sm font-bold ${colors.text}`}>{formatValue(current)}</span>
+          {diffPct !== null && (
+            <span className={`text-[10px] font-semibold ${trendUp ? 'text-green-400' : trendDown ? 'text-red-400' : 'text-gray-500'}`}>
+              {trendUp ? `+${diffPct}%` : trendDown ? `${diffPct}%` : '—'}
+            </span>
+          )}
+        </div>
+      </div>
+      <div className="flex gap-1">
+        <div className={`flex-1 h-2 rounded-full ${colors.track} overflow-hidden`}>
+          <div className={`h-full rounded-full ${colors.bar} transition-all`} style={{ width: `${currentPct}%` }} />
+        </div>
+        <div className={`flex-1 h-2 rounded-full bg-gray-700/40 overflow-hidden`}>
+          <div className="h-full rounded-full bg-gray-500/50 transition-all" style={{ width: `${previousPct}%` }} />
+        </div>
+      </div>
+      <div className="flex justify-between mt-0.5">
+        <span className="text-[9px] text-gray-500">This month</span>
+        <span className="text-[9px] text-gray-600">Last month: {formatValue(previous)}</span>
+      </div>
+    </div>
+  )
+}
+
+function RevenueMixBar({ segments, total }) {
+  if (!total || total <= 0) return null
+  return (
+    <div className="mt-2">
+      <div className="flex h-3 rounded-full overflow-hidden bg-gray-700/30">
+        {segments.map((seg) => {
+          const pct = Math.max(((seg.value || 0) / total) * 100, 0)
+          if (pct <= 0) return null
+          return (
+            <div
+              key={seg.label}
+              className={`h-full ${seg.color} transition-all`}
+              style={{ width: `${pct}%` }}
+              title={`${seg.label}: P ${Math.round(seg.value || 0).toLocaleString()}`}
+            />
+          )
+        })}
+      </div>
+      <div className="flex flex-wrap gap-x-3 gap-y-1 mt-2">
+        {segments.filter((s) => (s.value || 0) > 0).map((seg) => (
+          <div key={seg.label} className="flex items-center gap-1">
+            <span className={`w-2 h-2 rounded-full ${seg.color}`} />
+            <span className="text-[10px] text-gray-400">{seg.label}</span>
+            <span className="text-[10px] text-gray-500">P {Math.round(seg.value || 0).toLocaleString()}</span>
+          </div>
+        ))}
+      </div>
     </div>
   )
 }
@@ -94,6 +172,8 @@ export default function Reports() {
   const usageLimits = getPlanUsageLimits(usage.plan)
   const usageStatus = getUsageLimitStatus({ used: usage.monthlyBookings, limit: usageLimits.monthlyBookings, grace: usageLimits.monthlyBookingsGrace })
   const usageRecommendation = getPlanRecommendation({ plan: usage.plan, usage, limits: usageLimits })
+  const totalRevenue = (data?.monthRev || 0) + (data?.posRevenue || 0) + (data?.conferenceRevenue || 0) + (data?.poolRevenue || 0)
+  const totalLastMonthRevenue = (data?.lastMonthRev || 0)
 
   return (
     <div className="flex flex-col min-h-screen bg-gray-950 pb-24">
@@ -134,7 +214,6 @@ export default function Reports() {
             </div>
           ) : (
             <>
-          {/* Live */}
           <div className="bg-green-900/30 border border-green-700/40 rounded-2xl p-4 mb-3">
             <p className="text-xs font-semibold text-green-400 uppercase tracking-wide mb-2">Live Now</p>
             <div className="flex items-center justify-between">
@@ -142,6 +221,48 @@ export default function Reports() {
               <div className="text-right"><p className="text-2xl font-bold text-green-400">{data.totalRooms > 0 ? Math.round((data.currentOcc / data.totalRooms) * 100) : 0}%</p><p className="text-xs text-gray-400">Occupancy</p></div>
             </div>
           </div>
+
+          <Section title="Trends">
+            <ComparisonBar
+              label="Occupancy"
+              current={data.monthOcc}
+              previous={data.lastMonthOcc}
+              formatValue={(v) => `${v}%`}
+              accent="green"
+            />
+            <ComparisonBar
+              label="Cash Collected"
+              current={data.monthRev}
+              previous={data.lastMonthRev}
+              formatValue={fmt}
+              accent="blue"
+            />
+            {isEnabled('expenses') && (
+              <ComparisonBar
+                label="Expenses"
+                current={expenseTotal}
+                previous={0}
+                formatValue={fmt}
+                accent="red"
+              />
+            )}
+          </Section>
+
+          {isEnabled('pos') && totalRevenue > 0 && (
+            <Section title="Revenue Mix">
+              <p className="text-xs text-gray-500 mb-1">Breakdown of total revenue this month</p>
+              <RevenueMixBar
+                segments={[
+                  { label: 'Accommodation', value: data.monthRev, color: 'bg-green-500' },
+                  { label: 'POS', value: data.posRevenue, color: 'bg-blue-500' },
+                  { label: 'Conference', value: data.conferenceRevenue, color: 'bg-indigo-500' },
+                  { label: 'Day Use', value: data.poolRevenue, color: 'bg-cyan-500' }
+                ]}
+                total={totalRevenue}
+              />
+              <p className="mt-2 text-xs text-gray-400">Total: {fmt(totalRevenue)}</p>
+            </Section>
+          )}
 
           <Section title="Cash Collected">
             <p className="text-xs text-gray-500 mb-2">Actual payments received · not total booking value. Fees kept from refunds are shown separately.</p>
@@ -180,8 +301,8 @@ export default function Reports() {
               <StatRow label="Total Expenses" value={fmt(expenseTotal)} color="text-red-400" />
               <StatRow
                 label="Net Cash (All Revenue − Expenses)"
-                value={fmt(data.monthRev + data.posRevenue + data.conferenceRevenue + data.poolRevenue - expenseTotal)}
-                color={(data.monthRev + data.posRevenue + data.conferenceRevenue + data.poolRevenue) >= expenseTotal ? 'text-green-400' : 'text-red-400'}
+                value={fmt(totalRevenue - expenseTotal)}
+                color={totalRevenue >= expenseTotal ? 'text-green-400' : 'text-red-400'}
               />
             </Section>
           )}

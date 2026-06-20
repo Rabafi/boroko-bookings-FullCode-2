@@ -141,6 +141,18 @@ export function normalizeQueuedSyncItemForReplay(item = {}) {
       }
     }
   }
+  if (next.type === 'rpc' && next.table === 'reschedule_booking' && !next.data.p_idempotency_key) {
+    const queueId = String(next._queue_id || '').replace(/[^A-Za-z0-9:_-]/g, '-').slice(0, 80);
+    if (queueId) {
+      next.data.p_idempotency_key = `sync:reschedule_booking:${queueId}`.slice(0, 128);
+    }
+  }
+  if (next.type === 'rpc' && next.table === 'record_customer_credit' && !next.data.p_idempotency_key) {
+    const queueId = String(next._queue_id || '').replace(/[^A-Za-z0-9:_-]/g, '-').slice(0, 80);
+    if (queueId) {
+      next.data.p_idempotency_key = `sync:record_customer_credit:${queueId}`.slice(0, 128);
+    }
+  }
 
   if (next.type === 'rpc' && ['update_booking', 'update_customer', 'update_room', 'update_quotation'].includes(next.table) && !('p_expected_updated_at' in next.data)) {
     next.data.p_expected_updated_at = null;

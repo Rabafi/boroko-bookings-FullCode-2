@@ -388,28 +388,21 @@ export default function Reports() {
     }
     setSavingXLSX(true); setError('')
     try {
-      const result = await window.api.reports.saveExcel({
-        occupancy,
-        revenue,
-        expenses,
-        posSales,
-        invSpend,
-        supSpend,
-        profitLoss: pl,
-        start,
-        end,
+      const result = await window.api.reports.exportDetailedExcel({
+        startDate: start,
+        endDate: end,
         currency,
-        reportType: 'finance-workbook',
-        reportTitle: 'Finance Workbook',
         lodgeName: settings?.lodge_name || '',
         companyName: settings?.company_name || '',
         outletLabel: selectedOutletLabel,
-        generatedAt: new Date().toLocaleString()
+        activeTab
       })
       if (result.success) {
-        setExportSuccess(`Excel workbook saved: ${result.filePath}. It includes separate sheets for bookings, occupancy, expenses, POS sales, stock costs, and P&L.`)
+        const reconNote = result.reconciliationStatus === 'PASSED' ? '' : ` (${result.reconciliationStatus})`
+        setExportSuccess(`Excel workbook saved: ${result.filePath}${reconNote}. Includes detailed sheets for Booking Register, Payment Transactions, Outstanding Balances, Cancelled Bookings, Refunds, Quotations, Invoice Register, Financial Exceptions, and Reconciliation.`)
         setTimeout(() => setExportSuccess(''), 6500)
       }
+      else if (result.canceled) { /* user cancelled — no error */ }
       else if (result.error) setError(`Excel export could not be completed: ${result.error}`)
     } catch (err) { setError(`Excel export could not be completed: ${err?.message}`) }
     setSavingXLSX(false)
@@ -422,20 +415,21 @@ export default function Reports() {
     }
     setSavingPDF(true); setExportSuccess(''); setError('')
     try {
-      const result = await window.api.reports.savePDF({
+      const result = await window.api.reports.exportDetailedPDF({
         reportType: activeTab,
-        reportTitle,
-        start,
-        end,
+        startDate: start,
+        endDate: end,
+        currency,
         lodgeName: settings?.lodge_name || '',
         companyName: settings?.company_name || '',
-        outletLabel: ['expenses', 'pos', 'costs'].includes(activeTab) ? selectedOutletLabel : '',
-        generatedAt: new Date().toLocaleString()
+        outletLabel: ['expenses', 'pos', 'costs'].includes(activeTab) ? selectedOutletLabel : ''
       })
       if (result.success) {
-        setExportSuccess(`PDF saved for ${reportTitle}: ${result.filePath}`)
+        const reconNote = result.reconciliationStatus === 'PASSED' ? '' : ` (${result.reconciliationStatus})`
+        setExportSuccess(`PDF saved for ${reportTitle}: ${result.filePath}${reconNote}`)
         setTimeout(() => setExportSuccess(''), 5000)
       }
+      else if (result.canceled) { /* user cancelled — no error */ }
       else if (result.error) setError(`PDF export could not be completed: ${result.error}`)
     } catch (err) { setError(`PDF export could not be completed: ${err?.message}`) }
     setSavingPDF(false)

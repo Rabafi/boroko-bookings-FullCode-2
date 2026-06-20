@@ -126,8 +126,18 @@ export {
   markQuotationSent,
   duplicateQuotation,
   getQuotationById,
-  convertQuotationToBooking
+  convertQuotationToBooking,
+  rescheduleBooking
 } from './domains/bookings.js'
+export {
+  getCustomerCreditBalance,
+  getCustomerCreditHistory,
+  getCustomerCreditSummary,
+  recordCustomerCredit,
+  applyCustomerCreditToBooking,
+  refundCustomerCredit,
+  reverseCustomerCreditEntry
+} from './domains/customerCredit.js'
 export {
   getExpenses,
   getExpenseById,
@@ -247,6 +257,19 @@ export {
   getNightAudit
 } from './domains/reports.js'
 export {
+  loadDetailedReportData,
+  computeReconciliation,
+  buildExportMetaRows,
+  sanitizeCellValue,
+  sanitizeRow,
+  deriveBookingPaymentMethod,
+  getAgingBucket,
+  safeSheetName,
+  estimateColumnWidths,
+  DATE_BASIS,
+  EXPORT_VERSION
+} from './domains/reportExport.js'
+export {
   getSettings,
   getLodgeDiagnostics,
   relinkLodge,
@@ -267,6 +290,18 @@ export {
   updateConferenceBookingPayment,
   deleteConferenceBooking
 } from './domains/conference.js'
+export {
+  getEventBookings,
+  getEventBookingById,
+  getEventBookingDetails,
+  createEventBooking as createEventVenueBooking,
+  updateEventBooking,
+  cancelEventBooking,
+  addEventLineItem,
+  voidEventLineItem,
+  updateEventPayment,
+  checkEventResourceAvailability
+} from './domains/events.js'
 export {
   getDayUseEntries,
   getDayUseEntryById,
