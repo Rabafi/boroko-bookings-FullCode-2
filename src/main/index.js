@@ -739,11 +739,286 @@ function buildDetailedReportPdfHtml({ lodgeName, companyName, reportType, startD
   }
 
   // Report-specific content
-  if (reportType === 'bookings' && data.bookings.length > 0) {
-    bodyContent += table(
-      ['Booking #', 'Invoice #', 'Guest', 'Room', 'Type', 'Check-In', 'Check-Out', 'Nights', 'Status', 'Payment Status', `Gross (${sym})`, `Paid (${sym})`, `Balance (${sym})`, 'Method'],
-      data.bookings.map((b) => [b.booking_number, b.invoice_number, b.guest_name, `${b.room_number || ''} (${b.room_type || ''})`, b.booking_type, b.check_in, b.check_out, b.nights, b.booking_status, b.payment_status, b.gross_total, b.lifetime_amount_paid, b.balance_due, b.payment_method_summary])
-    )
+  if (reportType === 'bookings') {
+    const bookings = data.bookings
+    const rev = extraData.revenue || {}
+    const occ = extraData.occupancy || []
+    const profit = extraData.profitability || []
+
+    // ── Compute from booking rows (fallback to revenue RPC) ────────────────
+    const totalRevenue = rev.total_revenue ?? bookings.reduce((s, b) => s + Number(b.gross_total || 0), 0)
+    const totalPaid = rev.paid_revenue ?? bookings.reduce((s, b) => s + Number(b.lifetime_amount_paid || 0), 0)
+    const totalOutstanding = rev.outstanding_amount ?? bookings.reduce((s, b) => s + Number(b.balance_due || 0), 0)
+    const totalBookings = rev.total_bookings ?? bookings.length
+    const avgBookingValue = rev.avg_booking_value ?? (totalBookings > 0 ? totalRevenue / totalBookings : 0)
+    const confirmedCount = rev.confirmed_count ?? bookings.filter((b) => b.booking_status === 'confirmed').length
+    const checkedInCount = rev.checked_in_count ?? bookings.filter((b) => b.booking_status === 'checked_in').length
+    const checkedOutCount = rev.checked_out_count ?? bookings.filter((b) => b.booking_status === 'checked_out').length
+    const cancelledCount = rev.cancelled_count ?? bookings.filter((b) => b.booking_status === 'cancelled').length
+    const totalBookingCount = confirmedCount + checkedInCount + checkedOutCount + cancelledCount
+    const paidCount = rev.paid_count ?? bookings.filter((b) => b.payment_status === 'paid').length
+    const partialCount = rev.partial_count ?? bookings.filter((b) => b.payment_status === 'partial').length
+    const unpaidCount = rev.unpaid_count ?? bookings.filter((b) => !b.payment_status || b.payment_status === 'unpaid').length
+    const grossCollected = rev.gross_collected ?? 0
+    const refundsIssued = rev.refunds_issued ?? 0
+    const retainedRevenue = rev.retained_revenue ?? 0
+    const bookingPaymentByMethod = rev.booking_payment_by_method || {}
+    const eventCount = rev.event_count ?? bookings.filter((b) => b.booking_type === 'event').length
+    const eventBookings = rev.event_bookings ?? []
+    const eventRevenue = rev.event_revenue ?? bookings.filter((b) => b.booking_type === 'event').reduce((s, b) => s + Number(b.gross_total || 0), 0)
+    const vatEnabled = rev.vat_enabled ?? false
+    const vatRate = rev.vat_rate
+    const vatAmount = rev.vat_amount ?? 0
+    const netRevenue = rev.net_revenue ?? (totalRevenue - vatAmount)
+
+    // ── Occupancy totals ────────────────────────────────────────────────────
+    const totalOccupiedNights = occ.reduce((s, r) => s + Number(r.occupied_nights || 0), 0)
+    const avgOccupancy = occ.length > 0 ? Math.round(occ.reduce((s, r) => s + Number(r.occupancy_rate || 0), 0) / occ.length) : 0
+    const totalNights = Math.max(1, Math.round((new Date(endDate) - new Date(startDate)) / 86400000) + 1)
+
+    function summaryCard(label, value, sub, color) {
+      const bg = color || '#f8fafc'
+      return `<div style="flex:1;min-width:140px;padding:10px 14px;background:${bg};border:1px solid #e2e8f0;border-radius:6px">
+        <div style="font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">${escapeHtml(label)}</div>
+        <div style="font-size:16px;font-weight:700;color:#1e293b">${escapeHtml(String(value))}</div>
+        ${sub ? `<div style="font-size:9px;color:#94a3b8;margin-top:2px">${escapeHtml(String(sub))}</div>` : ''}
+      </div>`
+    }
+
+    function statusRow(label, count, total, color) {
+      const pct = total > 0 ? Math.round((count / total) * 100) : 0
+      return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <span style="width:80px;font-size:11px;color:#64748b">${escapeHtml(label)}</span>
+        <div style="flex:1;height:8px;background:#f1f5f9;border-radius:4px;overflow:hidden">
+          <div style="height:8px;width:${pct}%;background:${color};border-radius:4px"></div>
+        </div>
+        <span style="width:28px;text-align:right;font-size:11px;font-weight:600;color:#334155">${count}</span>
+        <span style="width:32px;text-align:right;font-size:10px;color:#94a3b8">${pct}%</span>
+      </div>`
+    }
+
+    // ── 1. Revenue Summary (6 cards) ───────────────────────────────────────
+    bodyContent += `
+      <div style="margin:0 0 16px">
+        <h2 style="font-size:13px;font-weight:700;color:#166534;margin:0 0 8px">Revenue Summary</h2>
+        <div style="display:flex;flex-wrap:wrap;gap:8px">
+          ${summaryCard('Total Revenue', `${sym} ${totalRevenue.toFixed(2)}`, `${totalBookings} bookings`)}
+          ${summaryCard('Total Bookings', totalBookings, `${eventCount > 0 ? eventCount + ' events, ' : ''}${totalBookings - eventCount} rooms`)}
+          ${summaryCard('Avg Booking Value', `${sym} ${avgBookingValue.toFixed(2)}`)}
+          ${summaryCard('Avg Occupancy', `${avgOccupancy}%`, `${totalOccupiedNights} occupied nights / ${totalNights} total`)}
+          ${summaryCard('Net Cash Collected', `${sym} ${totalPaid.toFixed(2)}`, `Refunds ${sym} ${refundsIssued.toFixed(2)} · kept ${sym} ${retainedRevenue.toFixed(2)}`)}
+          ${summaryCard('Outstanding', `${sym} ${totalOutstanding.toFixed(2)}`, `${unpaidCount + partialCount} booking${(unpaidCount + partialCount) === 1 ? '' : 's'} still open`, totalOutstanding > 0 ? '#fff5f5' : '#f8fafc')}
+        </div>
+      </div>`
+
+    // ── 2. VAT Breakdown ────────────────────────────────────────────────────
+    if (vatEnabled) {
+      const vatLabel = vatRate ? `VAT (${vatRate}% inclusive)` : 'VAT (mixed historical rates)'
+      bodyContent += `
+        <div style="margin:0 0 16px;padding:10px 14px;background:#fffbeb;border:1px solid #fde68a;border-radius:6px">
+          <div style="display:flex;flex-wrap:wrap;gap:16px;font-size:12px">
+            <span style="color:#92400e;font-weight:600">${escapeHtml(vatLabel)}</span>
+            <span style="color:#475569">Gross: <b style="color:#1e293b">${sym} ${totalRevenue.toFixed(2)}</b></span>
+            <span style="color:#475569">VAT portion: <b style="color:#92400e">${sym} ${vatAmount.toFixed(2)}</b></span>
+            <span style="color:#475569">Net (excl. VAT): <b style="color:#1e293b">${sym} ${netRevenue.toFixed(2)}</b></span>
+          </div>
+        </div>`
+    }
+
+    // ── 3. Booking Status Breakdown ─────────────────────────────────────────
+    bodyContent += `
+      <div style="margin:0 0 16px;padding:14px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px">
+        <h2 style="font-size:13px;font-weight:700;color:#1e293b;margin:0 0 10px">Booking Status Breakdown</h2>
+        ${statusRow('Confirmed', confirmedCount, totalBookingCount, '#3b82f6')}
+        ${statusRow('Checked In', checkedInCount, totalBookingCount, '#22c55e')}
+        ${statusRow('Checked Out', checkedOutCount, totalBookingCount, '#9ca3af')}
+        ${statusRow('Cancelled', cancelledCount, totalBookingCount, '#f87171')}
+      </div>`
+
+    // ── 4. Cash Movement & Open Balances ────────────────────────────────────
+    bodyContent += `
+      <div style="margin:0 0 16px;padding:14px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px">
+        <h2 style="font-size:13px;font-weight:700;color:#1e293b;margin:0 0 10px">Cash Movement & Open Balances</h2>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+          ${summaryCard('Net Cash', `${sym} ${totalPaid.toFixed(2)}`, '', '#ecfdf5')}
+          ${summaryCard('Gross Receipts', `${sym} ${grossCollected.toFixed(2)}`)}
+          ${summaryCard('Refunds', `${sym} ${refundsIssued.toFixed(2)}`, '', '#fff5f5')}
+          ${summaryCard('Fees Kept from Refunds', `${sym} ${retainedRevenue.toFixed(2)}`, '', '#fffbeb')}
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px">
+          ${summaryCard('Paid', paidCount, '', '#f0fdf4')}
+          ${summaryCard('Partial', partialCount, '', '#fefce8')}
+          ${summaryCard('Unpaid', unpaidCount, '', '#fff5f5')}
+        </div>
+        <p style="font-size:9px;color:#94a3b8;margin:8px 0 0">Revenue is based on booked stay value for this period. Cash movement is based on payment events recorded during this period, and fees kept from refunds are shown separately.</p>
+      </div>`
+
+    // ── 5. Booking Payment Methods ──────────────────────────────────────────
+    if (Object.keys(bookingPaymentByMethod).length > 0) {
+      const sortedMethods = Object.entries(bookingPaymentByMethod).sort(([, a], [, b]) => Number(b || 0) - Number(a || 0))
+      let methodRows = ''
+      for (const [method, amount] of sortedMethods) {
+        const pct = grossCollected > 0 ? (Number(amount || 0) / grossCollected) * 100 : 0
+        methodRows += `<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+          <span style="width:100px;font-size:11px;color:#475569">${escapeHtml(method)}</span>
+          <div style="flex:1;height:8px;background:#f1f5f9;border-radius:4px;overflow:hidden">
+            <div style="height:8px;width:${Math.max(2, pct)}%;background:#10b981;border-radius:4px"></div>
+          </div>
+          <span style="width:90px;text-align:right;font-size:11px;font-weight:600;color:#1e293b">${sym} ${Number(amount || 0).toFixed(2)}</span>
+          <span style="width:32px;text-align:right;font-size:10px;color:#94a3b8">${Math.round(pct)}%</span>
+        </div>`
+      }
+      bodyContent += `
+        <div style="margin:0 0 16px;padding:14px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px">
+          <h2 style="font-size:13px;font-weight:700;color:#1e293b;margin:0 0 4px">Booking Payment Methods</h2>
+          <p style="font-size:10px;color:#94a3b8;margin:0 0 10px">How booking money was collected across the selected period.</p>
+          ${methodRows}
+        </div>`
+    }
+
+    // ── 6. Exclusive Events ─────────────────────────────────────────────────
+    if (eventCount > 0) {
+      let eventRows = ''
+      for (const evt of eventBookings) {
+        eventRows += `<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;font-size:11px;border-bottom:1px solid #e2e8f0">
+          <span style="color:#475569">${escapeHtml(evt.check_in)} → ${escapeHtml(evt.check_out)} <span style="color:#6366f1;font-size:10px">${evt.nights} night${evt.nights !== 1 ? 's' : ''} · ${evt.room_count} room${evt.room_count !== 1 ? 's' : ''}</span></span>
+          <span style="font-weight:600;color:#4f46e5">${sym} ${Number(evt.total || 0).toFixed(2)} <span style="color:#a5b4fc;font-size:10px">(${sym} ${Number(evt.daily_rate || 0).toLocaleString()}/night)</span></span>
+        </div>`
+      }
+      bodyContent += `
+        <div style="margin:0 0 16px;padding:14px;background:#eef2ff;border:1px solid #c7d2fe;border-radius:6px">
+          <h2 style="font-size:13px;font-weight:700;color:#4338ca;margin:0 0 8px">Exclusive Events (${eventCount})</h2>
+          ${eventRows}
+          <div style="display:flex;justify-content:space-between;padding-top:6px;font-size:12px;font-weight:700;color:#4338ca;border-top:2px solid #c7d2fe;margin-top:4px">
+            <span>Event Revenue Total</span>
+            <span>${sym} ${Number(eventRevenue).toFixed(2)}</span>
+          </div>
+        </div>`
+    }
+
+    // ── 7. Room Occupancy Table ─────────────────────────────────────────────
+    if (occ.length > 0) {
+      const bestRoom = occ.reduce((best, r) => Number(r.occupancy_rate || 0) > Number(best?.occupancy_rate || 0) ? r : best, null)
+      let occRows = ''
+      for (const room of occ) {
+        const rate = Number(room.rate_per_night || 0)
+        const nights = Number(room.occupied_nights || 0)
+        const pct = Number(room.occupancy_rate || 0)
+        const rev = Number(room.actual_revenue || 0)
+        const barColor = pct >= 70 ? '#22c55e' : pct >= 30 ? '#facc15' : '#f87171'
+        occRows += `<tr>
+          <td style="padding:5px 8px;border-bottom:1px solid #e2e8f0;font-size:11px;font-weight:500;color:#1e293b">${room.has_event ? '<span style="background:#e0e7ff;color:#4f46e5;font-size:8px;padding:1px 4px;border-radius:3px;margin-right:4px">EVENT</span>' : ''}Room ${escapeHtml(String(room.room_number || ''))}</td>
+          <td style="padding:5px 8px;border-bottom:1px solid #e2e8f0;font-size:11px;color:#475569">${escapeHtml(String(room.room_type || ''))}</td>
+          <td style="padding:5px 8px;border-bottom:1px solid #e2e8f0;font-size:11px;color:#475569;text-align:right">${sym} ${rate.toFixed(2)}</td>
+          <td style="padding:5px 8px;border-bottom:1px solid #e2e8f0;font-size:11px;color:#475569;text-align:right">${nights} / ${totalNights}</td>
+          <td style="padding:5px 8px;border-bottom:1px solid #e2e8f0;font-size:11px">
+            <div style="display:flex;align-items:center;gap:6px">
+              <div style="flex:1;height:6px;background:#f1f5f9;border-radius:3px;overflow:hidden"><div style="height:6px;width:${pct}%;background:${barColor};border-radius:3px"></div></div>
+              <span style="width:32px;text-align:right;font-size:10px;font-weight:600;color:#334155">${pct}%</span>
+            </div>
+          </td>
+          <td style="padding:5px 8px;border-bottom:1px solid #e2e8f0;font-size:11px;font-weight:500;color:#1e293b;text-align:right">${sym} ${rev.toFixed(2)}</td>
+        </tr>`
+      }
+      const occRevenueTotal = occ.reduce((s, r) => s + Number(r.actual_revenue || 0), 0)
+      bodyContent += `
+        <div style="margin:0 0 16px">
+          <h2 style="font-size:13px;font-weight:700;color:#166534;margin:0 0 4px">Room Occupancy — ${totalNights}-day period</h2>
+          ${bestRoom && bestRoom.occupancy_rate > 0 ? `<p style="font-size:10px;color:#22c55e;margin:0 0 8px">Best: Room ${escapeHtml(String(bestRoom.room_number))} (${bestRoom.occupancy_rate}%)</p>` : ''}
+          <table style="width:100%;border-collapse:collapse;font-size:11px">
+            <thead><tr style="background:#f8fafc">
+              <th style="padding:5px 8px;text-align:left;border-bottom:2px solid #333;font-size:10px;color:#64748b">Room</th>
+              <th style="padding:5px 8px;text-align:left;border-bottom:2px solid #333;font-size:10px;color:#64748b">Type</th>
+              <th style="padding:5px 8px;text-align:right;border-bottom:2px solid #333;font-size:10px;color:#64748b">Rate / Night</th>
+              <th style="padding:5px 8px;text-align:right;border-bottom:2px solid #333;font-size:10px;color:#64748b">Nights</th>
+              <th style="padding:5px 8px;text-align:left;border-bottom:2px solid #333;font-size:10px;color:#64748b">Occupancy</th>
+              <th style="padding:5px 8px;text-align:right;border-bottom:2px solid #333;font-size:10px;color:#64748b">Revenue</th>
+            </tr></thead>
+            <tbody>${occRows}</tbody>
+            <tfoot><tr style="background:#f8fafc;border-top:2px solid #e2e8f0">
+              <td colspan="3" style="padding:5px 8px;font-size:10px;font-weight:600;color:#64748b;text-transform:uppercase">Totals / Averages</td>
+              <td style="padding:5px 8px;font-size:11px;font-weight:600;color:#334155;text-align:right">${totalOccupiedNights} nights total</td>
+              <td style="padding:5px 8px;font-size:11px;font-weight:600;color:#334155">${avgOccupancy}% avg</td>
+              <td style="padding:5px 8px;font-size:11px;font-weight:700;color:#16a34a;text-align:right">${sym} ${occRevenueTotal.toFixed(2)}</td>
+            </tr></tfoot>
+          </table>
+        </div>`
+    }
+
+    // ── 8. Room Profitability Table ─────────────────────────────────────────
+    if (profit.length > 0) {
+      const topRoom = profit.reduce((best, r) => Number(r.contribution || 0) > Number(best?.contribution || 0) ? r : best, null)
+      let profRows = ''
+      for (const room of profit) {
+        profRows += `<tr>
+          <td style="padding:4px 6px;border-bottom:1px solid #e2e8f0;font-size:10px;font-weight:500;color:#1e293b">Room ${escapeHtml(String(room.room_number || ''))}</td>
+          <td style="padding:4px 6px;border-bottom:1px solid #e2e8f0;font-size:10px;color:#475569;text-align:right">${Number(room.occupancy_rate || 0)}%</td>
+          <td style="padding:4px 6px;border-bottom:1px solid #e2e8f0;font-size:10px;color:#1e293b;text-align:right;font-weight:500">${sym} ${Number(room.revenue || 0).toFixed(2)}</td>
+          <td style="padding:4px 6px;border-bottom:1px solid #e2e8f0;font-size:10px;color:#92400e;text-align:right">${sym} ${Number(room.supply_cost || 0).toFixed(2)}</td>
+          <td style="padding:4px 6px;border-bottom:1px solid #e2e8f0;font-size:10px;color:#b91c1c;text-align:right">${sym} ${Number(room.maintenance_cost || 0).toFixed(2)}</td>
+          <td style="padding:4px 6px;border-bottom:1px solid #e2e8f0;font-size:10px;color:#475569;text-align:right">${sym} ${Number(room.running_cost || 0).toFixed(2)}</td>
+          <td style="padding:4px 6px;border-bottom:1px solid #e2e8f0;font-size:10px;font-weight:600;color:${Number(room.contribution || 0) >= 0 ? '#16a34a' : '#b91c1c'};text-align:right">${sym} ${Number(room.contribution || 0).toFixed(2)}</td>
+          <td style="padding:4px 6px;border-bottom:1px solid #e2e8f0;font-size:10px;color:#475569;text-align:right">${Number(room.margin_pct || 0)}%</td>
+        </tr>`
+      }
+      bodyContent += `
+        <div style="margin:0 0 16px">
+          <h2 style="font-size:13px;font-weight:700;color:#166534;margin:0 0 4px">Room Profitability</h2>
+          <p style="font-size:9px;color:#94a3b8;margin:0 0 8px">Revenue minus tracked room-supply cost and recorded maintenance cost.</p>
+          ${topRoom && topRoom.contribution > 0 ? `<p style="font-size:10px;color:#059669;margin:0 0 6px">Top contribution: Room ${escapeHtml(String(topRoom.room_number))}</p>` : ''}
+          <table style="width:100%;border-collapse:collapse;font-size:10px">
+            <thead><tr style="background:#f8fafc">
+              <th style="padding:4px 6px;text-align:left;border-bottom:2px solid #333;font-size:9px;color:#64748b">Room</th>
+              <th style="padding:4px 6px;text-align:right;border-bottom:2px solid #333;font-size:9px;color:#64748b">Occupancy</th>
+              <th style="padding:4px 6px;text-align:right;border-bottom:2px solid #333;font-size:9px;color:#64748b">Revenue</th>
+              <th style="padding:4px 6px;text-align:right;border-bottom:2px solid #333;font-size:9px;color:#64748b">Supply</th>
+              <th style="padding:4px 6px;text-align:right;border-bottom:2px solid #333;font-size:9px;color:#64748b">Maint.</th>
+              <th style="padding:4px 6px;text-align:right;border-bottom:2px solid #333;font-size:9px;color:#64748b">Running</th>
+              <th style="padding:4px 6px;text-align:right;border-bottom:2px solid #333;font-size:9px;color:#64748b">Contribution</th>
+              <th style="padding:4px 6px;text-align:right;border-bottom:2px solid #333;font-size:9px;color:#64748b">Margin</th>
+            </tr></thead>
+            <tbody>${profRows}</tbody>
+          </table>
+        </div>`
+    }
+
+    // ── 9. Collection Queue (outstanding bookings) ──────────────────────────
+    const openBookings = bookings.filter((b) => Number(b.balance_due || 0) > 0.01 && b.booking_status !== 'cancelled')
+    if (openBookings.length > 0) {
+      const sorted = [...openBookings].sort((a, b) => Number(b.balance_due || 0) - Number(a.balance_due || 0))
+      let queueRows = ''
+      for (const b of sorted.slice(0, 20)) {
+        queueRows += `<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;margin-bottom:4px;background:#fff;border:1px solid #e2e8f0;border-radius:4px;font-size:11px">
+          <div style="flex:1;min-width:0">
+            <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+              <span style="font-weight:600;color:#1e293b">${escapeHtml(b.guest_name || 'Guest')}</span>
+              <span style="font-size:9px;padding:1px 6px;border-radius:10px;background:${b.booking_status === 'checked_in' ? '#dcfce7;color:#166534' : b.booking_status === 'checked_out' ? '#f1f5f9;color:#475569' : '#fef3c7;color:#92400e'}">${escapeHtml(String(b.booking_status || 'confirmed').replace(/_/g, ' '))}</span>
+              <span style="font-size:9px;padding:1px 6px;border-radius:10px;border:1px solid #fecaca;color:#b91c1c;background:#fff5f5">${sym} ${Number(b.balance_due || 0).toFixed(2)} due</span>
+            </div>
+            <div style="font-size:9px;color:#94a3b8;margin-top:2px">${b.booking_type === 'event' ? 'Full Lodge' : `Room ${escapeHtml(String(b.room_number || ''))}`} · ${escapeHtml(String(b.check_in || ''))} → ${escapeHtml(String(b.check_out || ''))}</div>
+          </div>
+        </div>`
+      }
+      bodyContent += `
+        <div style="margin:0 0 16px;padding:14px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px">
+          <h2 style="font-size:13px;font-weight:700;color:#1e293b;margin:0 0 4px">Collection Queue</h2>
+          <p style="font-size:10px;color:#94a3b8;margin:0 0 10px">Most urgent outstanding balances for the selected period.</p>
+          ${queueRows}
+          ${sorted.length > 20 ? `<p style="font-size:9px;color:#94a3b8;margin:6px 0 0">… and ${sorted.length - 20} more</p>` : ''}
+        </div>`
+    }
+
+    // ── 10. Booking Details Table ───────────────────────────────────────────
+    if (bookings.length > 0) {
+      bodyContent += `
+        <h2 style="font-size:13px;font-weight:700;color:#166534;margin:16px 0 8px">Booking Details</h2>`
+      bodyContent += table(
+        ['Booking #', 'Invoice #', 'Guest', 'Room', 'Type', 'Check-In', 'Check-Out', 'Nights', 'Status', 'Payment', `Gross (${sym})`, `Paid (${sym})`, `Balance (${sym})`, 'Method'],
+        bookings.map((b) => [b.booking_number, b.invoice_number, b.guest_name, `${b.room_number || ''} (${b.room_type || ''})`, b.booking_type, b.check_in, b.check_out, b.nights, b.booking_status, b.payment_status, b.gross_total, b.lifetime_amount_paid, b.balance_due, b.payment_method_summary])
+      )
+    } else {
+      bodyContent += '<p style="color:#888;font-style:italic">No booking records for this period.</p>'
+    }
   } else if (reportType === 'payments' && data.payments.length > 0) {
     bodyContent += table(
       ['Timestamp', 'Booking #', 'Invoice #', 'Guest', 'Type', 'Method', `Amount (${sym})`, 'Recorded By'],
@@ -4956,7 +5231,16 @@ app.whenReady().then(async () => {
 
       // For tabs that need additional data, load it from existing report functions
       let extraData = {}
-      if (reportType === 'expenses') {
+      if (reportType === 'bookings') {
+        try {
+          const [revenueData, occupancyData, profitData] = await Promise.all([
+            db.getRevenueReport(startDate, endDate).catch(() => null),
+            db.getOccupancyReport(startDate, endDate).catch(() => []),
+            db.getRoomProfitabilityReport(startDate, endDate).catch(() => [])
+          ])
+          extraData = { revenue: revenueData || null, occupancy: occupancyData || [], profitability: profitData || [] }
+        } catch {}
+      } else if (reportType === 'expenses') {
         try {
           const [expenses, maintenanceRows] = await Promise.all([
             db.getExpenses(startDate, endDate, outletLabel || 'all'),
