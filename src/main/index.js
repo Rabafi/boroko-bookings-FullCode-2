@@ -5529,20 +5529,20 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('rateOverrides:create', async (_, data) => {
     try {
-      requireRole('manager', 'admin', 'super_admin')
+      try { requireRole('manager', 'admin', 'super_admin') } catch { throw new Error('Only managers and admins can create rate overrides. Please ask a manager or admin to do this.') }
       return await db.createRateOverride(data)
     } catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('rateOverrides:update', async (_, id, data) => {
     try {
-      requireRole('manager', 'admin', 'super_admin')
+      try { requireRole('manager', 'admin', 'super_admin') } catch { throw new Error('Only managers and admins can edit rate overrides. Please ask a manager or admin to do this.') }
       await assertResourceBelongsToCurrentLodge('Rate override', id, db.getRateOverrideById)
       return await db.updateRateOverride(id, data)
     } catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('rateOverrides:delete', async (_, id) => {
     try {
-      requireRole('manager', 'admin', 'super_admin')
+      try { requireRole('manager', 'admin', 'super_admin') } catch { throw new Error('Only managers and admins can delete rate overrides. Please ask a manager or admin to do this.') }
       await assertResourceBelongsToCurrentLodge('Rate override', id, db.getRateOverrideById)
       return await db.deleteRateOverride(id)
     } catch (e) { return { success: false, error: e.message } }
