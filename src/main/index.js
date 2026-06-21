@@ -5529,20 +5529,20 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('rateOverrides:create', async (_, data) => {
     try {
-      await requireCapability('rooms.manage')
+      requireRole('manager', 'admin', 'super_admin')
       return await db.createRateOverride(data)
     } catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('rateOverrides:update', async (_, id, data) => {
     try {
-      await requireCapability('rooms.manage')
+      requireRole('manager', 'admin', 'super_admin')
       await assertResourceBelongsToCurrentLodge('Rate override', id, db.getRateOverrideById)
       return await db.updateRateOverride(id, data)
     } catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('rateOverrides:delete', async (_, id) => {
     try {
-      await requireCapability('rooms.manage')
+      requireRole('manager', 'admin', 'super_admin')
       await assertResourceBelongsToCurrentLodge('Rate override', id, db.getRateOverrideById)
       return await db.deleteRateOverride(id)
     } catch (e) { return { success: false, error: e.message } }
