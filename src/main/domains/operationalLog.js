@@ -48,8 +48,10 @@ export function appendAuxiliaryLog(filename, row, limit = 200) {
 
 export function isNonCriticalOperationalError(scope, errorOrMessage = '') {
   const message = errorOrMessage?.message || String(errorOrMessage || '');
-  return scope === 'booking.refund' &&
-  /Refund approvals require an internet connection/i.test(message);
+  if (scope === 'booking.refund' && /Refund approvals require an internet connection/i.test(message)) return true;
+  if (scope === 'booking.reschedule' && /Room is already booked|fully reserved for an exclusive event|Reschedule creates an overpayment|modified on another device|stale|conflict/i.test(message)) return true;
+  if (scope === 'booking.updateStatus' && /Cannot check in before|Cannot check out|Cannot transition booking/i.test(message)) return true;
+  return false;
 }
 
 export function recordCriticalError(scope, error, details = {}, { limit = 300, level = 'error' } = {}) {

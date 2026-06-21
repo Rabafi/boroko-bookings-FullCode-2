@@ -91,6 +91,7 @@ export default function Prepayments() {
         window.api.customers.getBookings(customer.id)
       ])
       if (balanceResult?.success === false) throw new Error(balanceResult.error)
+      if (historyRows?.success === false) throw new Error(historyRows.error)
       setBalance(Number(balanceResult?.balance || 0))
       setHistory(Array.isArray(historyRows) ? historyRows : [])
       setBookings((Array.isArray(bookingRows) ? bookingRows : []).filter((booking) => {
@@ -135,6 +136,7 @@ export default function Prepayments() {
       if (result?.success === false) throw new Error(result.error)
       const receiptData = {
         id: result.entry_id,
+        receipt_number: result.receipt_number || (result.offline ? `PRE-PENDING-${String(result.entry_id).slice(0, 6).toUpperCase()}` : null),
         customer: selected,
         amount: Number(receiveForm.amount),
         method: receiveForm.method,
@@ -295,6 +297,26 @@ export default function Prepayments() {
                             <p className="text-sm font-semibold text-slate-800">{entryLabel(entry.entry_type)}</p>
                             <p className="mt-1 text-xs text-slate-500">{new Date(entry.created_at).toLocaleString()} · {String(entry.method || 'internal').replaceAll('_', ' ')}</p>
                             {(entry.reference || entry.notes) && <p className="mt-1 text-xs text-slate-500">{entry.reference || entry.notes}</p>}
+                            {entry.entry_type === 'receipt' && (
+                              <button
+                                type="button"
+                                onClick={() => setReceipt({
+                                  id: entry.id,
+                                  receipt_number: entry.receipt_number,
+                                  customer: selected,
+                                  amount: Number(entry.amount || 0),
+                                  method: entry.method || 'other',
+                                  reference: entry.reference || '',
+                                  notes: entry.notes || '',
+                                  balance,
+                                  offline: entry._pending_sync === true,
+                                  created_at: entry.created_at
+                                })}
+                                className="mt-2 text-xs font-semibold text-emerald-700 hover:text-emerald-800"
+                              >
+                                Open receipt
+                              </button>
+                            )}
                           </div>
                           <div className="flex items-center gap-3">
                             <span className={`font-bold ${sign > 0 ? 'text-emerald-700' : 'text-rose-700'}`}>{sign > 0 ? '+' : '−'}{money(currency, entry.amount)}</span>
@@ -360,15 +382,40 @@ function MethodSelect({ value, onChange }) {
 
 function AdvanceReceipt({ receipt, currency, settings, onClose }) {
   const print = () => window.api.receipts.printCurrent({ silent: false }).catch(() => null)
-  const save = () => window.api.receipts.savePDF({ guestName: receipt.customer.name, invoiceNumber: `PREPAY-${String(receipt.id).slice(0, 8).toUpperCase()}` }).catch(() => null)
+  const receiptNumber = receipt.receipt_number || `PRE-PENDING-${String(receipt.id).slice(0, 6).toUpperCase()}`
+  const save = () => window.api.receipts.savePDF({
+    guestName: receipt.customer.name,
+    invoiceNumber: receiptNumber,
+    documentType: 'prepayment',
+    defaultFilename: `${receiptNumber}-${receipt.customer.name}`,
+    receipt: {
+      receiptNumber,
+      customerName: receipt.customer.name,
+      amount: Number(receipt.amount || 0),
+      currency,
+      method: receipt.method,
+      reference: receipt.reference || '',
+      notes: receipt.notes || '',
+      balance: Number(receipt.balance || 0),
+      createdAt: receipt.created_at,
+      provisional: receipt.offline === true,
+      lodgeName: settings?.lodge_name || settings?.company_name || 'Lodge',
+      companyName: settings?.company_name || '',
+      address: settings?.address || '',
+      phone: settings?.phone || '',
+      email: settings?.email || '',
+      website: settings?.website || '',
+      logo: settings?.logo || ''
+    }
+  }).catch(() => null)
   return <Modal title="Advance Payment Receipt" onClose={onClose} size="lg">
-    <div id="prepayment-receipt" className="space-y-5 bg-white p-6 print:p-0">
+    <div id="printable-receipt" className="mx-auto min-h-[297mm] w-full max-w-[210mm] space-y-8 bg-white p-8 sm:p-12 print:min-h-0 print:w-[210mm] print:max-w-none print:p-[16mm]">
       {receipt.offline && <div className="rounded-lg bg-amber-50 p-3 text-center text-xs font-semibold text-amber-800">PROVISIONAL — PENDING SERVER CONFIRMATION</div>}
       <div className="text-center">
-        <h2 className="text-xl font-bold">{settings?.lodge_name || settings?.company_name || 'Lodge'}</h2>
+        <h2 className="text-2xl font-bold">{settings?.lodge_name || settings?.company_name || 'Lodge'}</h2>
         <p className="text-sm text-slate-500">{settings?.address || ''}</p>
-        <h3 className="mt-5 text-lg font-semibold">Advance Payment Receipt</h3>
-        <p className="text-xs text-slate-500">PREPAY-{String(receipt.id).slice(0, 8).toUpperCase()}</p>
+        <h3 className="mt-8 text-xl font-semibold">Advance Payment Receipt</h3>
+        <p className="mt-1 text-sm text-slate-500">{receiptNumber}</p>
       </div>
       <div className="grid grid-cols-2 gap-4 rounded-xl border border-slate-200 p-4 text-sm">
         <div><span className="text-slate-500">Customer</span><p className="font-semibold">{receipt.customer.name}</p></div>
@@ -377,6 +424,7 @@ function AdvanceReceipt({ receipt, currency, settings, onClose }) {
         <div><span className="text-slate-500">Reference</span><p className="font-semibold">{receipt.reference || '—'}</p></div>
       </div>
       <div className="rounded-xl bg-emerald-50 p-5 text-center"><p className="text-sm text-emerald-700">Amount received</p><p className="text-3xl font-bold text-emerald-800">{money(currency, receipt.amount)}</p><p className="mt-2 text-sm text-emerald-700">Remaining customer credit: {money(currency, receipt.balance)}</p></div>
+      {receipt.notes && <div className="rounded-xl border border-slate-200 p-4 text-sm"><span className="text-slate-500">Notes</span><p className="mt-1 text-slate-800">{receipt.notes}</p></div>}
       <p className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-center text-sm font-semibold text-amber-900">This payment is held as customer credit. It does not reserve accommodation or guarantee room availability until a booking is confirmed.</p>
       <div className="flex justify-end gap-2 print:hidden"><button onClick={save} className="btn-secondary flex items-center gap-2"><Download size={15} /> Save PDF</button><button onClick={print} className="btn-primary flex items-center gap-2"><Printer size={15} /> Print</button></div>
     </div>

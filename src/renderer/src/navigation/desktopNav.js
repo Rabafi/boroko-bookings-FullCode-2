@@ -74,7 +74,7 @@ export const ALL_NAV = [
     label: 'Prepayments',
     icon: Banknote,
     types: ['lodge'],
-    group: 'Front Desk',
+    group: 'Finance',
     capability: 'invoices.view',
     keywords: ['customer credit', 'advance payment', 'deposit without dates', 'held money']
   },

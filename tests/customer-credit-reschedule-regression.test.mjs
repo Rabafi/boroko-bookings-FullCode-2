@@ -180,6 +180,11 @@ async function run() {
   assert.match(prepayments, /does not reserve accommodation or guarantee room availability/i, 'Advance receipt must carry the non-reservation warning')
   assert.match(prepayments, /receipts\.printCurrent/, 'Advance receipt must support printing')
   assert.match(prepayments, /receipts\.savePDF/, 'Advance receipt must support PDF export')
+  assert.match(prepayments, /id="printable-receipt"/, 'Advance receipt must use the printable A4 receipt surface')
+  assert.match(prepayments, /Open receipt/, 'Posted prepayment receipts must be reopenable from ledger history')
+  assert.match(prepayments, /receipt_number/, 'Prepayment receipts must use server-issued receipt numbers')
+  assert.match(mainIndex, /buildPrepaymentReceiptPdfHtml/, 'Prepayment PDF must render from a dedicated A4 HTML document')
+  assert.match(mainIndex, /renderHtmlToPdfBuffer\(/, 'Prepayment PDF must not depend on printing the whole application window')
 
   assert.match(mainIndex, /customerCredit:record[\s\S]{0,160}payments\.record/, 'Receiving prepayments must require payments.record capability')
   assert.match(mainIndex, /customerCredit:refund[\s\S]{0,160}payments\.refund/, 'Refunding prepayments must require payments.refund capability')
@@ -187,6 +192,11 @@ async function run() {
   // ── PWA Money ─────────────────────────────────────────────────────────
   const pwaMoney = await read('manager-pwa/src/pages/Money.jsx')
   assert.match(pwaMoney, /customerCredit/, 'PWA Money must have customerCredit state')
+  assert.match(desktopBookings, /customerCredit\.getBalance/, 'Booking payment modal must load available customer credit')
+  assert.match(desktopBookings, /payment_status === 'partial' && !creditAllocation\.enabled/, 'Credit-only payments must not require a separate cash amount')
+  assert.match(desktopBookings, /financialAudit\(\{ bookingId/, 'Booking history must load authoritative reschedule audit rows')
+  const desktopReports = await read('src/renderer/src/components/Reports.jsx')
+  assert.match(desktopReports, /Customer-credit liability/, 'Desktop reports must expose outstanding customer-credit liability')
   assert.match(pwaMoney, /getCustomerCreditSummaryPwa/, 'PWA Money must call getCustomerCreditSummaryPwa')
   assert.match(pwaMoney, /Customer Credit/, 'PWA Money must display customer credit label')
 

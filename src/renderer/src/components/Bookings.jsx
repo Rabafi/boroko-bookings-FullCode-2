@@ -211,6 +211,7 @@ export default function Bookings() {
   const [modalWarning, setModalWarning] = useState('')  // amber — booking saved but deposit failed
   const [loading, setLoading] = useState(false)
   const [statusLoadingId, setStatusLoadingId] = useState(null)
+  const [statusLoadingAction, setStatusLoadingAction] = useState('')
   const [applicableRate, setApplicableRate] = useState(null)
   const [receiptBooking, setReceiptBooking] = useState(null)
   const [failedSyncIds, setFailedSyncIds] = useState(new Set())
@@ -263,6 +264,8 @@ export default function Bookings() {
 
   // Customer credit allocation (used in payment modal)
   const [creditAllocation, setCreditAllocation] = useState({ enabled: false, amount: '' })
+  const [customerCreditBalance, setCustomerCreditBalance] = useState(0)
+  const [customerCreditLoading, setCustomerCreditLoading] = useState(false)
 
   // Payment modal
   const [paymentBooking, setPaymentBooking] = useState(null)
@@ -633,6 +636,8 @@ export default function Bookings() {
     setPaymentIntentKey(null)
     setPayError('')
     setCreditAllocation({ enabled: false, amount: '' })
+    setCustomerCreditBalance(0)
+    setCustomerCreditLoading(false)
   }
 
   const getPaymentAttemptSignature = (bookingId, paymentStatus, amount) => {
@@ -651,7 +656,7 @@ export default function Bookings() {
     return key
   }
 
-  const openPayment = (b) => {
+  const openPayment = async (b) => {
     if (isFinanciallySyncBlocked(b.id)) {
       setWarning(FINANCIAL_SYNC_BLOCK_MESSAGE)
       return
@@ -668,6 +673,20 @@ export default function Bookings() {
       payment_method: b.payment_method || 'cash',
       amount_paid: initialAmount
     })
+    setCreditAllocation({ enabled: false, amount: '' })
+    setCustomerCreditBalance(0)
+    if (b.customer_id) {
+      setCustomerCreditLoading(true)
+      try {
+        const result = await window.api.customerCredit.getBalance(b.customer_id)
+        if (result?.success === false) throw new Error(result.error)
+        setCustomerCreditBalance(Number(result?.balance || 0))
+      } catch (error) {
+        setPayError(error?.message || 'Could not load customer credit.')
+      } finally {
+        setCustomerCreditLoading(false)
+      }
+    }
   }
 
   const handleSave = async (e) => {
@@ -884,6 +903,7 @@ export default function Bookings() {
       }
     }
     setStatusLoadingId(id)
+    setStatusLoadingAction(status)
     try {
       const result = await window.api.bookings.updateStatus(id, status)
       if (result?.success === false) {
@@ -899,6 +919,7 @@ export default function Bookings() {
       }
     } finally {
       setStatusLoadingId(null)
+      setStatusLoadingAction('')
     }
   }
 
@@ -1521,28 +1542,28 @@ export default function Bookings() {
                             <button
                               onClick={() => handleStatusChange(b.id, 'checked_in')}
                               disabled={b.check_in > today() || statusLoadingId === b.id}
-                              title={b.check_in > today() ? `Check-in date is ${b.check_in}` : statusLoadingId === b.id ? 'Checking in…' : undefined}
+                              title={b.check_in > today() ? `Check-in date is ${b.check_in}` : statusLoadingId === b.id && statusLoadingAction === 'checked_in' ? 'Checking in…' : undefined}
                               className={`cursor-pointer rounded-xl px-3 py-1.5 text-xs font-semibold text-white transition-colors ${
                                 b.check_in > today() || statusLoadingId === b.id
                                   ? 'bg-slate-300 text-slate-600 cursor-not-allowed'
                                   : 'bg-emerald-600 hover:bg-emerald-700'
                               }`}
                             >
-                              {statusLoadingId === b.id ? 'Checking in…' : 'Check In'}
+                              {statusLoadingId === b.id && statusLoadingAction === 'checked_in' ? 'Checking in…' : 'Check In'}
                             </button>
                           )}
                           {b.status === 'checked_in' && (
                             <button
                               onClick={() => handleStatusChange(b.id, 'checked_out')}
                               disabled={bookingOutstandingAmount(b) > 0 || isFinanciallySyncBlocked(b.id) || b._pending_payment || statusLoadingId === b.id}
-                              title={statusLoadingId === b.id ? 'Checking out…' : getCheckoutBlockMessage(b)}
+                              title={statusLoadingId === b.id && statusLoadingAction === 'checked_out' ? 'Checking out…' : getCheckoutBlockMessage(b)}
                               className={`cursor-pointer rounded-xl px-3 py-1.5 text-xs font-semibold text-white transition-colors ${
                                 bookingOutstandingAmount(b) > 0 || isFinanciallySyncBlocked(b.id) || b._pending_payment || statusLoadingId === b.id
                                   ? 'bg-slate-300 text-slate-600 cursor-not-allowed'
                                   : 'bg-indigo-600 hover:bg-indigo-700'
                               }`}
                             >
-                              {statusLoadingId === b.id ? 'Checking out…' : 'Check Out'}
+                              {statusLoadingId === b.id && statusLoadingAction === 'checked_out' ? 'Checking out…' : 'Check Out'}
                             </button>
                           )}
                           {b.payment_status !== 'paid' && b.status !== 'cancelled' && (
@@ -1852,13 +1873,20 @@ export default function Bookings() {
               </p>
             </F>
 
-            {payForm.payment_status !== 'paid' && outstandingBeforePayment > 0 && (
+            {outstandingBeforePayment > 0 && (
               <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-                <label className="flex items-center gap-2 cursor-pointer">
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <span className="text-sm font-semibold text-slate-700">Customer credit</span>
+                  <span className="text-sm font-bold text-emerald-700">
+                    {customerCreditLoading ? 'Loading…' : `${currency} ${customerCreditBalance.toFixed(2)} available`}
+                  </span>
+                </div>
+                <label className={`flex items-center gap-2 ${customerCreditBalance > 0 ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'}`}>
                   <input
                     type="checkbox"
                     checked={creditAllocation.enabled}
                     onChange={handleCreditAllocationToggle}
+                    disabled={customerCreditLoading || customerCreditBalance <= 0}
                     className="rounded"
                   />
                   <span className="text-sm font-medium text-slate-700">Apply customer credit</span>
@@ -1869,19 +1897,19 @@ export default function Bookings() {
                       type="number"
                       min="0.01"
                       step="0.01"
-                      max={outstandingBeforePayment}
+                      max={Math.min(outstandingBeforePayment, customerCreditBalance)}
                       value={creditAllocation.amount}
                       onChange={(e) => setCreditAllocation(prev => ({ ...prev, amount: e.target.value }))}
-                      placeholder={`Max: ${currency} ${outstandingBeforePayment.toFixed(2)}`}
+                      placeholder={`Max: ${currency} ${Math.min(outstandingBeforePayment, customerCreditBalance).toFixed(2)}`}
                       className="input w-full"
                     />
-                    <p className="mt-1 text-xs text-slate-400">Enter the credit amount to allocate from the customer's credit balance.</p>
+                    <p className="mt-1 text-xs text-slate-400">This is an alternative payment source and will not also record the selected cash/card method.</p>
                   </div>
                 )}
               </div>
             )}
 
-            {payForm.payment_status === 'partial' && (
+            {payForm.payment_status === 'partial' && !creditAllocation.enabled && (
               <F label={`Amount Paid (${currency})`}>
                 <input
                   type="number"
@@ -2499,6 +2527,7 @@ function BookingHistoryModal({ booking, onClose }) {
   const [charges, setCharges] = useState([])
   const [chargesUnavailable, setChargesUnavailable] = useState(false)
   const [payments, setPayments] = useState([])
+  const [auditRows, setAuditRows] = useState([])
   const bookingId = booking.id || booking.booking_id
 
   useEffect(() => {
@@ -2512,6 +2541,9 @@ function BookingHistoryModal({ booking, onClose }) {
       setChargesUnavailable(true)
     })
     window.api.bookings.getPayments(bookingId).then((data) => setPayments(Array.isArray(data) ? data : [])).catch(() => {})
+    window.api.reports.financialAudit({ bookingId, limit: 100, offset: 0 })
+      .then((data) => setAuditRows(Array.isArray(data) ? data : []))
+      .catch(() => setAuditRows([]))
   }, [bookingId])
 
   const currency = settings?.currency || 'P'
@@ -2550,6 +2582,16 @@ function BookingHistoryModal({ booking, onClose }) {
         detail: `${currency} ${amount.toFixed(2)} via ${String(p.method || 'cash').replace(/_/g, ' ')}`
       })
     })
+    auditRows.filter((row) => row.action === 'booking_rescheduled').forEach((row) => {
+      const before = row.before_snapshot || {}
+      const after = row.after_snapshot || {}
+      list.push({
+        at: row.created_at,
+        tone: 'bg-indigo-100 text-indigo-700',
+        title: 'Booking rescheduled',
+        detail: `${before.old_check_in || '—'} to ${before.old_check_out || '—'} → ${after.new_check_in || '—'} to ${after.new_check_out || '—'}${after.reason ? ` · ${after.reason}` : ''}`
+      })
+    })
     if (booking.status === 'checked_in' || booking.status === 'checked_out') {
       list.push({
         at: booking.updated_at || booking.check_in,
@@ -2559,7 +2601,7 @@ function BookingHistoryModal({ booking, onClose }) {
       })
     }
     return list.sort((a, b) => new Date(b.at) - new Date(a.at))
-  }, [booking, charges, payments, currency, nights])
+  }, [booking, charges, payments, auditRows, currency, nights])
 
   return (
     <Modal title={`Booking Activity · ${booking.invoice_number || booking._local_invoice_number || 'Draft'}`} onClose={onClose} size="sm">

@@ -1,6 +1,43 @@
 # Booking Rescheduling and Customer Credit
 
-> **Status: implementation in progress as of 2026-06-20.** Relevant migration, desktop domains, IPC/UI, reporting, and tests exist in the uncommitted worktree. This plan is a design reference, not proof of completion or deployment. Verify the current diff and linked schema before continuing.
+> **Status: implemented and database-deployed as of 2026-06-20; release publication pending.** The repository includes the Supabase ledger/RPC layer, desktop backend and UI, offline replay contracts, reporting classification, read-only Manager PWA visibility, receipts, and focused regression coverage. The linked migration list and live RPC catalog were verified after deployment. The Windows 1.5.2 installer builds successfully, but the feature is not production-certified until the remaining ship gates in [SHIP_READY_RUNBOOK.md](SHIP_READY_RUNBOOK.md) are completed.
+
+## Implementation record
+
+Implemented entry points:
+
+- Desktop: **Front Desk -> Prepayments**
+- Existing booking: **Bookings -> Payment -> Customer credit**
+- Eligible booking: **Bookings -> Reschedule**
+- Manager PWA: read-only customer-credit liability summary under Money
+
+Confirmed implementation:
+
+- `customer_credit_ledger` with lodge/customer isolation, immutable compensating entries, RLS, constraints, consistency trigger, and customer-scoped locking.
+- Atomic receipt, allocation, refund, reversal, balance/history/summary, cash-flow, and booking-reschedule RPCs.
+- Stable idempotency keys for queued advance-payment receipts and queued reschedules.
+- Credit allocation as an alternative payment source, never a duplicate normal payment.
+- Cash reporting that counts advance receipt once, excludes allocation as new cash, and distinguishes internal credit transfers from external refunds.
+- Advance-payment receipts that state no accommodation is reserved until a booking is confirmed.
+- Desktop capability gates for receipt/allocation and refund/reversal actions.
+
+Verification completed on 2026-06-20:
+
+- Linked Supabase migrations applied through `20260620200000`.
+- Live function signatures, authenticated grants, ledger table, and consistency trigger verified.
+- Customer-credit/reschedule, financial-integrity, offline-queue, production-guardrail, Manager PWA lint/build, booking-site build, Legacy POS tests, and desktop build passed.
+- Windows installer created at `dist/Boroko-Bookings-1.5.2-x64.exe`.
+
+Remaining release gates:
+
+- Run the complete current ship-ready command matrix, including production audit and all affected offline/import/inventory suites.
+- Run Supabase lint/advisors and disposable live concurrency, duplicate replay, rollback, and cross-lodge isolation smoke tests.
+- Test prepayment, allocation, refund/reversal, rescheduling, conflict handling, receipt printing, and disconnected replay from the packaged installer.
+- Sign and intentionally publish the desktop installer.
+- Deploy and smoke-test any changed Manager PWA build.
+- Confirm backups, support-bundle export, production queue health, and deployment-matrix status before operator rollout.
+
+The sections below preserve the original technical design and acceptance contract. Where proposed names differ from the final migration, the deployed migration and current tests are authoritative.
 
 ## Comprehensive Technical Implementation Plan
 

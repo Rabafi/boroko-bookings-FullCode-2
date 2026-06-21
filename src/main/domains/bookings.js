@@ -4,7 +4,7 @@ import { state } from '../state.js';
 import { getAllRooms, getRoomById } from './rooms.js';
 import { getAllCustomers } from './customers.js';
 import { normalizeLodgeId } from './shared.js';
-import { recordCriticalError } from './operationalLog.js';
+import { getLocalDateKey, recordCriticalError } from './operationalLog.js';
 import {
   DEBUG_CACHE_FALLBACKS,
   readCache,
@@ -494,7 +494,14 @@ export async function createBooking(data) {
     if (totalGuests > (room.max_occupancy || 2)) {
       throw new Error(`Number of guests (${totalGuests}) exceeds room maximum occupancy (${room.max_occupancy || 2})`);
     }
-    const baseTotal = room.rate_per_night * nights;
+    let effectiveRate = room.rate_per_night;
+    try {
+      const override = await getApplicableRate(data.room_id, data.check_in, data.check_out);
+      if (override && Number.isFinite(Number(override.rate)) && Number(override.rate) > 0) {
+        effectiveRate = Number(override.rate);
+      }
+    } catch { /* fall back to base rate */ }
+    const baseTotal = effectiveRate * nights;
     const requestedTotal = Number(data.total_amount);
     const allowTotalOverride = data.allow_total_override === true &&
     Number.isFinite(requestedTotal) &&
@@ -758,10 +765,7 @@ export async function updateBookingStatus(id, status) {
   }
 
   if (status === 'checked_in' && currentBooking) {
-    const checkInDate = new Date(currentBooking.check_in + 'T00:00:00');
-    const todayDate = new Date();
-    todayDate.setHours(0, 0, 0, 0);
-    if (checkInDate.getTime() > todayDate.getTime()) {
+    if (String(currentBooking.check_in) > getLocalDateKey()) {
       throw new Error(`Cannot check in before the check-in date (${currentBooking.check_in}).`);
     }
   }

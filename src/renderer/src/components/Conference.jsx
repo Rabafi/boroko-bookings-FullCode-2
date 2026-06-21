@@ -5,7 +5,6 @@ import { PAYMENT_METHOD_PLAIN_OPTIONS } from '../constants/paymentMethods'
 import { useSettings } from '../app-context'
 import { localToday } from '../utils/localDate'
 
-const SETUP_TYPES = ['Theatre', 'Boardroom', 'Classroom', 'U-Shape', 'Banquet', 'Cocktail', 'Default']
 const EVENT_TYPES = [
   { value: 'conference', label: 'Conference' },
   { value: 'meeting', label: 'Meeting' },
@@ -275,6 +274,11 @@ export default function Conference() {
       const hasNewFields = form.event_type || form.reservation_scope || form.event_name
       const payload = {
         ...form,
+        booking_date: form.reservation_scope === 'venue_only' ? form.booking_date : form.check_in,
+        event_name: form.client_name.trim(),
+        company: null,
+        setup_type: 'Default',
+        room_name: null,
         attendees: Number(form.attendees) || 0,
         adults: Number(form.adults) || Number(form.attendees) || 0,
         children: Number(form.children) || 0,
@@ -596,9 +600,9 @@ export default function Conference() {
                 <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 text-sm">{error}</div>
               )}
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Client / Group Name *</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Event / Client Name *</label>
                   <input
                     className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
                     placeholder="e.g. ABC Company"
@@ -606,15 +610,6 @@ export default function Conference() {
                     onChange={(e) => set('client_name', e.target.value)}
                     required
                     autoFocus
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Event Name</label>
-                  <input
-                    className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
-                    placeholder="e.g. Annual Conference 2026"
-                    value={form.event_name}
-                    onChange={(e) => set('event_name', e.target.value)}
                   />
                 </div>
               </div>
@@ -681,7 +676,7 @@ export default function Conference() {
                 </div>
               )}
 
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Event Type</label>
                   <select
@@ -702,19 +697,10 @@ export default function Conference() {
                     {RESERVATION_SCOPES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
                   </select>
                 </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Company / Organisation</label>
-                  <input
-                    className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
-                    placeholder="Optional"
-                    value={form.company}
-                    onChange={(e) => set('company', e.target.value)}
-                  />
-                </div>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                <div>
+                {form.reservation_scope === 'venue_only' && <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Date *</label>
                   <input
                     type="date"
@@ -723,7 +709,7 @@ export default function Conference() {
                     onChange={(e) => set('booking_date', e.target.value)}
                     required
                   />
-                </div>
+                </div>}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Start Time *</label>
                   <input
@@ -746,7 +732,7 @@ export default function Conference() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Adults</label>
                   <input
@@ -767,25 +753,6 @@ export default function Conference() {
                     placeholder="0"
                     value={form.children}
                     onChange={(e) => set('children', e.target.value)}
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Setup Type</label>
-                  <select
-                    className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 bg-white"
-                    value={form.setup_type}
-                    onChange={(e) => set('setup_type', e.target.value)}
-                  >
-                    {SETUP_TYPES.map((s) => <option key={s}>{s}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Room / Venue Name</label>
-                  <input
-                    className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
-                    placeholder="Conference Room"
-                    value={form.room_name}
-                    onChange={(e) => set('room_name', e.target.value)}
                   />
                 </div>
               </div>
@@ -841,13 +808,7 @@ export default function Conference() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Payment Status</label>
-                  <div className="w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm text-gray-600">
-                    Calculated by the financial ledger
-                  </div>
-                </div>
+              <div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Payment Method</label>
                   <select

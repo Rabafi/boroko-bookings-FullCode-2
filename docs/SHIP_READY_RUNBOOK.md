@@ -22,6 +22,19 @@ Do not publish if any required check is red.
 
 Run every feature-specific regression script present in `package.json` for the area being released, including customer-credit/reschedule or report-export tests when those changes are part of the release.
 
+For customer-credit/reschedule releases, manually verify from the packaged desktop installer:
+
+- advance-payment receipt creation without a booking or room hold;
+- receipt wording that explicitly says accommodation is not reserved;
+- partial and full credit allocation to an existing booking;
+- insufficient-credit and excessive-allocation rejection;
+- refund and reversal authorization;
+- rescheduling into an available room/date range;
+- stale/conflicting reschedule rejection;
+- lower-priced reschedule overpayment handling;
+- disconnected receipt/reschedule queueing and exact-once replay after reconnection;
+- reporting classification: receipt is cash in, allocation is non-cash, unused credit is a liability.
+
 ## Legacy POS gate
 
 When Legacy POS, shared POS SQL, mesh behavior, shifts, outlets, returns, or cash-up changes:
@@ -40,6 +53,7 @@ Build and publish Legacy POS separately from the desktop installer. Verify its p
 - Run Supabase database lint/advisors against the target project before production promotion.
 - Smoke-test the current authoritative booking, payment, POS order/return/cash-up, inventory, authentication, and public online-booking RPCs affected by the release.
 - For financial SQL, test duplicate replay, conflicting idempotency payloads, concurrent mutation, rollback behavior, and lodge/outlet isolation.
+- For customer credit, test concurrent allocation versus allocation/refund, reversal-once enforcement, booking/customer/lodge consistency, and exact cash-flow classification.
 
 ## Deployment matrix
 

@@ -55,7 +55,7 @@ export async function getCustomerCreditHistory(customerId, limit = 50, offset = 
     return Array.isArray(data) ? data : [];
   } catch (error) {
     recordCriticalError('customerCredit.getHistory', error, { customer_id: customerId });
-    return [];
+    throw error;
   }
 }
 
@@ -106,6 +106,8 @@ export async function recordCustomerCredit({
       if (!result?.success) throw new Error(result?.error || 'Could not record customer credit');
 
       await refreshCache('customers');
+      const postedHistory = await getCustomerCreditHistory(customerId, 100, 0).catch(() => []);
+      const postedEntry = postedHistory.find((entry) => entry.id === result.entry_id);
       const customer = readCache('customers').find((c) => c.id === customerId);
       logActivity(
         'customer_credit_received',
@@ -116,6 +118,7 @@ export async function recordCustomerCredit({
       return {
         success: true,
         entry_id: result.entry_id,
+        receipt_number: postedEntry?.receipt_number || null,
         balance: result.balance,
         offline: false
       };

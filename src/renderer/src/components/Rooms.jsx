@@ -44,6 +44,7 @@ export default function Rooms() {
   const [rateForm, setRateForm] = useState(null)
   const [editingRate, setEditingRate] = useState(null)
   const [rateSaving, setRateSaving] = useState(false)
+  const [rateError, setRateError] = useState('')
   const [showModal, setShowModal] = useState(false)
   const [editing, setEditing] = useState(null)
   const [form, setForm] = useState(emptyForm)
@@ -167,6 +168,7 @@ export default function Rooms() {
 
   const openRateCreate = () => {
     setEditingRate(null)
+    setRateError('')
     setRateForm({
       room_id: rooms[0]?.id || '',
       start_date: '',
@@ -181,6 +183,7 @@ export default function Rooms() {
 
   const openRateEdit = (rateOverride) => {
     setEditingRate(rateOverride)
+    setRateError('')
     setRateForm({
       room_id: rateOverride.room_id,
       start_date: rateOverride.start_date,
@@ -195,6 +198,7 @@ export default function Rooms() {
 
   const handleRateSave = async () => {
     setRateSaving(true)
+    setRateError('')
     try {
       const applyScope = rateForm.apply_scope || 'single'
       const pricingMode = rateForm.pricing_mode || 'fixed'
@@ -238,14 +242,15 @@ export default function Rooms() {
         throw new Error(failed?.error || `Could not ${editingRate ? 'update' : 'create'} rate override.`)
       }
 
-      await load()
+      try { await load() } catch { /* non-critical refresh failure */ }
       setRateForm(null)
       setEditingRate(null)
+      setSuccess(editingRate ? 'Rate override updated.' : 'Rate override saved.')
       if (results.some((result) => result?.local_only)) {
         setSuccess('One or more rate overrides were saved locally because the server save is currently unavailable.')
       }
     } catch (error) {
-      setError(error?.message || 'Could not save rate override.')
+      setRateError(error?.message || 'Could not save rate override.')
     } finally {
       setRateSaving(false)
     }
@@ -560,9 +565,12 @@ export default function Rooms() {
             {rateForm.pricing_mode === 'percent' && (
               <p className="text-xs text-slate-500">
                 {rateForm.apply_scope === 'all'
-                  ? 'The same percentage discount will be applied to each room’s standard rate.'
-                  : 'The percentage discount will be calculated from the selected room’s standard rate.'}
+                  ? 'The same percentage discount will be applied to each room\'s standard rate.'
+                  : 'The percentage discount will be calculated from the selected room\'s standard rate.'}
               </p>
+            )}
+            {rateError && (
+              <div className="rounded-xl bg-red-50 px-4 py-2 text-sm text-red-600">{rateError}</div>
             )}
             <div className="flex gap-3">
               <button type="button" onClick={() => { setRateForm(null); setEditingRate(null) }} className="btn-secondary flex-1">Cancel</button>

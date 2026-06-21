@@ -163,6 +163,8 @@ export default function Reports() {
   const [plLoading, setPlLoading]   = useState(false)
   const [outletPL, setOutletPL]     = useState(null)
   const [roomProfitability, setRoomProfitability] = useState([])
+  const [customerCredits, setCustomerCredits] = useState([])
+  const [creditLoading, setCreditLoading] = useState(false)
 
   // Outlet filter — applies to POS, Expenses, and Costs (inventory) tabs only
   const [outlets, setOutlets]           = useState([])
@@ -301,6 +303,19 @@ export default function Reports() {
           setTabError(`Could not load P&L: ${err?.message || 'Unknown error'}`)
         } finally {
           setPlLoading(false)
+        }
+      }
+      if (activeTab === 'prepayments') {
+        setCreditLoading(true)
+        try {
+          const rows = await window.api.customerCredit.getSummary(null, 100, 0)
+          if (rows?.success === false) throw new Error(rows.error)
+          setCustomerCredits(Array.isArray(rows) ? rows : [])
+        } catch (err) {
+          setCustomerCredits([])
+          setTabError(`Could not load customer-credit liability: ${err?.message || 'Unknown error'}`)
+        } finally {
+          setCreditLoading(false)
         }
       }
     }
@@ -620,6 +635,7 @@ export default function Reports() {
 
   const TABS = [
     ['bookings', '🛏️ Bookings'],
+    ['prepayments', '💳 Prepayments'],
     ['expenses', '💸 Expenses'],
     ['pos',      '🍺 POS Sales'],
     ['costs',    '📦 Stock Costs'],
@@ -705,7 +721,7 @@ export default function Reports() {
             </select>
           </div>
         )}
-        {(loading || posLoading || costsLoading || expLoading || plLoading) && (
+        {(loading || posLoading || costsLoading || expLoading || plLoading || creditLoading) && (
           <span className="self-end pb-2 text-sm italic text-slate-400">Refreshing the {activeTab} report…</span>
         )}
         <div className="ml-auto flex gap-2">
@@ -788,6 +804,58 @@ export default function Reports() {
           <div>
             <p className="font-semibold">Financial data is using local fallback — NOT server-authoritative</p>
             <p className="mt-1 text-xs font-normal text-red-700">Exports are blocked. Restore server connectivity and reload to get verified numbers. Do not make financial decisions based on this data.</p>
+          </div>
+        </div>
+      )}
+
+      {/* ── POS SALES TAB ─────────────────────────────────────────────────────── */}
+      {activeTab === 'prepayments' && (
+        <div className="space-y-6">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <SummaryCard
+              icon={PiggyBank}
+              label="Customer-credit liability"
+              value={`${currency} ${customerCredits.reduce((sum, row) => sum + Number(row.balance || 0), 0).toFixed(2)}`}
+              sub="Money held before booking and still available to customers"
+              color="bg-amber-50 text-amber-700"
+            />
+            <SummaryCard
+              icon={CreditCard}
+              label="Customers with available credit"
+              value={customerCredits.length}
+              color="bg-emerald-50 text-emerald-700"
+            />
+          </div>
+          <div className="bb-table-shell">
+            <div className="border-b border-slate-200/80 px-5 py-4">
+              <h2 className="text-lg font-semibold text-slate-800">Unallocated prepayments</h2>
+              <p className="mt-1 text-xs text-slate-500">These balances exist independently of bookings and do not reserve rooms.</p>
+            </div>
+            {creditLoading ? (
+              <div className="p-8 text-center text-sm text-slate-500">Loading prepayments…</div>
+            ) : customerCredits.length === 0 ? (
+              <div className="p-8 text-center text-sm text-slate-500">No outstanding customer credit.</div>
+            ) : (
+              <HorizontalScrollArea>
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50 text-xs uppercase tracking-[0.14em] text-slate-500">
+                    <tr><th className="px-5 py-3 text-left">Customer</th><th className="px-5 py-3 text-right">Received</th><th className="px-5 py-3 text-right">Allocated</th><th className="px-5 py-3 text-right">Refunded</th><th className="px-5 py-3 text-right">Liability</th><th className="px-5 py-3 text-left">Last activity</th></tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {customerCredits.map((row) => (
+                      <tr key={row.customer_id}>
+                        <td className="px-5 py-3 font-semibold text-slate-800">{row.customer_name}</td>
+                        <td className="px-5 py-3 text-right">{currency} {Number(row.total_receipts || 0).toFixed(2)}</td>
+                        <td className="px-5 py-3 text-right">{currency} {Number(row.total_allocations || 0).toFixed(2)}</td>
+                        <td className="px-5 py-3 text-right">{currency} {Number(row.total_refunds || 0).toFixed(2)}</td>
+                        <td className="px-5 py-3 text-right font-bold text-amber-700">{currency} {Number(row.balance || 0).toFixed(2)}</td>
+                        <td className="px-5 py-3 text-slate-500">{row.last_activity ? new Date(row.last_activity).toLocaleString() : '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </HorizontalScrollArea>
+            )}
           </div>
         </div>
       )}
