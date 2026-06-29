@@ -98,6 +98,10 @@ input[type='date']::-webkit-calendar-picker-indicator {
   cursor: pointer;
 }
 
+.section-collapsed {
+  display: none;
+}
+
 /* ── Print Styles ─────────────────────────────────────────────────────────── */
 @media print {
 
@@ -169,12 +173,103 @@ input[type='date']::-webkit-calendar-picker-indicator {
     visibility: visible !important;
   }
 
+  /* ── Night Audit / Report section helpers ─────────────────────────────────── */
+  #printable-report .section-collapsed {
+    display: block !important;
+    max-height: none !important;
+    overflow: visible !important;
+  }
+
+  #printable-report .print-section-header {
+    cursor: default !important;
+    background: transparent !important;
+    border-bottom: 2px solid #e5e7eb !important;
+    padding: 6px 12px !important;
+    font-size: 11px !important;
+  }
+
+  #printable-report .print-section-header:hover {
+    background: transparent !important;
+  }
+
+  #printable-report .section-chevron {
+    display: none !important;
+  }
+
+  /* ── Scale report down for A4 ────────────────────────────────────────────── */
+  #printable-report {
+    padding: 12px !important;
+    font-size: 11px !important;
+  }
+
+  /* Summary cards: compact */
+  #printable-report .rounded-xl.p-5.shadow-sm {
+    border: 1px solid #d1d5db !important;
+    box-shadow: none !important;
+    padding: 10px !important;
+  }
+
+  #printable-report .w-10.h-10.rounded-lg {
+    width: 28px !important;
+    height: 28px !important;
+  }
+
+  #printable-report .text-2xl {
+    font-size: 16px !important;
+    line-height: 1.2 !important;
+  }
+
+  #printable-report .text-sm {
+    font-size: 10px !important;
+  }
+
+  #printable-report .text-xs {
+    font-size: 9px !important;
+  }
+
+  #printable-report .mb-6 {
+    margin-bottom: 10px !important;
+  }
+
+  #printable-report .gap-4 {
+    gap: 8px !important;
+  }
+
+  #printable-report .mb-4 {
+    margin-bottom: 8px !important;
+  }
+
+  /* Tables: tighter cells */
+  #printable-report table {
+    font-size: 10px !important;
+  }
+
+  #printable-report table th,
+  #printable-report table td {
+    padding: 4px 8px !important;
+  }
+
+  #printable-report table .text-xs {
+    font-size: 9px !important;
+  }
+
+  /* Status badges: compact */
+  #printable-report table .rounded-full.font-medium {
+    border: 1px solid currentColor !important;
+    background: transparent !important;
+    padding: 1px 6px !important;
+    font-size: 9px !important;
+  }
+
+  /* Force 5-column grid for summary cards */
+  #printable-report .grid {
+    grid-template-columns: repeat(5, 1fr) !important;
+  }
+
   /* ── Whitelist persistent UI containers so they don't block visible children ── */
   #root,
   #root>div,
-  #root main,
-  [role="dialog"],
-  .fixed.inset-0 {
+  #root main {
     visibility: visible !important;
     background: transparent !important;
   }

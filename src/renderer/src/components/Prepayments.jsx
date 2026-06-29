@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { CreditCard, Download, History, Plus, Printer, RefreshCw, RotateCcw, Search, Undo2 } from 'lucide-react'
+import { CreditCard, Download, FileText, History, Plus, Printer, RefreshCw, RotateCcw, Search, Undo2 } from 'lucide-react'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { useAccess, useAuth, useSettings } from '../app-context'
 import { canAccessCapability } from '../../../shared/accessControl'
 import { Modal } from './shared/Modal'
@@ -22,7 +23,12 @@ function entryEffect(entry) {
   return ['receipt', 'adjustment_in', 'reversal_in'].includes(entry.entry_type) ? 1 : -1
 }
 
-function entryLabel(type) {
+function isCancelledBookingCredit(entry) {
+  return entry?.method === 'customer_credit_transfer' && entry?.entry_type === 'adjustment_in'
+}
+
+function entryLabel(entry) {
+  if (isCancelledBookingCredit(entry)) return 'Credit from cancelled booking'
   return {
     receipt: 'Advance payment received',
     booking_allocation: 'Applied to booking',
@@ -31,10 +37,12 @@ function entryLabel(type) {
     adjustment_out: 'Credit removed',
     reversal_in: 'Credit restored',
     reversal_out: 'Credit reversed'
-  }[type] || String(type || 'Credit activity').replaceAll('_', ' ')
+  }[entry?.entry_type] || String(entry?.entry_type || 'Credit activity').replaceAll('_', ' ')
 }
 
 export default function Prepayments() {
+  const location = useLocation()
+  const navigate = useNavigate()
   const access = useAccess()
   const { user } = useAuth()
   const { settings } = useSettings()
@@ -49,6 +57,7 @@ export default function Prepayments() {
   const [balance, setBalance] = useState(0)
   const [history, setHistory] = useState([])
   const [bookings, setBookings] = useState([])
+  const [allBookings, setAllBookings] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
@@ -94,7 +103,9 @@ export default function Prepayments() {
       if (historyRows?.success === false) throw new Error(historyRows.error)
       setBalance(Number(balanceResult?.balance || 0))
       setHistory(Array.isArray(historyRows) ? historyRows : [])
-      setBookings((Array.isArray(bookingRows) ? bookingRows : []).filter((booking) => {
+      const customerBookings = Array.isArray(bookingRows) ? bookingRows : []
+      setAllBookings(customerBookings)
+      setBookings(customerBookings.filter((booking) => {
         const outstanding = Number(booking.total_amount || 0) + Number(booking.charges_total || 0) - Number(booking.amount_paid || 0)
         return !['cancelled', 'checked_out'].includes(booking.status) && outstanding > 0.009
       }))
@@ -104,6 +115,18 @@ export default function Prepayments() {
   }, [])
 
   useEffect(() => { loadBase() }, [loadBase])
+
+  useEffect(() => {
+    const targetCustomerId = location.state?.customerId
+    if (!targetCustomerId || customers.length === 0) return
+    const customer = customers.find((row) => String(row.id) === String(targetCustomerId))
+    if (!customer) return
+    loadCustomer(customer)
+    if (location.state?.openReceive === true && canRecord) {
+      setReceiveOpen(true)
+    }
+    navigate(location.pathname, { replace: true, state: {} })
+  }, [canRecord, customers, loadCustomer, location.pathname, location.state, navigate])
 
   const customerRows = useMemo(() => {
     const balances = new Map(summary.map((row) => [row.customer_id, row]))
@@ -117,6 +140,19 @@ export default function Prepayments() {
   const refreshSelected = async () => {
     await loadBase()
     if (selected) await loadCustomer(selected)
+  }
+
+  const bookingById = useMemo(() => {
+    return new Map(allBookings.map((booking) => [String(booking.id), booking]))
+  }, [allBookings])
+
+  const openLinkedInvoice = (bookingId) => {
+    if (!bookingId) return
+    navigate('/invoices', {
+      state: {
+        viewBookingId: bookingId
+      }
+    })
   }
 
   const receive = async (event) => {
@@ -294,9 +330,19 @@ export default function Prepayments() {
                       return (
                         <div key={entry.id} className="flex items-center justify-between gap-4 px-5 py-4">
                           <div>
-                            <p className="text-sm font-semibold text-slate-800">{entryLabel(entry.entry_type)}</p>
+                            <p className="text-sm font-semibold text-slate-800">{entryLabel(entry)}</p>
                             <p className="mt-1 text-xs text-slate-500">{new Date(entry.created_at).toLocaleString()} · {String(entry.method || 'internal').replaceAll('_', ' ')}</p>
                             {(entry.reference || entry.notes) && <p className="mt-1 text-xs text-slate-500">{entry.reference || entry.notes}</p>}
+                            {entry.booking_id && (
+                              <button
+                                type="button"
+                                onClick={() => openLinkedInvoice(entry.booking_id)}
+                                className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-blue-700 hover:text-blue-800"
+                              >
+                                <FileText size={13} />
+                                Open {bookingById.get(String(entry.booking_id))?.invoice_number || 'linked invoice'}
+                              </button>
+                            )}
                             {entry.entry_type === 'receipt' && (
                               <button
                                 type="button"

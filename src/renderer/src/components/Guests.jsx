@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Search, UserX, Clock, ChevronDown, ChevronUp, Camera, X, Pencil, Plus, RefreshCw } from 'lucide-react'
+import { Search, UserX, Clock, ChevronDown, ChevronUp, Camera, X, Pencil, Plus, RefreshCw, CreditCard } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
 import { Modal } from './shared/Modal'
 import HorizontalScrollArea from './shared/HorizontalScrollArea'
 import { useAccess, useSettings } from '../app-context'
@@ -13,13 +14,26 @@ const emptyGuestForm = {
   nationality: ''
 }
 
+async function loadCreditSummaryRows() {
+  const rows = []
+  for (let offset = 0; offset < 1000; offset += 100) {
+    const page = await window.api.customerCredit.getSummary(null, 100, offset).catch(() => [])
+    if (!Array.isArray(page) || page.length === 0) break
+    rows.push(...page)
+    if (page.length < 100) break
+  }
+  return rows
+}
+
 export default function Guests() {
+  const navigate = useNavigate()
   const access = useAccess()
   const { settings } = useSettings()
   const currency = settings?.currency || 'P'
   const canManageGuests = canAccessCapability(access, 'guests.manage')
 
   const [customers, setCustomers] = useState([])
+  const [creditSummary, setCreditSummary] = useState([])
   const [search, setSearch]       = useState('')
   const [filter, setFilter]       = useState('all') // all | active | blacklisted
   const [sortBy, setSortBy]       = useState('created_desc')
@@ -90,8 +104,12 @@ export default function Guests() {
 
   const loadCustomers = useCallback(async () => {
     setLoading(true)
-    const data = await window.api.customers.getAll()
+    const [data, creditRows] = await Promise.all([
+      window.api.customers.getAll(),
+      loadCreditSummaryRows()
+    ])
     setCustomers(data || [])
+    setCreditSummary(Array.isArray(creditRows) ? creditRows : [])
     setLoading(false)
   }, [])
 
@@ -123,6 +141,15 @@ export default function Guests() {
     })
     setGuestError('')
     setGuestModalOpen(true)
+  }
+
+  const openGuestPrepayments = (customer, openReceive = false) => {
+    navigate('/prepayments', {
+      state: {
+        customerId: customer.id,
+        openReceive
+      }
+    })
   }
 
   const handleGuestFormChange = (field, value) => {
@@ -205,6 +232,7 @@ export default function Guests() {
 
   const filtered = useMemo(() => {
     const normalizedSearch = search.toLowerCase()
+    const creditByCustomer = new Map(creditSummary.map((row) => [row.customer_id, Number(row.balance || 0)]))
     return [...customers.filter((c) => {
       const matchSearch =
         !search ||
@@ -216,6 +244,11 @@ export default function Guests() {
         (filter === 'blacklisted' && c.is_blacklisted) ||
         (filter === 'active' && !c.is_blacklisted)
       return matchSearch && matchFilter
+    }).map((customer) => {
+      return {
+        ...customer,
+        credit_balance: creditByCustomer.get(customer.id) || 0
+      }
     })].sort((a, b) => {
       switch (sortBy) {
         case 'name_asc':
@@ -232,7 +265,7 @@ export default function Guests() {
           return String(b.created_at || '').localeCompare(String(a.created_at || ''))
       }
     })
-  }, [customers, filter, search, sortBy])
+  }, [creditSummary, customers, filter, search, sortBy])
 
   const blacklistedCount = useMemo(
     () => customers.filter((c) => c.is_blacklisted).length,
@@ -305,6 +338,7 @@ export default function Guests() {
               <th className="px-5 py-3 text-left">Email</th>
               <th className="px-5 py-3 text-left">ID / Passport</th>
               <th className="px-5 py-3 text-left">Nationality</th>
+              <th className="px-5 py-3 text-right">Credit</th>
               <th className="px-5 py-3 text-left">Status</th>
               <th className="px-5 py-3 text-left">ID Photo</th>
               <th className="px-5 py-3 text-center">Actions</th>
@@ -324,6 +358,15 @@ export default function Guests() {
                   <td className="px-5 py-3 text-slate-600">{c.email || '—'}</td>
                   <td className="px-5 py-3 text-slate-600">{c.id_number || '—'}</td>
                   <td className="px-5 py-3 text-slate-600">{c.nationality || '—'}</td>
+                  <td className="px-5 py-3 text-right">
+                    <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${
+                      Number(c.credit_balance || 0) > 0
+                        ? 'bg-emerald-50 text-emerald-700'
+                        : 'bg-slate-100 text-slate-500'
+                    }`}>
+                      {currency} {Number(c.credit_balance || 0).toFixed(2)}
+                    </span>
+                  </td>
                   <td className="px-5 py-3">
                     {c.is_blacklisted ? (
                       <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-red-100 text-red-700">
@@ -374,6 +417,22 @@ export default function Guests() {
                         {expandedId === c.id ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
                       </button>
                       <button
+                        onClick={() => openGuestPrepayments(c, true)}
+                        className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-amber-700 transition-colors hover:bg-amber-50"
+                        title="Add prepayment for this guest"
+                      >
+                        <CreditCard size={12} />
+                        Prepay
+                      </button>
+                      <button
+                        onClick={() => openGuestPrepayments(c, false)}
+                        className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-emerald-700 transition-colors hover:bg-emerald-50"
+                        title="View this guest's credit ledger"
+                      >
+                        <CreditCard size={12} />
+                        Ledger
+                      </button>
+                      <button
                         onClick={() => openBlacklist(c)}
                         className={`flex items-center gap-1 rounded-lg px-2 py-1 text-xs transition-colors ${
                           c.is_blacklisted
@@ -391,7 +450,7 @@ export default function Guests() {
                 {/* History expansion row */}
                 {expandedId === c.id && (
                   <tr key={`${c.id}-history`}>
-                    <td colSpan={8} className="border-b border-blue-100 bg-blue-50/40 px-5 py-3">
+                    <td colSpan={9} className="border-b border-blue-100 bg-blue-50/40 px-5 py-3">
                       <p className="mb-2 text-xs font-semibold text-blue-700">
                         Booking history for {c.name}
                       </p>
@@ -438,7 +497,7 @@ export default function Guests() {
             ))}
             {loading && customers.length === 0 && (
               <tr>
-                <td colSpan={8} className="px-5 py-10">
+                <td colSpan={9} className="px-5 py-10">
                   <div className="flex items-center justify-center gap-3 py-10 text-sm text-gray-500">
                     <RefreshCw size={16} className="animate-spin" />
                     Loading guests…
@@ -448,7 +507,7 @@ export default function Guests() {
             )}
             {!loading && filtered.length === 0 && (
               <tr>
-                <td colSpan={8} className="px-5 py-10">
+                <td colSpan={9} className="px-5 py-10">
                   <div className="bb-empty-state py-10">
                     <p className="text-base font-semibold text-slate-800">No guests found</p>
                     <p className="text-sm text-slate-500">Try adjusting the search or guest status filter.</p>

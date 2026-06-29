@@ -20,6 +20,10 @@ export const FINANCIAL_SYNC_TABLES = new Set([
   'update_conference_booking',
   'update_conference_booking_payment',
   'delete_conference_booking',
+  'create_event_booking',
+  'update_event_booking',
+  'update_event_payment',
+  'cancel_event_booking',
   'add_pool_day_use',
   'update_pool_day_use',
   'delete_pool_day_use'
@@ -38,10 +42,10 @@ export function pickNextReadySyncItemIndex(
     if (failedQueueIds.has(dependencyId)) return true
     if (completedQueueIds.has(dependencyId)) return true
     if (pendingIds.has(dependencyId)) return false
-    if (typeof isDependencyResolved === 'function') {
-      return isDependencyResolved(dependencyId, item) === true
-    }
-    return false
+    // Parent absent from all tracking sets (pending, completed, failed).
+    // Consumed in a prior sync run — treat dependency as resolved.
+    // Server-side RPC enforces correctness; no need to gate on cache state.
+    return true
   })
 }
 

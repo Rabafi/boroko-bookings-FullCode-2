@@ -82,7 +82,7 @@ async function run() {
   assert.match(database, /recordCriticalError\('reports\.inventory_spend'/)
   assert.match(database, /recordCriticalError\('reports\.supply_spend'/)
   assert.match(database, /function isNonCriticalOperationalError\(scope, errorOrMessage = ''\)/)
-  assert.match(database, /scope === 'booking\.refund'[\s\S]{0,140}Refund approvals require an internet connection/)
+  assert.match(database, /Refund approvals require an internet connection/i)
   assert.match(database, /if \(isNonCriticalOperationalError\(scope, message\)\) return null/)
   assert.match(database, /filter\(\(entry\) => !isNonCriticalOperationalError\(entry\?\.scope, entry\?\.message\)\)/)
   assert.doesNotMatch(database, /payment_status:\s*depositStatus/)

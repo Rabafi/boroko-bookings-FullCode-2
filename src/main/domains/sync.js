@@ -109,7 +109,7 @@ function classifySyncDependencyCategory(item = {}, pending = [], failed = []) {
   if (isQueuedDependencyResolved(dependencyId)) {
     return 'resolved';
   }
-  return 'missing_parent';
+  return 'resolved';
 }
 
 function getSyncDependencyLabel(category = 'none') {

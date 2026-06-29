@@ -57,7 +57,7 @@ function Section({ title, count, children, defaultOpen = true }) {
   return (
     <div className="bg-white rounded-xl shadow-sm overflow-hidden mb-4">
       <button
-        className="w-full flex items-center justify-between px-5 py-4 border-b border-gray-100 hover:bg-gray-50 transition-colors"
+        className="w-full flex items-center justify-between px-5 py-4 border-b border-gray-100 hover:bg-gray-50 transition-colors print-section-header"
         onClick={() => setOpen((o) => !o)}
       >
         <span className="font-semibold text-gray-700">
@@ -68,9 +68,11 @@ function Section({ title, count, children, defaultOpen = true }) {
             </span>
           )}
         </span>
-        {open ? <ChevronUp size={16} className="text-gray-400" /> : <ChevronDown size={16} className="text-gray-400" />}
+        <span className="section-chevron">
+          {open ? <ChevronUp size={16} className="text-gray-400" /> : <ChevronDown size={16} className="text-gray-400" />}
+        </span>
       </button>
-      {open && <div>{children}</div>}
+      <div className={open ? '' : 'section-collapsed'}>{children}</div>
     </div>
   )
 }

@@ -357,42 +357,104 @@ export default function Reports() {
   }
 
   const exportCSV = () => {
-    const totalNights = Math.max(1, Math.ceil((new Date(end) - new Date(start)) / 86400000))
-    const avgOcc = occupancy.length
-      ? Math.round(occupancy.reduce((s, r) => s + r.occupancy_rate, 0) / occupancy.length) : 0
     const csvStamp = formatFilenameStamp()
-    const rows = [
-      [`${companyDisplayName} — Bookings Report`],
-      ['Lodge', companyDisplayName],
-      ...(companyLegalName ? [['Company', companyLegalName]] : []),
-      [`Period: ${exportPeriod}`],
-      [`Generated: ${new Date().toLocaleString()}`],
-      [],
-      ['REVENUE SUMMARY'],
-      ['Total Revenue',      `${currency} ${Number(revenue?.total_revenue || 0).toFixed(2)}`],
-      ['Total Bookings',     revenue?.total_bookings || 0],
-      ['Avg Booking Value',  `${currency} ${Number(revenue?.avg_booking_value || 0).toFixed(2)}`],
-      ['Avg Occupancy Rate', `${avgOcc}%`],
-      [],
-      ['ROOM OCCUPANCY'],
-      ['Room', 'Type', `Rate/Night (${currency})`, 'Nights Occupied', `Period (${totalNights} nights)`, 'Occupancy %', `Revenue (${currency})`]
-    ]
-    for (const r of occupancy) {
-      rows.push([
-        `Room ${r.room_number}`, r.room_type,
-        Number(r.rate_per_night).toFixed(2), r.occupied_nights, totalNights,
-        `${r.occupancy_rate}%`, Number(r.actual_revenue || 0).toFixed(2)
-      ])
+    const rows = []
+    const pushRow = (...r) => rows.push(r)
+    const pushBlank = () => rows.push([])
+
+    // Header block (common)
+    pushRow(`${companyDisplayName} — ${REPORT_TITLES[activeTab] || 'Report'}`)
+    pushRow('Lodge', companyDisplayName)
+    if (companyLegalName) pushRow('Company', companyLegalName)
+    pushRow(`Period: ${exportPeriod}`)
+    pushRow(`Generated: ${new Date().toLocaleString()}`)
+    pushBlank()
+
+    if (activeTab === 'bookings') {
+      const totalNights = Math.max(1, Math.ceil((new Date(end) - new Date(start)) / 86400000))
+      const avgOcc = occupancy.length ? Math.round(occupancy.reduce((s, r) => s + r.occupancy_rate, 0) / occupancy.length) : 0
+      pushRow('REVENUE SUMMARY')
+      pushRow('Total Revenue', `${currency} ${Number(revenue?.total_revenue || 0).toFixed(2)}`)
+      pushRow('Total Bookings', revenue?.total_bookings || 0)
+      pushRow('Avg Booking Value', `${currency} ${Number(revenue?.avg_booking_value || 0).toFixed(2)}`)
+      pushRow('Avg Occupancy Rate', `${avgOcc}%`)
+      pushBlank()
+      pushRow('ROOM OCCUPANCY')
+      pushRow('Room', 'Type', `Rate/Night (${currency})`, 'Nights Occupied', `Period (${totalNights} nights)`, 'Occupancy %', `Revenue (${currency})`)
+      for (const r of occupancy) {
+        pushRow(`Room ${r.room_number}`, r.room_type, Number(r.rate_per_night).toFixed(2), r.occupied_nights, totalNights, `${r.occupancy_rate}%`, Number(r.actual_revenue || 0).toFixed(2))
+      }
+    } else if (activeTab === 'expenses') {
+      pushRow('EXPENSES')
+      pushRow('Date', 'Category', 'Description', `Amount (${currency})`)
+      let total = 0
+      for (const e of combinedExpenses) {
+        pushRow(e.date || '', e.category || '', e.description || '', Number(e.amount || 0).toFixed(2))
+        total += Number(e.amount || 0)
+      }
+      pushBlank()
+      pushRow('TOTAL', '', '', total.toFixed(2))
+    } else if (activeTab === 'pos') {
+      if (posSales) {
+        pushRow('POS REVENUE SUMMARY')
+        pushRow('Total Revenue', `${currency} ${Number(posSales.total_revenue || 0).toFixed(2)}`)
+        pushRow('Total Orders', posSales.total_orders || 0)
+        pushRow('Avg Order Value', `${currency} ${Number(posSales.avg_order || 0).toFixed(2)}`)
+        pushBlank()
+        const byPayment = posSales.by_payment || {}
+        if (Object.keys(byPayment).length > 0) {
+          pushRow('BY PAYMENT METHOD')
+          pushRow('Method', `Revenue (${currency})`)
+          for (const [m, a] of Object.entries(byPayment).sort((a, b) => b[1] - a[1])) pushRow(m, Number(a).toFixed(2))
+          pushBlank()
+        }
+        const topItems = posSales.top_items || []
+        if (topItems.length > 0) {
+          pushRow('TOP SELLING ITEMS')
+          pushRow('#', 'Item', 'Qty Sold', `Revenue (${currency})`)
+          topItems.forEach((item, i) => pushRow(i + 1, item.name || '', item.qty || 0, Number(item.revenue || 0).toFixed(2)))
+        }
+      }
+    } else if (activeTab === 'costs') {
+      pushRow('STOCK COSTS')
+      pushRow('Date', 'Item', 'Category', 'Qty', `Unit Cost (${currency})`, `Total (${currency})`)
+      for (const p of (invSpend?.purchases || [])) {
+        pushRow(p.date || p.purchased_at || '', p.inventory_items?.name || p.item_name || '', p.inventory_items?.category || '', p.quantity_purchased || 0, Number(p.unit_cost || 0).toFixed(2), Number(p.total_cost || 0).toFixed(2))
+      }
+      pushBlank()
+      pushRow('ROOM SUPPLIES')
+      pushRow('Date', 'Item', 'Qty', `Unit Cost (${currency})`, `Total (${currency})`)
+      for (const p of (supSpend?.purchases || [])) {
+        pushRow(p.date || p.purchased_at || '', p.supply_items?.name || p.item_name || '', p.quantity_purchased || 0, Number(p.unit_cost || 0).toFixed(2), Number(p.total_cost || 0).toFixed(2))
+      }
+    } else if (activeTab === 'pl' && pl) {
+      pushRow('PROFIT & LOSS')
+      pushRow('Booking Revenue', Number(pl.bookingRevenue || 0).toFixed(2))
+      pushRow('POS Revenue', Number(pl.posRevenue || 0).toFixed(2))
+      pushRow('Total Revenue', Number(pl.totalRevenue || 0).toFixed(2))
+      pushBlank()
+      pushRow('Operating Expenses', Number(pl.totalExpenses || 0).toFixed(2))
+      pushRow('Total Stock & Maintenance', Number(pl.totalCosts || 0).toFixed(2))
+      pushRow('GROSS PROFIT', Number(pl.grossProfit || 0).toFixed(2))
+    } else if (activeTab === 'prepayments' && customerCredits.length > 0) {
+      pushRow('CUSTOMER CREDIT')
+      pushRow('Customer', `Received (${currency})`, `Allocated (${currency})`, `Refunded (${currency})`, `Balance (${currency})`, 'Last Activity')
+      for (const c of customerCredits) {
+        pushRow(c.customer_name || '', Number(c.total_receipts || 0).toFixed(2), Number(c.total_allocations || 0).toFixed(2), Number(c.total_refunds || 0).toFixed(2), Number(c.balance || 0).toFixed(2), c.last_activity ? new Date(c.last_activity).toLocaleDateString() : '')
+      }
+    } else {
+      pushRow('No data available for this report type in CSV format.')
     }
+
     const csv = rows.map((r) => r.map((v) => `"${v}"`).join(',')).join('\n')
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `boroko-bookings-report-${start}-to-${end}-${csvStamp}.csv`
+    a.download = `boroko-${activeTab}-report-${start}-to-${end}-${csvStamp}.csv`
     a.click()
     URL.revokeObjectURL(url)
-    setExportSuccess(`CSV export started for the bookings report (${exportPeriod}). Your download should begin shortly.`)
+    setExportSuccess(`CSV export started for ${activeTab} report (${exportPeriod}). Your download should begin shortly.`)
     setTimeout(() => setExportSuccess(''), 4000)
   }
 
@@ -414,7 +476,8 @@ export default function Reports() {
       })
       if (result.success) {
         const reconNote = result.reconciliationStatus === 'PASSED' ? '' : ` (${result.reconciliationStatus})`
-        setExportSuccess(`Excel workbook saved: ${result.filePath}${reconNote}. Includes detailed sheets for Booking Register, Payment Transactions, Outstanding Balances, Cancelled Bookings, Refunds, Quotations, Invoice Register, Financial Exceptions, and Reconciliation.`)
+        const tabLabels = { bookings: 'Booking Register, Payments, Outstanding, Cancelled, Refunds, Quotations, Invoices, Exceptions, Reconciliation', expenses: 'Expenses, Maintenance, Summary', pos: 'POS Summary, Payment Methods, Operators, Top Items, Daily Sales', costs: 'Inventory Purchases, Room Supplies, Category Breakdown, Summary', pl: 'P&L Statement, Expense Breakdown, Payment Methods', prepayments: 'Customer Credit, Summary' }
+        setExportSuccess(`Excel workbook saved: ${result.filePath}${reconNote}. Sheets: ${tabLabels[activeTab] || 'Report data'}.`)
         setTimeout(() => setExportSuccess(''), 6500)
       }
       else if (result.canceled) { /* user cancelled — no error */ }
@@ -1820,6 +1883,10 @@ export default function Reports() {
                 <h2 className="mb-4 text-sm font-semibold uppercase tracking-[0.18em] text-slate-500">Revenue</h2>
                 <div className="space-y-2">
                   <PLRow label="Booking Revenue"   value={`${currency} ${Number(pl.bookingRevenue).toFixed(2)}`} />
+                  {(pl.regularRevenue > 0 || pl.eventRevenue > 0) && <>
+                    <PLRow label="  Regular" value={`${currency} ${Number(pl.regularRevenue || 0).toFixed(2)}`} muted />
+                    {pl.eventRevenue > 0 && <PLRow label="  Events" value={`${currency} ${Number(pl.eventRevenue).toFixed(2)}`} muted />}
+                  </>}
                   <PLRow label="Fees Kept From Refunds" value={`${currency} ${Number(pl.retainedRevenue || 0).toFixed(2)}`} />
                   <PLRow label="POS Revenue"        value={`${currency} ${Number(pl.posRevenue).toFixed(2)}`} />
                   {(pl.conferenceRevenue > 0) && (
@@ -1833,6 +1900,26 @@ export default function Reports() {
                     <PLRow label={pl.vatMixed ? 'VAT (mixed historical rates)' : `VAT (${pl.vatRate}% inclusive)`} value={`- ${currency} ${Number(pl.vatAmount).toFixed(2)}`} muted />
                     <PLRow label="Net Revenue (excl. VAT)" value={`${currency} ${Number(pl.netRevenue).toFixed(2)}`} muted />
                   </>}
+                </div>
+              </div>
+
+              {/* Key Metrics */}
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+                <div className="bb-card p-4">
+                  <p className="text-xs text-slate-400 mb-1">Bookings</p>
+                  <p className="text-lg font-bold text-slate-800">{pl.totalBookings || 0}</p>
+                </div>
+                <div className="bb-card p-4">
+                  <p className="text-xs text-slate-400 mb-1">Avg Booking Value</p>
+                  <p className="text-lg font-bold text-slate-800">{currency} {Number(pl.avgBookingValue || 0).toFixed(2)}</p>
+                </div>
+                <div className="bb-card p-4">
+                  <p className="text-xs text-slate-400 mb-1">Refunds Issued</p>
+                  <p className={`text-lg font-bold ${(pl.refundsIssued || 0) > 0 ? 'text-amber-600' : 'text-slate-800'}`}>{currency} {Number(pl.refundsIssued || 0).toFixed(2)}</p>
+                </div>
+                <div className="bb-card p-4">
+                  <p className="text-xs text-slate-400 mb-1">Outstanding</p>
+                  <p className={`text-lg font-bold ${(pl.outstandingAmount || 0) > 0 ? 'text-rose-600' : 'text-slate-800'}`}>{currency} {Number(pl.outstandingAmount || 0).toFixed(2)}</p>
                 </div>
               </div>
 
@@ -1861,6 +1948,13 @@ export default function Reports() {
                 </div>
               </div>
 
+              {/* Total Outgoings */}
+              <div className="bb-card mb-4 p-5">
+                <div className="space-y-2">
+                  <PLRow label="Total Outgoings (Expenses + Stock & Maintenance)" value={`${currency} ${Number((pl.totalExpenses || 0) + (pl.totalCosts || 0)).toFixed(2)}`} bold />
+                </div>
+              </div>
+
               {/* Gross Profit */}
                 <div className={`rounded-xl p-5 ${pl.grossProfit >= 0 ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200'}`}>
                 <div className="flex items-center justify-between">
@@ -1871,8 +1965,27 @@ export default function Reports() {
                     {pl.grossProfit < 0 ? '- ' : ''}{currency} {Math.abs(pl.grossProfit).toFixed(2)}
                   </span>
                 </div>
-                <p className="mt-1 text-xs text-slate-500">Revenue, including fees kept from refunds, minus expenses and stock & maintenance costs.</p>
+                <div className="mt-1 flex items-center gap-3">
+                  <p className="text-xs text-slate-500">Revenue, including fees kept from refunds, minus expenses and stock & maintenance costs.</p>
+                  {pl.grossMarginPct != null && (
+                    <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${pl.grossProfit >= 0 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                      {pl.grossMarginPct}% margin
+                    </span>
+                  )}
+                </div>
               </div>
+
+              {/* Revenue by Payment Method */}
+              {pl.bookingPaymentByMethod && Object.keys(pl.bookingPaymentByMethod).length > 0 && (
+                <div className="bb-card mt-4 p-5">
+                  <h2 className="mb-4 text-sm font-semibold uppercase tracking-[0.18em] text-slate-500">Revenue by Payment Method</h2>
+                  <div className="space-y-2">
+                    {Object.entries(pl.bookingPaymentByMethod).sort((a, b) => b[1] - a[1]).map(([method, amt]) => (
+                      <PLRow key={method} label={method.charAt(0).toUpperCase() + method.slice(1)} value={`${currency} ${Number(amt).toFixed(2)}`} />
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {/* Outlet P&L Breakdown — only for users with combined report access */}
               {outletPL && canViewCombinedReports && (

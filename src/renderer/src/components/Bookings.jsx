@@ -104,6 +104,10 @@ function bookingOutstandingAmount(booking) {
   return Math.max(0, Number(booking.total_amount || 0) + Number(booking.charges_total || 0) - Number(booking.amount_paid || 0))
 }
 
+function bookingRefundPending(booking) {
+  return booking?.status === 'cancelled' && Number(booking.amount_paid || 0) > 0.01 && booking.refund_settled !== true
+}
+
 function bookingNeedsAttention(booking) {
   const total = Math.max(0, Number(booking.total_amount || 0) + Number(booking.charges_total || 0))
   const paid = Math.max(0, Number(booking.amount_paid || 0))
@@ -123,6 +127,10 @@ function bookingHasSyncFailure(booking, failedSyncIds) {
 function bookingHasAttentionState(booking) {
   const syncState = String(booking?._sync_state || '').trim().toLowerCase()
   return booking?._needs_attention === true || syncState === 'manual_review_required'
+}
+
+function isSessionExpiredError(message = '') {
+  return /not authenticated|authenticated.*required|authentication.*required|session.*expired|session.*required/i.test(String(message || ''))
 }
 
 function normalizeChargesResponse(result) {
@@ -179,7 +187,7 @@ function getMeshLocksForRoom(activeLocks = [], roomId, checkIn, checkOut, localN
 }
 
 export default function Bookings() {
-  const { user } = useAuth()
+  const { user, logout } = useAuth()
   const access = useAccess()
   const { settings } = useSettings()
   const currency = settings?.currency || 'P'
@@ -576,6 +584,12 @@ export default function Bookings() {
     successTimerRef.current = window.setTimeout(() => setSuccess(''), 3500)
   }
 
+  const signOutForExpiredSession = () => {
+    window.alert('Your session has expired. Please sign in again, then create the booking.')
+    logout?.()
+    window.location.hash = '#/login'
+  }
+
   const openAdd = () => {
     if (bookingCreateBlocked) {
       setShowUpgradePrompt(true)
@@ -769,7 +783,10 @@ export default function Bookings() {
       showSuccess(editingId ? 'Booking changes saved.' : 'Booking created successfully.')
     } catch (err) {
       const message = err.message || 'Failed to save booking'
-      if (/modified on another device|refresh and try again/i.test(message)) {
+      if (isSessionExpiredError(message)) {
+        setError('Your session has expired. Please sign in again, then create the booking.')
+        signOutForExpiredSession()
+      } else if (/modified on another device|refresh and try again/i.test(message)) {
         await loadAll()
         setEditingBaseUpdatedAt(null)
         setError('This booking changed on another device. The latest booking list has been refreshed. Re-open the booking and apply your edit again.')
@@ -1436,7 +1453,7 @@ export default function Bookings() {
                         Balance {currency} {bookingOutstandingAmount(b).toFixed(2)}
                       </span>
                     )}
-                    {b.status === 'cancelled' && Number(b.amount_paid || 0) > 0.01 && b.payment_status !== 'paid' && (
+                    {bookingRefundPending(b) && (
                       <span className="rounded-full border border-rose-300 bg-rose-50 px-2 py-1 text-xs font-semibold text-rose-700 whitespace-nowrap">
                         ⚠️ Refund Pending
                       </span>
@@ -1580,7 +1597,7 @@ export default function Bookings() {
                               Collect Balance
                             </button>
                           )}
-                          {b.status === 'cancelled' && Number(b.amount_paid || 0) > 0.01 && b.payment_status !== 'paid' && (
+                          {bookingRefundPending(b) && (
                             <button
                               onClick={() => {
                                 if (isFinanciallySyncBlocked(b.id)) {

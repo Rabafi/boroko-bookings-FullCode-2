@@ -27,7 +27,7 @@ function getSyncItemUserId(item) {
   return getSyncItemEntityId(item, 'user');
 }
 
-function getSyncItemQuotationId(item) {
+export function getSyncItemQuotationId(item) {
   const quotationId = String(item?.data?.p_quotation_id || '').trim();
   if (quotationId) return quotationId;
   return getSyncItemEntityId(item, 'quotation');

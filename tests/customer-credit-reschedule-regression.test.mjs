@@ -12,6 +12,7 @@ async function read(path) {
 
 async function run() {
   const migration = await read('supabase/migrations/20260620100000_customer_credit_and_booking_reschedule.sql')
+  const cancellationCreditMigration = await read('supabase/migrations/20260625120000_booking_refund_to_customer_credit.sql')
 
   // ── Table and schema ──────────────────────────────────────────────────
   assert.match(migration, /customer_credit_ledger/, 'Migration must create customer_credit_ledger table')
@@ -34,6 +35,12 @@ async function run() {
   // Reschedule transfer must use type='refund' (valid per payments_type_check), NOT 'credit_transfer'
   assert.doesNotMatch(migration, /type,\s*'credit_transfer'/, 'Must not use type credit_transfer (not in payments_type_check)')
   assert.match(migration, /'customer_credit_transfer',\s*'refund'/, 'Reschedule transfer must use type=refund with method=customer_credit_transfer')
+  assert.match(cancellationCreditMigration, /v_method = 'customer_credit_transfer'/, 'Cancellation settlement must support customer-credit transfer')
+  assert.match(cancellationCreditMigration, /public\.record_booking_refund/, 'Cancellation credit transfer must reuse the booking refund RPC path')
+  assert.match(cancellationCreditMigration, /insert into public\.customer_credit_ledger/, 'Cancellation credit transfer must create a customer-credit ledger entry server-side')
+  assert.match(cancellationCreditMigration, /'adjustment_in'/, 'Cancellation credit transfer must increase available customer credit')
+  assert.match(cancellationCreditMigration, /v_refund_idempotency_key \|\| ':credit'/, 'Cancellation credit transfer must use a stable child idempotency key')
+  assert.match(cancellationCreditMigration, /'customer_credit_adjusted'/, 'Cancellation credit transfer must write financial audit context')
 
   // ── Function definitions ──────────────────────────────────────────────
   assert.match(migration, /customer_credit_balance.*\(/i, 'Migration must define customer_credit_balance function')
@@ -112,6 +119,10 @@ async function run() {
   const bookings = await read('src/main/domains/bookings.js')
   assert.match(bookings, /export.*function.*rescheduleBooking/, 'bookings.js must export rescheduleBooking')
   assert.match(bookings, /\.rpc\('reschedule_booking'/, 'rescheduleBooking must use RPC')
+  assert.match(bookings, /refund_approval_log/, 'Booking rows must load refund settlement state from refund approval log')
+  assert.match(bookings, /refund_settled: Boolean\(settlement\)/, 'Booking rows must expose explicit refund settlement state')
+  assert.match(bookings, /customer_credit_transfer/, 'booking refund domain must pass through customer-credit transfer method')
+  assert.match(bookings, /credit_transfer: data\?\.credit_transfer === true/, 'booking refund domain must return credit-transfer result to UI')
 
   // ── database.js exports ───────────────────────────────────────────────
   const database = await read('src/main/database.js')
@@ -158,6 +169,9 @@ async function run() {
   assert.match(desktopBookings, /handleRescheduleSave/, 'Desktop Bookings must have handleRescheduleSave handler')
   assert.match(desktopBookings, /openReschedule/, 'Desktop Bookings must have openReschedule function')
   assert.match(desktopBookings, /CalendarClock/, 'Desktop Bookings must import CalendarClock icon')
+  assert.match(desktopBookings, /function bookingRefundPending/, 'Desktop Bookings must use a refund-pending predicate')
+  assert.match(desktopBookings, /refund_settled !== true/, 'Refund visibility must depend on refund settlement state')
+  assert.doesNotMatch(desktopBookings, /status === 'cancelled' && Number\(b\.amount_paid \|\| 0\) > 0\.01 && b\.payment_status !== 'paid'/, 'Paid cancelled bookings must still expose refund actions before settlement')
 
   // Credit must be alternative payment (not secondary action)
   assert.match(desktopBookings, /creditAllocation\.enabled.*creditAllocation\.amount/, 'Credit must be checked as alternative')
@@ -168,10 +182,22 @@ async function run() {
 
   // ── Complete desktop prepayment workspace ─────────────────────────────
   const prepayments = await read('src/renderer/src/components/Prepayments.jsx')
+  const desktopGuests = await read('src/renderer/src/components/Guests.jsx')
+  const bookingInvoices = await read('src/renderer/src/components/BookingInvoices.jsx')
   const desktopNav = await read('src/renderer/src/navigation/desktopNav.js')
   const app = await read('src/renderer/src/App.jsx')
   assert.match(desktopNav, /to:\s*['"]\/prepayments['"]/, 'Desktop navigation must expose Prepayments')
   assert.match(app, /path="prepayments"/, 'Desktop router must expose the prepayments workspace')
+  assert.match(desktopGuests, /loadCreditSummaryRows/, 'Guests tab must load customer-credit balances')
+  assert.match(desktopGuests, /customerCredit\.getSummary\(null, 100, offset\)/, 'Guests tab must page customer-credit summary rows')
+  assert.match(desktopGuests, /credit_balance/, 'Guests tab must show customer-credit balance for each guest')
+  assert.match(desktopGuests, /navigate\('\/prepayments'[\s\S]*customerId: customer\.id[\s\S]*openReceive/, 'Guests tab must shortcut selected guests to Prepayments')
+  assert.match(desktopGuests, /Prepay/, 'Guests tab must expose add-prepayment shortcut')
+  assert.match(desktopGuests, /Ledger/, 'Guests tab must expose credit ledger shortcut')
+  assert.match(prepayments, /location\.state\?\.customerId/, 'Prepayments workspace must accept selected guest navigation state')
+  assert.match(prepayments, /setReceiveOpen\(true\)/, 'Prepayments shortcut must be able to open the receive-prepayment modal')
+  assert.match(prepayments, /Credit from cancelled booking/, 'Prepayments ledger must label cancellation credit transfers clearly')
+  assert.match(prepayments, /viewBookingId: bookingId/, 'Prepayments ledger must link booking-backed credit entries to invoices')
   assert.match(prepayments, /customerCredit\.record/, 'Prepayments workspace must record advance payments')
   assert.match(prepayments, /customerCredit\.getHistory/, 'Prepayments workspace must show the credit ledger')
   assert.match(prepayments, /customerCredit\.applyToBooking/, 'Prepayments workspace must allocate credit to bookings')
@@ -188,6 +214,17 @@ async function run() {
 
   assert.match(mainIndex, /customerCredit:record[\s\S]{0,160}payments\.record/, 'Receiving prepayments must require payments.record capability')
   assert.match(mainIndex, /customerCredit:refund[\s\S]{0,160}payments\.refund/, 'Refunding prepayments must require payments.refund capability')
+  assert.match(bookingInvoices, /settlement_mode: 'external_refund'/, 'Refund modal must default to existing external refund behavior')
+  assert.match(bookingInvoices, /function invoiceRefundPending/, 'Invoices must use a refund-pending predicate')
+  assert.match(bookingInvoices, /refund_settled !== true/, 'Invoice refund visibility must depend on refund settlement state')
+  assert.doesNotMatch(bookingInvoices, /status === 'cancelled' && Number\(invoice\.amount_paid \|\| 0\) > 0\.01 && invoice\.payment_status !== 'paid'/, 'Paid cancelled invoices must still expose refund actions before settlement')
+  assert.match(bookingInvoices, /settlement_mode: 'customer_credit'/, 'Refund modal must expose customer-credit settlement mode')
+  assert.match(bookingInvoices, /No cash leaves the lodge/, 'Credit-transfer mode must clearly distinguish credit from external refunds')
+  assert.match(bookingInvoices, /method: transferToCredit \? 'customer_credit_transfer' : form\.method/, 'Refund modal must send customer-credit transfer method when selected')
+  assert.match(bookingInvoices, /credit_transfer === true/, 'Refund completion must acknowledge customer-credit transfer results')
+  assert.match(bookingInvoices, /CreditTransferReceipt/, 'Cancellation-to-credit must produce a printable credit memo')
+  assert.match(bookingInvoices, /Customer Credit Memo/, 'Credit-transfer receipt must be labelled as a customer credit memo')
+  assert.match(bookingInvoices, /viewBookingId/, 'Booking invoices must support ledger deep links')
 
   // ── PWA Money ─────────────────────────────────────────────────────────
   const pwaMoney = await read('manager-pwa/src/pages/Money.jsx')

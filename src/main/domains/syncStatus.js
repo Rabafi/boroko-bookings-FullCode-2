@@ -45,7 +45,7 @@ function buildSyncGroupedCountsForStatus(pending = [], failed = []) {
     if (queueFailed.some((entry) => entry?._queue_id === dependencyId)) return 'blocked_dependencies';
     if (queuePending.some((entry) => entry?._queue_id === dependencyId)) return 'blocked_dependencies';
     if (isQueuedDependencyResolved(dependencyId)) return 'resolved';
-    return 'missing_parent';
+    return 'resolved';
   };
 
   const pendingMissingParent = pending.filter((item) => classify(item, pending, failed) === 'missing_parent').length;

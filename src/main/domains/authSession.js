@@ -434,6 +434,7 @@ export async function validateCurrentSession() {
     const expiryTs = new Date(session.expires_at).getTime();
     if (Number.isFinite(expiryTs) && expiryTs <= Date.now()) {
       console.warn('[AUTH] Offline session expired');
+      state.replayAuthReady = false;
       state.currentUser = null;
       clearBackendSession();
       clearSessionNonce();
@@ -461,6 +462,7 @@ export async function validateCurrentSession() {
 
     const row = Array.isArray(data) ? data[0] : data;
     if (!row) {
+      state.replayAuthReady = false;
       state.currentUser = null;
       clearBackendSession();
       clearSessionNonce();
@@ -472,6 +474,7 @@ export async function validateCurrentSession() {
     row.session_type !== (session.session_type || 'desktop') ||
     rowLodgeId && rowLodgeId !== normalizeLodgeId(state.lodgeId))
     {
+      state.replayAuthReady = false;
       state.currentUser = null;
       clearBackendSession();
       clearSessionNonce();

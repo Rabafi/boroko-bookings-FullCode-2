@@ -8,6 +8,12 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import autoUpdaterPkg from 'electron-updater'
 const { autoUpdater } = autoUpdaterPkg
 import * as db from './database.js'
+
+// Guard console output against EPIPE errors in packaged builds
+for (const method of ['warn', 'error', 'log', 'info']) {
+  const original = console[method]
+  console[method] = (...args) => { try { original(...args) } catch {} }
+}
 import { state } from './state.js'
 import { readCache } from './domains/cacheStore.js'
 import { createAiOrchestrator, writeAiAuditLog } from './ai/aiOrchestrator.js'
@@ -756,6 +762,15 @@ function buildDetailedReportPdfHtml({ lodgeName, companyName, reportType, startD
 
   let bodyContent = ''
 
+  function summaryCard(label, value, sub, color) {
+    const bg = color || '#f8fafc'
+    return `<div style="flex:1;min-width:140px;padding:10px 14px;background:${bg};border:1px solid #e2e8f0;border-radius:6px">
+      <div style="font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">${escapeHtml(label)}</div>
+      <div style="font-size:16px;font-weight:700;color:#1e293b">${escapeHtml(String(value))}</div>
+      ${sub ? `<div style="font-size:9px;color:#94a3b8;margin-top:2px">${escapeHtml(String(sub))}</div>` : ''}
+    </div>`
+  }
+
   // Report Info Header
   bodyContent += `
     <div style="margin-bottom:24px;padding-bottom:12px;border-bottom:2px solid #166534">
@@ -823,15 +838,6 @@ function buildDetailedReportPdfHtml({ lodgeName, companyName, reportType, startD
     const totalOccupiedNights = occ.reduce((s, r) => s + Number(r.occupied_nights || 0), 0)
     const avgOccupancy = occ.length > 0 ? Math.round(occ.reduce((s, r) => s + Number(r.occupancy_rate || 0), 0) / occ.length) : 0
     const totalNights = Math.max(1, Math.round((new Date(endDate) - new Date(startDate)) / 86400000) + 1)
-
-    function summaryCard(label, value, sub, color) {
-      const bg = color || '#f8fafc'
-      return `<div style="flex:1;min-width:140px;padding:10px 14px;background:${bg};border:1px solid #e2e8f0;border-radius:6px">
-        <div style="font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">${escapeHtml(label)}</div>
-        <div style="font-size:16px;font-weight:700;color:#1e293b">${escapeHtml(String(value))}</div>
-        ${sub ? `<div style="font-size:9px;color:#94a3b8;margin-top:2px">${escapeHtml(String(sub))}</div>` : ''}
-      </div>`
-    }
 
     function statusRow(label, count, total, color) {
       const pct = total > 0 ? Math.round((count / total) * 100) : 0
@@ -1119,18 +1125,60 @@ function buildDetailedReportPdfHtml({ lodgeName, companyName, reportType, startD
   } else if (reportType === 'expenses') {
     const expenses = extraData.expenses || []
     const maintenanceRows = extraData.maintenanceRows || []
+    const totalExpenses = expenses.reduce((s, e) => s + Number(e.amount || 0), 0)
+    const totalMaintenance = maintenanceRows.reduce((s, m) => s + Number(m.actual_cost || m.total_cost || 0), 0)
+    
+    // Summary cards
+    if (expenses.length > 0 || maintenanceRows.length > 0) {
+      bodyContent += `
+        <div style="margin:0 0 16px">
+          <h2 style="font-size:13px;font-weight:700;color:#166534;margin:0 0 8px">Expenses Summary</h2>
+          <div style="display:flex;flex-wrap:wrap;gap:8px">
+            ${summaryCard('Operating Expenses', `${sym} ${totalExpenses.toFixed(2)}`, `${expenses.length} entries`)}
+            ${summaryCard('Maintenance Costs', `${sym} ${totalMaintenance.toFixed(2)}`, `${maintenanceRows.length} tickets`)}
+            ${summaryCard('Total', `${sym} ${(totalExpenses + totalMaintenance).toFixed(2)}`)}
+          </div>
+        </div>`
+    }
+    
+    // By category breakdown
+    if (expenses.length > 0) {
+      const byCategory = {}
+      expenses.forEach((e) => { byCategory[e.category || 'Other'] = (byCategory[e.category || 'Other'] || 0) + Number(e.amount || 0) })
+      const sortedCats = Object.entries(byCategory).sort((a, b) => b[1] - a[1])
+      let catRows = ''
+      for (const [cat, amt] of sortedCats) {
+        const pct = totalExpenses > 0 ? (amt / totalExpenses) * 100 : 0
+        catRows += `<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+          <span style="width:140px;font-size:11px;color:#475569">${escapeHtml(cat)}</span>
+          <div style="flex:1;height:8px;background:#f1f5f9;border-radius:4px;overflow:hidden">
+            <div style="height:8px;width:${Math.max(2, pct)}%;background:#f59e0b;border-radius:4px"></div>
+          </div>
+          <span style="width:90px;text-align:right;font-size:11px;font-weight:600;color:#1e293b">${sym} ${amt.toFixed(2)}</span>
+          <span style="width:32px;text-align:right;font-size:10px;color:#94a3b8">${Math.round(pct)}%</span>
+        </div>`
+      }
+      bodyContent += `
+        <div style="margin:0 0 16px;padding:14px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px">
+          <h2 style="font-size:13px;font-weight:700;color:#1e293b;margin:0 0 10px">By Category</h2>
+          ${catRows}
+        </div>`
+    }
+    
     if (expenses.length > 0) {
       bodyContent += '<h2 style="font-size:14px;color:#166534;margin:0 0 8px">Expenses</h2>'
       bodyContent += table(
         ['Date', 'Category', 'Description', `Amount (${sym})`],
-        expenses.map((e) => [e.date || '', e.category || '', e.description || '', Number(e.amount || 0)])
+        [...expenses.map((e) => [e.date || '', e.category || '', e.description || '', Number(e.amount || 0)]),
+         ['TOTAL', '', '', totalExpenses]]
       )
     }
     if (maintenanceRows.length > 0) {
       bodyContent += '<h2 style="font-size:14px;color:#166534;margin:16px 0 8px">Maintenance Costs</h2>'
       bodyContent += table(
-        ['Date', 'Ticket', 'Description', `Estimated (${sym})`, `Actual (${sym})`],
-        maintenanceRows.map((m) => [m.date || '', m.ticket_number || '', m.description || '', Number(m.estimated_cost || 0), Number(m.actual_cost || 0)])
+        ['Date', 'Title', 'Description', 'Room', 'Status', `Cost (${sym})`],
+        [...maintenanceRows.map((m) => [m.reported_date || m.date || '', m.title || '', m.description || '', m.room_number || '', m.status || '', Number(m.actual_cost || m.total_cost || 0)]),
+         ['TOTAL', '', '', '', '', totalMaintenance]]
       )
     }
     if (expenses.length === 0 && maintenanceRows.length === 0) {
@@ -1140,15 +1188,91 @@ function buildDetailedReportPdfHtml({ lodgeName, companyName, reportType, startD
     const posOrders = extraData.posOrders || []
     const posRevenue = extraData.posRevenue
     if (posRevenue) {
-      bodyContent += '<h2 style="font-size:14px;color:#166534;margin:0 0 8px">POS Revenue Summary</h2>'
-      bodyContent += table(
-        ['Metric', 'Value'],
-        [
-          ['Total Revenue', posRevenue.total_revenue || 0],
-          ['Total Orders', posRevenue.total_orders || 0],
-          ['Avg Order Value', posRevenue.avg_order || 0]
-        ]
-      )
+      bodyContent += `
+        <div style="margin:0 0 16px">
+          <h2 style="font-size:13px;font-weight:700;color:#166534;margin:0 0 8px">POS Revenue Summary</h2>
+          <div style="display:flex;flex-wrap:wrap;gap:8px">
+            ${summaryCard('Total Revenue', `${sym} ${(posRevenue.total_revenue || 0).toFixed(2)}`, `${posRevenue.total_orders || 0} orders`)}
+            ${summaryCard('Avg Order Value', `${sym} ${(posRevenue.avg_order || 0).toFixed(2)}`)}
+            ${summaryCard('Gross Sales', `${sym} ${(posRevenue.gross_revenue || 0).toFixed(2)}`)}
+            ${summaryCard('Discounts', `${sym} ${(posRevenue.discount_total || 0).toFixed(2)}`, '', '#fff5f5')}
+            ${summaryCard('Returns', `${sym} ${(posRevenue.returns_total || 0).toFixed(2)}`, '', '#fff5f5')}
+            ${summaryCard('Tax/VAT', `${sym} ${(posRevenue.tax_total || 0).toFixed(2)}`)}
+            ${summaryCard('Tips', `${sym} ${(posRevenue.tip_total || 0).toFixed(2)}`, '', '#ecfdf5')}
+          </div>
+        </div>`
+      
+      // By Payment Method
+      const byPayment = posRevenue.by_payment || {}
+      if (Object.keys(byPayment).length > 0) {
+        const totalPayment = Object.values(byPayment).reduce((s, v) => s + Number(v || 0), 0)
+        let methodRows = ''
+        for (const [method, amount] of Object.entries(byPayment).sort((a, b) => b[1] - a[1])) {
+          const pct = totalPayment > 0 ? (Number(amount || 0) / totalPayment) * 100 : 0
+          methodRows += `<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+            <span style="width:100px;font-size:11px;color:#475569">${escapeHtml(method)}</span>
+            <div style="flex:1;height:8px;background:#f1f5f9;border-radius:4px;overflow:hidden">
+              <div style="height:8px;width:${Math.max(2, pct)}%;background:#10b981;border-radius:4px"></div>
+            </div>
+            <span style="width:90px;text-align:right;font-size:11px;font-weight:600;color:#1e293b">${sym} ${Number(amount || 0).toFixed(2)}</span>
+            <span style="width:32px;text-align:right;font-size:10px;color:#94a3b8">${Math.round(pct)}%</span>
+          </div>`
+        }
+        bodyContent += `
+          <div style="margin:0 0 16px;padding:14px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px">
+            <h2 style="font-size:13px;font-weight:700;color:#1e293b;margin:0 0 10px">By Payment Method</h2>
+            ${methodRows}
+          </div>`
+      }
+      
+      // By Operator
+      const byCashier = posRevenue.by_cashier || {}
+      if (Object.keys(byCashier).length > 0) {
+        let cashierRows = ''
+        for (const [name, amount] of Object.entries(byCashier).sort((a, b) => b[1] - a[1])) {
+          cashierRows += `<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:11px;border-bottom:1px solid #e2e8f0">
+            <span style="color:#475569">${escapeHtml(name)}</span>
+            <span style="font-weight:600;color:#1e293b">${sym} ${Number(amount || 0).toFixed(2)}</span>
+          </div>`
+        }
+        bodyContent += `
+          <div style="margin:0 0 16px;padding:14px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px">
+            <h2 style="font-size:13px;font-weight:700;color:#1e293b;margin:0 0 10px">By Operator</h2>
+            ${cashierRows}
+          </div>`
+      }
+      
+      // Top Selling Items
+      const topItems = posRevenue.top_items || []
+      if (topItems.length > 0) {
+        bodyContent += '<h2 style="font-size:13px;font-weight:700;color:#166534;margin:0 0 8px">Top Selling Items</h2>'
+        bodyContent += table(
+          ['#', 'Item', 'Qty Sold', `Revenue (${sym})`, `Margin (${sym})`],
+          topItems.map((item, i) => [i + 1, item.name || '', item.qty || 0, Number(item.revenue || 0), item.margin != null ? Number(item.margin) : ''])
+        )
+      }
+      
+      // Daily Sales
+      const daily = posRevenue.daily || []
+      if (daily.length > 0) {
+        let dailyRows = ''
+        for (const d of daily) {
+          const maxDaily = Math.max(...daily.map((x) => x.total || 0))
+          const pct = maxDaily > 0 ? ((d.total || 0) / maxDaily) * 100 : 0
+          dailyRows += `<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+            <span style="width:80px;font-size:10px;color:#475569">${escapeHtml(d.date || '')}</span>
+            <div style="flex:1;height:8px;background:#f1f5f9;border-radius:4px;overflow:hidden">
+              <div style="height:8px;width:${Math.max(2, pct)}%;background:#6366f1;border-radius:4px"></div>
+            </div>
+            <span style="width:80px;text-align:right;font-size:11px;font-weight:600;color:#1e293b">${sym} ${(d.total || 0).toFixed(2)}</span>
+          </div>`
+        }
+        bodyContent += `
+          <div style="margin:0 0 16px;padding:14px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px">
+            <h2 style="font-size:13px;font-weight:700;color:#1e293b;margin:0 0 10px">Daily Sales</h2>
+            ${dailyRows}
+          </div>`
+      }
     }
     if (posOrders.length > 0) {
       bodyContent += '<h2 style="font-size:14px;color:#166534;margin:16px 0 8px">POS Orders</h2>'
@@ -1163,18 +1287,36 @@ function buildDetailedReportPdfHtml({ lodgeName, companyName, reportType, startD
   } else if (reportType === 'costs') {
     const invPurchases = extraData.inventoryPurchases || []
     const supPurchases = extraData.supplyPurchases || []
+    const totalInv = invPurchases.reduce((s, p) => s + Number(p.total_cost || p.quantity_purchased * p.unit_cost || 0), 0)
+    const totalSup = supPurchases.reduce((s, p) => s + Number(p.total_cost || p.quantity_purchased * p.unit_cost || 0), 0)
+    
+    // Summary cards
+    if (invPurchases.length > 0 || supPurchases.length > 0) {
+      bodyContent += `
+        <div style="margin:0 0 16px">
+          <h2 style="font-size:13px;font-weight:700;color:#166534;margin:0 0 8px">Stock Costs Summary</h2>
+          <div style="display:flex;flex-wrap:wrap;gap:8px">
+            ${summaryCard('Inventory Purchases', `${sym} ${totalInv.toFixed(2)}`, `${invPurchases.length} entries`)}
+            ${summaryCard('Room Supplies', `${sym} ${totalSup.toFixed(2)}`, `${supPurchases.length} entries`)}
+            ${summaryCard('Total Stock Costs', `${sym} ${(totalInv + totalSup).toFixed(2)}`)}
+          </div>
+        </div>`
+    }
+    
     if (invPurchases.length > 0) {
       bodyContent += '<h2 style="font-size:14px;color:#166534;margin:0 0 8px">Inventory Purchases</h2>'
       bodyContent += table(
-        ['Date', 'Item', 'Category', `Qty`, `Unit Cost (${sym})`, `Total (${sym})`],
-        invPurchases.map((p) => [p.date || '', p.item_name || p.inventory_items?.name || '', p.category || p.inventory_items?.category || '', p.quantity_purchased || 0, Number(p.unit_cost || 0), Number(p.total_cost || p.quantity_purchased * p.unit_cost || 0)])
+        ['Date', 'Item', 'Category', 'Qty', `Unit Cost (${sym})`, `Total (${sym})`],
+        [...invPurchases.map((p) => [p.date || p.purchased_at || '', p.item_name || p.inventory_items?.name || '', p.category || p.inventory_items?.category || '', p.quantity_purchased || 0, Number(p.unit_cost || 0), Number(p.total_cost || p.quantity_purchased * p.unit_cost || 0)]),
+         ['TOTAL', '', '', '', '', totalInv]]
       )
     }
     if (supPurchases.length > 0) {
       bodyContent += '<h2 style="font-size:14px;color:#166534;margin:16px 0 8px">Room Supply Purchases</h2>'
       bodyContent += table(
-        ['Date', 'Item', `Qty`, `Unit Cost (${sym})`, `Total (${sym})`],
-        supPurchases.map((p) => [p.date || '', p.item_name || p.supply_items?.name || '', p.quantity_purchased || 0, Number(p.unit_cost || 0), Number(p.total_cost || p.quantity_purchased * p.unit_cost || 0)])
+        ['Date', 'Item', 'Qty', `Unit Cost (${sym})`, `Total (${sym})`],
+        [...supPurchases.map((p) => [p.date || p.purchased_at || '', p.item_name || p.supply_items?.name || '', p.quantity_purchased || 0, Number(p.unit_cost || 0), Number(p.total_cost || p.quantity_purchased * p.unit_cost || 0)]),
+         ['TOTAL', '', '', '', totalSup]]
       )
     }
     if (invPurchases.length === 0 && supPurchases.length === 0) {
@@ -1184,26 +1326,56 @@ function buildDetailedReportPdfHtml({ lodgeName, companyName, reportType, startD
     const pl = extraData.profitLoss
     if (pl) {
       bodyContent += '<h2 style="font-size:14px;color:#166534;margin:0 0 8px">Profit & Loss Statement</h2>'
-      bodyContent += table(
-        ['Line Item', `Amount (${sym})`],
-        [
-          ['Booking Revenue', Number(pl.bookingRevenue || 0)],
-          ['Fees Kept From Refunds', Number(pl.retainedRevenue || 0)],
-          ['POS Revenue', Number(pl.posRevenue || 0)],
-          ['Total Revenue', Number(pl.totalRevenue || 0)],
-          [],
-          ['Operating Expenses', Number(pl.totalExpenses || 0)],
-          ['Inventory Purchases', Number(pl.invCosts || 0)],
-          ['Room Supplies', Number(pl.supCosts || 0)],
-          ['Maintenance Repairs', Number(pl.maintenanceCosts || 0)],
-          ['Total Costs', Number(pl.totalCosts || 0)],
-          [],
-          ['GROSS PROFIT', Number(pl.grossProfit || 0)],
-          ['Net Profit', Number(pl.netProfit || 0)]
-        ].filter((r) => r.length > 0)
+      const plRows = [
+        ['Booking Revenue', Number(pl.bookingRevenue || 0)],
+        ['Fees Kept From Refunds', Number(pl.retainedRevenue || 0)],
+        ['POS Revenue', Number(pl.posRevenue || 0)],
+      ]
+      if (pl.conferenceRevenue > 0) plRows.push(['Conference Revenue', Number(pl.conferenceRevenue)])
+      if (pl.poolRevenue > 0) plRows.push(['Day Use / Facility Access', Number(pl.poolRevenue)])
+      plRows.push(
+        ['Total Revenue', Number(pl.totalRevenue || 0)],
+        [],
+        ['Operating Expenses', Number(pl.totalExpenses || 0)],
+        ['Inventory Purchases', Number(pl.invCosts || 0)],
+        ['Room Supplies', Number(pl.supCosts || 0)],
+        ['Maintenance Repairs', Number(pl.maintenanceCosts || 0)],
+        ['Total Costs', Number(pl.totalCosts || 0)],
+        ['Total Outgoings', Number((pl.totalExpenses || 0) + (pl.totalCosts || 0))],
+        [],
+        ['GROSS PROFIT', Number(pl.grossProfit || 0)],
+        ['Gross Margin %', `${Number(pl.grossMarginPct || 0).toFixed(1)}%`]
       )
+      bodyContent += table(['Line Item', `Amount (${sym})`], plRows.filter((r) => r.length > 0))
+      if (pl.totalBookings > 0) {
+        bodyContent += '<h3 style="font-size:12px;color:#555;margin:12px 0 6px">Key Metrics</h3>'
+        bodyContent += table(['Metric', 'Value'], [
+          ['Bookings', String(pl.totalBookings)],
+          [`Avg Booking Value (${sym})`, Number(pl.avgBookingValue || 0).toFixed(2)],
+          [`Refunds Issued (${sym})`, Number(pl.refundsIssued || 0).toFixed(2)],
+          [`Outstanding (${sym})`, Number(pl.outstandingAmount || 0).toFixed(2)]
+        ])
+      }
     } else {
       bodyContent += '<p style="color:#888;font-style:italic">No P&L data available for this period.</p>'
+    }
+  } else if (reportType === 'prepayments') {
+    const credits = extraData.credits || []
+    if (credits.length > 0) {
+      const totalBalance = credits.reduce((s, c) => s + Number(c.balance || 0), 0)
+      bodyContent += `
+        <div style="margin:0 0 16px">
+          <h2 style="font-size:13px;font-weight:700;color:#166534;margin:0 0 8px">Customer Credit Summary</h2>
+          <div style="display:flex;flex-wrap:wrap;gap:8px">
+            ${summaryCard('Total Liability', `${sym} ${totalBalance.toFixed(2)}`, `${credits.length} customers`)}
+          </div>
+        </div>`
+      bodyContent += table(
+        ['Customer', `Received (${sym})`, `Allocated (${sym})`, `Refunded (${sym})`, `Balance (${sym})`, 'Last Activity'],
+        credits.map((c) => [c.customer_name || '', Number(c.total_receipts || 0), Number(c.total_allocations || 0), Number(c.total_refunds || 0), Number(c.balance || 0), c.last_activity || ''])
+      )
+    } else {
+      bodyContent += '<p style="color:#888;font-style:italic">No customer credit records for this period.</p>'
     }
   } else {
     bodyContent += '<p style="color:#888;font-style:italic">No data available for this report in the selected period.</p>'
@@ -4896,15 +5068,29 @@ app.whenReady().then(async () => {
           ...buildWorkbookMetaRows(sharedMeta),
           ['REVENUE', `${sym}`],
           ['Booking Revenue',  Number(pl.bookingRevenue || 0).toFixed(2)],
-          ['Fees Kept From Refunds', Number(pl.retainedRevenue || 0).toFixed(2)],
-          ['POS Revenue',      Number(pl.posRevenue || 0).toFixed(2)],
-          ['Total Revenue',    Number(pl.totalRevenue || 0).toFixed(2)]
         ]
+        if (pl.regularRevenue > 0 || pl.eventRevenue > 0) {
+          plRows.push(['  Regular Revenue', Number(pl.regularRevenue || 0).toFixed(2)])
+          if (pl.eventRevenue > 0) plRows.push(['  Event Revenue', Number(pl.eventRevenue || 0).toFixed(2)])
+        }
+        plRows.push(
+          ['Fees Kept From Refunds', Number(pl.retainedRevenue || 0).toFixed(2)],
+          ['POS Revenue',      Number(pl.posRevenue || 0).toFixed(2)]
+        )
+        if (pl.conferenceRevenue > 0) plRows.push(['Conference Revenue', Number(pl.conferenceRevenue).toFixed(2)])
+        if (pl.poolRevenue > 0) plRows.push(['Day Use / Facility Access', Number(pl.poolRevenue).toFixed(2)])
+        plRows.push(['Total Revenue',    Number(pl.totalRevenue || 0).toFixed(2)])
         if (pl.vatEnabled) {
           plRows.push([`VAT (${pl.vatRate}% inclusive)`, `-${Number(pl.vatAmount || 0).toFixed(2)}`])
           plRows.push(['Net Revenue (excl. VAT)', Number(pl.netRevenue || 0).toFixed(2)])
         }
         plRows.push(
+          [],
+          ['KEY METRICS', ''],
+          ['Bookings', String(pl.totalBookings || 0)],
+          ['Avg Booking Value', Number(pl.avgBookingValue || 0).toFixed(2)],
+          ['Refunds Issued', Number(pl.refundsIssued || 0).toFixed(2)],
+          ['Outstanding', Number(pl.outstandingAmount || 0).toFixed(2)],
           [],
           ['EXPENSES', ''],
           ['Operating Expenses', Number(pl.totalExpenses || 0).toFixed(2)],
@@ -4914,12 +5100,19 @@ app.whenReady().then(async () => {
           ['Total Stock & Maintenance Costs', Number(pl.totalCosts || 0).toFixed(2)],
           ['Total Outgoings',    Number((pl.totalExpenses || 0) + (pl.totalCosts || 0)).toFixed(2)],
           [],
-          ['GROSS PROFIT', Number(pl.grossProfit || 0).toFixed(2)]
+          ['GROSS PROFIT', Number(pl.grossProfit || 0).toFixed(2)],
+          ['Gross Margin %', `${Number(pl.grossMarginPct || 0).toFixed(1)}%`]
         )
         if (pl.expByCategory && Object.keys(pl.expByCategory).length > 0) {
           plRows.push([], ['EXPENSE BREAKDOWN'])
           for (const [cat, amt] of Object.entries(pl.expByCategory)) {
             plRows.push([cat, Number(amt).toFixed(2)])
+          }
+        }
+        if (pl.bookingPaymentByMethod && Object.keys(pl.bookingPaymentByMethod).length > 0) {
+          plRows.push([], ['REVENUE BY PAYMENT METHOD'])
+          for (const [method, amt] of Object.entries(pl.bookingPaymentByMethod)) {
+            plRows.push([method.charAt(0).toUpperCase() + method.slice(1), Number(amt).toFixed(2)])
           }
         }
         XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(plRows), 'P&L')
@@ -5220,6 +5413,189 @@ app.whenReady().then(async () => {
         addSheetWithFormatting('Reconciliation', rcAoa)
       }
 
+      if (activeTab === 'expenses') {
+        try {
+          const [expenses, maintenanceRows] = await Promise.all([
+            db.getExpenses(startDate, endDate, outletLabel || 'all'),
+            db.getMaintenanceRowsForPeriod(startDate, endDate)
+          ])
+          const expRows = (expenses || []).map((e) => [e.date || '', e.category || '', e.description || '', Number(e.amount || 0)])
+          const expAoa = [...db.buildExportMetaRows(sharedMeta), ['Date', 'Category', 'Description', `Amount (${sym})`], ...expRows.map(db.sanitizeRow)]
+          if (expRows.length === 0) expAoa.push(['No expense records for this period'])
+          addSheetWithFormatting('Expenses', expAoa)
+
+          const maintRows = (maintenanceRows || []).map((m) => [m.reported_date || m.date || '', m.title || '', m.description || '', m.room_number || '', m.status || '', Number(m.total_cost || 0)])
+          const maintAoa = [...db.buildExportMetaRows(sharedMeta), ['Date', 'Title', 'Description', 'Room', 'Status', `Cost (${sym})`], ...maintRows.map(db.sanitizeRow)]
+          if (maintRows.length === 0) maintAoa.push(['No maintenance records for this period'])
+          addSheetWithFormatting('Maintenance', maintAoa)
+
+          const totalExpenses = (expenses || []).reduce((s, e) => s + Number(e.amount || 0), 0)
+          const totalMaintenance = (maintenanceRows || []).reduce((s, m) => s + Number(m.total_cost || 0), 0)
+          const summaryAoa = [
+            ...db.buildExportMetaRows(sharedMeta),
+            ['EXPENSES SUMMARY'],
+            ['Total Operating Expenses', money(totalExpenses)],
+            ['Total Maintenance Costs', money(totalMaintenance)],
+            ['Combined Total', money(totalExpenses + totalMaintenance)]
+          ]
+          addSheetWithFormatting('Summary', summaryAoa, { filter: false })
+        } catch {}
+      }
+
+      if (activeTab === 'pos') {
+        try {
+          const posRevenue = await db.getPosRevenueSummary(startDate, endDate, outletLabel || 'all')
+          if (posRevenue) {
+            const posSummaryAoa = [
+              ...db.buildExportMetaRows(sharedMeta),
+              ['POS REVENUE SUMMARY'],
+              ['Total Revenue', money(posRevenue.total_revenue || 0)],
+              ['Gross Sales', money(posRevenue.gross_revenue || 0)],
+              ['Discounts', money(posRevenue.discount_total || 0)],
+              ['Returns', money(posRevenue.returns_total || 0)],
+              ['Tax/VAT', money(posRevenue.tax_total || 0)],
+              ['Tips', money(posRevenue.tip_total || 0)],
+              ['Total Orders', String(posRevenue.total_orders || 0)],
+              ['Avg Order Value', money(posRevenue.avg_order || 0)]
+            ]
+            addSheetWithFormatting('POS Summary', posSummaryAoa, { filter: false })
+
+            const byPayment = posRevenue.by_payment || {}
+            if (Object.keys(byPayment).length > 0) {
+              const payRows = Object.entries(byPayment).sort((a, b) => b[1] - a[1]).map(([method, amt]) => [method, money(amt)])
+              addSheetWithFormatting('By Payment Method', [...db.buildExportMetaRows(sharedMeta), ['Method', `Revenue (${sym})`], ...payRows.map(db.sanitizeRow)])
+            }
+
+            const byCashier = posRevenue.by_cashier || {}
+            if (Object.keys(byCashier).length > 0) {
+              const cashierRows = Object.entries(byCashier).sort((a, b) => b[1] - a[1]).map(([name, amt]) => [name, money(amt)])
+              addSheetWithFormatting('By Operator', [...db.buildExportMetaRows(sharedMeta), ['Operator', `Revenue (${sym})`], ...cashierRows.map(db.sanitizeRow)])
+            }
+
+            const topItems = posRevenue.top_items || []
+            if (topItems.length > 0) {
+              const itemRows = topItems.map((item) => [item.name || '', item.qty || 0, money(item.revenue), item.cost != null ? money(item.cost) : '', item.margin != null ? money(item.margin) : ''])
+              addSheetWithFormatting('Top Selling Items', [...db.buildExportMetaRows(sharedMeta), ['Item', 'Qty Sold', `Revenue (${sym})`, `Cost (${sym})`, `Margin (${sym})`], ...itemRows.map(db.sanitizeRow)])
+            }
+
+            const daily = posRevenue.daily || []
+            if (daily.length > 0) {
+              const dailyRows = daily.map((d) => [d.date || '', money(d.total)])
+              addSheetWithFormatting('Daily Sales', [...db.buildExportMetaRows(sharedMeta), ['Date', `Total (${sym})`], ...dailyRows.map(db.sanitizeRow)])
+            }
+          }
+        } catch {}
+      }
+
+      if (activeTab === 'costs') {
+        try {
+          const [invSpend, supSpend] = await Promise.all([
+            db.getInventorySpend(startDate, endDate, outletLabel || 'all'),
+            db.getSupplySpend(startDate, endDate)
+          ])
+          if (invSpend && invSpend.purchases) {
+            const invRows = invSpend.purchases.map((p) => [
+              p.date || p.purchased_at || '', p.inventory_items?.name || p.item_name || '',
+              p.inventory_items?.category || p.category || '', p.quantity_purchased || 0,
+              Number(p.unit_cost || 0), Number(p.total_cost || 0)
+            ])
+            addSheetWithFormatting('Inventory Purchases', [...db.buildExportMetaRows(sharedMeta), ['Date', 'Item', 'Category', 'Qty', `Unit Cost (${sym})`, `Total (${sym})`], ...invRows.map(db.sanitizeRow)])
+
+            const byCategory = invSpend.by_category || {}
+            if (Object.keys(byCategory).length > 0) {
+              const catRows = Object.entries(byCategory).sort((a, b) => b[1] - a[1]).map(([cat, amt]) => [cat, money(amt)])
+              addSheetWithFormatting('Inventory by Category', [...db.buildExportMetaRows(sharedMeta), ['Category', `Amount (${sym})`], ...catRows.map(db.sanitizeRow)])
+            }
+          }
+          if (supSpend && supSpend.purchases) {
+            const supRows = supSpend.purchases.map((p) => [
+              p.date || p.purchased_at || '', p.supply_items?.name || p.item_name || '',
+              p.quantity_purchased || 0, Number(p.unit_cost || 0), Number(p.total_cost || 0)
+            ])
+            addSheetWithFormatting('Room Supplies', [...db.buildExportMetaRows(sharedMeta), ['Date', 'Item', 'Qty', `Unit Cost (${sym})`, `Total (${sym})`], ...supRows.map(db.sanitizeRow)])
+          }
+          const totalInv = invSpend?.total || 0
+          const totalSup = supSpend?.total || 0
+          addSheetWithFormatting('Costs Summary', [...db.buildExportMetaRows(sharedMeta), ['STOCK COSTS SUMMARY'], ['Inventory Purchases', money(totalInv)], ['Room Supplies', money(totalSup)], ['Total Stock Costs', money(totalInv + totalSup)]], { filter: false })
+        } catch {}
+      }
+
+      if (activeTab === 'pl') {
+        try {
+          const pl = await db.getProfitLoss(startDate, endDate)
+          if (pl) {
+            const plRows = [
+              ['REVENUE', `${sym}`],
+              ['Booking Revenue', Number(pl.bookingRevenue || 0).toFixed(2)],
+            ]
+            if (pl.regularRevenue > 0 || pl.eventRevenue > 0) {
+              plRows.push(['  Regular Revenue', Number(pl.regularRevenue || 0).toFixed(2)])
+              if (pl.eventRevenue > 0) plRows.push(['  Event Revenue', Number(pl.eventRevenue || 0).toFixed(2)])
+            }
+            plRows.push(
+              ['Fees Kept From Refunds', Number(pl.retainedRevenue || 0).toFixed(2)],
+              ['POS Revenue', Number(pl.posRevenue || 0).toFixed(2)]
+            )
+            if (pl.conferenceRevenue > 0) plRows.push(['Conference Revenue', Number(pl.conferenceRevenue).toFixed(2)])
+            if (pl.poolRevenue > 0) plRows.push(['Day Use / Facility Access', Number(pl.poolRevenue).toFixed(2)])
+            plRows.push(['Total Revenue', Number(pl.totalRevenue || 0).toFixed(2)])
+            if (pl.vatEnabled) {
+              plRows.push([`VAT (${pl.vatRate}% inclusive)`, `-${Number(pl.vatAmount || 0).toFixed(2)}`])
+              plRows.push(['Net Revenue (excl. VAT)', Number(pl.netRevenue || 0).toFixed(2)])
+            }
+            plRows.push(
+              [],
+              ['KEY METRICS', ''],
+              ['Bookings', String(pl.totalBookings || 0)],
+              ['Avg Booking Value', Number(pl.avgBookingValue || 0).toFixed(2)],
+              ['Refunds Issued', Number(pl.refundsIssued || 0).toFixed(2)],
+              ['Outstanding', Number(pl.outstandingAmount || 0).toFixed(2)],
+              [],
+              ['EXPENSES', ''],
+              ['Operating Expenses', Number(pl.totalExpenses || 0).toFixed(2)],
+              ['Inventory Purchases', Number(pl.invCosts || 0).toFixed(2)],
+              ['Room Supplies', Number(pl.supCosts || 0).toFixed(2)],
+              ['Maintenance Repairs', Number(pl.maintenanceCosts || 0).toFixed(2)],
+              ['Total Stock & Maintenance Costs', Number(pl.totalCosts || 0).toFixed(2)],
+              ['Total Outgoings', Number((pl.totalExpenses || 0) + (pl.totalCosts || 0)).toFixed(2)],
+              [],
+              ['GROSS PROFIT', Number(pl.grossProfit || 0).toFixed(2)],
+              ['Gross Margin %', `${Number(pl.grossMarginPct || 0).toFixed(1)}%`]
+            )
+            if (pl.expByCategory && Object.keys(pl.expByCategory).length > 0) {
+              plRows.push([], ['EXPENSE BREAKDOWN'])
+              for (const [cat, amt] of Object.entries(pl.expByCategory)) {
+                plRows.push([cat, Number(amt).toFixed(2)])
+              }
+            }
+            if (pl.bookingPaymentByMethod && Object.keys(pl.bookingPaymentByMethod).length > 0) {
+              plRows.push([], ['REVENUE BY PAYMENT METHOD'])
+              for (const [method, amt] of Object.entries(pl.bookingPaymentByMethod)) {
+                plRows.push([method.charAt(0).toUpperCase() + method.slice(1), Number(amt).toFixed(2)])
+              }
+            }
+            addSheetWithFormatting('P&L', [...db.buildExportMetaRows(sharedMeta), ...plRows.map(db.sanitizeRow)])
+          }
+        } catch {}
+      }
+
+      if (activeTab === 'prepayments') {
+        try {
+          const credits = await db.getCustomerCreditSummary(null, 500, 0)
+          if (credits && credits.length > 0) {
+            const creditRows = credits.map((c) => [
+              c.customer_name || '', Number(c.total_receipts || 0), Number(c.total_allocations || 0),
+              Number(c.total_refunds || 0), Number(c.balance || 0), c.last_activity || ''
+            ])
+            addSheetWithFormatting('Customer Credit', [...db.buildExportMetaRows(sharedMeta), ['Customer', `Received (${sym})`, `Allocated (${sym})`, `Refunded (${sym})`, `Balance (${sym})`, 'Last Activity'], ...creditRows.map(db.sanitizeRow)])
+            const totalBalance = credits.reduce((s, c) => s + Number(c.balance || 0), 0)
+            addSheetWithFormatting('Summary', [...db.buildExportMetaRows(sharedMeta), ['PREPAYMENTS SUMMARY'], ['Total Liability', money(totalBalance)], ['Customers with Credit', String(credits.length)]], { filter: false })
+          } else {
+            addSheetWithFormatting('Customer Credit', [...db.buildExportMetaRows(sharedMeta), ['Customer', `Received (${sym})`, `Allocated (${sym})`, `Refunded (${sym})`, `Balance (${sym})`, 'Last Activity'], ['No customer credit records for this period']], { filter: false })
+          }
+        } catch {}
+      }
+
       const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' })
       fs.mkdirSync(dirname(filePath), { recursive: true })
       fs.writeFileSync(filePath, buffer)
@@ -5318,6 +5694,11 @@ app.whenReady().then(async () => {
         try {
           const profitLoss = await db.getProfitLoss(startDate, endDate)
           extraData = { profitLoss: profitLoss || null }
+        } catch {}
+      } else if (reportType === 'prepayments') {
+        try {
+          const credits = await db.getCustomerCreditSummary(null, 500, 0)
+          extraData = { credits: credits || [] }
         } catch {}
       }
 

@@ -147,6 +147,7 @@ const api = {
     inventorySpend: (start, end, outletId) => ipcRenderer.invoke('reports:inventorySpend', start, end, outletId),
     supplySpend: (start, end) => ipcRenderer.invoke('reports:supplySpend', start, end),
     nightAudit: (date) => ipcRenderer.invoke('reports:nightAudit', date),
+    saveNightAuditExcel: (payload) => ipcRenderer.invoke('reports:saveNightAuditExcel', payload),
     profitLoss: (start, end) => ipcRenderer.invoke('reports:profitLoss', start, end),
     maintenanceRows: (start, end) => ipcRenderer.invoke('reports:maintenanceRows', start, end),
     outletProfitLoss: (start, end) => ipcRenderer.invoke('reports:outletProfitLoss', start, end),

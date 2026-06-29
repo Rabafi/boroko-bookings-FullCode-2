@@ -13,6 +13,8 @@ async function run() {
   const eventQuotationMigration = await read('supabase/migrations/20260618180000_event_lodge_quotations.sql')
   const financialIntegritySql = await read('supabase/migrations/20260618130000_financial_mutation_idempotency_and_booking_audit.sql')
   const posEventMigration = await read('supabase/migrations/20260620200000_pos_event_folio_support.sql')
+  const eventParentIdRepair = await read('supabase/migrations/20260626120000_harden_event_booking_parent_id.sql')
+  const eventIdempotencyMissRepair = await read('supabase/migrations/20260626123000_fix_event_booking_id_after_idempotency_miss.sql')
   const database = await read('src/main/database.js')
   const legacyPayloads = await read('legacy-pos/src/shared/payloads.js')
   const legacyTerminal = await read('legacy-pos/src/renderer/src/screens/POSTerminal.jsx')
@@ -156,6 +158,13 @@ async function run() {
       migration.indexOf('INSERT INTO public.event_booking_rooms'),
     'event parent must be inserted before event room links'
   )
+  assert.match(eventParentIdRepair, /alter column id set default gen_random_uuid\(\)/i)
+  assert.match(eventParentIdRepair, /v_event_id uuid := coalesce\(nullif\(payload->>''id''/)
+  assert.match(eventParentIdRepair, /begin\\n  v_event_id := coalesce\(v_event_id/)
+  assert.match(eventParentIdRepair, /create_event_booking still does not guarantee a generated event ID/)
+  assert.match(eventIdempotencyMissRepair, /SELECT \.\.\. INTO clears target variables when no row is found/)
+  assert.match(eventIdempotencyMissRepair, /v_event_id := coalesce\(v_event_id, nullif\(payload->>''id'', ''''\)::uuid, gen_random_uuid\(\)\)/)
+  assert.match(eventIdempotencyMissRepair, /create_event_booking still clears v_event_id after idempotency lookup miss/)
 
   // ═══ MIGRATION: update_event_booking safety ═══
   assert.match(migration, /p_expected_updated_at/)

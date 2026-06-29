@@ -127,6 +127,48 @@ async function fetchPagedBookingRows(buildQuery, maxRows = BOOKING_MAX_ROWS) {
   return rows;
 }
 
+async function fetchRefundSettlementMap(bookingIds = []) {
+  if (!state.isOnline || !state.lodgeId) return new Map();
+  let query = state.supabase.
+    from('refund_approval_log').
+    select('booking_id, refund_amount, retained_amount, retained_percent, method, created_at').
+    eq('lodge_id', state.lodgeId).
+    order('created_at', { ascending: false });
+
+  if (bookingIds.length > 0) {
+    query = query.in('booking_id', bookingIds);
+  }
+
+  const { data, error } = await query;
+  if (error) {
+    console.warn('Could not load refund settlement state:', error.message);
+    return new Map();
+  }
+
+  const byBooking = new Map();
+  for (const row of data || []) {
+    if (row?.booking_id && !byBooking.has(row.booking_id)) {
+      byBooking.set(row.booking_id, row);
+    }
+  }
+  return byBooking;
+}
+
+function applyRefundSettlementState(rows, settlementMap) {
+  return rows.map((row) => {
+    const settlement = settlementMap.get(row.id || row.booking_id);
+    return {
+      ...row,
+      refund_settled: Boolean(settlement),
+      refund_amount: settlement ? Number(settlement.refund_amount || 0) : null,
+      retained_amount: settlement ? Number(settlement.retained_amount || 0) : null,
+      retained_percent: settlement ? Number(settlement.retained_percent || 0) : null,
+      refund_method: settlement?.method || null,
+      refund_approved_at: settlement?.created_at || null
+    };
+  });
+}
+
 async function _getAllBookings() {
   try {
     const data = await fetchPagedBookingRows(() => state.supabase.
@@ -153,7 +195,9 @@ async function _getAllBookings() {
       room_type: b.rooms?.room_type,
       rate_per_night: b.rooms?.rate_per_night
     }));
-    const mergedLiveRows = mergeRemoteBookingsWithLocalState(mapped, localRowsForMerge);
+    const refundSettlements = await fetchRefundSettlementMap(mapped.map((row) => row.id).filter(Boolean));
+    const mappedWithRefundState = applyRefundSettlementState(mapped, refundSettlements);
+    const mergedLiveRows = mergeRemoteBookingsWithLocalState(mappedWithRefundState, localRowsForMerge);
     writeCache('bookings', mergedLiveRows);
     return mergedLiveRows;
   } catch (error) {
@@ -993,6 +1037,7 @@ export async function refundBooking(bookingId, options = {}) {
     if (refundAmount <= 0) throw new Error('Retained percentage leaves nothing to refund');
 
     const paymentMethod = options.method || 'refund';
+    const isCreditTransfer = paymentMethod === 'customer_credit_transfer';
     const notes = String(options.notes || '').trim();
     const proofReference = String(options.proof_reference ?? options.proofReference ?? '').trim();
     const approvalNote = String(options.approval_note ?? options.approvalNote ?? '').trim();
@@ -1038,8 +1083,10 @@ export async function refundBooking(bookingId, options = {}) {
 
     const customer = readCache('customers').find((entry) => entry.id === booking.customer_id);
     logActivity(
-      'refund_processed',
-      `Refund processed · ${customer?.name || booking.customer_name || 'Guest'} · refunded ${refundAmount.toFixed(2)} · retained ${retainedAmount.toFixed(2)} (${retainedPercent.toFixed(2)}%) · approved by ${approver?.approved_by_name || 'manager'}`
+      isCreditTransfer ? 'customer_credit_adjusted' : 'refund_processed',
+      isCreditTransfer
+        ? `Cancelled booking credit transfer · ${customer?.name || booking.customer_name || 'Guest'} · credited ${refundAmount.toFixed(2)} · retained ${retainedAmount.toFixed(2)} (${retainedPercent.toFixed(2)}%) · approved by ${approver?.approved_by_name || 'manager'}`
+        : `Refund processed · ${customer?.name || booking.customer_name || 'Guest'} · refunded ${refundAmount.toFixed(2)} · retained ${retainedAmount.toFixed(2)} (${retainedPercent.toFixed(2)}%) · approved by ${approver?.approved_by_name || 'manager'}`
     );
 
     return {
@@ -1049,7 +1096,10 @@ export async function refundBooking(bookingId, options = {}) {
       retained_amount: retainedAmount,
       retained_percent: retainedPercent,
       approved_by: approver?.approved_by || null,
-      approved_by_name: approver?.approved_by_name || null
+      approved_by_name: approver?.approved_by_name || null,
+      credit_transfer: data?.credit_transfer === true,
+      credit_entry_id: data?.credit_entry_id || null,
+      credit_balance: data?.credit_balance ?? null
     };
   } catch (error) {
     recordCriticalError('booking.refund', error, {

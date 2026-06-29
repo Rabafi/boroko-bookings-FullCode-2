@@ -430,6 +430,14 @@ async function getProfitLossLocal(start, end) {
     return acc;
   }, {});
   const vatAmount = rev.vat_amount || 0;
+  const regularRevenue = rev.regular_revenue || 0;
+  const eventRevenue = rev.event_revenue || 0;
+  const totalBookings = rev.total_bookings || 0;
+  const avgBookingValue = rev.avg_booking_value || 0;
+  const refundsIssued = rev.refunds_issued || 0;
+  const outstandingAmount = rev.outstanding_amount || 0;
+  const bookingPaymentByMethod = rev.booking_payment_by_method || {};
+  const grossMarginPct = totalRevenue > 0 ? +((grossProfit / totalRevenue) * 100).toFixed(1) : 0;
   return {
     bookingRevenue, posRevenue, conferenceRevenue, poolRevenue, retainedRevenue, totalRevenue,
     totalExpenses, expByCategory,
@@ -439,7 +447,9 @@ async function getProfitLossLocal(start, end) {
     vatEnabled: rev.vat_enabled || false,
     vatRate: rev.vat_rate || 0,
     vatMixed: rev.vat_mixed || false,
-    netRevenue: +(totalRevenue - vatAmount).toFixed(2)
+    netRevenue: +(totalRevenue - vatAmount).toFixed(2),
+    regularRevenue, eventRevenue, totalBookings, avgBookingValue,
+    refundsIssued, outstandingAmount, bookingPaymentByMethod, grossMarginPct
   };
 }
 
@@ -456,6 +466,8 @@ function finalizeProfitLossSummary(summary = {}, retainedRevenueFallback = 0) {
   const totalCosts = invCosts + supCosts + maintenanceCosts;
   const totalRevenue = bookingRevenue + posRevenue + conferenceRevenue + poolRevenue + retainedRevenue;
   const vatAmount = Number(summary.vatAmount || 0);
+  const grossProfit = totalRevenue - totalExpenses - totalCosts;
+  const grossMarginPct = totalRevenue > 0 ? +((grossProfit / totalRevenue) * 100).toFixed(1) : 0;
 
   return {
     ...summary,
@@ -470,9 +482,17 @@ function finalizeProfitLossSummary(summary = {}, retainedRevenueFallback = 0) {
     supCosts,
     maintenanceCosts,
     totalCosts,
-    grossProfit: totalRevenue - totalExpenses - totalCosts,
+    grossProfit,
+    grossMarginPct,
     vatAmount,
-    netRevenue: +(totalRevenue - vatAmount).toFixed(2)
+    netRevenue: +(totalRevenue - vatAmount).toFixed(2),
+    regularRevenue: Number(summary.regularRevenue || 0),
+    eventRevenue: Number(summary.eventRevenue || 0),
+    totalBookings: Number(summary.totalBookings || 0),
+    avgBookingValue: Number(summary.avgBookingValue || 0),
+    refundsIssued: Number(summary.refundsIssued || 0),
+    outstandingAmount: Number(summary.outstandingAmount || 0),
+    bookingPaymentByMethod: summary.bookingPaymentByMethod || {}
   };
 }
 
@@ -493,9 +513,19 @@ export async function getProfitLoss(start, end) {
           normalized.maintenanceCosts = (maintenanceRows || []).reduce((sum, row) => sum + Number(row.total_cost || 0), 0);
         }
         let retainedRevenue = normalized.retainedRevenue;
+        let revenueExtra = null;
         if (typeof retainedRevenue === 'undefined') {
-          const revenue = await getRevenueReport(start, end).catch(() => null);
-          retainedRevenue = Number(revenue?.retained_revenue || 0);
+          revenueExtra = await getRevenueReport(start, end).catch(() => null);
+          retainedRevenue = Number(revenueExtra?.retained_revenue || 0);
+        }
+        if (revenueExtra) {
+          normalized.regularRevenue = revenueExtra.regular_revenue || 0;
+          normalized.eventRevenue = revenueExtra.event_revenue || 0;
+          normalized.totalBookings = revenueExtra.total_bookings || 0;
+          normalized.avgBookingValue = revenueExtra.avg_booking_value || 0;
+          normalized.refundsIssued = revenueExtra.refunds_issued || 0;
+          normalized.outstandingAmount = revenueExtra.outstanding_amount || 0;
+          normalized.bookingPaymentByMethod = revenueExtra.booking_payment_by_method || {};
         }
         return {
           ...finalizeProfitLossSummary(normalized, retainedRevenue),

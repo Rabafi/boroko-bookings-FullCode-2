@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { CreditCard, FileText, Mail, Printer, Receipt, RefreshCw, RotateCcw, Search } from 'lucide-react'
+import { CreditCard, Download, FileText, Mail, Printer, Receipt, RefreshCw, RotateCcw, Search } from 'lucide-react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { Modal } from './shared/Modal'
 import { Receipt as BookingReceipt } from './shared/Receipt'
@@ -127,6 +127,10 @@ function formatStay(invoice) {
 function canRefundBooking(invoice) {
   const status = String(invoice?.status || '').toLowerCase()
   return ['pending', 'confirmed', 'cancelled'].includes(status)
+}
+
+function invoiceRefundPending(invoice) {
+  return invoice?.status === 'cancelled' && Number(invoice.amount_paid || 0) > 0.01 && invoice.refund_settled !== true
 }
 
 function invoiceNeedsAttention(invoice) {
@@ -419,6 +423,7 @@ function DeliveryHistoryModal({ invoice, onClose }) {
 function RefundModal({ invoice, currency, onClose, onSaved }) {
   const [form, setForm] = useState({
     retained_percent: 0,
+    settlement_mode: 'external_refund',
     method: 'bank_transfer',
     notes: '',
     proof_reference: '',
@@ -432,6 +437,7 @@ function RefundModal({ invoice, currency, onClose, onSaved }) {
   const retainedPercent = Math.min(100, Math.max(0, Number(form.retained_percent || 0)))
   const retainedAmount = paidAmount * (retainedPercent / 100)
   const refundAmount = Math.max(0, paidAmount - retainedAmount)
+  const transferToCredit = form.settlement_mode === 'customer_credit'
 
   const handleSubmit = async (event) => {
     event.preventDefault()
@@ -439,7 +445,7 @@ function RefundModal({ invoice, currency, onClose, onSaved }) {
     setError('')
     const result = await window.api.bookings.refund(invoice.booking_id, {
       retained_percent: retainedPercent,
-      method: form.method,
+      method: transferToCredit ? 'customer_credit_transfer' : form.method,
       notes: form.notes,
       proof_reference: form.proof_reference,
       approval_note: form.approval_note,
@@ -454,7 +460,12 @@ function RefundModal({ invoice, currency, onClose, onSaved }) {
     }
 
     setSaving(false)
-    onSaved?.(result)
+    onSaved?.({
+      ...result,
+      settlement_mode: form.settlement_mode,
+      proof_reference: form.proof_reference,
+      notes: form.notes
+    })
   }
 
   return (
@@ -463,7 +474,7 @@ function RefundModal({ invoice, currency, onClose, onSaved }) {
         <div className="rounded-2xl bg-amber-50 p-4 text-sm text-amber-900">
           <p className="font-semibold">Refund basis</p>
           <p className="mt-1">Paid amount on this booking: {fmtMoney(currency, paidAmount)}</p>
-          <p className="mt-1">Set the percentage the lodge is retaining. The rest will be recorded as a refund.</p>
+          <p className="mt-1">Set the percentage the lodge is retaining. The rest can leave the lodge as a refund or stay on the guest account as customer credit.</p>
         </div>
 
         <label className="block">
@@ -480,28 +491,54 @@ function RefundModal({ invoice, currency, onClose, onSaved }) {
           />
         </label>
 
+        <div className="grid gap-2 rounded-2xl border border-gray-200 bg-gray-50 p-2 sm:grid-cols-2">
+          <button
+            type="button"
+            onClick={() => setForm((current) => ({ ...current, settlement_mode: 'external_refund' }))}
+            className={`rounded-xl px-3 py-2 text-sm font-semibold transition ${
+              !transferToCredit ? 'bg-white text-rose-700 shadow-sm ring-1 ring-rose-200' : 'text-gray-600 hover:bg-white'
+            }`}
+          >
+            Refund guest
+          </button>
+          <button
+            type="button"
+            onClick={() => setForm((current) => ({ ...current, settlement_mode: 'customer_credit', method: 'bank_transfer' }))}
+            className={`rounded-xl px-3 py-2 text-sm font-semibold transition ${
+              transferToCredit ? 'bg-white text-emerald-700 shadow-sm ring-1 ring-emerald-200' : 'text-gray-600 hover:bg-white'
+            }`}
+          >
+            Transfer to customer credit
+          </button>
+        </div>
+
         <label className="block">
-          <span className="mb-1.5 block text-sm font-medium text-gray-700">Refund method</span>
+          <span className="mb-1.5 block text-sm font-medium text-gray-700">{transferToCredit ? 'Credit transfer method' : 'Refund method'}</span>
           <select
-            value={form.method}
+            value={transferToCredit ? 'customer_credit_transfer' : form.method}
             onChange={(event) => setForm((current) => ({ ...current, method: event.target.value }))}
             className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm outline-none focus:border-green-500"
+            disabled={transferToCredit}
           >
-            {PAYMENT_METHODS.map((method) => (
+            {(transferToCredit ? [{ value: 'customer_credit_transfer', label: 'Customer credit transfer' }] : PAYMENT_METHODS).map((method) => (
               <option key={method.value} value={method.value}>{method.label}</option>
             ))}
           </select>
-          <p className="mt-1.5 text-xs text-gray-500">Use the actual refund path used for the guest. Bank transfer refunds should only be confirmed once POP is available.</p>
+          <p className="mt-1.5 text-xs text-gray-500">
+            {transferToCredit
+              ? 'No cash leaves the lodge. The refundable amount becomes customer credit for future bookings.'
+              : 'Use the actual refund path used for the guest. Bank transfer refunds should only be confirmed once POP is available.'}
+          </p>
         </label>
 
         <label className="block">
-          <span className="mb-1.5 block text-sm font-medium text-gray-700">Proof reference</span>
+          <span className="mb-1.5 block text-sm font-medium text-gray-700">{transferToCredit ? 'Credit transfer reference' : 'Proof reference'}</span>
           <input
             type="text"
             value={form.proof_reference}
             onChange={(event) => setForm((current) => ({ ...current, proof_reference: event.target.value }))}
             className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm outline-none focus:border-green-500"
-            placeholder="Bank reference, signed cash slip, POP number, or refund note ID"
+            placeholder={transferToCredit ? 'Guest credit authorization, policy reference, or manager note ID' : 'Bank reference, signed cash slip, POP number, or refund note ID'}
             required
           />
         </label>
@@ -546,8 +583,8 @@ function RefundModal({ invoice, currency, onClose, onSaved }) {
             <p className="mt-1 text-lg font-bold text-gray-900">{fmtMoney(currency, retainedAmount)}</p>
           </div>
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-gray-500">Refund To Guest</p>
-            <p className="mt-1 text-lg font-bold text-rose-700">{fmtMoney(currency, refundAmount)}</p>
+            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-gray-500">{transferToCredit ? 'Customer Credit' : 'Refund To Guest'}</p>
+            <p className={`mt-1 text-lg font-bold ${transferToCredit ? 'text-emerald-700' : 'text-rose-700'}`}>{fmtMoney(currency, refundAmount)}</p>
           </div>
         </div>
 
@@ -567,10 +604,70 @@ function RefundModal({ invoice, currency, onClose, onSaved }) {
             className="inline-flex items-center gap-2 rounded-xl bg-rose-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-rose-700 disabled:opacity-60"
           >
             <RotateCcw size={15} />
-            {saving ? 'Processing…' : 'Record Refund'}
+            {saving ? 'Processing…' : transferToCredit ? 'Transfer to Credit' : 'Record Refund'}
           </button>
         </div>
       </form>
+    </Modal>
+  )
+}
+
+function CreditTransferReceipt({ receipt, currency, settings, onClose }) {
+  const receiptNumber = receipt.receipt_number || `CREDIT-${String(receipt.id || receipt.booking_id || Date.now()).slice(0, 8).toUpperCase()}`
+  const print = () => window.api.receipts.printCurrent({ silent: false }).catch(() => null)
+  const save = () => window.api.receipts.savePDF({
+    guestName: receipt.customerName,
+    invoiceNumber: receiptNumber,
+    documentType: 'prepayment',
+    defaultFilename: `${receiptNumber}-${receipt.customerName}`,
+    receipt: {
+      receiptNumber,
+      customerName: receipt.customerName,
+      amount: Number(receipt.amount || 0),
+      currency,
+      method: 'customer_credit_transfer',
+      reference: receipt.reference || '',
+      notes: receipt.notes || '',
+      balance: Number(receipt.balance || 0),
+      createdAt: receipt.created_at,
+      provisional: false,
+      lodgeName: settings?.lodge_name || settings?.company_name || 'Lodge',
+      companyName: settings?.company_name || '',
+      address: settings?.address || '',
+      phone: settings?.phone || '',
+      email: settings?.email || '',
+      website: settings?.website || '',
+      logo: settings?.logo || ''
+    }
+  }).catch(() => null)
+
+  return (
+    <Modal title="Customer Credit Memo" onClose={onClose} size="lg">
+      <div id="printable-receipt" className="mx-auto min-h-[297mm] w-full max-w-[210mm] space-y-8 bg-white p-8 sm:p-12 print:min-h-0 print:w-[210mm] print:max-w-none print:p-[16mm]">
+        <div className="text-center">
+          <h2 className="text-2xl font-bold">{settings?.lodge_name || settings?.company_name || 'Lodge'}</h2>
+          <p className="text-sm text-slate-500">{settings?.address || ''}</p>
+          <h3 className="mt-8 text-xl font-semibold">Customer Credit Memo</h3>
+          <p className="mt-1 text-sm text-slate-500">{receiptNumber}</p>
+        </div>
+        <div className="grid grid-cols-2 gap-4 rounded-xl border border-slate-200 p-4 text-sm">
+          <div><span className="text-slate-500">Customer</span><p className="font-semibold">{receipt.customerName}</p></div>
+          <div><span className="text-slate-500">Date</span><p className="font-semibold">{new Date(receipt.created_at).toLocaleString()}</p></div>
+          <div><span className="text-slate-500">Source booking</span><p className="font-semibold">{receipt.invoiceNumber || receipt.booking_id || 'Cancelled booking'}</p></div>
+          <div><span className="text-slate-500">Method</span><p className="font-semibold">Customer credit transfer</p></div>
+        </div>
+        <div className="rounded-xl bg-emerald-50 p-5 text-center">
+          <p className="text-sm text-emerald-700">Amount credited</p>
+          <p className="text-3xl font-bold text-emerald-800">{fmtMoney(currency, receipt.amount)}</p>
+          <p className="mt-2 text-sm text-emerald-700">Remaining customer credit: {fmtMoney(currency, receipt.balance)}</p>
+        </div>
+        {receipt.notes && <div className="rounded-xl border border-slate-200 p-4 text-sm"><span className="text-slate-500">Notes</span><p className="mt-1 text-slate-800">{receipt.notes}</p></div>}
+        <p className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-center text-sm font-semibold text-amber-900">This credit came from a cancelled booking settlement. No cash left the lodge in this transaction.</p>
+        <div className="flex justify-end gap-2 print:hidden">
+          <button onClick={save} className="btn-secondary flex items-center gap-2"><Download size={15} /> Save PDF</button>
+          <button onClick={print} className="btn-primary flex items-center gap-2"><Printer size={15} /> Print</button>
+        </div>
+      </div>
     </Modal>
   )
 }
@@ -596,6 +693,7 @@ export default function BookingInvoices() {
   const [auditInvoice, setAuditInvoice] = useState(null)
   const [deliveryInvoice, setDeliveryInvoice] = useState(null)
   const [refundInvoice, setRefundInvoice] = useState(null)
+  const [creditReceipt, setCreditReceipt] = useState(null)
   const [flash, setFlash] = useState(null)
   const [emailingId, setEmailingId] = useState(null)
   const [financialPendingIds, setFinancialPendingIds] = useState(new Set())
@@ -646,13 +744,17 @@ export default function BookingInvoices() {
     loadInvoices()
   }, [])
 
-  // Handle incoming navigation state from Bookings page (Process Refund button)
+  // Handle incoming navigation state from Bookings and customer-credit ledger links
   useEffect(() => {
     const refundBookingId = location.state?.refundBookingId
-    if (!refundBookingId || !invoices.length) return
-    const invoice = invoices.find((inv) => String(inv.booking_id) === String(refundBookingId))
+    const viewBookingId = location.state?.viewBookingId
+    const targetBookingId = refundBookingId || viewBookingId
+    if (!targetBookingId || !invoices.length) return
+    const invoice = invoices.find((inv) => String(inv.booking_id) === String(targetBookingId))
     if (!invoice) {
       pushFlash('error', 'Could not find that booking invoice. Please refresh and try again.')
+    } else if (viewBookingId) {
+      setSelectedInvoice(invoice)
     } else if (isFinanciallySyncBlocked(invoice.booking_id)) {
       pushFlash('error', FINANCIAL_SYNC_BLOCK_MESSAGE)
     } else if (!canRefundBooking(invoice)) {
@@ -1069,7 +1171,7 @@ export default function BookingInvoices() {
                       {Number(invoice.balance_due || 0) > 0 && invoice.status !== 'cancelled' && (
                         <p className="mt-1 text-xs font-semibold text-amber-700">Needs collection</p>
                       )}
-                      {invoice.status === 'cancelled' && Number(invoice.amount_paid || 0) > 0.01 && invoice.payment_status !== 'paid' && (
+                      {invoiceRefundPending(invoice) && (
                         <p className="mt-1 text-xs font-semibold text-rose-600">Refund pending</p>
                       )}
                     </td>
@@ -1083,7 +1185,7 @@ export default function BookingInvoices() {
                     </td>
                     <td className="px-5 py-4">
                       <Badge value={invoice.status} styles={BOOKING_STATUS_STYLES} />
-                      {invoice.status === 'cancelled' && Number(invoice.amount_paid || 0) > 0.01 && invoice.payment_status !== 'paid' && (
+                      {invoiceRefundPending(invoice) && (
                         <span className="mt-1 inline-flex items-center rounded-full border border-rose-200 bg-rose-50 px-2 py-0.5 text-[10px] font-semibold text-rose-700 whitespace-nowrap">
                           ⚠️ Refund Pending
                         </span>
@@ -1140,7 +1242,7 @@ export default function BookingInvoices() {
                           <CreditCard size={12} />
                           Collect
                         </button>
-                        {invoice.status === 'cancelled' && Number(invoice.amount_paid || 0) > 0.01 && invoice.payment_status !== 'paid' && (
+                        {invoiceRefundPending(invoice) && (
                           <button
                             type="button"
                             onClick={() => {
@@ -1244,7 +1346,7 @@ export default function BookingInvoices() {
               </div>
             )}
 
-            {selectedInvoice.status === 'cancelled' && Number(selectedInvoice.amount_paid || 0) > 0.01 && selectedInvoice.payment_status !== 'paid' && (
+            {invoiceRefundPending(selectedInvoice) && (
               <div className="rounded-2xl border-2 border-rose-300 bg-rose-50 px-5 py-4 text-sm text-rose-900">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
@@ -1392,9 +1494,37 @@ export default function BookingInvoices() {
             ))
             setRefundInvoice(null)
             setSelectedInvoice(null)
-            pushFlash('success', `Refund recorded for ${refundInvoice.customer_name || 'guest'} and approved by ${result?.approved_by_name || 'manager'}.`)
+            if (result?.credit_transfer === true) {
+              setCreditReceipt({
+                id: result.credit_entry_id,
+                booking_id: refundInvoice.booking_id,
+                invoiceNumber: refundInvoice.invoice_number,
+                customerName: refundInvoice.customer_name || 'Guest',
+                amount: Number(result.refund_amount || 0),
+                balance: Number(result.credit_balance || 0),
+                reference: result.proof_reference || refundInvoice.invoice_number || refundInvoice.booking_id,
+                notes: result.notes || `Customer credit from cancelled booking ${refundInvoice.invoice_number || refundInvoice.booking_id}`,
+                receipt_number: result.credit_entry_id ? `CREDIT-${String(result.credit_entry_id).slice(0, 8).toUpperCase()}` : null,
+                created_at: new Date().toISOString()
+              })
+            }
+            pushFlash(
+              'success',
+              result?.credit_transfer === true
+                ? `Customer credit created for ${refundInvoice.customer_name || 'guest'} and approved by ${result?.approved_by_name || 'manager'}.`
+                : `Refund recorded for ${refundInvoice.customer_name || 'guest'} and approved by ${result?.approved_by_name || 'manager'}.`
+            )
             loadInvoices()
           }}
+        />
+      )}
+
+      {creditReceipt && (
+        <CreditTransferReceipt
+          receipt={creditReceipt}
+          currency={currency}
+          settings={settings}
+          onClose={() => setCreditReceipt(null)}
         />
       )}
     </div>

@@ -66,6 +66,7 @@ import { mergeRemoteBookingsWithLocalState } from './bookingMerge.js';
 import { mergeRemotePosOrdersWithLocalState } from './posMerge.js';
 import { protectQueuedRpcData, resolveQueuedRpcData } from './secureQueueSecrets.js';
 import {
+  getSyncItemQuotationId,
   markClearedSyncItemForManualReview,
   patchCachedBookingSyncState,
   patchCachedDayUseSyncState,
@@ -368,6 +369,18 @@ function isConvertQuotationQueueItem(item) {
   return item?.type === 'rpc' && item?.table === 'convert_quotation_to_booking';
 }
 
+function isCreateQuotationQueueItem(item) {
+  return item?.type === 'rpc' && item?.table === 'create_quotation';
+}
+
+function isUpdateQuotationQueueItem(item) {
+  return item?.type === 'rpc' && item?.table === 'update_quotation';
+}
+
+function isMarkQuotationSentQueueItem(item) {
+  return item?.type === 'rpc' && item?.table === 'mark_quotation_sent';
+}
+
 function getQueuedBookingId(item) {
   const bookingId = String(item?.data?.p_booking_id || '').trim();
   if (bookingId) return bookingId;
@@ -400,6 +413,17 @@ function getQueuedQuotationId(item) {
 
 function isRoomConflictError(message = '') {
   return /no_overlapping_bookings|room is already booked|room is not available|room.*conflict/i.test(String(message || ''));
+}
+
+function isQuotationNumberConflict(message = '') {
+  return /quotations_lodge_id_quotation_number_key|duplicate key value/i.test(String(message || ''));
+}
+
+function getNextQuotationNumberAfterLocal(currentNumber) {
+  const match = String(currentNumber || '').match(/^(Q-\d{4}-)(\d+)$/);
+  if (!match) return currentNumber;
+  const [, prefix, seq] = match;
+  return `${prefix}${String(Number(seq) + 1).padStart(seq.length, '0')}`;
 }
 
 function valuesEqualForDrift(left, right) {
@@ -464,6 +488,13 @@ function isAlreadyAppliedRpcError(item, errorOrMessage) {
   const message = getErrorMessage(errorOrMessage);
   if (isConvertQuotationQueueItem(item) && /quotation is already converted|quotation is already .*converted|already converted/i.test(message)) {
     return true;
+  }
+  // For create_quotation, a 23505 on the quotation_number unique constraint means
+  // a DIFFERENT quotation with the same number exists — not that THIS quotation
+  // was already applied. Only treat it as already-applied if the error references
+  // the quotation's own ID (UUID), not the number constraint.
+  if (isCreateQuotationQueueItem(item)) {
+    if (/quotations_lodge_id_quotation_number_key/i.test(message)) return false;
   }
   const payloadId = item?.data?.payload?.id || item?.data?.p_booking_id || item?.data?.p_quotation_id || null;
   if (!payloadId) return false;
@@ -844,6 +875,49 @@ async function _runSyncQueue() {
           });
         }
       }
+      if (isCreateQuotationQueueItem(item)) {
+        const quotationId = getQueuedQuotationId(item);
+        if (isQuotationNumberConflict(errorMessage) && item?.data?.payload?.quotation_number) {
+          const bumped = getNextQuotationNumberAfterLocal(item.data.payload.quotation_number);
+          console.warn('[QUOTATION SYNC] Number conflict, bumping quotation number', item.data.payload.quotation_number, '->', bumped);
+          item.data.payload.quotation_number = bumped;
+          patchCachedQuotationSyncState(quotationId, {
+            _pending_sync: true,
+            _sync_state: 'pending',
+            _sync_error: null,
+            quotation_number: bumped
+          });
+        } else if (quotationId) {
+          patchCachedQuotationSyncState(quotationId, {
+            _pending_sync: true,
+            _sync_state: 'failed',
+            _sync_error: errorMessage
+          });
+          console.warn('[QUOTATION SYNC] Failed create quotation', quotationId, errorMessage);
+        }
+      }
+      if (isUpdateQuotationQueueItem(item)) {
+        const quotationId = getQueuedQuotationId(item);
+        if (quotationId) {
+          patchCachedQuotationSyncState(quotationId, {
+            _pending_sync: true,
+            _sync_state: 'failed',
+            _sync_error: `update_quotation rejected by server: ${errorMessage}`
+          });
+          console.warn('[QUOTATION SYNC] Failed update quotation', quotationId, errorMessage);
+        }
+      }
+      if (isMarkQuotationSentQueueItem(item)) {
+        const quotationId = getQueuedQuotationId(item);
+        if (quotationId) {
+          patchCachedQuotationSyncState(quotationId, {
+            _pending_sync: true,
+            _sync_state: 'failed',
+            _sync_error: `mark_quotation_sent rejected by server: ${errorMessage}`
+          });
+          console.warn('[QUOTATION SYNC] Failed mark quotation sent', quotationId, errorMessage);
+        }
+      }
       const retryCount = (item.retryCount || 0) + 1;
       const manualReviewOnly = shouldManualReviewSyncItem(item, errorMessage) ||
       (isCreateBookingQueueItem(item) || isConvertQuotationQueueItem(item)) && isRoomConflictError(errorMessage) ||
@@ -937,6 +1011,42 @@ async function _runSyncQueue() {
           });
         }
       }
+      if (isCreateQuotationQueueItem(item)) {
+        const quotationId = getQueuedQuotationId(item);
+        if (quotationId) {
+          patchCachedQuotationSyncState(quotationId, {
+            _pending_sync: false,
+            _sync_state: 'synced',
+            _sync_error: null,
+            _synced_at: new Date().toISOString()
+          });
+          console.log('[QUOTATION SYNC] Synced create quotation', quotationId);
+        }
+      }
+      if (isUpdateQuotationQueueItem(item)) {
+        const quotationId = getQueuedQuotationId(item);
+        if (quotationId) {
+          patchCachedQuotationSyncState(quotationId, {
+            _pending_sync: false,
+            _sync_state: 'synced',
+            _sync_error: null,
+            _synced_at: new Date().toISOString()
+          });
+          console.log('[QUOTATION SYNC] Synced update quotation', quotationId);
+        }
+      }
+      if (isMarkQuotationSentQueueItem(item)) {
+        const quotationId = getQueuedQuotationId(item);
+        if (quotationId) {
+          patchCachedQuotationSyncState(quotationId, {
+            _pending_sync: false,
+            _sync_state: 'synced',
+            _sync_error: null,
+            _synced_at: new Date().toISOString()
+          });
+          console.log('[QUOTATION SYNC] Synced mark quotation sent', quotationId);
+        }
+      }
       // Mark inventory item creation success in cache
       if (item?.type === 'rpc' && item?.table === 'create_inventory_item') {
         const inventoryItemId = getQueuedInventoryItemId(item);
@@ -979,9 +1089,18 @@ async function _runSyncQueue() {
       if (item.type === 'rpc' && ['create_customer', 'update_customer'].includes(item.table)) shouldRefreshCustomers = true;
       if (item.table === 'rooms' || item.type === 'rpc' && item.table?.startsWith?.('update_room')) shouldRefreshRooms = true;
       if (item.type === 'rpc' && ['create_user', 'update_user_profile', 'set_user_pwa_access'].includes(item.table)) shouldRefreshUsers = true;
-      if (item.type === 'rpc' && ['create_quotation', 'update_quotation', 'convert_quotation', 'convert_quotation_to_booking'].includes(item.table)) shouldRefreshQuotations = true;
+      if (item.type === 'rpc' && ['create_quotation', 'update_quotation', 'mark_quotation_sent', 'convert_quotation_to_booking'].includes(item.table)) shouldRefreshQuotations = true;
       if (isPosCreateOrderQueueItem(item) || isPosVoidQueueItem(item)) shouldRefreshPosOrders = true;
-      if (item.type === 'rpc' && ['create_conference_booking', 'update_conference_booking', 'delete_conference_booking'].includes(item.table)) shouldRefreshConference = true;
+      if (item.type === 'rpc' && [
+        'create_conference_booking',
+        'update_conference_booking',
+        'update_conference_booking_payment',
+        'delete_conference_booking',
+        'create_event_booking',
+        'update_event_booking',
+        'update_event_payment',
+        'cancel_event_booking'
+      ].includes(item.table)) shouldRefreshConference = true;
       if ((item.type === 'rpc' && ['add_pool_day_use', 'update_pool_day_use', 'delete_pool_day_use'].includes(item.table)) || (item.type === 'update' && item.table === 'pool_day_use')) shouldRefreshPoolDayUse = true;
       // Phase 1: persist committed state before removing from queue file.
       // Crash here → restart sees 'committed' → skips RPC without retrying.

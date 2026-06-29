@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { state } from '../src/main/state.js'
 import { writeSyncQueue } from '../src/main/domains/syncStore.js'
+import { pickNextReadySyncItemIndex } from '../src/shared/syncQueue.js'
 
 async function read(path) {
   try {
@@ -127,7 +128,8 @@ async function run() {
   assert.match(database, /function buildOfflineBookingFinancialState\(/)
   assert.match(database, /function mergeRemoteBookingsWithLocalState\(/)
   assert.match(database, /writeCache\(name, mergeRemoteBookingsWithLocalState\(data \|\| \[\]\), \{ source: 'remote' \}\)/)
-  assert.match(database, /const mergedLiveRows = mergeRemoteBookingsWithLocalState\(mapped, localRowsForMerge\)/)
+  assert.match(database, /const mappedWithRefundState = applyRefundSettlementState\(mapped, refundSettlements\)/)
+  assert.match(database, /const mergedLiveRows = mergeRemoteBookingsWithLocalState\(mappedWithRefundState, localRowsForMerge\)/)
   assert.match(database, /cachedCustomer\?\._pending_sync \? \{ _depends_on: `customer-\$\{booking\.customer_id\}` \} : \{\}/)
   assert.match(database, /amount_paid:\s*optimisticPayment\.amount_paid/)
   assert.match(database, /payment_status:\s*optimisticPayment\.payment_status/)
@@ -184,6 +186,80 @@ async function run() {
   assert.match(database, /pending\[i\] = rewriteQueuedBookingReferenceItem\(pending\[i\], localBookingId, serverBookingId\)/)
   assert.match(database, /shouldRefreshQuotations = true/)
   assert.match(database, /refreshTargets\.push\('quotations'\)/)
+
+  // mark_quotation_sent must trigger quotation cache refresh after sync.
+  assert.match(
+    database,
+    /'mark_quotation_sent'[\s\S]{0,80}shouldRefreshQuotations/
+  )
+
+  // Quotation merge contract: mergeRemoteQuotationsWithLocalState must exist and
+  // be used in the quotations cache write path so pending-sync rows survive refresh.
+  assert.match(database, /function mergeRemoteQuotationsWithLocalState\(/)
+  assert.match(database, /writeCache\(name, mergeRemoteQuotationsWithLocalState\(data \|\| \[\]\), \{ source: 'remote' \}\)/)
+
+  // pickNextReadySyncItemIndex unit tests for the prior-run fix
+  {
+    const base = { type: 'rpc', table: 'update_quotation', data: {} }
+    const child = { ...base, _queue_id: 'child-1', _depends_on: 'quotation-parent-1' }
+
+    // Case 1: No dependency → ready
+    assert.equal(
+      pickNextReadySyncItemIndex([{ ...base, _queue_id: 'x' }]),
+      0,
+      'item with no _depends_on should be picked'
+    )
+
+    // Case 2: Parent in failedQueueIds → ready
+    const failed = new Set(['quotation-parent-1'])
+    assert.equal(
+      pickNextReadySyncItemIndex([child], new Set(), failed),
+      0,
+      'child should be picked when parent is in failedQueueIds'
+    )
+
+    // Case 3: Parent in completedQueueIds → ready
+    const completed = new Set(['quotation-parent-1'])
+    assert.equal(
+      pickNextReadySyncItemIndex([child], completed),
+      0,
+      'child should be picked when parent is in completedQueueIds'
+    )
+
+    // Case 4: Parent in pendingIds → blocked
+    const parent = { ...base, _queue_id: 'quotation-parent-1' }
+    assert.equal(
+      pickNextReadySyncItemIndex([parent, child]),
+      0,
+      'parent should be picked first when child depends on it'
+    )
+    // With only child in pending (parent already picked), child is blocked
+    // because parent's _queue_id is not in any tracking set — but there are
+    // no other items either, so findIndex returns -1.
+    // HOWEVER, our fix treats absent-from-all-sets as resolved, so the child
+    // is actually allowed. This is correct for the prior-run scenario.
+    // To test true "parent pending" behavior, parent must be in the array:
+    assert.equal(
+      pickNextReadySyncItemIndex([parent, child], new Set(), new Set()),
+      0,
+      'parent should be picked before child when both are pending'
+    )
+
+    // Case 5: Parent absent from ALL sets → ready (prior-run scenario)
+    assert.equal(
+      pickNextReadySyncItemIndex([child], new Set(), new Set()),
+      0,
+      'child should be picked when parent is absent from all tracking sets (prior sync run)'
+    )
+
+    // Case 6: With a callback that returns false → still ready (parent absent)
+    const falseCallback = () => false
+    assert.equal(
+      pickNextReadySyncItemIndex([child], new Set(), new Set(), falseCallback),
+      0,
+      'child should be picked even if callback returns false when parent is absent from all sets'
+    )
+  }
   assert.match(quotationsUi, /window\.api\.quotations\.getAll\(\)/)
   assert.match(quotationsUi, /window\.api\.quotations\.create\(data\)/)
   assert.match(quotationsUi, /window\.api\.quotations\.update\(q\.id, \{ \.\.\.q, status: newStatus \}\)/)
@@ -239,6 +315,11 @@ async function run() {
   assert.match(database, /queueOperation\('rpc', 'delete_conference_booking', \{/)
   assert.match(database, /shouldRefreshConference = true/)
   assert.match(database, /refreshTargets\.push\('conference-bookings'\)/)
+  assert.match(database, /FINANCIAL_SYNC_TABLES[\s\S]*'create_event_booking'/)
+  assert.match(database, /FINANCIAL_SYNC_TABLES[\s\S]*'update_event_booking'/)
+  assert.match(database, /FINANCIAL_SYNC_TABLES[\s\S]*'update_event_payment'/)
+  assert.match(database, /FINANCIAL_SYNC_TABLES[\s\S]*'cancel_event_booking'/)
+  assert.match(database, /'create_event_booking'[\s\S]*'update_event_booking'[\s\S]*'update_event_payment'[\s\S]*'cancel_event_booking'[\s\S]*shouldRefreshConference = true/)
   assert.match(conferenceUi, /window\.api\.conference\.getAll\(start, end\)/)
   assert.match(conferenceUi, /window\.api\.conference\.create\(payload\)/)
   assert.match(conferenceUi, /window\.api\.conference\.update\(editing\.id, payload\)/)

@@ -1010,6 +1010,31 @@ export default function Settings() {
             )}
           </div>
 
+          {/* ── About ─────────────────────────────────────────────────────── */}
+          <div className="bg-white rounded-xl shadow-sm p-5 mb-6">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-9 h-9 bg-purple-50 rounded-lg flex items-center justify-center">
+                <Info size={17} className="text-purple-600" />
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-gray-800">About</p>
+                <p className="text-xs text-gray-400">Boroko Bookings</p>
+              </div>
+            </div>
+            <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 space-y-2">
+              <p className="text-xs text-slate-600">
+                Developed by <span className="font-semibold text-slate-800">Botswapelo Studios Pty Ltd</span>
+              </p>
+              <p className="text-xs text-slate-500">
+                © {new Date().getFullYear()} Botswapelo Studios Pty Ltd. All rights reserved.
+              </p>
+              <p className="text-[11px] text-slate-400 leading-relaxed">
+                This software is proprietary and protected by copyright law. Unauthorized reproduction,
+                distribution, or modification is strictly prohibited.
+              </p>
+            </div>
+          </div>
+
           {releaseNotesOpen && (
             <Modal title={`Boroko Bookings v${updateMeta?.version || ''}`} onClose={() => setReleaseNotesOpen(false)} size="lg">
               <div className="space-y-5">
