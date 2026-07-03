@@ -1,11 +1,69 @@
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { state } from '../state.js';
 
 const SYNC_META_FILE = 'sync-meta.json';
 const HEALTH_FAULTS_FILE = 'health-faults.json';
+const OFFLINE_OPERATION_LOG_FILE = 'offline-operation-log.jsonl';
+const OFFLINE_MODE_FILE = 'lodge-offline-mode.json';
 export const SYNC_DRIFT_FAULT_TYPES = ['customer_drift', 'room_drift', 'quotation_drift', 'pos_drift'];
+
+function requireCacheDir(label = 'local sync store') {
+  if (!state.cacheDir) {
+    throw new Error(`${label} failed: cache directory is not initialized`);
+  }
+  return state.cacheDir;
+}
+
+function stableStringify(value) {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  if (!value || typeof value !== 'object') return JSON.stringify(value);
+  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`;
+}
+
+function hashObject(value) {
+  return createHash('sha256').update(stableStringify(value)).digest('hex');
+}
+
+function getQueueIntentId(item = {}) {
+  return String(
+    item.intentId ||
+    item.data?.p_idempotency_key ||
+    item.data?.payload?.create_idempotency_key ||
+    item.data?.payload?.idempotency_key ||
+    item.data?.payload?.return_idempotency_key ||
+    item.data?.payload?.cashup_id ||
+    item._queue_id ||
+    ''
+  ).trim();
+}
+
+function redactSecureQueueSecrets(value) {
+  if (Array.isArray(value)) return value.map(redactSecureQueueSecrets);
+  if (!value || typeof value !== 'object') return value;
+  if (value._secure_queue_secret === true) {
+    return {
+      _secure_queue_secret: true,
+      encrypted: value.encrypted === true,
+      redacted: true
+    };
+  }
+  return Object.fromEntries(
+    Object.entries(value).map(([key, entry]) => [key, redactSecureQueueSecrets(entry)])
+  );
+}
+
+function appendJsonLineDurable(filePath, entry) {
+  const line = `${JSON.stringify(entry)}\n`;
+  const fd = fs.openSync(filePath, 'a');
+  try {
+    fs.writeFileSync(fd, line, 'utf-8');
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
 
 function quarantineBadJsonFile(filePath, reason = 'corrupt JSON') {
   if (!filePath || !fs.existsSync(filePath)) return null;
@@ -90,6 +148,200 @@ function normalizeQueueRows(parsed, scope = 'sync-queue') {
     });
   }
   return validRows;
+}
+
+export function appendOperationJournalEntry(event, item = {}, extra = {}) {
+  if (!state.cacheDir) return null;
+  const now = new Date().toISOString();
+  const queueItem = item && typeof item === 'object' ? item : {};
+  const entry = {
+    schemaVersion: 1,
+    event: String(event || 'unknown'),
+    at: now,
+    lodge_id: extra.lodge_id || queueItem.data?.p_lodge_id || queueItem.data?.payload?.lodge_id || queueItem.lodge_id || state.lodgeId || null,
+    queue_id: queueItem._queue_id || null,
+    operation: queueItem.table || null,
+    type: queueItem.type || null,
+    intent_id: getQueueIntentId(queueItem) || null,
+    payload_hash: hashObject({
+      type: queueItem.type || null,
+      table: queueItem.table || null,
+      data: queueItem.data || null,
+      id: queueItem.id || null
+    }),
+    dependency: queueItem._depends_on || null,
+    source_node_id: queueItem._mesh_source_node_id || extra.source_node_id || null,
+    imported_from_mesh: queueItem._mesh_imported === true || extra.imported_from_mesh === true,
+    financial: extra.financial === true,
+    state: queueItem._state || extra.state || null,
+    retryCount: Number(queueItem.retryCount || 0),
+    message: extra.message || queueItem.lastError || '',
+    snapshot: extra.includeSnapshot === false ? undefined : redactSecureQueueSecrets(queueItem)
+  };
+  try {
+    appendJsonLineDurable(path.join(state.cacheDir, OFFLINE_OPERATION_LOG_FILE), entry);
+    return entry;
+  } catch (error) {
+    appendHealthFault({
+      type: 'operation_journal_write_failed',
+      scope: 'offline-operation-log',
+      severity: 'error',
+      message: `Local operation journal could not be written. Error: ${error.message}`,
+      at: now
+    });
+    return null;
+  }
+}
+
+export function readOperationJournal({ limit = 500 } = {}) {
+  if (!state.cacheDir) return [];
+  const filePath = path.join(state.cacheDir, OFFLINE_OPERATION_LOG_FILE);
+  try {
+    const lines = fs.readFileSync(filePath, 'utf-8').split(/\r?\n/).filter(Boolean);
+    const selected = Number.isFinite(Number(limit)) && Number(limit) > 0 ? lines.slice(-Number(limit)) : lines;
+    return selected.map((line) => JSON.parse(line)).filter((entry) => entry && typeof entry === 'object');
+  } catch (error) {
+    if (fs.existsSync(filePath)) {
+      appendHealthFault({
+        type: 'operation_journal_read_failed',
+        scope: 'offline-operation-log',
+        severity: 'warn',
+        message: `Local operation journal could not be read. Error: ${error.message}`,
+        at: new Date().toISOString()
+      });
+    }
+    return [];
+  }
+}
+
+export function getOperationJournalSummary() {
+  const entries = readOperationJournal({ limit: 0 });
+  const byEvent = {};
+  const byOperation = {};
+  let oldestAt = null;
+  let newestAt = null;
+  for (const entry of entries) {
+    byEvent[entry.event] = (byEvent[entry.event] || 0) + 1;
+    if (entry.operation) byOperation[entry.operation] = (byOperation[entry.operation] || 0) + 1;
+    if (entry.at && (!oldestAt || Date.parse(entry.at) < Date.parse(oldestAt))) oldestAt = entry.at;
+    if (entry.at && (!newestAt || Date.parse(entry.at) > Date.parse(newestAt))) newestAt = entry.at;
+  }
+  return {
+    total: entries.length,
+    oldestAt,
+    newestAt,
+    byEvent,
+    byOperation,
+    file: state.cacheDir ? path.join(state.cacheDir, OFFLINE_OPERATION_LOG_FILE) : null
+  };
+}
+
+export function readOfflineModeState() {
+  if (!state.cacheDir) {
+    return {
+      enabled: false,
+      reason: '',
+      startedAt: null,
+      endedAt: null,
+      acknowledgedRisksAt: null,
+      lastBackupAt: null,
+      lastBackupPath: null
+    };
+  }
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(state.cacheDir, OFFLINE_MODE_FILE), 'utf-8'));
+    return {
+      enabled: parsed?.enabled === true,
+      reason: String(parsed?.reason || ''),
+      startedAt: parsed?.startedAt || null,
+      endedAt: parsed?.endedAt || null,
+      acknowledgedRisksAt: parsed?.acknowledgedRisksAt || null,
+      lastBackupAt: parsed?.lastBackupAt || null,
+      lastBackupPath: parsed?.lastBackupPath || null,
+      updatedAt: parsed?.updatedAt || null,
+      updatedBy: parsed?.updatedBy || null
+    };
+  } catch {
+    return {
+      enabled: false,
+      reason: '',
+      startedAt: null,
+      endedAt: null,
+      acknowledgedRisksAt: null,
+      lastBackupAt: null,
+      lastBackupPath: null
+    };
+  }
+}
+
+export function writeOfflineModeState(updates = {}) {
+  const cacheDir = requireCacheDir('Offline mode state write');
+  const current = readOfflineModeState();
+  const now = new Date().toISOString();
+  const enabling = updates.enabled === true;
+  const disabling = updates.enabled === false;
+  const restartingOfflineWindow = enabling && current.enabled !== true;
+  const next = {
+    ...current,
+    ...updates,
+    enabled: enabling ? true : disabling ? false : current.enabled,
+    startedAt: enabling ? (restartingOfflineWindow ? now : current.startedAt || now) : current.startedAt,
+    endedAt: disabling ? now : enabling ? null : current.endedAt,
+    acknowledgedRisksAt: enabling ? (updates.acknowledgedRisksAt || now) : current.acknowledgedRisksAt,
+    updatedAt: now
+  };
+  writeJsonFileDurable(path.join(cacheDir, OFFLINE_MODE_FILE), next, 'offline mode state');
+  return next;
+}
+
+export function noteOfflineOperationsBackup(pathname) {
+  const current = readOfflineModeState();
+  return writeOfflineModeState({
+    lastBackupAt: new Date().toISOString(),
+    lastBackupPath: pathname || current.lastBackupPath || null
+  });
+}
+
+export function buildLocalOperationsBundle(extra = {}) {
+  const queue = readSyncQueue();
+  const failed = readFailedSyncQueue();
+  const journal = readOperationJournal({ limit: 0 });
+  const syncMeta = readSyncMeta();
+  const healthFaults = readHealthFaults();
+  let cacheFreshness = {};
+  try {
+    cacheFreshness = JSON.parse(fs.readFileSync(path.join(state.cacheDir, 'cache-freshness.json'), 'utf-8')) || {};
+  } catch {}
+  return {
+    schemaVersion: 1,
+    exportedAt: new Date().toISOString(),
+    lodge_id: state.lodgeId || null,
+    cacheDir: state.cacheDir || null,
+    offlineMode: readOfflineModeState(),
+    syncMeta,
+    cacheFreshness,
+    healthFaults,
+    operationJournalSummary: getOperationJournalSummary(),
+    pendingQueue: queue.map(redactSecureQueueSecrets),
+    failedQueue: failed.map(redactSecureQueueSecrets),
+    operationJournal: journal,
+    ...extra
+  };
+}
+
+export function writeLocalOperationsBundle(filePath, extra = {}) {
+  if (!filePath) throw new Error('No export path was selected.');
+  const bundle = buildLocalOperationsBundle(extra);
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  writeJsonFileDurable(filePath, bundle, 'offline operations export');
+  noteOfflineOperationsBackup(filePath);
+  return {
+    success: true,
+    path: filePath,
+    pending: bundle.pendingQueue.length,
+    failed: bundle.failedQueue.length,
+    journalEntries: bundle.operationJournal.length
+  };
 }
 
 export function readSyncQueue() {

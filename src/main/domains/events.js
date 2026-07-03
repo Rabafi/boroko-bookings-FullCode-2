@@ -15,6 +15,72 @@ const VALID_EVENT_TYPES = ['conference', 'meeting', 'party', 'wedding', 'corpora
 const VALID_SCOPES = ['venue_only', 'venue_with_rooms', 'exclusive_lodge']
 const VALID_EVENT_STATUSES = ['draft', 'reserved', 'confirmed', 'active', 'completed', 'cancelled']
 
+function getCachedEventLineItems(eventId) {
+  return readCache('event-line-items')
+    .filter((line) => line?.event_booking_id === eventId && !line?.voided_at)
+    .sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')))
+}
+
+function upsertCachedEventLineItem(line = {}) {
+  if (!line?.id) return
+  writeCache('event-line-items', [
+    line,
+    ...readCache('event-line-items').filter((row) => row?.id !== line.id)
+  ].sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || ''))))
+}
+
+function patchCachedEventLineItem(lineItemId, patch = {}) {
+  const rows = readCache('event-line-items')
+  const idx = rows.findIndex((line) => line?.id === lineItemId)
+  if (idx < 0) return null
+  const next = [...rows]
+  next[idx] = { ...next[idx], ...patch }
+  writeCache('event-line-items', next)
+  return next[idx]
+}
+
+function patchCachedEventTotals(eventId, delta = 0) {
+  const rows = readCache('conference-bookings')
+  const idx = rows.findIndex((row) => row?.id === eventId)
+  if (idx < 0) return null
+  const current = rows[idx]
+  const extrasTotal = Math.max(0, Number(current.extras_total || 0) + Number(delta || 0))
+  const chargesTotal = Math.max(0, Number(current.charges_total || 0) + Number(delta || 0))
+  const totalAmount = Math.max(0, Number(current.total_amount || 0) + Number(delta || 0))
+  const amountPaid = Number(current.amount_paid ?? current.deposit_paid ?? 0)
+  const next = {
+    ...current,
+    extras_total: extrasTotal,
+    charges_total: chargesTotal,
+    total_amount: totalAmount,
+    balance_due: Math.max(0, totalAmount - amountPaid),
+    _pending_sync: true,
+    _financial_estimate: true,
+    _sync_state: 'pending',
+    _sync_error: null,
+    updated_at: new Date().toISOString()
+  }
+  const copy = [...rows]
+  copy[idx] = next
+  writeCache('conference-bookings', copy, { source: 'local' })
+  return next
+}
+
+function patchEventInventoryEstimate(line = {}, restore = false) {
+  if (!line?.inventory_item_id) return
+  const depletion = Number(line.depletion_quantity || line.quantity || 0)
+  if (!Number.isFinite(depletion) || depletion <= 0) return
+  const multiplier = restore ? 1 : -1
+  writeCache('inventory-items', readCache('inventory-items').map((item) => item.id === line.inventory_item_id ? {
+    ...item,
+    current_stock: Math.max(0, Number(item.current_stock || 0) + multiplier * depletion),
+    _pending_sync: true,
+    _sync_state: 'pending',
+    _sync_error: null,
+    updated_at: new Date().toISOString()
+  } : item))
+}
+
 export function getEventBookings(start, end) {
   const cached = readCache('conference-bookings')
   if (!state.isOnline) {
@@ -52,7 +118,7 @@ export async function getEventBookingDetails(id) {
   if (!id) return null
   if (!state.isOnline) {
     const event = readCache('conference-bookings').find((row) => row.id === id) || null
-    return event ? { event, resources: [], line_items: [], rooms: [], payments: [] } : null
+    return event ? { event, resources: [], line_items: getCachedEventLineItems(id), rooms: [], payments: [] } : null
   }
   const { data, error } = await state.supabase.rpc('get_event_booking_details', {
     p_event_id: id,
@@ -60,6 +126,12 @@ export async function getEventBookingDetails(id) {
   })
   if (error) throw new Error(error.message)
   if (!data?.success) throw new Error(data?.error || 'Could not load event details')
+  if (Array.isArray(data.line_items)) {
+    writeCache('event-line-items', [
+      ...data.line_items,
+      ...readCache('event-line-items').filter((line) => line?.event_booking_id !== id)
+    ])
+  }
   return data
 }
 
@@ -221,20 +293,21 @@ export async function cancelEventBooking(id, reason, cancelLinkedRooms = true) {
 export async function addEventLineItem(data) {
   if (!data.event_booking_id) throw new Error('event_booking_id is required')
   const idempotencyKey = data.idempotency_key || `line-${Date.now()}-${crypto.randomUUID()}`
+  const payload = {
+    lodge_id: state.lodgeId,
+    event_booking_id: data.event_booking_id,
+    line_type: data.line_type || 'manual',
+    description: data.description || '',
+    category: data.category || null,
+    quantity: data.quantity || 1,
+    unit_price: data.unit_price || 0,
+    inventory_item_id: data.inventory_item_id || null,
+    depletion_quantity: data.depletion_quantity || null,
+    idempotency_key: idempotencyKey
+  }
 
   if (state.isOnline) {
-    const { data: result, error } = await state.supabase.rpc('add_event_line_item', {
-      lodge_id: state.lodgeId,
-      event_booking_id: data.event_booking_id,
-      line_type: data.line_type || 'manual',
-      description: data.description || '',
-      category: data.category || null,
-      quantity: data.quantity || 1,
-      unit_price: data.unit_price || 0,
-      inventory_item_id: data.inventory_item_id || null,
-      depletion_quantity: data.depletion_quantity || null,
-      idempotency_key: idempotencyKey
-    })
+    const { data: result, error } = await state.supabase.rpc('add_event_line_item', { payload })
     if (error) throw new Error(error.message)
     if (!result?.success) throw new Error(result?.error || 'Could not add line item')
     await refreshCache('conference-bookings')
@@ -242,7 +315,38 @@ export async function addEventLineItem(data) {
     return { id: result.line_item_id, subtotal: result.subtotal, idempotent: result.idempotent }
   }
 
-  throw new Error('Adding line items requires an online connection')
+  const lineId = data.id || randomUUID()
+  const quantity = Number(payload.quantity || 1)
+  const unitPrice = Number(payload.unit_price || 0)
+  const subtotal = Math.round(quantity * unitPrice * 100) / 100
+  const line = {
+    id: lineId,
+    lodge_id: state.lodgeId,
+    event_booking_id: payload.event_booking_id,
+    line_type: payload.line_type,
+    description: payload.description,
+    category: payload.category,
+    quantity,
+    unit_price: unitPrice,
+    subtotal,
+    inventory_item_id: payload.inventory_item_id,
+    depletion_quantity: payload.depletion_quantity || null,
+    source_reference: idempotencyKey,
+    created_at: new Date().toISOString(),
+    _pending_sync: true,
+    _sync_state: 'pending',
+    _sync_error: null
+  }
+  upsertCachedEventLineItem(line)
+  patchCachedEventTotals(payload.event_booking_id, subtotal)
+  patchEventInventoryEstimate(line, false)
+  queueOperation('rpc', 'add_event_line_item', { payload }, null, {
+    _queue_id: `event-line-${lineId}`,
+    _local_line_item_id: lineId,
+    ...(readCache('conference-bookings').find((row) => row?.id === payload.event_booking_id)?._pending_sync ? { _depends_on: `event-${payload.event_booking_id}` } : {})
+  })
+  logActivity('event_line_item_added', `(Offline) Line item added · ${payload.description} · ${quantity}x ${unitPrice}`)
+  return { id: lineId, subtotal, offline: true, queued: true }
 }
 
 export async function voidEventLineItem(lineItemId, reason) {
@@ -262,7 +366,28 @@ export async function voidEventLineItem(lineItemId, reason) {
     return { success: true }
   }
 
-  throw new Error('Voiding line items requires an online connection')
+  const line = readCache('event-line-items').find((row) => row?.id === lineItemId)
+  if (!line) throw new Error('Line item not found in offline cache')
+  patchCachedEventLineItem(lineItemId, {
+    voided_at: new Date().toISOString(),
+    void_reason: reason,
+    _pending_sync: true,
+    _sync_state: 'pending',
+    _sync_error: null
+  })
+  patchCachedEventTotals(line.event_booking_id, -Number(line.subtotal || Number(line.quantity || 0) * Number(line.unit_price || 0)))
+  patchEventInventoryEstimate(line, true)
+  queueOperation('rpc', 'void_event_line_item', {
+    p_line_item_id: lineItemId,
+    p_lodge_id: state.lodgeId,
+    p_reason: reason,
+    p_idempotency_key: `event-line-void:${lineItemId}:${Date.now()}`
+  }, null, {
+    _queue_id: `event-line-void-${lineItemId}-${Date.now()}`,
+    ...(line?._pending_sync ? { _depends_on: `event-line-${lineItemId}` } : {})
+  })
+  logActivity('event_line_item_voided', `(Offline) Line item void queued · ${lineItemId} · ${reason}`)
+  return { success: true, offline: true, queued: true }
 }
 
 export async function updateEventPayment(id, amount, method, type = 'payment', idempotencyKey = null) {

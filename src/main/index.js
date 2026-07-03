@@ -4566,6 +4566,21 @@ app.whenReady().then(async () => {
       return { success: false, error: e.message }
     }
   })
+  ipcMain.handle('bookings:createMultiRoom', async (_, data) => {
+    try {
+      await requireCapability('bookings.manage')
+      const result = await db.createMultiRoomBooking(data)
+      notifyLodge(data.lodge_id, '📋 Multi-room booking created', `${result.bookings?.length || result.booking_ids?.length || 0} rooms arriving ${data.check_in || ''}`, {
+        tag: `booking-group-created:${result.group_id}`,
+        dedupeKey: `booking-group-created:${result.group_id}`,
+        version: result.group_id,
+        url: '/#/bookings'
+      })
+      return { success: true, ...result }
+    } catch (e) {
+      return { success: false, error: e.message }
+    }
+  })
   ipcMain.handle('bookings:update', async (_, id, data) => {
     try {
       await requireCapability('bookings.manage')
@@ -4594,6 +4609,14 @@ app.whenReady().then(async () => {
       return { success: false, error: e.message }
     }
   })
+  ipcMain.handle('bookings:updateGroupPayment', async (_, groupId, amount, method, intentKey) => {
+    try {
+      await requireCapability('payments.record')
+      return await db.updateGroupInvoicePayment(groupId, amount, method, intentKey)
+    } catch (e) {
+      return { success: false, error: e.message }
+    }
+  })
   ipcMain.handle('bookings:getPayments', async (_, bookingId) => {
     try {
       await requireCapability('invoices.view')
@@ -4608,6 +4631,14 @@ app.whenReady().then(async () => {
       await requireCapability('payments.refund')
       await assertResourceBelongsToCurrentLodge('Booking', bookingId, db.getBookingById)
       return await db.refundBooking(bookingId, payload)
+    } catch (e) {
+      return { success: false, error: e.message }
+    }
+  })
+  ipcMain.handle('bookings:refundGroup', async (_, groupId, payload) => {
+    try {
+      await requireCapability('payments.refund')
+      return await db.refundGroupInvoice(groupId, payload)
     } catch (e) {
       return { success: false, error: e.message }
     }
@@ -7372,6 +7403,33 @@ app.whenReady().then(async () => {
   ipcMain.handle('sync:getDetails', async () => {
     try { await requireCapability('system.health'); return await db.getSyncDetails() }
     catch { return { pending: [], failed: [] } }
+  })
+  ipcMain.handle('sync:getOfflineMode', async () => {
+    try { await requireCapability('system.health'); return db.getOfflineModeState() }
+    catch (e) { return { enabled: false, error: e.message } }
+  })
+  ipcMain.handle('sync:setOfflineMode', async (_, payload) => {
+    try {
+      await requireCapability('sync.manage')
+      return db.setOfflineModeState(payload || {})
+    } catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('sync:exportOfflineOperations', async () => {
+    try {
+      await requireCapability('sync.manage')
+      const today = new Date().toISOString().slice(0, 10)
+      const defaultPath = join(app.getPath('documents'), `boroko-offline-operations-${today}.json`)
+      const { canceled, filePath } = await dialog.showSaveDialog({
+        title: 'Save Offline Operations Bundle',
+        defaultPath,
+        filters: [{ name: 'JSON', extensions: ['json'] }]
+      })
+      if (canceled || !filePath) return { success: false, canceled: true }
+      return db.exportOfflineOperationsBundle(filePath, {
+        appVersion: app.getVersion(),
+        exportedBy: state.currentUser?.id || null
+      })
+    } catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('sync:retryFailed', async (_, queueIds) => {
     try {

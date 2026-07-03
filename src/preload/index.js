@@ -99,11 +99,15 @@ const api = {
     getCachedByDateRange: (start, end) => ipcRenderer.invoke('bookings:getCachedByDateRange', start, end),
     getByDateRange: (start, end) => ipcRenderer.invoke('bookings:getByDateRange', start, end),
     create: (data) => ipcRenderer.invoke('bookings:create', data),
+    createMultiRoom: (data) => ipcRenderer.invoke('bookings:createMultiRoom', data),
     update: (id, data) => ipcRenderer.invoke('bookings:update', id, data),
     updateStatus: (id, status) => ipcRenderer.invoke('bookings:updateStatus', id, status),
     updatePayment: (id, amount, method, intentKey) =>
       ipcRenderer.invoke('bookings:updatePayment', id, amount, method, intentKey),
+    updateGroupPayment: (groupId, amount, method, intentKey) =>
+      ipcRenderer.invoke('bookings:updateGroupPayment', groupId, amount, method, intentKey),
     getPayments: (bookingId) => ipcRenderer.invoke('bookings:getPayments', bookingId),
+    refundGroup: (groupId, payload) => ipcRenderer.invoke('bookings:refundGroup', groupId, payload),
     refund: (bookingId, payload) => ipcRenderer.invoke('bookings:refund', bookingId, payload),
     createEvent: (data) => ipcRenderer.invoke('bookings:createEvent', data),
     getPendingOnline: () => ipcRenderer.invoke('bookings:getPendingOnline'),
@@ -216,6 +220,9 @@ const api = {
   sync: {
     getStatus: () => ipcRenderer.invoke('sync:getStatus'),
     getDetails: () => ipcRenderer.invoke('sync:getDetails'),
+    getOfflineMode: () => ipcRenderer.invoke('sync:getOfflineMode'),
+    setOfflineMode: (payload) => ipcRenderer.invoke('sync:setOfflineMode', payload),
+    exportOfflineOperations: () => ipcRenderer.invoke('sync:exportOfflineOperations'),
     retryFailed: (queueIds) => ipcRenderer.invoke('sync:retryFailed', queueIds),
     clearFailed: (queueIds) => ipcRenderer.invoke('sync:clearFailed', queueIds),
     runNow: () => ipcRenderer.invoke('sync:runNow'),

@@ -4,6 +4,8 @@ import { readCache } from './cacheStore.js';
 import {
   readFailedSyncQueue,
   readHealthFaults,
+  readOfflineModeState,
+  getOperationJournalSummary,
   readSyncMeta,
   readSyncQueue
 } from './syncStore.js';
@@ -113,6 +115,8 @@ export function buildSyncStatusSnapshot() {
     financialPendingCount,
     financialFailedCount,
     groupedCounts,
+    offlineMode: readOfflineModeState(),
+    operationJournal: getOperationJournalSummary(),
     lastSuccessfulSyncAt: resolvedLastSync,
     // P0-1: full sync meta
     syncMeta: {

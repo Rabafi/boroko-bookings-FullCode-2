@@ -11,6 +11,7 @@ import {
   writeCache,
   refreshCache,
   queueOperation,
+  appendOperationJournalEntry,
   logActivity,
   createBackup,
   dedupePromise
@@ -29,6 +30,132 @@ import { patchCachedQuotationSyncState } from './syncCache.js';
 function buildLocalPendingInvoiceNumber(bookingId) {
   const suffix = String(bookingId || randomUUID()).replace(/-/g, '').slice(0, 8).toUpperCase();
   return `PENDING-${suffix}`;
+}
+
+function buildAccommodationGroupId() {
+  return `stay-${randomUUID().replace(/-/g, '').slice(0, 24)}`;
+}
+
+function appendAccommodationGroupMetadata(notes = '', groupId = '', roomCount = 1) {
+  const cleanNotes = String(notes || '').
+  replace(/\[STAY_GROUP:[^\]]+\]/g, '').
+  replace(/\[STAY_ROOMS:\d+\]/g, '').
+  trim();
+  return [
+  cleanNotes,
+  groupId ? `[STAY_GROUP:${groupId}]` : '',
+  roomCount > 1 ? `[STAY_ROOMS:${roomCount}]` : ''].
+  filter(Boolean).
+  join(' ');
+}
+
+function parseAccommodationGroupId(notes = '') {
+  return String(notes || '').match(/\[STAY_GROUP:([^\]]+)\]/)?.[1] || null;
+}
+
+function parseAccommodationRoomCount(notes = '') {
+  const count = Number(String(notes || '').match(/\[STAY_ROOMS:(\d+)\]/)?.[1] || 0);
+  return Number.isFinite(count) && count > 0 ? count : null;
+}
+
+function stripAccommodationGroupMetadata(notes = '') {
+  return String(notes || '').
+  replace(/\[STAY_GROUP:[^\]]+\]/g, '').
+  replace(/\[STAY_ROOMS:\d+\]/g, '').
+  trim();
+}
+
+function upsertCachedBookingInvoiceGroup(group = {}, lines = []) {
+  if (!group?.id && !group?.group_key) return null;
+  const groupId = group.id || `local-${group.group_key}`;
+  const normalizedGroup = { ...group, id: groupId };
+  writeCache('booking-invoice-groups', [
+    normalizedGroup,
+    ...(readCache('booking-invoice-groups') || []).filter((row) =>
+      row?.id !== groupId && row?.group_key !== group.group_key)
+  ]);
+  const normalizedLines = (lines || []).map((line, index) => ({
+    ...line,
+    group_id: groupId,
+    lodge_id: line.lodge_id || group.lodge_id || state.lodgeId,
+    line_order: Number(line.line_order || index + 1)
+  })).filter((line) => line.booking_id);
+  const lineBookingIds = new Set(normalizedLines.map((line) => line.booking_id));
+  writeCache('booking-invoice-group-lines', [
+    ...normalizedLines,
+    ...(readCache('booking-invoice-group-lines') || []).filter((line) => !lineBookingIds.has(line?.booking_id))
+  ]);
+  return normalizedGroup;
+}
+
+async function createBookingInvoiceGroup({ groupKey, customerId, bookingIds, notes = '', createdBy = null }) {
+  const cleanBookingIds = [...new Set((bookingIds || []).filter(Boolean))];
+  if (!groupKey || cleanBookingIds.length < 2) return null;
+  if (state.isOnline) {
+    const { data, error } = await state.supabase.rpc('create_booking_invoice_group', {
+      p_lodge_id: state.lodgeId,
+      p_group_key: groupKey,
+      p_customer_id: customerId || null,
+      p_booking_ids: cleanBookingIds,
+      p_invoice_number: null,
+      p_notes: notes || null,
+      p_created_by: createdBy || state.currentUser?.id || null
+    });
+    if (error) throw new Error(error.message);
+    if (!data?.success) throw new Error(data?.error || 'Could not create group invoice');
+    const now = new Date().toISOString();
+    return upsertCachedBookingInvoiceGroup({
+      id: data.group_id,
+      lodge_id: state.lodgeId,
+      group_key: data.group_key || groupKey,
+      customer_id: customerId || null,
+      invoice_number: data.invoice_number,
+      issued_at: now,
+      due_date: null,
+      notes: notes || '',
+      created_by: createdBy || state.currentUser?.id || null,
+      created_at: now,
+      updated_at: now
+    }, cleanBookingIds.map((bookingId, index) => ({
+      booking_id: bookingId,
+      line_order: index + 1
+    })));
+  }
+
+  const now = new Date().toISOString();
+  const group = upsertCachedBookingInvoiceGroup({
+    id: `local-${groupKey}`,
+    lodge_id: state.lodgeId,
+    group_key: groupKey,
+    customer_id: customerId || null,
+    invoice_number: buildLocalPendingInvoiceNumber(groupKey),
+    issued_at: now,
+    due_date: null,
+    notes: notes || '',
+    created_by: createdBy || state.currentUser?.id || null,
+    created_at: now,
+    updated_at: now,
+    _pending_sync: true,
+    _sync_state: 'pending'
+  }, cleanBookingIds.map((bookingId, index) => ({
+    booking_id: bookingId,
+    line_order: index + 1,
+    _pending_sync: true,
+    _sync_state: 'pending'
+  })));
+  queueOperation('rpc', 'create_booking_invoice_group', {
+    p_lodge_id: state.lodgeId,
+    p_group_key: groupKey,
+    p_customer_id: customerId || null,
+    p_booking_ids: cleanBookingIds,
+    p_invoice_number: null,
+    p_notes: notes || null,
+    p_created_by: createdBy || state.currentUser?.id || null
+  }, null, {
+    _queue_id: `booking-invoice-group-${groupKey}`,
+    _depends_on: `booking-${cleanBookingIds[cleanBookingIds.length - 1]}`
+  });
+  return group;
 }
 
 function buildOfflineBookingFinancialState(totalAmount, depositAmount = 0) {
@@ -58,6 +185,107 @@ function createOperationIdempotencyKey(prefix, payload = {}) {
   digest('hex').
   slice(0, 32);
   return `${prefix}:${digest}`.slice(0, 128);
+}
+
+function calculateBookingPaymentStatus(totalOwed, amountPaid) {
+  const total = Math.max(0, Number(totalOwed || 0));
+  const paid = Math.max(0, Number(amountPaid || 0));
+  if (total > 0 && paid >= total) return 'paid';
+  if (paid > 0) return 'partial';
+  return 'unpaid';
+}
+
+function patchCachedBookingFinancialEstimate(bookingId, patch = {}) {
+  if (!bookingId) return null;
+  const cachedBookings = readCache('bookings');
+  const idx = cachedBookings.findIndex((booking) => booking?.id === bookingId);
+  if (idx < 0) return null;
+  const current = cachedBookings[idx];
+  const next = {
+    ...current,
+    ...patch,
+    _pending_sync: true,
+    _financial_estimate: true,
+    _sync_state: 'pending',
+    _sync_error: null,
+    updated_at: new Date().toISOString()
+  };
+  const totalOwed = Number(next.total_amount || 0) + Number(next.charges_total || 0);
+  next.payment_status = calculateBookingPaymentStatus(totalOwed, next.amount_paid);
+  cachedBookings[idx] = next;
+  writeCache('bookings', cachedBookings);
+  return next;
+}
+
+function mergeCachedBookingChargesForBooking(bookingId, rows = []) {
+  const existing = readCache('booking-charges');
+  const next = [
+  ...existing.filter((row) => row?.booking_id !== bookingId),
+  ...(rows || [])].
+  sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')));
+  writeCache('booking-charges', next);
+  return next.filter((row) => row?.booking_id === bookingId && !row?.voided_at);
+}
+
+function upsertCachedBookingCharge(row = {}) {
+  if (!row?.id) return;
+  const cached = readCache('booking-charges');
+  const next = [row, ...cached.filter((charge) => charge?.id !== row.id)].
+  sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')));
+  writeCache('booking-charges', next);
+}
+
+function patchCachedBookingCharge(chargeId, patch = {}) {
+  if (!chargeId) return null;
+  const cached = readCache('booking-charges');
+  const idx = cached.findIndex((charge) => charge?.id === chargeId);
+  if (idx < 0) return null;
+  const next = [...cached];
+  next[idx] = { ...next[idx], ...patch };
+  writeCache('booking-charges', next);
+  return next[idx];
+}
+
+function getCachedBookingChargeById(chargeId) {
+  return readCache('booking-charges').find((charge) => charge?.id === chargeId) || null;
+}
+
+function readActiveRateOverrideCache() {
+  return readCache('room-rate-overrides').
+  filter((override) => override?._deleted_offline !== true).
+  sort((a, b) => String(a.start_date || '').localeCompare(String(b.start_date || '')));
+}
+
+function mergeRemoteRateOverridesWithLocal(rows = []) {
+  const local = readCache('room-rate-overrides');
+  const localPending = local.filter((override) =>
+  override?._pending_sync === true ||
+  override?._deleted_offline === true ||
+  override?._sync_state === 'pending');
+  const pendingIds = new Set(localPending.map((override) => override?.id).filter(Boolean));
+  const merged = [
+  ...localPending,
+  ...(rows || []).filter((override) => !pendingIds.has(override?.id))].
+  sort((a, b) => String(a.start_date || '').localeCompare(String(b.start_date || '')));
+  writeCache('room-rate-overrides', merged);
+  return merged.filter((override) => override?._deleted_offline !== true);
+}
+
+function getCachedRateOverrideById(id) {
+  return readCache('room-rate-overrides').find((override) => override?.id === id) || null;
+}
+
+function findApplicableRateOverrideFromCache(roomId, checkIn, checkOut) {
+  if (!checkIn || !checkOut) return null;
+  const overrides = readActiveRateOverrideCache().filter((override) =>
+  override?.lodge_id === state.lodgeId &&
+  override?.start_date <= checkOut &&
+  override?.end_date >= checkIn);
+  if (overrides.length === 0) return null;
+  const specific = overrides.find((override) => override.room_id === roomId);
+  const global = overrides.find((override) => !override.room_id);
+  const applicable = specific || global;
+  return applicable ? { rate: applicable.rate_per_night, name: applicable.name, offline: !state.isOnline } : null;
 }
 
 function createPaymentIdempotencyKey(bookingId, type = 'payment', intentId = null, fallbackSignature = null) {
@@ -169,6 +397,95 @@ function applyRefundSettlementState(rows, settlementMap) {
   });
 }
 
+function readPendingRefundRequests() {
+  return (readCache('booking-refund-requests') || []).
+  filter((request) => request?.status === 'pending_approval' && request?.booking_id);
+}
+
+function getPendingRefundRequestForBooking(bookingId) {
+  return readPendingRefundRequests().
+  find((request) => request.booking_id === bookingId) || null;
+}
+
+function clearRefundRequestFields(row = {}) {
+  const next = { ...(row || {}) };
+  delete next._pending_refund_request;
+  delete next.refund_request_pending;
+  delete next.refund_request_saved_at;
+  return next;
+}
+
+function applyRefundRequestState(row = {}, request = null) {
+  if (!request || request.status !== 'pending_approval' || row?.refund_settled === true) {
+    return clearRefundRequestFields(row);
+  }
+  return {
+    ...row,
+    _pending_refund_request: request,
+    refund_request_pending: true,
+    refund_request_saved_at: request.updated_at || request.created_at || null
+  };
+}
+
+function annotateRowsWithLocalRefundRequests(rows = []) {
+  const requests = readPendingRefundRequests();
+  if (!requests.length) {
+    return rows.map((row) => clearRefundRequestFields(row));
+  }
+  const byBooking = new Map();
+  for (const request of requests) {
+    if (!byBooking.has(request.booking_id)) {
+      byBooking.set(request.booking_id, request);
+    }
+  }
+  return rows.map((row) => applyRefundRequestState(row, byBooking.get(row?.booking_id || row?.id)));
+}
+
+function writeRefundRequest(request = {}) {
+  if (!request?.id || !request?.booking_id) return null;
+  const existingRows = readCache('booking-refund-requests') || [];
+  const nextRows = [
+  request,
+  ...existingRows.filter((row) =>
+  row?.id !== request.id &&
+  !(row?.booking_id === request.booking_id && row?.status === 'pending_approval'))].
+  sort((a, b) => String(b.updated_at || b.created_at || '').localeCompare(String(a.updated_at || a.created_at || '')));
+  writeCache('booking-refund-requests', nextRows);
+  return request;
+}
+
+function markRefundRequestApproved(bookingId, approvalPatch = {}) {
+  const rows = readCache('booking-refund-requests') || [];
+  let changed = false;
+  const now = new Date().toISOString();
+  const nextRows = rows.map((row) => {
+    if (row?.booking_id !== bookingId || row?.status !== 'pending_approval') return row;
+    changed = true;
+    return {
+      ...row,
+      ...approvalPatch,
+      status: 'approved',
+      approved_at: approvalPatch.approved_at || now,
+      updated_at: now
+    };
+  });
+  if (changed) writeCache('booking-refund-requests', nextRows);
+  patchCachedBookingRefundRequest(bookingId, null);
+}
+
+function patchCachedBookingRefundRequest(bookingId, request = null) {
+  if (!bookingId) return null;
+  const cached = readCache('bookings') || [];
+  let patched = null;
+  const next = cached.map((booking) => {
+    if (booking?.id !== bookingId) return booking;
+    patched = applyRefundRequestState(booking, request);
+    return patched;
+  });
+  if (patched) writeCache('bookings', next);
+  return patched;
+}
+
 async function _getAllBookings() {
   try {
     const data = await fetchPagedBookingRows(() => state.supabase.
@@ -198,8 +515,9 @@ async function _getAllBookings() {
     const refundSettlements = await fetchRefundSettlementMap(mapped.map((row) => row.id).filter(Boolean));
     const mappedWithRefundState = applyRefundSettlementState(mapped, refundSettlements);
     const mergedLiveRows = mergeRemoteBookingsWithLocalState(mappedWithRefundState, localRowsForMerge);
-    writeCache('bookings', mergedLiveRows);
-    return mergedLiveRows;
+    const annotatedRows = annotateRowsWithLocalRefundRequests(mergedLiveRows);
+    writeCache('bookings', annotatedRows);
+    return annotatedRows;
   } catch (error) {
     if (state.isOnline) {
       const cached = readCache('bookings');
@@ -215,8 +533,7 @@ async function _getAllBookings() {
   const customers = readCache('customers');
   const rooms = readCache('rooms');
 
-  return bookings.
-  map((b) => {
+  const mappedBookings = bookings.map((b) => {
     const customer = customers.find((c) => c.id === b.customer_id);
     const room = rooms.find((r) => r.id === b.room_id);
     return {
@@ -228,7 +545,9 @@ async function _getAllBookings() {
       room_type: room?.room_type,
       rate_per_night: room?.rate_per_night
     };
-  }).
+  });
+
+  return annotateRowsWithLocalRefundRequests(mappedBookings).
   sort((a, b) => new Date(b.check_in) - new Date(a.check_in));
 }
 
@@ -698,6 +1017,114 @@ export async function createBooking(data) {
   }
 }
 
+export async function createMultiRoomBooking(data = {}) {
+  const requestedRooms = Array.isArray(data.rooms) ? data.rooms : [];
+  const roomLines = requestedRooms.
+  map((entry) => ({
+    room_id: String(entry?.room_id || '').trim(),
+    adults: Math.max(1, Number(entry?.adults || 1)),
+    children: Math.max(0, Number(entry?.children || 0))
+  })).
+  filter((entry) => entry.room_id);
+  const uniqueRoomIds = [...new Set(roomLines.map((entry) => entry.room_id))];
+  if (uniqueRoomIds.length < 2) {
+    throw new Error('Select at least two rooms for a multi-room booking.');
+  }
+  if (uniqueRoomIds.length !== roomLines.length) {
+    throw new Error('Each room can only be selected once.');
+  }
+  if (!data.customer_id) {
+    throw new Error('Customer ID is required for multi-room booking.');
+  }
+
+  const { nights } = validateBookingDates(data.check_in, data.check_out);
+  await checkExclusiveEventConflict(data.check_in, data.check_out);
+
+  const groupId = data.group_id || buildAccommodationGroupId();
+  const roomPlans = [];
+  for (const line of roomLines) {
+    await checkRoomConflict(line.room_id, data.check_in, data.check_out);
+    const room = await getRoomById(line.room_id);
+    if (!room) throw new Error('Room not found');
+    const totalGuests = line.adults + line.children;
+    if (totalGuests > (room.max_occupancy || 2)) {
+      throw new Error(`Room ${room.room_number || ''} exceeds maximum occupancy (${room.max_occupancy || 2}).`);
+    }
+    let effectiveRate = room.rate_per_night;
+    try {
+      const override = await getApplicableRate(line.room_id, data.check_in, data.check_out);
+      if (override && Number.isFinite(Number(override.rate)) && Number(override.rate) > 0) {
+        effectiveRate = Number(override.rate);
+      }
+    } catch { /* fall back to base rate */ }
+    const total = Number(effectiveRate || 0) * nights;
+    if (!Number.isFinite(total) || total <= 0) {
+      throw new Error(`Invalid total for room ${room.room_number || ''}. Check room rate and dates.`);
+    }
+    roomPlans.push({ ...line, room, total });
+  }
+
+  const groupTotal = roomPlans.reduce((sum, plan) => sum + Number(plan.total || 0), 0);
+  let remainingDeposit = Math.min(Math.max(0, Number(data.deposit_amount || 0)), groupTotal);
+  const created = [];
+  const groupNotes = appendAccommodationGroupMetadata(data.notes || '', groupId, roomPlans.length);
+
+  try {
+    for (const plan of roomPlans) {
+      const lineDeposit = Math.min(remainingDeposit, plan.total);
+      remainingDeposit = Math.max(0, Math.round((remainingDeposit - lineDeposit) * 100) / 100);
+      const bookingId = await createBooking({
+        customer_id: data.customer_id,
+        room_id: plan.room_id,
+        check_in: data.check_in,
+        check_out: data.check_out,
+        adults: plan.adults,
+        children: plan.children,
+        deposit_amount: lineDeposit,
+        payment_method: data.payment_method,
+        notes: groupNotes,
+        created_by: data.created_by || null,
+        allow_total_override: true,
+        total_amount: plan.total
+      });
+      created.push({
+        booking_id: bookingId,
+        room_id: plan.room_id,
+        room_number: plan.room?.room_number || null,
+        total_amount: plan.total,
+        deposit_amount: lineDeposit
+      });
+    }
+    await createBookingInvoiceGroup({
+      groupKey: groupId,
+      customerId: data.customer_id,
+      bookingIds: created.map((entry) => entry.booking_id),
+      notes: stripAccommodationGroupMetadata(data.notes || ''),
+      createdBy: data.created_by || state.currentUser?.id || null
+    });
+  } catch (error) {
+    error.message = created.length > 0
+      ? `${error.message} Some room bookings may already have been created; review the bookings list before retrying.`
+      : error.message;
+    throw error;
+  }
+
+  logActivity(
+    'booking_group_created',
+    `Multi-room booking created · ${created.length} rooms · ${data.check_in} → ${data.check_out}`
+  );
+
+  return {
+    success: true,
+    group_id: groupId,
+    group_invoice_number: (readCache('booking-invoice-groups') || []).find((group) => group?.group_key === groupId)?.invoice_number || null,
+    booking_ids: created.map((entry) => entry.booking_id),
+    bookings: created,
+    total_amount: groupTotal,
+    deposit_amount: Math.min(Math.max(0, Number(data.deposit_amount || 0)), groupTotal)
+  };
+}
+
 export async function updateBooking(id, data) {
   try {
     const { nights } = validateBookingDates(data.check_in, data.check_out);
@@ -1019,6 +1446,62 @@ export async function getBookingPayments(bookingId) {
   return Array.isArray(data) ? data : [];
 }
 
+export async function updateGroupInvoicePayment(groupId, amount, method, intentKey = null) {
+  if (!groupId) throw new Error('Group invoice is required');
+  const paymentAmount = Math.max(0, Number(amount || 0));
+  if (paymentAmount <= 0) throw new Error('Payment amount must be greater than zero');
+  const invoices = await getBookingInvoices();
+  const group = invoices.find((invoice) => invoice?._accommodation_group && invoice.accommodation_group_id === groupId);
+  if (!group) throw new Error('Group invoice not found');
+  let remaining = Math.min(paymentAmount, Math.max(0, Number(group.balance_due || 0)));
+  if (remaining <= 0) throw new Error('This group invoice is already settled');
+  const allocations = [];
+  const baseIntent = intentKey || randomUUID();
+  for (const line of group._room_lines || []) {
+    if (remaining <= 0) break;
+    const lineDue = Math.max(0, Number(line.balance_due || 0));
+    if (lineDue <= 0) continue;
+    const lineAmount = Math.min(remaining, lineDue);
+    const result = await updateBookingPayment(line.booking_id, lineAmount, method, 'payment', null, `${baseIntent}:${line.booking_id}`);
+    allocations.push({ booking_id: line.booking_id, amount: lineAmount, result });
+    remaining = Math.max(0, Math.round((remaining - lineAmount) * 100) / 100);
+  }
+  return {
+    success: true,
+    group_id: groupId,
+    invoice_number: group.invoice_number,
+    amount_applied: paymentAmount - remaining,
+    unallocated_amount: remaining,
+    allocations,
+    offline: allocations.some((entry) => entry.result?.offline)
+  };
+}
+
+export async function refundGroupInvoice(groupId, options = {}) {
+  if (!groupId) throw new Error('Group invoice is required');
+  const invoices = await getBookingInvoices();
+  const group = invoices.find((invoice) => invoice?._accommodation_group && invoice.accommodation_group_id === groupId);
+  if (!group) throw new Error('Group invoice not found');
+  const lines = (group._room_lines || []).filter((line) => line?.booking_id && Number(line.amount_paid || 0) > 0.01);
+  if (lines.length === 0) throw new Error('This group invoice has no paid amount available to refund');
+  const results = [];
+  for (const line of lines) {
+    const result = await refundBooking(line.booking_id, {
+      ...options,
+      notes: [options.notes || '', `Group invoice refund ${group.invoice_number || groupId}`].filter(Boolean).join('\n')
+    });
+    results.push({ booking_id: line.booking_id, refund_amount: result.refund_amount || 0, retained_amount: result.retained_amount || 0, result });
+  }
+  return {
+    success: true,
+    group_id: groupId,
+    invoice_number: group.invoice_number,
+    refund_amount: results.reduce((sum, entry) => sum + Number(entry.refund_amount || 0), 0),
+    retained_amount: results.reduce((sum, entry) => sum + Number(entry.retained_amount || 0), 0),
+    results
+  };
+}
+
 export async function refundBooking(bookingId, options = {}) {
   try {
     const booking = (await getAllBookings()).find((entry) => entry.id === bookingId);
@@ -1028,7 +1511,8 @@ export async function refundBooking(bookingId, options = {}) {
       throw new Error('Refunds are not allowed while guest is checked in. Please wait until check-out or cancel the booking.');
     }
 
-    const retainedPercent = Math.min(100, Math.max(0, Number(options.retained_percent ?? options.retainedPercent ?? 0) || 0));
+    const pendingRequest = getPendingRefundRequestForBooking(bookingId);
+    const retainedPercent = Math.min(100, Math.max(0, Number(options.retained_percent ?? options.retainedPercent ?? pendingRequest?.retained_percent ?? 0) || 0));
     const baseAmount = Math.max(0, Number(booking.amount_paid || 0));
     if (baseAmount <= 0) throw new Error('This booking has no paid amount available to refund');
 
@@ -1036,15 +1520,73 @@ export async function refundBooking(bookingId, options = {}) {
     const retainedAmount = Math.max(0, Math.round((baseAmount - refundAmount) * 100) / 100);
     if (refundAmount <= 0) throw new Error('Retained percentage leaves nothing to refund');
 
-    const paymentMethod = options.method || 'refund';
+    const paymentMethod = String(options.method || pendingRequest?.method || 'refund').trim() || 'refund';
     const isCreditTransfer = paymentMethod === 'customer_credit_transfer';
-    const notes = String(options.notes || '').trim();
-    const proofReference = String(options.proof_reference ?? options.proofReference ?? '').trim();
-    const approvalNote = String(options.approval_note ?? options.approvalNote ?? '').trim();
+    const notes = String(options.notes ?? pendingRequest?.notes ?? '').trim();
+    const proofReference = String(options.proof_reference ?? options.proofReference ?? pendingRequest?.proof_reference ?? '').trim();
+    const approvalNote = String(options.approval_note ?? options.approvalNote ?? pendingRequest?.approval_note ?? '').trim();
     const approverPin = String(options.approver_pin ?? options.approverPin ?? '').trim();
 
-    if (!state.isOnline) throw new Error('Refund approvals require an internet connection');
     if (!proofReference) throw new Error('Proof reference is required before a refund can be approved');
+    if (!state.isOnline) {
+      const now = new Date().toISOString();
+      const request = writeRefundRequest({
+        id: String(options.request_id ?? options.requestId ?? pendingRequest?.id ?? randomUUID()),
+        lodge_id: state.lodgeId || booking.lodge_id || null,
+        booking_id: bookingId,
+        invoice_number: booking.invoice_number || booking._local_invoice_number || null,
+        customer_id: booking.customer_id || null,
+        customer_name: booking.customer_name || null,
+        amount_paid_before: baseAmount,
+        refund_amount: refundAmount,
+        retained_amount: retainedAmount,
+        retained_percent: retainedPercent,
+        method: paymentMethod,
+        settlement_mode: isCreditTransfer ? 'customer_credit' : 'external_refund',
+        proof_reference: proofReference,
+        approval_note: approvalNote,
+        notes,
+        status: 'pending_approval',
+        requires_online_approval: true,
+        requested_by: state.currentUser?.id || null,
+        requested_by_name: state.currentUser?.name || state.currentUser?.email || null,
+        created_at: pendingRequest?.created_at || now,
+        updated_at: now
+      });
+      patchCachedBookingRefundRequest(bookingId, request);
+      appendOperationJournalEntry('refund_request_saved', {
+        type: 'local',
+        table: 'booking_refund_request',
+        id: request.id,
+        lodge_id: request.lodge_id,
+        data: request
+      }, {
+        financial: true,
+        state: 'pending_approval',
+        message: 'Booking refund request saved locally; live manager approval is still required online.'
+      });
+
+      const customer = readCache('customers').find((entry) => entry.id === booking.customer_id);
+      logActivity(
+        'refund_requested',
+        `Refund request saved locally · ${customer?.name || booking.customer_name || 'Guest'} · refundable ${refundAmount.toFixed(2)} · retained ${retainedAmount.toFixed(2)} (${retainedPercent.toFixed(2)}%)`
+      );
+
+      return {
+        success: true,
+        offline: true,
+        pending_approval: true,
+        booking_id: bookingId,
+        request_id: request.id,
+        request,
+        refund_amount: refundAmount,
+        retained_amount: retainedAmount,
+        retained_percent: retainedPercent,
+        method: paymentMethod,
+        proof_reference: proofReference,
+        notes
+      };
+    }
     if (!approverPin) throw new Error('Manager/Admin approval PIN is required');
 
     const { data: approver, error: approverError } = await state.supabase.rpc('verify_refund_approver_pin', {
@@ -1078,6 +1620,14 @@ export async function refundBooking(bookingId, options = {}) {
 
     if (error) throw new Error(error.message || 'Refund failed');
     if (!data?.success) throw new Error(data?.error || 'Refund failed');
+
+    markRefundRequestApproved(bookingId, {
+      approved_by: approver?.approved_by || null,
+      approved_by_name: approver?.approved_by_name || null,
+      proof_reference: proofReference,
+      approval_note: approvalNote,
+      approval_result: data
+    });
 
     await refreshCache('bookings');
 
@@ -1332,9 +1882,11 @@ export async function getBookingCharges(bookingId) {
     eq('booking_id', bookingId).
     is('voided_at', null).
     order('created_at');
-    return data || [];
+    return mergeCachedBookingChargesForBooking(bookingId, data || []);
   }
-  return { unavailable: true };
+  return readCache('booking-charges').
+  filter((charge) => charge?.booking_id === bookingId && !charge?.voided_at).
+  sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')));
 }
 
 export async function getBookingChargeById(chargeId) {
@@ -1349,19 +1901,22 @@ export async function getBookingChargeById(chargeId) {
     if (error) throw new Error(error.message);
     return data || null;
   }
-  return null;
+  return getCachedBookingChargeById(chargeId);
 }
 
 export async function addBookingCharge(bookingId, data) {
   try {
     if (Number(data.unit_price) <= 0) throw new Error('Charge unit price must be greater than zero');
     const currentBooking = readCache('bookings').find((booking) => booking.id === bookingId) || null;
+    if (!currentBooking && !state.isOnline) throw new Error('Booking not found in offline cache');
+    const quantity = Number(data.quantity) || 1;
+    const unitPrice = Number(data.unit_price) || 0;
     const idempotencyKey = data.idempotency_key || createOperationIdempotencyKey(`booking:charge:${bookingId}`, {
       expected_updated_at: currentBooking?.updated_at || null,
       description: data.description,
       category: data.category || 'other',
-      quantity: Number(data.quantity) || 1,
-      unit_price: Number(data.unit_price) || 0,
+      quantity,
+      unit_price: unitPrice,
       outlet_id: data.outlet_id || null
     });
     if (state.isOnline) {
@@ -1370,8 +1925,8 @@ export async function addBookingCharge(bookingId, data) {
         p_lodge_id: state.lodgeId,
         p_description: data.description,
         p_category: data.category || 'other',
-        p_quantity: Number(data.quantity) || 1,
-        p_unit_price: Number(data.unit_price) || 0,
+        p_quantity: quantity,
+        p_unit_price: unitPrice,
         p_outlet_id: data.outlet_id || null, // explicit outlet attribution; null = Unassigned
         p_expected_updated_at: currentBooking?.updated_at || null,
         p_idempotency_key: idempotencyKey
@@ -1380,7 +1935,47 @@ export async function addBookingCharge(bookingId, data) {
       if (!result?.success) throw new Error(result?.error || 'Could not add booking charge');
       return { success: true, id: result?.id };
     }
-    return { success: false, error: 'Charges require an internet connection' };
+
+    const chargeId = data.id || randomUUID();
+    const amount = Math.round(quantity * unitPrice * 100) / 100;
+    const outlet = readCache('outlets').find((entry) => entry?.id === data.outlet_id) || null;
+    const queuedCharge = {
+      id: chargeId,
+      lodge_id: state.lodgeId,
+      booking_id: bookingId,
+      description: data.description,
+      category: data.category || 'other',
+      quantity,
+      unit_price: unitPrice,
+      amount,
+      outlet_id: data.outlet_id || null,
+      outlets: outlet ? { name: outlet.name } : null,
+      source_reference: idempotencyKey,
+      created_at: new Date().toISOString(),
+      _pending_sync: true,
+      _sync_state: 'pending',
+      _sync_error: null
+    };
+    upsertCachedBookingCharge(queuedCharge);
+    patchCachedBookingFinancialEstimate(bookingId, {
+      charges_total: Number(currentBooking?.charges_total || 0) + amount
+    });
+    queueOperation('rpc', 'add_booking_charge', {
+      p_booking_id: bookingId,
+      p_lodge_id: state.lodgeId,
+      p_description: data.description,
+      p_category: data.category || 'other',
+      p_quantity: quantity,
+      p_unit_price: unitPrice,
+      p_outlet_id: data.outlet_id || null,
+      p_expected_updated_at: currentBooking?._pending_sync ? null : currentBooking?.updated_at || null,
+      p_idempotency_key: idempotencyKey
+    }, null, {
+      _queue_id: `booking-charge-${chargeId}`,
+      _local_charge_id: chargeId,
+      ...(currentBooking?._pending_sync ? { _depends_on: `booking-${bookingId}` } : {})
+    });
+    return { success: true, id: chargeId, offline: true, queued: true };
   } catch (error) {
     recordCriticalError('booking.charge.add', error, {
       booking_id: bookingId,
@@ -1394,6 +1989,7 @@ export async function addBookingCharge(bookingId, data) {
 export async function deleteBookingCharge(chargeId, reason = '') {
   try {
     const charge = await getBookingChargeById(chargeId).catch(() => null);
+    if (!charge && !state.isOnline) throw new Error('Charge not found in offline cache');
     const currentBooking = charge?.booking_id ?
     readCache('bookings').find((booking) => booking.id === charge.booking_id) || null :
     null;
@@ -1408,7 +2004,30 @@ export async function deleteBookingCharge(chargeId, reason = '') {
       if (!result?.success) throw new Error(result?.error || 'Could not void booking charge');
       return { success: true, voided: !!result?.voided };
     }
-    return { success: false, error: 'Requires internet connection' };
+    const amount = Number(charge?.amount ?? Number(charge?.quantity || 1) * Number(charge?.unit_price || 0));
+    patchCachedBookingCharge(chargeId, {
+      voided_at: new Date().toISOString(),
+      void_reason: reason || null,
+      _pending_sync: true,
+      _sync_state: 'pending',
+      _sync_error: null
+    });
+    if (currentBooking) {
+      patchCachedBookingFinancialEstimate(charge.booking_id, {
+        charges_total: Math.max(0, Number(currentBooking.charges_total || 0) - amount)
+      });
+    }
+    queueOperation('rpc', 'delete_booking_charge', {
+      p_charge_id: chargeId,
+      p_lodge_id: state.lodgeId,
+      p_reason: reason || null,
+      p_expected_booking_updated_at: currentBooking?._pending_sync ? null : currentBooking?.updated_at || null
+    }, null, {
+      _queue_id: `booking-charge-void-${chargeId}`,
+      ...(charge?._pending_sync ? { _depends_on: `booking-charge-${chargeId}` } : {}),
+      ...(currentBooking?._pending_sync && !charge?._pending_sync ? { _depends_on: `booking-${charge.booking_id}` } : {})
+    });
+    return { success: true, voided: true, offline: true, queued: true };
   } catch (error) {
     recordCriticalError('booking.charge.delete', error, {
       charge_id: chargeId,
@@ -1425,13 +2044,14 @@ export async function getRateOverrides() {
     select('*').
     eq('lodge_id', state.lodgeId).
     order('start_date');
-    return data || [];
+    return mergeRemoteRateOverridesWithLocal(data || []);
   }
-  return [];
+  return readActiveRateOverrideCache();
 }
 
 export async function getRateOverrideById(id) {
-  if (!id || !state.isOnline) return null;
+  if (!id) return null;
+  if (!state.isOnline) return getCachedRateOverrideById(id);
   const { data, error } = await state.supabase.
   from('room_rate_overrides').
   select('*').
@@ -1443,7 +2063,9 @@ export async function getRateOverrideById(id) {
 }
 
 export async function createRateOverride(data) {
+  const id = data.id || randomUUID();
   const override = {
+    id,
     lodge_id: state.lodgeId,
     room_id: data.room_id || null,
     name: data.name,
@@ -1457,7 +2079,19 @@ export async function createRateOverride(data) {
     if (!result?.success) throw new Error(result?.error || 'Could not create rate override');
     return { success: true, id: result?.id };
   }
-  return { success: false, error: 'Requires internet connection' };
+  const offlineRow = {
+    ...override,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    _pending_sync: true,
+    _sync_state: 'pending',
+    _sync_error: null
+  };
+  writeCache('room-rate-overrides', [offlineRow, ...readCache('room-rate-overrides').filter((row) => row?.id !== id)]);
+  queueOperation('rpc', 'create_room_rate_override', { payload: override }, null, {
+    _queue_id: `rate-override-${id}`
+  });
+  return { success: true, id, offline: true, queued: true };
 }
 
 export async function updateRateOverride(id, data) {
@@ -1478,7 +2112,25 @@ export async function updateRateOverride(id, data) {
     if (!result?.success) throw new Error(result?.error || 'Could not update rate override');
     return { success: true };
   }
-  return { success: false, error: 'Requires internet connection' };
+  const existing = getCachedRateOverrideById(id);
+  if (!existing) return { success: false, error: 'Rate override not found in offline cache' };
+  writeCache('room-rate-overrides', readCache('room-rate-overrides').map((row) => row?.id === id ? {
+    ...row,
+    ...update,
+    _pending_sync: true,
+    _sync_state: 'pending',
+    _sync_error: null,
+    updated_at: new Date().toISOString()
+  } : row));
+  queueOperation('rpc', 'update_room_rate_override', {
+    p_id: id,
+    p_lodge_id: state.lodgeId,
+    payload: update
+  }, null, {
+    _queue_id: `rate-override-update-${id}-${Date.now()}`,
+    ...(existing?._pending_sync ? { _depends_on: `rate-override-${id}` } : {})
+  });
+  return { success: true, offline: true, queued: true };
 }
 
 export async function deleteRateOverride(id) {
@@ -1491,11 +2143,28 @@ export async function deleteRateOverride(id) {
     if (!result?.success) throw new Error(result?.error || 'Could not delete rate override');
     return { success: true };
   }
-  return { success: false, error: 'Requires internet connection' };
+  const existing = getCachedRateOverrideById(id);
+  if (!existing) return { success: false, error: 'Rate override not found in offline cache' };
+  writeCache('room-rate-overrides', readCache('room-rate-overrides').map((row) => row?.id === id ? {
+    ...row,
+    _deleted_offline: true,
+    _pending_sync: true,
+    _sync_state: 'pending',
+    _sync_error: null,
+    updated_at: new Date().toISOString()
+  } : row));
+  queueOperation('rpc', 'delete_room_rate_override', {
+    p_id: id,
+    p_lodge_id: state.lodgeId
+  }, null, {
+    _queue_id: `rate-override-delete-${id}-${Date.now()}`,
+    ...(existing?._pending_sync ? { _depends_on: `rate-override-${id}` } : {})
+  });
+  return { success: true, offline: true, queued: true };
 }
 
 export async function getApplicableRate(roomId, checkIn, checkOut) {
-  if (!state.isOnline) return null;
+  if (!state.isOnline) return findApplicableRateOverrideFromCache(roomId, checkIn, checkOut);
   try {
     const { data: overrides } = await state.supabase.
     from('room_rate_overrides').
@@ -1504,12 +2173,13 @@ export async function getApplicableRate(roomId, checkIn, checkOut) {
     lte('start_date', checkOut).
     gte('end_date', checkIn);
     if (!overrides || overrides.length === 0) return null;
+    mergeRemoteRateOverridesWithLocal(overrides || []);
     const specific = overrides.find((o) => o.room_id === roomId);
     const global = overrides.find((o) => !o.room_id);
     const applicable = specific || global;
     return applicable ? { rate: applicable.rate_per_night, name: applicable.name } : null;
   } catch {
-    return null;
+    return findApplicableRateOverrideFromCache(roomId, checkIn, checkOut);
   }
 }
 
@@ -1743,6 +2413,8 @@ async function getNextBookingInvoiceNumber() {
 export async function getBookingInvoices() {
   const bookings = await getAllBookings();
   let invoiceRows = [];
+  let groupRows = readCache('booking-invoice-groups') || [];
+  let groupLineRows = readCache('booking-invoice-group-lines') || [];
 
   if (state.isOnline) {
     let { data, error } = await state.supabase.
@@ -1768,6 +2440,27 @@ export async function getBookingInvoices() {
       invoiceRows = [];
     } else {
       invoiceRows = data || [];
+    }
+
+    const [groupsResult, linesResult] = await Promise.all([
+      state.supabase.
+      from('booking_invoice_groups').
+      select('id, lodge_id, group_key, customer_id, invoice_number, issued_at, due_date, notes, created_at, updated_at').
+      eq('lodge_id', state.lodgeId).
+      order('issued_at', { ascending: false }),
+      state.supabase.
+      from('booking_invoice_group_lines').
+      select('group_id, booking_id, lodge_id, line_order, created_at').
+      eq('lodge_id', state.lodgeId).
+      order('line_order', { ascending: true })
+    ]);
+    if (!groupsResult.error && Array.isArray(groupsResult.data)) {
+      groupRows = groupsResult.data;
+      writeCache('booking-invoice-groups', groupRows, { source: 'remote' });
+    }
+    if (!linesResult.error && Array.isArray(linesResult.data)) {
+      groupLineRows = linesResult.data;
+      writeCache('booking-invoice-group-lines', groupLineRows, { source: 'remote' });
     }
   }
 
@@ -1817,6 +2510,71 @@ export async function getBookingInvoices() {
 
   const regularRows = rows.filter((row) => !row.is_exclusive_event);
   const eventRows = rows.filter((row) => row.is_exclusive_event);
+  const groupById = new Map((groupRows || []).map((group) => [group.id, group]));
+  const groupIdByBookingId = new Map(
+    (groupLineRows || []).
+    filter((line) => line?.booking_id && line?.group_id).
+    map((line) => [line.booking_id, line.group_id])
+  );
+  const accommodationGroups = new Map();
+  const ungroupedRegularRows = [];
+  for (const row of regularRows) {
+    const groupId = groupIdByBookingId.get(row.booking_id) || (parseAccommodationGroupId(row.notes) ? `local-${parseAccommodationGroupId(row.notes)}` : null);
+    const group = groupById.get(groupId) || groupRows.find((entry) => entry?.group_key && entry.group_key === parseAccommodationGroupId(row.notes));
+    if (!group) {
+      ungroupedRegularRows.push(row);
+      continue;
+    }
+    if (!accommodationGroups.has(group.id)) {
+      accommodationGroups.set(group.id, {
+        ...row,
+        _accommodation_group: true,
+        accommodation_group_id: group.id,
+        accommodation_group_key: group.group_key,
+        booking_id: row.booking_id,
+        invoice_id: group.id,
+        invoice_number: group.invoice_number,
+        issued_at: group.issued_at || row.issued_at,
+        due_date: group.due_date || row.due_date,
+        invoice_notes: group.notes || row.invoice_notes || '',
+        room_count: 0,
+        room_number: 'Multiple Rooms',
+        room_type: 'Accommodation Group',
+        display_notes: stripAccommodationGroupMetadata(row.notes),
+        total_amount: 0,
+        amount_paid: 0,
+        charges_total: 0,
+        balance_due: 0,
+        _booking_ids: [],
+        _room_lines: []
+      });
+    }
+    const grouped = accommodationGroups.get(group.id);
+    grouped._booking_ids.push(row.booking_id);
+    grouped._room_lines.push({
+      booking_id: row.booking_id,
+      room_id: row.room_id,
+      room_number: row.room_number,
+      room_type: row.room_type,
+      check_in: row.check_in,
+      check_out: row.check_out,
+      nights: row.nights,
+      adults: row.adults,
+      children: row.children,
+      total_amount: row.total_amount,
+      amount_paid: row.amount_paid,
+      balance_due: row.balance_due,
+      status: row.status,
+      payment_status: row.payment_status
+    });
+    grouped.room_count = grouped._room_lines.length;
+    grouped.total_amount += Number(row.total_amount || 0);
+    grouped.amount_paid += Number(row.amount_paid || 0);
+    grouped.charges_total += Number(row.charges_total || 0);
+    grouped.balance_due = Math.max(0, grouped.total_amount + grouped.charges_total - grouped.amount_paid);
+    grouped.payment_status = calculateBookingPaymentStatus(grouped.total_amount + grouped.charges_total, grouped.amount_paid);
+  }
+
   const eventGroups = new Map();
   for (const row of eventRows) {
     const groupId = String(row.notes || '').match(/\[GROUP:([^\]]+)\]/)?.[1] || row.booking_id;
@@ -1843,7 +2601,7 @@ export async function getBookingInvoices() {
     }
   }
 
-  return [...regularRows, ...eventGroups.values()].
+  return [...ungroupedRegularRows, ...accommodationGroups.values(), ...eventGroups.values()].
   sort((a, b) => {
     const left = String(a.issued_at || a.created_at || a.check_in || '');
     const right = String(b.issued_at || b.created_at || b.check_in || '');
@@ -1889,6 +2647,19 @@ function isExclusiveEventQuotation(quotation = {}) {
   return quotation?.quotation_type === 'exclusive_event';
 }
 
+function normalizeQuotationAccommodationLines(value = []) {
+  const rawLines = Array.isArray(value) ? value : [];
+  return rawLines.
+  map((line) => ({
+    room_id: String(line?.room_id || '').trim(),
+    room_name: String(line?.room_name || '').trim(),
+    adults: Math.max(1, Number(line?.adults || 1)),
+    children: Math.max(0, Number(line?.children || 0)),
+    amount: Math.max(0, Number(line?.amount || line?.total_amount || 0))
+  })).
+  filter((line) => line.room_id);
+}
+
 function getQuotationNights(checkIn, checkOut) {
   if (!checkIn || !checkOut) return 0;
   const start = new Date(checkIn).getTime();
@@ -1922,7 +2693,9 @@ function buildQuotationRecord(data, overrides = {}) {
 
   const eventDailyRate = isEvent ? Number(data.event_daily_rate || 0) : null;
   const eventTotal = isEvent ? eventDailyRate * getQuotationNights(data.check_in, data.check_out) : null;
-  const subtotal = isEvent ? eventTotal : Number(data.subtotal ?? 0);
+  const accommodationLines = isEvent ? [] : normalizeQuotationAccommodationLines(data.accommodation_lines);
+  const linesTotal = accommodationLines.reduce((sum, line) => sum + Number(line.amount || 0), 0);
+  const subtotal = isEvent ? eventTotal : (linesTotal > 0 ? linesTotal : Number(data.subtotal ?? 0));
   const tax_amount = isEvent ? 0 : Number(calcTax(subtotal, data.tax_rate ?? 0));
   const total_amount = subtotal + tax_amount;
 
@@ -1938,6 +2711,7 @@ function buildQuotationRecord(data, overrides = {}) {
     event_daily_rate: eventDailyRate,
     room_id: isEvent ? null : data.room_id || null,
     room_name: isEvent ? 'Full Lodge' : data.room_name || (room ? `Room ${room.room_number}` : ''),
+    accommodation_lines: isEvent ? null : accommodationLines,
     check_in: data.check_in || null,
     check_out: data.check_out || null,
     adults: isEvent ? 1 : Number(data.adults) || 1,
@@ -1965,6 +2739,7 @@ function normalizeQuotationForDisplay(q, { customer = null, room = null, convert
   const totalAmount = Number(q.total_amount ?? subtotal + taxAmount);
   const roomNumber = room?.room_number || q.room_number || '';
   const normalizedConvertedBookingId = q.converted_booking_id || convertedBookingId || null;
+  const accommodationLines = isEvent ? [] : normalizeQuotationAccommodationLines(q.accommodation_lines);
   const baseStatus = normalizedConvertedBookingId ? 'converted' : q.status || 'draft';
   const status = todayStr && q.valid_until && q.valid_until < todayStr && ['draft', 'sent', 'accepted'].includes(baseStatus) ?
   'expired' :
@@ -1982,6 +2757,7 @@ function normalizeQuotationForDisplay(q, { customer = null, room = null, convert
     event_name: isEvent ? q.event_name || q.customer_name || 'Exclusive event' : null,
     event_daily_rate: isEvent ? Number(q.event_daily_rate || 0) : null,
     room_name: isEvent ? 'Full Lodge' : q.room_name || (roomNumber ? `Room ${roomNumber}` : ''),
+    accommodation_lines: isEvent ? [] : accommodationLines,
     check_in: q.check_in || null,
     check_out: q.check_out || null,
     adults: Number(q.adults) || 1,
@@ -2135,9 +2911,11 @@ export async function updateQuotation(id, data) {
   const quotationType = data.quotation_type === 'exclusive_event' ? 'exclusive_event' : 'room';
   const isEvent = quotationType === 'exclusive_event';
   const eventDailyRate = isEvent ? Number(data.event_daily_rate || 0) : null;
+  const accommodationLines = isEvent ? [] : normalizeQuotationAccommodationLines(data.accommodation_lines);
+  const linesTotal = accommodationLines.reduce((sum, line) => sum + Number(line.amount || 0), 0);
   const subtotal = isEvent ?
   eventDailyRate * getQuotationNights(data.check_in, data.check_out) :
-  Number(data.subtotal ?? 0);
+  (linesTotal > 0 ? linesTotal : Number(data.subtotal ?? 0));
   const tax_amount = isEvent ? 0 : Number(calcTax(subtotal, data.tax_rate ?? 0));
   const total_amount = subtotal + tax_amount;
 
@@ -2148,6 +2926,7 @@ export async function updateQuotation(id, data) {
     currency: data.currency || 'BWP',
     notes: data.notes || '',
     status: data.status,
+    converted_booking_id: data.converted_booking_id || null,
     valid_until: data.valid_until || null,
     updated_at: new Date().toISOString()
   };
@@ -2161,6 +2940,7 @@ export async function updateQuotation(id, data) {
       event_daily_rate: eventDailyRate,
       room_id: isEvent ? null : data.room_id || null,
       room_name: isEvent ? 'Full Lodge' : data.room_name || '',
+      accommodation_lines: isEvent ? null : accommodationLines,
       check_in: data.check_in || null,
       check_out: data.check_out || null,
       adults: isEvent ? 1 : Number(data.adults) || 1,
@@ -2248,6 +3028,7 @@ export async function duplicateQuotation(id) {
     event_daily_rate: source.event_daily_rate,
     room_id: source.room_id,
     room_name: source.room_name,
+    accommodation_lines: source.accommodation_lines || [],
     check_in: source.check_in,
     check_out: source.check_out,
     adults: source.adults,
@@ -2279,6 +3060,42 @@ export async function getQuotationById(id) {
 export async function convertQuotationToBooking(quotationId, depositAmount = 0, paymentMethod = 'cash') {
   const deposit = Number(depositAmount) || 0;
   const method = paymentMethod || 'cash';
+  const convertMultiRoomQuotation = async (quotation) => {
+    const lines = normalizeQuotationAccommodationLines(quotation.accommodation_lines);
+    if (isExclusiveEventQuotation(quotation) || lines.length < 2) return null;
+    if (!quotation.customer_id) throw new Error('Customer is required before converting a multi-room quotation.');
+    if (!['sent', 'accepted'].includes(quotation.status)) {
+      throw new Error('Quotation must be sent or accepted before conversion.');
+    }
+    const result = await createMultiRoomBooking({
+      customer_id: quotation.customer_id,
+      check_in: quotation.check_in,
+      check_out: quotation.check_out,
+      rooms: lines.map((line) => ({
+        room_id: line.room_id,
+        adults: line.adults,
+        children: line.children
+      })),
+      deposit_amount: deposit,
+      payment_method: method,
+      notes: quotation.notes || '',
+      created_by: state.currentUser?.id || null
+    });
+    const convertedBookingId = result.booking_ids?.[0] || null;
+    await updateQuotation(quotation.id, {
+      ...quotation,
+      status: 'converted',
+      converted_booking_id: convertedBookingId
+    });
+    return {
+      booking_id: convertedBookingId,
+      booking_ids: result.booking_ids || [],
+      group_id: result.group_id,
+      invoice_number: result.group_invoice_number,
+      pendingSync: result.bookings?.some((entry) => entry?._pending_sync) || !state.isOnline,
+      group_invoice: true
+    };
+  };
 
   if (!state.isOnline) {
     const quotation = readCache('quotations').find((q) => q.id === quotationId);
@@ -2289,6 +3106,8 @@ export async function convertQuotationToBooking(quotationId, depositAmount = 0, 
     if (!['sent', 'accepted'].includes(quotation.status)) {
       throw new Error('Quotation must be sent or accepted before conversion.');
     }
+    const multiRoomResult = await convertMultiRoomQuotation(quotation);
+    if (multiRoomResult) return multiRoomResult;
     const isEvent = isExclusiveEventQuotation(quotation);
     if (!isEvent && quotation.room_id && quotation.check_in && quotation.check_out) {
       await checkRoomConflict(quotation.room_id, quotation.check_in, quotation.check_out);
@@ -2409,6 +3228,10 @@ export async function convertQuotationToBooking(quotationId, depositAmount = 0, 
   if (quotation?.status === 'converted') {
     throw new Error('This quotation has already been converted to a booking.');
   }
+
+  const fullQuotation = await getQuotationById(quotationId);
+  const multiRoomResult = await convertMultiRoomQuotation(fullQuotation);
+  if (multiRoomResult) return multiRoomResult;
 
   const { data: result, error } = await state.supabase.rpc('convert_quotation_to_booking', {
     p_quotation_id: quotationId,

@@ -21,6 +21,7 @@ const emptyForm = {
   event_daily_rate:'',
   room_id:        '',
   room_name:      '',
+  accommodation_lines: [],
   check_in:       '',
   check_out:      '',
   adults:         1,
@@ -47,6 +48,7 @@ function buildQuotationWhatsAppMessage(q, settings) {
   const lodge    = settings?.lodge_name || 'the Lodge'
   const currency = q.currency || settings?.currency || 'BWP'
   const isEvent  = q.quotation_type === 'exclusive_event'
+  const roomLines = quotationRoomLines(q)
   const nights   = q.check_in && q.check_out
     ? Math.max(0, Math.ceil((new Date(q.check_out) - new Date(q.check_in)) / 86400000))
     : null
@@ -57,7 +59,7 @@ function buildQuotationWhatsAppMessage(q, settings) {
     `No: ${q.quotation_number}`,
     '',
     isEvent && q.event_name ? `🏢  Event: ${q.event_name}` : null,
-    q.room_name  ? `${isEvent ? '🏢' : '🛏️'}  ${q.room_name}` : null,
+    quotationRoomLabel(q) ? `${isEvent ? '🏢' : '🛏️'}  ${quotationRoomLabel(q)}` : null,
     q.check_in   ? `📅  Check-in:  ${q.check_in}` : null,
     q.check_out  ? `📅  Check-out: ${q.check_out}${nights !== null ? ` (${nights} night${nights !== 1 ? 's' : ''})` : ''}` : null,
     !isEvent ? `👥  Guests: ${q.adults} adult${q.adults !== 1 ? 's' : ''}${q.children > 0 ? `, ${q.children} child${q.children !== 1 ? 'ren' : ''}` : ''}` : null,
@@ -87,10 +89,12 @@ function isExpired(q) {
 
 function normalizeQuotationRow(q) {
   if (!q) return q
+  const accommodationLines = Array.isArray(q.accommodation_lines) ? q.accommodation_lines : []
   const convertedBookingId = q.converted_booking_id || (q.status === 'converted' ? '__converted__' : null)
   return {
     ...q,
     quotation_type: q.quotation_type === 'exclusive_event' ? 'exclusive_event' : 'room',
+    accommodation_lines: accommodationLines,
     event_name: q.quotation_type === 'exclusive_event' ? (q.event_name || q.customer_name || 'Exclusive event') : null,
     converted_booking_id: convertedBookingId,
     status: convertedBookingId ? 'converted' : (q.status || 'draft')
@@ -122,6 +126,16 @@ function quotationNights(checkIn, checkOut) {
   const end = new Date(checkOut).getTime()
   if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return 0
   return Math.ceil((end - start) / 86400000)
+}
+
+function quotationRoomLines(q) {
+  return Array.isArray(q?.accommodation_lines) ? q.accommodation_lines.filter(line => line?.room_id) : []
+}
+
+function quotationRoomLabel(q) {
+  const lines = quotationRoomLines(q)
+  if (lines.length > 1) return `${lines.length} rooms`
+  return q.room_name || ''
 }
 
 // ─── Status Badge ─────────────────────────────────────────────────────────────
@@ -429,12 +443,22 @@ function QuotationPreview({ quotation: q, settings, onClose, onConvert, canConve
                     <td className="px-4 py-2 text-gray-800">{q.event_name}</td>
                   </tr>
                 )}
-                {q.room_name && (
+                {quotationRoomLabel(q) && (
                   <tr className={isEvent ? 'bg-gray-50' : 'bg-white'}>
                     <td className="px-4 py-2 text-gray-500 font-medium">{isEvent ? 'Reservation' : 'Room'}</td>
-                    <td className="px-4 py-2 text-gray-800">{q.room_name}</td>
+                    <td className="px-4 py-2 text-gray-800">{quotationRoomLabel(q)}</td>
                   </tr>
                 )}
+                {!isEvent && roomLines.length > 1 && roomLines.map((line, index) => {
+                  return (
+                    <tr key={`${line.room_id}-${index}`} className={index % 2 === 0 ? 'bg-gray-50' : 'bg-white'}>
+                      <td className="px-4 py-2 text-gray-500 font-medium">Room line {index + 1}</td>
+                      <td className="px-4 py-2 text-gray-800">
+                        {line.room_name || `Room ${index + 1}`} · {line.adults || 1} adult{Number(line.adults || 1) !== 1 ? 's' : ''}{Number(line.children || 0) > 0 ? `, ${line.children} child${Number(line.children) !== 1 ? 'ren' : ''}` : ''} · {fmt(line.amount, currency)}
+                      </td>
+                    </tr>
+                  )
+                })}
                 {q.check_in && (
                   <tr className="bg-gray-50">
                     <td className="px-4 py-2 text-gray-500 font-medium">Check-in</td>
@@ -624,6 +648,7 @@ export default function Quotations() {
       event_daily_rate:q.event_daily_rate ?? '',
       room_id:        q.room_id        || '',
       room_name:      q.room_name      || '',
+      accommodation_lines: quotationRoomLines(q),
       check_in:       q.check_in       || '',
       check_out:      q.check_out      || '',
       adults:         q.adults         || 1,
@@ -640,6 +665,33 @@ export default function Quotations() {
     setShowModal(true)
   }
 
+  function addRoomLine() {
+    setForm(f => ({
+      ...f,
+      accommodation_lines: [
+        ...(Array.isArray(f.accommodation_lines) ? f.accommodation_lines : []),
+        { room_id: '', adults: Number(f.adults || 1), children: Number(f.children || 0), amount: '' }
+      ]
+    }))
+  }
+
+  function updateRoomLine(index, patch) {
+    setForm(f => {
+      const lines = Array.isArray(f.accommodation_lines) ? [...f.accommodation_lines] : []
+      lines[index] = { ...(lines[index] || {}), ...patch }
+      const total = lines.reduce((sum, line) => sum + Number(line.amount || 0), 0)
+      return { ...f, accommodation_lines: lines, total_amount: total > 0 ? total : f.total_amount, subtotal: total > 0 ? total : f.subtotal }
+    })
+  }
+
+  function removeRoomLine(index) {
+    setForm(f => {
+      const lines = (Array.isArray(f.accommodation_lines) ? f.accommodation_lines : []).filter((_, i) => i !== index)
+      const total = lines.reduce((sum, line) => sum + Number(line.amount || 0), 0)
+      return { ...f, accommodation_lines: lines, total_amount: total > 0 ? total : '', subtotal: total > 0 ? total : '' }
+    })
+  }
+
   async function handleSave(e) {
     e.preventDefault()
     setFormError('')
@@ -650,7 +702,25 @@ export default function Quotations() {
       if (!form.customer_id) { setFormError('Please select a customer.'); return }
     }
     const isEvent = form.quotation_type === 'exclusive_event'
-    if (!isEvent && (!form.total_amount || Number(form.total_amount) <= 0)) { setFormError('Enter a valid amount.'); return }
+    const accommodationLines = !isEvent
+      ? (Array.isArray(form.accommodation_lines) ? form.accommodation_lines : [])
+          .filter(line => line?.room_id)
+          .map(line => {
+            const selectedRoom = rooms.find(r => r.id === line.room_id)
+            return {
+              room_id: line.room_id,
+              room_name: line.room_name || (selectedRoom?.room_number ? `Room ${selectedRoom.room_number}` : ''),
+              adults: Math.max(1, Number(line.adults || 1)),
+              children: Math.max(0, Number(line.children || 0)),
+              amount: Math.max(0, Number(line.amount || 0))
+            }
+          })
+      : []
+    const roomLineTotal = accommodationLines.reduce((sum, line) => sum + Number(line.amount || 0), 0)
+    const quotedTotal = accommodationLines.length > 0 ? roomLineTotal : Number(form.total_amount || 0)
+    if (!isEvent && (!quotedTotal || quotedTotal <= 0)) { setFormError('Enter a valid amount.'); return }
+    if (!isEvent && accommodationLines.some(line => Number(line.amount || 0) <= 0)) { setFormError('Each selected room needs a valid quoted amount.'); return }
+    if (!isEvent && new Set(accommodationLines.map(line => line.room_id)).size !== accommodationLines.length) { setFormError('Each room can only be selected once.'); return }
     if (form.check_in && form.check_out && form.check_out <= form.check_in) {
       setFormError('Check-out must be after check-in.')
       return
@@ -685,7 +755,7 @@ export default function Quotations() {
     const eventTotal = isEvent
       ? Number(form.event_daily_rate || 0) * quotationNights(form.check_in, form.check_out)
       : 0
-    const subtotal    = isEvent ? eventTotal : Number(form.subtotal || form.total_amount || 0)
+    const subtotal    = isEvent ? eventTotal : quotedTotal
     const tax_amount  = isEvent ? 0 : Number(form.tax_amount || 0)
     const data = {
       ...form,
@@ -695,10 +765,11 @@ export default function Quotations() {
       quotation_type: isEvent ? 'exclusive_event' : 'room',
       event_name:     isEvent ? form.event_name.trim() : null,
       event_daily_rate:isEvent ? Number(form.event_daily_rate || 0) : null,
-      room_id:        isEvent ? '' : form.room_id,
-      room_name:      isEvent ? 'Full Lodge' : room?.room_number ? `Room ${room.room_number}` : form.room_name,
-      adults:         isEvent ? 1 : form.adults,
-      children:       isEvent ? 0 : form.children,
+      room_id:        isEvent ? '' : (accommodationLines[0]?.room_id || form.room_id),
+      room_name:      isEvent ? 'Full Lodge' : accommodationLines.length > 1 ? `${accommodationLines.length} rooms` : room?.room_number ? `Room ${room.room_number}` : form.room_name,
+      accommodation_lines: isEvent ? [] : accommodationLines,
+      adults:         isEvent ? 1 : (accommodationLines[0]?.adults || form.adults),
+      children:       isEvent ? 0 : (accommodationLines[0]?.children || form.children),
       subtotal,
       tax_amount,
       total_amount:   subtotal + tax_amount
@@ -957,7 +1028,7 @@ export default function Quotations() {
                         </div>
                       ) : (
                         <span className="inline-flex items-center gap-1">
-                          {q.room_name ? <><BedDouble size={13} className="text-gray-400" /> {q.room_name}</> : <span className="text-gray-300">—</span>}
+                          {quotationRoomLabel(q) ? <><BedDouble size={13} className="text-gray-400" /> {quotationRoomLabel(q)}</> : <span className="text-gray-300">—</span>}
                         </span>
                       )}
                     </td>
@@ -1200,22 +1271,73 @@ export default function Quotations() {
                 </div>
               </div>
             ) : (
-              /* Room (optional) */
-              <div>
-                <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">
-                  Room (optional)
-                </label>
-                <select
-                  disabled={financialLocked}
-                  className={`input ${financialLocked ? 'opacity-50 cursor-not-allowed' : ''}`}
-                  value={form.room_id}
-                  onChange={e => setForm(f => ({ ...f, room_id: e.target.value }))}
-                >
-                  <option value="">No specific room</option>
-                  {rooms.filter(r => r.status !== 'inactive').map(r => (
-                    <option key={r.id} value={r.id}>Room {r.room_number} — {r.room_type}</option>
-                  ))}
-                </select>
+              <div className="rounded-xl border border-gray-200 p-3 space-y-3">
+                <div className="flex items-center justify-between gap-3">
+                  <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                    Room Lines
+                  </label>
+                  <button
+                    type="button"
+                    disabled={financialLocked}
+                    onClick={addRoomLine}
+                    className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-semibold text-gray-700 hover:border-green-500 hover:text-green-700 disabled:opacity-50"
+                  >
+                    Add Room
+                  </button>
+                </div>
+                {(Array.isArray(form.accommodation_lines) && form.accommodation_lines.length > 0 ? form.accommodation_lines : [{ room_id: form.room_id, adults: form.adults, children: form.children, amount: form.total_amount }]).map((line, index) => (
+                  <div key={index} className="grid grid-cols-12 gap-2">
+                    <select
+                      disabled={financialLocked}
+                      className={`input col-span-5 ${financialLocked ? 'opacity-50 cursor-not-allowed' : ''}`}
+                      value={line.room_id || ''}
+                      onChange={e => {
+                        const selectedRoom = rooms.find(r => r.id === e.target.value)
+                        updateRoomLine(index, { room_id: e.target.value, room_name: selectedRoom?.room_number ? `Room ${selectedRoom.room_number}` : '' })
+                        if (index === 0) setForm(f => ({ ...f, room_id: e.target.value, room_name: selectedRoom?.room_number ? `Room ${selectedRoom.room_number}` : '' }))
+                      }}
+                    >
+                      <option value="">Select room…</option>
+                      {rooms.filter(r => r.status !== 'inactive').map(r => (
+                        <option key={r.id} value={r.id}>Room {r.room_number} — {r.room_type}</option>
+                      ))}
+                    </select>
+                    <input
+                      type="number"
+                      min={1}
+                      disabled={financialLocked}
+                      className={`input col-span-2 ${financialLocked ? 'opacity-50 cursor-not-allowed' : ''}`}
+                      value={line.adults ?? 1}
+                      onChange={e => updateRoomLine(index, { adults: Number(e.target.value) })}
+                    />
+                    <input
+                      type="number"
+                      min={0}
+                      disabled={financialLocked}
+                      className={`input col-span-2 ${financialLocked ? 'opacity-50 cursor-not-allowed' : ''}`}
+                      value={line.children ?? 0}
+                      onChange={e => updateRoomLine(index, { children: Number(e.target.value) })}
+                    />
+                    <input
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      disabled={financialLocked}
+                      className={`input col-span-2 ${financialLocked ? 'opacity-50 cursor-not-allowed' : ''}`}
+                      value={line.amount ?? ''}
+                      onChange={e => updateRoomLine(index, { amount: e.target.value })}
+                      placeholder="Amount"
+                    />
+                    <button
+                      type="button"
+                      disabled={financialLocked}
+                      onClick={() => removeRoomLine(index)}
+                      className="col-span-1 rounded-lg border border-gray-200 text-gray-500 hover:border-red-300 hover:text-red-600 disabled:opacity-50"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
               </div>
             )}
 
@@ -1249,7 +1371,7 @@ export default function Quotations() {
             </div>
 
             {/* Guests */}
-            {form.quotation_type !== 'exclusive_event' && <div className="grid grid-cols-2 gap-3">
+            {form.quotation_type !== 'exclusive_event' && (!Array.isArray(form.accommodation_lines) || form.accommodation_lines.length === 0) && <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">
                   Adults
@@ -1410,7 +1532,7 @@ export default function Quotations() {
                 {convertTarget.quotation_type === 'exclusive_event' && (
                   <p className="font-medium text-indigo-700">Full Lodge · {convertTarget.event_name}</p>
                 )}
-                {convertTarget.quotation_type !== 'exclusive_event' && convertTarget.room_name && <p className="text-gray-500">{convertTarget.room_name}</p>}
+                {convertTarget.quotation_type !== 'exclusive_event' && quotationRoomLabel(convertTarget) && <p className="text-gray-500">{quotationRoomLabel(convertTarget)}</p>}
                 <p className="font-medium text-gray-800">{fmt(convertTarget.total_amount, convertTarget.currency || currency)}</p>
               </div>
 

@@ -316,6 +316,8 @@ export default function SystemHealthPanel() {
         financialPendingBookingIds: Array.isArray(details?.financialPendingBookingIds) ? details.financialPendingBookingIds : [],
         financialFailedBookingIds:  Array.isArray(details?.financialFailedBookingIds)  ? details.financialFailedBookingIds  : [],
         unresolvedLocal: details?.unresolvedLocal || null,
+        offlineMode: details?.offlineMode || { enabled: false },
+        operationJournal: details?.operationJournal || { total: 0 },
         error: details?.error || ''
       })
       setReconciliation(reconciliationSummary || null)
@@ -522,6 +524,44 @@ export default function SystemHealthPanel() {
     }
   }
 
+  const toggleOfflineMode = async () => {
+    const enabled = syncDetails?.offlineMode?.enabled === true
+    setActionBusy('offline-mode')
+    try {
+      const result = await window.api.sync.setOfflineMode({
+        enabled: !enabled,
+        acknowledged: !enabled,
+        reason: !enabled
+          ? 'Manager enabled lodge offline mode from System Health.'
+          : 'Manager ended lodge offline mode from System Health.'
+      }).catch((e) => ({ success: false, error: e.message }))
+      if (result?.success === false) {
+        pushFlash('error', result.error || 'Could not update lodge offline mode.')
+        return
+      }
+      pushFlash('success', result?.offlineMode?.enabled ? 'Lodge offline mode is on.' : 'Lodge offline mode is off.')
+      await load()
+    } finally {
+      setActionBusy('')
+    }
+  }
+
+  const exportOfflineOperations = async () => {
+    setActionBusy('offline-export')
+    try {
+      const result = await window.api.sync.exportOfflineOperations().catch((e) => ({ success: false, error: e.message }))
+      if (result?.canceled) return
+      if (result?.success === false) {
+        pushFlash('error', result.error || 'Could not save the offline operations bundle.')
+        return
+      }
+      pushFlash('success', `Saved offline operations bundle with ${result.pending || 0} pending and ${result.failed || 0} review item(s).`)
+      await load()
+    } finally {
+      setActionBusy('')
+    }
+  }
+
   const sendReportToCommandCentral = async () => {
     setActionBusy('send-report')
     try {
@@ -628,6 +668,12 @@ export default function SystemHealthPanel() {
   const financialFailedCount    = financialFailedBookingIds.length
   const financialPendingCount   = financialPendingBookingIds.length
   const groupedCounts          = syncDetails?.groupedCounts || {}
+  const offlineMode            = syncDetails?.offlineMode || {}
+  const operationJournal       = syncDetails?.operationJournal || {}
+  const offlineModeEnabled     = offlineMode?.enabled === true
+  const offlineBackupAt        = offlineMode?.lastBackupAt || null
+  const offlineBackupAgeMs     = offlineBackupAt ? Date.now() - Date.parse(offlineBackupAt) : null
+  const offlineBackupStale     = offlineModeEnabled && (!offlineBackupAt || offlineBackupAgeMs > 24 * 60 * 60 * 1000)
   const missingParentCount     = Number(groupedCounts.missing_parent || 0)
   const blockedDependencyCount = Number(groupedCounts.blocked_dependencies || 0)
   const financialRiskCount     = Number(groupedCounts.financial_risk_items || 0)
@@ -639,6 +685,7 @@ export default function SystemHealthPanel() {
   const meshStateLabel         = meshStatus?.running ? 'Running' : meshStatus?.enabled ? 'Starting' : meshAutoStandby ? 'Standby' : meshLastError ? 'Needs setup' : 'Off'
   const meshWarnings           = Array.isArray(meshStatus?.warnings) ? meshStatus.warnings : []
   const meshInterfaces         = Array.isArray(meshStatus?.localInterfaces) ? meshStatus.localInterfaces : []
+  const meshQueueRepair        = meshStatus?.lastQueueRepair || null
   const criticalIssueCount     = criticalErrors.filter(isImportantIssueCritical).length
   const warningIssueCount      = Math.max(0, criticalErrors.length - criticalIssueCount)
 
@@ -1154,7 +1201,7 @@ export default function SystemHealthPanel() {
             label={meshStateLabel}
           />
         </div>
-        <div className="mt-4 grid gap-3 sm:grid-cols-3">
+        <div className="mt-4 grid gap-3 sm:grid-cols-3 xl:grid-cols-5">
           <div className="rounded-xl bg-gray-50 px-3 py-3">
             <p className="text-[11px] uppercase tracking-[0.12em] text-gray-400">Peers</p>
             <p className="mt-1 text-lg font-bold text-gray-900">{meshPeerCount}</p>
@@ -1167,7 +1214,20 @@ export default function SystemHealthPanel() {
             <p className="text-[11px] uppercase tracking-[0.12em] text-gray-400">Last merge</p>
             <p className="mt-1 text-sm font-semibold text-gray-900">{meshStatus?.lastQueueMergeAt ? formatTs(meshStatus.lastQueueMergeAt) : 'Not yet'}</p>
           </div>
+          <div className="rounded-xl bg-gray-50 px-3 py-3">
+            <p className="text-[11px] uppercase tracking-[0.12em] text-gray-400">Repair pass</p>
+            <p className="mt-1 text-sm font-semibold text-gray-900">{meshQueueRepair?.at ? formatTs(meshQueueRepair.at) : 'Not yet'}</p>
+          </div>
+          <div className="rounded-xl bg-gray-50 px-3 py-3">
+            <p className="text-[11px] uppercase tracking-[0.12em] text-gray-400">Imported</p>
+            <p className="mt-1 text-lg font-bold text-gray-900">{Number(meshQueueRepair?.importedCount || 0)}</p>
+          </div>
         </div>
+        {meshQueueRepair && Number(meshQueueRepair.missingCount || 0) > 0 && (
+          <div className="mt-3 rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-900">
+            Last repair found {Number(meshQueueRepair.missingCount || 0)} missing operation{Number(meshQueueRepair.missingCount || 0) === 1 ? '' : 's'} across nearby devices.
+          </div>
+        )}
         {meshLastError && (
           <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
             {meshAutoStandby
@@ -1231,6 +1291,60 @@ export default function SystemHealthPanel() {
                 {warning}
               </div>
             ))}
+          </div>
+        )}
+      </div>
+
+      <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-gray-200">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <HardDrive size={16} className="text-gray-500" />
+              <h3 className="text-sm font-semibold text-gray-900">Lodge offline mode</h3>
+              <StatusPill ok={!offlineModeEnabled} warn={offlineModeEnabled && !failedCount} label={offlineModeEnabled ? 'Local pending truth' : 'Off'} />
+            </div>
+            <p className="mt-1 text-xs text-gray-500">
+              Use this during a long internet outage. Work remains local and mesh-shared until cloud replay confirms it.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button type="button" onClick={exportOfflineOperations} disabled={actionBusy === 'offline-export'}
+              className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-xs font-semibold text-gray-700 transition hover:border-blue-400 hover:text-blue-700 disabled:opacity-60">
+              <Download size={13} />
+              {actionBusy === 'offline-export' ? 'Saving…' : 'Save Bundle'}
+            </button>
+            <button type="button" onClick={toggleOfflineMode} disabled={actionBusy === 'offline-mode'}
+              className={`inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold transition disabled:opacity-60 ${offlineModeEnabled ? 'border border-gray-200 text-gray-700 hover:border-green-500 hover:text-green-700' : 'border border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100'}`}>
+              <ShieldCheck size={13} />
+              {actionBusy === 'offline-mode' ? 'Updating…' : offlineModeEnabled ? 'End Offline Mode' : 'Acknowledge Long Outage'}
+            </button>
+          </div>
+        </div>
+        <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="rounded-xl bg-gray-50 px-3 py-3">
+            <p className="text-[11px] uppercase tracking-[0.12em] text-gray-400">Started</p>
+            <p className="mt-1 text-sm font-semibold text-gray-900">{offlineMode?.startedAt ? formatTs(offlineMode.startedAt) : 'Not active'}</p>
+          </div>
+          <div className="rounded-xl bg-gray-50 px-3 py-3">
+            <p className="text-[11px] uppercase tracking-[0.12em] text-gray-400">Last bundle</p>
+            <p className={`mt-1 text-sm font-semibold ${offlineBackupStale ? 'text-amber-700' : 'text-gray-900'}`}>
+              {offlineBackupAt ? formatTs(offlineBackupAt) : 'Not saved yet'}
+            </p>
+          </div>
+          <div className="rounded-xl bg-gray-50 px-3 py-3">
+            <p className="text-[11px] uppercase tracking-[0.12em] text-gray-400">Journal entries</p>
+            <p className="mt-1 text-sm font-semibold text-gray-900">{Number(operationJournal?.total || 0)}</p>
+          </div>
+          <div className="rounded-xl bg-gray-50 px-3 py-3">
+            <p className="text-[11px] uppercase tracking-[0.12em] text-gray-400">Oldest operation</p>
+            <p className="mt-1 text-sm font-semibold text-gray-900">{operationJournal?.oldestAt ? formatTs(operationJournal.oldestAt) : 'None'}</p>
+          </div>
+        </div>
+        {offlineModeEnabled && (
+          <div className={`mt-3 rounded-xl border px-3 py-2 text-xs ${offlineBackupStale ? 'border-amber-200 bg-amber-50 text-amber-900' : 'border-blue-100 bg-blue-50 text-blue-900'}`}>
+            {offlineBackupStale
+              ? 'Save an offline operations bundle at least once per day during a long outage.'
+              : 'Offline mode is acknowledged. Keep daily bundles until cloud sync is clean.'}
           </div>
         )}
       </div>

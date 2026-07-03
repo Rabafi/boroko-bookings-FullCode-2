@@ -3,12 +3,18 @@ import path from 'path';
 import { state } from '../state.js';
 
 import {
+  appendOperationJournalEntry,
   appendHealthFault,
+  buildLocalOperationsBundle,
+  getOperationJournalSummary,
   readFailedSyncQueue,
   readHealthFaults,
+  readOfflineModeState,
   readSyncMeta,
   readSyncQueue,
+  writeLocalOperationsBundle,
   writeFailedSyncQueue,
+  writeOfflineModeState,
   writeSyncQueue
 } from './syncStore.js';
 import {
@@ -261,6 +267,8 @@ export function getSyncDetails() {
     pending: pending.map(enrichPending),
     failed: failed.map(enrichFailed),
     faults,
+    offlineMode: readOfflineModeState(),
+    operationJournal: getOperationJournalSummary(),
     cacheFreshness: enrichedCacheFreshness,
     cacheStale: {
       active: state.syncRefreshState.stale,
@@ -321,7 +329,14 @@ export async function retrySyncItems(queueIds = []) {
         });
       }
     }
-    if (!existingIds.has(cleanItem._queue_id)) queue.push(cleanItem);
+    if (!existingIds.has(cleanItem._queue_id)) {
+      queue.push(cleanItem);
+      existingIds.add(cleanItem._queue_id);
+      appendOperationJournalEntry('manual_requeued', cleanItem, {
+        financial: isFinancialSyncItem(cleanItem),
+        message: 'Manager returned failed item to the pending queue.'
+      });
+    }
   }
   writeFailedSyncQueue(keepFailed);
   writeSyncQueue(queue);
@@ -359,6 +374,10 @@ export function clearSyncFailed(queueIds = []) {
     });
     integrityAlertsRecorded++;
     console.warn('[Sync] Dead letter cleared without remote confirmation:', item._queue_id, item.table);
+    appendOperationJournalEntry('manually_cleared', item, {
+      financial: isFinancial,
+      message: 'Manager cleared failed item without remote confirmation.'
+    });
   }
 
   const remaining = failed.filter((item) => !itemsToRemove.some((r) => r?._queue_id === item?._queue_id));
@@ -382,4 +401,49 @@ export async function runSyncNow() {
   await requeueEligibleFailedSyncItems();
   const result = await processSyncQueue();
   return result?.success === false ? result : { success: true };
+}
+
+export function getOfflineModeState() {
+  return {
+    ...readOfflineModeState(),
+    operationJournal: getOperationJournalSummary()
+  };
+}
+
+export function setOfflineModeState({ enabled, reason = '', acknowledged = false, updatedBy = null } = {}) {
+  if (enabled === true && acknowledged !== true) {
+    return {
+      success: false,
+      error: 'A manager must acknowledge that local values are pending until cloud replay confirms them.'
+    };
+  }
+  const next = writeOfflineModeState({
+    enabled: enabled === true,
+    reason: String(reason || '').slice(0, 500),
+    updatedBy: updatedBy || state.currentUser?.id || null,
+    acknowledgedRisksAt: enabled === true ? new Date().toISOString() : undefined
+  });
+  appendOperationJournalEntry(enabled === true ? 'offline_mode_enabled' : 'offline_mode_disabled', {
+    type: 'control',
+    table: 'lodge_offline_mode',
+    _queue_id: `offline-mode-${Date.now()}`,
+    data: { reason: next.reason, enabled: next.enabled }
+  }, {
+    includeSnapshot: false,
+    message: next.enabled
+      ? 'Lodge offline mode was enabled by a manager.'
+      : 'Lodge offline mode was disabled by a manager.'
+  });
+  broadcastSyncStatus();
+  return { success: true, offlineMode: next };
+}
+
+export function buildOfflineOperationsBundle(extra = {}) {
+  return buildLocalOperationsBundle(extra);
+}
+
+export function exportOfflineOperationsBundle(filePath, extra = {}) {
+  const result = writeLocalOperationsBundle(filePath, extra);
+  broadcastSyncStatus();
+  return result;
 }

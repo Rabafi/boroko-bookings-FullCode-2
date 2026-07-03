@@ -65,6 +65,9 @@ async function setupMockedEnvironment() {
     export function writeFailedSyncQueue(newQueue) {
       failed = newQueue;
     }
+    export function appendOperationJournalEntry() {
+      return null;
+    }
     export function setMockSyncQueue(newQueue) {
       queue = newQueue;
     }
@@ -130,6 +133,7 @@ async function setupMockedEnvironment() {
     // Perform import path rewriting
     content = content
       .replace(/import\s+\{\s*state\s*\}\s+from\s+['"]\.\.\/\.\.\/state\.js['"];/g, "import { state } from './mockState.js';")
+      .replace(/import\s+\{\s*appendOperationJournalEntry\s*\}\s+from\s+['"]\.\.\/syncStore\.js['"];/g, "import { appendOperationJournalEntry } from './mockSyncStore.js';")
       .replace(/import\s+\{\s*readSyncQueue,\s*writeSyncQueue\s*\}\s+from\s+['"]\.\.\/syncStore\.js['"];/g, "import { readSyncQueue, writeSyncQueue } from './mockSyncStore.js';")
       .replace(/import\s+\{\s*readFailedSyncQueue,\s*readSyncQueue,\s*writeFailedSyncQueue,\s*writeSyncQueue\s*\}\s+from\s+['"]\.\.\/syncStore\.js['"];/g, "import { readFailedSyncQueue, readSyncQueue, writeFailedSyncQueue, writeSyncQueue } from './mockSyncStore.js';")
       .replace(/import\s+\{\s*readSyncQueue\s*\}\s+from\s+['"]\.\.\/syncStore\.js['"];/g, "import { readSyncQueue } from './mockSyncStore.js';")
@@ -718,6 +722,21 @@ async function runTests() {
       }
     }
     assert.deepEqual(nonRpcQueueCalls, [], 'All offline mutations must be RPC operations');
+  });
+
+  await runTest('Mesh repair exposes operation metadata and repair health', async () => {
+    const meshServer = await fs.readFile(path.join(workspaceRoot, 'src', 'main', 'domains', 'mesh', 'meshServer.js'), 'utf8');
+    const meshMerge = await fs.readFile(path.join(workspaceRoot, 'src', 'main', 'domains', 'mesh', 'meshQueueMerge.js'), 'utf8');
+    const meshStateSource = await fs.readFile(path.join(workspaceRoot, 'src', 'main', 'domains', 'mesh', 'meshState.js'), 'utf8');
+    const healthPanel = await fs.readFile(path.join(workspaceRoot, 'src', 'renderer', 'src', 'components', 'SystemHealthPanel.jsx'), 'utf8');
+
+    assert.match(meshServer, /operation: item\.table \|\| null/);
+    assert.match(meshServer, /createdAt: item\.createdAt \|\| item\.timestamp \|\| null/);
+    assert.match(meshMerge, /appendOperationJournalEntry\('mesh_imported'/);
+    assert.match(meshMerge, /lastQueueRepair/);
+    assert.match(meshStateSource, /lastQueueRepair: meshState\.lastQueueRepair \|\| null/);
+    assert.match(healthPanel, /Repair pass/);
+    assert.match(healthPanel, /meshQueueRepair[\s\S]{0,120}missingCount/);
   });
 
   await runTest('Extender-resilient discovery and firewall-friendly ports are configured', async () => {

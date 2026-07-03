@@ -3,7 +3,14 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { state } from '../src/main/state.js'
-import { writeSyncQueue } from '../src/main/domains/syncStore.js'
+import {
+  appendOperationJournalEntry,
+  readOfflineModeState,
+  readOperationJournal,
+  writeLocalOperationsBundle,
+  writeOfflineModeState,
+  writeSyncQueue
+} from '../src/main/domains/syncStore.js'
 import { pickNextReadySyncItemIndex } from '../src/shared/syncQueue.js'
 
 async function read(path) {
@@ -41,6 +48,39 @@ async function run() {
     assert.equal(savedQueue.length, 1)
     assert.equal(savedQueue[0].data.p_idempotency_key, 'test-payment-key')
 
+    appendOperationJournalEntry('queued', {
+      type: 'rpc',
+      table: 'update_booking_payment',
+      _queue_id: 'booking-payment-test',
+      data: { p_idempotency_key: 'test-payment-key' }
+    })
+    const journalRows = readOperationJournal({ limit: 10 })
+    assert.equal(journalRows.length, 1)
+    assert.equal(journalRows[0].event, 'queued')
+    assert.equal(journalRows[0].payload_hash.length, 64)
+
+    const offlineState = writeOfflineModeState({ enabled: true, reason: 'outage test', acknowledgedRisksAt: '2026-07-03T00:00:00.000Z' })
+    assert.equal(offlineState.enabled, true)
+    assert.equal(readOfflineModeState().reason, 'outage test')
+    await writeFile(path.join(durabilityRoot, 'lodge-offline-mode.json'), JSON.stringify({
+      enabled: false,
+      reason: 'old outage',
+      startedAt: '2026-06-01T00:00:00.000Z',
+      endedAt: '2026-06-02T00:00:00.000Z',
+      acknowledgedRisksAt: '2026-06-01T00:00:00.000Z'
+    }), 'utf8')
+    const restartedOfflineState = writeOfflineModeState({ enabled: true, reason: 'second outage', acknowledgedRisksAt: '2026-07-03T00:00:00.000Z' })
+    assert.notEqual(restartedOfflineState.startedAt, '2026-06-01T00:00:00.000Z')
+    assert.equal(restartedOfflineState.endedAt, null)
+    const bundlePath = path.join(durabilityRoot, 'operations-bundle.json')
+    const bundleResult = writeLocalOperationsBundle(bundlePath, { test: true })
+    assert.equal(bundleResult.success, true)
+    const bundle = JSON.parse(await readFile(bundlePath, 'utf8'))
+    assert.equal(bundle.pendingQueue.length, 1)
+    assert.equal(bundle.operationJournal.length, 1)
+    assert.equal(bundle.offlineMode.enabled, true)
+    assert.equal(readOfflineModeState().lastBackupPath, bundlePath)
+
     const invalidCacheRoot = path.join(durabilityRoot, 'not-a-directory')
     await writeFile(invalidCacheRoot, 'block directory creation', 'utf8')
     state.cacheDir = invalidCacheRoot
@@ -65,8 +105,10 @@ async function run() {
     ...(await readTree('src/main/domains'))
   ].join('\n')
   const mainIndex = await read('src/main/index.js')
+  const preload = await read('src/preload/index.js')
   const packageJson = await read('package.json')
   const bookingsUi = await read('src/renderer/src/components/Bookings.jsx')
+  const bookingInvoicesUi = await read('src/renderer/src/components/BookingInvoices.jsx')
   const posUi = await read('src/renderer/src/components/POS.jsx')
   const layout = await read('src/renderer/src/components/Layout.jsx')
   const offlineNotice = await read('src/renderer/src/components/shared/OfflineNotice.jsx')
@@ -77,6 +119,8 @@ async function run() {
   const posReplaySql = await read('supabase/migrations/20260507_pos_offline_inventory_payload.sql')
   const posVoidHardeningSql = await read('supabase/migrations/20260524_pos_void_pin_stock_hardening.sql')
   const posLaunchReadinessSql = await read('supabase/migrations/20260604120000_pos_inventory_launch_readiness.sql')
+  const longOutageSql = await read('supabase/migrations/20260703120000_offline_normal_operations_idempotency.sql')
+  const groupInvoiceSql = await read('supabase/migrations/20260703133000_accommodation_group_invoices.sql')
 
   assert.match(packageJson, /"test:offline-queue-critical":\s*"node \.\\\\tests\\\\offline-queue-regression\.test\.mjs"/)
 
@@ -123,13 +167,36 @@ async function run() {
 
   // Bookings: create/update/status/payment must stay queue-aware and visible.
   assert.match(database, /queueOperation\('rpc', 'create_booking', \{/)
+  assert.match(database, /appendOperationJournalEntry\('queued'/)
+  assert.match(database, /appendOperationJournalEntry\('replayed'/)
+  assert.match(database, /appendOperationJournalEntry\('dead_lettered'/)
+  assert.match(database, /appendOperationJournalEntry\('manually_cleared'/)
+  assert.match(database, /writeLocalOperationsBundle/)
+  assert.match(database, /setOfflineModeState/)
+  assert.match(mainIndex, /sync:exportOfflineOperations/)
+  assert.match(mainIndex, /dialog\.showSaveDialog/)
+  assert.match(preload, /exportOfflineOperations/)
+  assert.match(health, /Lodge offline mode/)
+  assert.match(health, /Acknowledge Long Outage/)
+  assert.match(health, /Save Bundle/)
   assert.match(database, /_queue_id:\s*`booking-\$\{id\}`/)
   assert.match(database, /function buildLocalPendingInvoiceNumber\(/)
   assert.match(database, /function buildOfflineBookingFinancialState\(/)
+  assert.match(database, /export async function createMultiRoomBooking/)
+  assert.match(database, /buildAccommodationGroupId/)
+  assert.match(database, /appendAccommodationGroupMetadata/)
+  assert.match(database, /queueOperation\('rpc', 'create_booking_invoice_group'/)
+  assert.match(database, /booking-invoice-groups/)
+  assert.match(database, /export async function updateGroupInvoicePayment/)
+  assert.match(database, /await createBooking\(\{[\s\S]*room_id: plan\.room_id/)
   assert.match(database, /function mergeRemoteBookingsWithLocalState\(/)
   assert.match(database, /writeCache\(name, mergeRemoteBookingsWithLocalState\(data \|\| \[\]\), \{ source: 'remote' \}\)/)
   assert.match(database, /const mappedWithRefundState = applyRefundSettlementState\(mapped, refundSettlements\)/)
   assert.match(database, /const mergedLiveRows = mergeRemoteBookingsWithLocalState\(mappedWithRefundState, localRowsForMerge\)/)
+  assert.match(database, /readCache\('booking-refund-requests'\)/)
+  assert.match(database, /appendOperationJournalEntry\('refund_request_saved'/)
+  assert.match(database, /requires_online_approval:\s*true/)
+  assert.doesNotMatch(database, /queueOperation\('rpc',\s*'approve_booking_refund'/)
   assert.match(database, /cachedCustomer\?\._pending_sync \? \{ _depends_on: `customer-\$\{booking\.customer_id\}` \} : \{\}/)
   assert.match(database, /amount_paid:\s*optimisticPayment\.amount_paid/)
   assert.match(database, /payment_status:\s*optimisticPayment\.payment_status/)
@@ -144,7 +211,7 @@ async function run() {
   assert.match(database, /const autoDepend\s*=\s*dependsOn \|\| \(b\._pending_sync \? `booking-\$\{id\}` : null\)/)
   assert.match(database, /queueOperation\('rpc', 'update_booking_payment', \{/)
   assert.match(database, /booking\._local_invoice_number \|\| null/)
-  assert.match(database, /refreshTargets\.push\('bookings'\)/)
+  assert.match(database, /refreshTargets\.push\('bookings', 'booking-charges'\)/)
   assert.match(database, /customer_id:\s*b\.customer_id/)
   assert.match(database, /room_id:\s*b\.room_id/)
   assert.match(database, /hasDriftBaselineValue\(pre\.customer_id\)/)
@@ -156,6 +223,15 @@ async function run() {
   assert.match(bookingsUi, /const fmtBkNum = \(b\) => b\.invoice_number \|\| b\._local_invoice_number \|\| \(b\._pending_sync \? 'PENDING' : '—'\)/)
   assert.match(bookingsUi, /const isOfflineCreatedPendingBooking = booking\?\._pending_sync && booking\?\._sync_created_offline/)
   assert.match(bookingsUi, /status === 'cancelled' && isFinanciallySyncBlocked\(id\) && !isOfflineCreatedPendingBooking/)
+  assert.match(bookingsUi, /createMultiRoom/)
+  assert.match(bookingsUi, /selectedRoomIds/)
+  assert.match(bookingsUi, /room_guests/)
+  assert.match(bookingInvoicesUi, /GroupPaymentModal/)
+  assert.match(groupInvoiceSql, /booking_invoice_groups/)
+  assert.match(groupInvoiceSql, /create_booking_invoice_group/)
+  assert.match(bookingInvoicesUi, /result\?\.pending_approval/)
+  assert.match(bookingInvoicesUi, /required=\{!isOffline\}/)
+  assert.match(bookingInvoicesUi, /isRefundActionBlocked/)
 
   const createdAtHelperMatch = database.match(/function resolveQueuedItemCreatedAtRaw\(item = \{\}\) \{[\s\S]*?\n\}/)
   assert.ok(createdAtHelperMatch, 'resolveQueuedItemCreatedAtRaw helper missing')
@@ -265,6 +341,59 @@ async function run() {
   assert.match(quotationsUi, /window\.api\.quotations\.update\(q\.id, \{ \.\.\.q, status: newStatus \}\)/)
   assert.match(quotationsUi, /Booking queued offline/)
 
+  // Long-outage normal operations: every non-admin lodge workflow added here
+  // must remain queued, locally visible, mesh-shareable, and idempotent on replay.
+  assert.match(database, /queueOperation\('rpc', 'add_booking_charge', \{/)
+  assert.match(database, /queueOperation\('rpc', 'delete_booking_charge', \{/)
+  assert.match(database, /writeCache\('booking-charges'/)
+  assert.match(database, /patchCachedBookingFinancialEstimate/)
+  assert.match(database, /queueOperation\('rpc', 'apply_customer_credit_to_booking', \{/)
+  assert.match(database, /queueOperation\('rpc', 'refund_customer_credit', \{/)
+  assert.match(database, /queueOperation\('rpc', 'reverse_customer_credit_entry', \{/)
+  assert.match(database, /mergeCreditLedgerRows/)
+  assert.match(database, /customer-credit-summary/)
+  assert.match(database, /mergeCreditSummaryRows/)
+  assert.match(database, /patchCreditSummaryBalance/)
+  assert.match(database, /p_limit:\s*1000/)
+  assert.match(database, /queueOperation\('rpc', 'create_room_rate_override', \{/)
+  assert.match(database, /queueOperation\('rpc', 'update_room_rate_override', \{/)
+  assert.match(database, /queueOperation\('rpc', 'delete_room_rate_override', \{/)
+  assert.match(database, /findApplicableRateOverrideFromCache/)
+  assert.match(database, /queueOperation\('rpc', 'create_expense'/)
+  assert.match(database, /queueOperation\('rpc', 'update_expense'/)
+  assert.match(database, /queueOperation\('rpc', 'delete_expense'/)
+  assert.match(database, /queueOperation\('rpc', 'update_maintenance_ticket'/)
+  assert.match(database, /queueOperation\('rpc', 'resolve_maintenance_ticket'/)
+  assert.match(database, /queueOperation\('rpc', 'add_inventory_purchase'/)
+  assert.match(database, /queueOperation\('rpc', 'create_inventory_stocktake_session'/)
+  assert.match(database, /queueOperation\('rpc', 'save_inventory_stocktake_counts'/)
+  assert.match(database, /queueOperation\('rpc', 'post_inventory_stocktake_session'/)
+  assert.match(database, /queueOperation\('rpc', 'add_supply_purchase'/)
+  assert.match(database, /queueOperation\('rpc', 'load_supply_to_room'/)
+  assert.match(database, /queueOperation\('rpc', 'use_room_supply_stock'/)
+  assert.match(database, /queueOperation\('rpc', 'return_room_supply_to_store'/)
+  assert.match(database, /queueOperation\('rpc', 'create_supply_stocktake_session'/)
+  assert.match(database, /queueOperation\('rpc', 'create_room_supply_stocktake_session'/)
+  assert.match(database, /queueOperation\('rpc', 'post_supply_stocktake_session'/)
+  assert.match(database, /queueOperation\('rpc', 'post_room_supply_stocktake_session'/)
+  assert.match(database, /PRESERVE_PENDING_LOCAL_CACHE_NAMES/)
+  assert.match(database, /mergeRemoteRowsPreservingPendingLocal/)
+  assert.match(database, /shouldRefreshRateOverrides = true/)
+  assert.match(database, /refreshTargets\.push\('room-rate-overrides'\)/)
+  assert.match(database, /'create_room_rate_override'[\s\S]*'delete_room_rate_override'/)
+  assert.match(database, /'add_booking_charge'[\s\S]*'delete_booking_charge'/)
+  assert.match(longOutageSql, /create or replace function public\.create_room_rate_override\(payload jsonb\)/)
+  assert.match(longOutageSql, /create or replace function public\.add_inventory_purchase\(payload jsonb\)/)
+  assert.match(longOutageSql, /create or replace function public\.create_inventory_stocktake_session\(payload jsonb\)/)
+  assert.match(longOutageSql, /create or replace function public\.post_inventory_stocktake_session\([\s\S]*'idempotent', true/)
+  assert.match(longOutageSql, /create or replace function public\.add_supply_purchase\(payload jsonb\)/)
+  assert.match(longOutageSql, /create or replace function public\.post_supply_stocktake_session\([\s\S]*'idempotent', true/)
+  assert.match(longOutageSql, /create or replace function public\.post_room_supply_stocktake_session\([\s\S]*'idempotent', true/)
+  assert.match(longOutageSql, /create or replace function public\.load_supply_to_room\(payload jsonb\)[\s\S]*payload->>'operation_id'/)
+  assert.match(longOutageSql, /create or replace function public\.use_room_supply_stock\(payload jsonb\)[\s\S]*payload->>'operation_id'/)
+  assert.match(longOutageSql, /create or replace function public\.return_room_supply_to_store\(payload jsonb\)[\s\S]*payload->>'operation_id'/)
+  assert.match(longOutageSql, /create or replace function public\.create_room_supply_stocktake_line\([\s\S]*Only open room stock takes can be updated/)
+
   // POS: preserve pending state, keep local stock reservations, and replay inventory deduction.
   assert.match(database, /function getOfflinePosInventoryReservation\(/)
   assert.match(database, /function applyOfflinePosInventoryReservation\(/)
@@ -314,7 +443,7 @@ async function run() {
   assert.match(database, /queueOperation\('rpc', 'update_conference_booking', \{/)
   assert.match(database, /queueOperation\('rpc', 'delete_conference_booking', \{/)
   assert.match(database, /shouldRefreshConference = true/)
-  assert.match(database, /refreshTargets\.push\('conference-bookings'\)/)
+  assert.match(database, /refreshTargets\.push\('conference-bookings', 'event-line-items'\)/)
   assert.match(database, /FINANCIAL_SYNC_TABLES[\s\S]*'create_event_booking'/)
   assert.match(database, /FINANCIAL_SYNC_TABLES[\s\S]*'update_event_booking'/)
   assert.match(database, /FINANCIAL_SYNC_TABLES[\s\S]*'update_event_payment'/)

@@ -23,6 +23,22 @@ const MAINTENANCE_TICKET_LEGACY_SELECT = 'id, room_id, title, description, statu
 const BOOKING_PAGE_SIZE = 1000;
 const BOOKING_REFRESH_MAX_ROWS = 10000;
 const CACHE_REFRESH_CONCURRENCY = 3;
+const PRESERVE_PENDING_LOCAL_CACHE_NAMES = new Set([
+  'booking-charges',
+  'room-rate-overrides',
+  'event-line-items',
+  'expenses',
+  'maintenance',
+  'inventory-purchases',
+  'inventory-stocktakes',
+  'supply-items',
+  'supply-purchases',
+  'room-supply-stock',
+  'room-supply-movements',
+  'room-supply-allocations',
+  'supply-stocktakes',
+  'room-supply-stocktakes'
+]);
 
 function uniqueSyncNames(names = []) {
   return [...new Set((names || []).filter(Boolean))];
@@ -86,6 +102,18 @@ function normalizeMaintenanceTicketRowForCache(row = {}) {
     completed_at: row.completed_at || null,
     updated_at: row.updated_at || row.created_at || null
   };
+}
+
+function mergeRemoteRowsPreservingPendingLocal(name, rows = []) {
+  const localPending = (readCache(name) || []).filter((row) =>
+  row?._pending_sync === true ||
+  row?._deleted_offline === true ||
+  row?._sync_state === 'pending');
+  const pendingIds = new Set(localPending.map((row) => row?.id).filter(Boolean));
+  return [
+    ...localPending,
+    ...(rows || []).filter((row) => !pendingIds.has(row?.id))
+  ];
 }
 
 async function fetchUsersForRefresh() {
@@ -176,10 +204,27 @@ async function refreshCacheStrict(...names) {
     maintenance: () => fetchMaintenanceForRefresh(),
     'inventory-items': () => fetchInventoryItemsForRefresh(),
     'inventory-purchases': () => state.supabase.from('inventory_purchases').select(INVENTORY_PURCHASE_SELECT).eq('lodge_id', state.lodgeId).order('date', { ascending: false }).limit(500),
+    'inventory-stocktakes': () => state.supabase.from('inventory_stocktakes').select('*, outlets(name, type)').eq('lodge_id', state.lodgeId).order('created_at', { ascending: false }).limit(100),
+    'booking-charges': () => state.supabase.from('booking_charges').select('*, outlets(name)').eq('lodge_id', state.lodgeId).order('created_at', { ascending: false }).limit(1000),
+    'room-rate-overrides': () => state.supabase.from('room_rate_overrides').select('*').eq('lodge_id', state.lodgeId).order('start_date').limit(500),
+    'customer-credit-summary': () => state.supabase.rpc('get_customer_credit_summary', {
+      p_lodge_id: state.lodgeId,
+      p_search: null,
+      p_limit: 1000,
+      p_offset: 0
+    }),
     quotations: () => state.supabase.from('quotations').select('id, customer_id, customer_name, customer_phone, customer_email, room_id, room_name, check_in, check_out, adults, children, subtotal, tax_amount, total_amount, currency, notes, status, valid_until, quotation_number, created_at, updated_at, created_by, lodge_id, parent_quotation_id, converted_booking_id, quotation_type, event_name, event_daily_rate').eq('lodge_id', state.lodgeId).order('created_at', { ascending: false }).limit(200),
     'conference-bookings': () => state.supabase.from('conference_bookings').select('id, booking_date, start_time, end_time, client_name, company, attendees, setup_type, room_name, includes_catering, catering_notes, total_amount, deposit_paid, payment_status, payment_method, notes, created_at, updated_at, lodge_id').eq('lodge_id', state.lodgeId).order('booking_date', { ascending: false }).order('start_time', { ascending: true }).limit(200),
+    'event-line-items': () => state.supabase.from('event_booking_line_items').select('*').eq('lodge_id', state.lodgeId).order('created_at', { ascending: false }).limit(1000),
     'pool-day-use': () => state.supabase.from('pool_day_use').select(POOL_DAY_USE_SELECT).eq('lodge_id', state.lodgeId).order('date', { ascending: false }).limit(500),
     expenses: () => state.supabase.from('expenses').select('id, date, category, description, amount, outlet_id, created_at, updated_at, outlets(name)').eq('lodge_id', state.lodgeId).order('date', { ascending: false }).limit(500),
+    'supply-items': () => state.supabase.from('supply_items').select('id, name, category, unit, current_stock, reorder_level, latest_unit_cost, lodge_id, created_at, updated_at, is_active').eq('lodge_id', state.lodgeId).order('category').order('name').limit(500),
+    'supply-purchases': () => state.supabase.from('supply_purchases').select('*').eq('lodge_id', state.lodgeId).order('date', { ascending: false }).limit(500),
+    'room-supply-stock': () => state.supabase.from('room_supply_room_stock').select('*, rooms(room_number, room_type), supply_items(name, unit, category)').eq('lodge_id', state.lodgeId).order('updated_at', { ascending: false }).limit(1000),
+    'room-supply-movements': () => state.supabase.from('room_supply_movements').select('*, rooms(room_number, room_type), supply_items(name, unit, category)').eq('lodge_id', state.lodgeId).order('created_at', { ascending: false }).limit(1000),
+    'room-supply-allocations': () => state.supabase.from('room_supply_allocations').select('*, supply_items(name, unit, category), rooms(room_number)').eq('lodge_id', state.lodgeId).order('week_start', { ascending: false }).limit(1000),
+    'supply-stocktakes': () => state.supabase.from('supply_stocktakes').select('*').eq('lodge_id', state.lodgeId).order('created_at', { ascending: false }).limit(100),
+    'room-supply-stocktakes': () => state.supabase.from('room_supply_stocktakes').select('*').eq('lodge_id', state.lodgeId).order('created_at', { ascending: false }).limit(100),
     'pos-orders': () => state.supabase.
     from('pos_orders').
     select('id, room_id, booking_id, walk_in_name, total, gross_total, discount_total, tax_rate, tax_total, tip_total, notes, payment_method, payment_breakdown, outlet_id, service_mode, table_name, tab_name, waiter_name, cashier_id, cashier_name, shift_id, ticket_status, status, created_at, pos_order_items(*), outlets(name)').
@@ -238,8 +283,57 @@ async function refreshCacheStrict(...names) {
         writeCache(name, mergeRemoteQuotationsWithLocalState(data || []), { source: 'remote' });
         continue;
       }
+      if (name === 'room-rate-overrides') {
+        writeCache(name, mergeRemoteRowsPreservingPendingLocal(name, data || []), { source: 'remote' });
+        continue;
+      }
+      if (name === 'customer-credit-summary') {
+        writeCache(name, (data || []).map((row) => ({ ...row, _confirmed_balance: true })), { source: 'remote' });
+        continue;
+      }
       if (name === 'pos-orders') {
         writeCache(name, mergeRemotePosOrdersWithLocalState(data || []), { source: 'remote' });
+        continue;
+      }
+      if (name === 'room-supply-stock') {
+        const normalized = (data || []).map((row) => ({
+          ...row,
+          room_number: row.rooms?.room_number,
+          room_type: row.rooms?.room_type,
+          supply_name: row.supply_items?.name,
+          supply_unit: row.supply_items?.unit,
+          supply_category: row.supply_items?.category
+        }));
+        writeCache(name, mergeRemoteRowsPreservingPendingLocal(name, normalized), { source: 'remote' });
+        continue;
+      }
+      if (name === 'room-supply-movements') {
+        const normalized = (data || []).map((row) => ({
+          ...row,
+          room_number: row.rooms?.room_number,
+          room_type: row.rooms?.room_type,
+          supply_name: row.supply_items?.name,
+          supply_unit: row.supply_items?.unit,
+          supply_category: row.supply_items?.category
+        }));
+        writeCache(name, mergeRemoteRowsPreservingPendingLocal(name, normalized), { source: 'remote' });
+        continue;
+      }
+      if (name === 'room-supply-allocations') {
+        const normalized = (data || []).map((row) => ({
+          ...row,
+          source: 'allocation',
+          entry_date: row.week_start,
+          supply_name: row.supply_items?.name,
+          supply_unit: row.supply_items?.unit,
+          supply_category: row.supply_items?.category,
+          room_number: row.rooms?.room_number
+        }));
+        writeCache(name, mergeRemoteRowsPreservingPendingLocal(name, normalized), { source: 'remote' });
+        continue;
+      }
+      if (PRESERVE_PENDING_LOCAL_CACHE_NAMES.has(name)) {
+        writeCache(name, mergeRemoteRowsPreservingPendingLocal(name, data || []), { source: 'remote' });
         continue;
       }
       writeCache(name, data, { source: 'remote' });
@@ -328,12 +422,24 @@ export async function refreshAllCaches() {
     'maintenance',
     'inventory-items',
     'inventory-purchases',
+    'inventory-stocktakes',
     'quotations',
     'conference-bookings',
+    'event-line-items',
     'pool-day-use',
     'pos-orders',
     'pos-menu-items',
     'outlets',
-    'expenses'
+    'expenses',
+    'booking-charges',
+    'room-rate-overrides',
+    'customer-credit-summary',
+    'supply-items',
+    'supply-purchases',
+    'room-supply-stock',
+    'room-supply-movements',
+    'room-supply-allocations',
+    'supply-stocktakes',
+    'room-supply-stocktakes'
   );
 }

@@ -127,7 +127,7 @@ async function run() {
   assert.match(bookings, /rpc\('add_booking_charge'[\s\S]*p_idempotency_key:\s*idempotencyKey/)
 
   assert.match(infrastructure, /shouldRefreshBookingsAfterFailure = true/)
-  assert.match(infrastructure, /\|\| shouldRefreshBookingsAfterFailure\) refreshTargets\.push\('bookings'\)/)
+  assert.match(infrastructure, /\|\| shouldRefreshBookingsAfterFailure\) refreshTargets\.push\('bookings', 'booking-charges'\)/)
   assert.match(syncCache, /\['failed', 'sync_failed', 'manual_review_required'\]\.includes\(patch\._sync_state\)/)
 
   assert.doesNotMatch(pwaApi, /async function executeCreateBooking\(/)

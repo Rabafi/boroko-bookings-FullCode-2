@@ -88,7 +88,7 @@ export function startMeshServer(lodgeMeshSecret) {
           let oldestQueuedAt = null;
           if (queue.length > 0) {
             const times = queue
-              .map((item) => item.created_at || item.data?.created_at || item.lastAttemptedAt)
+              .map((item) => item.createdAt || item.timestamp || item.created_at || item.data?.created_at || item.lastAttemptedAt)
               .filter(Boolean);
             if (times.length > 0) {
               oldestQueuedAt = new Date(Math.min(...times.map((t) => new Date(t).getTime()))).toISOString();
@@ -134,6 +134,9 @@ export function startMeshServer(lodgeMeshSecret) {
           const queue = readSyncQueue().filter(isMeshShareableQueueItem);
           const summary = queue.map((item) => ({
             _queue_id: item._queue_id,
+            operation: item.table || null,
+            type: item.type || null,
+            createdAt: item.createdAt || item.timestamp || null,
             intentId: item.intentId || item.data?.p_idempotency_key || item.data?.payload?.create_idempotency_key || null,
             bodyHash: getQueueItemBodyHash(item)
           }));

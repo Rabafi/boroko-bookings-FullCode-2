@@ -18,6 +18,7 @@ export const meshState = {
   discoverySocket: null, // UDP Socket
   serverNonceCache: new Set(), // Received nonces (HMAC replay protection)
   lastQueueMergeAt: null,
+  lastQueueRepair: null,
   localInterfaces: [],
   discoveryTargets: [],
   lastBeaconAt: null,
@@ -153,6 +154,7 @@ export function getMeshHealthSnapshot() {
     activeLockCount: meshState.activeLocks.length,
     activeLocks: meshState.activeLocks,
     lastQueueMergeAt: meshState.lastQueueMergeAt ? meshState.lastQueueMergeAt.toISOString() : null,
+    lastQueueRepair: meshState.lastQueueRepair || null,
     lastError: meshState.lastError,
     lastDiscoveryError: meshState.lastDiscoveryError,
     lastBeaconAt: meshState.lastBeaconAt,

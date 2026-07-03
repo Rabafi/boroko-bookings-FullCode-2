@@ -62,7 +62,8 @@ export function getMaintenanceTickets() {
 }
 
 export async function getMaintenanceTicketById(id) {
-  if (!id || !state.isOnline) return null;
+  if (!id) return null;
+  if (!state.isOnline) return readCache('maintenance').map(normalizeMaintenanceTicketRow).find((ticket) => ticket?.id === id) || null;
   const { data, error } = await state.supabase.
   from('maintenance_tickets').
   select('*').
@@ -142,7 +143,30 @@ export async function updateMaintenanceTicket(id, data) {
     await refreshCache('maintenance');
     return { success: true };
   }
-  return { success: false, error: 'Requires internet connection' };
+  const cached = readCache('maintenance');
+  const idx = cached.findIndex((ticket) => ticket?.id === id);
+  if (idx < 0) return { success: false, error: 'Maintenance ticket not found in offline cache' };
+  const existing = cached[idx];
+  const dependsOn = existing?._pending_sync ? `maintenance-${id}` : null;
+  const next = [...cached];
+  next[idx] = {
+    ...existing,
+    ...update,
+    _pending_sync: true,
+    _sync_state: 'pending',
+    _sync_error: null,
+    updated_at: new Date().toISOString()
+  };
+  writeCache('maintenance', next);
+  queueOperation('rpc', 'update_maintenance_ticket', {
+    p_id: String(id),
+    p_lodge_id: String(state.lodgeId),
+    payload: update
+  }, null, {
+    _queue_id: `maintenance-update-${id}-${Date.now()}`,
+    ...(dependsOn ? { _depends_on: dependsOn } : {})
+  });
+  return { success: true, offline: true, queued: true };
 }
 
 export async function resolveMaintenanceTicket(id, roomId) {
@@ -157,7 +181,38 @@ export async function resolveMaintenanceTicket(id, roomId) {
     await refreshCache('maintenance');
     return { success: true };
   }
-  return { success: false, error: 'Requires internet connection' };
+  const cached = readCache('maintenance');
+  const idx = cached.findIndex((ticket) => ticket?.id === id);
+  if (idx < 0) return { success: false, error: 'Maintenance ticket not found in offline cache' };
+  const existing = cached[idx];
+  const now = new Date().toISOString();
+  const next = [...cached];
+  next[idx] = {
+    ...existing,
+    status: 'resolved',
+    completed_at: now,
+    _pending_sync: true,
+    _sync_state: 'pending',
+    _sync_error: null,
+    updated_at: now
+  };
+  writeCache('maintenance', next);
+  if (roomId) {
+    const rooms = readCache('rooms');
+    const roomIndex = rooms.findIndex((room) => String(room.id) === String(roomId));
+    if (roomIndex >= 0) {
+      rooms[roomIndex] = { ...rooms[roomIndex], status: 'available', _pending_sync: true };
+      writeCache('rooms', rooms);
+    }
+  }
+  queueOperation('rpc', 'resolve_maintenance_ticket', {
+    p_id: String(id),
+    p_lodge_id: String(state.lodgeId)
+  }, null, {
+    _queue_id: `maintenance-resolve-${id}-${Date.now()}`,
+    ...(existing?._pending_sync ? { _depends_on: `maintenance-${id}` } : {})
+  });
+  return { success: true, offline: true, queued: true };
 }
 
 

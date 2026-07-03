@@ -8,13 +8,18 @@ import { detectConflicts } from './meshConflict.js';
 import { computeBodyHash } from './meshSecurity.js';
 import { readCache, writeCache } from '../cacheStore.js';
 import { broadcastSyncStatus } from '../connectivity.js';
+import { appendOperationJournalEntry } from '../syncStore.js';
 
 const ALLOWED_RPC_TABLES = new Set([
   'create_booking',
+  'create_booking_invoice_group',
   'create_booking_record',
+  'reschedule_booking',
   'update_booking',
   'update_booking_status',
   'update_booking_payment',
+  'add_booking_charge',
+  'delete_booking_charge',
   'create_customer',
   'update_customer',
   'update_customer_blacklist',
@@ -27,15 +32,53 @@ const ALLOWED_RPC_TABLES = new Set([
   'update_quotation',
   'mark_quotation_sent',
   'convert_quotation_to_booking',
+  'create_room_rate_override',
+  'update_room_rate_override',
+  'delete_room_rate_override',
+  'record_customer_credit',
+  'apply_customer_credit_to_booking',
+  'refund_customer_credit',
+  'reverse_customer_credit_entry',
   'create_conference_booking',
   'update_conference_booking',
   'update_conference_booking_payment',
   'delete_conference_booking',
+  'create_event_booking',
+  'update_event_booking',
+  'update_event_payment',
+  'cancel_event_booking',
+  'add_event_line_item',
+  'void_event_line_item',
   'add_pool_day_use',
   'delete_pool_day_use',
   'update_pool_day_use',
   'create_inventory_item',
+  'update_inventory_item',
+  'delete_inventory_item',
+  'add_inventory_purchase',
   'adjust_inventory_stock',
+  'create_inventory_stocktake_session',
+  'save_inventory_stocktake_counts',
+  'post_inventory_stocktake_session',
+  'create_expense',
+  'update_expense',
+  'delete_expense',
+  'create_supply_item',
+  'update_supply_item',
+  'delete_supply_item',
+  'add_supply_purchase',
+  'adjust_supply_stock',
+  'save_room_supply_allocations',
+  'load_supply_to_room',
+  'use_room_supply_stock',
+  'return_room_supply_to_store',
+  'create_supply_stocktake_session',
+  'create_room_supply_stocktake_session',
+  'save_supply_stocktake_counts',
+  'save_room_supply_stocktake_counts',
+  'post_supply_stocktake_session',
+  'post_room_supply_stocktake_session',
+  'create_room_supply_stocktake_line',
   'create_pos_order',
   'create_pos_order_v3',
   'create_pos_return_v3',
@@ -55,7 +98,9 @@ const ALLOWED_RPC_TABLES = new Set([
   'upsert_pos_modifier_groups',
   'upsert_pos_promotions',
   'upsert_pos_floor_layout',
-  'create_maintenance_ticket'
+  'create_maintenance_ticket',
+  'update_maintenance_ticket',
+  'resolve_maintenance_ticket'
 ]);
 
 const ORIGIN_DEVICE_ONLY_RPC_TABLES = new Set([
@@ -77,6 +122,10 @@ function isValidDate(value) {
 
 function hasValidDateRange(checkIn, checkOut) {
   return isValidDate(checkIn) && isValidDate(checkOut) && Date.parse(checkOut) > Date.parse(checkIn);
+}
+
+function hasValidInclusiveDateRange(startDate, endDate) {
+  return isValidDate(startDate) && isValidDate(endDate) && Date.parse(endDate) >= Date.parse(startDate);
 }
 
 function isFiniteNumber(value) {
@@ -170,6 +219,9 @@ function getQueueItemIntentId(item = {}) {
   return String(
     item.intentId ||
     item.data?.p_idempotency_key ||
+    item.data?.p_adjustment_id ||
+    item.data?.payload?.operation_id ||
+    item.data?.payload?.id ||
     item.data?.payload?.create_idempotency_key ||
     item.data?.payload?.return_idempotency_key ||
     item.data?.payload?.cashup_id ||
@@ -241,8 +293,171 @@ export function validateSyncQueueItem(item) {
     }
   }
 
+  if (item.table === 'reschedule_booking') {
+    const data = item.data;
+    const required = ['p_booking_id', 'p_lodge_id', 'p_new_room_id', 'p_new_check_in', 'p_new_check_out', 'p_idempotency_key'];
+    const missing = required.filter((field) => !hasString(data[field]));
+    if (missing.length > 0) return { isValid: false, reason: `reschedule_booking missing ${missing.join(', ')}` };
+    if (!hasValidDateRange(data.p_new_check_in, data.p_new_check_out)) return { isValid: false, reason: 'reschedule_booking has invalid date range' };
+  }
+
   if (item.table === 'update_booking_status' && !hasString(item.data.p_id)) {
     return { isValid: false, reason: 'update_booking_status missing p_id' };
+  }
+
+  if (item.table === 'add_booking_charge') {
+    const data = item.data;
+    const required = ['p_booking_id', 'p_lodge_id', 'p_description', 'p_idempotency_key'];
+    const missing = required.filter((field) => !hasString(data[field]));
+    if (missing.length > 0) return { isValid: false, reason: `add_booking_charge missing ${missing.join(', ')}` };
+    if (!isFiniteNumber(data.p_quantity) || Number(data.p_quantity) <= 0) return { isValid: false, reason: 'add_booking_charge has invalid quantity' };
+    if (!isFiniteNumber(data.p_unit_price) || Number(data.p_unit_price) <= 0) return { isValid: false, reason: 'add_booking_charge has invalid unit price' };
+  }
+
+  if (item.table === 'delete_booking_charge' && (!hasString(item.data.p_charge_id) || !hasString(item.data.p_lodge_id))) {
+    return { isValid: false, reason: 'delete_booking_charge missing charge or lodge' };
+  }
+
+  if (item.table === 'record_customer_credit') {
+    const data = item.data;
+    const required = ['p_lodge_id', 'p_customer_id', 'p_idempotency_key'];
+    const missing = required.filter((field) => !hasString(data[field]));
+    if (missing.length > 0) return { isValid: false, reason: `record_customer_credit missing ${missing.join(', ')}` };
+    if (!isFiniteNumber(data.p_amount) || Number(data.p_amount) <= 0) return { isValid: false, reason: 'record_customer_credit has invalid amount' };
+  }
+
+  if (['apply_customer_credit_to_booking', 'refund_customer_credit'].includes(item.table)) {
+    const data = item.data;
+    const required = item.table === 'apply_customer_credit_to_booking'
+      ? ['p_lodge_id', 'p_customer_id', 'p_booking_id', 'p_idempotency_key']
+      : ['p_lodge_id', 'p_customer_id', 'p_method', 'p_idempotency_key'];
+    const missing = required.filter((field) => !hasString(data[field]));
+    if (missing.length > 0) return { isValid: false, reason: `${item.table} missing ${missing.join(', ')}` };
+    if (!isFiniteNumber(data.p_amount) || Number(data.p_amount) <= 0) return { isValid: false, reason: `${item.table} has invalid amount` };
+  }
+
+  if (item.table === 'reverse_customer_credit_entry') {
+    const data = item.data;
+    const required = ['p_lodge_id', 'p_entry_id', 'p_idempotency_key'];
+    const missing = required.filter((field) => !hasString(data[field]));
+    if (missing.length > 0) return { isValid: false, reason: `reverse_customer_credit_entry missing ${missing.join(', ')}` };
+  }
+
+  if (item.table === 'create_room_rate_override') {
+    const payload = item.data.payload;
+    if (!isPlainObject(payload)) return { isValid: false, reason: 'create_room_rate_override missing payload object' };
+    const required = ['id', 'lodge_id', 'name', 'start_date', 'end_date'];
+    const missing = required.filter((field) => !hasString(payload[field]));
+    if (missing.length > 0) return { isValid: false, reason: `create_room_rate_override missing ${missing.join(', ')}` };
+    if (!hasValidInclusiveDateRange(payload.start_date, payload.end_date)) return { isValid: false, reason: 'create_room_rate_override has invalid date range' };
+    if (!isFiniteNumber(payload.rate_per_night) || Number(payload.rate_per_night) < 0) return { isValid: false, reason: 'create_room_rate_override has invalid rate' };
+  }
+
+  if (item.table === 'update_room_rate_override') {
+    const payload = item.data.payload;
+    if (!hasString(item.data.p_id) || !hasString(item.data.p_lodge_id)) return { isValid: false, reason: 'update_room_rate_override missing id or lodge' };
+    if (!isPlainObject(payload)) return { isValid: false, reason: 'update_room_rate_override missing payload object' };
+    if (!hasValidInclusiveDateRange(payload.start_date, payload.end_date)) return { isValid: false, reason: 'update_room_rate_override has invalid date range' };
+    if (!isFiniteNumber(payload.rate_per_night) || Number(payload.rate_per_night) < 0) return { isValid: false, reason: 'update_room_rate_override has invalid rate' };
+  }
+
+  if (item.table === 'delete_room_rate_override' && (!hasString(item.data.p_id) || !hasString(item.data.p_lodge_id))) {
+    return { isValid: false, reason: 'delete_room_rate_override missing id or lodge' };
+  }
+
+  if (item.table === 'create_event_booking') {
+    const payload = item.data.payload;
+    if (!isPlainObject(payload)) return { isValid: false, reason: 'create_event_booking missing payload object' };
+    const required = ['id', 'lodge_id', 'idempotency_key', 'event_name'];
+    const missing = required.filter((field) => !hasString(payload[field]));
+    if (missing.length > 0) return { isValid: false, reason: `create_event_booking missing ${missing.join(', ')}` };
+    if (payload.check_in || payload.check_out) {
+      if (!hasValidDateRange(payload.check_in, payload.check_out)) return { isValid: false, reason: 'create_event_booking has invalid linked-room date range' };
+    }
+  }
+
+  if (item.table === 'update_event_booking') {
+    if (!hasString(item.data.p_event_id) || !hasString(item.data.p_lodge_id) || !hasString(item.data.p_idempotency_key)) {
+      return { isValid: false, reason: 'update_event_booking missing event, lodge, or idempotency key' };
+    }
+    if (!isPlainObject(item.data.payload)) return { isValid: false, reason: 'update_event_booking missing payload object' };
+  }
+
+  if (item.table === 'cancel_event_booking') {
+    if (!hasString(item.data.p_event_id) || !hasString(item.data.p_lodge_id)) {
+      return { isValid: false, reason: 'cancel_event_booking missing event or lodge' };
+    }
+  }
+
+  if (item.table === 'update_event_payment') {
+    const data = item.data;
+    const required = ['p_event_id', 'p_lodge_id', 'p_method', 'p_type', 'p_idempotency_key'];
+    const missing = required.filter((field) => !hasString(data[field]));
+    if (missing.length > 0) return { isValid: false, reason: `update_event_payment missing ${missing.join(', ')}` };
+    if (!isFiniteNumber(data.p_amount) || Number(data.p_amount) <= 0) return { isValid: false, reason: 'update_event_payment has invalid amount' };
+  }
+
+  if (item.table === 'add_event_line_item') {
+    const payload = item.data.payload;
+    if (!isPlainObject(payload)) return { isValid: false, reason: 'add_event_line_item missing payload object' };
+    const required = ['lodge_id', 'event_booking_id', 'idempotency_key'];
+    const missing = required.filter((field) => !hasString(payload[field]));
+    if (missing.length > 0) return { isValid: false, reason: `add_event_line_item missing ${missing.join(', ')}` };
+    if (!isFiniteNumber(payload.quantity) || Number(payload.quantity) <= 0) return { isValid: false, reason: 'add_event_line_item has invalid quantity' };
+    if (!isFiniteNumber(payload.unit_price) || Number(payload.unit_price) < 0) return { isValid: false, reason: 'add_event_line_item has invalid unit price' };
+  }
+
+  if (item.table === 'void_event_line_item') {
+    if (!hasString(item.data.p_line_item_id) || !hasString(item.data.p_lodge_id)) {
+      return { isValid: false, reason: 'void_event_line_item missing line item or lodge' };
+    }
+  }
+
+  if (['create_expense', 'add_inventory_purchase', 'create_supply_item', 'add_supply_purchase', 'create_inventory_stocktake_session', 'create_supply_stocktake_session', 'create_room_supply_stocktake_session'].includes(item.table)) {
+    const payload = item.data.payload;
+    if (!isPlainObject(payload) || !hasString(payload.lodge_id)) {
+      return { isValid: false, reason: `${item.table} missing lodge-scoped payload` };
+    }
+    if (['create_expense', 'add_inventory_purchase', 'add_supply_purchase'].includes(item.table)) {
+      const amount = item.table === 'create_expense' ? payload.amount : payload.total_cost;
+      if (!isFiniteNumber(amount) || Number(amount) < 0) return { isValid: false, reason: `${item.table} has invalid amount` };
+    }
+  }
+
+  if (['update_expense', 'delete_expense', 'update_inventory_item', 'delete_inventory_item', 'update_supply_item', 'delete_supply_item', 'update_maintenance_ticket', 'resolve_maintenance_ticket'].includes(item.table)) {
+    if (!hasString(item.data.p_id) || !hasString(item.data.p_lodge_id)) {
+      return { isValid: false, reason: `${item.table} missing id or lodge` };
+    }
+  }
+
+  if (['save_inventory_stocktake_counts', 'post_inventory_stocktake_session', 'save_supply_stocktake_counts', 'save_room_supply_stocktake_counts', 'post_supply_stocktake_session', 'post_room_supply_stocktake_session', 'create_room_supply_stocktake_line'].includes(item.table)) {
+    if (!hasString(item.data.p_stocktake_id) || !hasString(item.data.p_lodge_id)) {
+      return { isValid: false, reason: `${item.table} missing stocktake or lodge` };
+    }
+  }
+
+  if (['adjust_supply_stock'].includes(item.table)) {
+    if (!hasString(item.data.p_item_id) || !hasString(item.data.p_lodge_id)) {
+      return { isValid: false, reason: `${item.table} missing item or lodge` };
+    }
+    if (!isFiniteNumber(item.data.p_delta) || Number(item.data.p_delta) === 0) {
+      return { isValid: false, reason: `${item.table} has invalid quantity` };
+    }
+  }
+
+  if (['save_room_supply_allocations', 'load_supply_to_room', 'use_room_supply_stock', 'return_room_supply_to_store'].includes(item.table)) {
+    const payload = item.table === 'save_room_supply_allocations' ? item.data : item.data.payload;
+    if (!isPlainObject(payload) || !hasString(payload.p_lodge_id || payload.lodge_id)) {
+      return { isValid: false, reason: `${item.table} missing lodge-scoped payload` };
+    }
+    if (item.table !== 'save_room_supply_allocations') {
+      if (!hasString(payload.operation_id) || !hasString(payload.item_id) || !hasString(payload.room_id)) {
+        return { isValid: false, reason: `${item.table} missing operation, item, or room` };
+      }
+      if (!isFiniteNumber(payload.quantity) || Number(payload.quantity) <= 0) {
+        return { isValid: false, reason: `${item.table} has invalid quantity` };
+      }
+    }
   }
 
   if (item.table === 'create_room') {
@@ -515,11 +730,21 @@ export function quarantineInvalidItem(item, reason) {
  */
 export async function syncMeshQueues() {
   if (!meshState.running || meshState.peers.size === 0) {
+    meshState.lastQueueRepair = {
+      at: new Date().toISOString(),
+      peerCount: meshState.peers.size,
+      importedCount: 0,
+      missingCount: 0,
+      perPeer: []
+    };
     return;
   }
 
   console.log(`[MeshMerge] Starting P2P queue sync with ${meshState.peers.size} active peers...`);
   let hasMergedNewItems = false;
+  let totalImported = 0;
+  let totalMissing = 0;
+  const repairPeers = [];
 
   for (const [peerId, peer] of meshState.peers.entries()) {
     try {
@@ -545,11 +770,20 @@ export async function syncMeshQueues() {
         return true;
       });
       const missingIds = missingSummaries.map((item) => item._queue_id);
+      totalMissing += missingIds.length;
       const expectedHashesById = new Map(
         missingSummaries.map((item) => [item._queue_id, String(item.bodyHash || '').trim()]).filter(([, hash]) => hash)
       );
 
       if (missingIds.length === 0) {
+        repairPeers.push({
+          nodeId: peer.nodeId || peerId,
+          address: peer.address,
+          remoteQueueSize: remoteSummary.length,
+          missingCount: 0,
+          importedCount: 0,
+          lastError: ''
+        });
         console.log(`[MeshMerge] Local queue is fully up-to-date with Peer ${peerId}.`);
         continue;
       }
@@ -560,6 +794,7 @@ export async function syncMeshQueues() {
       // Since HTTP GET might hit header constraints, we can batch them in groups of 30 if needed
       const batchSize = 30;
       const newValidItems = [];
+      let importedFromPeer = 0;
 
       for (let i = 0; i < missingIds.length; i += batchSize) {
         const batchIds = missingIds.slice(i, i + batchSize);
@@ -626,16 +861,49 @@ export async function syncMeshQueues() {
           applyImportedPosInventoryEffects(deduplicatedNewItems);
           applyImportedBookingCacheEffects(deduplicatedNewItems);
           applyImportedOperationalCacheEffects(deduplicatedNewItems);
+          for (const importedItem of deduplicatedNewItems) {
+            appendOperationJournalEntry('mesh_imported', importedItem, {
+              imported_from_mesh: true,
+              source_node_id: peer.nodeId || peerId,
+              message: 'Operation imported from a nearby Boroko device over local mesh.'
+            });
+          }
           meshState.lastQueueMergeAt = new Date();
+          importedFromPeer += deduplicatedNewItems.length;
+          totalImported += deduplicatedNewItems.length;
           hasMergedNewItems = true;
           console.log(`[MeshMerge] Successfully imported ${deduplicatedNewItems.length} operations from Peer ${peerId}.`);
         }
       }
+      repairPeers.push({
+        nodeId: peer.nodeId || peerId,
+        address: peer.address,
+        remoteQueueSize: remoteSummary.length,
+        missingCount: missingIds.length,
+        importedCount: importedFromPeer,
+        lastError: ''
+      });
 
     } catch (err) {
+      repairPeers.push({
+        nodeId: peer.nodeId || peerId,
+        address: peer.address,
+        remoteQueueSize: null,
+        missingCount: 0,
+        importedCount: 0,
+        lastError: err.message
+      });
       console.warn(`[MeshMerge] Queue sync iteration failed for Peer ${peerId}:`, err.message);
     }
   }
+
+  meshState.lastQueueRepair = {
+    at: new Date().toISOString(),
+    peerCount: meshState.peers.size,
+    importedCount: totalImported,
+    missingCount: totalMissing,
+    perPeer: repairPeers.slice(-12)
+  };
 
   // 3. Trigger conflict detection and notify UI if any new operations were merged
   if (hasMergedNewItems) {

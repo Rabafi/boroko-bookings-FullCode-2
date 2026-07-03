@@ -164,6 +164,8 @@ const emptyCustomer = { name: '', email: '', phone: '', id_number: '', nationali
 const emptyBooking = {
   customer_id: '',
   room_id: '',
+  room_ids: [],
+  room_guests: {},
   check_in: '',
   check_out: '',
   adults: 1,
@@ -631,6 +633,8 @@ export default function Bookings() {
     setForm({
       customer_id: b.customer_id,
       room_id: b.room_id,
+      room_ids: [b.room_id].filter(Boolean),
+      room_guests: {},
       check_in: b.check_in,
       check_out: b.check_out,
       adults: b.adults,
@@ -709,9 +713,11 @@ export default function Bookings() {
     setError('')
 
     try {
-      const peerLocks = getMeshLocksForRoom(meshStatus?.activeLocks || [], form.room_id, form.check_in, form.check_out, meshStatus?.nodeId)
-      if (!editingId && peerLocks.length > 0) {
-        setError('This room is currently being held by another front desk for those dates. Choose another room or wait for the hold to expire.')
+      const blockedRoomLocks = selectedRoomIds.flatMap((roomId) =>
+        getMeshLocksForRoom(meshStatus?.activeLocks || [], roomId, form.check_in, form.check_out, meshStatus?.nodeId)
+      )
+      if (!editingId && blockedRoomLocks.length > 0) {
+        setError('One of these rooms is currently being held by another front desk for those dates. Choose another room or wait for the hold to expire.')
         setLoading(false)
         return
       }
@@ -728,11 +734,22 @@ export default function Bookings() {
         customerId = res.id
       }
 
-      if (!editingId && selectedRoom) {
+      if (!editingId && selectedRooms.length === 0) {
+        setError('Select at least one room')
+        setLoading(false)
+        return
+      }
+
+      if (!editingId && selectedRooms.length > 0) {
         const totalGuests = parseInt(form.adults) + parseInt(form.children)
-        const maxOccupancy = selectedRoom.max_occupancy || 2
-        if (totalGuests > maxOccupancy) {
-          setError(`Number of guests (${totalGuests}) exceeds room maximum occupancy (${maxOccupancy})`)
+        const overCapacityRoom = selectedRooms.find((room) => {
+          const perRoom = form.room_guests?.[room.id] || {}
+          const adults = isMultiRoomDraft ? Number(perRoom.adults || 1) : totalGuests
+          const children = isMultiRoomDraft ? Number(perRoom.children || 0) : 0
+          return adults + children > (room.max_occupancy || 2)
+        })
+        if (overCapacityRoom) {
+          setError(`Room ${overCapacityRoom.room_number || ''} exceeds maximum occupancy (${overCapacityRoom.max_occupancy || 2})`)
           setLoading(false)
           return
         }
@@ -762,7 +779,21 @@ export default function Bookings() {
           const nextPlan = plan === 'Starter' ? 'Standard' : 'Pro'
           throw new Error(`You’ve reached ${thisMonthBookings} / ${bookingLimitStatus.effectiveLimit} monthly bookings on ${plan}. Upgrade to ${nextPlan} for higher monthly booking capacity.`)
         }
-        res = await window.api.bookings.create(data)
+        if (isMultiRoomDraft) {
+          res = await window.api.bookings.createMultiRoom({
+            ...data,
+            rooms: selectedRooms.map((room) => {
+              const perRoom = form.room_guests?.[room.id] || {}
+              return {
+                room_id: room.id,
+                adults: Number(perRoom.adults || 1),
+                children: Number(perRoom.children || 0)
+              }
+            })
+          })
+        } else {
+          res = await window.api.bookings.create(data)
+        }
       }
 
       if (res.success === false) throw new Error(res.error)
@@ -780,7 +811,7 @@ export default function Bookings() {
       closeBookingModal()
       setEditingBaseUpdatedAt(null)
       loadAll()
-      showSuccess(editingId ? 'Booking changes saved.' : 'Booking created successfully.')
+      showSuccess(editingId ? 'Booking changes saved.' : isMultiRoomDraft ? 'Multi-room booking created successfully.' : 'Booking created successfully.')
     } catch (err) {
       const message = err.message || 'Failed to save booking'
       if (isSessionExpiredError(message)) {
@@ -1114,6 +1145,15 @@ export default function Bookings() {
     () => rooms.find((r) => r.id === form.room_id),
     [rooms, form.room_id]
   )
+  const selectedRoomIds = useMemo(
+    () => Array.isArray(form.room_ids) && form.room_ids.length ? form.room_ids : (form.room_id ? [form.room_id] : []),
+    [form.room_id, form.room_ids]
+  )
+  const selectedRooms = useMemo(
+    () => selectedRoomIds.map((id) => rooms.find((r) => String(r.id) === String(id))).filter(Boolean),
+    [rooms, selectedRoomIds]
+  )
+  const isMultiRoomDraft = !editingId && selectedRoomIds.length > 1
   const selectableRooms = useMemo(
     () => rooms,
     [rooms]
@@ -1133,6 +1173,10 @@ export default function Bookings() {
   const estimatedTotal = selectedRoom
     ? selectedNightlyRate * nights(form.check_in, form.check_out)
     : 0
+  const multiRoomEstimatedTotal = selectedRooms.reduce((sum, room) => (
+    sum + Number(room?.rate_per_night || 0) * nights(form.check_in, form.check_out)
+  ), 0)
+  const activeEstimatedTotal = isMultiRoomDraft ? multiRoomEstimatedTotal : estimatedTotal
   const bookingGrandTotal = paymentBooking
     ? Number(paymentBooking.total_amount || 0) + Number(paymentBooking.charges_total || 0)
     : 0
@@ -2350,22 +2394,111 @@ export default function Bookings() {
                 <p className="mt-1 text-xs text-slate-500">Select the room and stay dates first so the estimated total and deposit guidance stay accurate.</p>
               </div>
               <div className="grid grid-cols-2 gap-4">
-              <F label="Room *">
-                <select
-                  className="input"
-                  value={form.room_id}
-                  onChange={(e) => setForm({ ...form, room_id: e.target.value })}
-                  data-testid="booking-room-select"
-                  required
-                >
-                  <option value="">-- Select room --</option>
-                  {selectableRooms.map((r) => (
-                      <option key={r.id} value={r.id} disabled={r.status === 'maintenance' || (!editingId && meshLockedRoomIds.has(String(r.id)))}>
-                        Room {r.room_number} — {r.room_type} ({currency}{r.rate_per_night}/night) {r.status === 'maintenance' ? ' (UNDER MAINTENANCE)' : meshLockedRoomIds.has(String(r.id)) ? ' (HELD BY ANOTHER DESK)' : ''}
-                      </option>
-                    ))}
-                </select>
-              </F>
+              {editingId ? (
+                <F label="Room *">
+                  <select
+                    className="input"
+                    value={form.room_id}
+                    onChange={(e) => setForm({ ...form, room_id: e.target.value, room_ids: [e.target.value].filter(Boolean) })}
+                    data-testid="booking-room-select"
+                    required
+                  >
+                    <option value="">-- Select room --</option>
+                    {selectableRooms.map((r) => (
+                        <option key={r.id} value={r.id} disabled={r.status === 'maintenance'}>
+                          Room {r.room_number} — {r.room_type} ({currency}{r.rate_per_night}/night) {r.status === 'maintenance' ? ' (UNDER MAINTENANCE)' : ''}
+                        </option>
+                      ))}
+                  </select>
+                </F>
+              ) : (
+                <div className="col-span-2">
+                  <p className="mb-1.5 text-sm font-medium text-slate-700">Room(s) *</p>
+                  <div className="max-h-64 overflow-auto rounded-2xl border border-slate-200 bg-white">
+                    {selectableRooms.map((r) => {
+                      const checked = selectedRoomIds.includes(r.id)
+                      const disabled = r.status === 'maintenance' || meshLockedRoomIds.has(String(r.id))
+                      const perRoom = form.room_guests?.[r.id] || { adults: 1, children: 0 }
+                      return (
+                        <div key={r.id} className="border-b border-slate-100 px-3 py-3 last:border-b-0">
+                          <label className={`flex items-start gap-3 ${disabled ? 'opacity-50' : ''}`}>
+                            <input
+                              type="checkbox"
+                              className="mt-1 h-4 w-4 rounded border-slate-300 text-green-700"
+                              checked={checked}
+                              disabled={disabled}
+                              onChange={(e) => {
+                                const nextIds = e.target.checked
+                                  ? [...selectedRoomIds, r.id]
+                                  : selectedRoomIds.filter((id) => id !== r.id)
+                                const nextGuests = { ...(form.room_guests || {}) }
+                                if (e.target.checked && !nextGuests[r.id]) nextGuests[r.id] = { adults: 1, children: 0 }
+                                if (!e.target.checked) delete nextGuests[r.id]
+                                setForm({
+                                  ...form,
+                                  room_ids: nextIds,
+                                  room_id: nextIds[0] || '',
+                                  room_guests: nextGuests,
+                                  adults: nextIds.length > 1 ? form.adults : (nextGuests[nextIds[0]]?.adults || form.adults),
+                                  children: nextIds.length > 1 ? form.children : (nextGuests[nextIds[0]]?.children || form.children)
+                                })
+                              }}
+                            />
+                            <div className="min-w-0 flex-1">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <p className="font-semibold text-slate-800">Room {r.room_number} — {r.room_type}</p>
+                                <p className="text-sm font-semibold text-green-700">{currency} {Number(r.rate_per_night || 0).toFixed(2)}/night</p>
+                              </div>
+                              <p className="mt-1 text-xs text-slate-500">
+                                Max {r.max_occupancy || 2} guest{Number(r.max_occupancy || 2) === 1 ? '' : 's'}
+                                {r.status === 'maintenance' ? ' · under maintenance' : meshLockedRoomIds.has(String(r.id)) ? ' · held by another front desk' : ''}
+                              </p>
+                              {checked && selectedRoomIds.length > 1 && (
+                                <div className="mt-3 grid grid-cols-2 gap-2">
+                                  <label className="text-xs font-medium text-slate-600">
+                                    Adults
+                                    <input
+                                      type="number"
+                                      min="1"
+                                      max={r.max_occupancy || 20}
+                                      className="input mt-1"
+                                      value={perRoom.adults}
+                                      onChange={(event) => setForm({
+                                        ...form,
+                                        room_guests: {
+                                          ...(form.room_guests || {}),
+                                          [r.id]: { ...perRoom, adults: event.target.value }
+                                        }
+                                      })}
+                                    />
+                                  </label>
+                                  <label className="text-xs font-medium text-slate-600">
+                                    Children
+                                    <input
+                                      type="number"
+                                      min="0"
+                                      max={r.max_occupancy || 20}
+                                      className="input mt-1"
+                                      value={perRoom.children}
+                                      onChange={(event) => setForm({
+                                        ...form,
+                                        room_guests: {
+                                          ...(form.room_guests || {}),
+                                          [r.id]: { ...perRoom, children: event.target.value }
+                                        }
+                                      })}
+                                    />
+                                  </label>
+                                </div>
+                              )}
+                            </div>
+                          </label>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
               <F label="Adults">
                 <input
                   type="number"
@@ -2374,6 +2507,7 @@ export default function Bookings() {
                   className="input"
                   value={form.adults}
                   onChange={(e) => setForm({ ...form, adults: e.target.value })}
+                  disabled={isMultiRoomDraft}
                 />
               </F>
               <F label="Check In *">
@@ -2405,6 +2539,7 @@ export default function Bookings() {
                   className="input"
                   value={form.children}
                   onChange={(e) => setForm({ ...form, children: e.target.value })}
+                  disabled={isMultiRoomDraft}
                 />
               </F>
               </div>
@@ -2420,14 +2555,15 @@ export default function Bookings() {
             )}
 
             {/* Estimated Total */}
-            {estimatedTotal > 0 && (
+            {activeEstimatedTotal > 0 && (
               <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm">
                 <span className="text-slate-600">
-                  {nights(form.check_in, form.check_out)} night(s) × {currency}{' '}
-                  {Number(selectedNightlyRate || 0).toFixed(2)} ={' '}
+                  {isMultiRoomDraft
+                    ? `${selectedRooms.length} rooms × ${nights(form.check_in, form.check_out)} night(s)`
+                    : `${nights(form.check_in, form.check_out)} night(s) × ${currency} ${Number(selectedNightlyRate || 0).toFixed(2)}`} ={' '}
                 </span>
-                <span className="font-bold text-green-700">{currency} {estimatedTotal.toFixed(2)}</span>
-                {applicableRate && selectedRoom && Number(applicableRate.rate_per_night) !== Number(selectedRoom.rate_per_night) && (
+                <span className="font-bold text-green-700">{currency} {activeEstimatedTotal.toFixed(2)}</span>
+                {!isMultiRoomDraft && applicableRate && selectedRoom && Number(applicableRate.rate_per_night) !== Number(selectedRoom.rate_per_night) && (
                   <p className="mt-1 text-xs font-medium text-emerald-700">
                     Seasonal/Event pricing applied: {applicableRate.name || 'Override'} instead of the standard {currency} {Number(selectedRoom.rate_per_night || 0).toFixed(2)}/night.
                   </p>
@@ -2437,7 +2573,7 @@ export default function Bookings() {
             )}
 
             {/* Deposit — only for new bookings */}
-            {!editingId && estimatedTotal > 0 && (
+            {!editingId && activeEstimatedTotal > 0 && (
               <div>
                 <div className="mb-3">
                   <p className="text-sm font-semibold text-slate-800">Deposit</p>
@@ -2449,7 +2585,7 @@ export default function Bookings() {
                     type="number"
                     min="0"
                     step="0.01"
-                    max={estimatedTotal}
+                    max={activeEstimatedTotal}
                     className="input"
                     value={form.deposit_amount}
                     onChange={(e) => setForm({ ...form, deposit_amount: e.target.value })}

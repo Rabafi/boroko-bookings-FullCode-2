@@ -1,12 +1,12 @@
 # Boroko Bookings Architecture
 
-Last reviewed: 2026-06-20
+Last reviewed: 2026-07-03
 
 ## System map
 
 | Surface | Runtime | Authoritative write path | Offline behavior |
 |---|---|---|---|
-| Desktop front desk | Electron + React | Renderer -> preload/IPC -> `database.js` facade -> domain module -> Supabase RPC | Main desktop queue, local cache, mesh synchronization |
+| Desktop front desk | Electron + React | Renderer -> preload/IPC -> `database.js` facade -> domain module -> Supabase RPC | Main desktop queue, append-only local operation journal, local cache, mesh operation sharing, manager offline-mode controls |
 | Manager PWA | React browser app | Direct Supabase RPC | Limited device-local queue for approved operational actions |
 | Legacy POS | Electron 22 + React | POS renderer -> preload/IPC -> Legacy POS main process -> Supabase RPC | Separate POS cache/queue plus mesh peer synchronization |
 | Public booking site | React browser app | Public server-enforced Supabase RPC/API contract | No trusted financial offline mutation path |
@@ -33,7 +33,15 @@ UI intent
   -> cache/UI reconciliation
 ```
 
-On an eligible offline path, the RPC name, payload, stable key, and dependencies are stored and replayed. Offline estimates are visibly pending and are not authoritative balances.
+On an eligible offline path, the RPC name, payload, stable key, and dependencies are stored and replayed. Offline estimates are visibly pending and are not authoritative balances. Desktop queue writes are accompanied by a local operation journal so long-outage work can be audited and exported without changing the final replay authority.
+
+The local mesh shares allowed queued operations, room holds, conflict signals, and repair diagnostics between nearby lodge devices. It does not transfer full cache snapshots and must not be treated as a replacement for Supabase. Supabase RPC replay remains the point where financial, booking, inventory, customer-credit, event, and POS changes become final.
+
+Current desktop offline queue coverage includes normal front-desk and lodge operations: bookings, booking status/payment updates, booking charges, quotation lifecycle and conversion, customer-credit receipt/allocation/refund/reversal, event and conference operations, rate overrides, day use, room/customer/housekeeping updates, expenses, maintenance tickets, inventory item/purchase/adjustment/stocktake work, POS orders/returns/tabs/tables/shifts, supplies, room-supply allocations/moves, and supply/room-supply stocktakes. Booking refund requests can be prepared offline as local pending-approval records with proof references and journal audit, but they are not replayed as refund approvals.
+
+Accommodation multi-room bookings are not Events & Venues records. Direct bookings and room quotations can capture one lead guest and several selected room lines, then create one normal booking record per room with shared `[STAY_GROUP]` metadata and a group invoice wrapper in `booking_invoice_groups` / `booking_invoice_group_lines`. Each child booking keeps the standard room conflict checks, room status lifecycle, room-level profitability, payment ledger behavior, refund approval boundary, and offline replay contract, while the guest/company receives one customer-facing invoice. Group invoice collection and refund approval are entered once in the invoice UI and allocated across the child booking ledgers.
+
+The intentional online-only set is narrow and server-verification-heavy: first-time login/session bootstrap, Command Central/admin work, imports and undo-imports, server-authoritative exports/reports/financial validation, license activation, fleet health, formal booking refund approval/final settlement with live manager PIN verification, and POS catalog publishing/setup changes that must create Legacy POS catalog snapshots.
 
 ## Financial truth
 
@@ -63,4 +71,3 @@ The following can move independently:
 - Supabase migrations.
 
 A feature is operational only when every required surface and migration has been deployed. Repository code alone is not proof of production state.
-

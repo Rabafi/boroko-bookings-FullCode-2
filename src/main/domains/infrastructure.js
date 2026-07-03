@@ -8,6 +8,7 @@ import { getBackupHealthSummary, getBackupInfoForHealth } from './backupHealth.j
 import { ensureDir, readJsonFile, writeJsonFile } from './fileStore.js';
 import {
   SYNC_DRIFT_FAULT_TYPES,
+  appendOperationJournalEntry,
   appendHealthFault,
   readFailedSyncQueue,
   readHealthFaults,
@@ -109,6 +110,7 @@ export { ensureDir, readJsonFile, writeJsonFile } from './fileStore.js';
 export { getBackupHealthSummary, getBackupInfoForHealth } from './backupHealth.js';
 export {
   SYNC_DRIFT_FAULT_TYPES,
+  appendOperationJournalEntry,
   appendHealthFault,
   readFailedSyncQueue,
   readHealthFaults,
@@ -411,6 +413,29 @@ function getQueuedQuotationId(item) {
   return null;
 }
 
+function rewriteQueuedEntityReference(pending = [], localId, serverId, { fieldNames = [], dependsPrefix = '' } = {}) {
+  if (!localId || !serverId || localId === serverId) return pending;
+  return pending.map((item) => {
+    let changed = false;
+    const next = { ...item, data: { ...(item?.data || {}) } };
+    for (const field of fieldNames) {
+      if (next.data[field] === localId) {
+        next.data[field] = serverId;
+        changed = true;
+      }
+      if (next.data.payload?.[field] === localId) {
+        next.data.payload = { ...(next.data.payload || {}), [field]: serverId };
+        changed = true;
+      }
+    }
+    if (dependsPrefix && next._depends_on === `${dependsPrefix}-${localId}`) {
+      next._depends_on = `${dependsPrefix}-${serverId}`;
+      changed = true;
+    }
+    return changed ? next : item;
+  });
+}
+
 function isRoomConflictError(message = '') {
   return /no_overlapping_bookings|room is already booked|room is not available|room.*conflict/i.test(String(message || ''));
 }
@@ -448,9 +473,13 @@ function queueItemNeedsBookingRefresh(item) {
   if (item?.type === 'rpc') {
     return new Set([
     'create_booking',
+    'create_booking_invoice_group',
     'update_booking',
     'update_booking_status',
     'update_booking_payment',
+    'add_booking_charge',
+    'delete_booking_charge',
+    'apply_customer_credit_to_booking',
     'create_booking_record',
     'convert_quotation_to_booking']
     ).has(item.table);
@@ -461,7 +490,15 @@ function queueItemNeedsBookingRefresh(item) {
 function queueItemNeedsInventoryRefresh(item) {
   // create_inventory_item: always refresh so the local pending-sync item is
   // replaced by the definitive server row (with the confirmed UUID).
-  if (item?.type === 'rpc' && item?.table === 'create_inventory_item') return true;
+  if (item?.type === 'rpc' && [
+    'create_inventory_item',
+    'update_inventory_item',
+    'delete_inventory_item',
+    'add_inventory_purchase',
+    'create_inventory_stocktake_session',
+    'save_inventory_stocktake_counts',
+    'post_inventory_stocktake_session'
+  ].includes(item?.table)) return true;
   if (isInventoryAdjustmentQueueItem(item)) return true;
   if (isPosCreateOrderQueueItem(item) || isPosVoidQueueItem(item)) {
     const items = Array.isArray(item?.data?.payload?.items) ? item.data.payload.items : [];
@@ -474,6 +511,35 @@ function queueItemNeedsInventoryRefresh(item) {
     return extras.some((entry) => !!entry?.inventory_item_id && Number(entry?.quantity || 0) > 0);
   }
   return false;
+}
+
+function queueItemNeedsSupplyRefresh(item) {
+  return item?.type === 'rpc' && [
+    'create_supply_item',
+    'update_supply_item',
+    'delete_supply_item',
+    'add_supply_purchase',
+    'adjust_supply_stock',
+    'save_room_supply_allocations',
+    'load_supply_to_room',
+    'use_room_supply_stock',
+    'return_room_supply_to_store',
+    'create_supply_stocktake_session',
+    'create_room_supply_stocktake_session',
+    'save_supply_stocktake_counts',
+    'save_room_supply_stocktake_counts',
+    'post_supply_stocktake_session',
+    'post_room_supply_stocktake_session',
+    'create_room_supply_stocktake_line'
+  ].includes(item.table);
+}
+
+function queueItemNeedsRateOverrideRefresh(item) {
+  return item?.type === 'rpc' && [
+    'create_room_rate_override',
+    'update_room_rate_override',
+    'delete_room_rate_override'
+  ].includes(item.table);
 }
 
 function isAlreadyAppliedInsertError(item, error) {
@@ -591,6 +657,10 @@ async function _runSyncQueue() {
   let shouldRefreshPosOrders = false;
   let shouldRefreshConference = false;
   let shouldRefreshPoolDayUse = false;
+  let shouldRefreshExpenses = false;
+  let shouldRefreshMaintenance = false;
+  let shouldRefreshSupplies = false;
+  let shouldRefreshRateOverrides = false;
 
   while (pending.length > 0) {
     const nextIndex = pickNextReadySyncItemIndex(
@@ -611,6 +681,10 @@ async function _runSyncQueue() {
           manualRetryOnly: true
         };
         if (blockedItem?._queue_id) failedQueueIds.add(blockedItem._queue_id);
+        appendOperationJournalEntry('blocked', blockedItem, {
+          financial: isFinancialSyncItem(blockedItem),
+          message: blockedItem.lastError
+        });
         deadLetter.push(blockedItem);
       }
       writeSyncQueue([]);
@@ -623,6 +697,10 @@ async function _runSyncQueue() {
       console.warn('[SYNC SKIPPED DEPENDENT]', { operation: item.table, queueId: item._queue_id, dependsOn: item._depends_on });
       const retryCount = (item.retryCount || 0) + 1;
       const skipped = { ...item, _state: 'pending', retryCount, lastError: 'Skipped: parent operation failed', lastAttemptedAt: new Date().toISOString() };
+      appendOperationJournalEntry('blocked', skipped, {
+        financial: isFinancialSyncItem(skipped),
+        message: skipped.lastError
+      });
       if (isPosCreateOrderQueueItem(item)) {
         shouldRefreshInventory = true;
         const orderId = getQueuedPosOrderId(item);
@@ -932,9 +1010,17 @@ async function _runSyncQueue() {
       };
       if (updatedItem.retryCount >= MAX_SYNC_RETRIES) {
         console.error(`[Sync] Dead-lettered after ${MAX_SYNC_RETRIES} attempts — ${item.type} ${item.table}:`, errorMessage);
+        appendOperationJournalEntry('dead_lettered', updatedItem, {
+          financial: isFinancialSyncItem(updatedItem),
+          message: errorMessage
+        });
         deadLetter.push(updatedItem);
       } else {
         console.warn(`[Sync] Failed (attempt ${updatedItem.retryCount}/${MAX_SYNC_RETRIES}) — ${item.type} ${item.table}:`, errorMessage);
+        appendOperationJournalEntry('replay_failed', updatedItem, {
+          financial: isFinancialSyncItem(updatedItem),
+          message: errorMessage
+        });
         pending.push(updatedItem);
       }
       writeSyncQueue(pending);
@@ -1047,6 +1133,44 @@ async function _runSyncQueue() {
           console.log('[QUOTATION SYNC] Synced mark quotation sent', quotationId);
         }
       }
+      if (item?.type === 'rpc' && item?.table === 'add_booking_charge') {
+        const localChargeId = item._local_charge_id || null;
+        const serverChargeId = rpcResultData?.id || rpcResultData?.charge_id || null;
+        if (localChargeId && serverChargeId && localChargeId !== serverChargeId) {
+          pending.splice(0, pending.length, ...rewriteQueuedEntityReference(pending, localChargeId, serverChargeId, {
+            fieldNames: ['p_charge_id'],
+            dependsPrefix: 'booking-charge'
+          }));
+          const charges = readCache('booking-charges');
+          writeCache('booking-charges', charges.map((charge) => charge?.id === localChargeId ? {
+            ...charge,
+            id: serverChargeId,
+            _pending_sync: false,
+            _sync_state: 'synced',
+            _sync_error: null,
+            _synced_at: new Date().toISOString()
+          } : charge));
+        }
+      }
+      if (item?.type === 'rpc' && item?.table === 'add_event_line_item') {
+        const localLineId = item._local_line_item_id || null;
+        const serverLineId = rpcResultData?.line_item_id || rpcResultData?.id || null;
+        if (localLineId && serverLineId && localLineId !== serverLineId) {
+          pending.splice(0, pending.length, ...rewriteQueuedEntityReference(pending, localLineId, serverLineId, {
+            fieldNames: ['p_line_item_id'],
+            dependsPrefix: 'event-line'
+          }));
+          const lines = readCache('event-line-items');
+          writeCache('event-line-items', lines.map((line) => line?.id === localLineId ? {
+            ...line,
+            id: serverLineId,
+            _pending_sync: false,
+            _sync_state: 'synced',
+            _sync_error: null,
+            _synced_at: new Date().toISOString()
+          } : line));
+        }
+      }
       // Mark inventory item creation success in cache
       if (item?.type === 'rpc' && item?.table === 'create_inventory_item') {
         const inventoryItemId = getQueuedInventoryItemId(item);
@@ -1085,11 +1209,15 @@ async function _runSyncQueue() {
       }
       if (queueItemNeedsInventoryRefresh(item)) shouldRefreshInventory = true;
       if (queueItemNeedsBookingRefresh(item)) shouldRefreshBookings = true;
+      if (queueItemNeedsSupplyRefresh(item)) shouldRefreshSupplies = true;
+      if (queueItemNeedsRateOverrideRefresh(item)) shouldRefreshRateOverrides = true;
       // P1-8: widen refresh to cover all domains touched by this operation
       if (item.type === 'rpc' && ['create_customer', 'update_customer'].includes(item.table)) shouldRefreshCustomers = true;
       if (item.table === 'rooms' || item.type === 'rpc' && item.table?.startsWith?.('update_room')) shouldRefreshRooms = true;
       if (item.type === 'rpc' && ['create_user', 'update_user_profile', 'set_user_pwa_access'].includes(item.table)) shouldRefreshUsers = true;
       if (item.type === 'rpc' && ['create_quotation', 'update_quotation', 'mark_quotation_sent', 'convert_quotation_to_booking'].includes(item.table)) shouldRefreshQuotations = true;
+      if (item.type === 'rpc' && ['create_expense', 'update_expense', 'delete_expense'].includes(item.table)) shouldRefreshExpenses = true;
+      if (item.type === 'rpc' && ['create_maintenance_ticket', 'update_maintenance_ticket', 'resolve_maintenance_ticket'].includes(item.table)) shouldRefreshMaintenance = true;
       if (isPosCreateOrderQueueItem(item) || isPosVoidQueueItem(item)) shouldRefreshPosOrders = true;
       if (item.type === 'rpc' && [
         'create_conference_booking',
@@ -1099,13 +1227,19 @@ async function _runSyncQueue() {
         'create_event_booking',
         'update_event_booking',
         'update_event_payment',
-        'cancel_event_booking'
+        'cancel_event_booking',
+        'add_event_line_item',
+        'void_event_line_item'
       ].includes(item.table)) shouldRefreshConference = true;
       if ((item.type === 'rpc' && ['add_pool_day_use', 'update_pool_day_use', 'delete_pool_day_use'].includes(item.table)) || (item.type === 'update' && item.table === 'pool_day_use')) shouldRefreshPoolDayUse = true;
       // Phase 1: persist committed state before removing from queue file.
       // Crash here → restart sees 'committed' → skips RPC without retrying.
       writeSyncQueue([{ ...item, _state: 'committed' }, ...pending]);
       if (item._queue_id) completedQueueIds.add(item._queue_id);
+      appendOperationJournalEntry('replayed', { ...item, _state: 'committed' }, {
+        financial: isFinancialSyncItem(item),
+        message: 'Operation was accepted by the authoritative replay path.'
+      });
       // Phase 2: remove item from queue
       successCount++;
       writeSyncQueue(pending);
@@ -1134,7 +1268,7 @@ async function _runSyncQueue() {
   writeSyncQueue(pending);
 
   if (shouldRefreshInventory) {
-    refreshCache('inventory-items', 'inventory-purchases')
+    refreshCache('inventory-items', 'inventory-purchases', 'inventory-stocktakes')
       .catch(() => refreshOfflinePosInventoryProjection());
   }
 
@@ -1157,14 +1291,28 @@ async function _runSyncQueue() {
 
   // P1-8: widen canonical post-sync refresh
   const refreshTargets = [];
-  if ((successCount > 0 && shouldRefreshBookings) || shouldRefreshBookingsAfterFailure) refreshTargets.push('bookings');
+  if ((successCount > 0 && shouldRefreshBookings) || shouldRefreshBookingsAfterFailure) refreshTargets.push('bookings', 'booking-charges');
   if (successCount > 0 && shouldRefreshCustomers) refreshTargets.push('customers');
   if (successCount > 0 && shouldRefreshRooms) refreshTargets.push('rooms');
   if (successCount > 0 && shouldRefreshUsers) refreshTargets.push('users');
   if (successCount > 0 && shouldRefreshQuotations) refreshTargets.push('quotations');
   if (successCount > 0 && shouldRefreshPosOrders) refreshTargets.push('pos-orders');
-  if (successCount > 0 && shouldRefreshConference) refreshTargets.push('conference-bookings');
+  if (successCount > 0 && shouldRefreshConference) refreshTargets.push('conference-bookings', 'event-line-items');
   if (successCount > 0 && shouldRefreshPoolDayUse) refreshTargets.push('pool-day-use');
+  if (successCount > 0 && shouldRefreshExpenses) refreshTargets.push('expenses');
+  if (successCount > 0 && shouldRefreshMaintenance) refreshTargets.push('maintenance');
+  if (successCount > 0 && shouldRefreshRateOverrides) refreshTargets.push('room-rate-overrides');
+  if (successCount > 0 && shouldRefreshSupplies) {
+    refreshTargets.push(
+      'supply-items',
+      'supply-purchases',
+      'room-supply-stock',
+      'room-supply-movements',
+      'room-supply-allocations',
+      'supply-stocktakes',
+      'room-supply-stocktakes'
+    );
+  }
   if (refreshTargets.length > 0) {
     await refreshCachesAfterSync(...refreshTargets);
   }
@@ -1241,6 +1389,10 @@ export async function requeueEligibleFailedSyncItems(minAgeMs = DEAD_LETTER_AUTO
     if (!existingIds.has(cleanItem._queue_id)) {
       queue.push(cleanItem);
       existingIds.add(cleanItem._queue_id);
+      appendOperationJournalEntry('auto_requeued', cleanItem, {
+        financial: isFinancialSyncItem(cleanItem),
+        message: 'Failed item returned to pending queue for another replay attempt.'
+      });
     }
 
     if (isPosCreateOrderQueueItem(cleanItem)) {
@@ -1281,6 +1433,9 @@ export function queueOperation(type, table, data, id = null, meta = {}) {
     data: queuedData,
     id,
     timestamp: new Date().toISOString(),
+    _origin_device_id: state.deviceId || null,
+    _origin_user_id: state.currentUser?.id || null,
+    _origin_lodge_id: state.lodgeId || null,
     ...derivedMeta
   }, type);
 
@@ -1308,6 +1463,10 @@ export function queueOperation(type, table, data, id = null, meta = {}) {
 
   queue.push(queuedItem);
   writeSyncQueue(queue);
+  appendOperationJournalEntry('queued', queuedItem, {
+    financial: isFinancialSyncItem(queuedItem),
+    message: 'Operation saved locally for later authoritative RPC replay.'
+  });
   return queuedItem._queue_id;
 }
 state.queueOperation = queueOperation;

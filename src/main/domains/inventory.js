@@ -72,6 +72,16 @@ function writeInventoryMovementsCache(rows = []) {
   writeCache(INVENTORY_MOVEMENTS_CACHE, rows.slice(0, 1000));
 }
 
+function removeInventoryDraftFromQueues(id) {
+  const activeQueue = readSyncQueue();
+  const nextActive = removeQueuedInventoryDraft(activeQueue, id);
+  if (nextActive.removed) writeSyncQueue(nextActive.queue);
+
+  const failedQueue = readFailedSyncQueue();
+  const nextFailed = removeQueuedInventoryDraft(failedQueue, id);
+  if (nextFailed.removed) writeFailedSyncQueue(nextFailed.queue);
+}
+
 function upsertLocalInventoryMovement(entry = {}) {
   if (!entry?.item_id || !entry?.movement_type) return null;
   const row = {
@@ -124,7 +134,7 @@ async function _getInventoryItems() {
         const cached = readCache('inventory-items');
         if (cached.length > 0) {
           console.warn('getInventoryItems received empty live result; using cached inventory items instead');
-          return cached;
+          return cached.filter((row) => row?._deleted_offline !== true);
         }
       }
       const liveRows = applyQueuedDayUseInventoryReservations(applyQueuedPosInventoryReservations(data || []));
@@ -136,11 +146,11 @@ async function _getInventoryItems() {
     const cached = readCache('inventory-items');
     if (cached.length > 0) {
       console.warn('getInventoryItems falling back to cache:', error.message);
-      return cached;
+      return cached.filter((row) => row?._deleted_offline !== true);
     }
     throw new Error(error.message);
   }
-  return readCache('inventory-items');
+  return readCache('inventory-items').filter((row) => row?._deleted_offline !== true);
 }
 
 export function getInventoryItems() {
@@ -269,11 +279,52 @@ export async function updateInventoryItem(id, data) {
     writeCache('inventory-items', cached.map((row) => row.id === id ? { ...row, ...update } : row));
     return { success: true };
   }
-  return { success: false, error: 'Requires internet connection' };
+  if (!existing) return { success: false, error: 'Inventory item not found in offline cache' };
+  writeCache('inventory-items', cached.map((row) => row.id === id ? {
+    ...row,
+    ...update,
+    _pending_sync: true,
+    _sync_state: 'pending',
+    _sync_error: null,
+    updated_at: new Date().toISOString()
+  } : row));
+  queueOperation('rpc', 'update_inventory_item', {
+    p_id: id,
+    p_lodge_id: state.lodgeId,
+    payload: update
+  }, null, {
+    _queue_id: `inventory-item-update-${id}-${Date.now()}`
+  });
+  return { success: true, offline: true, queued: true };
 }
 
 export async function deleteInventoryItem(id) {
-  if (!state.isOnline) throw new Error('No internet connection. Please check your connection and try again.');
+  if (!state.isOnline) {
+    const cached = readCache('inventory-items');
+    const existing = cached.find((row) => row?.id === id);
+    if (!existing) return { success: false, error: 'Inventory item not found in offline cache' };
+    if (existing._pending_sync) {
+      removeInventoryDraftFromQueues(id);
+      writeCache('inventory-items', cached.filter((row) => row.id !== id));
+      writeCache('inventory-purchases', readCache('inventory-purchases').filter((row) => row.item_id !== id));
+      return { success: true, offline: true, queued: false };
+    }
+    writeCache('inventory-items', cached.map((row) => row.id === id ? {
+      ...row,
+      _deleted_offline: true,
+      _pending_sync: true,
+      _sync_state: 'pending',
+      _sync_error: null,
+      updated_at: new Date().toISOString()
+    } : row));
+    queueOperation('rpc', 'delete_inventory_item', {
+      p_id: id,
+      p_lodge_id: state.lodgeId
+    }, null, {
+      _queue_id: `inventory-item-delete-${id}-${Date.now()}`
+    });
+    return { success: true, offline: true, queued: true };
+  }
   const { data: result, error } = await state.supabase.rpc('delete_inventory_item', {
     p_id: id,
     p_lodge_id: state.lodgeId
@@ -286,12 +337,13 @@ export async function deleteInventoryItem(id) {
 }
 
 export async function addInventoryPurchase(data) {
-  if (!state.isOnline) return { success: false, error: 'Requires internet connection' };
   const qty = Number(data.quantity_purchased);
   const cost = Number(data.total_cost);
   const unitCost = qty > 0 ? cost / qty : 0;
+  const id = data.id || randomUUID();
 
   const purchase = {
+    id,
     lodge_id: state.lodgeId,
     item_id: data.item_id,
     date: data.date,
@@ -300,6 +352,48 @@ export async function addInventoryPurchase(data) {
     unit_cost: unitCost,
     notes: data.notes || null
   };
+  if (!state.isOnline) {
+    const items = readCache('inventory-items');
+    const item = items.find((row) => row?.id === data.item_id);
+    if (!item) return { success: false, error: 'Inventory item not found on this computer.' };
+    writeCache('inventory-items', items.map((row) => row.id === data.item_id ?
+    {
+      ...row,
+      current_stock: Number(row.current_stock || 0) + qty,
+      latest_unit_cost: unitCost,
+      _pending_sync: true,
+      _sync_state: 'pending',
+      _sync_error: null,
+      updated_at: new Date().toISOString()
+    } :
+    row
+    ));
+    const cachedPurchases = readCache('inventory-purchases');
+    writeCache('inventory-purchases', [
+    { ...purchase, _pending_sync: true, _sync_state: 'pending', _sync_error: null, created_at: new Date().toISOString() },
+    ...cachedPurchases.filter((row) => row?.id !== id)]
+    );
+    upsertLocalInventoryMovement({
+      id,
+      item_id: data.item_id,
+      movement_type: 'purchase',
+      quantity: qty,
+      unit_cost: unitCost,
+      total_cost: cost,
+      notes: purchase.notes,
+      reference_type: 'inventory_purchase',
+      reference_id: id,
+      source: 'purchase',
+      created_at: purchase.date ? `${purchase.date}T12:00:00.000Z` : new Date().toISOString(),
+      _pending_sync: true,
+      _sync_state: 'pending'
+    });
+    queueOperation('rpc', 'add_inventory_purchase', { payload: purchase }, null, {
+      _queue_id: `inventory-purchase-${id}`,
+      ...(item?._pending_sync ? { _depends_on: `inventory-item-${data.item_id}` } : {})
+    });
+    return { success: true, id, unit_cost: unitCost, new_stock: Number(item.current_stock || 0) + qty, offline: true, queued: true };
+  }
   const { data: result, error } = await state.supabase.rpc('add_inventory_purchase', { payload: purchase });
   if (error) throw new Error(error.message);
   if (!result?.success) throw new Error(result?.error || 'Could not record inventory purchase');
@@ -333,7 +427,7 @@ export async function addInventoryPurchase(data) {
 }
 
 export async function getInventoryPurchases(itemId) {
-  const cached = readCache('inventory-purchases').filter((row) => row.item_id === itemId);
+  const cached = readCache('inventory-purchases').filter((row) => row.item_id === itemId && row?._deleted_offline !== true);
   if (!state.isOnline) {
     return cached.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
   }
@@ -367,7 +461,7 @@ export async function getInventoryPurchases(itemId) {
 }
 
 export async function getAllInventoryPurchases() {
-  const cached = readCache('inventory-purchases');
+  const cached = readCache('inventory-purchases').filter((row) => row?._deleted_offline !== true);
   if (!state.isOnline) {
     return cached.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
   }
@@ -604,8 +698,48 @@ export async function getInventoryMovements(filters = {}) {
   slice(0, limit);
 }
 
+function readInventoryStocktakeHeaders() {
+  return readCache('inventory-stocktakes');
+}
+
+function writeInventoryStocktakeHeaders(rows = []) {
+  writeCache('inventory-stocktakes', rows);
+}
+
+function readInventoryStocktakeLines() {
+  return readCache('inventory-stocktake-lines');
+}
+
+function writeInventoryStocktakeLines(rows = []) {
+  writeCache('inventory-stocktake-lines', rows);
+}
+
+function buildLocalInventoryStocktakeLines(stocktakeId, outletId = null) {
+  return (readCache('inventory-items') || [])
+    .filter((item) => item?._deleted_offline !== true)
+    .filter((item) => !outletId || item.outlet_id === outletId)
+    .map((item) => ({
+      id: randomUUID(),
+      stocktake_id: stocktakeId,
+      lodge_id: state.lodgeId,
+      item_id: item.id,
+      expected_qty: Number(item.current_stock || 0),
+      counted_qty: null,
+      variance_qty: null,
+      notes: null,
+      item_name: item.name || 'Item',
+      item_category: item.category || 'Other',
+      item_unit: item.unit || 'unit',
+      outlet_id: item.outlet_id || null,
+      created_at: new Date().toISOString(),
+      _pending_sync: true,
+      _sync_state: 'pending'
+    }));
+}
+
 export async function getInventoryStocktakes(limit = 12) {
-  if (!state.isOnline) return [];
+  const cached = readInventoryStocktakeHeaders();
+  if (!state.isOnline) return cached.slice(0, Number(limit || 12));
   const { data, error } = await state.supabase.
   from('inventory_stocktakes').
   select('*, outlets(name, type)').
@@ -613,22 +747,45 @@ export async function getInventoryStocktakes(limit = 12) {
   order('created_at', { ascending: false }).
   limit(Number(limit || 12));
   if (error) throw new Error(error.message);
-  return (data || []).map((row) => ({
+  const rows = (data || []).map((row) => ({
     ...row,
     outlet_name: row.outlets?.name || null,
     outlet_type: row.outlets?.type || null
   }));
+  writeInventoryStocktakeHeaders(rows);
+  return rows;
 }
 
 export async function createInventoryStocktakeSession(data = {}) {
-  if (!state.isOnline) return { success: false, error: 'Requires internet connection' };
+  const id = data.id || randomUUID();
   const payload = {
+    id,
     lodge_id: state.lodgeId,
     outlet_id: data.outlet_id || null,
     title: data.title || null,
     notes: data.notes || null,
     created_by: state.currentUser?.id || null
   };
+  if (!state.isOnline) {
+    const now = new Date().toISOString();
+    const header = {
+      id,
+      ...payload,
+      status: 'draft',
+      created_at: now,
+      updated_at: now,
+      _pending_sync: true,
+      _sync_state: 'pending',
+      _sync_error: null
+    };
+    const lines = buildLocalInventoryStocktakeLines(id, payload.outlet_id);
+    writeInventoryStocktakeHeaders([header, ...readInventoryStocktakeHeaders().filter((row) => row?.id !== id)]);
+    writeInventoryStocktakeLines([...lines, ...readInventoryStocktakeLines().filter((row) => row?.stocktake_id !== id)]);
+    queueOperation('rpc', 'create_inventory_stocktake_session', { payload }, null, {
+      _queue_id: `inventory-stocktake-${id}`
+    });
+    return { success: true, id, stocktake_id: id, offline: true, queued: true };
+  }
   const { data: result, error } = await state.supabase.rpc('create_inventory_stocktake_session', { payload });
   if (error) throw new Error(error.message);
   if (!result?.success) throw new Error(result?.error || 'Could not start inventory stock take');
@@ -636,7 +793,16 @@ export async function createInventoryStocktakeSession(data = {}) {
 }
 
 export async function getInventoryStocktakeSession(stocktakeId) {
-  if (!state.isOnline) return null;
+  if (!state.isOnline) {
+    const header = readInventoryStocktakeHeaders().find((row) => row?.id === stocktakeId);
+    if (!header) return null;
+    return {
+      ...header,
+      lines: readInventoryStocktakeLines()
+        .filter((line) => line?.stocktake_id === stocktakeId)
+        .sort((a, b) => String(a.item_name || '').localeCompare(String(b.item_name || '')))
+    };
+  }
   const [{ data: header, error: headerError }, { data: lines, error: linesError }] = await Promise.all([
   state.supabase.
   from('inventory_stocktakes').
@@ -670,6 +836,7 @@ export async function getInventoryStocktakeSession(stocktakeId) {
 
 export async function getInventoryStocktakeById(stocktakeId) {
   if (!stocktakeId) return null;
+  if (!state.isOnline) return readInventoryStocktakeHeaders().find((row) => row?.id === stocktakeId) || null;
   try {
     const { data, error } = await state.supabase.
     from('inventory_stocktakes').
@@ -685,12 +852,47 @@ export async function getInventoryStocktakeById(stocktakeId) {
 }
 
 export async function saveInventoryStocktakeCounts(stocktakeId, lines) {
-  if (!state.isOnline) return { success: false, error: 'Requires internet connection' };
   const payload = (Array.isArray(lines) ? lines : []).map((line) => ({
     item_id: line.item_id,
     counted_qty: line.counted_qty,
     notes: line.notes || null
   }));
+  if (!state.isOnline) {
+    const headers = readInventoryStocktakeHeaders();
+    const header = headers.find((row) => row?.id === stocktakeId);
+    if (!header) return { success: false, error: 'Inventory stocktake not found in offline cache' };
+    const counts = new Map(payload.map((line) => [line.item_id, line]));
+    writeInventoryStocktakeLines(readInventoryStocktakeLines().map((line) => {
+      if (line.stocktake_id !== stocktakeId || !counts.has(line.item_id)) return line;
+      const count = counts.get(line.item_id);
+      const counted = Number(count.counted_qty || 0);
+      return {
+        ...line,
+        counted_qty: counted,
+        variance_qty: counted - Number(line.expected_qty || 0),
+        notes: count.notes || null,
+        _pending_sync: true,
+        _sync_state: 'pending',
+        updated_at: new Date().toISOString()
+      };
+    }));
+    writeInventoryStocktakeHeaders(headers.map((row) => row.id === stocktakeId ? {
+      ...row,
+      _pending_sync: true,
+      _sync_state: 'pending',
+      _sync_error: null,
+      updated_at: new Date().toISOString()
+    } : row));
+    queueOperation('rpc', 'save_inventory_stocktake_counts', {
+      p_stocktake_id: stocktakeId,
+      p_lodge_id: state.lodgeId,
+      p_lines: payload
+    }, null, {
+      _queue_id: `inventory-stocktake-counts-${stocktakeId}-${Date.now()}`,
+      ...(header?._pending_sync ? { _depends_on: `inventory-stocktake-${stocktakeId}` } : {})
+    });
+    return { success: true, offline: true, queued: true };
+  }
   const { data: result, error } = await state.supabase.rpc('save_inventory_stocktake_counts', {
     p_stocktake_id: stocktakeId,
     p_lodge_id: state.lodgeId,
@@ -702,7 +904,60 @@ export async function saveInventoryStocktakeCounts(stocktakeId, lines) {
 }
 
 export async function postInventoryStocktakeSession(stocktakeId, notes) {
-  if (!state.isOnline) return { success: false, error: 'Requires internet connection' };
+  if (!state.isOnline) {
+    const headers = readInventoryStocktakeHeaders();
+    const header = headers.find((row) => row?.id === stocktakeId);
+    if (!header) return { success: false, error: 'Inventory stocktake not found in offline cache' };
+    const lines = readInventoryStocktakeLines().filter((line) => line?.stocktake_id === stocktakeId);
+    const countable = lines.filter((line) => line.counted_qty !== null && line.counted_qty !== undefined);
+    const itemCounts = new Map(countable.map((line) => [line.item_id, line]));
+    writeCache('inventory-items', readCache('inventory-items').map((item) => {
+      const line = itemCounts.get(item.id);
+      if (!line) return item;
+      const counted = Number(line.counted_qty || 0);
+      return {
+        ...item,
+        current_stock: counted,
+        _pending_sync: true,
+        _sync_state: 'pending',
+        _sync_error: null,
+        updated_at: new Date().toISOString()
+      };
+    }));
+    for (const line of countable) {
+      upsertLocalInventoryMovement({
+        id: `stocktake-${stocktakeId}-${line.item_id}`,
+        item_id: line.item_id,
+        movement_type: 'stocktake_adjustment',
+        quantity: Number(line.counted_qty || 0) - Number(line.expected_qty || 0),
+        notes: notes || line.notes || null,
+        reference_type: 'inventory_stocktake',
+        reference_id: stocktakeId,
+        source: 'stocktake',
+        _pending_sync: true,
+        _sync_state: 'pending'
+      });
+    }
+    writeInventoryStocktakeHeaders(headers.map((row) => row.id === stocktakeId ? {
+      ...row,
+      status: 'posted',
+      notes: notes || row.notes || null,
+      posted_at: new Date().toISOString(),
+      _pending_sync: true,
+      _sync_state: 'pending',
+      _sync_error: null,
+      updated_at: new Date().toISOString()
+    } : row));
+    queueOperation('rpc', 'post_inventory_stocktake_session', {
+      p_stocktake_id: stocktakeId,
+      p_lodge_id: state.lodgeId,
+      p_notes: notes || null
+    }, null, {
+      _queue_id: `inventory-stocktake-post-${stocktakeId}-${Date.now()}`,
+      ...(header?._pending_sync ? { _depends_on: `inventory-stocktake-${stocktakeId}` } : {})
+    });
+    return { success: true, offline: true, queued: true };
+  }
   const { data: result, error } = await state.supabase.rpc('post_inventory_stocktake_session', {
     p_stocktake_id: stocktakeId,
     p_lodge_id: state.lodgeId,

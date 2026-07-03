@@ -109,6 +109,12 @@ function buildAuditSummary(row, currency) {
 }
 
 function formatStay(invoice) {
+  if (invoice._accommodation_group) {
+    const checkIn = fmtDate(invoice.check_in)
+    const checkOut = fmtDate(invoice.check_out)
+    const nights = Number(invoice.nights || 0)
+    return `${invoice.room_count || invoice._room_lines?.length || 0} rooms · ${checkIn} - ${checkOut} · ${nights}N`
+  }
   // Consolidated lodge/event booking — show 'Full Lodge (N rooms)' instead of a single room number
   if (invoice._event_group || invoice.room_type === 'Full Lodge') {
     const roomLabel = invoice.room_count ? `Full Lodge (${invoice.room_count} rooms)` : 'Full Lodge'
@@ -130,7 +136,12 @@ function canRefundBooking(invoice) {
 }
 
 function invoiceRefundPending(invoice) {
+  if (invoice?._accommodation_group) return false
   return invoice?.status === 'cancelled' && Number(invoice.amount_paid || 0) > 0.01 && invoice.refund_settled !== true
+}
+
+function refundRequestPending(invoice) {
+  return invoice?._pending_refund_request?.status === 'pending_approval' || invoice?.refund_request_pending === true
 }
 
 function invoiceNeedsAttention(invoice) {
@@ -420,16 +431,22 @@ function DeliveryHistoryModal({ invoice, onClose }) {
   )
 }
 
-function RefundModal({ invoice, currency, onClose, onSaved }) {
-  const [form, setForm] = useState({
-    retained_percent: 0,
-    settlement_mode: 'external_refund',
-    method: 'bank_transfer',
-    notes: '',
-    proof_reference: '',
-    approval_note: '',
+function RefundModal({ invoice, currency, isOffline = false, onClose, onSaved }) {
+  const pendingRequest = invoice?._pending_refund_request || null
+  const pendingSettlementMode = pendingRequest?.settlement_mode ||
+    (pendingRequest?.method === 'customer_credit_transfer' ? 'customer_credit' : 'external_refund')
+  const pendingMethod = pendingRequest?.method && pendingRequest.method !== 'customer_credit_transfer'
+    ? pendingRequest.method
+    : 'bank_transfer'
+  const [form, setForm] = useState(() => ({
+    retained_percent: pendingRequest?.retained_percent ?? 0,
+    settlement_mode: pendingSettlementMode,
+    method: pendingMethod,
+    notes: pendingRequest?.notes || '',
+    proof_reference: pendingRequest?.proof_reference || '',
+    approval_note: pendingRequest?.approval_note || '',
     approver_pin: ''
-  })
+  }))
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
@@ -438,20 +455,25 @@ function RefundModal({ invoice, currency, onClose, onSaved }) {
   const retainedAmount = paidAmount * (retainedPercent / 100)
   const refundAmount = Math.max(0, paidAmount - retainedAmount)
   const transferToCredit = form.settlement_mode === 'customer_credit'
+  const actionLabel = isOffline ? 'Save Refund Request' : transferToCredit ? 'Approve Credit Transfer' : 'Approve Refund'
 
   const handleSubmit = async (event) => {
     event.preventDefault()
     setSaving(true)
     setError('')
-    const result = await window.api.bookings.refund(invoice.booking_id, {
+    const payload = {
       retained_percent: retainedPercent,
       method: transferToCredit ? 'customer_credit_transfer' : form.method,
       notes: form.notes,
       proof_reference: form.proof_reference,
       approval_note: form.approval_note,
       approver_pin: form.approver_pin,
+      request_id: pendingRequest?.id || undefined,
       intentId: crypto.randomUUID()
-    }).catch((e) => ({ success: false, error: e.message }))
+    }
+    const result = invoice?._accommodation_group
+      ? await window.api.bookings.refundGroup(invoice.accommodation_group_id, payload).catch((e) => ({ success: false, error: e.message }))
+      : await window.api.bookings.refund(invoice.booking_id, payload).catch((e) => ({ success: false, error: e.message }))
 
     if (result?.success === false) {
       setError(result.error || 'Refund failed')
@@ -471,6 +493,20 @@ function RefundModal({ invoice, currency, onClose, onSaved }) {
   return (
     <Modal title={`Refund Guest · ${invoice.invoice_number}`} onClose={onClose} size="md">
       <form onSubmit={handleSubmit} className="space-y-4">
+        {pendingRequest && (
+          <div className="rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-900">
+            <p className="font-semibold">Refund request saved</p>
+            <p className="mt-1">
+              Prepared {fmtDateTime(pendingRequest.updated_at || pendingRequest.created_at)} for {fmtMoney(currency, pendingRequest.refund_amount)}.
+            </p>
+          </div>
+        )}
+        {isOffline && (
+          <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+            <p className="font-semibold">Online approval required</p>
+            <p className="mt-1">This will save the request locally. The refund posts only after live manager PIN approval.</p>
+          </div>
+        )}
         <div className="rounded-2xl bg-amber-50 p-4 text-sm text-amber-900">
           <p className="font-semibold">Refund basis</p>
           <p className="mt-1">Paid amount on this booking: {fmtMoney(currency, paidAmount)}</p>
@@ -555,14 +591,17 @@ function RefundModal({ invoice, currency, onClose, onSaved }) {
         </label>
 
         <label className="block">
-          <span className="mb-1.5 block text-sm font-medium text-gray-700">Manager/Admin approval PIN</span>
+          <span className="mb-1.5 block text-sm font-medium text-gray-700">
+            {isOffline ? 'Manager/Admin approval PIN (online approval)' : 'Manager/Admin approval PIN'}
+          </span>
           <input
             type="password"
             value={form.approver_pin}
             onChange={(event) => setForm((current) => ({ ...current, approver_pin: event.target.value }))}
             className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm outline-none focus:border-green-500"
-            placeholder="Required to approve and post this refund"
-            required
+            placeholder={isOffline ? 'PIN required when internet returns' : 'Required to approve and post this refund'}
+            disabled={isOffline}
+            required={!isOffline}
           />
         </label>
 
@@ -604,7 +643,63 @@ function RefundModal({ invoice, currency, onClose, onSaved }) {
             className="inline-flex items-center gap-2 rounded-xl bg-rose-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-rose-700 disabled:opacity-60"
           >
             <RotateCcw size={15} />
-            {saving ? 'Processing…' : transferToCredit ? 'Transfer to Credit' : 'Record Refund'}
+            {saving ? (isOffline ? 'Saving…' : 'Processing…') : actionLabel}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  )
+}
+
+function GroupPaymentModal({ invoice, currency, form, setForm, saving, error, onClose, onSubmit }) {
+  return (
+    <Modal title={`Collect Payment · ${invoice.invoice_number}`} onClose={onClose} size="md">
+      <form onSubmit={onSubmit} className="space-y-4">
+        <div className="rounded-2xl bg-amber-50 p-4 text-sm text-amber-900">
+          <p className="font-semibold">{invoice.customer_name || 'Guest'} · {invoice.room_count || invoice._room_lines?.length || 0} rooms</p>
+          <p className="mt-1">Outstanding balance: {fmtMoney(currency, invoice.balance_due)}</p>
+        </div>
+        <label className="block">
+          <span className="mb-1.5 block text-sm font-medium text-gray-700">Amount</span>
+          <input
+            type="number"
+            min="0.01"
+            max={Number(invoice.balance_due || 0)}
+            step="0.01"
+            value={form.amount}
+            onChange={(event) => setForm((current) => ({ ...current, amount: event.target.value }))}
+            className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm outline-none focus:border-green-500"
+            required
+          />
+        </label>
+        <label className="block">
+          <span className="mb-1.5 block text-sm font-medium text-gray-700">Payment method</span>
+          <select
+            value={form.method}
+            onChange={(event) => setForm((current) => ({ ...current, method: event.target.value }))}
+            className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm outline-none focus:border-green-500"
+          >
+            {PAYMENT_METHODS.filter((method) => method.value !== 'refund').map((method) => (
+              <option key={method.value} value={method.value}>{method.label}</option>
+            ))}
+          </select>
+        </label>
+        {error && (
+          <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            {error}
+          </div>
+        )}
+        <div className="flex justify-end gap-2">
+          <button type="button" onClick={onClose} className="rounded-xl border border-gray-200 px-4 py-2 text-sm font-semibold text-gray-700 transition hover:bg-gray-50">
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={saving}
+            className="inline-flex items-center gap-2 rounded-xl bg-green-700 px-4 py-2 text-sm font-semibold text-white transition hover:bg-green-800 disabled:opacity-60"
+          >
+            <CreditCard size={15} />
+            {saving ? 'Recording...' : 'Record Group Payment'}
           </button>
         </div>
       </form>
@@ -693,6 +788,10 @@ export default function BookingInvoices() {
   const [auditInvoice, setAuditInvoice] = useState(null)
   const [deliveryInvoice, setDeliveryInvoice] = useState(null)
   const [refundInvoice, setRefundInvoice] = useState(null)
+  const [groupPaymentInvoice, setGroupPaymentInvoice] = useState(null)
+  const [groupPaymentForm, setGroupPaymentForm] = useState({ amount: '', method: 'cash' })
+  const [groupPaymentError, setGroupPaymentError] = useState('')
+  const [groupPaymentSaving, setGroupPaymentSaving] = useState(false)
   const [creditReceipt, setCreditReceipt] = useState(null)
   const [flash, setFlash] = useState(null)
   const [emailingId, setEmailingId] = useState(null)
@@ -755,7 +854,7 @@ export default function BookingInvoices() {
       pushFlash('error', 'Could not find that booking invoice. Please refresh and try again.')
     } else if (viewBookingId) {
       setSelectedInvoice(invoice)
-    } else if (isFinanciallySyncBlocked(invoice.booking_id)) {
+    } else if (isInvoiceRefundBlocked(invoice)) {
       pushFlash('error', FINANCIAL_SYNC_BLOCK_MESSAGE)
     } else if (!canRefundBooking(invoice)) {
       pushFlash('error', 'This booking cannot be refunded at this stage.')
@@ -794,12 +893,33 @@ export default function BookingInvoices() {
     financialCacheStale || financialPendingIds.has(bookingId) || financialFailedIds.has(bookingId)
   )
 
+  const isRefundActionBlocked = (bookingId) => (
+    financialPendingIds.has(bookingId) || financialFailedIds.has(bookingId) || (!isOffline && financialCacheStale)
+  )
+
+  const isInvoiceRefundBlocked = (invoice) => {
+    if (invoice?._accommodation_group) {
+      return (invoice._booking_ids || []).some((bookingId) => isRefundActionBlocked(bookingId))
+    }
+    return isRefundActionBlocked(invoice?.booking_id)
+  }
+
   const pushFlash = (type, text) => {
     setFlash({ type, text })
     setTimeout(() => setFlash(null), 3500)
   }
 
   const openCollectionFlow = (invoice) => {
+    if (invoice?._accommodation_group) {
+      if ((invoice._booking_ids || []).some((bookingId) => isFinanciallySyncBlocked(bookingId))) {
+        pushFlash('error', FINANCIAL_SYNC_BLOCK_MESSAGE)
+        return
+      }
+      setGroupPaymentInvoice(invoice)
+      setGroupPaymentForm({ amount: Number(invoice.balance_due || 0).toFixed(2), method: 'cash' })
+      setGroupPaymentError('')
+      return
+    }
     if (!invoice?.booking_id) {
       pushFlash('error', 'This invoice is not linked to a booking payment record.')
       return
@@ -846,6 +966,40 @@ export default function BookingInvoices() {
       return
     }
     pushFlash('success', `Invoice sent to ${invoice.customer_email}`)
+  }
+
+  const handleGroupPaymentSubmit = async (event) => {
+    event.preventDefault()
+    if (!groupPaymentInvoice?.accommodation_group_id) return
+    setGroupPaymentSaving(true)
+    setGroupPaymentError('')
+    const amount = Number(groupPaymentForm.amount || 0)
+    if (amount <= 0) {
+      setGroupPaymentError('Payment amount must be greater than zero.')
+      setGroupPaymentSaving(false)
+      return
+    }
+    const result = await window.api.bookings.updateGroupPayment(
+      groupPaymentInvoice.accommodation_group_id,
+      amount,
+      groupPaymentForm.method,
+      crypto.randomUUID()
+    ).catch((error) => ({ success: false, error: error?.message }))
+    if (result?.success === false) {
+      setGroupPaymentError(result.error || 'Payment could not be recorded.')
+      setGroupPaymentSaving(false)
+      return
+    }
+    setGroupPaymentSaving(false)
+    setGroupPaymentInvoice(null)
+    setSelectedInvoice(null)
+    pushFlash(
+      'success',
+      result?.offline
+        ? 'Group payment saved locally and will sync when online.'
+        : `Group payment recorded and allocated across ${result?.allocations?.length || 0} room line${result?.allocations?.length === 1 ? '' : 's'}.`
+    )
+    loadInvoices()
   }
 
   const filteredInvoices = useMemo(() => {
@@ -1147,7 +1301,9 @@ export default function BookingInvoices() {
                         className="text-left"
                       >
                         <p className="font-mono text-xs font-semibold text-green-700">{invoice.invoice_number}</p>
-                        <p className="mt-1 text-xs text-gray-500">Booking #{String(invoice.booking_id).slice(0, 8)}</p>
+                        <p className="mt-1 text-xs text-gray-500">
+                          {invoice._accommodation_group ? `${invoice.room_count || invoice._room_lines?.length || 0} room booking lines` : `Booking #${String(invoice.booking_id).slice(0, 8)}`}
+                        </p>
                       </button>
                     </td>
                     <td className="px-5 py-4">
@@ -1157,7 +1313,7 @@ export default function BookingInvoices() {
                     <td className="px-5 py-4 align-top">
                       <div className="max-w-[220px]">
                         <p className="truncate text-sm text-gray-800 leading-5">{formatStay(invoice)}</p>
-                        <p className="mt-1 truncate text-xs text-gray-500 leading-4">{invoice.room_type || 'Room type not set'}</p>
+                        <p className="mt-1 truncate text-xs text-gray-500 leading-4">{invoice._accommodation_group ? 'Accommodation group' : invoice.room_type || 'Room type not set'}</p>
                       </div>
                     </td>
                     <td className="px-5 py-4 text-right font-semibold text-gray-900">
@@ -1172,7 +1328,9 @@ export default function BookingInvoices() {
                         <p className="mt-1 text-xs font-semibold text-amber-700">Needs collection</p>
                       )}
                       {invoiceRefundPending(invoice) && (
-                        <p className="mt-1 text-xs font-semibold text-rose-600">Refund pending</p>
+                        <p className="mt-1 text-xs font-semibold text-rose-600">
+                          {refundRequestPending(invoice) ? 'Refund approval saved' : 'Refund pending'}
+                        </p>
                       )}
                     </td>
                     <td className="px-5 py-4">
@@ -1187,7 +1345,7 @@ export default function BookingInvoices() {
                       <Badge value={invoice.status} styles={BOOKING_STATUS_STYLES} />
                       {invoiceRefundPending(invoice) && (
                         <span className="mt-1 inline-flex items-center rounded-full border border-rose-200 bg-rose-50 px-2 py-0.5 text-[10px] font-semibold text-rose-700 whitespace-nowrap">
-                          ⚠️ Refund Pending
+                          ⚠️ {refundRequestPending(invoice) ? 'Approval Saved' : 'Refund Pending'}
                         </span>
                       )}
                     </td>
@@ -1246,17 +1404,17 @@ export default function BookingInvoices() {
                           <button
                             type="button"
                             onClick={() => {
-                              if (isFinanciallySyncBlocked(invoice.booking_id)) {
+                              if (isRefundActionBlocked(invoice.booking_id)) {
                                 pushFlash('error', FINANCIAL_SYNC_BLOCK_MESSAGE)
                                 return
                               }
                               setRefundInvoice(invoice)
                             }}
-                            disabled={isFinanciallySyncBlocked(invoice.booking_id)}
+                            disabled={isRefundActionBlocked(invoice.booking_id)}
                             className="inline-flex items-center gap-1 rounded-lg border border-rose-300 bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-700 transition hover:border-rose-400 hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-50"
                           >
                             <RotateCcw size={12} />
-                            Refund
+                            {refundRequestPending(invoice) && !isOffline ? 'Approve' : 'Refund'}
                           </button>
                         )}
                         <button
@@ -1309,8 +1467,10 @@ export default function BookingInvoices() {
               </div>
               <div className="rounded-2xl bg-gray-50 p-4">
                 <p className="text-xs font-semibold uppercase tracking-[0.16em] text-gray-500">Room</p>
-                <p className="mt-2 font-semibold text-gray-900">Room {selectedInvoice.room_number || '—'}</p>
-                <p className="mt-1 text-sm text-gray-500">{selectedInvoice.room_type || 'Room type not set'}</p>
+                <p className="mt-2 font-semibold text-gray-900">
+                  {selectedInvoice._accommodation_group ? `${selectedInvoice.room_count || selectedInvoice._room_lines?.length || 0} rooms` : `Room ${selectedInvoice.room_number || '—'}`}
+                </p>
+                <p className="mt-1 text-sm text-gray-500">{selectedInvoice._accommodation_group ? 'Accommodation group invoice' : selectedInvoice.room_type || 'Room type not set'}</p>
               </div>
               <div className="rounded-2xl bg-gray-50 p-4">
                 <p className="text-xs font-semibold uppercase tracking-[0.16em] text-gray-500">Stay</p>
@@ -1324,6 +1484,26 @@ export default function BookingInvoices() {
                 <p className="mt-1 text-sm text-amber-700">Balance {fmtMoney(currency, selectedInvoice.balance_due)}</p>
               </div>
             </div>
+
+            {selectedInvoice._accommodation_group && Array.isArray(selectedInvoice._room_lines) && (
+              <div className="rounded-2xl border border-gray-200 p-4">
+                <p className="mb-3 text-sm font-semibold text-gray-900">Room Lines</p>
+                <div className="space-y-2">
+                  {selectedInvoice._room_lines.map((line) => (
+                    <div key={line.booking_id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-gray-50 px-3 py-2 text-sm">
+                      <div>
+                        <p className="font-semibold text-gray-900">Room {line.room_number || '—'} · {line.room_type || 'Room'}</p>
+                        <p className="text-xs text-gray-500">{fmtDate(line.check_in)} - {fmtDate(line.check_out)} · {line.nights || 0} night{Number(line.nights || 0) === 1 ? '' : 's'}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="font-semibold text-gray-900">{fmtMoney(currency, line.total_amount)}</p>
+                        <p className="text-xs text-gray-500">Paid {fmtMoney(currency, line.amount_paid)}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {Number(selectedInvoice.balance_due || 0) > 0 && selectedInvoice.status !== 'cancelled' && (
               <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
@@ -1350,17 +1530,20 @@ export default function BookingInvoices() {
               <div className="rounded-2xl border-2 border-rose-300 bg-rose-50 px-5 py-4 text-sm text-rose-900">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
-                    <p className="font-semibold">⚠️ Refund must be processed</p>
+                    <p className="font-semibold">
+                      ⚠️ {refundRequestPending(selectedInvoice) ? 'Refund approval is pending' : 'Refund must be processed'}
+                    </p>
                     <p className="mt-1 text-rose-700">
-                      This booking was cancelled with {fmtMoney(currency, selectedInvoice.amount_paid)} on record.
-                      Process the refund to clear the guest balance and close this record.
+                      {refundRequestPending(selectedInvoice)
+                        ? `A refund request for ${fmtMoney(currency, selectedInvoice._pending_refund_request?.refund_amount ?? selectedInvoice.amount_paid)} is saved. Approve it with a live manager PIN when internet is available.`
+                        : `This booking was cancelled with ${fmtMoney(currency, selectedInvoice.amount_paid)} on record. Process the refund to clear the guest balance and close this record.`}
                     </p>
                   </div>
                   <button
                     type="button"
-                    disabled={isFinanciallySyncBlocked(selectedInvoice.booking_id)}
+                    disabled={isRefundActionBlocked(selectedInvoice.booking_id)}
                     onClick={() => {
-                      if (isFinanciallySyncBlocked(selectedInvoice.booking_id)) {
+                      if (isRefundActionBlocked(selectedInvoice.booking_id)) {
                         pushFlash('error', FINANCIAL_SYNC_BLOCK_MESSAGE)
                         return
                       }
@@ -1369,7 +1552,7 @@ export default function BookingInvoices() {
                     className="inline-flex items-center gap-2 rounded-xl bg-rose-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-rose-700 disabled:opacity-60"
                   >
                     <RotateCcw size={15} />
-                    Process Refund
+                    {refundRequestPending(selectedInvoice) && !isOffline ? 'Approve Refund' : 'Process Refund'}
                   </button>
                 </div>
               </div>
@@ -1431,9 +1614,9 @@ export default function BookingInvoices() {
               </button>
               <button
                 type="button"
-                disabled={Number(selectedInvoice.amount_paid || 0) <= 0 || isFinanciallySyncBlocked(selectedInvoice.booking_id) || !canRefundBooking(selectedInvoice)}
+                disabled={Number(selectedInvoice.amount_paid || 0) <= 0 || isInvoiceRefundBlocked(selectedInvoice) || !canRefundBooking(selectedInvoice)}
                 onClick={() => {
-                  if (isFinanciallySyncBlocked(selectedInvoice.booking_id)) {
+                  if (isInvoiceRefundBlocked(selectedInvoice)) {
                     pushFlash('error', FINANCIAL_SYNC_BLOCK_MESSAGE)
                     return
                   }
@@ -1477,24 +1660,67 @@ export default function BookingInvoices() {
         <DeliveryHistoryModal invoice={deliveryInvoice} onClose={() => setDeliveryInvoice(null)} />
       )}
 
+      {groupPaymentInvoice && (
+        <GroupPaymentModal
+          invoice={groupPaymentInvoice}
+          currency={currency}
+          form={groupPaymentForm}
+          setForm={setGroupPaymentForm}
+          saving={groupPaymentSaving}
+          error={groupPaymentError}
+          onClose={() => setGroupPaymentInvoice(null)}
+          onSubmit={handleGroupPaymentSubmit}
+        />
+      )}
+
       {refundInvoice && (
         <RefundModal
           invoice={refundInvoice}
           currency={currency}
+          isOffline={isOffline}
           onClose={() => setRefundInvoice(null)}
           onSaved={(result) => {
             const bookingId = refundInvoice.booking_id
+            const isGroupRefund = refundInvoice?._accommodation_group
+            if (result?.pending_approval) {
+              const request = result.request || {
+                id: result.request_id,
+                booking_id: bookingId,
+                status: 'pending_approval',
+                refund_amount: result.refund_amount,
+                retained_amount: result.retained_amount,
+                retained_percent: result.retained_percent,
+                method: result.method,
+                proof_reference: result.proof_reference,
+                notes: result.notes,
+                updated_at: new Date().toISOString()
+              }
+              setInvoices((prev) => prev.map((inv) =>
+                inv.booking_id === bookingId
+                  ? { ...inv, _pending_refund_request: request, refund_request_pending: true, refund_request_saved_at: request.updated_at || request.created_at || null }
+                  : inv
+              ))
+              setRefundInvoice(null)
+              setSelectedInvoice(null)
+              pushFlash('success', `Refund request saved for ${refundInvoice.customer_name || 'guest'}. Live manager PIN approval is still required.`)
+              loadInvoices()
+              return
+            }
             const settledAmount = Number(result?.retained_amount ?? 0)
             const settledStatus = settledAmount > 0.001 ? 'paid' : 'unpaid'
             // Optimistic patch — clears warnings immediately without waiting for the full reload
             setInvoices((prev) => prev.map((inv) =>
-              inv.booking_id === bookingId
+              isGroupRefund
+                ? inv.accommodation_group_id === refundInvoice.accommodation_group_id
+                  ? { ...inv, payment_status: settledStatus, amount_paid: settledAmount, total_amount: settledAmount, balance_due: 0, status: 'cancelled' }
+                  : inv
+                : inv.booking_id === bookingId
                 ? { ...inv, payment_status: settledStatus, amount_paid: settledAmount, total_amount: settledAmount, balance_due: 0, status: 'cancelled' }
                 : inv
             ))
             setRefundInvoice(null)
             setSelectedInvoice(null)
-            if (result?.credit_transfer === true) {
+            if (!isGroupRefund && result?.credit_transfer === true) {
               setCreditReceipt({
                 id: result.credit_entry_id,
                 booking_id: refundInvoice.booking_id,
@@ -1512,7 +1738,9 @@ export default function BookingInvoices() {
               'success',
               result?.credit_transfer === true
                 ? `Customer credit created for ${refundInvoice.customer_name || 'guest'} and approved by ${result?.approved_by_name || 'manager'}.`
-                : `Refund recorded for ${refundInvoice.customer_name || 'guest'} and approved by ${result?.approved_by_name || 'manager'}.`
+                : isGroupRefund
+                  ? `Group invoice refund recorded for ${refundInvoice.customer_name || 'guest'}.`
+                  : `Refund recorded for ${refundInvoice.customer_name || 'guest'} and approved by ${result?.approved_by_name || 'manager'}.`
             )
             loadInvoices()
           }}

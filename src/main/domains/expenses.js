@@ -1,6 +1,8 @@
+import { randomUUID } from 'crypto';
 import { state } from '../state.js';
 import { MAX_FINANCIAL_AMOUNT } from './shared.js';
 import {
+  queueOperation,
   readCache,
   writeCache,
   dedupePromise
@@ -13,6 +15,7 @@ function payloadHasAmount(payload) {
 async function _getExpenses(startDate, endDate, outletId = 'all') {
   const canonicalExpenses = readCache('expenses');
   const cachedExpenses = canonicalExpenses.
+  filter((row) => row?._deleted_offline !== true).
   filter((row) =>
   (!startDate || row.date >= startDate) && (
   !endDate || row.date <= endDate) && (
@@ -63,7 +66,8 @@ export function getExpenses(startDate, endDate, outletId = 'all') {
 }
 
 export async function getExpenseById(id) {
-  if (!id || !state.isOnline) return null;
+  if (!id) return null;
+  if (!state.isOnline) return readCache('expenses').find((row) => row?.id === id) || null;
   const { data, error } = await state.supabase.
   from('expenses').
   select('*').
@@ -77,7 +81,9 @@ export async function getExpenseById(id) {
 export async function createExpense(data) {
   if (Number(data.amount) <= 0) throw new Error('Expense amount must be greater than zero');
   if (Number(data.amount) > MAX_FINANCIAL_AMOUNT) throw new Error(`Expense amount cannot exceed P${MAX_FINANCIAL_AMOUNT.toLocaleString('en-BW')}`);
+  const id = data.id || randomUUID();
   const expense = {
+    id,
     lodge_id: state.lodgeId,
     date: data.date,
     category: data.category,
@@ -94,18 +100,30 @@ export async function createExpense(data) {
     writeCache('expenses', [{ ...expense, id: result?.id }, ...cached.filter((row) => row.id !== result?.id)]);
     return { success: true, id: result?.id };
   }
-  return { success: false, error: 'Requires internet connection' };
+  const offlineExpense = {
+    ...expense,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    _pending_sync: true,
+    _sync_state: 'pending',
+    _sync_error: null
+  };
+  writeCache('expenses', [offlineExpense, ...readCache('expenses').filter((row) => row?.id !== id)]);
+  queueOperation('rpc', 'create_expense', { payload: expense }, null, {
+    _queue_id: `expense-${id}`
+  });
+  return { success: true, id, offline: true, queued: true };
 }
 
 export async function updateExpense(id, data) {
   if (payloadHasAmount(data) && Number(data.amount) <= 0) throw new Error('Expense amount must be greater than zero');
   if (payloadHasAmount(data) && Number(data.amount) > MAX_FINANCIAL_AMOUNT) throw new Error(`Expense amount cannot exceed P${MAX_FINANCIAL_AMOUNT.toLocaleString('en-BW')}`);
   const update = {
-    date: data.date,
-    category: data.category,
-    description: data.description,
-    amount: Number(data.amount),
-    notes: data.notes || null,
+    ...(data.date !== undefined ? { date: data.date } : {}),
+    ...(data.category !== undefined ? { category: data.category } : {}),
+    ...(data.description !== undefined ? { description: data.description } : {}),
+    ...(payloadHasAmount(data) ? { amount: Number(data.amount) } : {}),
+    ...(data.notes !== undefined ? { notes: data.notes || null } : {}),
     ...(data.outlet_id !== undefined ? { outlet_id: data.outlet_id || null } : {})
   };
   if (state.isOnline) {
@@ -120,7 +138,26 @@ export async function updateExpense(id, data) {
     writeCache('expenses', cached.map((row) => row.id === id ? { ...row, ...update } : row));
     return { success: true };
   }
-  return { success: false, error: 'Requires internet connection' };
+  const cached = readCache('expenses');
+  const existing = cached.find((row) => row?.id === id);
+  if (!existing) return { success: false, error: 'Expense not found in offline cache' };
+  writeCache('expenses', cached.map((row) => row.id === id ? {
+    ...row,
+    ...update,
+    _pending_sync: true,
+    _sync_state: 'pending',
+    _sync_error: null,
+    updated_at: new Date().toISOString()
+  } : row));
+  queueOperation('rpc', 'update_expense', {
+    p_id: id,
+    p_lodge_id: state.lodgeId,
+    payload: update
+  }, null, {
+    _queue_id: `expense-update-${id}-${Date.now()}`,
+    ...(existing?._pending_sync ? { _depends_on: `expense-${id}` } : {})
+  });
+  return { success: true, offline: true, queued: true };
 }
 
 export async function deleteExpense(id) {
@@ -134,7 +171,25 @@ export async function deleteExpense(id) {
     writeCache('expenses', readCache('expenses').filter((row) => row.id !== id));
     return { success: true };
   }
-  return { success: false, error: 'Requires internet connection' };
+  const cached = readCache('expenses');
+  const existing = cached.find((row) => row?.id === id);
+  if (!existing) return { success: false, error: 'Expense not found in offline cache' };
+  writeCache('expenses', cached.map((row) => row.id === id ? {
+    ...row,
+    _deleted_offline: true,
+    _pending_sync: true,
+    _sync_state: 'pending',
+    _sync_error: null,
+    updated_at: new Date().toISOString()
+  } : row));
+  queueOperation('rpc', 'delete_expense', {
+    p_id: id,
+    p_lodge_id: state.lodgeId
+  }, null, {
+    _queue_id: `expense-delete-${id}-${Date.now()}`,
+    ...(existing?._pending_sync ? { _depends_on: `expense-${id}` } : {})
+  });
+  return { success: true, offline: true, queued: true };
 }
 
 export async function getAdminExpenses() {
