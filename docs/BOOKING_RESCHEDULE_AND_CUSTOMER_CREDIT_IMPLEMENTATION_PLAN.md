@@ -1,6 +1,6 @@
 # Booking Rescheduling and Customer Credit
 
-> **Status: implemented and database-deployed as of 2026-06-20; release publication pending.** The repository includes the Supabase ledger/RPC layer, desktop backend and UI, offline replay contracts, reporting classification, read-only Manager PWA visibility, receipts, and focused regression coverage. The linked migration list and live RPC catalog were verified after deployment. The Windows 1.5.2 installer builds successfully, but the feature is not production-certified until the remaining ship gates in [SHIP_READY_RUNBOOK.md](SHIP_READY_RUNBOOK.md) are completed.
+> **Status: implemented and database-deployed as of 2026-06-20; release publication pending in this document's evidence.** The repository includes the Supabase ledger/RPC layer, desktop backend and UI, offline replay contracts, reporting classification, read-only Manager PWA visibility, receipts, and focused regression coverage. The linked migration list and live RPC catalog were verified after deployment. This plan's packaged-installer evidence refers to the historical Windows 1.5.2 artifact; the current package manifest is newer, so use [../PROJECT_STATE.md](../PROJECT_STATE.md) and [SHIP_READY_RUNBOOK.md](SHIP_READY_RUNBOOK.md) for current release state.
 
 ## Implementation record
 
@@ -21,12 +21,12 @@ Confirmed implementation:
 - Advance-payment receipts that state no accommodation is reserved until a booking is confirmed.
 - Desktop capability gates for receipt/allocation and refund/reversal actions.
 
-Verification completed on 2026-06-20:
+Verification completed on 2026-06-20 for this feature slice:
 
 - Linked Supabase migrations applied through `20260620200000`.
 - Live function signatures, authenticated grants, ledger table, and consistency trigger verified.
 - Customer-credit/reschedule, financial-integrity, offline-queue, production-guardrail, Manager PWA lint/build, booking-site build, Legacy POS tests, and desktop build passed.
-- Windows installer created at `dist/Boroko-Bookings-1.5.2-x64.exe`.
+- Windows installer created at `dist/Boroko-Bookings-1.5.2-x64.exe` for that historical verification slice.
 
 Remaining release gates:
 

@@ -134,7 +134,12 @@ async function saveRemoteSettingsRecord(settings) {
     'booking_cancellation_policy',
     'booking_payment_terms',
     'booking_house_rules',
-    'booking_faq'
+    'booking_faq',
+    'public_offer_rooms',
+    'public_offer_multi_room',
+    'public_offer_full_lodge',
+    'public_offer_day_use',
+    'public_offer_events'
   ]);
   const remoteSettings = { ...settings };
   const skippedColumns = [];
@@ -371,6 +376,11 @@ export async function saveSettings(data) {
     booking_payment_terms: data.booking_payment_terms || '',
     booking_house_rules: data.booking_house_rules || '',
     booking_faq: Array.isArray(data.booking_faq) ? data.booking_faq : [],
+    public_offer_rooms: data.public_offer_rooms !== false,
+    public_offer_multi_room: data.public_offer_multi_room !== false,
+    public_offer_full_lodge: data.public_offer_full_lodge === true,
+    public_offer_day_use: data.public_offer_day_use === true,
+    public_offer_events: data.public_offer_events === true,
     setup_complete: true,
     updated_at: new Date().toISOString(),
     lodge_id: state.lodgeId

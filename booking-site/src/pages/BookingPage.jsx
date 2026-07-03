@@ -70,7 +70,7 @@ function validatePhone(phone) {
 /**
  * Build booking state to persist so the page survives a refresh.
  */
-function buildBookingState({ lodge, room, checkIn, checkOut, nights }) {
+function buildBookingState({ lodge, room, rooms, bookingType, checkIn, checkOut, nights }) {
   return {
     lodge: {
       id: lodge?.id,
@@ -100,6 +100,20 @@ function buildBookingState({ lodge, room, checkIn, checkOut, nights }) {
       amenities: room?.amenities,
       description: room?.description
     },
+    rooms: Array.isArray(rooms) ? rooms.map((entry) => ({
+      id: entry?.id,
+      room_number: entry?.room_number,
+      room_type: entry?.room_type,
+      total_price: entry?.total_price,
+      rate_per_night: entry?.rate_per_night,
+      max_occupancy: entry?.max_occupancy,
+      photo: entry?.photo,
+      photos: entry?.photos,
+      photo_count: entry?.photo_count,
+      amenities: entry?.amenities,
+      description: entry?.description
+    })) : undefined,
+    bookingType,
     checkIn,
     checkOut,
     nights
@@ -127,12 +141,12 @@ export default function BookingPage() {
   // ── Reconstruct state from multiple sources ───────────────────────────────
   const rawState = useMemo(() => {
     // 1. Prefer React Router state
-    if (state?.lodge && state?.room) {
+    if (state?.lodge && (state?.room || Array.isArray(state?.rooms))) {
       return state
     }
     // 2. Fallback to sessionStorage
     const cached = readSessionState(BOOKING_STATE_KEY)
-    if (cached?.lodge && cached?.room) {
+    if (cached?.lodge && (cached?.room || Array.isArray(cached?.rooms))) {
       return cached
     }
     // 3. Fallback to URL params (minimal)
@@ -144,6 +158,8 @@ export default function BookingPage() {
 
   const [lodge, setLodge] = useState(rawState?.lodge || null)
   const [room, setRoom] = useState(rawState?.room || null)
+  const [rooms, setRooms] = useState(Array.isArray(rawState?.rooms) ? rawState.rooms : [])
+  const [bookingType, setBookingType] = useState(rawState?.bookingType || null)
   const [checkIn, setCheckIn] = useState(rawState?.checkIn || '')
   const [checkOut, setCheckOut] = useState(rawState?.checkOut || '')
   const [nights, setNights] = useState(rawState?.nights || 1)
@@ -151,7 +167,14 @@ export default function BookingPage() {
   // If we have a room ID in URL but no state, we can't fully reconstruct.
   // Show a graceful fallback with a link back to search.
   const roomIdFromUrl = searchParams.get('roomId')
-  const hasState = Boolean(lodge && room)
+  const selectedRooms = useMemo(() => {
+    if (Array.isArray(rooms) && rooms.length > 0) return rooms
+    return room ? [room] : []
+  }, [rooms, room])
+  const effectiveBookingType = bookingType || (selectedRooms.length > 1 ? 'multi_room' : 'room')
+  const isMultiRoom = selectedRooms.length > 1 || effectiveBookingType === 'multi_room'
+  const isFullLodge = effectiveBookingType === 'full_lodge'
+  const hasState = Boolean(lodge && selectedRooms.length > 0 && room)
   const hasUrlHint = Boolean(roomIdFromUrl)
 
   // Restore photos from URL hint or cached room
@@ -218,7 +241,7 @@ export default function BookingPage() {
   // Auto-clamp guest counts when max_occupancy changes
   useEffect(() => {
     if (!hasState) return
-    const maxOccupancy = Number(room?.max_occupancy || 0)
+    const maxOccupancy = selectedRooms.reduce((sum, entry) => sum + Number(entry?.max_occupancy || 0), 0) || Number(room?.max_occupancy || 0)
     const adults = clampGuestCount(form.adults, Math.max(1, maxOccupancy))
     const maxChildren = Math.max(0, maxOccupancy - adults)
     const children = clampGuestCount(form.children, maxChildren)
@@ -230,7 +253,7 @@ export default function BookingPage() {
         children
       }))
     }
-  }, [form.adults, form.children, room?.max_occupancy, hasState, setForm])
+  }, [form.adults, form.children, room?.max_occupancy, selectedRooms, hasState, setForm])
 
   // Fetch room media if missing
   useEffect(() => {
@@ -360,18 +383,36 @@ export default function BookingPage() {
       return
     }
 
-    if (totalGuests > Number(room.max_occupancy || 0)) {
-      setError(`This room supports up to ${room.max_occupancy} guests. Please reduce the number of adults or children.`)
+    const totalCapacity = selectedRooms.reduce((sum, entry) => sum + Number(entry?.max_occupancy || 0), 0) || Number(room.max_occupancy || 0)
+    if (totalGuests > totalCapacity) {
+      setError(`${isMultiRoom || isFullLodge ? 'This request' : 'This room'} supports up to ${totalCapacity} guests. Please reduce the number of adults or children.`)
       return
     }
 
     setLastSubmitTime(now)
     setSubmitting(true)
 
+    let remainingAdults = Number(form.adults)
+    let remainingChildren = Number(form.children)
+    const roomLines = selectedRooms.map((entry, index) => {
+      const capacity = Math.max(1, Number(entry.max_occupancy || 1))
+      const adults = Math.max(index === 0 ? 1 : 0, Math.min(remainingAdults, capacity))
+      remainingAdults = Math.max(0, remainingAdults - adults)
+      const children = Math.max(0, Math.min(remainingChildren, Math.max(0, capacity - adults)))
+      remainingChildren = Math.max(0, remainingChildren - children)
+      return {
+        room_id: entry.id,
+        adults,
+        children
+      }
+    }).filter((entry) => entry.room_id)
+
     const { data, error: rpcError } = await rpc('create_online_booking', {
       p_slug: slug,
       payload: {
-        room_id: room.id,
+        booking_type: effectiveBookingType,
+        room_id: selectedRooms[0]?.id || room.id,
+        rooms: roomLines,
         check_in: checkIn,
         check_out: checkOut,
         guest_first_name: form.guest_first_name.trim(),
@@ -387,7 +428,7 @@ export default function BookingPage() {
     if (rpcError || !data?.success) {
       setSubmitting(false)
       const errMsg = data?.error || rpcError?.message
-      captureException(new Error(errMsg || 'Booking RPC failed'), { slug, roomId: room.id })
+      captureException(new Error(errMsg || 'Booking RPC failed'), { slug, roomId: room.id, bookingType: effectiveBookingType })
       setError(toGuestBookingError(errMsg))
       return
     }
@@ -436,15 +477,18 @@ export default function BookingPage() {
   const totalAmount = Number(room.total_price || 0)
   const hasContact = lodge?.phone || lodge?.email || lodge?.whatsapp_number
   const whatsappUrl = buildWhatsAppUrl(lodge?.whatsapp_number)
-  const maxOccupancy = Math.max(1, Number(room?.max_occupancy || 1))
+  const maxOccupancy = Math.max(1, selectedRooms.reduce((sum, entry) => sum + Number(entry?.max_occupancy || 0), 0) || Number(room?.max_occupancy || 1))
   const selectedAdults = clampGuestCount(form.adults, maxOccupancy)
   const maxChildren = Math.max(0, maxOccupancy - selectedAdults)
+  const stayLabel = isFullLodge ? 'Full lodge' : isMultiRoom ? `${selectedRooms.length} rooms` : `Room ${room.room_number}`
+  const roomTitle = isFullLodge ? 'Full Lodge' : isMultiRoom ? `${selectedRooms.length} rooms` : room.room_number
+  const roomTypeLabel = isFullLodge ? 'Exclusive use' : isMultiRoom ? 'Multi-room stay' : room.room_type
 
   return (
     <div className="min-h-screen overflow-x-hidden bg-transparent">
       <SeoMeta
-        title={`Book ${room.room_number} — ${lodge.lodge_name}`}
-        description={`Request a reservation for ${room.room_number} at ${lodge.lodge_name}. ${nights} night${nights !== 1 ? 's' : ''} from ${format(new Date(checkIn), 'd MMM yyyy')}.`}
+        title={`Book ${roomTitle} — ${lodge.lodge_name}`}
+        description={`Request a reservation for ${roomTitle} at ${lodge.lodge_name}. ${nights} night${nights !== 1 ? 's' : ''} from ${format(new Date(checkIn), 'd MMM yyyy')}.`}
         ogImage={roomPhotos[0] || lodge.hero_image}
         canonicalPath={`/${slug}/book`}
       />
@@ -532,9 +576,9 @@ export default function BookingPage() {
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
                     <span className="inline-flex rounded-full border border-[var(--line-strong)] bg-[var(--brand-soft)] px-2.5 py-1 text-[11px] font-bold uppercase tracking-[0.2em] text-[var(--brand)]">
-                      {room.room_type}
+                      {roomTypeLabel}
                     </span>
-                    <h2 className="font-display mt-3 break-words text-[1.9rem] text-[var(--text)] sm:text-3xl">{room.room_number}</h2>
+                    <h2 className="font-display mt-3 break-words text-[1.9rem] text-[var(--text)] sm:text-3xl">{roomTitle}</h2>
                   </div>
                   <div className="rounded-2xl bg-[var(--surface-strong)] px-3.5 py-3 text-right sm:px-4">
                     <div className="text-xl font-extrabold text-[var(--text)] sm:text-2xl">
@@ -562,11 +606,25 @@ export default function BookingPage() {
                   </span>
                   <span className="inline-flex items-center gap-2 rounded-full bg-[var(--surface-soft)] px-3 py-1.5">
                     <Users size={14} />
-                    Up to {room.max_occupancy} guests
+                    Up to {maxOccupancy} guests
                   </span>
                 </div>
 
-                {Array.isArray(room.amenities) && room.amenities.length > 0 && (
+                {isMultiRoom && !isFullLodge && (
+                  <div className="mt-4 rounded-2xl border border-[var(--line)] bg-white/70 p-4">
+                    <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-[var(--muted)]">Selected rooms</p>
+                    <div className="mt-3 space-y-2">
+                      {selectedRooms.map((entry) => (
+                        <div key={entry.id} className="flex justify-between gap-3 text-sm">
+                          <span className="font-semibold text-[var(--text)]">{entry.room_number}</span>
+                          <span className="text-right text-[var(--muted)]">{entry.room_type}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {Array.isArray(room.amenities) && room.amenities.length > 0 && !isMultiRoom && !isFullLodge && (
                   <div className="mt-4 rounded-2xl border border-[var(--line)] bg-white/70 p-4">
                     <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-[var(--muted)]">Room amenities</p>
                     <div className="mt-3 flex flex-wrap gap-2">
@@ -639,7 +697,7 @@ export default function BookingPage() {
 
             <div className="mt-5 rounded-[24px] border border-[var(--line)] bg-[var(--surface-soft)] p-4">
               <p className="text-sm font-semibold text-[var(--text)]">
-                {format(new Date(checkIn), 'd MMM')} to {format(new Date(checkOut), 'd MMM yyyy')} · Room {room.room_number}
+                {format(new Date(checkIn), 'd MMM')} to {format(new Date(checkOut), 'd MMM yyyy')} · {stayLabel}
               </p>
               <p className="mt-1 text-sm text-[var(--muted)]">
                 {nights} night{nights !== 1 ? 's' : ''} · estimated total {lodge.currency}{totalAmount.toLocaleString()}

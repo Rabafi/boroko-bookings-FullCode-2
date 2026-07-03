@@ -9,6 +9,14 @@ const SystemHealthPanel = lazy(() => import('./SystemHealthPanel'))
 const SubscriptionAccessPanel = lazy(() => import('./SubscriptionAccessPanel'))
 
 const BOOKING_SITE_BASE = 'https://borokoonlinebookings.netlify.app'
+const PUBLIC_OFFER_DEFAULTS = {
+  public_offer_rooms: true,
+  public_offer_multi_room: true,
+  public_offer_full_lodge: false,
+  public_offer_day_use: false,
+  public_offer_events: false
+}
+const PUBLIC_OFFER_DEFAULT_TRUE = new Set(['public_offer_rooms', 'public_offer_multi_room'])
 const EMAIL_PROVIDER_PRESETS = {
   gmail: {
     label: 'Gmail',
@@ -480,10 +488,7 @@ export default function Settings() {
 
   useEffect(() => {
     if (globalSettings) {
-      let s = globalSettings
-      if (s && !s.slug && s.lodge_name) {
-        s = { ...s, slug: s.lodge_name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') }
-      }
+      const s = normalizeSettingsForForm(globalSettings)
       setForm(s)
       if (!savedFormSnapshotRef.current) {
         savedFormSnapshotRef.current = JSON.parse(JSON.stringify(s))
@@ -495,10 +500,7 @@ export default function Settings() {
     }
 
     window.api.settings.get().then((sn) => {
-      let s = sn
-      if (s && !s.slug && s.lodge_name) {
-        s = { ...s, slug: s.lodge_name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') }
-      }
+      const s = normalizeSettingsForForm(sn)
       setForm(s)
       if (!savedFormSnapshotRef.current) {
         savedFormSnapshotRef.current = JSON.parse(JSON.stringify(s))
@@ -511,10 +513,14 @@ export default function Settings() {
 
   const normalizeSettingsForForm = (settings) => {
     if (!settings) return settings
-    if (!settings.slug && settings.lodge_name) {
-      return { ...settings, slug: settings.lodge_name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') }
+    const normalized = {
+      ...PUBLIC_OFFER_DEFAULTS,
+      ...settings
     }
-    return settings
+    if (!settings.slug && settings.lodge_name) {
+      return { ...normalized, slug: settings.lodge_name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') }
+    }
+    return normalized
   }
 
   const applySavedSettings = (settings) => {
@@ -1464,6 +1470,32 @@ export default function Settings() {
                   <p className="text-xs text-gray-400">
                     Save your settings to publish the page. Booking requests from this public lodge URL will appear as <strong>Pending</strong> in your Bookings screen for you to confirm or reject.
                   </p>
+
+                  <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
+                    <p className="text-xs font-semibold uppercase tracking-wider text-gray-500">What guests can request online</p>
+                    <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                      {[
+                        ['public_offer_rooms', 'Room stays', 'Guests can request one room.'],
+                        ['public_offer_multi_room', 'Multiple rooms', 'Families and companies can request several rooms together.'],
+                        ['public_offer_full_lodge', 'Full lodge', 'Guests can request exclusive lodge use.'],
+                        ['public_offer_day_use', 'Day use', 'Show configured pool, braai, and facility packages.'],
+                        ['public_offer_events', 'Events & venues', 'Show venue and event request options.']
+                      ].map(([key, label, hint]) => (
+                        <label key={key} className="flex items-start gap-3 rounded-lg border border-gray-200 bg-white p-3 text-sm">
+                          <input
+                            type="checkbox"
+                            className="mt-1"
+                            checked={PUBLIC_OFFER_DEFAULT_TRUE.has(key) ? form?.[key] !== false : form?.[key] === true}
+                            onChange={(e) => set(key, e.target.checked)}
+                          />
+                          <span>
+                            <span className="block font-semibold text-gray-800">{label}</span>
+                            <span className="mt-0.5 block text-xs leading-5 text-gray-500">{hint}</span>
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
 
                   <div className="grid gap-4 border-t border-gray-200 pt-4 lg:grid-cols-2">
                     <div className="space-y-4">

@@ -53,7 +53,7 @@ GitHub Actions currently runs the production guardrails, critical queue/POS suit
 
 ## Releases
 
-- Desktop package version: `1.5.2`.
+- Desktop package manifest version: `1.5.5` in this checkout. Do not infer that this exact version has been published.
 - Desktop releases publish to `Rabafi/boroko-bookings-releases`.
 - Legacy POS package version: `1.1.0`.
 - Legacy POS releases publish separately to `Rabafi/boroko-pos-legacy-releases`.
@@ -62,3 +62,12 @@ GitHub Actions currently runs the production guardrails, critical queue/POS suit
 The desktop GitHub workflow is `.github/workflows/publish-desktop-release.yml`.
 
 Never infer that a migration is deployed merely because it exists locally.
+
+## Current Offline/Sync Truth
+
+- Main desktop sync queue storage is JSON/JSONL, not SQLite.
+- Critical queued mutations replay Supabase RPCs with stable operation or idempotency keys.
+- Server-side idempotency infrastructure exists for key financial/offline paths, including `financial_operation_idempotency`.
+- Manager PWA offline state is a limited, device-local lodge-scoped queue and blocks high-risk financial mutations.
+- Legacy POS has its own queue and an authenticated local mesh; it must still be verified separately from the desktop app.
+- Passing local regression tests does not prove live Supabase deployment, packaged-installer smoke testing, or release publication.

@@ -21,7 +21,8 @@ Or run inside this folder:
 - The app uses Supabase Auth plus Boroko app-session validation.
 - The PWA is not globally read-only. Approved operational changes use Supabase RPCs and capability checks.
 - High-risk payment, refund, customer-credit allocation, booking-reschedule, and similar financial actions remain desktop-only unless a dedicated server-authorized PWA contract explicitly permits them.
-- Some approved operational actions can be queued in the PWA's device-local queue. Pending local state is not authoritative financial state.
+- Some approved operational actions can be queued in the PWA's device-local queue. The queue is lodge-scoped browser `localStorage`, not IndexedDB or the desktop queue.
+- High-risk mutation types are blocked while offline and unresolved queue items are surfaced after repeated failures. Pending local state is not authoritative financial state.
 - Offline queue health shown in the PWA is device-local only. It does not replace the desktop System Health panel.
 - Keep service-role keys out of this app. It must use only public browser-safe environment values.
 

@@ -1,6 +1,8 @@
 # Legacy POS Verification And Fix Handoff
 
 > **Status: historical and substantially superseded.** This handoff records the 2026-06-13 state. Later POS v3 migrations, Legacy POS updater/release work, mesh changes, and regression work changed many items below. Do not implement its remaining-fix list without re-verifying current code. See [../PROJECT_STATE.md](../PROJECT_STATE.md).
+>
+> Current-state note, 2026-07-03: `npm run legacy-pos:test` passed 216 checks. The suite now includes coverage for shift idempotency column order, multi-line return ledger behavior, desktop offline partial returns queuing `create_pos_return_v3`, authenticated local lodge mesh participation, update controls, inventory diagnostics, low-resource behavior, and release hardening. Treat the P0/P1 list below as historical evidence, not an open action list.
 
 Date: 2026-06-13
 

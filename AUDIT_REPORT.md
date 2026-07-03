@@ -1,6 +1,8 @@
 # Boroko Bookings - Comprehensive Security & UX Audit Report
 
-> Historical snapshot — generated 2026-04-10. This is not the current project status or active issue list. Several findings and recommendations were superseded by later migrations and releases. Start with [PROJECT_STATE.md](PROJECT_STATE.md) and verify every claim against current code.
+> Historical snapshot — generated 2026-04-10. This is not the current project status or active issue list. Several findings, file references, and recommendations were superseded by later domain-module refactors, migrations, queue hardening, Legacy POS changes, and release work. Start with [PROJECT_STATE.md](PROJECT_STATE.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), and current code before using anything below.
+>
+> Current-state correction as of 2026-07-03: external offline/sync reports that claimed SQLite sync queues, no server-side idempotency table, unauthenticated Legacy POS mesh, and a direct `bookings.amount_paid` payment fallback were verified against the repository and found mostly false for this checkout. The current main desktop queue is JSON/JSONL-backed, key financial/offline paths use server-side idempotency infrastructure, the Legacy POS mesh uses signed local requests, and local regression suites passed. This does not prove live Supabase deployment or production release publication.
 
 **Generated:** April 10, 2026  
 **Audit Type:** Combined Security, Performance, and UX Analysis  
@@ -10,7 +12,7 @@
 
 ## Executive Summary
 
-This report consolidates findings from a comprehensive security and UX audit of the Boroko Bookings system. All **P0 (Critical)** and **P1 (High Priority)** issues have been identified and resolved. P2 and P3 improvements have been implemented. The system is now production-ready with enhanced financial integrity, offline sync reliability, and user experience.
+This report consolidates findings from an April 2026 security and UX audit of the Boroko Bookings system. Treat its status language as point-in-time evidence only. It does not prove the current repository is production-ready, and it does not replace the current ship-ready runbook, linked-database verification, or packaged-installer smoke tests.
 
 **Key Achievements:**
 - ✅ 5 Critical (P0) security vulnerabilities fixed
@@ -428,7 +430,7 @@ webPreferences: {
 ## Part 6: Architecture & Design Improvements
 
 ### Offline Sync Queue
-**Status:** Enhanced with idempotency and conflict detection
+**Historical status:** Enhanced with idempotency and conflict detection as of this April snapshot. Current queue behavior has since moved through later refactors and hardening; verify against `src/main/domains/syncStore.js`, `src/main/domains/infrastructure.js`, `src/shared/syncQueue.js`, and current migrations.
 
 The offline sync queue now:
 - ✅ Stores operation type + RPC function name + payload
@@ -509,11 +511,7 @@ All financial operations:
 ## Part 8: Known Limitations & Future Work
 
 ### Current Limitations
-1. **No financial audit trail** - Consider adding transaction/audit log table
-2. **No idempotency key persistence** - Lost on app restart (mitigated by fallback signature)
-3. **POS not fully linked to bookings** - Revenue tracking incomplete
-4. **No concurrent booking lock** - Race conditions possible if multiple users book simultaneously
-5. **No automatic conflict resolution** - Staff must manually handle sync failures
+These April limitations are not current instructions. Several were superseded by later work, including `financial_audit_log`, `financial_operation_idempotency`, POS v3 linkage/cash-up work, customer-credit/reschedule hardening, and offline queue/journal changes. For current risks, use [PROJECT_STATE.md](PROJECT_STATE.md).
 
 ### Recommended Future Improvements
 1. **Add transaction audit logging** - Track all financial operations with user/timestamp
@@ -542,7 +540,7 @@ All financial operations:
 - [x] Components created and integrated
 - [x] Code committed to git
 
-**Status:** READY FOR PRODUCTION TESTING ✅
+**Historical status:** READY FOR PRODUCTION TESTING as of this April snapshot. Current production readiness must be determined from [PROJECT_STATE.md](PROJECT_STATE.md), [docs/SHIP_READY_RUNBOOK.md](docs/SHIP_READY_RUNBOOK.md), current tests, packaged smoke tests, and linked Supabase verification.
 
 ---
 

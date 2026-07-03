@@ -1,3 +1,17 @@
+## Boroko Bookings 1.5.5
+
+### Highlights
+- Main desktop long-outage and mesh hardening is present in the repository.
+- Desktop sync queue state is journaled with exportable local operation history.
+- Offline queue coverage now includes broader desktop lodge operations while preserving Supabase RPC replay as final authority.
+- Accommodation room quotations can store multiple room lines and convert into grouped accommodation invoices.
+- External offline/sync audit claims were verified on 2026-07-03; the severe SQLite/no-idempotency/unauthenticated-mesh findings were not true for the current checkout.
+
+### Operator Notes
+- Local estimates remain pending until cloud replay succeeds.
+- Formal refund settlement, reports/export authority, admin work, license activation, and POS catalog publication remain online-only.
+- Do not treat this changelog entry as proof that desktop, PWA, booking site, Legacy POS, or Supabase changes have all been published.
+
 ## Boroko Bookings 1.5.3
 
 ### Highlights

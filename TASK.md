@@ -6,6 +6,8 @@ There is no single permanent repository-wide active task in this file.
 
 The previous deposit and first-generation offline-idempotency task has been superseded by later implementation. Do not reapply it.
 
+2026-07-03 note: external offline/sync audit notes were checked against the current repository. Severe claims about SQLite sync queues, no server-side idempotency, unauthenticated Legacy POS mesh, and direct booking-payment table writes were mostly false for this checkout. Use [PROJECT_STATE.md](PROJECT_STATE.md) for the current verified state.
+
 For current orientation:
 
 - Read [PROJECT_STATE.md](PROJECT_STATE.md).

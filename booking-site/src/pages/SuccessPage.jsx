@@ -85,12 +85,23 @@ export default function SuccessPage() {
   }
 
   const calendarUrl = buildCalendarUrl(booking)
+  const stayLabel = booking.booking_type === 'full_lodge'
+    ? 'Full Lodge'
+    : Number(booking.room_count || 0) > 1
+      ? `${booking.room_count} rooms`
+      : booking.room_number
+  const stayType = booking.booking_type === 'full_lodge'
+    ? 'Exclusive use'
+    : Number(booking.room_count || 0) > 1
+      ? 'Multi-room stay'
+      : booking.room_type
+  const stayDescription = stayType ? `${stayLabel} (${stayType})` : stayLabel
 
   return (
     <div className="min-h-screen overflow-x-hidden bg-transparent px-4 py-8 sm:py-12">
       <SeoMeta
         title={`Booking Request Sent — ${booking.lodge_name}`}
-        description={`Your reservation request for ${booking.room_number} at ${booking.lodge_name} has been received. Reference: ${booking.reference}.`}
+        description={`Your reservation request for ${stayLabel} at ${booking.lodge_name} has been received. Reference: ${booking.reference}.`}
         noindex
       />
       <div className="mx-auto max-w-2xl">
@@ -129,8 +140,8 @@ export default function SuccessPage() {
                     <span className="break-words font-semibold text-[var(--text)] text-right">{booking.lodge_name}</span>
                   </div>
                   <div className="flex justify-between gap-4">
-                    <span className="text-[var(--muted)]">Room</span>
-                    <span className="break-words font-semibold text-[var(--text)] text-right">{booking.room_number} ({booking.room_type})</span>
+                    <span className="text-[var(--muted)]">Stay</span>
+                    <span className="break-words font-semibold text-[var(--text)] text-right">{stayDescription}</span>
                   </div>
                   <div className="flex justify-between gap-4">
                     <span className="text-[var(--muted)]">Check-in</span>

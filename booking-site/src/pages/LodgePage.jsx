@@ -13,6 +13,7 @@ import {
   Search,
   ShieldCheck,
   Sparkles,
+  TentTree,
   Users
 } from 'lucide-react'
 import { isMissingRpcError, readSessionCache, rpc, writeSessionCache } from '../lib/publicApi.js'
@@ -57,6 +58,7 @@ function SkeletonCard() {
 const LODGE_SHELL_TTL_MS = 10 * 60 * 1000
 const LODGE_MEDIA_TTL_MS = 30 * 60 * 1000
 const ROOM_RESULTS_TTL_MS = 2 * 60 * 1000
+const PUBLIC_OFFERS_TTL_MS = 10 * 60 * 1000
 
 export default function LodgePage() {
   const { slug } = useParams()
@@ -93,6 +95,8 @@ export default function LodgePage() {
   const [searched, setSearched] = useState(false)
   const [sortBy, setSortBy] = useState('recommended')
   const [online, setOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true)
+  const [offers, setOffers] = useState(null)
+  const [selectedRoomIds, setSelectedRoomIds] = useState([])
 
   useEffect(() => {
     const onOnline = () => setOnline(true)
@@ -220,6 +224,19 @@ export default function LodgePage() {
     }
   }, [slug])
 
+  useEffect(() => {
+    const cacheKey = `booking-offers:${slug}`
+    const cachedOffers = readSessionCache(cacheKey, PUBLIC_OFFERS_TTL_MS)
+    if (cachedOffers?.success) setOffers(cachedOffers)
+    let active = true
+    rpc('get_public_booking_offers', { p_slug: slug }).then(({ data }) => {
+      if (!active || !data?.success) return
+      writeSessionCache(cacheKey, data)
+      setOffers(data)
+    }).catch(() => {})
+    return () => { active = false }
+  }, [slug])
+
   async function handleSearch(event) {
     event.preventDefault()
 
@@ -239,6 +256,7 @@ export default function LodgePage() {
 
     if (hasCachedRooms) {
       setRooms(cachedRooms)
+      setSelectedRoomIds([])
       setLoadingRooms(false)
     } else {
       setRooms(null)
@@ -273,6 +291,7 @@ export default function LodgePage() {
     const roomList = Array.isArray(data.rooms) ? data.rooms : []
     writeSessionCache(roomCacheKey, roomList)
     setRooms(roomList)
+    setSelectedRoomIds([])
     setLoadingRooms(false)
     trackSearch(slug, checkIn, checkOut, roomList.length)
   }
@@ -292,6 +311,36 @@ export default function LodgePage() {
       {
         state: bookingState
       }
+    )
+  }
+
+  function handleBookSelected({ fullLodge = false } = {}) {
+    const selectedRooms = fullLodge
+      ? [...(rooms || [])]
+      : (rooms || []).filter((room) => selectedRoomIds.includes(room.id))
+    if (selectedRooms.length === 0) return
+    const totalPrice = selectedRooms.reduce((sum, room) => sum + Number(room.total_price || 0), 0)
+    const primary = selectedRooms[0]
+    const bookingState = {
+      lodge,
+      room: {
+        ...primary,
+        id: selectedRooms.map((room) => room.id).join(','),
+        room_number: fullLodge ? 'Full Lodge' : `${selectedRooms.length} rooms`,
+        room_type: fullLodge ? 'Exclusive use' : 'Multi-room stay',
+        total_price: totalPrice,
+        max_occupancy: selectedRooms.reduce((sum, room) => sum + Number(room.max_occupancy || 0), 0),
+        photos: selectedRooms.flatMap((room) => Array.isArray(room.photos) ? room.photos : (room.photo ? [room.photo] : [])).slice(0, 8)
+      },
+      rooms: selectedRooms,
+      bookingType: fullLodge ? 'full_lodge' : selectedRooms.length > 1 ? 'multi_room' : 'room',
+      checkIn,
+      checkOut,
+      nights
+    }
+    navigate(
+      `/${slug}/book?checkIn=${encodeURIComponent(checkIn)}&checkOut=${encodeURIComponent(checkOut)}`,
+      { state: bookingState }
     )
   }
 
@@ -325,6 +374,7 @@ export default function LodgePage() {
   const websiteUrl = sanitizeWebsiteUrl(lodge?.website)
   const hasContact = lodge?.phone || lodge?.email || websiteUrl || lodge?.whatsapp_number
   const whatsappUrl = buildWhatsAppUrl(lodge?.whatsapp_number)
+  const enabledOffers = offers?.offers || {}
 
   return (
     <div className="min-h-screen overflow-x-hidden bg-transparent">
@@ -501,8 +551,8 @@ export default function LodgePage() {
                     </>
                   ) : (
                     <>
-                      <Search size={15} />
-                      Search rooms
+                  <Search size={15} />
+                      Search availability
                     </>
                   )}
                 </span>
@@ -561,24 +611,54 @@ export default function LodgePage() {
             </div>
 
             {rooms.length > 1 && (
-              <div className="mb-5 flex flex-wrap gap-2">
-                {[
-                  { key: 'recommended', label: 'Recommended', icon: Sparkles },
-                  { key: 'price', label: 'Lowest price', icon: ArrowDown },
-                  { key: 'guests', label: 'Most guests', icon: Users },
-                ].map(({ key, label, icon: Icon }) => (
-                  <button
-                    key={key}
-                    type="button"
-                    onClick={() => setSortBy(key)}
-                    className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${sortBy === key ? 'border-[var(--brand)] bg-[var(--brand-soft)] text-[var(--brand)]' : 'border-[var(--line)] bg-white text-[var(--muted)] hover:bg-[var(--surface-soft)]'}`}
-                    aria-pressed={sortBy === key}
-                  >
-                    <Icon size={12} />
-                    {label}
-                  </button>
-                ))}
-              </div>
+              <>
+                <div className="mb-5 flex flex-wrap gap-2">
+                  {[
+                    { key: 'recommended', label: 'Recommended', icon: Sparkles },
+                    { key: 'price', label: 'Lowest price', icon: ArrowDown },
+                    { key: 'guests', label: 'Most guests', icon: Users },
+                  ].map(({ key, label, icon: Icon }) => (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => setSortBy(key)}
+                      className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${sortBy === key ? 'border-[var(--brand)] bg-[var(--brand-soft)] text-[var(--brand)]' : 'border-[var(--line)] bg-white text-[var(--muted)] hover:bg-[var(--surface-soft)]'}`}
+                      aria-pressed={sortBy === key}
+                    >
+                      <Icon size={12} />
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                {enabledOffers.multi_room !== false && (
+                  <div className="mb-5 rounded-[28px] border border-[var(--line)] bg-white p-4">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-[var(--muted)]">Group Stay</p>
+                        <p className="mt-1 text-sm text-[var(--muted)]">Select several rooms and send one request for a family, team, or company.</p>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={selectedRoomIds.length === 0}
+                        onClick={() => handleBookSelected()}
+                        className="brand-button rounded-2xl px-5 py-3 text-sm font-extrabold disabled:opacity-50"
+                      >
+                        Request {selectedRoomIds.length || ''} selected room{selectedRoomIds.length === 1 ? '' : 's'}
+                      </button>
+                    </div>
+                    {enabledOffers.full_lodge && (
+                      <button
+                        type="button"
+                        onClick={() => handleBookSelected({ fullLodge: true })}
+                        className="mt-3 inline-flex items-center gap-2 rounded-2xl border border-[var(--line)] bg-[var(--surface-soft)] px-4 py-2.5 text-sm font-extrabold text-[var(--text)]"
+                      >
+                        <TentTree size={15} />
+                        Request full lodge for these dates
+                      </button>
+                    )}
+                  </div>
+                )}
+              </>
             )}
 
             <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
@@ -589,18 +669,72 @@ export default function LodgePage() {
                   return 0
                 })
                 .map((room) => (
-                <RoomCard
-                  key={room.id}
-                  room={room}
-                  currency={lodge.currency}
-                  nights={nights}
-                  onBook={handleBook}
-                />
+                <div key={room.id} className="relative">
+                  {enabledOffers.multi_room !== false && (
+                    <label className="absolute left-3 top-3 z-10 inline-flex items-center gap-2 rounded-full bg-white/95 px-3 py-2 text-xs font-bold text-[var(--text)] shadow-sm">
+                      <input
+                        type="checkbox"
+                        checked={selectedRoomIds.includes(room.id)}
+                        onChange={(event) => setSelectedRoomIds((current) => event.target.checked
+                          ? [...new Set([...current, room.id])]
+                          : current.filter((id) => id !== room.id))}
+                      />
+                      Select
+                    </label>
+                  )}
+                  <RoomCard
+                    room={room}
+                    currency={lodge.currency}
+                    nights={nights}
+                    onBook={handleBook}
+                  />
+                </div>
               ))}
             </div>
             </section>
           )}
         </div>
+
+        {offers?.success && (enabledOffers.day_use || enabledOffers.events) && (
+          <section className="surface-card mt-8 rounded-[32px] p-5 sm:p-8">
+            <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-[var(--muted)]">More ways to visit</p>
+            <div className="mt-5 grid gap-4 md:grid-cols-2">
+              {enabledOffers.day_use && (
+                <div className="rounded-[24px] border border-[var(--line)] bg-white p-5">
+                  <h3 className="font-display text-2xl text-[var(--text)]">Day use</h3>
+                  <p className="mt-2 text-sm leading-7 text-[var(--muted)]">Pool, braai, and facility packages configured by this lodge.</p>
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    {(offers.day_use?.templates || []).slice(0, 6).map((template) => (
+                      <span key={template.key || template.name} className="rounded-full bg-[var(--surface-soft)] px-3 py-1.5 text-xs font-semibold text-[var(--muted)]">
+                        {template.name || template.key}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {enabledOffers.events && (
+                <div className="rounded-[24px] border border-[var(--line)] bg-white p-5">
+                  <h3 className="font-display text-2xl text-[var(--text)]">Events & venues</h3>
+                  <p className="mt-2 text-sm leading-7 text-[var(--muted)]">Send a venue or event request for meetings, braais, parties, or private gatherings.</p>
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    {whatsappUrl && (
+                      <a href={whatsappUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-sm font-extrabold text-emerald-800">
+                        <MessageCircle size={15} />
+                        WhatsApp
+                      </a>
+                    )}
+                    {lodge?.email && (
+                      <a href={`mailto:${lodge.email}`} className="inline-flex items-center gap-2 rounded-2xl border border-[var(--line)] bg-[var(--surface-soft)] px-4 py-2.5 text-sm font-extrabold text-[var(--text)]">
+                        <Mail size={15} />
+                        Email
+                      </a>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          </section>
+        )}
 
         {!searched && (
           <div className="surface-card mt-8 rounded-[32px] p-8 text-center">

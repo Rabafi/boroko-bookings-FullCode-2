@@ -1,6 +1,6 @@
 # Boroko Bookings Agent Guide
 
-Last reviewed: 2026-06-20
+Last reviewed: 2026-07-03
 
 This file contains durable engineering rules. It is not a task tracker.
 
@@ -11,6 +11,8 @@ Before changing the system, read:
 - [docs/SHIP_READY_RUNBOOK.md](docs/SHIP_READY_RUNBOOK.md) before releases.
 
 Historical audits and implementation plans are evidence from a point in time, not current instructions unless the user explicitly activates them.
+
+If an external audit claims severe offline/sync issues, first verify the current file layout. As of 2026-07-03, the main desktop queue is JSON/JSONL-backed rather than SQLite, the repository contains server-side idempotency infrastructure for key financial/offline paths, the Manager PWA queue is a limited device-local browser queue, and Legacy POS mesh traffic is signed/authenticated. Still verify live Supabase deployment separately when deployment state matters.
 
 ## Product standard
 

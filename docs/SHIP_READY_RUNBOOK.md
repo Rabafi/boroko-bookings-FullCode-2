@@ -22,6 +22,8 @@ Do not publish if any required check is red.
 
 Run every feature-specific regression script present in `package.json` for the area being released, including customer-credit/reschedule or report-export tests when those changes are part of the release.
 
+For offline/sync or mesh changes, explicitly verify the current implementation rather than relying on older audit reports. In this checkout, the desktop queue is JSON/JSONL-backed, the Manager PWA has a limited localStorage queue, and Legacy POS has its own authenticated mesh and queue. A report claiming SQLite sync queues, no idempotency table, or unauthenticated mesh should be treated as stale until proven against current code.
+
 For customer-credit/reschedule releases, manually verify from the packaged desktop installer:
 
 - advance-payment receipt creation without a booking or room hold;
@@ -54,6 +56,7 @@ Build and publish Legacy POS separately from the desktop installer. Verify its p
 - Smoke-test the current authoritative booking, payment, POS order/return/cash-up, inventory, authentication, and public online-booking RPCs affected by the release.
 - For financial SQL, test duplicate replay, conflicting idempotency payloads, concurrent mutation, rollback behavior, and lodge/outlet isolation.
 - For customer credit, test concurrent allocation versus allocation/refund, reversal-once enforcement, booking/customer/lodge consistency, and exact cash-flow classification.
+- Do not treat local regression success as proof that the live Supabase project has the matching functions, grants, RLS policies, and migration state.
 
 ## Deployment matrix
 

@@ -1,6 +1,6 @@
 # Manager PWA UI/UX Final Implementation Plan
 
-> **Status: partially implemented in the uncommitted worktree as of 2026-06-20.** Navigation, inbox, notification, freshness, dashboard, guest, reporting, and API files have active changes. Use this as design intent and inspect the current diff before doing more work.
+> **Status: historical design plan from 2026-06-20.** Some navigation, inbox, notification, freshness, dashboard, guest, reporting, and API work has since moved into the repository, while other ideas may be stale. Use this as design intent only; inspect [../PROJECT_STATE.md](../PROJECT_STATE.md), current `manager-pwa/` code, and current diffs before doing more work.
 
 ## Purpose
 
