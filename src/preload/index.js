@@ -186,6 +186,7 @@ const api = {
   },
   app: {
     getVersion: () => ipcRenderer.invoke('app:getVersion'),
+    getProduct: () => ipcRenderer.invoke('app:getProduct'),
     notify: (payload) => ipcRenderer.invoke('app:notify', payload),
     logRendererError: (payload) => ipcRenderer.invoke('app:logRendererError', payload),
     getRendererErrors: (limit) => ipcRenderer.invoke('app:getRendererErrors', limit),

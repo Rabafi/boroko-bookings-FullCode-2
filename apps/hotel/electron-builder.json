@@ -1,0 +1,30 @@
+{
+  "appId": "com.boroko.hotel",
+  "productName": "Boroko Hotel",
+  "artifactName": "Boroko-Hotel-${version}-${arch}.${ext}",
+  "directories": { "output": "dist/hotel" },
+  "asar": true,
+  "files": [
+    "out/**/*",
+    "src/main/assets/**/*",
+    "package.json",
+    "!out/**/*.map",
+    "!**/.claude/**",
+    "!apps/**",
+    "!packages/**",
+    "!legacy-pos/**",
+    "!booking-site/**",
+    "!manager-pwa/**",
+    "!marketing-site/**",
+    "!tests/**",
+    "!Playwright tests/**",
+    "!supabase/**",
+    "!docs/**"
+  ],
+  "extraResources": [
+    { "from": "src/main/assets", "to": "assets" },
+    { "from": "apps/hotel/product.json", "to": "product.json" }
+  ],
+  "extraMetadata": { "name": "boroko-hotel", "main": "out/main/index.js" },
+  "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": false, "deleteAppDataOnUninstall": false, "shortcutName": "Boroko Hotel", "uninstallDisplayName": "Boroko Hotel" }
+}

@@ -10,7 +10,26 @@ This repository is the single Boroko platform workspace. It owns one shared Supa
 | `apps/hotel` | Boroko Hotel | Hotel-grade PMS application | Enterprise hotel capability, staged for physical extraction |
 | `apps/hospitality-pos` | Boroko Restaurant & Bar POS | Restaurant + Bar or Bar Only configuration | Restaurant-only capability, staged for physical extraction |
 
-The folders are product and release boundaries. They are not evidence that every product has already been copied into an independent codebase.
+Each product folder is a runnable npm workspace with its own Electron packaging identity. The runtime source is intentionally shared rather than copied: physical installer separation must not fork the financial, inventory, offline, or Supabase contract.
+
+## Run and package a product
+
+Run one product in development:
+
+```powershell
+npm run dev --workspace=@boroko/lodge-camp
+npm run dev --workspace=@boroko/hotel
+npm run dev --workspace=@boroko/hospitality-pos
+```
+
+Build or create an installer for one product:
+
+```powershell
+npm run build --workspace=@boroko/hotel
+npm run dist --workspace=@boroko/hospitality-pos
+```
+
+Each product has a distinct Windows application ID, display name, shortcut name, installer artifact name, and user-data directory. This prevents a Hotel installer from overwriting a Lodge & Camp installation.
 
 ## Shared backend rule
 
@@ -19,9 +38,8 @@ The folders are product and release boundaries. They are not evidence that every
 ## Extraction order
 
 1. Preserve and test the shared desktop foundation.
-2. Extract the Lodge & Camp entry point and release identity.
-3. Extract the Hotel entry point and release identity.
-4. Extract the Hospitality POS entry point and its Restaurant + Bar / Bar Only onboarding modes.
-5. Move reusable UI, offline, POS, and configuration code into `packages/` only after two products actually consume it.
+2. Build each product through its own workspace and installer identity.
+3. Complete product-specific onboarding copy and feature constraints.
+4. Move reusable UI, offline, POS, and configuration code into `packages/` only after two products actually consume it.
 
-The local-only `bar-pos/` prototype is intentionally not a sellable product boundary. It remains a prototype until its sales, stock, refunds, permissions, cash-up, and audit flows use the same authoritative RPC contracts as the platform.
+The local-only `bar-pos/` prototype was removed. Boroko Restaurant & Bar POS is built only from the shared, authoritative POS, stock, refund, cash-up, audit, and offline-replay contracts.

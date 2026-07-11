@@ -3,15 +3,20 @@ import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 import react from '@vitejs/plugin-react'
 
 const allowedRendererHost = process.env.ELECTRON_RENDERER_ALLOWED_HOST?.trim()
+const productId = process.env.BOROKO_PRODUCT?.trim() || 'lodge-camp'
+const productDefine = { __BOROKO_PRODUCT__: JSON.stringify(productId) }
 
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin()]
+    plugins: [externalizeDepsPlugin()],
+    define: productDefine
   },
   preload: {
-    plugins: [externalizeDepsPlugin()]
+    plugins: [externalizeDepsPlugin()],
+    define: productDefine
   },
   renderer: {
+    define: productDefine,
     server: allowedRendererHost ? { allowedHosts: [allowedRendererHost] } : {},
     resolve: {
       alias: {

@@ -2,5 +2,10 @@
   "name": "@boroko/hospitality-pos",
   "version": "0.1.0",
   "private": true,
-  "description": "Boroko Restaurant & Bar POS product boundary"
+  "description": "Boroko Restaurant & Bar POS product",
+  "scripts": {
+    "dev": "node ../../scripts/product-app.mjs hospitality-pos dev",
+    "build": "node ../../scripts/product-app.mjs hospitality-pos build",
+    "dist": "node ../../scripts/product-app.mjs hospitality-pos dist"
+  }
 }

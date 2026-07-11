@@ -4,6 +4,11 @@ import { Building2, Phone, Mail, MapPin, Globe, Hash, CheckCircle, Upload, Image
 import { useProfiles } from '../app-context'
 import borokoLogoDark from '../assets/boroko-bookings-logo-dark.png'
 import { PROPERTY_TYPE_ORDER, PROPERTY_TYPE_LABELS, PROPERTY_TYPE_DESCRIPTIONS, propertyTypeToBusinessType } from '../../../shared/propertyTypes'
+import { getProductDefinition, getRuntimeProductId } from '../../../shared/productIdentity'
+
+const BUILD_PRODUCT = getProductDefinition(getRuntimeProductId())
+const ALLOWED_PROPERTY_TYPES = new Set(BUILD_PRODUCT.allowedPropertyTypes)
+const PRODUCT_PROPERTY_TYPES = PROPERTY_TYPE_ORDER.filter((propertyType) => ALLOWED_PROPERTY_TYPES.has(propertyType))
 
 export default function Setup({ onComplete }) {
   const navigate = useNavigate()
@@ -17,8 +22,8 @@ export default function Setup({ onComplete }) {
   const fileInputRef = useRef(null)
   const [admin, setAdmin] = useState({ name: '', email: '', password: '', confirm: '' })
   const [form, setForm] = useState({
-    property_type: '',
-    business_type: 'lodge',
+    property_type: PRODUCT_PROPERTY_TYPES.length === 1 ? PRODUCT_PROPERTY_TYPES[0] : '',
+    business_type: PRODUCT_PROPERTY_TYPES.length === 1 ? propertyTypeToBusinessType(PRODUCT_PROPERTY_TYPES[0]) : 'lodge',
     lodge_name: '',
     company_name: '',
     address: '',
@@ -236,7 +241,7 @@ export default function Setup({ onComplete }) {
           <div className="mb-4 flex h-24 w-80 max-w-full items-center">
             <img src={borokoLogoDark} alt="Boroko Bookings" className="max-h-full max-w-full object-contain" draggable="false" />
           </div>
-          <h1 className="text-2xl font-bold">Welcome to Boroko Bookings</h1>
+          <h1 className="text-2xl font-bold">Welcome to {BUILD_PRODUCT.name}</h1>
           <p className="text-green-200 text-sm mt-1">{stepSubtitle[step]}</p>
           {activeProfile && (
             <div className="mt-4 rounded-xl border border-white/20 bg-white/10 px-4 py-3">
@@ -275,9 +280,9 @@ export default function Setup({ onComplete }) {
           {/* ── Step 1: Property Type ── */}
           {step === 1 && (
             <div className="space-y-4">
-              <p className="text-sm text-gray-600">Select the type that best describes your operation. You can change this later in Settings.</p>
+              <p className="text-sm text-gray-600">Select the type that best describes your operation. This product only shows compatible choices.</p>
               <div className="grid grid-cols-2 gap-2.5">
-                {PROPERTY_TYPE_ORDER.map((key) => {
+                {PRODUCT_PROPERTY_TYPES.map((key) => {
                   const Icon = PROPERTY_TYPE_ICONS[key] || Building2
                   const isSelected = form.property_type === key
                   return (

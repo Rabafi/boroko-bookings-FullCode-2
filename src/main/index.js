@@ -46,8 +46,11 @@ import {
   sendPaymentTerminalTotal as sendPaymentTerminalToDevice,
   testPosHardwareDevice
 } from './hardware/posHardwareAdapter.js'
+import { getProductDefinition, getRuntimeProductId } from '../shared/productIdentity.js'
 
 const currentDir = dirname(fileURLToPath(import.meta.url))
+const BUILD_PRODUCT_ID = getRuntimeProductId()
+const BUILD_PRODUCT = getProductDefinition(BUILD_PRODUCT_ID)
 const INPUT_FOCUS_DEBUG = false
 const APP_LOGO_FILENAME = 'boroko-bookings-logo.svg'
 const APP_DARK_LOGO_FILENAME = 'boroko-bookings-logo-dark.png'
@@ -153,8 +156,8 @@ function seedDevDeskFromInstalledApp(installedUserDataDir, devUserDataDir) {
 if (process.env.BOROKO_TEST_USER_DATA_DIR) {
   app.setPath('userData', process.env.BOROKO_TEST_USER_DATA_DIR)
 } else if (!app.isPackaged) {
-  const devDeskName = process.env.BOROKO_DEV_DESK_NAME || 'Boroko Bookings Dev Desk'
-  const installedDeskName = process.env.BOROKO_INSTALLED_DESK_NAME || 'boroko-bookings'
+  const devDeskName = process.env.BOROKO_DEV_DESK_NAME || `${BUILD_PRODUCT.name} Dev Desk`
+  const installedDeskName = process.env.BOROKO_INSTALLED_DESK_NAME || BUILD_PRODUCT.appDataName
   const appDataDir = app.getPath('appData')
   const devUserDataDir = join(appDataDir, devDeskName)
   const installedUserDataDir = join(appDataDir, installedDeskName)
@@ -3356,7 +3359,14 @@ async function runManagedBackupPolicy(force = false) {
 }
 
 app.whenReady().then(async () => {
-  electronApp.setAppUserModelId('com.boroko.bookings')
+  electronApp.setAppUserModelId(BUILD_PRODUCT.appId)
+
+  ipcMain.handle('app:getProduct', () => ({
+    id: BUILD_PRODUCT.id,
+    name: BUILD_PRODUCT.name,
+    allowedPropertyTypes: BUILD_PRODUCT.allowedPropertyTypes,
+    hospitalityModes: BUILD_PRODUCT.hospitalityModes
+  }))
 
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)

@@ -2,5 +2,10 @@
   "name": "@boroko/lodge-camp",
   "version": "0.1.0",
   "private": true,
-  "description": "Boroko Lodge & Camp product boundary"
+  "description": "Boroko Lodge & Camp product",
+  "scripts": {
+    "dev": "node ../../scripts/product-app.mjs lodge-camp dev",
+    "build": "node ../../scripts/product-app.mjs lodge-camp build",
+    "dist": "node ../../scripts/product-app.mjs lodge-camp dist"
+  }
 }

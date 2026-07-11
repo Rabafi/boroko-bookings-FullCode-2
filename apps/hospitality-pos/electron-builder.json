@@ -1,0 +1,30 @@
+{
+  "appId": "com.boroko.hospitalitypos",
+  "productName": "Boroko Restaurant & Bar POS",
+  "artifactName": "Boroko-Restaurant-Bar-POS-${version}-${arch}.${ext}",
+  "directories": { "output": "dist/hospitality-pos" },
+  "asar": true,
+  "files": [
+    "out/**/*",
+    "src/main/assets/**/*",
+    "package.json",
+    "!out/**/*.map",
+    "!**/.claude/**",
+    "!apps/**",
+    "!packages/**",
+    "!legacy-pos/**",
+    "!booking-site/**",
+    "!manager-pwa/**",
+    "!marketing-site/**",
+    "!tests/**",
+    "!Playwright tests/**",
+    "!supabase/**",
+    "!docs/**"
+  ],
+  "extraResources": [
+    { "from": "src/main/assets", "to": "assets" },
+    { "from": "apps/hospitality-pos/product.json", "to": "product.json" }
+  ],
+  "extraMetadata": { "name": "boroko-hospitality-pos", "main": "out/main/index.js" },
+  "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": false, "deleteAppDataOnUninstall": false, "shortcutName": "Boroko Restaurant & Bar POS", "uninstallDisplayName": "Boroko Restaurant & Bar POS" }
+}

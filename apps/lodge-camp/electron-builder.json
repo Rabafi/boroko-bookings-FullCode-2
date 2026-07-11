@@ -1,0 +1,30 @@
+{
+  "appId": "com.boroko.lodgecamp",
+  "productName": "Boroko Lodge & Camp",
+  "artifactName": "Boroko-Lodge-Camp-${version}-${arch}.${ext}",
+  "directories": { "output": "dist/lodge-camp" },
+  "asar": true,
+  "files": [
+    "out/**/*",
+    "src/main/assets/**/*",
+    "package.json",
+    "!out/**/*.map",
+    "!**/.claude/**",
+    "!apps/**",
+    "!packages/**",
+    "!legacy-pos/**",
+    "!booking-site/**",
+    "!manager-pwa/**",
+    "!marketing-site/**",
+    "!tests/**",
+    "!Playwright tests/**",
+    "!supabase/**",
+    "!docs/**"
+  ],
+  "extraResources": [
+    { "from": "src/main/assets", "to": "assets" },
+    { "from": "apps/lodge-camp/product.json", "to": "product.json" }
+  ],
+  "extraMetadata": { "name": "boroko-lodge-camp", "main": "out/main/index.js" },
+  "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": false, "deleteAppDataOnUninstall": false, "shortcutName": "Boroko Lodge & Camp", "uninstallDisplayName": "Boroko Lodge & Camp" }
+}

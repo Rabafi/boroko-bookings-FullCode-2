@@ -12,10 +12,15 @@ for (const entry of fs.readdirSync(appsDir, { withFileTypes: true })) {
   const appDir = path.join(appsDir, entry.name)
   const packagePath = path.join(appDir, 'package.json')
   const manifestPath = path.join(appDir, 'product.json')
-  if (!fs.existsSync(packagePath) || !fs.existsSync(manifestPath)) throw new Error(`${entry.name} must have package.json and product.json`)
+  const buildConfigPath = path.join(appDir, 'electron-builder.json')
+  if (!fs.existsSync(packagePath) || !fs.existsSync(manifestPath) || !fs.existsSync(buildConfigPath)) throw new Error(`${entry.name} must have package.json, product.json, and electron-builder.json`)
   const product = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+  const appPackage = JSON.parse(fs.readFileSync(packagePath, 'utf8'))
+  const buildConfig = JSON.parse(fs.readFileSync(buildConfigPath, 'utf8'))
   for (const field of required) if (!product[field]) throw new Error(`${entry.name} product.json is missing ${field}`)
   if (seen.has(product.id)) throw new Error(`Duplicate product id: ${product.id}`)
+  if (!appPackage.scripts?.build || !appPackage.scripts?.dist) throw new Error(`${entry.name} must expose build and dist scripts`)
+  if (!buildConfig.appId || !buildConfig.productName || !buildConfig.artifactName) throw new Error(`${entry.name} must declare installer identity`)
   seen.add(product.id)
 }
 

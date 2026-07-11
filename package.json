@@ -29,6 +29,7 @@
     "test:pos-rush": "node .\\tests\\pos-rush-simulation.test.mjs",
     "products:list": "node .\\scripts\\list-products.mjs",
     "workspace:check": "node .\\scripts\\verify-product-workspace.mjs",
+    "test:products": "node .\\tests\\product-extraction.test.mjs",
     "audit:prod": "npm audit --omit=dev && npm --prefix manager-pwa audit --omit=dev && npm --prefix booking-site audit --omit=dev",
     "manager:install": "npm --prefix manager-pwa ci",
     "manager:lint": "npm --prefix manager-pwa run lint",

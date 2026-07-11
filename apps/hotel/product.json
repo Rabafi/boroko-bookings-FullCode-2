@@ -3,7 +3,7 @@
   "name": "Boroko Hotel",
   "customer": "Hotels and resorts requiring hotel-grade PMS operations",
   "database_product": "hotel",
-  "current_implementation": "Enterprise hotel capability in the shared Electron desktop foundation",
-  "release_status": "extraction target; do not present readiness-gated add-ons as operational",
+  "current_implementation": "shared Electron runtime compiled with a Hotel product identity and Enterprise hotel capability",
+  "release_status": "runnable workspace with a distinct installer identity; readiness-gated add-ons remain non-operational",
   "shared_backend": "../../supabase"
 }
