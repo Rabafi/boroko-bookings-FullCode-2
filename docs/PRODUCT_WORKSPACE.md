@@ -29,18 +29,17 @@ npm run build --workspace=@boroko/hotel
 npm run dist --workspace=@boroko/hospitality-pos
 ```
 
-Each product has a distinct Windows application ID, display name, shortcut name, installer artifact name, and user-data directory. This prevents a Hotel installer from overwriting a Lodge & Camp installation.
+Lodge & Camp deliberately retains the original Boroko Bookings Windows application ID, updater feed, installer name, and user-data directory. It updates existing customer installations in place. Hotel and Restaurant & Bar POS have distinct identities, which prevents either from overwriting a Lodge & Camp installation.
 
 Each product has its own public GitHub Releases update feed. This is required because the Windows updater reads a single `latest.yml` feed and must never receive another product's installer:
 
 | Product | Update feed |
 |---|---|
-| Existing Boroko Bookings customers | `Rabafi/boroko-bookings-releases` |
-| Boroko Lodge & Camp | `Rabafi/boroko-lodge-camp-releases` |
+| Boroko Bookings Lodge & Camp (existing customers) | `Rabafi/boroko-bookings-releases` |
 | Boroko Hotel | `Rabafi/boroko-hotel-releases` |
 | Boroko Restaurant & Bar POS | `Rabafi/boroko-hospitality-pos-releases` |
 
-Use `npm run dist:publish --workspace=@boroko/<product>` only for an intentional versioned release of that product. The root `release:*` scripts remain the compatibility release path for existing Boroko Bookings customers; they do not update the new standalone products.
+Use `npm run dist:publish --workspace=@boroko/lodge-camp` to update live Lodge & Camp customers. Hotel and Hospitality POS publish only through their own workspace commands. The root `release:*` scripts remain an equivalent legacy-compatible Lodge & Camp release path.
 
 ## Shared backend rule
 

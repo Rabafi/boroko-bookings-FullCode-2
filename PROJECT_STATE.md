@@ -47,9 +47,9 @@ The customer-credit and booking-reschedule migrations were confirmed applied to 
 ### 2026-07-11: Product workspace and release-feed isolation
 
 - The repository remains one shared code workspace and one Supabase backend for Boroko Bookings, Lodge & Camp, Hotel, and Restaurant & Bar POS.
-- Existing Boroko Bookings installations remain the compatibility product: Windows application ID `com.boroko.bookings`, user-data identity `boroko-bookings`, and the established public updater feed `Rabafi/boroko-bookings-releases`. Only the root `release:*` scripts may be used to update those live customers.
-- Lodge & Camp (`com.boroko.lodgecamp`), Hotel (`com.boroko.hotel`), and Restaurant & Bar POS (`com.boroko.hospitalitypos`) have independent public GitHub Releases feeds. This avoids `latest.yml` collisions that could otherwise offer one product's installer to another product.
-- The dedicated feeds are configured and their GitHub repositories exist, but no new standalone product installer has been published or operator-smoke-tested yet.
+- Lodge & Camp is the existing Boroko Bookings installation: it retains Windows application ID `com.boroko.bookings`, user-data identity `boroko-bookings`, installer identity, and the established public updater feed `Rabafi/boroko-bookings-releases`. Lodge & Camp releases install in place for live customers.
+- Hotel (`com.boroko.hotel`) and Restaurant & Bar POS (`com.boroko.hospitalitypos`) have independent public GitHub Releases feeds. This avoids `latest.yml` collisions that could otherwise offer one product's installer to another product.
+- The Hotel and Restaurant & Bar POS feeds are configured and their GitHub repositories exist, but no new standalone product installer has been published or operator-smoke-tested yet.
 
 The worktree on 2026-07-03 was not pristine before this documentation update. Preserve unrelated changes:
 

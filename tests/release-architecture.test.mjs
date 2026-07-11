@@ -5,28 +5,31 @@ import test from 'node:test'
 import { PRODUCT_DEFINITIONS, getRuntimeProductId } from '../src/shared/productIdentity.js'
 
 const root = process.cwd()
-const compatibilityRelease = Object.freeze({
+const lodgeCampRelease = Object.freeze({
   appId: 'com.boroko.bookings',
   repo: 'boroko-bookings-releases'
 })
 const products = Object.freeze([
-  ['lodge-camp', 'com.boroko.lodgecamp', 'boroko-lodge-camp-releases'],
   ['hotel', 'com.boroko.hotel', 'boroko-hotel-releases'],
   ['hospitality-pos', 'com.boroko.hospitalitypos', 'boroko-hospitality-pos-releases']
 ])
 
-test('the live Boroko Bookings client retains its compatibility identity and update feed', () => {
+test('Lodge and Camp retains the live Boroko Bookings identity and update feed', () => {
   const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
-  assert.equal(packageJson.build.appId, compatibilityRelease.appId)
-  assert.equal(packageJson.build.publish.repo, compatibilityRelease.repo)
-  assert.equal(getRuntimeProductId(), 'boroko-bookings')
-  assert.equal(PRODUCT_DEFINITIONS['boroko-bookings'].appId, compatibilityRelease.appId)
-  assert.equal(PRODUCT_DEFINITIONS['boroko-bookings'].appDataName, 'boroko-bookings')
+  const lodgeBuilder = JSON.parse(fs.readFileSync(path.join(root, 'apps', 'lodge-camp', 'electron-builder.json'), 'utf8'))
+  assert.equal(packageJson.build.appId, lodgeCampRelease.appId)
+  assert.equal(packageJson.build.publish.repo, lodgeCampRelease.repo)
+  assert.equal(lodgeBuilder.appId, lodgeCampRelease.appId)
+  assert.equal(lodgeBuilder.publish.repo, lodgeCampRelease.repo)
+  assert.equal(lodgeBuilder.extraMetadata.name, 'boroko-bookings')
+  assert.equal(getRuntimeProductId(), 'lodge-camp')
+  assert.equal(PRODUCT_DEFINITIONS['lodge-camp'].appId, lodgeCampRelease.appId)
+  assert.equal(PRODUCT_DEFINITIONS['lodge-camp'].appDataName, 'boroko-bookings')
 })
 
-test('every standalone product has an isolated installer identity and GitHub update feed', () => {
-  const appIds = new Set([compatibilityRelease.appId])
-  const releaseRepos = new Set([compatibilityRelease.repo])
+test('Hotel and Hospitality POS have isolated installer identities and GitHub update feeds', () => {
+  const appIds = new Set([lodgeCampRelease.appId])
+  const releaseRepos = new Set([lodgeCampRelease.repo])
 
   for (const [id, expectedAppId, expectedRepo] of products) {
     const builderPath = path.join(root, 'apps', id, 'electron-builder.json')

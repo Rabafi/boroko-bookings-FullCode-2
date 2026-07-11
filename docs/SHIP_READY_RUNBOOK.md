@@ -24,15 +24,14 @@ Do not publish if any required check is red.
 
 ## Product release-feed gate
 
-The existing Boroko Bookings customer application is a compatibility product with the fixed Windows identity `com.boroko.bookings` and update feed `Rabafi/boroko-bookings-releases`. Do not change either value as part of releasing Lodge & Camp, Hotel, or Hospitality POS.
+The existing Boroko Bookings customer application is the Lodge & Camp product. Its Windows identity `com.boroko.bookings`, stored data identity `boroko-bookings`, installer identity, and update feed `Rabafi/boroko-bookings-releases` are fixed. Do not change any of them: Lodge & Camp updates must install over the existing customer application.
 
 Each standalone product must use both its own Windows application ID and its own public GitHub Releases feed:
 
-- Lodge & Camp: `com.boroko.lodgecamp` / `Rabafi/boroko-lodge-camp-releases`
 - Hotel: `com.boroko.hotel` / `Rabafi/boroko-hotel-releases`
 - Restaurant & Bar POS: `com.boroko.hospitalitypos` / `Rabafi/boroko-hospitality-pos-releases`
 
-Never publish two product installers to the same GitHub Releases feed. Before publishing, run `npm run test:release-architecture`, verify the selected workspace and version, and build products serially because the shared Electron output directory is not safe for parallel builds.
+Hotel and Restaurant & Bar POS must never publish to the Lodge & Camp GitHub Releases feed or to each other's feed. Before publishing, run `npm run test:release-architecture`, verify the selected workspace and version, and build products serially because the shared Electron output directory is not safe for parallel builds.
 
 Run every feature-specific regression script present in `package.json` for the area being released, including customer-credit/reschedule or report-export tests when those changes are part of the release.
 

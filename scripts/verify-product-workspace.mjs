@@ -6,8 +6,8 @@ const required = ['id', 'name', 'customer', 'database_product', 'current_impleme
 const expected = new Set(['lodge-camp', 'hotel', 'hospitality-pos'])
 const appsDir = path.resolve(process.cwd(), 'apps')
 const seen = new Set()
-const appIds = new Set(['com.boroko.bookings'])
-const releaseRepos = new Set(['boroko-bookings-releases'])
+const appIds = new Set()
+const releaseRepos = new Set()
 
 for (const entry of fs.readdirSync(appsDir, { withFileTypes: true })) {
   if (!entry.isDirectory()) continue
@@ -23,8 +23,9 @@ for (const entry of fs.readdirSync(appsDir, { withFileTypes: true })) {
   if (seen.has(product.id)) throw new Error(`Duplicate product id: ${product.id}`)
   if (!appPackage.scripts?.build || !appPackage.scripts?.dist || !appPackage.scripts?.['dist:publish']) throw new Error(`${entry.name} must expose build, dist, and dist:publish scripts`)
   if (!buildConfig.appId || !buildConfig.productName || !buildConfig.artifactName || !buildConfig.publish?.repo) throw new Error(`${entry.name} must declare installer and release identity`)
-  if (appIds.has(buildConfig.appId)) throw new Error(`${entry.name} reuses a Windows application ID`)
-  if (releaseRepos.has(buildConfig.publish.repo)) throw new Error(`${entry.name} reuses a GitHub update feed`)
+  const isLodgeCamp = product.id === 'lodge-camp'
+  if (!isLodgeCamp && appIds.has(buildConfig.appId)) throw new Error(`${entry.name} reuses a Windows application ID`)
+  if (!isLodgeCamp && releaseRepos.has(buildConfig.publish.repo)) throw new Error(`${entry.name} reuses a GitHub update feed`)
   appIds.add(buildConfig.appId)
   releaseRepos.add(buildConfig.publish.repo)
   seen.add(product.id)

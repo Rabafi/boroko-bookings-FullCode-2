@@ -1,8 +1,8 @@
 {
-  "appId": "com.boroko.lodgecamp",
-  "productName": "Boroko Lodge & Camp",
-  "publish": { "provider": "github", "owner": "Rabafi", "repo": "boroko-lodge-camp-releases" },
-  "artifactName": "Boroko-Lodge-Camp-${version}-${arch}.${ext}",
+  "appId": "com.boroko.bookings",
+  "productName": "Boroko Bookings",
+  "publish": { "provider": "github", "owner": "Rabafi", "repo": "boroko-bookings-releases" },
+  "artifactName": "Boroko-Bookings-${version}-${arch}.${ext}",
   "directories": { "output": "dist/lodge-camp" },
   "asar": true,
   "files": [
@@ -26,6 +26,6 @@
     { "from": "src/main/assets", "to": "assets" },
     { "from": "apps/lodge-camp/product.json", "to": "product.json" }
   ],
-  "extraMetadata": { "name": "boroko-lodge-camp", "main": "out/main/index.js" },
-  "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": false, "deleteAppDataOnUninstall": false, "shortcutName": "Boroko Lodge & Camp", "uninstallDisplayName": "Boroko Lodge & Camp" }
+  "extraMetadata": { "name": "boroko-bookings", "main": "out/main/index.js" },
+  "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": false, "deleteAppDataOnUninstall": false, "shortcutName": "Boroko Bookings", "uninstallDisplayName": "Boroko Bookings" }
 }

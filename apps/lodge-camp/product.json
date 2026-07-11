@@ -4,6 +4,6 @@
   "customer": "Lodges, camps, guest houses and small accommodation properties",
   "database_product": "lodge_camp",
   "current_implementation": "shared Electron runtime compiled with a Lodge & Camp product identity",
-  "release_status": "runnable workspace with a distinct installer identity",
+  "release_status": "runnable workspace retaining the established Boroko Bookings installer identity and updater feed",
   "shared_backend": "../../supabase"
 }

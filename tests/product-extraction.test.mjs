@@ -7,12 +7,12 @@ import { HOSPITALITY_MODES, getHospitalityMode, isBarOnlyMode } from '../src/sha
 
 const root = process.cwd()
 const products = [
-  ['lodge-camp', 'com.boroko.lodgecamp', 'Boroko Lodge & Camp', 'boroko-lodge-camp-releases'],
+  ['lodge-camp', 'com.boroko.bookings', 'Boroko Bookings', 'boroko-bookings-releases'],
   ['hotel', 'com.boroko.hotel', 'Boroko Hotel', 'boroko-hotel-releases'],
   ['hospitality-pos', 'com.boroko.hospitalitypos', 'Boroko Restaurant & Bar POS', 'boroko-hospitality-pos-releases']
 ]
 
-test('each physical product app has an independent installer identity', () => {
+test('each product app has the correct installer identity', () => {
   const appIds = new Set()
   for (const [id, appId, productName, releaseRepo] of products) {
     const appDir = path.join(root, 'apps', id)
