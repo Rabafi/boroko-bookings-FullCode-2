@@ -1,6 +1,7 @@
 {
   "name": "boroko-bookings",
   "version": "1.5.5",
+  "private": true,
   "type": "module",
   "description": "Boroko Lodge Booking Management System",
   "author": {
@@ -26,6 +27,8 @@
     "test:marketing-site": "node .\\tests\\marketing-site-contract.test.mjs",
     "test:pos-hardware-adapter": "node .\\tests\\pos-hardware-adapter.test.mjs",
     "test:pos-rush": "node .\\tests\\pos-rush-simulation.test.mjs",
+    "products:list": "node .\\scripts\\list-products.mjs",
+    "workspace:check": "node .\\scripts\\verify-product-workspace.mjs",
     "audit:prod": "npm audit --omit=dev && npm --prefix manager-pwa audit --omit=dev && npm --prefix booking-site audit --omit=dev",
     "manager:install": "npm --prefix manager-pwa ci",
     "manager:lint": "npm --prefix manager-pwa run lint",
@@ -68,6 +71,10 @@
     "legacy-pos:test": "npm --prefix legacy-pos run test",
     "legacy-pos:db:probe": "npm --prefix legacy-pos run db:probe"
   },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "dependencies": {
     "@e965/xlsx": "^0.20.3",
     "@electron-toolkit/utils": "^3.0.0",

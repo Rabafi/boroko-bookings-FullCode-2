@@ -1,0 +1,6 @@
+{
+  "name": "@boroko/hospitality-pos",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Boroko Restaurant & Bar POS product boundary"
+}

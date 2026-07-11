@@ -9,6 +9,7 @@ out
 .env.db
 .release/
 *.log
+*.pid
 .DS_Store
 .claude/
 test-results/

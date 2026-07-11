@@ -1,0 +1,10 @@
+{
+  "id": "hospitality-pos",
+  "name": "Boroko Restaurant & Bar POS",
+  "customer": "Restaurants, restaurant-bars and bar-only businesses",
+  "database_product": "hospitality_pos",
+  "modes": ["restaurant_bar", "bar_only"],
+  "current_implementation": "Restaurant-only module set in the shared Electron desktop foundation",
+  "release_status": "extraction target; must retain RPC-backed financial and inventory contracts",
+  "shared_backend": "../../supabase"
+}

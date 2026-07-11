@@ -1,0 +1,9 @@
+{
+  "id": "lodge-camp",
+  "name": "Boroko Lodge & Camp",
+  "customer": "Lodges, camps, guest houses and small accommodation properties",
+  "database_product": "lodge_camp",
+  "current_implementation": "root Electron desktop application configured for accommodation property types",
+  "release_status": "existing product; extraction into this workspace boundary is staged",
+  "shared_backend": "../../supabase"
+}
