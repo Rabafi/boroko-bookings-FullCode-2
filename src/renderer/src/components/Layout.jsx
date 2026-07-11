@@ -684,8 +684,8 @@ export default function Layout() {
   const effectiveUiAddons = getEffectiveAddonsFromEntitlement(access?.entitlement || {})
   const effectiveUiAccess = access
   const navItems = useMemo(() => (
-    getDesktopNavItems(effectiveUiBizType, effectiveUiAccess, effectiveUiPropertyType, effectiveUiPlan, effectiveUiAddons).filter((item) => assistantEnabled || item.to !== '/ai')
-  ), [effectiveUiBizType, effectiveUiAccess, assistantEnabled, effectiveUiPlan, effectiveUiPropertyType, effectiveUiAddons])
+    getDesktopNavItems(effectiveUiBizType, effectiveUiAccess, effectiveUiPropertyType, effectiveUiPlan, effectiveUiAddons, settings?.operating_profile).filter((item) => assistantEnabled || item.to !== '/ai')
+  ), [effectiveUiBizType, effectiveUiAccess, assistantEnabled, effectiveUiPlan, effectiveUiPropertyType, effectiveUiAddons, settings?.operating_profile])
   const standaloneTop = useMemo(
     () => navItems.filter((item) => !item.group && item.to !== '/settings'),
     [navItems]

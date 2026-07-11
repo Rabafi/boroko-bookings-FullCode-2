@@ -3,7 +3,7 @@ import { HashRouter, Routes, Route, Navigate, useNavigate } from 'react-router-d
 import { BellRing, ChevronDown, ChevronUp, Download, FileText, RefreshCw, RotateCcw, X } from 'lucide-react'
 import { APP_FEATURES, FEATURE_LABELS, buildCapabilitySnapshot, isPosFullAccessRole } from '../../shared/accessControl'
 import { SUBSCRIPTION_PLAN_ORDER, getAllSubscriptionPlans, getFeatureRequiredPlan, getSubscriptionPlan, normalizeSubscriptionPlan } from '../../shared/subscriptionPlans'
-import { isRestaurantOnly } from '../../shared/propertyTypes'
+import { isBarOnlyMode, isRestaurantOnly } from '../../shared/propertyTypes'
 import AppErrorBoundary from './components/AppErrorBoundary'
 import { ToastProvider } from './components/shared/Toast'
 import { Modal } from './components/shared/Modal'
@@ -202,13 +202,23 @@ const RESTAURANT_EXCLUDED_PATHS = [
   '/supplies'
 ]
 
+const BAR_ONLY_EXCLUDED_ROUTE_SEGMENTS = [
+  'floor', 'kitchen-workspace', 'menu-production', 'tables', 'kitchen', 'recipes',
+  'reservations', 'combos', 'recipe-variance', 'prep-batches', 'kitchen-analytics'
+]
+
 function RestaurantGuard({ children }) {
   const { settings } = useContext(SettingsContext)
   const propertyType = settings?.property_type || settings?.business_type || 'lodge'
   const restaurantMode = isRestaurantOnly(propertyType)
+  const barOnlyMode = restaurantMode && isBarOnlyMode(settings)
   const location = window.location.hash.replace('#', '').split('?')[0]
 
   if (restaurantMode && RESTAURANT_EXCLUDED_PATHS.some(path => location.startsWith(path))) {
+    return <Navigate to="/" replace />
+  }
+
+  if (barOnlyMode && BAR_ONLY_EXCLUDED_ROUTE_SEGMENTS.some(segment => location.startsWith(`/restaurant/${segment}`))) {
     return <Navigate to="/" replace />
   }
 

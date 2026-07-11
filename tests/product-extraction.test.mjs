@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import test from 'node:test'
+import { getDesktopNavItems } from '../src/renderer/src/navigation/desktopNav.js'
+import { HOSPITALITY_MODES, getHospitalityMode, isBarOnlyMode } from '../src/shared/propertyTypes.js'
 
 const root = process.cwd()
 const products = [
@@ -36,4 +38,24 @@ test('product build configuration is injected into all Electron runtimes', () =>
   assert.match(identity, /hospitality-pos/)
   assert.match(main, /app:getProduct/)
   assert.match(setup, /PRODUCT_PROPERTY_TYPES\.map/)
+})
+
+test('Hospitality POS persists Bar Only as an explicit operating mode', () => {
+  const setup = fs.readFileSync(path.join(root, 'src/renderer/src/components/Setup.jsx'), 'utf8')
+  assert.equal(getHospitalityMode({ operating_profile: {} }), HOSPITALITY_MODES.RESTAURANT_BAR)
+  assert.equal(isBarOnlyMode({ operating_profile: { hospitality_mode: 'bar_only' } }), true)
+  assert.match(setup, /hospitality_mode: IS_HOSPITALITY_POS_PRODUCT \? hospitalityMode : null/)
+  assert.match(setup, /Bar Only/)
+})
+
+test('Bar Only hides restaurant-only navigation while preserving core POS operations', () => {
+  const access = { allowedByRole: { 'pos.view': true, 'pos.manage': true, 'pos.cashup': true, 'inventory.view': true, 'staff.view': true, 'reports.view': true } }
+  const items = getDesktopNavItems('restaurant', access, 'restaurant', 'Pro', [], { hospitality_mode: 'bar_only' })
+  const routes = new Set(items.map((item) => item.to))
+  assert.equal(routes.has('/pos'), true)
+  assert.equal(routes.has('/restaurant/stock-purchasing'), true)
+  assert.equal(routes.has('/restaurant/cash-close'), true)
+  assert.equal(routes.has('/restaurant/floor'), false)
+  assert.equal(routes.has('/restaurant/kitchen-workspace'), false)
+  assert.equal(routes.has('/restaurant/menu-production'), false)
 })

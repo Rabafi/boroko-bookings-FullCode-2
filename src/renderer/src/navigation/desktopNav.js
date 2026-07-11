@@ -51,7 +51,7 @@ import {
   TableProperties
 } from 'lucide-react'
 import { resolveModuleVisibility, MODULE_VISIBILITY_STATES } from '../../../shared/moduleCatalog.js'
-import { normalizePropertyType, isHotelPropertyType } from '../../../shared/propertyTypes.js'
+import { normalizePropertyType, isBarOnlyMode, isHotelPropertyType } from '../../../shared/propertyTypes.js'
 import { normalizeSubscriptionPlan } from '../../../shared/subscriptionPlans.js'
 
 export const ALL_NAV = [
@@ -253,6 +253,7 @@ export const ALL_NAV = [
     label: 'Floor & Service',
     icon: TableProperties,
     types: ['restaurant'],
+    barOnlyHidden: true,
     group: 'Sell',
     feature: 'pos',
     tier: 'Pro',
@@ -265,6 +266,7 @@ export const ALL_NAV = [
     label: 'Kitchen',
     icon: ChefHat,
     types: ['restaurant'],
+    barOnlyHidden: true,
     group: 'Sell',
     feature: 'pos',
     tier: 'Pro',
@@ -277,6 +279,7 @@ export const ALL_NAV = [
     label: 'Menu & Production',
     icon: Salad,
     types: ['restaurant'],
+    barOnlyHidden: true,
     group: 'Sell',
     feature: 'pos',
     tier: 'Pro',
@@ -734,15 +737,17 @@ export const ALL_NAV = [
 
 export const NAV_GROUPS = ['Home', 'Front Desk', 'Sell', 'Property', 'Stock', 'Team', 'Money', 'Growth', 'Control', 'Finance', 'Hotel']
 
-export function getDesktopNavItems(bizType, access, propertyType = null, subscriptionPlan = null, addons = []) {
+export function getDesktopNavItems(bizType, access, propertyType = null, subscriptionPlan = null, addons = [], operatingProfile = null) {
   const normalizedPropertyType = normalizePropertyType(propertyType || bizType)
   const normalizedPlan = normalizeSubscriptionPlan(subscriptionPlan)
   const hotelMode = isHotelPropertyType(normalizedPropertyType)
+  const barOnlyMode = normalizedPropertyType === 'restaurant' && isBarOnlyMode(operatingProfile)
 
   return ALL_NAV.reduce((acc, item) => {
     if (!item.types.includes(bizType)) return acc
     if (item.hideFromSidebar) return acc
     if (hotelMode && item.hideInHotelMode) return acc
+    if (barOnlyMode && item.barOnlyHidden) return acc
 
     let visibility = null
     let isLocked = false

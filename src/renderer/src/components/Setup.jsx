@@ -3,12 +3,13 @@ import { useState, useRef } from 'react'
 import { Building2, Phone, Mail, MapPin, Globe, Hash, CheckCircle, Upload, Image, X, User, Lock, Eye, EyeOff, Home, BedDouble, Tent, Car, Hotel, Palmtree, UtensilsCrossed } from 'lucide-react'
 import { useProfiles } from '../app-context'
 import borokoLogoDark from '../assets/boroko-bookings-logo-dark.png'
-import { PROPERTY_TYPE_ORDER, PROPERTY_TYPE_LABELS, PROPERTY_TYPE_DESCRIPTIONS, propertyTypeToBusinessType } from '../../../shared/propertyTypes'
+import { HOSPITALITY_MODES, PROPERTY_TYPE_ORDER, PROPERTY_TYPE_LABELS, PROPERTY_TYPE_DESCRIPTIONS, propertyTypeToBusinessType } from '../../../shared/propertyTypes'
 import { getProductDefinition, getRuntimeProductId } from '../../../shared/productIdentity'
 
 const BUILD_PRODUCT = getProductDefinition(getRuntimeProductId())
 const ALLOWED_PROPERTY_TYPES = new Set(BUILD_PRODUCT.allowedPropertyTypes)
 const PRODUCT_PROPERTY_TYPES = PROPERTY_TYPE_ORDER.filter((propertyType) => ALLOWED_PROPERTY_TYPES.has(propertyType))
+const IS_HOSPITALITY_POS_PRODUCT = BUILD_PRODUCT.id === 'hospitality-pos'
 
 export default function Setup({ onComplete }) {
   const navigate = useNavigate()
@@ -21,6 +22,7 @@ export default function Setup({ onComplete }) {
   const [adminError, setAdminError] = useState('')
   const fileInputRef = useRef(null)
   const [admin, setAdmin] = useState({ name: '', email: '', password: '', confirm: '' })
+  const [hospitalityMode, setHospitalityMode] = useState(HOSPITALITY_MODES.RESTAURANT_BAR)
   const [form, setForm] = useState({
     property_type: PRODUCT_PROPERTY_TYPES.length === 1 ? PRODUCT_PROPERTY_TYPES[0] : '',
     business_type: PRODUCT_PROPERTY_TYPES.length === 1 ? propertyTypeToBusinessType(PRODUCT_PROPERTY_TYPES[0]) : 'lodge',
@@ -86,6 +88,7 @@ export default function Setup({ onComplete }) {
           k === 'multi_property_interest' ? 'multi_property' : k)
       await window.api.settings.updateOperatingProfile({
         ...operatingAnswers,
+        hospitality_mode: IS_HOSPITALITY_POS_PRODUCT ? hospitalityMode : null,
         recommended_features: recommended
       })
     } catch (e) {
@@ -329,6 +332,28 @@ export default function Setup({ onComplete }) {
           {/* ── Step 2: Operating Questions ── */}
           {step === 2 && (
             <div className="space-y-3">
+              {IS_HOSPITALITY_POS_PRODUCT && (
+                <section className="rounded-xl border border-green-200 bg-green-50 p-4">
+                  <h2 className="text-sm font-semibold text-green-900">Choose your selling mode</h2>
+                  <p className="mt-1 text-xs text-green-800">You can upgrade from Bar Only later without creating a new account.</p>
+                  <div className="mt-3 grid grid-cols-2 gap-2">
+                    {[
+                      [HOSPITALITY_MODES.RESTAURANT_BAR, 'Restaurant + Bar', 'Tables, kitchen, food production and bar sales.'],
+                      [HOSPITALITY_MODES.BAR_ONLY, 'Bar Only', 'Fast drink sales, stock, shifts, cash-up and reports.']
+                    ].map(([mode, label, description]) => (
+                      <button
+                        key={mode}
+                        type="button"
+                        onClick={() => setHospitalityMode(mode)}
+                        className={`rounded-lg border-2 p-3 text-left transition-all ${hospitalityMode === mode ? 'border-green-600 bg-white shadow-sm' : 'border-green-100 bg-green-50 hover:border-green-300'}`}
+                      >
+                        <span className="block text-sm font-semibold text-gray-900">{label}</span>
+                        <span className="mt-1 block text-[11px] leading-tight text-gray-600">{description}</span>
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              )}
               <div className="max-h-[360px] overflow-y-auto -mx-1 px-1 space-y-2">
                 {OPERATING_QUESTIONS.map((q) => (
                   <div key={q.key} className="flex items-center justify-between bg-gray-50 rounded-lg p-3 border border-gray-100">

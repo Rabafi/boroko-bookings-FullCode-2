@@ -135,6 +135,25 @@ export function isRestaurantOnly(propertyType) {
   return normalizePropertyType(propertyType) === 'restaurant'
 }
 
+export const HOSPITALITY_MODES = Object.freeze({
+  RESTAURANT_BAR: 'restaurant_bar',
+  BAR_ONLY: 'bar_only'
+})
+
+export function normalizeHospitalityMode(value) {
+  const raw = String(value || '').trim().toLowerCase()
+  return raw === HOSPITALITY_MODES.BAR_ONLY ? HOSPITALITY_MODES.BAR_ONLY : HOSPITALITY_MODES.RESTAURANT_BAR
+}
+
+export function getHospitalityMode(settingsOrProfile) {
+  const source = settingsOrProfile?.operating_profile || settingsOrProfile || {}
+  return normalizeHospitalityMode(source.hospitality_mode)
+}
+
+export function isBarOnlyMode(settingsOrProfile) {
+  return getHospitalityMode(settingsOrProfile) === HOSPITALITY_MODES.BAR_ONLY
+}
+
 export function getRelevantModules(propertyType, subscriptionPlan) {
   const defaults = getPropertyTypeDefaults(propertyType)
   const baseModules = defaults.modules || []
