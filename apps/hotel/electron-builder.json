@@ -1,6 +1,7 @@
 {
   "appId": "com.boroko.hotel",
   "productName": "Boroko Hotel",
+  "publish": { "provider": "github", "owner": "Rabafi", "repo": "boroko-bookings-releases" },
   "artifactName": "Boroko-Hotel-${version}-${arch}.${ext}",
   "directories": { "output": "dist/hotel" },
   "asar": true,

@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "node ../../scripts/product-app.mjs lodge-camp dev",
     "build": "node ../../scripts/product-app.mjs lodge-camp build",
-    "dist": "node ../../scripts/product-app.mjs lodge-camp dist"
+    "dist": "node ../../scripts/product-app.mjs lodge-camp dist",
+    "dist:publish": "node ../../scripts/product-app.mjs lodge-camp publish"
   }
 }

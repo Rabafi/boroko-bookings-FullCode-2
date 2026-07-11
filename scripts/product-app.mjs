@@ -5,9 +5,9 @@ import { fileURLToPath } from 'node:url'
 import { PRODUCT_IDS } from '../packages/product-config/index.js'
 
 const [productId, action] = process.argv.slice(2)
-const validActions = new Set(['dev', 'build', 'dist'])
+const validActions = new Set(['dev', 'build', 'dist', 'publish'])
 if (!PRODUCT_IDS.includes(productId) || !validActions.has(action)) {
-  throw new Error(`Usage: node scripts/product-app.mjs <${PRODUCT_IDS.join('|')}> <dev|build|dist>`)
+  throw new Error(`Usage: node scripts/product-app.mjs <${PRODUCT_IDS.join('|')}> <dev|build|dist|publish>`)
 }
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -29,4 +29,8 @@ if (action === 'build') await runNode(electronViteCli, ['build'])
 if (action === 'dist') {
   await runNode(electronViteCli, ['build'])
   await runNode(electronBuilderCli, ['--config', `apps/${productId}/electron-builder.json`, '--win', 'nsis', '--publish', 'never'])
+}
+if (action === 'publish') {
+  await runNode(electronViteCli, ['build'])
+  await runNode(electronBuilderCli, ['--config', `apps/${productId}/electron-builder.json`, '--win', 'nsis', '--publish', 'always'])
 }

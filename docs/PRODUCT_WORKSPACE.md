@@ -31,6 +31,8 @@ npm run dist --workspace=@boroko/hospitality-pos
 
 Each product has a distinct Windows application ID, display name, shortcut name, installer artifact name, and user-data directory. This prevents a Hotel installer from overwriting a Lodge & Camp installation.
 
+All three products publish release assets to the shared `Rabafi/boroko-bookings-releases` GitHub Releases repository. Use `npm run dist:publish --workspace=@boroko/<product>` only for an intentional versioned release; it creates or updates a public GitHub Release.
+
 ## Shared backend rule
 
 `supabase/` stays at the repository root. Every migration, RLS policy, RPC, audit rule, idempotency rule, and deployment check remains central. A future product must never create a second local financial truth just to become a separate installer.

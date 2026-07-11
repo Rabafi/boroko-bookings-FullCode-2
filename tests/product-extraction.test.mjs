@@ -22,8 +22,10 @@ test('each physical product app has an independent installer identity', () => {
     assert.equal(manifest.id, id)
     assert.equal(builder.appId, appId)
     assert.equal(builder.productName, productName)
+    assert.equal(builder.publish?.repo, 'boroko-bookings-releases')
     assert.ok(packageJson.scripts.build.includes(`product-app.mjs ${id} build`))
     assert.ok(packageJson.scripts.dist.includes(`product-app.mjs ${id} dist`))
+    assert.ok(packageJson.scripts['dist:publish'].includes(`product-app.mjs ${id} publish`))
     appIds.add(builder.appId)
   }
   assert.equal(appIds.size, products.length)

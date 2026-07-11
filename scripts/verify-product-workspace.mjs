@@ -19,8 +19,8 @@ for (const entry of fs.readdirSync(appsDir, { withFileTypes: true })) {
   const buildConfig = JSON.parse(fs.readFileSync(buildConfigPath, 'utf8'))
   for (const field of required) if (!product[field]) throw new Error(`${entry.name} product.json is missing ${field}`)
   if (seen.has(product.id)) throw new Error(`Duplicate product id: ${product.id}`)
-  if (!appPackage.scripts?.build || !appPackage.scripts?.dist) throw new Error(`${entry.name} must expose build and dist scripts`)
-  if (!buildConfig.appId || !buildConfig.productName || !buildConfig.artifactName) throw new Error(`${entry.name} must declare installer identity`)
+  if (!appPackage.scripts?.build || !appPackage.scripts?.dist || !appPackage.scripts?.['dist:publish']) throw new Error(`${entry.name} must expose build, dist, and dist:publish scripts`)
+  if (!buildConfig.appId || !buildConfig.productName || !buildConfig.artifactName || !buildConfig.publish?.repo) throw new Error(`${entry.name} must declare installer and release identity`)
   seen.add(product.id)
 }
 

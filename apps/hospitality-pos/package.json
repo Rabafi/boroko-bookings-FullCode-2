@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "node ../../scripts/product-app.mjs hospitality-pos dev",
     "build": "node ../../scripts/product-app.mjs hospitality-pos build",
-    "dist": "node ../../scripts/product-app.mjs hospitality-pos dist"
+    "dist": "node ../../scripts/product-app.mjs hospitality-pos dist",
+    "dist:publish": "node ../../scripts/product-app.mjs hospitality-pos publish"
   }
 }
