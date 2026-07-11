@@ -69,6 +69,106 @@ export {
   deleteRoom
 } from './domains/rooms.js'
 export {
+  getAllRoomTypes,
+  getRoomTypeById,
+  createRoomType,
+  updateRoomType,
+  deleteRoomType
+} from './domains/roomTypes.js'
+export {
+  getAllRoomAttributes,
+  createRoomAttribute,
+  updateRoomAttribute,
+  deleteRoomAttribute
+} from './domains/roomAttributes.js'
+export {
+  getAllFloorSections,
+  getFloorSectionById,
+  createFloorSection,
+  updateFloorSection,
+  deleteFloorSection
+} from './domains/floorSections.js'
+export {
+  getAllFolios as getHotelFolios,
+  getFolioEntries as getHotelFolioEntries,
+  postFolioCharge as postHotelFolioCharge
+} from './domains/folios.js'
+export * as folioLedger from './domains/folioLedger.js'
+export {
+  getAvailableRoomsForMove as getAvailableRoomsForMove,
+  executeRoomMove as executeRoomMove
+} from './domains/roomMoves.js'
+export {
+  getAllCorporateAccounts,
+  createCorporateAccount,
+  updateCorporateAccount,
+  deleteCorporateAccount
+} from './domains/corporateAccounts.js'
+export {
+  getAllRatePlans,
+  createRatePlan,
+  updateRatePlan,
+  deleteRatePlan
+} from './domains/ratePlans.js'
+export {
+  getPaymentProviderConfig,
+  savePaymentProviderConfig
+} from './domains/payments.js'
+export {
+  getAllGroupBlocks,
+  createGroupBlock,
+  updateGroupBlock,
+  deleteGroupBlock
+} from './domains/groupBlocks.js'
+export {
+  getAllMasterFolios,
+  createMasterFolio,
+  getDebtorAging,
+  checkCreditLimit,
+  generateCompanyStatement
+} from './domains/masterFolios.js'
+export {
+  getAllRoomingLists,
+  processRoomingList,
+  parseRoomingListCSV
+} from './domains/roomingLists.js'
+export {
+  getAllLostFoundItems, createLostFoundItem, updateLostFoundItem, deleteLostFoundItem,
+  getAllIncidents, createIncident, updateIncident,
+  getAllVisitors, createVisitor, checkoutVisitor,
+  getAllLinenItems, createLinenItem,
+  getAllLinenBatches, createLinenBatch
+} from './domains/operationalModules.js'
+export {
+  getEnterpriseWorkflowRecords,
+  upsertEnterpriseWorkflowRecord,
+  appendEnterpriseWorkflowEvent,
+  createPaymentLinkRequest,
+  createChannelSyncItem,
+  createEnterpriseDocument
+} from './domains/enterpriseOperations.js'
+export {
+  getAllMappings, createMapping, updateMapping, deleteMapping,
+  getAllConfigs, createConfig, updateConfig, enableChannel, disableChannel,
+  getChannelDashboard, processSyncQueue,
+  importReservation, confirmImport, rejectImport
+} from './domains/channelManager.js'
+export {
+  getAllTemplates, createTemplate, updateTemplate, deleteTemplate,
+  renderDocument, publishDocument, getDocumentHistory, getDocumentDashboard
+} from './domains/documentSystem.js'
+export {
+  getHotelRoleTemplates, getRoleCapabilities
+} from './domains/hotelRoles.js'
+export {
+  getEffectiveFeatureFlags, getActivationHistory,
+  deactivateEnterpriseAddon, getPendingUpgradeRequests
+} from './domains/commandCentral.js'
+export {
+  getPaymentDashboard, getProviderSecrets,
+  verifyWebhookSignature
+} from './domains/payments.js'
+export {
   getAllCustomers,
   createCustomer,
   updateCustomerBlacklist,
@@ -178,6 +278,7 @@ export {
   createPosOrder,
   voidPosOrder,
   approvePosVoidWithPin,
+  approvePosDiscountWithPin,
   createPosPartialReturnWithPin,
   getPosCashupSummary,
   getPosCashups,
@@ -193,6 +294,9 @@ export {
   getPosTables,
   savePosTable,
   deletePosTable,
+  getPosStations,
+  savePosStation,
+  deletePosStation,
   getPosTickets,
   updatePosTicketStatus,
   getCurrentPosShift,
@@ -212,9 +316,76 @@ export {
   savePosFloorLayout,
   updatePosCustomerDisplay,
   getPosCustomerDisplay,
+  splitBillByItems,
+  splitBillEvenly,
+  getPosRecipes,
+  savePosRecipe,
+  deletePosRecipe,
+  recordRecipeStockDepletion,
   sendPaymentTerminalTotal,
   getPosAuditLog,
-  getPosRevenueSummary
+  getPosRevenueSummary,
+  getPosCustomers,
+  savePosCustomer,
+  awardLoyaltyPoints,
+  redeemLoyaltyPoints,
+  chargeCustomerAccount,
+  redeemVoucher,
+  recordDelivery,
+  clockInStaff,
+  clockOutStaff,
+  getActiveShifts,
+  openCashDrawerSession,
+  closeCashDrawerSession,
+  getOpenCashDrawer,
+  getPosSuppliers,
+  createPosSupplier,
+  createPurchaseOrder,
+  approvePurchaseOrder,
+  receivePurchaseOrder,
+  createStockTransfer,
+  createDailyChecklist,
+  completeChecklistItem,
+  getActiveAlerts,
+  getPosPurchaseOrders,
+  getShiftHistory,
+  getCashDrawerSessions,
+  getChecklists,
+  getExceptionAlerts,
+  recordExceptionAlert,
+  resolveExceptionAlert,
+  generateOwnerDigest,
+  getRestaurantReservations,
+  createRestaurantReservation,
+  updateRestaurantReservation,
+  cancelRestaurantReservation,
+  seatRestaurantReservation,
+  markRestaurantReservationNoShow,
+  getRestaurantWaitlist,
+  createRestaurantWaitlistEntry,
+  seatRestaurantWaitlistEntry,
+  getRestaurantCombos,
+  saveRestaurantCombo,
+  deleteRestaurantCombo,
+  getRecipeVarianceReport,
+  getRestaurantPrepItems,
+  saveRestaurantPrepItem,
+  getRestaurantPrepBatches,
+  createRestaurantPrepBatch,
+  postRestaurantPrepBatch,
+  recordTicketStatusEvent,
+  getKitchenTimingReport,
+  getLowStockPurchaseSuggestions,
+  convertPurchaseSuggestionsToPo,
+  recordRestaurantSettlement,
+  getRestaurantSettlements,
+  recordRestaurantReservationDeposit,
+  recordRestaurantFeedback,
+  createRestaurantGiftCard,
+  recordRestaurantTipPayout,
+  saveRestaurantReservationPolicy,
+  recordRestaurantInventoryLot,
+  getRestaurantExpiryLots
 } from './domains/pos.js'
 export {
   getSupplyItems,
@@ -282,6 +453,7 @@ export {
   relinkLodge,
   resetToNewLodge,
   saveSettings,
+  updateOperatingProfile,
   initializeCompanySetup
 } from './domains/settings.js'
 export {
@@ -289,6 +461,15 @@ export {
   getTrialStatus,
   activateLicenseKey
 } from './domains/subscriptions.js'
+export {
+  submitSubscriptionRequest,
+  getSubscriptionRequests,
+  getSubscriptionRequestById,
+  updateSubscriptionRequestStatus,
+  activateSubscriptionRequest,
+  createSubscriptionRequestDocument,
+  submitPublicSubscriptionRequest
+} from './domains/subscriptionRequests.js'
 export {
   getConferenceBookings,
   getConferenceBookingById,
@@ -466,3 +647,260 @@ export {
   getImportBatches,
   undoImportBatch
 } from './domains/misc.js'
+
+export {
+  getDashboardStats as getHotelDashboardStats,
+  getArrivals as getHotelArrivals,
+  getDepartures as getHotelDepartures,
+  getInHouse as getHotelInHouse,
+  getNoShows as getHotelNoShows,
+  getHotelKpis
+} from './domains/hotel.js'
+
+export {
+  getRateCalendar,
+  setRateCalendarEntry,
+  setRateCalendarBulk,
+  setRateRestriction,
+  getRateConflicts,
+  getApplicableRate as getRateCalendarApplicableRate,
+  getAllPromoCodes,
+  createPromoCode,
+  updatePromoCode,
+  deletePromoCode,
+  validatePromoCode,
+  getAllSeasonLabels,
+  createSeasonLabel,
+  updateSeasonLabel,
+  deleteSeasonLabel,
+  getYieldRules,
+  createYieldRule,
+  updateYieldRule,
+  deleteYieldRule,
+  getApplicableYieldAdjustment,
+  calculateOccupancyBasedRate,
+  getOccupancyForecast
+} from './domains/rateCalendar.js'
+
+export {
+  getAllCorporateBilling,
+  chargeToCorporateAccount,
+  getCorporateOutstanding,
+  recordCorporatePayment,
+  getCorporateStatement,
+  checkCreditLimitWithPending,
+  suspendCorporateAccount,
+  reactivateCorporateAccount
+} from './domains/corporateBilling.js'
+
+export {
+  getAllGroupOperations,
+  checkinGroupBlock,
+  checkoutGroupBlock,
+  getGroupBlockPickup,
+  releaseUnsoldGroupRooms,
+  createBookingsFromRoomingList
+} from './domains/groupOperations.js'
+
+export {
+  getAllPropertyGroups,
+  createPropertyGroup,
+  updatePropertyGroup,
+  deletePropertyGroup,
+  getGroupProperties,
+  addPropertyToGroup,
+  removePropertyFromGroup,
+  getGroupSettings,
+  updateGroupSettings,
+  getConsolidatedDashboard,
+  getConsolidatedOccupancyReport,
+  getConsolidatedFinancialSummary,
+  getSharedGuestProfiles,
+  shareGuestProfile,
+  unshareGuestProfile,
+  getSharedBlacklist,
+  addBlacklistEntry,
+  removeBlacklistEntry,
+  getSharedCorporateAccounts,
+  shareCorporateAccount,
+  unshareCorporateAccount,
+  getGroupMemberLodges,
+  switchActiveProperty
+} from './domains/multiProperty.js'
+
+export {
+  getHousekeepingDashboard,
+  createAssignment,
+  updateAssignmentStatus,
+  createInspection,
+  startTurnaround,
+  completeTurnaround,
+  getTurnaroundTimes,
+  getProductivity,
+  getChecklistItems,
+  createChecklistItem,
+  updateChecklistItem,
+  deleteChecklistItem
+} from './domains/housekeepingCommandCenter.js'
+
+export {
+  getAllPreventiveSchedules,
+  createPreventiveSchedule,
+  updatePreventiveSchedule,
+  deletePreventiveSchedule,
+  getDuePreventiveMaintenance,
+  completePreventiveMaintenance,
+  setRoomOutOfOrder,
+  setRoomOutOfService,
+  returnRoomToService,
+  getRoomDowntimeHistory,
+  getMaintenanceDashboard,
+  getDowntimeReport
+} from './domains/maintenanceEnterprise.js'
+
+export {
+  createLinenStocktake,
+  getLinenDashboard,
+  reportDamagedLinen,
+  chargeDamagedLinen,
+  claimLostFoundItem,
+  getLostFoundDashboard,
+  resolveIncident,
+  getIncidentDashboard,
+  getVisitorDashboard,
+  getVisitorHistory,
+  getEvacuationList,
+  exportEvacuationReport,
+  createShiftHandover,
+  completeShiftHandover,
+  getShiftHandoverHistory
+} from './domains/operationsCompliance.js'
+
+export {
+  getRevenueForecast,
+  upsertForecastEntry,
+  getCompetitorNotes,
+  createCompetitorNote,
+  getDemandEvents,
+  createDemandEvent,
+  getRevenueRecommendations
+} from './domains/revenueManager.js'
+
+export {
+  getOccupancy,
+  getPace,
+  getPickup,
+  getChannelSource,
+  getDebtorAging as getAdvancedReportDebtorAging,
+  getRatePerformance,
+  getHousekeepingProductivity,
+  getRoomDowntime,
+  getGroupPickup,
+  getCancellationNoShow,
+  getTaxVat,
+  getDepositLiability,
+  getFolioExceptions
+} from './domains/advancedReports.js'
+export {
+  getAllTemplates as getGuestMessageTemplates,
+  createTemplate as createMessageTemplate,
+  updateTemplate as updateMessageTemplate,
+  deleteTemplate as deleteMessageTemplate,
+  getAllTriggers as getGuestMessageTriggers,
+  createTrigger as createMessageTrigger,
+  updateTrigger as updateMessageTrigger,
+  deleteTrigger as deleteMessageTrigger,
+  renderTemplate as renderMessageTemplate,
+  queueTriggeredMessages as queueTriggeredMessages,
+  getDeliveryStatus as getMessageDeliveryStatus
+} from './domains/guestMessaging.js'
+export {
+  getPortalConfig as getGuestPortalConfig,
+  updatePortalConfig as updateGuestPortalConfig,
+  createPortalSession as createGuestPortalSession,
+  validatePortalSession as validateGuestPortalSession,
+  submitPortalRequest as submitGuestPortalRequest,
+  getPortalBookingDetails as getGuestPortalBookingDetails,
+  getPortalDocuments as getGuestPortalDocuments,
+  getPendingRequests as getPendingGuestPortalRequests
+} from './domains/guestPortal.js'
+export {
+  getGuestCRMProfile,
+  updateGuestCRMProfile,
+  setVipLevel,
+  addGuestPreference,
+  setBlacklistStatus,
+  getGuestStayHistory,
+  recordGuestConsent,
+  searchGuestsCRM,
+  getVIPList
+} from './domains/guestCRM.js'
+export {
+  runAuditChecks as runNightAuditChecks,
+  closeNightAudit,
+  reopenNightAudit,
+  getNightAuditSummary,
+  getNightAuditHistory,
+  resolveException as resolveNightAuditException
+} from './domains/nightAudit.js'
+export {
+  getCheckinChecklist,
+  completeCheckinStep,
+  resetCheckinStep,
+  getCheckoutChecklist,
+  completeCheckoutStep,
+  resetCheckoutStep,
+  getCheckinConfig,
+  updateCheckinConfig
+} from './domains/checkinWorkflow.js'
+export {
+  getEarlyPolicies,
+  createEarlyPolicy,
+  updateEarlyPolicy,
+  deleteEarlyPolicy,
+  getLatePolicies,
+  createLatePolicy,
+  updateLatePolicy,
+  deleteLatePolicy,
+  getEarlyRequests,
+  createEarlyRequest,
+  approveEarlyRequest,
+  rejectEarlyRequest,
+  getLateRequests,
+  createLateRequest,
+  approveLateRequest,
+  rejectLateRequest,
+  calculateEarlyFee,
+  calculateLateFee
+} from './domains/earlyLateCheckout.js'
+export {
+  getAllCancellationPolicies,
+  createCancellationPolicy,
+  updateCancellationPolicy,
+  deleteCancellationPolicy,
+  calculateCancellationFee,
+  processCancellation,
+  getAllCancellationRequests,
+  approveCancellation
+} from './domains/cancellationPolicies.js'
+export {
+  getBookingEngineRules,
+  createBookingEngineRule,
+  updateBookingEngineRule,
+  deleteBookingEngineRule,
+  getBookingUpsellsList,
+  createBookingUpsell,
+  updateBookingUpsell,
+  deleteBookingUpsell,
+  calculateBookingPrice,
+  checkBookingAvailability,
+  getBookingUpsells,
+  createBookingIntent as createBookingEngineIntent
+} from './domains/bookingEngine.js'
+export {
+  logAbandonedSession,
+  getAbandonedSessions,
+  recoverSession,
+  expireSessions,
+  getPendingRecoverySessions
+} from './domains/abandonedPaymentRecovery.js'

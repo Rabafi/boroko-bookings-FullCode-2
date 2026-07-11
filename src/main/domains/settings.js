@@ -56,8 +56,10 @@ const DEFAULT_SETTINGS = {
   currency: 'P',
   logo: '',
   business_type: 'lodge',
+  property_type: 'lodge',
   assistant_enabled: false,
-  setup_complete: false
+  setup_complete: false,
+  operating_profile: {}
 };
 const SETTINGS_QUERY_TIMEOUT_MS = 15000;
 const SETTINGS_BACKGROUND_REFRESH_TIMEOUT_MS = 10000;
@@ -139,7 +141,9 @@ async function saveRemoteSettingsRecord(settings) {
     'public_offer_multi_room',
     'public_offer_full_lodge',
     'public_offer_day_use',
-    'public_offer_events'
+    'public_offer_events',
+    'property_type',
+    'operating_profile'
   ]);
   const remoteSettings = { ...settings };
   const skippedColumns = [];
@@ -364,6 +368,7 @@ export async function saveSettings(data) {
     currency: data.currency || 'P',
     logo: data.logo || '',
     business_type: data.business_type || 'lodge',
+    property_type: data.property_type || data.business_type || 'lodge',
     assistant_enabled: data.assistant_enabled === true,
     slug: data.slug ? data.slug.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') : null,
     booking_tagline: data.booking_tagline || '',
@@ -381,6 +386,7 @@ export async function saveSettings(data) {
     public_offer_full_lodge: data.public_offer_full_lodge === true,
     public_offer_day_use: data.public_offer_day_use === true,
     public_offer_events: data.public_offer_events === true,
+    operating_profile: data.operating_profile || {},
     setup_complete: true,
     updated_at: new Date().toISOString(),
     lodge_id: state.lodgeId
@@ -407,6 +413,27 @@ export async function saveSettings(data) {
     updateProfileMetadata(state.lodgeId, { label: profileLabelFromSettings(settings, activeProfile.label) });
   }
   return settings;
+}
+
+export async function updateOperatingProfile(profile) {
+  if (!state.lodgeId) throw new Error('Choose a lodge profile on this computer before saving operating profile.');
+
+  const current = getCachedSettings() || getDefaultSettings();
+  const updated = { ...current, operating_profile: profile, updated_at: new Date().toISOString() };
+
+  writeCache('settings', [updated]);
+
+  if (state.isOnline) {
+    try {
+      await state.supabase.from('settings').upsert(
+        { lodge_id: state.lodgeId, operating_profile: profile, updated_at: new Date().toISOString() },
+        { onConflict: 'lodge_id' }
+      );
+    } catch (e) {
+      console.warn('[SETTINGS] Failed to save operating profile to remote:', e.message);
+    }
+  }
+  return updated;
 }
 
 export async function initializeCompanySetup({ settings, admin }) {

@@ -83,6 +83,10 @@ export function getQueuedPosOrderId(item) {
     const parsedId = queueId.slice('pos-return-'.length).trim();
     if (parsedId) return parsedId;
   }
+  if (queueId.startsWith('pos-recipe-depletion-')) {
+    const parsedId = queueId.slice('pos-recipe-depletion-'.length).trim();
+    if (parsedId) return parsedId;
+  }
 
   console.error('[POS SYNC] Missing staged order id for queue item', {
     queueId: item?._queue_id || null,

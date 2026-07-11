@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Boroko Bar POS | Point of Sale for Bars, Pubs &amp; Shebeens</title>
+    <meta name="description" content="A simple, offline-ready point of sale for bars, shebeens, and pubs in Botswana. Ring up drinks, track stock, close your till — no internet needed." />
+    <meta property="og:title" content="Boroko Bar POS" />
+    <meta property="og:description" content="A simple POS for bars, shebeens, and pubs. No internet needed. No monthly fees." />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="https://borokobookings.com/assets/og-image.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:site" content="@borokobookings" />
+    <meta name="twitter:title" content="Boroko Bar POS" />
+    <meta name="twitter:description" content="A simple POS for bars, shebeens, and pubs. No internet needed." />
+    <meta name="twitter:image" content="https://borokobookings.com/assets/og-image.png" />
+    <meta name="theme-color" content="#0c0a09" />
+    <link rel="canonical" href="https://borokobookings.com/bar-pos" />
+    <link rel="icon" type="image/svg+xml" href="./assets/boroko-bookings-logo.svg" />
+    <link rel="alternate icon" type="image/png" href="./assets/boroko-bookings-logo-light.png" />
+    <link rel="stylesheet" href="./styles.css" />
+    <style>
+      .bar-hero { background: linear-gradient(135deg, #0c0a09 0%, #1c1917 50%, #0c0a09 100%); }
+      .bar-hero::after { content: ''; position: absolute; inset: 0; background: url("data:image/svg+xml,%3Csvg width='60' height='60' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M30 5 L55 30 L30 55 L5 30 Z' fill='none' stroke='rgba(255,255,255,0.02)' stroke-width='1'/%3E%3C/svg%3E") repeat; pointer-events: none; }
+      .bar-hero-grid { position: relative; z-index: 1; }
+      .bar-display-mockup { background: #1c1917; border: 1px solid #292524; border-radius: 16px; overflow: hidden; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.8); }
+      .bar-display-mockup .mockup-bar { display: flex; align-items: center; gap: 6px; padding: 10px 14px; background: #292524; border-bottom: 1px solid #44403c; }
+      .bar-display-mockup .mockup-bar .dot { width: 10px; height: 10px; border-radius: 50%; }
+      .bar-display-mockup .mockup-bar .dot-red { background: #ef4444; }
+      .bar-display-mockup .mockup-bar .dot-yellow { background: #eab308; }
+      .bar-display-mockup .mockup-bar .dot-green { background: #22c55e; }
+      .bar-display-mockup .mockup-bar .url { flex: 1; text-align: center; font-size: 0.7rem; color: #78716c; font-weight: 600; }
+      .bar-kpi-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; }
+      .bar-kpi-card { background: #1c1917; border: 1px solid #292524; border-radius: 12px; padding: 16px; text-align: center; }
+      .bar-kpi-card .num { font-size: 1.5rem; font-weight: 800; color: #d6d3d1; }
+      .bar-kpi-card .label { font-size: 0.75rem; color: #a8a29e; margin-top: 4px; text-transform: uppercase; letter-spacing: 0.05em; }
+      .bar-feature-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+      .bar-feature-card { background: #1c1917; border: 1px solid #292524; border-radius: 12px; padding: 20px; transition: border-color 0.2s; }
+      .bar-feature-card:hover { border-color: #44403c; }
+      .bar-feature-card .icon-wrap { width: 40px; height: 40px; border-radius: 10px; display: flex; align-items: center; justify-content: center; margin-bottom: 12px; background: rgba(16,185,129,0.1); }
+      .bar-feature-card h3 { font-size: 0.95rem; font-weight: 700; color: #d6d3d1; margin-bottom: 6px; }
+      .bar-feature-card p { font-size: 0.82rem; color: #a8a29e; line-height: 1.5; }
+      .bar-why-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+      .bar-why-item { display: flex; align-items: start; gap: 10px; font-size: 0.88rem; color: #d6d3d1; padding: 10px 0; }
+      .bar-why-item .check { color: #10b981; font-weight: 800; flex-shrink: 0; margin-top: 2px; }
+      .bar-step-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px; }
+      .bar-step { text-align: center; padding: 20px 12px; background: #1c1917; border: 1px solid #292524; border-radius: 12px; }
+      .bar-step .step-num { width: 32px; height: 32px; border-radius: 50%; background: #10b981; color: #0c0a09; font-weight: 800; font-size: 0.85rem; display: flex; align-items: center; justify-content: center; margin: 0 auto 10px; }
+      .bar-step h3 { font-size: 0.9rem; font-weight: 600; color: #d6d3d1; margin-bottom: 4px; }
+      .bar-step p { font-size: 0.78rem; color: #a8a29e; line-height: 1.4; }
+      .bar-cta { background: linear-gradient(135deg, #064e3b 0%, #065f46 100%); border-radius: 16px; padding: 48px 32px; text-align: center; }
+      .bar-cta h2 { font-size: 1.5rem; font-weight: 800; color: #d6d3d1; margin-bottom: 12px; }
+      .bar-cta p { font-size: 0.9rem; color: #a8a29e; margin-bottom: 24px; max-width: 500px; margin-left: auto; margin-right: auto; }
+    </style>
+  </head>
+  <body class="page page-dark">
+    <div id="app">
+      <header class="site-header">
+        <div class="container header-inner">
+          <a href="./index.html" class="brand">
+            <span class="brand-mark"><img src="./assets/boroko-bookings-logo-light.png" alt="" aria-hidden="true" width="120" height="43" /></span>
+            <span class="brand-copy"><strong>Boroko</strong><span>Bar POS</span></span>
+          </a>
+          <nav class="header-nav" aria-label="Main">
+            <a href="./bar-pos.html" class="active">Bar POS</a>
+            <a href="./packages.html">Packages</a>
+            <a href="./download.html">Download</a>
+            <a href="./contact.html">Contact</a>
+          </nav>
+        </div>
+      </header>
+
+      <main id="main">
+        <!-- ═══ HERO ═══ -->
+        <section class="bar-hero" style="position:relative;padding:120px 0 80px;overflow:hidden;">
+          <div class="container bar-hero-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:48px;align-items:center;">
+            <div>
+              <div style="display:inline-flex;align-items:center;gap:6px;background:rgba(16,185,129,0.1);border:1px solid rgba(16,185,129,0.2);border-radius:100px;padding:4px 12px 4px 4px;margin-bottom:20px;">
+                <span style="background:#10b981;color:#0c0a09;font-size:0.65rem;font-weight:800;padding:2px 8px;border-radius:100px;">v1.0</span>
+                <span style="font-size:0.75rem;color:#a8a29e;">Fully offline. No internet needed.</span>
+              </div>
+              <h1 style="font-size:2.5rem;font-weight:900;line-height:1.1;color:#d6d3d1;margin-bottom:16px;">
+                Ring up drinks.<br />
+                Track your stock.<br />
+                <span style="color:#10b981;">Close your till.</span>
+              </h1>
+              <p style="font-size:1rem;color:#a8a29e;line-height:1.6;margin-bottom:24px;max-width:480px;">
+                A simple, offline POS for bars, pubs, and shebeens in Botswana. No internet. No monthly fees. No training manual. Just a screen that sells drinks.
+              </p>
+              <div style="display:flex;gap:12px;flex-wrap:wrap;">
+                <a class="btn btn-primary btn-lg" href="#" data-action="download">Download Free Trial</a>
+                <a class="btn btn-secondary btn-lg" href="https://wa.me/26772789415" target="_blank" rel="noreferrer">Chat on WhatsApp</a>
+              </div>
+            </div>
+            <div>
+              <div class="bar-display-mockup">
+                <div class="mockup-bar">
+                  <span class="dot dot-red"></span>
+                  <span class="dot dot-yellow"></span>
+                  <span class="dot dot-green"></span>
+                  <span class="url">Bar POS — v1.0</span>
+                </div>
+                <div style="padding:24px;background:#0c0a09;">
+                  <div style="display:flex;gap:12px;margin-bottom:16px;">
+                    <div style="flex:1;background:#1c1917;border-radius:8px;padding:12px 16px;">
+                      <div style="font-size:0.65rem;color:#78716c;text-transform:uppercase;letter-spacing:0.05em;">Today's Total</div>
+                      <div style="font-size:1.5rem;font-weight:800;color:#d6d3d1;font-family:monospace;">P2,450</div>
+                    </div>
+                    <div style="flex:1;background:#1c1917;border-radius:8px;padding:12px 16px;">
+                      <div style="font-size:0.65rem;color:#78716c;text-transform:uppercase;letter-spacing:0.05em;">Orders</div>
+                      <div style="font-size:1.5rem;font-weight:800;color:#d6d3d1;font-family:monospace;">47</div>
+                    </div>
+                  </div>
+                  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;">
+                    <span style="background:#292524;color:#a8a29e;padding:4px 12px;border-radius:100px;font-size:0.7rem;">Beers</span>
+                    <span style="background:#10b981;color:#0c0a09;padding:4px 12px;border-radius:100px;font-size:0.7rem;font-weight:600;">Spirits</span>
+                    <span style="background:#292524;color:#a8a29e;padding:4px 12px;border-radius:100px;font-size:0.7rem;">Cocktails</span>
+                    <span style="background:#292524;color:#a8a29e;padding:4px 12px;border-radius:100px;font-size:0.7rem;">Shots</span>
+                  </div>
+                  <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
+                    <div style="background:#1c1917;border:1px solid #292524;border-radius:8px;padding:10px;text-align:center;">
+                      <div style="font-size:1.2rem;">🍺</div>
+                      <div style="font-size:0.7rem;color:#d6d3d1;">St Louis</div>
+                      <div style="font-size:0.65rem;color:#10b981;font-family:monospace;">P18</div>
+                    </div>
+                    <div style="background:#1c1917;border:1px solid #292524;border-radius:8px;padding:10px;text-align:center;">
+                      <div style="font-size:1.2rem;">🥃</div>
+                      <div style="font-size:0.7rem;color:#d6d3d1;">Jameson</div>
+                      <div style="font-size:0.65rem;color:#10b981;font-family:monospace;">P35</div>
+                    </div>
+                    <div style="background:#1c1917;border:1px solid #292524;border-radius:8px;padding:10px;text-align:center;">
+                      <div style="font-size:1.2rem;">🍹</div>
+                      <div style="font-size:0.7rem;color:#d6d3d1;">Mojito</div>
+                      <div style="font-size:0.65rem;color:#10b981;font-family:monospace;">P45</div>
+                    </div>
+                    <div style="background:#1c1917;border:1px solid #292524;border-radius:8px;padding:10px;text-align:center;">
+                      <div style="font-size:1.2rem;">🍷</div>
+                      <div style="font-size:0.7rem;color:#d6d3d1;">Red Wine</div>
+                      <div style="font-size:0.65rem;color:#10b981;font-family:monospace;">P30</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ═══ KPI STRIP ═══ -->
+        <section style="padding:40px 0;background:#0c0a09;border-top:1px solid #292524;border-bottom:1px solid #292524;">
+          <div class="container">
+            <div class="bar-kpi-strip">
+              <div class="bar-kpi-card"><div class="num">POS</div><div class="label">Ring up drinks in 2 taps</div></div>
+              <div class="bar-kpi-card"><div class="num">Stock</div><div class="label">Track bottles &amp; kegs</div></div>
+              <div class="bar-kpi-card"><div class="num">Staff</div><div class="label">Clock in / clock out</div></div>
+              <div class="bar-kpi-card"><div class="num">Cash</div><div class="label">Till close with variance</div></div>
+              <div class="bar-kpi-card"><div class="num">Reports</div><div class="label">Know your top sellers</div></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ═══ FEATURES ═══ -->
+        <section style="padding:64px 0;background:#0c0a09;">
+          <div class="container">
+            <div style="text-align:center;margin-bottom:40px;">
+              <div class="section-tag" style="background:rgba(16,185,129,0.1);color:#10b981;">Everything you need</div>
+              <h2 style="font-size:1.8rem;font-weight:800;color:#d6d3d1;margin-top:12px;">No fluff. Just the tools that sell drinks.</h2>
+              <p style="color:#a8a29e;margin-top:8px;max-width:500px;margin-left:auto;margin-right:auto;">Boroko Bar POS does one thing: help you sell drinks, track your money, and close without stress.</p>
+            </div>
+
+            <div class="bar-feature-grid">
+              <div class="bar-feature-card">
+                <div class="icon-wrap"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg></div>
+                <h3>Quick Sell Terminal</h3>
+                <p>Categories for beers, spirits, cocktails, shots. Tap a drink, set quantity, take payment. Two taps, done. Works with touch screens and mouse.</p>
+              </div>
+
+              <div class="bar-feature-card">
+                <div class="icon-wrap"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div>
+                <h3>Payment Methods</h3>
+                <p>Cash, card, Orange Money, MyZaka, SMEGA, bank transfer. Split payments across methods. All recorded with an audit trail.</p>
+              </div>
+
+              <div class="bar-feature-card">
+                <div class="icon-wrap"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg></div>
+                <h3>Stock Tracking</h3>
+                <p>Every sale deducts stock automatically. Know what's low. Know what to order. Set reorder levels and get low-stock warnings.</p>
+              </div>
+
+              <div class="bar-feature-card">
+                <div class="icon-wrap"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></div>
+                <h3>Staff Clock-In</h3>
+                <p>Staff sign in when they arrive, sign out when they leave. Know who worked when. Track sales per staff member.</p>
+              </div>
+
+              <div class="bar-feature-card">
+                <div class="icon-wrap"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></div>
+                <h3>Cash Drawer &amp; Close</h3>
+                <p>Open with a float. The system tracks what you should have. Count your drawer. Variance is calculated automatically. Close with confidence.</p>
+              </div>
+
+              <div class="bar-feature-card">
+                <div class="icon-wrap"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg></div>
+                <h3>Offline-First</h3>
+                <p>Works without internet. No WiFi? No problem. Orders, payments, and stock adjustments all save locally. Sync when you're online.</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ═══ HOW IT WORKS ═══ -->
+        <section style="padding:64px 0;background:#1c1917;">
+          <div class="container">
+            <div style="text-align:center;margin-bottom:40px;">
+              <div class="section-tag" style="background:rgba(16,185,129,0.1);color:#10b981;">How it works</div>
+              <h2 style="font-size:1.8rem;font-weight:800;color:#d6d3d1;margin-top:12px;">Open. Sell. Close.</h2>
+              <p style="color:#a8a29e;margin-top:8px;">Three steps. That's your entire day.</p>
+            </div>
+            <div class="bar-step-grid">
+              <div class="bar-step">
+                <div class="step-num">1</div>
+                <h3>Open the till</h3>
+                <p>Set your float. The system is ready to sell.</p>
+              </div>
+              <div class="bar-step">
+                <div class="step-num">2</div>
+                <h3>Sell drinks</h3>
+                <p>Tap a drink, take payment. Stock updates automatically.</p>
+              </div>
+              <div class="bar-step">
+                <div class="step-num">3</div>
+                <h3>Close out</h3>
+                <p>Count the drawer. See variance. Know your day.</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ═══ WHY SWITCH ═══ -->
+        <section style="padding:64px 0;background:#0c0a09;">
+          <div class="container">
+            <div style="text-align:center;margin-bottom:40px;">
+              <div class="section-tag" style="background:rgba(16,185,129,0.1);color:#10b981;">Why Bar POS</div>
+              <h2 style="font-size:1.8rem;font-weight:800;color:#d6d3d1;margin-top:12px;">Built for Botswana bars. Priced for reality.</h2>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:32px;">
+              <div style="background:#1c1917;border:1px solid #292524;border-radius:12px;padding:28px;">
+                <h3 style="color:#10b981;font-weight:700;margin-bottom:16px;">What you get</h3>
+                <div class="bar-why-grid">
+                  <div class="bar-why-item"><span class="check">&#10003;</span>POS terminal for any drink</div>
+                  <div class="bar-why-item"><span class="check">&#10003;</span>Stock tracking with low-stock alerts</div>
+                  <div class="bar-why-item"><span class="check">&#10003;</span>Cash drawer with variance control</div>
+                  <div class="bar-why-item"><span class="check">&#10003;</span>Staff clock-in / clock-out</div>
+                  <div class="bar-why-item"><span class="check">&#10003;</span>Works fully offline</div>
+                  <div class="bar-why-item"><span class="check">&#10003;</span>Free 1-month trial</div>
+                </div>
+              </div>
+              <div style="background:#1c1917;border:1px solid #292524;border-radius:12px;padding:28px;">
+                <h3 style="color:#a8a29e;font-weight:700;margin-bottom:16px;">What you don't get</h3>
+                <div class="bar-why-grid">
+                  <div class="bar-why-item"><span style="color:#ef4444;font-weight:800;flex-shrink:0;">&#10007;</span>Monthly internet bills</div>
+                  <div class="bar-why-item"><span style="color:#ef4444;font-weight:800;flex-shrink:0;">&#10007;</span>Per-terminal fees</div>
+                  <div class="bar-why-item"><span style="color:#ef4444;font-weight:800;flex-shrink:0;">&#10007;</span>Training courses</div>
+                  <div class="bar-why-item"><span style="color:#ef4444;font-weight:800;flex-shrink:0;">&#10007;</span>Kitchen display you don't need</div>
+                  <div class="bar-why-item"><span style="color:#ef4444;font-weight:800;flex-shrink:0;">&#10007;</span>Table management for a bar counter</div>
+                  <div class="bar-why-item"><span style="color:#ef4444;font-weight:800;flex-shrink:0;">&#10007;</span>Long-term contracts</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ═══ CTA ═══ -->
+        <section style="padding:64px 0;background:#0c0a09;">
+          <div class="container">
+            <div class="bar-cta">
+              <h2>Your bar deserves better than a notebook.</h2>
+              <p>Download Boroko Bar POS. Set it up in 5 minutes. Start tracking your sales, stock, and cash — no internet needed.</p>
+              <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;">
+                <a class="btn btn-primary btn-lg" href="#" data-action="download">Download Free Trial</a>
+                <a class="btn btn-secondary btn-lg" href="https://wa.me/26772789415" target="_blank" rel="noreferrer">Chat on WhatsApp</a>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <footer class="site-footer" style="background:#1c1917;border-top:1px solid #292524;">
+        <div class="container footer-grid">
+          <div>
+            <div class="brand footer-brand">
+              <span class="brand-mark"><img src="./assets/boroko-bookings-logo-light.png" alt="" aria-hidden="true" width="150" height="54" /></span>
+              <span class="brand-copy"><strong>Boroko Bar POS</strong><span>Built by Batswana for Botswana bars</span></span>
+            </div>
+            <p class="footer-copy" style="color:#78716c;">A simple, offline POS for bars, pubs, and shebeens. Part of the Boroko Bookings family.</p>
+          </div>
+          <div class="footer-links">
+            <a href="./index.html">Home</a>
+            <a href="./bar-pos.html">Bar POS</a>
+            <a href="./restaurant-pos.html">Restaurant POS</a>
+            <a href="./booking-site.html">Booking Site</a>
+            <a href="./packages.html">Packages</a>
+            <a href="./download.html">Download</a>
+            <a href="./contact.html">Contact</a>
+            <a href="https://wa.me/26772789415" target="_blank" rel="noreferrer">WhatsApp: +267 72 789 415</a>
+            <a href="mailto:hello@borokobookings.com">hello@borokobookings.com</a>
+            <a href="./privacy.html">Privacy Policy</a>
+            <a href="./terms.html">Terms of Service</a>
+          </div>
+        </div>
+      </footer>
+    </div>
+    <script src="./script.js" defer></script>
+  </body>
+</html>

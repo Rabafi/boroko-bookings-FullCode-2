@@ -94,7 +94,49 @@ const IMPORT_TEMPLATES = {
   { key: 'category', label: 'Category', required: true },
   { key: 'description', label: 'Description', required: false },
   { key: 'amount', label: 'Amount', required: true },
-  { key: 'paid_by', label: 'Paid By', required: false }]
+  { key: 'paid_by', label: 'Paid By', required: false }],
+
+  menu_items: [
+  { key: 'name', label: 'Name', required: true },
+  { key: 'category', label: 'Category', required: false },
+  { key: 'selling_price', label: 'Selling Price', required: false },
+  { key: 'cost_price', label: 'Cost Price', required: false },
+  { key: 'unit', label: 'Unit', required: false },
+  { key: 'available', label: 'Available', required: false }],
+
+  customers: [
+  { key: 'name', label: 'Name', required: true },
+  { key: 'phone', label: 'Phone', required: false },
+  { key: 'email', label: 'Email', required: false },
+  { key: 'notes', label: 'Notes', required: false }],
+
+  ingredients: [
+  { key: 'name', label: 'Name', required: true },
+  { key: 'category', label: 'Category', required: false },
+  { key: 'unit', label: 'Unit', required: false },
+  { key: 'current_stock', label: 'Current Stock', required: false },
+  { key: 'reorder_level', label: 'Reorder Level', required: false },
+  { key: 'cost_per_unit', label: 'Cost Per Unit', required: false }],
+
+  recipes: [
+  { key: 'menu_item', label: 'Menu Item', required: true },
+  { key: 'ingredient', label: 'Ingredient', required: true },
+  { key: 'quantity', label: 'Quantity', required: true },
+  { key: 'unit', label: 'Unit', required: false },
+  { key: 'wastage_pct', label: 'Wastage %', required: false }],
+
+  suppliers: [
+  { key: 'name', label: 'Name', required: true },
+  { key: 'contact_person', label: 'Contact Person', required: false },
+  { key: 'phone', label: 'Phone', required: false },
+  { key: 'email', label: 'Email', required: false },
+  { key: 'category', label: 'Category', required: false }],
+
+  staff: [
+  { key: 'name', label: 'Name', required: true },
+  { key: 'role', label: 'Role', required: false },
+  { key: 'email', label: 'Email', required: false },
+  { key: 'phone', label: 'Phone', required: false }]
 
 };
 
@@ -305,7 +347,13 @@ export function getSupportedImportTypes() {
   { key: 'rooms', label: 'Rooms', executable: true },
   { key: 'inventory', label: 'Inventory Items', executable: true },
   { key: 'supplies', label: 'Room Supply Items', executable: true },
-  { key: 'expenses', label: 'Expenses', executable: true }];
+  { key: 'expenses', label: 'Expenses', executable: true },
+  { key: 'menu_items', label: 'Menu Items', executable: true },
+  { key: 'customers', label: 'Customers', executable: true },
+  { key: 'ingredients', label: 'Ingredients / Inventory', executable: true },
+  { key: 'recipes', label: 'Recipes', executable: true },
+  { key: 'suppliers', label: 'Suppliers', executable: true },
+  { key: 'staff', label: 'Staff', executable: true }];
 
 }
 

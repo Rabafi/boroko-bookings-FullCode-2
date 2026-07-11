@@ -1,14 +1,15 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { AlertTriangle, BellRing, CalendarClock, CreditCard, FileText, MessageSquare, Package, RefreshCw, ShoppingCart, TrendingUp, Wrench } from 'lucide-react'
+import { AlertTriangle, BellRing, CalendarClock, CreditCard, FileText, MessageSquare, Package, RefreshCw, ShoppingCart, TrendingUp, Utensils, Wrench } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { useFeatures } from '../contexts/FeaturesContext'
 import { useInbox } from '../contexts/InboxContext'
-import { getDashboardSnapshot, getFinancialActivityFeed, getSupportRequests, listBookings } from '../lib/api'
+import { getDashboardSnapshot, getFinancialActivityFeed, getSupportRequests, listBookings, getSettings } from '../lib/api'
 import { money, shortDate } from '../lib/format'
 import { readCacheEntry } from '../lib/runtime'
 import DataFreshness from '../components/DataFreshness'
 import MobileBoundaryNotice from '../components/MobileBoundaryNotice'
+import { isRestaurantOnly } from '@shared/propertyTypes'
 
 const TONE = {
   red: 'bg-red-950/50 text-red-300',
@@ -78,22 +79,27 @@ export default function Dashboard() {
   const [lastUpdated, setLastUpdated] = useState(null)
   const [loadError, setLoadError] = useState('')
   const [requestFeed, setRequestFeed] = useState([])
+  const [restaurantMode, setRestaurantMode] = useState(false)
   const today = new Date().toISOString().slice(0, 10)
 
   const load = async () => {
     setLoading(true)
     setLoadError('')
     try {
-      const [snapshot, _feed, requests, bookingRows] = await Promise.all([
+      const [snapshot, _feed, requests, bookingRows, settings] = await Promise.all([
         getDashboardSnapshot(user.lodge_id),
         getFinancialActivityFeed(user.lodge_id, 5).catch(() => []),
         getSupportRequests(user.lodge_id, 6).catch(() => []),
-        listBookings(user.lodge_id).catch(() => [])
+        listBookings(user.lodge_id).catch(() => []),
+        getSettings(user.lodge_id).catch(() => null)
       ])
       setData(snapshot)
       setRequestFeed(Array.isArray(requests) ? requests : [])
       setBookings(Array.isArray(bookingRows) ? bookingRows : [])
       setLastUpdated(readCacheEntry(user.lodge_id, 'dashboard', null)?.updatedAt || null)
+      if (settings) {
+        setRestaurantMode(isRestaurantOnly(settings.property_type || settings.business_type || 'lodge'))
+      }
     } catch (error) {
       setLoadError(error?.message || 'Dashboard could not load.')
     }
@@ -134,7 +140,7 @@ export default function Dashboard() {
   const attentionItems = useMemo(() => {
     const items = []
 
-    if (overdueCheckouts.length > 0) {
+    if (!restaurantMode && overdueCheckouts.length > 0) {
       items.push({
         id: 'overdue-checkouts',
         icon: AlertTriangle,
@@ -158,7 +164,7 @@ export default function Dashboard() {
       })
     }
 
-    if (pendingOnline.length > 0) {
+    if (!restaurantMode && pendingOnline.length > 0) {
       items.push({
         id: 'pending-online',
         icon: CalendarClock,
@@ -170,17 +176,19 @@ export default function Dashboard() {
       })
     }
 
-    ;(data?.topBalances || []).slice(0, 1).forEach((booking) => {
-      items.push({
-        id: `balance-${booking.id}`,
-        icon: CreditCard,
-        tone: 'amber',
-        label: 'Balance',
-        title: guestLabel(booking),
-        sub: `Outstanding ${money(booking.balance)} \u2022 ${shortDate(booking.check_in)}`,
-        to: '/money?focus=outstanding'
+    if (!restaurantMode) {
+      ;(data?.topBalances || []).slice(0, 1).forEach((booking) => {
+        items.push({
+          id: `balance-${booking.id}`,
+          icon: CreditCard,
+          tone: 'amber',
+          label: 'Balance',
+          title: guestLabel(booking),
+          sub: `Outstanding ${money(booking.balance)} \u2022 ${shortDate(booking.check_in)}`,
+          to: '/money?focus=outstanding'
+        })
       })
-    })
+    }
 
     ;(data?.lowStock || []).slice(0, 1).forEach((item) => {
       items.push({
@@ -201,13 +209,13 @@ export default function Dashboard() {
         tone: 'blue',
         label: 'Inbox',
         title: `${inboxUnreadCount} unread message${inboxUnreadCount === 1 ? '' : 's'}`,
-        sub: 'Front desk has replied.',
+        sub: restaurantMode ? 'Manager has replied.' : 'Front desk has replied.',
         to: '/control'
       })
     }
 
     return items.slice(0, 5)
-  }, [data, overdueCheckouts, pendingOnline, pwaEnabled, inboxUnreadCount])
+  }, [data, overdueCheckouts, pendingOnline, pwaEnabled, inboxUnreadCount, restaurantMode])
 
   const openAlertCount = useMemo(() => {
     return (
@@ -254,7 +262,34 @@ export default function Dashboard() {
         <div className="grid grid-cols-2 gap-2">
           {loading
             ? Array.from({ length: 4 }).map((_, index) => <MetricSkeleton key={index} />)
-            : (
+            : restaurantMode ? (
+              <>
+                <KpiCard
+                  label="POS Sales Today"
+                  value={money(data?.posRevenue || 0)}
+                  accent="text-green-300"
+                  to="/pos"
+                />
+                <KpiCard
+                  label="Orders Today"
+                  value={todayArrivals.length || 0}
+                  sub="Completed orders"
+                  to="/pos"
+                />
+                <KpiCard
+                  label="Outstanding"
+                  value={money(data?.outstandingTotal)}
+                  accent={Number(data?.outstandingTotal || 0) > 0 ? 'text-yellow-300' : 'text-green-300'}
+                  to="/money?focus=outstanding"
+                />
+                <KpiCard
+                  label="Low Stock"
+                  value={data?.lowStockCount || 0}
+                  sub="Items below par"
+                  to="/alerts?filter=stock"
+                />
+              </>
+            ) : (
               <>
                 <KpiCard
                   label="Occupancy"
@@ -287,8 +322,11 @@ export default function Dashboard() {
           <QuickLink to="/alerts?filter=all" icon={AlertTriangle} label="Alerts" sub={`${openAlertCount} open`} />
           <QuickLink to="/money?focus=outstanding" icon={TrendingUp} label="Money" sub="Balances and audit" />
           {can('pos.reports') && isEnabled('pos') && <QuickLink to="/pos" icon={ShoppingCart} label="POS Sales" sub="Live sales and history" />}
-          {pwaEnabled && <QuickLink to="/control" icon={MessageSquare} label="Inbox" sub={inboxUnreadCount > 0 ? `${inboxUnreadCount} unread` : 'Front desk chat'} />}
-          {can('reports.view') ? (
+          {restaurantMode && <QuickLink to="/restaurant-owner" icon={Utensils} label="Owner View" sub="Today's overview" />}
+          {pwaEnabled && <QuickLink to="/control" icon={MessageSquare} label="Inbox" sub={inboxUnreadCount > 0 ? `${inboxUnreadCount} unread` : restaurantMode ? 'Manager chat' : 'Front desk chat'} />}
+          {restaurantMode ? (
+            <QuickLink to="/inventory" icon={Package} label="Inventory" sub="Stock and menu items" />
+          ) : can('reports.view') ? (
             <QuickLink to="/reports" icon={FileText} label="Reports" sub="Full snapshot" />
           ) : (
             <QuickLink to="/bookings" icon={CalendarClock} label="Bookings" sub="Calendar and list" />
@@ -296,7 +334,10 @@ export default function Dashboard() {
         </div>
 
         <MobileBoundaryNotice compact>
-          Mobile is for visibility and requests. Front desk still executes booking and money changes on desktop.
+          {restaurantMode
+            ? 'Mobile is for visibility and alerts. POS and stock changes are managed on the main terminal.'
+            : 'Mobile is for visibility and requests. Front desk still executes booking and money changes on desktop.'
+          }
         </MobileBoundaryNotice>
       </div>
     </div>

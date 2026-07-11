@@ -32,6 +32,11 @@ import {
   normalizeSubscriptionPlan,
   buildUpgradeRequestDescription
 } from '../../../shared/subscriptionPlans'
+import {
+  ENTERPRISE_ADDON_STATUS,
+  getEligibleEnterpriseAddons,
+  isEnterpriseAddonEnabled
+} from '../../../shared/enterpriseAddons'
 import UsageLimitIndicator from './shared/UsageLimitIndicator'
 
 function fmtDate(value) {
@@ -63,7 +68,8 @@ function getRecommendedUpgradePlan(currentPlan) {
   const normalizedPlan = normalizeSubscriptionPlan(currentPlan)
   if (normalizedPlan === 'Starter') return 'Standard'
   if (normalizedPlan === 'Standard') return 'Pro'
-  return 'Pro'
+  if (normalizedPlan === 'Pro') return 'Enterprise'
+  return null
 }
 
 function StatusHero({ licenseStatus }) {
@@ -170,7 +176,19 @@ export default function SubscriptionAccessPanel() {
   const entitlementExpired = licenseStatus?.expired === true
   const licensedPlan = normalizeSubscriptionPlan(licenseStatus?.plan || 'Starter')
   const isProPlan = licensedPlan === 'Pro'
+  const isEnterprisePlan = licensedPlan === 'Enterprise'
+  const hasUsageLimits = !isProPlan && !isEnterprisePlan
   const licensedPlanIndex = SUBSCRIPTION_PLAN_ORDER.indexOf(licensedPlan)
+  const enterpriseAddons = Array.isArray(licenseStatus?.enterprise_addons)
+    ? licenseStatus.enterprise_addons
+    : Array.isArray(access?.entitlement?.enterprise_addons)
+      ? access.entitlement.enterprise_addons
+      : []
+  const propertyType = settings?.property_type || settings?.business_type || 'lodge'
+  const eligibleAddons = useMemo(
+    () => getEligibleEnterpriseAddons(propertyType),
+    [propertyType]
+  )
 
   const isFeatureEnabled = (featureName) => {
     if (entitlementExpired) return false
@@ -340,6 +358,17 @@ export default function SubscriptionAccessPanel() {
                 <p className="mt-2 text-sm font-semibold text-emerald-800">Unlimited access</p>
                 <p className="mt-1 text-xs text-emerald-700">No usage counters or warning bars are shown for Pro.</p>
               </div>
+            ) : isEnterprisePlan ? (
+              <div className="mb-4 rounded-2xl border border-purple-200 bg-purple-50 p-4">
+                <p className="text-xs font-semibold uppercase tracking-wide text-purple-700">Usage</p>
+                <p className="mt-2 text-sm font-semibold text-purple-800">Enterprise plan</p>
+                <p className="mt-1 text-xs text-purple-700">Hotel-grade operations with capacity packs available for additional rooms, users, and bookings.</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <UsageLimitIndicator label="Bookings this month" used={usageCounts.monthlyBookings} limit={usageLimits.monthlyBookings} grace={usageLimits.monthlyBookingsGrace} />
+                  <UsageLimitIndicator label="Rooms" used={usageCounts.rooms} limit={usageLimits.rooms} />
+                  <UsageLimitIndicator label="Users" used={usageCounts.users} limit={usageLimits.users} />
+                </div>
+              </div>
             ) : (
               <div className="mb-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
                 <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Usage</p>
@@ -377,7 +406,7 @@ export default function SubscriptionAccessPanel() {
                   <p className="mt-1 text-sm font-semibold text-slate-900">{usageRecommendation.label}</p>
                   <p className="mt-1 text-xs text-slate-600">{usageRecommendation.reason || usageRecommendation.details}</p>
                   <p className="mt-1 text-[11px] text-slate-500">{usageRecommendation.details}</p>
-                  {usageRecommendation.label !== 'Best fit / unlimited' && (
+                  {usageRecommendation.recommendedPlan && usageRecommendation.label !== 'Best fit / Enterprise' && (
                     <button type="button" onClick={() => setUpgradeOpen(true)} className="mt-3 rounded-xl border border-blue-300 bg-white px-3 py-2 text-xs font-semibold text-blue-700">
                       Review upgrade to {usageRecommendation.recommendedPlan}
                     </button>
@@ -413,6 +442,56 @@ export default function SubscriptionAccessPanel() {
                 )
               })}
             </div>
+
+            <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <h4 className="text-sm font-semibold text-slate-800">Enterprise Add-ons</h4>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Add-ons require Enterprise plus explicit activation. They are not unlocked just because the lodge is on Enterprise.
+                  </p>
+                </div>
+                <span className="w-fit rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-600">
+                  {enterpriseAddons.length} active
+                </span>
+              </div>
+              <div className="mt-4 grid gap-3 md:grid-cols-2">
+                {eligibleAddons.map((addon) => {
+                  const enabled = isEnterpriseAddonEnabled(addon.key, enterpriseAddons)
+                  const requestable = addon.status === ENTERPRISE_ADDON_STATUS.requestable
+                  return (
+                    <div
+                      key={addon.key}
+                      className={`rounded-2xl border bg-white p-3 ${
+                        enabled ? 'border-green-200' : requestable ? 'border-amber-200' : 'border-slate-200'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-sm font-semibold text-slate-800">{addon.label}</p>
+                          <p className="mt-1 text-xs leading-5 text-slate-500">{addon.description}</p>
+                        </div>
+                        {enabled ? (
+                          <CheckCircle2 size={16} className="mt-1 flex-shrink-0 text-green-600" />
+                        ) : requestable ? (
+                          <ArrowUpCircle size={16} className="mt-1 flex-shrink-0 text-amber-600" />
+                        ) : (
+                          <Clock size={16} className="mt-1 flex-shrink-0 text-slate-400" />
+                        )}
+                      </div>
+                      <p className={`mt-3 text-xs font-semibold ${
+                        enabled ? 'text-green-700' : requestable ? 'text-amber-700' : 'text-slate-500'
+                      }`}>
+                        {enabled ? 'Activated for this lodge' : requestable ? 'Available by request' : 'Planned for a later rollout'}
+                      </p>
+                    </div>
+                  )
+                })}
+                {eligibleAddons.length === 0 && (
+                  <p className="text-sm text-slate-500">No Enterprise add-ons are currently relevant to this property type.</p>
+                )}
+              </div>
+            </div>
           </div>
 
         </div>
@@ -439,6 +518,7 @@ export default function SubscriptionAccessPanel() {
                 const isSelected = requestedPlan === plan.name
                 const isRecommended = plan.spotlight === 'Most Popular'
                 const isPremium = plan.name === 'Pro'
+                const isEnterprise = plan.name === 'Enterprise'
                 return (
                   <button
                     key={plan.name}
@@ -451,7 +531,9 @@ export default function SubscriptionAccessPanel() {
                           ? 'border-emerald-200 bg-emerald-50/40 hover:border-emerald-300 hover:bg-emerald-50/70'
                           : isPremium
                             ? 'border-purple-200 bg-purple-50/40 hover:border-purple-300 hover:bg-purple-50/70'
-                            : 'border-gray-200 bg-white hover:border-gray-300 hover:bg-gray-50'
+                            : isEnterprise
+                              ? 'border-indigo-200 bg-indigo-50/40 hover:border-indigo-300 hover:bg-indigo-50/70'
+                              : 'border-gray-200 bg-white hover:border-gray-300 hover:bg-gray-50'
                     }`}
                   >
                     <div className="flex items-center justify-between gap-2">
@@ -635,6 +717,22 @@ export default function SubscriptionAccessPanel() {
                 ))}
               </div>
             )}
+          </div>
+
+          <div className="bg-white rounded-2xl shadow-sm p-5">
+            <div className="flex items-center gap-2 mb-3">
+              <Sparkles size={16} className="text-indigo-600" />
+              <h3 className="text-base font-semibold text-gray-800">Enterprise Upgrade</h3>
+            </div>
+            <p className="text-sm text-gray-500 mb-3">Need more capacity or Enterprise hotel features? Use the Package Builder to select your target plan, choose add-ons, and submit a structured request.</p>
+            <button
+              type="button"
+              onClick={() => window.location.hash = '#/subscription-builder'}
+              className="w-full border-2 border-indigo-300 text-indigo-700 hover:bg-indigo-50 font-semibold text-sm py-3 rounded-2xl transition-colors flex items-center justify-center gap-2"
+            >
+              <Sparkles size={16} />
+              Open Package Builder
+            </button>
           </div>
 
           <div className="bg-white rounded-2xl shadow-sm p-5">

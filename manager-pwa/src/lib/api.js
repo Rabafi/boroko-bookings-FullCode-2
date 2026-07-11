@@ -824,6 +824,8 @@ async function getSettings(lodgeId) {
   })
 }
 
+export { getSettings }
+
 export async function getEntitlement(lodgeId, options = {}) {
   return queryWithCache({
     lodgeId,

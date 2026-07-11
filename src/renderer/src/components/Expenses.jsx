@@ -4,8 +4,9 @@ import { Modal } from './shared/Modal'
 import HorizontalScrollArea from './shared/HorizontalScrollArea'
 import { useSettings } from '../app-context'
 import { localToday } from '../utils/localDate'
+import { isRestaurantOnly } from '../../../shared/propertyTypes'
 
-const CATEGORIES = [
+const LODGE_CATEGORIES = [
   'Food & Beverage',
   'Utilities',
   'Maintenance & Repairs',
@@ -14,6 +15,20 @@ const CATEGORIES = [
   'Marketing',
   'Transport',
   'Equipment',
+  'Other'
+]
+
+const RESTAURANT_CATEGORIES = [
+  'Food Stock',
+  'Beverages',
+  'Packaging',
+  'Cleaning',
+  'Utilities',
+  'Staff',
+  'Equipment',
+  'Repairs',
+  'Delivery & Platform Fees',
+  'Marketing',
   'Other'
 ]
 
@@ -47,6 +62,9 @@ function normalizeMaintenanceRow(row = {}) {
 export default function Expenses() {
   const { settings } = useSettings()
   const currency = settings?.currency || 'P'
+  const propertyType = settings?.property_type || settings?.business_type || 'lodge'
+  const restaurantMode = isRestaurantOnly(propertyType)
+  const CATEGORIES = restaurantMode ? RESTAURANT_CATEGORIES : LODGE_CATEGORIES
 
   const [expenses, setExpenses] = useState([])
   const [inventorySpend, setInventorySpend] = useState({ total: 0, purchases: [] })
@@ -266,9 +284,9 @@ export default function Expenses() {
     ...(showSupplyCosts ? (supplySpend?.purchases || []).map((row) => ({
       id: `supply-${row.id || row.item_id || row.date}`,
       date: row.date,
-      source: 'Room Supplies',
-      description: row.supply_items?.name || 'Room supply purchase',
-      category: 'Room Supplies',
+      source: restaurantMode ? 'Food Stock' : 'Room Supplies',
+      description: row.supply_items?.name || (restaurantMode ? 'Food stock purchase' : 'Room supply purchase'),
+      category: restaurantMode ? 'Food Stock' : 'Room Supplies',
       outlet_id: null,
       notes: row.notes || '',
       amount: Number(row.total_cost || 0)
@@ -378,27 +396,27 @@ export default function Expenses() {
           <p className="mt-2 text-xs text-slate-500">{inventorySpend?.purchases?.length || 0} automatic stock cost entries.</p>
         </div>
         <div className="bb-card p-5">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Room Supplies</p>
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{restaurantMode ? 'Food Stock' : 'Room Supplies'}</p>
           <p className="mt-3 text-2xl font-bold text-slate-900">{currency} {fmt(roomSupplyTotal)}</p>
           <p className="mt-2 text-xs text-slate-500">
             {showSupplyCosts
-              ? `${supplySpend?.purchases?.length || 0} property-wide supply purchase entries.`
-              : 'Shown in All Outlets or Others view because room supplies are property-wide.'}
+              ? `${supplySpend?.purchases?.length || 0} ${restaurantMode ? 'stock cost' : 'property-wide supply purchase'} entries.`
+              : `Shown in All Outlets or Others view because ${restaurantMode ? 'food stock' : 'room supplies'} are property-wide.`}
           </p>
         </div>
         <div className="bb-card p-5">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Maintenance Repairs</p>
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{restaurantMode ? 'Equipment & Repairs' : 'Maintenance Repairs'}</p>
           <p className="mt-3 text-2xl font-bold text-slate-900">{currency} {fmt(maintenanceTotal)}</p>
           <p className="mt-2 text-xs text-slate-500">
             {showMaintenanceCosts
               ? `${maintenanceRows.length || 0} repair entry${maintenanceRows.length === 1 ? '' : 's'} in this period.`
-              : 'Shown in All Outlets or Others view because maintenance is property-wide.'}
+              : `Shown in All Outlets or Others view because ${restaurantMode ? 'equipment repairs' : 'maintenance'} are property-wide.`}
           </p>
         </div>
         <div className="bb-card border-slate-900 bg-slate-900 p-5 text-white">
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-white/70">Total Outgoings</p>
           <p className="mt-3 text-2xl font-bold">{currency} {fmt(totalOutgoings)}</p>
-          <p className="mt-2 text-xs text-white/70">Manual expenses plus inventory, room-supply, and maintenance costs.</p>
+          <p className="mt-2 text-xs text-white/70">Manual expenses plus {restaurantMode ? 'food stock, equipment, and repair costs' : 'inventory, room-supply, and maintenance costs'}.</p>
         </div>
       </div>
 
@@ -543,7 +561,7 @@ export default function Expenses() {
                 <span className="font-semibold text-slate-800">{currency} {fmt(inventoryTotal)}</span>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-slate-600">Room-supply purchases</span>
+                <span className="text-slate-600">{restaurantMode ? 'Food stock purchases' : 'Room-supply purchases'}</span>
                 <span className="font-semibold text-slate-800">{currency} {fmt(roomSupplyTotal)}</span>
               </div>
               <div className="border-t border-slate-100 pt-3">
@@ -563,7 +581,7 @@ export default function Expenses() {
       <div className="bb-table-shell">
         <div className="border-b border-slate-200 px-5 py-4">
           <p className="text-sm font-semibold text-slate-800">Automatic stock purchase entries</p>
-          <p className="mt-1 text-xs text-slate-500">Inventory and room-supply purchases flow here automatically for visibility and P&amp;L review.</p>
+          <p className="mt-1 text-xs text-slate-500">{restaurantMode ? 'Food stock and ingredient purchases flow here automatically for visibility and P&amp;L review.' : 'Inventory and room-supply purchases flow here automatically for visibility and P&amp;L review.'}</p>
         </div>
         <HorizontalScrollArea>
           <table className="w-full text-sm">
@@ -609,7 +627,7 @@ export default function Expenses() {
                   <div className="bb-empty-state py-10">
                     <p className="text-base font-semibold text-slate-800">No stock purchases in this view</p>
                     <p className="text-sm text-slate-500">
-                      Record inventory or room-supply purchases and they will appear here automatically.
+                      {restaurantMode ? 'Record food stock or ingredient purchases and they will appear here automatically.' : 'Record inventory or room-supply purchases and they will appear here automatically.'}
                     </p>
                   </div>
                 </td>

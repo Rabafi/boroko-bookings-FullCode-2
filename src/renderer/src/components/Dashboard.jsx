@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState, lazy, Suspense } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import {
   BedDouble,
@@ -29,7 +29,15 @@ import {
   ShieldCheck,
   Settings,
   MessageCircle,
-  Send
+  Send,
+  UtensilsCrossed,
+  Coffee,
+  ChefHat,
+  LayoutGrid,
+  UserCheck,
+  Wallet,
+  BarChart,
+  ClipboardCheck
 } from 'lucide-react'
 import { StatusBadge } from './shared/StatusBadge'
 import HorizontalScrollArea from './shared/HorizontalScrollArea'
@@ -48,6 +56,9 @@ import {
   normalizeSubscriptionPlan
 } from '../../../shared/subscriptionPlans'
 import { normalizeSupportMessages, supportMessageSide, supportSenderMeta, supportSenderName } from '../../../shared/supportThreads'
+import { isRestaurantOnly, isHotelPropertyType } from '../../../shared/propertyTypes'
+
+const HotelDashboard = lazy(() => import('./HotelDashboard'))
 
 const SHORTCUTS = [
   { label: 'Bookings',      to: '/bookings',   icon: BookOpen },
@@ -60,6 +71,22 @@ const SHORTCUTS = [
   { label: 'POS',           to: '/pos',        icon: ShoppingCart,  feature: 'pos',        tier: 'Pro' },
   { label: 'Inventory',     to: '/inventory',  icon: Package,       feature: 'inventory',  tier: 'Pro' },
   { label: 'Room Supplies', to: '/supplies',   icon: Boxes,         feature: 'supplies',   tier: 'Pro' },
+]
+
+const RESTAURANT_SHORTCUTS = [
+  { label: 'POS',             to: '/pos',                   icon: ShoppingCart,    feature: 'pos',        tier: 'Pro' },
+  { label: 'Floor & Service', to: '/restaurant/floor',      icon: LayoutGrid,      feature: 'pos',        tier: 'Pro' },
+  { label: 'Kitchen',         to: '/restaurant/kitchen-workspace', icon: ChefHat,   feature: 'pos',        tier: 'Pro' },
+  { label: 'Menu & Production', to: '/restaurant/menu-production', icon: UtensilsCrossed, feature: 'pos', tier: 'Pro' },
+  { label: 'Stock & Purchasing', to: '/restaurant/stock-purchasing', icon: Package, feature: 'inventory', tier: 'Pro' },
+  { label: 'Team',            to: '/restaurant/team',       icon: Users,           feature: 'staff',      tier: 'Standard' },
+  { label: 'Cash & Close',    to: '/restaurant/cash-close', icon: Wallet,          feature: 'pos',        tier: 'Pro' },
+  { label: 'Expenses',        to: '/expenses',              icon: Receipt,         feature: 'expenses',   tier: 'Standard' },
+  { label: 'Reports',         to: '/reports',               icon: BarChart3,       feature: 'reports',    tier: 'Standard' },
+  { label: 'Customers',       to: '/restaurant/customers',  icon: UserCheck,       feature: 'staff',      tier: 'Standard' },
+  { label: 'Control',         to: '/restaurant/control',    icon: AlertTriangle,   feature: 'staff',      tier: 'Standard' },
+  { label: 'Data',            to: '/data-management',       icon: HardDrive,       feature: null,         tier: null },
+  { label: 'Settings',        to: '/settings',              icon: Settings,        feature: null,         tier: null },
 ]
 
 function getRequestAgeMeta(createdAt) {
@@ -132,6 +159,8 @@ export default function Dashboard() {
   const features = useFeatures()
   const navigate = useNavigate()
   const currency = settings?.currency || 'P'
+  const propertyType = settings?.property_type || settings?.business_type || 'lodge'
+  const restaurantMode = isRestaurantOnly(propertyType)
   const { requests: onlineRequests, refresh: refreshOnlineRequests } = useOnlineRequests()
   const [actioningId, setActioningId] = useState(null)
 
@@ -153,6 +182,11 @@ export default function Dashboard() {
   const [inboxDraft, setInboxDraft] = useState('')
   const [inboxSending, setInboxSending] = useState(false)
   const [inboxError, setInboxError] = useState('')
+  const [restaurantTables, setRestaurantTables] = useState([])
+  const [kitchenTickets, setKitchenTickets] = useState([])
+  const [activeShifts, setActiveShifts] = useState([])
+  const [cashDrawer, setCashDrawer] = useState(null)
+  const [activeAlerts, setActiveAlerts] = useState([])
   const pendingOnlineRequests = onlineRequests || []
   const managerInboxRequests = useMemo(
     () => frontDeskRequests
@@ -180,28 +214,45 @@ export default function Dashboard() {
   const loadData = useCallback(async () => {
     setLoading(true)
     try {
-      const [s, bookings, up, fc, ls, paymentMix, lodgeRequests, rooms, users, rateOverrides, usage, confBookings, backups] = await Promise.all([
+      const baseCalls = [
         window.api.dashboard.stats(),
-        window.api.bookings.getAll(),
-        window.api.notifications.upcoming(),
-        window.api.dashboard.forecast(30).catch(() => []),
         window.api.inventory.getLowStock().catch(() => []),
         window.api.dashboard.bookingPaymentsToday().catch(() => ({ total_collected: 0, gross_collected: 0, refunds_issued: 0, by_method: {}, payment_count: 0, date: null })),
         window.api.requests?.getAll?.(50).catch(() => []),
-        window.api.rooms.getAll().catch(() => []),
         window.api.users.getAll().catch(() => []),
-        window.api.rateOverrides.getAll().catch(() => []),
         window.api.usage?.getSnapshot
           ? window.api.usage.getSnapshot({ forceRemoteRefresh: navigator.onLine === true }).catch(() => null)
           : Promise.resolve(null),
-        window.api.conference.getAll().catch(() => []),
         window.api.backup?.getInfo ? window.api.backup.getInfo().catch(() => null) : Promise.resolve(null)
-      ])
+      ]
+      const accomCalls = restaurantMode ? [] : [
+        window.api.bookings.getAll(),
+        window.api.notifications.upcoming(),
+        window.api.dashboard.forecast(30).catch(() => []),
+        window.api.rooms.getAll().catch(() => []),
+        window.api.rateOverrides.getAll().catch(() => []),
+        window.api.conference.getAll().catch(() => [])
+      ]
+      const restaurantCalls = restaurantMode ? [
+        (window.api.pos.getTablesWithStatus?.() || window.api.pos.getTables?.()).catch(() => []),
+        window.api.pos.getTickets?.({ station: 'all' }).catch(() => []),
+        window.api.pos.getActiveShifts?.().catch(() => []),
+        window.api.pos.getOpenCashDrawer?.().catch(() => null),
+        window.api.pos.getActiveAlerts?.().catch(() => [])
+      ] : []
+      const [s, ls, paymentMix, lodgeRequests, users, usage, backups, ...restResults] = await Promise.all([...baseCalls, ...accomCalls, ...restaurantCalls])
+      const [bookings, up, fc, rooms, rateOverrides, confBookings] = restaurantMode ? [ [], [], [], [], [], [] ] : restResults.slice(0, 6)
+      const [rTables, rTickets, rShifts, rDrawer, rAlerts] = restaurantMode ? restResults.slice(0, 5) : [ [], [], [], null, [] ]
       const allBookings = Array.isArray(bookings) ? bookings : []
       const allConfBookings = Array.isArray(confBookings) ? confBookings : []
       const allRooms = Array.isArray(rooms) ? rooms : []
       const allUsers = Array.isArray(users) ? users : []
       setBackupInfo(backups || null)
+      setRestaurantTables(Array.isArray(rTables) ? rTables : [])
+      setKitchenTickets(Array.isArray(rTickets) ? rTickets : [])
+      setActiveShifts(Array.isArray(rShifts) ? rShifts : [])
+      setCashDrawer(rDrawer || null)
+      setActiveAlerts(Array.isArray(rAlerts) ? rAlerts : [])
       const usagePlan = normalizeSubscriptionPlan(usage?.plan || s?.plan || settings?.subscription_plan || 'Starter')
       const usageLimits = getPlanUsageLimits(usagePlan)
       const usageCounts = usage && !usage.error && usage.usage
@@ -448,7 +499,66 @@ export default function Dashboard() {
     limits: usageLimits
   })
   const showDashboardPrompt = !isProPlan && dashboardPrompt.shouldPrompt
-  const todayQueue = [
+  const openTableCount = restaurantTables.filter(t => t.status === 'occupied' || t.status === 'reserved').length
+  const totalTableCount = restaurantTables.length
+  const pendingTicketCount = kitchenTickets.filter(t => ['pending', 'preparing'].includes(String(t.status || '').toLowerCase())).length
+  const drawerOpen = !!cashDrawer
+  const todayQueue = restaurantMode ? [
+    {
+      key: 'pos-sales',
+      label: 'POS Sales',
+      value: `${currency} ${Number(paymentMixToday.total_collected || 0).toFixed(2)}`,
+      detail: `${paymentMixToday.payment_count || 0} payment${paymentMixToday.payment_count === 1 ? '' : 's'} today`,
+      icon: ShoppingCart,
+      tone: 'emerald',
+      to: '/pos'
+    },
+    {
+      key: 'kitchen',
+      label: 'Kitchen Pending',
+      value: pendingTicketCount,
+      detail: pendingTicketCount > 0 ? 'Needs attention' : 'All clear',
+      icon: ChefHat,
+      tone: pendingTicketCount > 0 ? 'amber' : 'emerald',
+      to: '/restaurant/kitchen-workspace'
+    },
+    {
+      key: 'tables',
+      label: 'Open Tables',
+      value: `${openTableCount}/${totalTableCount}`,
+      detail: `${totalTableCount - openTableCount} available`,
+      icon: LayoutGrid,
+      tone: 'sky',
+      to: '/restaurant/floor'
+    },
+    {
+      key: 'stock',
+      label: 'Low Stock',
+      value: lowStock.length,
+      detail: 'Items below par',
+      icon: Package,
+      tone: lowStock.length > 0 ? 'orange' : 'emerald',
+      to: '/restaurant/stock-purchasing'
+    },
+    {
+      key: 'shifts',
+      label: 'Staff On Shift',
+      value: activeShifts.length,
+      detail: activeShifts.length > 0 ? 'Active now' : 'No one clocked in',
+      icon: Users,
+      tone: 'violet',
+      to: '/restaurant/team'
+    },
+    {
+      key: 'alerts',
+      label: 'Alerts',
+      value: activeAlerts.length,
+      detail: activeAlerts.length > 0 ? 'Check alerts' : 'All clear',
+      icon: AlertTriangle,
+      tone: activeAlerts.length > 0 ? 'rose' : 'emerald',
+      to: '/restaurant/control'
+    }
+  ] : [
     {
       key: 'arrivals',
       label: 'Arrivals',
@@ -495,13 +605,66 @@ export default function Dashboard() {
       to: '/inventory'
     }
   ]
-  const attentionSummary = [
+  const attentionSummary = restaurantMode ? [
+    pendingTicketCount > 0 && `${pendingTicketCount} pending kitchen ticket${pendingTicketCount === 1 ? '' : 's'}`,
+    lowStock.length > 0 && `${lowStock.length} low-stock item${lowStock.length === 1 ? '' : 's'}`,
+    activeAlerts.length > 0 && `${activeAlerts.length} active alert${activeAlerts.length === 1 ? '' : 's'}`
+  ].filter(Boolean) : [
     pendingOnlineRequests.length > 0 && `${pendingOnlineRequests.length} website request${pendingOnlineRequests.length === 1 ? '' : 's'}`,
     bookingHealth.unpaidCount > 0 && `${bookingHealth.unpaidCount} balance${bookingHealth.unpaidCount === 1 ? '' : 's'}`,
     lowStock.length > 0 && `${lowStock.length} low-stock item${lowStock.length === 1 ? '' : 's'}`,
     pendingFrontDeskRequests.length > 0 && `${pendingFrontDeskRequests.length} desk request${pendingFrontDeskRequests.length === 1 ? '' : 's'}`
   ].filter(Boolean)
-  const cockpitCards = [
+  const cockpitCards = restaurantMode ? [
+    {
+      label: 'Today Sales',
+      value: `${currency} ${Number(paymentMixToday.total_collected || 0).toFixed(2)}`,
+      detail: `${paymentMixToday.payment_count || 0} payment${paymentMixToday.payment_count === 1 ? '' : 's'} recorded`,
+      to: '/pos'
+    },
+    {
+      label: 'Open Tables',
+      value: `${openTableCount}/${totalTableCount}`,
+      detail: `${totalTableCount - openTableCount} available`,
+      to: '/restaurant/tables'
+    },
+    {
+      label: 'Kitchen Pending',
+      value: pendingTicketCount,
+      detail: `${kitchenTickets.length} total ticket${kitchenTickets.length === 1 ? '' : 's'} today`,
+      to: '/restaurant/kitchen'
+    },
+    {
+      label: 'Cash Drawer',
+      value: drawerOpen ? `${currency} ${Number(cashDrawer.opening_float || 0).toFixed(2)}` : 'Closed',
+      detail: drawerOpen ? 'Drawer is open' : 'No active drawer',
+      to: '/restaurant/cash-close'
+    },
+    {
+      label: 'Low Stock',
+      value: lowStock.length,
+      detail: lowStock.length > 0 ? 'Items below par level' : 'All items stocked',
+      to: '/restaurant/stock-purchasing'
+    },
+    {
+      label: 'Staff On Shift',
+      value: activeShifts.length,
+      detail: activeShifts.length > 0 ? `${activeShifts.length} active` : 'No active shifts',
+      to: '/restaurant/team'
+    },
+    {
+      label: 'Alerts',
+      value: activeAlerts.length,
+      detail: activeAlerts.length > 0 ? 'Active alerts need attention' : 'All clear',
+      to: '/restaurant/control'
+    },
+    {
+      label: 'Daily Close',
+      value: drawerOpen ? 'Ready' : 'Not started',
+      detail: drawerOpen ? 'Close the day when ready' : 'Open a drawer to start',
+      to: '/restaurant/cash-close'
+    }
+  ] : [
     {
       label: 'Cash Today',
       value: `${currency} ${Number(paymentMixToday.total_collected || 0).toFixed(2)}`,
@@ -551,7 +714,56 @@ export default function Dashboard() {
           : backupPolicy.compliance_state === 'overdue'
             ? 'A fresh off-device export is due. Run the weekly export before closing the release or handing over the device.'
             : 'Keep weekly exports current for recovery and support.'
-  const onboardingActions = [
+  const onboardingActions = restaurantMode ? [
+    {
+      key: 'pos',
+      title: 'Open the POS',
+      copy: 'Start taking orders and tracking sales from your first shift.',
+      icon: ShoppingCart,
+      to: '/pos',
+      action: 'Open POS'
+    },
+    {
+      key: 'tables',
+      title: 'Set up your floor plan',
+      copy: 'Add tables and arrange your restaurant layout for quick service.',
+      icon: LayoutGrid,
+      to: '/restaurant/floor',
+      action: 'Manage tables'
+    },
+    {
+      key: 'menu',
+      title: 'Build your menu',
+      copy: 'Add menu items, categories, and modifier groups.',
+      icon: UtensilsCrossed,
+      to: '/restaurant/menu-production',
+      action: 'Manage menu'
+    },
+    {
+      key: 'recipes',
+      title: 'Add recipes & costing',
+      copy: 'Link ingredients to menu items for cost tracking and stock depletion.',
+      icon: Coffee,
+      to: '/restaurant/menu-production?tab=recipes',
+      action: 'Manage recipes'
+    },
+    {
+      key: 'staff',
+      title: 'Set up your team',
+      copy: 'Add staff members and set up roles for clock-in/clock-out.',
+      icon: Users,
+      to: '/restaurant/team',
+      action: 'Manage staff'
+    },
+    backupNeedsAttention && {
+      key: 'backup',
+      title: backupReminderTitle,
+      copy: backupReminderCopy,
+      icon: HardDrive,
+      to: '/data-management',
+      action: 'Open backups'
+    }
+  ].filter(Boolean).slice(0, 4) : [
     Number(stats?.total_rooms || 0) === 0 && {
       key: 'rooms',
       title: 'Add your first room',
@@ -599,11 +811,13 @@ export default function Dashboard() {
       <section className="bb-ops-brief">
         <div className="bb-ops-brief__intro">
           <p className="bb-section-kicker">Today Queue</p>
-          <h2 className="bb-section-title mt-1">The next actions that keep the lodge moving.</h2>
+          <h2 className="bb-section-title mt-1">{restaurantMode ? 'The key numbers that keep the restaurant running.' : 'The next actions that keep the lodge moving.'}</h2>
           <p className="mt-1 text-sm text-slate-500">
             {attentionSummary.length > 0
               ? `Focus first on ${attentionSummary.join(', ')}.`
-              : 'Nothing urgent is blocking operations right now.'}
+              : restaurantMode
+                ? 'Everything is running smoothly right now.'
+                : 'Nothing urgent is blocking operations right now.'}
           </p>
         </div>
         <div className="bb-ops-queue">
@@ -629,7 +843,7 @@ export default function Dashboard() {
         </div>
       </section>
 
-      <section className="grid grid-cols-1 gap-3 lg:grid-cols-4">
+      <section className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         {cockpitCards.map((card) => (
           <button key={card.label} type="button" onClick={() => navigate(card.to)} className="bb-card p-4 text-left transition-all hover:-translate-y-0.5 hover:border-emerald-200">
             <p className="text-xs font-bold uppercase tracking-[0.18em] text-slate-400">{card.label}</p>
@@ -722,11 +936,11 @@ export default function Dashboard() {
         <div className="mb-3 flex items-center justify-between gap-4">
           <div>
             <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-500">Quick Access</h2>
-            <p className="mt-1 text-sm text-slate-500">Jump into the most-used desk and back-office modules.</p>
+            <p className="mt-1 text-sm text-slate-500">{restaurantMode ? 'Jump into the most-used modules.' : 'Jump into the most-used desk and back-office modules.'}</p>
           </div>
         </div>
         <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-10">
-          {SHORTCUTS.map(({ label, to, icon: Icon, feature, tier }) => {
+          {(restaurantMode ? RESTAURANT_SHORTCUTS : SHORTCUTS).map(({ label, to, icon: Icon, feature, tier }) => {
             const isLocked = feature && Object.keys(features).length > 0 && features[feature] === false
             const tierColor = tier === 'Pro' ? 'text-purple-500' : 'text-blue-500'
             return (
@@ -756,7 +970,7 @@ export default function Dashboard() {
       </section>
 
       {/* ── Online Booking Requests ─────────────────────────────────────── */}
-      {onlineRequests.length > 0 && (
+      {!restaurantMode && onlineRequests.length > 0 && (
         <section className="bb-card overflow-hidden border-l-4 border-l-amber-500">
           <div className="flex items-center justify-between gap-4 px-5 py-4 border-b border-slate-100">
             <div className="flex items-center gap-3">
@@ -997,6 +1211,7 @@ export default function Dashboard() {
         </section>
       )}
 
+      {!restaurantMode && (
       <section className="bb-card p-5">
         <div className="mb-4 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
@@ -1040,8 +1255,9 @@ export default function Dashboard() {
           </div>
         )}
       </section>
+      )}
 
-      {bookingHealth.outstandingTotal > 0 && (
+      {!restaurantMode && bookingHealth.outstandingTotal > 0 && (
         <section className="bb-card p-5 border-l-4 border-l-rose-500">
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div className="flex items-start gap-3">
@@ -1081,7 +1297,7 @@ export default function Dashboard() {
         </section>
       )}
 
-      {paymentMixToday.payment_count > 0 && (
+      {!restaurantMode && paymentMixToday.payment_count > 0 && (
         <section className="bb-card p-5">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200/80 pb-4">
             <div>
@@ -1128,7 +1344,7 @@ export default function Dashboard() {
         </section>
       )}
 
-      {overdueBalances.length > 0 && (
+      {!restaurantMode && overdueBalances.length > 0 && (
         <section className="bb-card p-5">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200/80 pb-4">
             <div>
@@ -1193,7 +1409,7 @@ export default function Dashboard() {
         </section>
       )}
 
-      {dayUseCollectionQueue.length > 0 && (
+      {!restaurantMode && dayUseCollectionQueue.length > 0 && (
         <section className="bb-card p-5 border-l-4 border-l-violet-500">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200/80 pb-4">
             <div>
@@ -1239,7 +1455,7 @@ export default function Dashboard() {
       )}
 
       {/* 30-Day Occupancy Forecast */}
-      {forecast.length > 0 && (
+      {!restaurantMode && forecast.length > 0 && (
         <section className="bb-card p-5">
           <div className="mb-4">
             <h2 className="text-lg font-semibold tracking-[-0.02em] text-slate-800">30-Day Occupancy Forecast</h2>
@@ -1318,6 +1534,7 @@ export default function Dashboard() {
         </section>
       )}
 
+      {!restaurantMode && (
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-5">
         {/* Recent Bookings — 3 cols */}
         <section className="bb-table-shell xl:col-span-3">
@@ -1522,6 +1739,15 @@ export default function Dashboard() {
           </div>
         </section>
       </div>
+      )}
+
+      {isHotelPropertyType(propertyType) && (
+        <section className="mt-6">
+          <Suspense fallback={<div className="p-8 text-center text-slate-500">Loading hotel dashboard...</div>}>
+            <HotelDashboard />
+          </Suspense>
+        </section>
+      )}
 
     </div>
   )

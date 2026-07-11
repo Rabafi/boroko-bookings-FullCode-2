@@ -436,6 +436,8 @@ details summary:focus-visible {
 .mobile-overlay.is-open .mobile-nav a[data-stagger="4"] { transition-delay: 0.24s; }
 .mobile-overlay.is-open .mobile-nav a[data-stagger="5"] { transition-delay: 0.28s; }
 .mobile-overlay.is-open .mobile-nav a[data-stagger="6"] { transition-delay: 0.32s; }
+.mobile-overlay.is-open .mobile-nav a[data-stagger="7"] { transition-delay: 0.36s; }
+.mobile-overlay.is-open .mobile-nav a[data-stagger="8"] { transition-delay: 0.40s; }
 
 .mobile-nav a:hover {
   color: #f7efe1;

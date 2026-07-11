@@ -1,12 +1,14 @@
 import { useEffect, useState, useRef, useContext, useMemo, lazy, Suspense } from 'react'
-import { useLocation } from 'react-router-dom'
+import { useLocation, useSearchParams } from 'react-router-dom'
 import { Building2, Phone, Mail, MapPin, Globe, Hash, Save, Upload, X, Image, Moon, RefreshCw, CheckCircle2, AlertTriangle, Key, ShieldCheck, Clock, CreditCard, Copy, TrendingUp, ArrowUpCircle, Settings as SettingsIcon, MessageCircle, FileText, Info, Send, Sparkles, Download, RotateCcw, Sun, Monitor } from 'lucide-react'
 import { useSettings, UnsavedChangesContext } from '../app-context'
 import { Modal } from './shared/Modal'
 import { extractReleaseHighlights, formatReleaseDate, normalizeReleaseNotes, toReleaseSections } from '../utils/updatePresentation'
 import { applyThemeMode, getStoredThemeMode, resolveThemeMode, saveThemeMode } from '../utils/themeMode'
+import { buildOperatingProfile, normalizePropertyType, propertyTypeToBusinessType, isRestaurantOnly } from '../../../shared/propertyTypes'
 const SystemHealthPanel = lazy(() => import('./SystemHealthPanel'))
 const SubscriptionAccessPanel = lazy(() => import('./SubscriptionAccessPanel'))
+const DocumentTemplates = lazy(() => import('./DocumentSystem').then(m => ({ default: () => <m.default templatesOnly /> })))
 
 const BOOKING_SITE_BASE = 'https://borokoonlinebookings.netlify.app'
 const PUBLIC_OFFER_DEFAULTS = {
@@ -78,8 +80,11 @@ function normalizePlanName(plan) {
 export default function Settings() {
   const UPDATE_SNOOZE_KEY = 'bb_update_snooze_until'
   const { settings: globalSettings, setSettings: setGlobalSettings } = useSettings()
+  const propertyType = globalSettings?.property_type || globalSettings?.business_type || 'lodge'
+  const restaurantMode = isRestaurantOnly(propertyType)
   const location = useLocation()
-  const [activeTab, setActiveTab] = useState(() => location.state?.activeTab || 'general')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const [activeTab, setActiveTab] = useState(() => searchParams.get('tab') || location.state?.activeTab || 'general')
   const [form, setForm] = useState(null)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -628,7 +633,18 @@ export default function Settings() {
     setSaved(false)
     setSaveError('')
     try {
-      const res = await window.api.settings.save(form)
+      const propertyType = normalizePropertyType(form?.property_type || form?.business_type || 'lodge')
+      const savePayload = {
+        ...form,
+        property_type: propertyType,
+        business_type: propertyTypeToBusinessType(propertyType),
+        operating_profile: buildOperatingProfile(
+          propertyType,
+          form?.subscription_plan || globalSettings?.subscription_plan || 'Starter',
+          form?.enterprise_addons || globalSettings?.enterprise_addons || []
+        )
+      }
+      const res = await window.api.settings.save(savePayload)
       if (res.success) {
         applySavedSettings(res.data)
         setSaved(true)
@@ -674,7 +690,7 @@ export default function Settings() {
         from: fromValue
       })
       if (result?.success) {
-        setEmailStatus({ ok: true, msg: 'Email setup saved. Automatic guest emails can now use these details.' })
+        setEmailStatus({ ok: true, msg: `Email setup saved. Automatic ${restaurantMode ? 'customer' : 'guest'} emails can now use these details.` })
         const nextConfig = { ...emailConfig, from: fromValue || emailConfig.from }
         setEmailConfig(nextConfig)
         savedEmailSnapshotRef.current = JSON.parse(JSON.stringify(nextConfig))
@@ -741,6 +757,7 @@ export default function Settings() {
   const tabs = [
     { id: 'general', label: 'General', icon: <SettingsIcon size={14} /> },
     { id: 'license', label: 'Subscription & Access', icon: <CreditCard size={14} /> },
+    { id: 'document-templates', label: 'Document Templates', icon: <FileText size={14} /> },
     { id: 'system', label: 'System Health', icon: <ShieldCheck size={14} /> },
   ]
 
@@ -1077,7 +1094,7 @@ export default function Settings() {
             {/* ── Logo Upload ─────────────────────────────────────────────── */}
             <div className="bg-white rounded-xl shadow-sm p-6">
               <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wider mb-4 flex items-center gap-2">
-                <Image size={15} className="text-green-600" /> Lodge Logo
+                <Image size={15} className="text-green-600" /> {restaurantMode ? 'Business Logo' : 'Lodge Logo'}
               </h2>
 
               <div className="flex items-start gap-6">
@@ -1142,6 +1159,35 @@ export default function Settings() {
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Registered Company Name</label>
                   <input className="input" value={form.company_name} onChange={(e) => set('company_name', e.target.value)} placeholder="e.g. Sunset Lodge (Pty) Ltd" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Property Type</label>
+                  <select className="input" value={form.property_type || form.business_type || 'lodge'} onChange={(e) => {
+                    const val = normalizePropertyType(e.target.value)
+                    setForm((current) => ({
+                      ...current,
+                      property_type: val,
+                      business_type: propertyTypeToBusinessType(val),
+                      operating_profile: buildOperatingProfile(
+                        val,
+                        current?.subscription_plan || globalSettings?.subscription_plan || 'Starter',
+                        current?.enterprise_addons || globalSettings?.enterprise_addons || []
+                      )
+                    }))
+                  }}>
+                    <option value="guest_house">Guest House</option>
+                    <option value="bnb">Bed & Breakfast</option>
+                    <option value="lodge">Lodge / Camp</option>
+                    <option value="motel">Motel</option>
+                    <option value="hotel">Hotel</option>
+                    <option value="resort">Resort</option>
+                    <option value="restaurant">Restaurant / POS Only</option>
+                  </select>
+                  <p className="text-xs text-gray-400 mt-1">
+                    {(form.property_type === 'hotel' || form.property_type === 'motel' || form.property_type === 'resort')
+                      ? 'Hotel-grade modules and Enterprise features will be visible.'
+                      : 'Controls which modules and navigation items are relevant for your property.'}
+                  </p>
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div>
@@ -1228,11 +1274,11 @@ export default function Settings() {
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1"><Mail size={13} className="inline mr-1" /> Email Address</label>
-                  <input type="email" className="input" value={form.email} onChange={(e) => set('email', e.target.value)} placeholder="info@yourlodge.com" />
+                   <input type="email" className="input" value={form.email} onChange={(e) => set('email', e.target.value)} placeholder={restaurantMode ? "info@yourrestaurant.com" : "info@yourlodge.com"} />
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1"><Globe size={13} className="inline mr-1" /> Website</label>
-                  <input className="input" value={form.website} onChange={(e) => set('website', e.target.value)} placeholder="www.yourlodge.com" />
+                   <input className="input" value={form.website} onChange={(e) => set('website', e.target.value)} placeholder={restaurantMode ? "www.yourrestaurant.com" : "www.yourlodge.com"} />
                 </div>
               </div>
             </div>
@@ -1245,11 +1291,13 @@ export default function Settings() {
                     <Mail size={15} className="text-green-600" /> Email Setup
                   </h2>
                   <p className="text-sm text-gray-500 mt-2">
-                    Connect your lodge email here so the system can send guest-facing emails automatically.
+                    {restaurantMode
+                      ? 'Connect your restaurant email here so the system can send customer-facing emails automatically.'
+                      : 'Connect your lodge email here so the system can send guest-facing emails automatically.'}
                   </p>
                 </div>
                 <div className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
-                  Guest email
+                  {restaurantMode ? 'Customer email' : 'Guest email'}
                 </div>
               </div>
 
@@ -1290,7 +1338,7 @@ export default function Settings() {
                   <div className="grid grid-cols-2 gap-4">
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">Email / username</label>
-                      <input className="input" type="email" value={emailConfig.user} onChange={(e) => setEmailField('user', e.target.value)} placeholder="reservations@yourlodge.com" />
+                       <input className="input" type="email" value={emailConfig.user} onChange={(e) => setEmailField('user', e.target.value)} placeholder={restaurantMode ? "orders@yourrestaurant.com" : "reservations@yourlodge.com"} />
                     </div>
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">Password / app password</label>
@@ -1302,17 +1350,17 @@ export default function Settings() {
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">From line</label>
                       <input className="input" value={emailConfig.from} onChange={(e) => setEmailField('from', e.target.value)} placeholder={`"${form?.lodge_name || 'Your lodge'}" <${emailConfig.user || 'you@example.com'}>`} />
-                      <p className="text-xs text-gray-400 mt-1">Leave blank to use your lodge name automatically.</p>
+                      <p className="text-xs text-gray-400 mt-1">{restaurantMode ? 'Leave blank to use your business name automatically.' : 'Leave blank to use your lodge name automatically.'}</p>
                     </div>
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">Reply-to address</label>
-                      <input className="input" type="email" value={emailConfig.reply_to} onChange={(e) => setEmailField('reply_to', e.target.value)} placeholder="reservations@yourlodge.com" />
+                       <input className="input" type="email" value={emailConfig.reply_to} onChange={(e) => setEmailField('reply_to', e.target.value)} placeholder={restaurantMode ? "orders@yourrestaurant.com" : "reservations@yourlodge.com"} />
                     </div>
                   </div>
 
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">Test inbox</label>
-                    <input className="input" type="email" value={emailConfig.to} onChange={(e) => setEmailField('to', e.target.value)} placeholder="manager@yourlodge.com" />
+                     <input className="input" type="email" value={emailConfig.to} onChange={(e) => setEmailField('to', e.target.value)} placeholder={restaurantMode ? "manager@yourrestaurant.com" : "manager@yourlodge.com"} />
                     <p className="text-xs text-gray-400 mt-1">We use this address for the test email and any local email checks from this computer.</p>
                   </div>
 
@@ -1324,7 +1372,7 @@ export default function Settings() {
                     />
                     <div>
                       <p className="text-sm font-medium text-gray-700">Allow insecure TLS only if your provider asks for it</p>
-                      <p className="text-xs text-gray-400">Most lodges should leave this off.</p>
+                      <p className="text-xs text-gray-400">{restaurantMode ? 'Most restaurants should leave this off.' : 'Most lodges should leave this off.'}</p>
                     </div>
                   </label>
                 </div>
@@ -1333,7 +1381,7 @@ export default function Settings() {
                   <div className="rounded-xl border border-gray-200 p-4">
                     <div className="flex items-center gap-2 mb-3">
                       <Sparkles size={15} className="text-violet-600" />
-                      <p className="text-sm font-semibold text-gray-800">Automatic guest emails</p>
+                      <p className="text-sm font-semibold text-gray-800">Automatic {restaurantMode ? 'customer' : 'guest'} emails</p>
                     </div>
                     <div className="space-y-3">
                       <label className="flex items-start gap-3">
@@ -1343,30 +1391,35 @@ export default function Settings() {
                           <p className="text-xs text-gray-400">Useful when front desk sends a quote after checking dates and rates.</p>
                         </div>
                       </label>
-                      <label className="flex items-start gap-3">
-                        <input type="checkbox" checked={emailConfig.auto_send_booking_confirmation} onChange={(e) => setEmailField('auto_send_booking_confirmation', e.target.checked)} />
-                        <div>
-                          <p className="text-sm font-medium text-gray-700">Send booking confirmation when front desk confirms a booking</p>
-                          <p className="text-xs text-gray-400">Guests get a clear stay summary and balance information.</p>
-                        </div>
-                      </label>
-                      <label className="flex items-start gap-3">
-                        <input type="checkbox" checked={emailConfig.auto_send_booking_invoice} onChange={(e) => setEmailField('auto_send_booking_invoice', e.target.checked)} />
-                        <div>
-                          <p className="text-sm font-medium text-gray-700">Send booking invoice with the confirmation</p>
-                          <p className="text-xs text-gray-400">This sends the guest-facing invoice as soon as the booking is confirmed.</p>
-                        </div>
-                      </label>
-                      <label className="flex items-start gap-3">
-                        <input type="checkbox" checked={emailConfig.auto_send_booking_cancellation} onChange={(e) => setEmailField('auto_send_booking_cancellation', e.target.checked)} />
-                        <div>
-                          <p className="text-sm font-medium text-gray-700">Send cancellation confirmation when front desk cancels a booking</p>
-                          <p className="text-xs text-gray-400">Useful when a guest asks for written confirmation that the booking was cancelled.</p>
-                        </div>
-                      </label>
+                      {!restaurantMode && (
+                        <>
+                          <label className="flex items-start gap-3">
+                            <input type="checkbox" checked={emailConfig.auto_send_booking_confirmation} onChange={(e) => setEmailField('auto_send_booking_confirmation', e.target.checked)} />
+                            <div>
+                              <p className="text-sm font-medium text-gray-700">Send booking confirmation when front desk confirms a booking</p>
+                              <p className="text-xs text-gray-400">Guests get a clear stay summary and balance information.</p>
+                            </div>
+                          </label>
+                          <label className="flex items-start gap-3">
+                            <input type="checkbox" checked={emailConfig.auto_send_booking_invoice} onChange={(e) => setEmailField('auto_send_booking_invoice', e.target.checked)} />
+                            <div>
+                              <p className="text-sm font-medium text-gray-700">Send booking invoice with the confirmation</p>
+                              <p className="text-xs text-gray-400">This sends the guest-facing invoice as soon as the booking is confirmed.</p>
+                            </div>
+                          </label>
+                          <label className="flex items-start gap-3">
+                            <input type="checkbox" checked={emailConfig.auto_send_booking_cancellation} onChange={(e) => setEmailField('auto_send_booking_cancellation', e.target.checked)} />
+                            <div>
+                              <p className="text-sm font-medium text-gray-700">Send cancellation confirmation when front desk cancels a booking</p>
+                              <p className="text-xs text-gray-400">Useful when a guest asks for written confirmation that the booking was cancelled.</p>
+                            </div>
+                          </label>
+                        </>
+                      )}
                     </div>
                   </div>
 
+                  {!restaurantMode && (
                   <div className="rounded-xl border border-blue-200 bg-blue-50 p-4">
                     <p className="text-sm font-semibold text-blue-900 mb-2">What guests will receive</p>
                     <ul className="space-y-2 text-xs text-blue-900/90">
@@ -1376,6 +1429,7 @@ export default function Settings() {
                       <li>Booking invoices are sent as a separate guest invoice email when enabled.</li>
                     </ul>
                   </div>
+                  )}
 
                   {emailStatus && (
                     <div className={`rounded-xl px-4 py-3 text-sm ${emailStatus.ok ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-700 border border-red-200'}`}>
@@ -1398,6 +1452,7 @@ export default function Settings() {
             </div>
 
             {/* ── Online Booking Site ──────────────────────────────────────── */}
+            {!restaurantMode && (
             <div className="border border-gray-200 rounded-xl p-5 space-y-4">
               <div className="flex items-center gap-2">
                 <Globe size={16} className="text-gray-500" />
@@ -1650,6 +1705,7 @@ export default function Settings() {
                 </>
               )}
             </div>
+            )}
 
             {/* ── Save ─────────────────────────────────────────────────────── */}
             <div className="flex items-center gap-4 pb-6">
@@ -1743,8 +1799,16 @@ export default function Settings() {
           LICENSE & BILLING TAB
           ════════════════════════════════════════════════════════════════ */}
       {activeTab === 'license' && (
+        <div className="space-y-4">
+          <Suspense fallback={tabLoader}>
+            <SubscriptionAccessPanel />
+          </Suspense>
+        </div>
+      )}
+
+      {activeTab === 'document-templates' && (
         <Suspense fallback={tabLoader}>
-          <SubscriptionAccessPanel />
+          <DocumentTemplates />
         </Suspense>
       )}
 

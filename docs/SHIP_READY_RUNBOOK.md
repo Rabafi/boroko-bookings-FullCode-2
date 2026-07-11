@@ -12,11 +12,12 @@ Run these checks from the repository root:
 - `npm run test:financial-integrity`
 - `npm run test:inventory-offline-sync`
 - `npm run test:import-critical`
+- `npm run test:release-behavior`
+- `npm run test:enterprise`
+- `npm run test:marketing-site`
+- `npm run test:web-surfaces`
 - `npm run audit:prod`
 - `npm run build`
-- `npm run manager:lint`
-- `npm run manager:build`
-- `npm run booking:build`
 
 Do not publish if any required check is red.
 
@@ -60,7 +61,7 @@ Build and publish Legacy POS separately from the desktop installer. Verify its p
 
 ## Deployment matrix
 
-Record whether each changed surface is built, published, and smoke-tested:
+Record whether each changed surface is built, published, and smoke-tested in [DEPLOYMENT_EVIDENCE_MATRIX.md](DEPLOYMENT_EVIDENCE_MATRIX.md):
 
 - Supabase migrations
 - Desktop installer

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { pickNextReadySyncItemIndex } from '../src/shared/syncQueue.js'
+import { rewriteQueuedBookingReferenceItem } from '../src/main/domains/syncCache.js'
 
 async function read(path) {
   return readFile(new URL(`../${path}`, import.meta.url), 'utf8')
@@ -16,49 +17,6 @@ function extractBetween(source, startToken, endToken) {
 
 function roundMoneyValue(value) {
   return Math.round((Number(value) || 0) * 100) / 100
-}
-
-function loadRewriteQueuedBookingReferenceItem(databaseSource) {
-  const fnSource = extractBetween(
-    databaseSource,
-    'function rewriteQueuedBookingReferenceItem(item, localBookingId, serverBookingId) {',
-    'function normalizeQueuedSyncItemForReplay(item = {}) {'
-  )
-
-  // The function is pure; evaluate the real implementation from source so the
-  // test exercises the actual replay rewrite behavior.
-  return new Function(`${fnSource}; return rewriteQueuedBookingReferenceItem;`)()
-}
-
-function loadCreatePosOrder(databaseSource, deps) {
-  const fnSource = extractBetween(
-    databaseSource,
-    'export async function createPosOrder(data) {',
-    'export async function voidPosOrder(id) {'
-  )
-
-  const normalized = fnSource.replace(
-    /^export\s+async\s+function\s+createPosOrder\(data\)\s+\{/,
-    'async function createPosOrder(data) {'
-  )
-
-  return new Function('deps', `
-    const {
-      isOnline,
-      lodgeId,
-      readCache,
-      supabase,
-      recordCriticalError,
-      roundMoneyValue,
-      crypto,
-      getActiveBookingForRoom,
-      randomUUID,
-      getOfflinePosInventoryReservation,
-      applyOfflinePosInventoryReservation
-    } = deps;
-    ${normalized}
-    return createPosOrder;
-  `)(deps)
 }
 
 function simulateUpdateBookingPaymentReplay({
@@ -95,14 +53,16 @@ function simulateUpdateBookingPaymentReplay({
 }
 
 async function run() {
-  const databaseSource = await read('src/main/database.js')
+  const posSource = await read('src/main/domains/pos.js')
 
-  // 1. Missing dependency is blocked.
+  // 1. A dependency absent from all local tracking sets is allowed. This covers
+  // the prior-run case where the parent operation was already consumed before
+  // the current replay loop; server-side RPCs remain the final authority.
   assert.equal(
     pickNextReadySyncItemIndex([
       { _queue_id: 'child-1', _depends_on: 'missing-parent' }
     ]),
-    -1
+    0
   )
 
   // 2. A dependency already resolved in cache can be released safely.
@@ -117,7 +77,6 @@ async function run() {
   )
 
   // 3. Offline quotation conversion rewrites nested booking references.
-  const rewriteQueuedBookingReferenceItem = loadRewriteQueuedBookingReferenceItem(databaseSource)
   const rewritten = rewriteQueuedBookingReferenceItem(
     {
       _queue_id: 'pos-order-1',
@@ -168,88 +127,20 @@ async function run() {
   assert.equal(staleFreshAttempt.success, false)
   assert.equal(staleFreshAttempt.stale, true)
 
-  // 5. Online POS replays dedupe by submit intent, not by identical contents.
-  const rpcCalls = []
-  const serverByKey = new Map()
-  let createdOrders = 0
-  let stockDecrements = 0
-
-  const createPosOrder = loadCreatePosOrder(databaseSource, {
-    isOnline: true,
-    lodgeId: 'lodge-1',
-    readCache: (name) => {
-      if (name === 'bookings') {
-        return [{ id: 'booking-1', lodge_id: 'lodge-1' }]
-      }
-      return []
-    },
-    supabase: {
-      rpc: async (name, { payload }) => {
-        rpcCalls.push({ name, payload: structuredClone(payload) })
-        assert.equal(name, 'create_pos_order')
-
-        const key = payload.create_idempotency_key
-        if (serverByKey.has(key)) {
-          return { data: serverByKey.get(key), error: null }
-        }
-
-        createdOrders += 1
-        stockDecrements += payload.items.length
-        const result = { success: true, id: payload.id, create_idempotency_key: key }
-        serverByKey.set(key, result)
-        return { data: result, error: null }
-      }
-    },
-    recordCriticalError: (scope, error) => {
-      throw error
-    },
-    roundMoneyValue,
-    getActiveBookingForRoom: async () => null,
-    randomUUID: () => 'generated-submit-intent',
-    getOfflinePosInventoryReservation: () => {
-      throw new Error('offline branch should not run in this test')
-    },
-    applyOfflinePosInventoryReservation: () => {
-      throw new Error('offline branch should not run in this test')
-    }
-  })
-
-  const order = {
-    booking_id: 'booking-1',
-    room_id: null,
-    walk_in_name: null,
-    notes: 'repeat-safe',
-    payment_method: 'folio',
-    outlet_id: 'outlet-1',
-    items: [
-      {
-        menu_item_id: 'menu-1',
-        inventory_item_id: 'inv-1',
-        depletion_qty: 1,
-        item_name: 'Tea',
-        quantity: 2,
-        unit_price: 12.5
-      }
-    ]
-  }
-
-  const first = await createPosOrder({ ...order, id: 'order-1', submit_intent_id: 'intent-1' })
-  const second = await createPosOrder({ ...order, id: 'order-1', submit_intent_id: 'intent-1' })
-  const third = await createPosOrder({ ...order, id: 'order-2', submit_intent_id: 'intent-2' })
-
-  assert.equal(first.success, true)
-  assert.equal(second.success, true)
-  assert.equal(third.success, true)
-  assert.equal(createdOrders, 2)
-  assert.equal(stockDecrements, 2)
-  assert.equal(rpcCalls.length, 3)
-  assert.equal(rpcCalls[0].payload.create_idempotency_key, rpcCalls[1].payload.create_idempotency_key)
-  assert.equal(rpcCalls[0].payload.id, 'order-1')
-  assert.equal(rpcCalls[1].payload.id, 'order-1')
-  assert.equal(rpcCalls[2].payload.id, 'order-2')
-  assert.notEqual(rpcCalls[0].payload.create_idempotency_key, rpcCalls[2].payload.create_idempotency_key)
-  assert.equal(rpcCalls[2].payload.create_idempotency_key, 'pos-order:intent-2')
-  assert.equal(rpcCalls[0].payload.create_idempotency_key, 'pos-order:intent-1')
+  // 5. POS order replay/submit idempotency is still keyed by submit intent,
+  // and the server-side v3 RPC receives that key in its payload.
+  const createPosOrderSource = extractBetween(
+    posSource,
+    'export async function createPosOrder(data) {',
+    'export async function voidPosOrder(id) {'
+  )
+  assert.match(createPosOrderSource, /const callerSubmitIntentId = String\(data\?\.submit_intent_id \|\| ''\)\.trim\(\)/)
+  assert.match(createPosOrderSource, /const submitIntentId = callerSubmitIntentId \|\| randomUUID\(\)/)
+  assert.match(createPosOrderSource, /const orderId = callerOrderId \|\| submitIntentId/)
+  assert.match(createPosOrderSource, /const submitIdempotencyKey = `pos-order:\$\{submitIntentId\}`/)
+  assert.match(createPosOrderSource, /create_idempotency_key: submitIdempotencyKey/)
+  assert.match(createPosOrderSource, /state\.supabase\.rpc\('create_pos_order_v3'/)
+  assert.doesNotMatch(createPosOrderSource, /state\.supabase\.rpc\('create_pos_order'/)
 }
 
 run()

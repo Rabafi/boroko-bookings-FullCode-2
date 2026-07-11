@@ -46,6 +46,33 @@ const PLAN_COLORS = {
 
 const FEATURE_ORDER = ['reports', 'expenses', 'staff', 'pwa', 'audit', 'conference', 'pool', 'import', 'pos', 'inventory', 'supplies']
 
+const ADDON_OVERRIDE_GROUPS = [
+  {
+    key: 'website_online_payments',
+    label: 'Website + Online Payments',
+    description: 'Direct booking website readiness, online payment setup, and payment confirmation plumbing.',
+    features: ['custom_website', 'payment_gateway', 'advanced_booking_engine']
+  },
+  {
+    key: 'guest_experience',
+    label: 'Guest Experience Suite',
+    description: 'Guest portal, guest messaging, and richer guest profiles.',
+    features: ['guest_portal', 'guest_messaging', 'guest_crm']
+  },
+  {
+    key: 'revenue_distribution',
+    label: 'Revenue & Distribution Suite',
+    description: 'Channel manager, revenue manager, advanced rates, promo codes, and deeper reports.',
+    features: ['channel_manager', 'advanced_rates', 'rate_calendar', 'promo_codes', 'advanced_reports']
+  },
+  {
+    key: 'enterprise_operations',
+    label: 'Enterprise Operations Suite',
+    description: 'Multi-property, multi-outlet POS, group operations, and operational compliance.',
+    features: ['multi_property', 'multi_outlet_pos', 'group_operations', 'operations_compliance']
+  }
+]
+
 function normalizePlanName(plan) {
   return normalizeSubscriptionPlan(plan)
 }
@@ -582,6 +609,52 @@ function OverrideDesk({ companies, licenses }) {
     }
   }
 
+  const saveAddonGroup = async (group, enabled) => {
+    if (!selectedLodge) return
+    setSavingFeature(group.key)
+    const metadata = {
+      reason: overrideReason.trim() || `Command Central ${enabled ? 'enabled' : 'disabled'} ${group.label}`,
+      expires_at: overrideExpiresAt ? `${overrideExpiresAt}T23:59:59` : null,
+      review_at: overrideReviewAt ? `${overrideReviewAt}T23:59:59` : null,
+      addon_group: group.key
+    }
+    try {
+      await Promise.all(group.features.map((featureName) => (
+        enabled
+          ? window.api.admin.setLodgeFeature(selectedLodge, featureName, true, metadata)
+          : window.api.admin.clearLodgeFeature(selectedLodge, featureName)
+      )))
+      setFlags((current) => {
+        const next = { ...current }
+        for (const featureName of group.features) {
+          if (enabled) next[featureName] = true
+          else delete next[featureName]
+        }
+        return next
+      })
+      setOverrideDetails((current) => {
+        const next = { ...current }
+        for (const featureName of group.features) {
+          if (enabled) {
+            next[featureName] = {
+              ...(current[featureName] || {}),
+              feature_name: featureName,
+              enabled: true,
+              reason: metadata.reason,
+              expires_at: metadata.expires_at,
+              review_at: metadata.review_at
+            }
+          } else {
+            delete next[featureName]
+          }
+        }
+        return next
+      })
+    } finally {
+      setSavingFeature('')
+    }
+  }
+
   return (
     <div className="grid xl:grid-cols-[0.8fr_1.2fr] gap-5">
       <div className="bg-gray-800 rounded-2xl border border-gray-700 p-5">
@@ -626,6 +699,55 @@ function OverrideDesk({ companies, licenses }) {
               </div>
               <p className="text-xs text-gray-500">Reason and dates apply to the next override you save. Leave them blank if the exception should just be immediate.</p>
             </div>
+          </div>
+        )}
+      </div>
+
+      <div className="bg-gray-800 rounded-2xl border border-gray-700 p-5">
+        <div className="flex items-center gap-2 mb-4">
+          <Sparkles size={18} className="text-purple-300" />
+          <h3 className="text-lg font-semibold text-white">Add-on Testing</h3>
+        </div>
+
+        {!selectedLodge ? (
+          <p className="text-sm text-gray-500">Choose a client to enable or disable add-on bundles for testing.</p>
+        ) : loading ? (
+          <p className="text-sm text-gray-500">Loading add-ons…</p>
+        ) : (
+          <div className="grid gap-3">
+            {ADDON_OVERRIDE_GROUPS.map((group) => {
+              const enabledCount = group.features.filter((feature) => flags[feature] === true).length
+              const fullyEnabled = enabledCount === group.features.length
+              return (
+                <div key={group.key} className="rounded-2xl border border-gray-700 bg-gray-900/80 p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="font-semibold text-white">{group.label}</p>
+                      <p className="mt-1 text-xs leading-5 text-gray-500">{group.description}</p>
+                      <p className="mt-2 text-xs text-gray-500">{enabledCount}/{group.features.length} module flags enabled</p>
+                    </div>
+                    <button
+                      onClick={() => saveAddonGroup(group, !fullyEnabled)}
+                      disabled={savingFeature === group.key}
+                      className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-semibold ${
+                        fullyEnabled ? 'bg-green-500/15 text-green-300' : 'bg-gray-700 text-gray-300'
+                      }`}
+                    >
+                      {savingFeature === group.key ? 'Saving…' : fullyEnabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-1.5">
+                    {group.features.map((feature) => (
+                      <span key={feature} className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                        flags[feature] === true ? 'bg-green-500/15 text-green-300' : 'bg-gray-700/70 text-gray-400'
+                      }`}>
+                        {FEATURE_LABELS[feature] || feature.replace(/_/g, ' ')}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )
+            })}
           </div>
         )}
       </div>

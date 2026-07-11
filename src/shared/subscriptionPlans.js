@@ -1,4 +1,4 @@
-export const SUBSCRIPTION_PLAN_ORDER = ['Starter', 'Standard', 'Pro']
+export const SUBSCRIPTION_PLAN_ORDER = ['Starter', 'Standard', 'Pro', 'Enterprise']
 
 const PLAN_ALIASES = {
   basic: 'Starter',
@@ -6,7 +6,10 @@ const PLAN_ALIASES = {
   standard: 'Standard',
   premium: 'Pro',
   pro: 'Pro',
-  trial: 'Pro'
+  trial: 'Pro',
+  enterprise: 'Enterprise',
+  hotel: 'Enterprise',
+  resort: 'Enterprise'
 }
 
 const FEATURE_REQUIRED_PLAN = {
@@ -21,7 +24,31 @@ const FEATURE_REQUIRED_PLAN = {
   pos: 'Pro',
   inventory: 'Pro',
   supplies: 'Pro',
-  online_booking: 'Pro'
+  online_booking: 'Pro',
+  hotel_mode: 'Enterprise',
+  room_types: 'Enterprise',
+  physical_inventory: 'Enterprise',
+  floors_sections: 'Enterprise',
+  front_desk_dashboard: 'Enterprise',
+  room_moves: 'Enterprise',
+  folios: 'Enterprise',
+  advanced_housekeeping: 'Enterprise',
+  hotel_kpis: 'Enterprise',
+  corporate_accounts: 'Enterprise',
+  rate_plans: 'Enterprise',
+  custom_website: 'Enterprise',
+  payment_gateway: 'Enterprise',
+  channel_manager: 'Enterprise',
+  multi_property: 'Enterprise',
+  subscription_builder: 'Starter',
+  advanced_rates: 'Enterprise',
+  guest_portal: 'Enterprise',
+  multi_outlet_pos: 'Enterprise',
+  linen_laundry: 'Enterprise',
+  lost_found: 'Enterprise',
+  incident_log: 'Enterprise',
+  visitor_register: 'Enterprise',
+  emergency_list: 'Enterprise'
 }
 
 const FEATURE_UPGRADE_CONTEXT = {
@@ -36,7 +63,31 @@ const FEATURE_UPGRADE_CONTEXT = {
   pos: 'The lodge wants to sell food, drinks, or extras from the same system.',
   inventory: 'The lodge needs stock control for a wider operation.',
   supplies: 'The lodge wants better tracking of room consumables and supply usage.',
-  online_booking: 'The lodge wants a branded public booking page, direct guest enquiries, and more direct sales.'
+  online_booking: 'The lodge wants a branded public booking page, direct guest enquiries, and more direct sales.',
+  hotel_mode: 'The property needs hotel-grade operations with room types, physical inventory, and front-desk dashboards.',
+  room_types: 'The property needs to manage different room categories with distinct rates and inventory.',
+  physical_inventory: 'The property needs to track individual physical rooms under each room type.',
+  floors_sections: 'The property needs to organize rooms by floors, wings, or sections for operational clarity.',
+  front_desk_dashboard: 'The property needs a real-time arrivals/departures/in-house board for front-desk operations.',
+  room_moves: 'The property needs audited room moves for in-house and active hotel stays.',
+  folios: 'The property needs hotel-style billing with room charges, POS posting, and split billing.',
+  advanced_housekeeping: 'The property needs supervisor inspection, turnaround tracking, and mobile housekeeping.',
+  hotel_kpis: 'The property needs hotel-specific metrics like occupancy, ADR, and RevPAR.',
+  corporate_accounts: 'The property needs corporate billing, group blocks, and company statements.',
+  rate_plans: 'The property needs seasonal rates, corporate rates, and package pricing.',
+  custom_website: 'The property wants a custom direct booking website with its own domain.',
+  payment_gateway: 'The property wants to accept online payments directly through its website.',
+  channel_manager: 'The property wants to sync availability and rates across multiple booking channels.',
+  multi_property: 'The group needs to manage multiple properties from a central dashboard.',
+  subscription_builder: 'The property wants to request upgrades or add-ons from inside the app.',
+  advanced_rates: 'The property needs restriction-based rates, promo codes, and advanced revenue rules.',
+  guest_portal: 'The property wants guest self-service before and during stays.',
+  multi_outlet_pos: 'The property needs cross-outlet stock, transfers, and outlet profitability.',
+  linen_laundry: 'The property needs linen stock and laundry-batch tracking.',
+  lost_found: 'The property needs a controlled lost-and-found register.',
+  incident_log: 'The property needs operational incident tracking and follow-up records.',
+  visitor_register: 'The property needs visitor and contractor sign-in tracking.',
+  emergency_list: 'The property needs a real-time list for emergencies or evacuation.'
 }
 
 const PLANS = {
@@ -95,7 +146,29 @@ const PLANS = {
       'POS, outlet revenue, and stock control',
       'Inventory, room supplies, and premium operations'
     ],
-    upgradeNudge: 'Best for lodges that want to sell directly, look premium online, monitor from mobile, and run a wider operation from one system.'
+    upgradeNudge: 'Upgrade to Enterprise for hotel-grade PMS with room types, physical inventory, folios, front-desk dashboards, and advanced operations.'
+  },
+  Enterprise: {
+    name: 'Enterprise',
+    badge: 'Hotel PMS',
+    spotlight: 'Hotel-Grade Operations',
+    priceLabel: 'Enterprise',
+    headline: 'Hotel-grade PMS and enterprise hospitality operations',
+    pitch: 'Full property management system with room types, physical inventory, folios, front-desk dashboards, and advanced hotel operations',
+    audience: 'Best for motels, hotels, resorts, large lodges, high-volume properties, multi-department operations, and future multi-property groups.',
+    summary: 'Complete hotel PMS with room types, physical inventory, floors/sections, front-desk dashboard, arrivals/departures, folios, advanced housekeeping, hotel KPIs, and Enterprise add-on catalog.',
+    modules: [
+      'Everything in Pro',
+      'Hotel/motel/resort property mode',
+      'Room types and physical room inventory',
+      'Floors, wings, and sections',
+      'Front-desk dashboard with arrivals/departures',
+      'Hotel folios with room charges and POS posting',
+      'Advanced housekeeping with supervisor inspection',
+      'Hotel KPIs and reporting',
+      'Enterprise add-on catalog'
+    ],
+    upgradeNudge: 'Enterprise includes all core hotel operations. Add advanced rates, custom websites, payment gateways, and multi-property through Enterprise add-ons.'
   }
 }
 
@@ -113,10 +186,16 @@ const PLAN_USAGE_LIMITS = {
     users: 5
   },
   Pro: {
-    monthlyBookings: null,
-    monthlyBookingsGrace: null,
-    rooms: null,
-    users: null
+    monthlyBookings: 500,
+    monthlyBookingsGrace: 10,
+    rooms: 30,
+    users: 10
+  },
+  Enterprise: {
+    monthlyBookings: 2000,
+    monthlyBookingsGrace: 50,
+    rooms: 100,
+    users: 25
   }
 }
 
@@ -133,13 +212,18 @@ const PLAN_UPSELL_BENEFITS = {
   },
   Standard: {
     nextPlan: 'Pro',
-    capacities: ['Unlimited bookings', 'Unlimited rooms', 'Unlimited users'],
+    capacities: ['500 bookings/month', '30 rooms', '10 users'],
     features: ['POS', 'Inventory', 'Room Supplies', 'Manager Mobile App', 'Public Booking Site']
   },
   Pro: {
-    nextPlan: 'Pro',
-    capacities: ['Unlimited bookings', 'Unlimited rooms', 'Unlimited users'],
-    features: ['POS', 'Inventory', 'Room Supplies', 'Manager Mobile App', 'Public Booking Site']
+    nextPlan: 'Enterprise',
+    capacities: ['2,000 bookings/month', '100 rooms', '25 users'],
+    features: ['Hotel Mode', 'Room Types', 'Physical Inventory', 'Front Desk Dashboard', 'Folios', 'Hotel KPIs']
+  },
+  Enterprise: {
+    nextPlan: null,
+    capacities: ['Capacity packs available', 'Add-on catalog', 'Multi-property ready'],
+    features: ['Advanced Rates', 'Custom Website', 'Payment Gateway', 'Channel Manager', 'Multi-Property']
   }
 }
 
@@ -167,7 +251,7 @@ export function isUnlimited(value) {
 export function getNextSubscriptionPlan(plan) {
   const normalizedPlan = normalizeSubscriptionPlan(plan)
   const planIndex = SUBSCRIPTION_PLAN_ORDER.indexOf(normalizedPlan)
-  if (planIndex === -1 || planIndex >= SUBSCRIPTION_PLAN_ORDER.length - 1) return 'Pro'
+  if (planIndex === -1 || planIndex >= SUBSCRIPTION_PLAN_ORDER.length - 1) return null
   return SUBSCRIPTION_PLAN_ORDER[planIndex + 1]
 }
 
@@ -249,7 +333,7 @@ export function getUsageLimitStatusWithGrace({ used = 0, limit = null, grace = 0
 
 export function getUsageStateKey(status = {}) {
   if (!status || typeof status !== 'object') return 'normal'
-  if (status.state === 'unlimited') return 'pro'
+  if (status.state === 'unlimited') return 'enterprise'
   if (status.isAbovePlan) return 'above_plan'
   if (status.state === 'blocked') return 'blocked'
   if (status.state === 'grace') return 'in_grace'
@@ -267,7 +351,7 @@ export function getUsagePriorityScore(statusOrKey = '') {
     critical: 30,
     near_limit: 20,
     normal: 10,
-    pro: 0,
+    enterprise: 0,
     unknown: 0
   }
   return order[key] || 0
@@ -300,9 +384,9 @@ export function getUsageStatePresentation(statusOrKey = '') {
       label: 'Above plan',
       cls: 'border-red-900 bg-red-950 text-red-100'
     },
-    pro: {
-      label: 'Unlimited',
-      cls: 'border-slate-200 bg-slate-50 text-slate-700'
+    enterprise: {
+      label: 'Enterprise',
+      cls: 'border-purple-200 bg-purple-50 text-purple-800'
     }
   }
   return { key, ...(styles[key] || styles.normal) }
@@ -316,13 +400,13 @@ export function getEarlyUpgradePromptState({
   limits = getPlanUsageLimits(plan)
 } = {}) {
   const normalizedPlan = normalizeSubscriptionPlan(plan)
-  if (normalizedPlan === 'Pro') {
+  if (normalizedPlan === 'Enterprise') {
     return {
       shouldPrompt: false,
       plan: normalizedPlan,
       reason: '',
       metric: null,
-      stateKey: 'pro'
+      stateKey: 'enterprise'
     }
   }
 
@@ -572,14 +656,14 @@ export function getPlanRecommendation({
   limits = getPlanUsageLimits(plan)
 } = {}) {
   const normalizedPlan = normalizeSubscriptionPlan(plan)
-  if (normalizedPlan === 'Pro') {
+  if (normalizedPlan === 'Enterprise') {
     return {
-      label: 'Best fit / unlimited',
+      label: 'Best fit / Enterprise',
       tone: 'good',
-      recommendedPlan: 'Pro',
+      recommendedPlan: 'Enterprise',
       reason: 'Optimal',
       strong: false,
-      details: 'Unlimited bookings, rooms, and users are already active for this lodge.',
+      details: 'Enterprise hotel-grade operations are active for this property.',
       currentUsage: {
         bookings: resolveUsageValue(bookingsUsage, usage.monthlyBookings ?? usage.targetMonthBookings ?? 0),
         rooms: resolveUsageValue(roomsUsage, usage.rooms ?? 0),

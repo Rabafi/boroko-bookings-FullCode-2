@@ -36,18 +36,24 @@ test('Standard booking grace allows #201-#205, blocks #206', () => {
   assert.equal(canCreateBooking({ plan: 'Standard', used: 206 }).isBlocked, true)
 })
 
-test('Pro plan is unlimited', () => {
-  const status = canCreateBooking({ plan: 'Pro', used: 999999 })
-  assert.equal(status.state, 'unlimited')
-  assert.equal(status.isBlocked, false)
+test('Pro plan has capped usage limits', () => {
+  const limits = getPlanUsageLimits('Pro')
+  assert.equal(limits.monthlyBookings, 500)
+  assert.equal(limits.monthlyBookingsGrace, 10)
+  assert.equal(limits.rooms, 30)
+  assert.equal(limits.users, 10)
+  assert.equal(canCreateBooking({ plan: 'Pro', used: 500 }).isBlocked, false)
+  assert.equal(canCreateBooking({ plan: 'Pro', used: 501 }).isInGrace, true)
+  assert.equal(canCreateBooking({ plan: 'Pro', used: 511 }).isBlocked, true)
 })
 
-test('active trial resolves to Pro unlimited usage limits at the entitlement boundary', () => {
+test('active trial resolves to Pro usage limits at the entitlement boundary', () => {
   assert.equal(normalizeEntitlementPlan('Trial'), 'Pro')
-  assert.equal(getPlanUsageLimits('Trial').rooms, null)
-  assert.equal(canCreateBooking({ plan: 'Trial', used: 999999 }).isBlocked, false)
-  assert.equal(canCreateRoom({ plan: 'Trial', used: 999999 }).isBlocked, false)
-  assert.equal(canCreateUser({ plan: 'Trial', used: 999999 }).isBlocked, false)
+  assert.equal(getPlanUsageLimits('Trial').rooms, 30)
+  assert.equal(canCreateBooking({ plan: 'Trial', used: 500 }).isBlocked, false)
+  assert.equal(canCreateBooking({ plan: 'Trial', used: 511 }).isBlocked, true)
+  assert.equal(canCreateRoom({ plan: 'Trial', used: 30 }).isBlocked, true)
+  assert.equal(canCreateUser({ plan: 'Trial', used: 10 }).isBlocked, true)
 })
 
 test('room and user limits enforce starter thresholds', () => {
@@ -131,21 +137,22 @@ test('plan recommendation points to the next tier when a single metric crosses 8
   assert.equal(standardRec.reason, 'Room expansion')
 })
 
-test('plan recommendation marks Pro as the best fit', () => {
-  const proRec = getPlanRecommendation({
-    plan: 'Pro',
+test('plan recommendation marks Enterprise as the best fit', () => {
+  const enterpriseRec = getPlanRecommendation({
+    plan: 'Enterprise',
     bookingsUsage: 999,
     roomsUsage: 999,
     usersUsage: 999
   })
-  assert.equal(proRec.recommendedPlan, 'Pro')
-  assert.equal(proRec.reason, 'Optimal')
-  assert.equal(proRec.label, 'Best fit / unlimited')
+  assert.equal(enterpriseRec.recommendedPlan, 'Enterprise')
+  assert.equal(enterpriseRec.reason, 'Optimal')
+  assert.equal(enterpriseRec.label, 'Best fit / Enterprise')
 })
 
 test('plan limit text stays readable across tiers', () => {
   const starter = formatPlanLimits('Starter')
   const pro = formatPlanLimits('Pro')
+  const enterprise = formatPlanLimits('Enterprise')
 
   assert.equal(starter.bookings, '50 bookings per month')
   assert.equal(starter.grace, '+2 grace bookings')
@@ -155,9 +162,15 @@ test('plan limit text stays readable across tiers', () => {
   assert.match(starter.bookingExplanation, /confirmed, checked_in, or checked_out/i)
   assert.match(starter.graceExplanation, /small grace allowance/i)
 
-  assert.equal(pro.bookings, 'Unlimited bookings')
-  assert.equal(pro.rooms, 'Unlimited rooms')
-  assert.equal(pro.users, 'Unlimited users')
+  assert.equal(pro.bookings, '500 bookings per month')
+  assert.equal(pro.grace, '+10 grace bookings')
+  assert.equal(pro.rooms, '30 rooms')
+  assert.equal(pro.users, '10 users')
+
+  assert.equal(enterprise.bookings, '2000 bookings per month')
+  assert.equal(enterprise.grace, '+50 grace bookings')
+  assert.equal(enterprise.rooms, '100 rooms')
+  assert.equal(enterprise.users, '25 users')
 })
 
 test('upgrade request message includes lodge context and timestamps', () => {
@@ -187,7 +200,7 @@ test('usage state classification stays consistent across badges and sorting', ()
   assert.equal(getUsageStateKey({ state: 'grace' }), 'in_grace')
   assert.equal(getUsageStateKey({ state: 'blocked' }), 'blocked')
   assert.equal(getUsageStateKey({ state: 'blocked', isAbovePlan: true }), 'above_plan')
-  assert.equal(getUsageStateKey({ state: 'unlimited' }), 'pro')
+  assert.equal(getUsageStateKey({ state: 'unlimited' }), 'enterprise')
 
   assert.ok(getUsagePriorityScore({ state: 'blocked' }) > getUsagePriorityScore({ state: 'grace' }))
   assert.ok(getUsagePriorityScore({ state: 'grace' }) > getUsagePriorityScore({ state: 'critical' }))

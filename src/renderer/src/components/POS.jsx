@@ -1,11 +1,16 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Plus, Pencil, Trash2, ShoppingCart, X, ChevronDown, ChevronUp, Scan, Eye, EyeOff, Keyboard, Printer, BadgePercent, ReceiptText, Calculator, RefreshCw, Monitor, Utensils, FileSpreadsheet, FileDown } from 'lucide-react'
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Plus, Pencil, Trash2, ShoppingCart, X, ChevronDown, ChevronUp, Scan, Eye, EyeOff, Keyboard, Printer, BadgePercent, ReceiptText, Calculator, RefreshCw, Monitor, Utensils, FileSpreadsheet, FileDown, Star } from 'lucide-react'
 import { Modal } from './shared/Modal'
 import { POSReceipt } from './shared/POSReceipt'
 import HorizontalScrollArea from './shared/HorizontalScrollArea'
+import POSFavouritesBar from './pos/POSFavouritesBar'
+import POSTerminalCartLine from './pos/POSTerminalCartLine'
+import POSTerminalProductCard from './pos/POSTerminalProductCard'
+import POSKeyboardHelp from './pos/POSKeyboardHelp'
 import { DESKTOP_PAYMENT_METHODS, formatPaymentMethod } from '../constants/paymentMethods'
 import { useSettings, useAccess, useAuth } from '../app-context'
 import { canAccessCapability } from '../../../shared/accessControl'
+import { isRestaurantOnly } from '../../../shared/propertyTypes'
 import { formatLocalDate } from '../utils/localDate'
 
 const MENU_CATEGORIES = ['Food', 'Drinks', 'Other']
@@ -17,6 +22,10 @@ const BAR_PACK_TEMPLATES = [
 const CASHUP_CORE_METHODS = ['cash', 'card', 'bank_transfer', 'orange_money', 'myzaka', 'smega', 'other']
 const POS_LIVE_REFRESH_MS = 30000
 const POS_TOUCH_MODE_STORAGE_KEY = 'bb_pos_touch_mode'
+const POS_MENU_PAGE_SIZE = 72
+const POS_FAVOURITES_STORAGE_KEY = 'bb_pos_favourites'
+const POS_FAVOURITES_MAX = 30
+const POS_COMPACT_CART_THRESHOLD = 20
 
 const toLocalDateInput = (value = new Date()) => formatLocalDate(value)
 const formatIsoTimestamp = (value = new Date()) => {
@@ -110,6 +119,22 @@ function normalizeStockValue(value) {
 function normalizePositiveQty(value, fallback = 1) {
   const numeric = Number(value)
   return Number.isFinite(numeric) && numeric > 0 ? numeric : fallback
+}
+
+// The database protects outlet names per lodge, but a stale cache or a legacy
+// import can still hand the renderer repeated rows. Never make an operator
+// choose between visually identical Kitchen/Bar buttons.
+function dedupeOutlets(rows = []) {
+  const seen = new Set()
+  return (rows || []).filter((row) => {
+    if (!row) return false
+    const key = row.id
+      ? `id:${row.id}`
+      : `name:${String(row.type || '').toLowerCase()}:${String(row.name || '').trim().toLowerCase()}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
 }
 
 function getInventoryAvailableUnits(inventoryMap, inventoryItemId, depletionQty = 1) {
@@ -207,6 +232,8 @@ function buildPosSubmitSignature({
 export default function POS() {
   const { settings } = useSettings()
   const currency = settings?.currency || 'P'
+  const propertyType = settings?.property_type || settings?.business_type || 'lodge'
+  const restaurantMode = isRestaurantOnly(propertyType)
   const access = useAccess()
   const { user: currentUser } = useAuth()
   const [touchMode, setTouchMode] = useState(() => {
@@ -219,13 +246,14 @@ export default function POS() {
   const [showStaffLogin, setShowStaffLogin] = useState(false)
   const [showPaymentDetails, setShowPaymentDetails] = useState(false)
   const [showManagerControls, setShowManagerControls] = useState(false)
-  const [setupSection, setSetupSection] = useState('tables')
+  const [setupSection, setSetupSection] = useState(() => restaurantMode ? 'displays' : 'tables')
 
   // Permission flags
   const canVoid       = canAccessCapability(access, 'pos.void')
   const canDiscount   = canAccessCapability(access, 'pos.discount')
   const canManagePos  = canAccessCapability(access, 'pos.manage')
   const canManageMenu = canAccessCapability(access, 'pos.menu_manage')
+  const canCloseCashup = canAccessCapability(access, 'pos.cashup')
 
   const [tab, setTab] = useState('terminal') // terminal | menu | history | cashup | tickets | setup
 
@@ -241,6 +269,7 @@ export default function POS() {
   const [menuRefreshing, setMenuRefreshing] = useState(false)
   const [menuSearch, setMenuSearch] = useState('')
   const [activeTerminalCategory, setActiveTerminalCategory] = useState('All')
+  const [menuDisplayLimit, setMenuDisplayLimit] = useState(POS_MENU_PAGE_SIZE)
 
   // Current order (terminal)
   const [orderItems, setOrderItems] = useState([])
@@ -293,7 +322,7 @@ export default function POS() {
   const [auditLog, setAuditLog] = useState([])
   const [modifierTargetIdx, setModifierTargetIdx] = useState(null)
   const [modifierDraftNotes, setModifierDraftNotes] = useState('')
-  const [modifierForm, setModifierForm] = useState({ name: '', options: '' })
+  const [modifierForm, setModifierForm] = useState({ name: '', options: '', min_selections: '', max_selections: '', applies_to_categories: '' })
   const [promotionForm, setPromotionForm] = useState({ name: '', discount_type: 'amount', discount_value: '', applies_to_category: 'All' })
   const [appliedPromotionId, setAppliedPromotionId] = useState(null)
   const [floorAreaName, setFloorAreaName] = useState('')
@@ -302,16 +331,57 @@ export default function POS() {
   const [orderSuccess, setOrderSuccess] = useState(false)
   const [syncStatus, setSyncStatus] = useState(null)
 
+  // Phase 4: Customer & loyalty
+  const [posCustomers, setPosCustomers] = useState([])
+  const [selectedCustomerId, setSelectedCustomerId] = useState('')
+  const [selectedCustomer, setSelectedCustomer] = useState(null)
+  const [loyaltyPointsEarned, setLoyaltyPointsEarned] = useState(0)
+  const [voucherCode, setVoucherCode] = useState('')
+  const [voucherAmount, setVoucherAmount] = useState('')
+  const [voucherRedeemed, setVoucherRedeemed] = useState(null)
+  const [deliveryAddress, setDeliveryAddress] = useState('')
+  const [deliveryNotes, setDeliveryNotes] = useState('')
+  const [customerAccountCharge, setCustomerAccountCharge] = useState(false)
+
+  // Phase 5: Operations
+  const [activeShifts, setActiveShifts] = useState([])
+  const [openDrawerSession, setOpenDrawerSession] = useState(null)
+  const [drawerFloat, setDrawerFloat] = useState('')
+  const [drawerClosingTotal, setDrawerClosingTotal] = useState('')
+  const [drawerDeclaredTotal, setDrawerDeclaredTotal] = useState('')
+  const [suppliers, setSuppliers] = useState([])
+  const [supplierForm, setSupplierForm] = useState({ name: '', contact_person: '', phone: '', email: '', address: '', payment_terms: '' })
+  const [poForm, setPoForm] = useState({ supplier_id: '', notes: '', items: [{ description: '', quantity: '', unit_cost: '' }] })
+  const [activeAlerts, setActiveAlerts] = useState([])
+  const [alertForm, setAlertForm] = useState({ alert_type: 'stock_low', severity: 'warning', message: '' })
+  const [checklists, setChecklists] = useState([])
+  const [checklistType, setChecklistType] = useState('daily_opening')
+  const [ownerDigest, setOwnerDigest] = useState(null)
+
   // Barcode scanner
   const barcodeBufferRef = useRef('')
   const barcodeTimerRef = useRef(null)
+  const menuSearchInputRef = useRef(null)
   const selectedOutletRef = useRef(null)
   const outletsRef = useRef([])
   const menuItemsRef = useRef([])
   const inventoryItemsRef = useRef([])
   const liveRefreshBusyRef = useRef(false)
   const submitIntentRef = useRef({ signature: null, intentId: null })
+  const splitOperationIdRef = useRef(null)
   const [barcodeFlash, setBarcodeFlash] = useState(null) // null | { name, found, wrongOutlet? }
+
+  // Favourites
+  const [favourites, setFavourites] = useState(() => {
+    try {
+      const raw = window.localStorage.getItem(POS_FAVOURITES_STORAGE_KEY)
+      return raw ? JSON.parse(raw) : []
+    } catch { return [] }
+  })
+
+  // Keyboard shortcuts
+  const [selectedLineIdx, setSelectedLineIdx] = useState(-1)
+  const [showKeyboardHelp, setShowKeyboardHelp] = useState(false)
 
   const currentOperator = selectedPosStaff || {
     id: currentUser?.id || null,
@@ -356,6 +426,21 @@ export default function POS() {
   const [returnLoading, setReturnLoading] = useState(false)
   const [showReturnPin, setShowReturnPin] = useState(false)
 
+  const [splitModal, setSplitModal] = useState(false)
+  const [splitItemIndices, setSplitItemIndices] = useState([])
+  const [splitTargetTable, setSplitTargetTable] = useState('')
+  const [splitLoading, setSplitLoading] = useState(false)
+  const [splitMode, setSplitMode] = useState('items')
+  const [splitEvenCount, setSplitEvenCount] = useState(2)
+  const [splitEvenNames, setSplitEvenNames] = useState([])
+  const [splitError, setSplitError] = useState('')
+
+  const [discountApprovalModal, setDiscountApprovalModal] = useState(false)
+  const [discountApprovalPin, setDiscountApprovalPin] = useState('')
+  const [discountApprovalError, setDiscountApprovalError] = useState('')
+  const [discountApprovalLoading, setDiscountApprovalLoading] = useState(false)
+  const [showDiscountApprovalPin, setShowDiscountApprovalPin] = useState(false)
+
   const [cashupDate, setCashupDate] = useState(() => toLocalDateInput(new Date()))
   const [cashupOutletId, setCashupOutletId] = useState('')
   const [cashupOpeningFloat, setCashupOpeningFloat] = useState('')
@@ -370,16 +455,25 @@ export default function POS() {
   // Inventory items (for depletion linking)
   const [inventoryItems, setInventoryItems] = useState([])
 
+  // Recipes
+  const [recipes, setRecipes] = useState([])
+  const [recipeModal, setRecipeModal] = useState(false)
+  const [editingRecipe, setEditingRecipe] = useState(null)
+  const [recipeForm, setRecipeForm] = useState({ name: '', menu_item_id: '', serving_size: '1', ingredients: [] })
+  const [recipeSaving, setRecipeSaving] = useState(false)
+
   // Menu item form modal
   const [menuModal, setMenuModal] = useState(false)
   const [editingItem, setEditingItem] = useState(null)
   const [menuForm, setMenuForm] = useState({
     name: '', category: 'Food', price: '', barcode: '',
-    inventory_item_id: '', depletion_qty: '1', outlet_id: ''
+    inventory_item_id: '', depletion_qty: '1', outlet_id: '',
+    dietary_flags: [], prep_time_minutes: 0, is_popular: false, kitchen_station_id: ''
   })
   const [menuSaving, setMenuSaving] = useState(false)
   const [menuError, setMenuError] = useState('')
   const [barTemplateSavingKey, setBarTemplateSavingKey] = useState('')
+  const [kitchenStations, setKitchenStations] = useState([])
 
   useEffect(() => {
     try {
@@ -389,10 +483,26 @@ export default function POS() {
     }
   }, [touchMode])
 
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(POS_FAVOURITES_STORAGE_KEY, JSON.stringify(favourites))
+    } catch { /* Best-effort */ }
+  }, [favourites])
+
+  const toggleFavourite = useCallback((itemId) => {
+    setFavourites((prev) => {
+      if (prev.includes(itemId)) return prev.filter((id) => id !== itemId)
+      if (prev.length >= POS_FAVOURITES_MAX) return [...prev.slice(1), itemId]
+      return [...prev, itemId]
+    })
+  }, [])
+
+  const isFavourite = useCallback((itemId) => favourites.includes(itemId), [favourites])
+
   // Outlets filtered to what this user is allowed to access
   // access.allowedOutletIds === null means full access (manager/admin)
   const posOutlets = useMemo(
-    () => outlets.filter((outlet) => outlet.type === 'food' || outlet.type === 'beverage'),
+    () => dedupeOutlets(outlets.filter((outlet) => outlet.type === 'food' || outlet.type === 'beverage')),
     [outlets]
   )
 
@@ -450,6 +560,17 @@ export default function POS() {
       })),
     [selectedBarInventoryItems, menuItems, selectedOutlet]
   )
+  // This must come after fallbackBarMenuItems. Hooks execute while POS renders,
+  // so referencing that const above its initializer sends the terminal straight
+  // to the recovery screen.
+  const favouriteItems = useMemo(() => {
+    if (favourites.length === 0) return []
+    const allItems = [...menuItems, ...fallbackBarMenuItems]
+    return favourites
+      .map((id) => allItems.find((item) => item.id === id))
+      .filter(Boolean)
+      .filter((item) => matchesSelectedOutlet(item))
+  }, [favourites, menuItems, fallbackBarMenuItems, selectedOutlet])
   const inventoryById = useMemo(
     () => new Map((inventoryItems || []).map((item) => [item.id, item])),
     [inventoryItems]
@@ -576,7 +697,8 @@ export default function POS() {
   }, [cashupDate, cashupOpeningFloat, cashupOutletId, currentOperator.id, currentOperator.name, currentShift?.id])
 
   const loadPosOperations = useCallback(async () => {
-    const [tabs, ticketRows, shift, hardware, staffRows, modifierRows, promotionRows, floorRows, auditRows] = await Promise.all([
+    const rushTab = tab === 'terminal' || tab === 'tickets'
+    const [tabs, ticketRows, shift, hardware, staffRows, modifierRows, promotionRows, floorRows, auditRows, recipeRows, customerRows, stationRows] = await Promise.all([
       window.api.pos.getTabs?.().catch(() => []),
       window.api.pos.getTickets?.({ station: 'all' }).catch(() => []),
       window.api.pos.getCurrentShift?.(selectedOutlet?.id || null, selectedPosStaff?.id || currentUser?.id || null).catch(() => null),
@@ -585,7 +707,10 @@ export default function POS() {
       window.api.pos.getModifierGroups?.().catch(() => []),
       window.api.pos.getPromotions?.().catch(() => []),
       window.api.pos.getFloorLayout?.().catch(() => ({ areas: [] })),
-      window.api.pos.getAuditLog?.(25).catch(() => [])
+      rushTab ? Promise.resolve([]) : window.api.pos.getAuditLog?.(25).catch(() => []),
+      rushTab ? Promise.resolve([]) : window.api.pos.getRecipes?.().catch(() => []),
+      restaurantMode ? window.api.pos.getCustomers?.().catch(() => []) : Promise.resolve([]),
+      window.api.pos.getStations?.().catch(() => [])
     ])
     const [tables, printers, displays] = await Promise.all([
       (window.api.pos.getTablesWithStatus?.(selectedOutlet?.id || null) || window.api.pos.getTables?.()).catch(() => []),
@@ -604,7 +729,24 @@ export default function POS() {
     setPosTables(tables || [])
     setReceiptPrinters(printers || [])
     setSystemDisplays(displays || [])
-  }, [currentUser?.id, selectedOutlet?.id, selectedPosStaff?.id])
+    setRecipes(recipeRows || [])
+    setPosCustomers(customerRows || [])
+    setKitchenStations(stationRows || [])
+
+    // Phase 5: Load operations data in restaurant mode
+    if (restaurantMode && !rushTab) {
+      const [shifts, drawer, supplierList, alertList] = await Promise.all([
+        window.api.pos.getActiveShifts?.().catch(() => []),
+        window.api.pos.getOpenCashDrawer?.().catch(() => null),
+        window.api.pos.getSuppliers?.().catch(() => []),
+        window.api.pos.getActiveAlerts?.().catch(() => [])
+      ])
+      setActiveShifts(shifts || [])
+      setOpenDrawerSession(drawer || null)
+      setSuppliers(supplierList || [])
+      setActiveAlerts(alertList || [])
+    }
+  }, [currentUser?.id, selectedOutlet?.id, selectedPosStaff?.id, restaurantMode, tab])
 
   useEffect(() => {
     if (tab !== 'history') return
@@ -621,7 +763,7 @@ export default function POS() {
     setOutletsLoading(true)
     window.api.outlets.getAll()
       .then((d) => {
-        const list = d || []
+        const list = dedupeOutlets(d || [])
         setOutlets(list)
         const posList = list.filter((o) => o.type === 'food' || o.type === 'beverage')
         // Auto-select: use allowedOutletIds to pick first allowed outlet
@@ -687,7 +829,7 @@ export default function POS() {
 
   const offlineMode = isSyncOffline(syncStatus)
   const walkInPaymentNeedsVerification = offlineMode && customerType === 'walkin' && paymentMethod !== 'cash'
-  const refreshLivePosState = useCallback(async ({ includeOrders = true } = {}) => {
+  const refreshLivePosState = useCallback(async ({ includeOrders = false } = {}) => {
     if (liveRefreshBusyRef.current) return
     liveRefreshBusyRef.current = true
     try {
@@ -705,7 +847,7 @@ export default function POS() {
 
     const tick = () => {
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
-      refreshLivePosState({ includeOrders: true })
+      refreshLivePosState({ includeOrders: tab === 'history' })
     }
 
     const handleFocus = () => tick()
@@ -720,7 +862,7 @@ export default function POS() {
       window.removeEventListener('focus', handleFocus)
       document.removeEventListener('visibilitychange', handleVisibility)
     }
-  }, [offlineMode, refreshLivePosState])
+  }, [offlineMode, refreshLivePosState, tab])
 
   // ── Barcode scanner listener (only active on terminal tab) ──────────────────
   useEffect(() => {
@@ -739,11 +881,10 @@ export default function POS() {
           barcodeTimerRef.current = null
         }
         if (code.length >= 4) {
-          const currentMenuItems = menuItemsRef.current || []
           const currentInventoryMap = new Map((inventoryItemsRef.current || []).map((item) => [item.id, item]))
           const currentSelectedOutlet = selectedOutletRef.current
           const currentOutlets = outletsRef.current || []
-          const found = currentMenuItems.find((m) => m.barcode === code && m.is_available)
+          const found = (menuItemsRef.current || []).find((m) => m.barcode === code && m.is_available)
           if (found) {
             // Block if item belongs to a different outlet than the selected one
             if (found.outlet_id && currentSelectedOutlet && found.outlet_id !== currentSelectedOutlet.id) {
@@ -778,6 +919,106 @@ export default function POS() {
     }
   }, [tab])
 
+  // ── Keyboard shortcuts (active on terminal tab) ────────────────────────────
+  useEffect(() => {
+    if (tab !== 'terminal') return
+
+    const handleShortcut = (e) => {
+      const activeTag = document.activeElement?.tagName
+      const isInputFocused = activeTag === 'INPUT' || activeTag === 'TEXTAREA' || activeTag === 'SELECT'
+
+      // Ctrl+F or / — Focus search (skip if already in an input)
+      if ((e.ctrlKey && e.key === 'f') || (!isInputFocused && e.key === '/' && !e.ctrlKey && !e.altKey && !e.metaKey)) {
+        e.preventDefault()
+        menuSearchInputRef.current?.focus()
+        return
+      }
+
+      // ? — Toggle keyboard help
+      if (!isInputFocused && e.key === '?' && !e.ctrlKey && !e.altKey) {
+        e.preventDefault()
+        setShowKeyboardHelp((v) => !v)
+        return
+      }
+
+      // Don't handle remaining shortcuts when input is focused
+      if (isInputFocused) return
+
+      // F2 — Cash payment
+      if (e.key === 'F2') {
+        e.preventDefault()
+        setPaymentMethod('cash')
+        setCustomerType('walkin')
+        setServiceMode('takeaway')
+        return
+      }
+
+      // F3 — Card payment
+      if (e.key === 'F3') {
+        e.preventDefault()
+        setPaymentMethod('card')
+        setCustomerType('walkin')
+        setServiceMode('takeaway')
+        return
+      }
+
+      // F9 or Ctrl+Enter — Complete order
+      if (e.key === 'F9' || (e.ctrlKey && e.key === 'Enter')) {
+        e.preventDefault()
+        if (orderItems.length > 0 && !submitting) completeOrder()
+        return
+      }
+
+      // Escape — Clear order or close help
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        if (showKeyboardHelp) { setShowKeyboardHelp(false); return }
+        if (orderItems.length > 0 && !submitting && window.confirm('Clear the current order?')) {
+          setOrderItems([])
+          setSelectedLineIdx(-1)
+        }
+        return
+      }
+
+      // + or = — Increment selected line quantity
+      if ((e.key === '+' || e.key === '=') && selectedLineIdx >= 0 && selectedLineIdx < orderItems.length) {
+        e.preventDefault()
+        updateQty(selectedLineIdx, 1)
+        return
+      }
+
+      // - — Decrement selected line quantity
+      if (e.key === '-' && selectedLineIdx >= 0 && selectedLineIdx < orderItems.length) {
+        e.preventDefault()
+        updateQty(selectedLineIdx, -1)
+        return
+      }
+
+      // Delete or Backspace — Remove selected line
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedLineIdx >= 0 && selectedLineIdx < orderItems.length) {
+        e.preventDefault()
+        setOrderItems((prev) => prev.filter((_, i) => i !== selectedLineIdx))
+        setSelectedLineIdx((prev) => Math.min(prev, orderItems.length - 2))
+        return
+      }
+
+      // Arrow Up/Down — Navigate cart lines
+      if (e.key === 'ArrowUp' && orderItems.length > 0) {
+        e.preventDefault()
+        setSelectedLineIdx((prev) => Math.max(0, prev - 1))
+        return
+      }
+      if (e.key === 'ArrowDown' && orderItems.length > 0) {
+        e.preventDefault()
+        setSelectedLineIdx((prev) => Math.min(orderItems.length - 1, prev + 1))
+        return
+      }
+    }
+
+    window.addEventListener('keydown', handleShortcut)
+    return () => window.removeEventListener('keydown', handleShortcut)
+  }, [tab, orderItems, selectedLineIdx, submitting, showKeyboardHelp])
+
   // ── Terminal ────────────────────────────────────────────────────────────────
 
   const addToOrder = (item) => {
@@ -796,7 +1037,8 @@ export default function POS() {
         item_notes: null,
         quantity: 1,
         inventory_item_id: item.inventory_item_id || null,
-        depletion_qty: Number(item.depletion_qty || 1)
+        depletion_qty: Number(item.depletion_qty || 1),
+        kitchen_station_id: item.kitchen_station_id || null
       }
       const candidate = prev.find((i) => i.order_key === orderKey)
         ? prev.map((i) => i.order_key === orderKey ? { ...i, quantity: i.quantity + 1 } : i)
@@ -819,18 +1061,25 @@ export default function POS() {
 
       return candidate
     })
+    setSelectedLineIdx((prev) => {
+      const idx = orderItems.findIndex((i) => i.order_key === (item._virtual_inventory_item ? `inventory:${item.inventory_item_id}` : `menu:${item.id}`))
+      return idx >= 0 ? idx : orderItems.length
+    })
   }
 
-  const updateQty = (idx, delta) => {
+  const updateQty = useCallback((idx, delta) => {
     setOrderItems((prev) => {
       const updated = [...prev]
       updated[idx] = { ...updated[idx], quantity: updated[idx].quantity + delta }
       if (updated[idx].quantity <= 0) updated.splice(idx, 1)
       return updated
     })
-  }
+  }, [])
 
-  const setQty = (idx, rawValue) => {
+  const incrementQty = useCallback((idx) => updateQty(idx, 1), [updateQty])
+  const decrementQty = useCallback((idx) => updateQty(idx, -1), [updateQty])
+
+  const setQty = useCallback((idx, rawValue) => {
     const parsed = Number.parseInt(String(rawValue || '').replace(/[^\d]/g, ''), 10)
     const quantity = Number.isFinite(parsed) && parsed > 0 ? parsed : 1
     setOrderItems((prev) => {
@@ -839,7 +1088,7 @@ export default function POS() {
       updated[idx] = { ...updated[idx], quantity }
       return updated
     })
-  }
+  }, [])
 
   const orderSubtotal = orderItems.reduce((s, i) => s + i.quantity * i.unit_price, 0)
   const parsedDiscountValue = Number(discountValue || 0)
@@ -932,6 +1181,10 @@ export default function POS() {
       alert('Enter a reason for the manual discount.')
       return
     }
+    if (!appliedPromotionId && orderDiscountAmount > 0 && !pendingDiscountApprovalRef.current) {
+      setDiscountApprovalModal(true)
+      return
+    }
 
     setSubmitting(true)
     try {
@@ -1000,6 +1253,7 @@ export default function POS() {
         booking_id: customerType === 'room' ? selectedBookingId : null,
         event_booking_id: customerType === 'event' ? selectedEventId : null,
         walk_in_name: customerType === 'walkin' ? (walkInName.trim() || 'Walk-in') : null,
+        customer_id: customerType === 'walkin' && selectedCustomerId ? selectedCustomerId : null,
         items: orderItemsForSubmit,
         notes: orderNotes.trim() || null,
         payment_method: (customerType === 'room' || customerType === 'event') ? 'folio' : splitPaymentsEnabled ? 'split' : paymentMethod,
@@ -1012,6 +1266,12 @@ export default function POS() {
         total: orderTotal,
         service_mode: serviceMode,
         table_name: serviceMode === 'table' ? tableName.trim() || null : null,
+        delivery_address: serviceMode === 'delivery' ? deliveryAddress.trim() || null : null,
+        delivery_notes: serviceMode === 'delivery' ? deliveryNotes.trim() || null : null,
+        customer_account_charge: customerAccountCharge && selectedCustomerId ? {
+          customer_id: selectedCustomerId,
+          amount: orderTotal
+        } : null,
         tab_name: tabNameForOrder,
         waiter_name: serviceMode === 'table' ? tableWaiterName || null : null,
         waiter_id: serviceMode === 'table' ? tableWaiterId || null : null,
@@ -1064,6 +1324,7 @@ export default function POS() {
           _auto_print: hardwareSettings?.auto_print_receipts === true
         }
         submitIntentRef.current = { signature: null, intentId: null }
+        pendingDiscountApprovalRef.current = null
         setOrderItems([])
         setWalkInName('')
         setOrderNotes('')
@@ -1087,6 +1348,35 @@ export default function POS() {
         setActiveTabId('')
         await loadPosOperations()
         await refreshLivePosState({ includeOrders: true })
+
+        // Phase 4: Award loyalty points for registered customers
+        if (selectedCustomerId && !result.offline) {
+          const points = Math.floor(Number(result.total || orderTotal) / 10)
+          if (points > 0) {
+            window.api.pos.awardLoyalty({
+              customerId: selectedCustomerId,
+              orderId: result.id,
+              points,
+              description: `Order #${(result.receipt_number || result.id || '').slice(0, 8)}`
+            }).then((r) => { if (r?.success && !r?.duplicate) setLoyaltyPointsEarned(points) }).catch(() => {})
+          }
+        }
+
+        // Phase 4: Redeem voucher if code was entered
+        if (voucherCode && voucherAmount && !result.offline) {
+          window.api.pos.redeemVoucher(voucherCode, Number(voucherAmount))
+            .then((r) => { if (r?.success) setVoucherRedeemed({ code: voucherCode, amount: Number(voucherAmount) }) })
+            .catch((e) => { alert(e?.message || 'Voucher redemption failed') })
+        }
+
+        setSelectedCustomerId('')
+        setSelectedCustomer(null)
+        setVoucherCode('')
+        setVoucherAmount('')
+        setDeliveryAddress('')
+        setDeliveryNotes('')
+        setCustomerAccountCharge(false)
+
         const shouldOpenDrawer = hardwareSettings?.cash_drawer_enabled === true
           && hardwareSettings?.cash_drawer_open_on_cash === true
           && (receiptOrder.payment_method === 'cash' || paymentBreakdownHasCash(receiptOrder.payment_breakdown))
@@ -1105,6 +1395,7 @@ export default function POS() {
         }
         if (receiptOrder._auto_print) setShowReceiptOrder({ ...receiptOrder, _open_drawer_on_print: shouldKickDrawerWithReceipt })
         setOrderSuccess(true)
+        window.setTimeout(() => menuSearchInputRef.current?.focus(), 0)
         setTimeout(() => setOrderSuccess(false), 3000)
       } else {
         alert(result?.error || 'Failed to complete order. Please try again.')
@@ -1161,7 +1452,7 @@ export default function POS() {
           const icon = o.type === 'food' ? '🍳' : '🍺'
           return (
             <button
-              key={o.id}
+              key={o.id || `${o.type}:${o.name}`}
               onClick={() => setSelectedOutlet(o)}
               className={`flex-1 rounded-xl font-semibold transition-all ${touchMode ? 'min-h-[2.5rem] px-2.5 py-2 text-sm' : 'py-2 text-xs'} ${isActive ? c.active : c.idle}`}
             >
@@ -1179,7 +1470,8 @@ export default function POS() {
     setMenuForm({
       name: '', category: isKitchenOutlet ? 'Food' : 'Drinks', price: '', barcode: '',
       inventory_item_id: '', depletion_qty: '1',
-      outlet_id: selectedOutlet?.id || '' // default to active outlet for accurate reporting
+      outlet_id: selectedOutlet?.id || '',
+      dietary_flags: [], prep_time_minutes: 0, is_popular: false, kitchen_station_id: ''
     })
     setMenuError('')
     setMenuModal(true)
@@ -1195,7 +1487,11 @@ export default function POS() {
       barcode: item.barcode || '',
       inventory_item_id: item.inventory_item_id || '',
       depletion_qty: item.depletion_qty != null ? String(item.depletion_qty) : '1',
-      outlet_id: item.outlet_id || '' // keep existing assignment if set
+      outlet_id: item.outlet_id || '',
+      dietary_flags: Array.isArray(item.dietary_flags) ? item.dietary_flags : [],
+      prep_time_minutes: item.prep_time_minutes || 0,
+      is_popular: item.is_popular || false,
+      kitchen_station_id: item.kitchen_station_id || ''
     })
     setMenuError('')
     setMenuModal(true)
@@ -1296,35 +1592,36 @@ export default function POS() {
   )
 
   const normalizedMenuSearch = menuSearch.trim().toLowerCase()
-  const filteredVisibleMenuItems = visibleMenuItems.filter((item) => {
+  const filteredVisibleMenuItems = useMemo(() => visibleMenuItems.filter((item) => {
     if (!normalizedMenuSearch) return true
     return (
       String(item.name || '').toLowerCase().includes(normalizedMenuSearch) ||
       String(item.barcode || '').toLowerCase().includes(normalizedMenuSearch)
     )
-  })
+  }), [normalizedMenuSearch, visibleMenuItems])
 
-  const menuByCategory = MENU_CATEGORIES.reduce((acc, cat) => {
+  const menuByCategory = useMemo(() => MENU_CATEGORIES.reduce((acc, cat) => {
     acc[cat] = filteredVisibleMenuItems.filter((m) => m.category === cat && m.is_available !== false)
     return acc
-  }, {})
+  }, {}), [filteredVisibleMenuItems])
   const terminalCategoryTabs = useMemo(
     () => ['All', ...MENU_CATEGORIES.filter((cat) => (menuByCategory[cat] || []).length > 0)],
     [menuByCategory]
   )
-  const visibleTerminalCategories = touchMode
-    ? terminalCategoryTabs.filter((cat) => cat === 'All' || cat === activeTerminalCategory)
-    : MENU_CATEGORIES
+  const visibleTerminalCategories = [activeTerminalCategory]
   const hasTerminalMenuData = filteredVisibleMenuItems.length > 0 || fallbackBarMenuItems.length > 0 || menuItems.length > 0
   const showInitialMenuLoading = menuLoading && !hasTerminalMenuData
 
   useEffect(() => {
-    if (!touchMode) return
     if (activeTerminalCategory === 'All') return
     if (!terminalCategoryTabs.includes(activeTerminalCategory)) {
       setActiveTerminalCategory('All')
     }
-  }, [activeTerminalCategory, terminalCategoryTabs, touchMode])
+  }, [activeTerminalCategory, terminalCategoryTabs])
+
+  useEffect(() => {
+    setMenuDisplayLimit(POS_MENU_PAGE_SIZE)
+  }, [activeTerminalCategory, normalizedMenuSearch, selectedOutlet?.id])
 
   // Returns the name of the outlet an item belongs to if it's different from selectedOutlet.
   // Used for cross-outlet blocking on tap and barcode scan.
@@ -1591,20 +1888,26 @@ export default function POS() {
     setDiscountReason(promotion.name || 'Promotion')
   }
 
-  const openModifierEditor = (idx) => {
+  const openModifierEditor = useCallback((idx) => {
     const line = orderItems[idx]
     if (!line) return
     setModifierTargetIdx(idx)
     setModifierDraftNotes(line.item_notes || '')
-  }
+  }, [orderItems])
 
-  const toggleLineModifier = (option) => {
+  const toggleLineModifier = (option, group = null) => {
     if (modifierTargetIdx == null || !option?.name) return
     setOrderItems((rows) => rows.map((line, idx) => {
       if (idx !== modifierTargetIdx) return line
       const current = Array.isArray(line.modifiers) ? line.modifiers : []
       const exists = current.some((entry) => entry.name === option.name)
       const nextModifiers = exists ? current.filter((entry) => entry.name !== option.name) : [...current, option]
+      if (group && Number(group.max_selections || 0) > 0) {
+        const groupSelections = nextModifiers.filter((mod) =>
+          (group.options || []).some((opt) => opt.name === mod.name)
+        ).length
+        if (groupSelections > Number(group.max_selections)) return line
+      }
       const basePrice = Number(line.base_unit_price ?? line.unit_price ?? 0)
       const delta = nextModifiers.reduce((sum, entry) => sum + Number(entry.price_delta || 0), 0)
       return {
@@ -1628,12 +1931,19 @@ export default function POS() {
       const [name, price] = line.split('|')
       return { name: String(name || '').trim(), price_delta: Number(price || 0) }
     }).filter((option) => option.name)
-    const res = await window.api.pos.saveModifierGroup?.({ name: modifierForm.name, options })
+    const appliesToCategories = modifierForm.applies_to_categories.split(',').map((c) => c.trim()).filter(Boolean)
+    const res = await window.api.pos.saveModifierGroup?.({
+      name: modifierForm.name,
+      options,
+      min_selections: modifierForm.min_selections ? Number(modifierForm.min_selections) : 0,
+      max_selections: modifierForm.max_selections ? Number(modifierForm.max_selections) : 0,
+      applies_to_categories: appliesToCategories
+    })
     if (!res?.success) {
       alert(res?.error || 'Could not save modifier group.')
       return
     }
-    setModifierForm({ name: '', options: '' })
+    setModifierForm({ name: '', options: '', min_selections: '', max_selections: '', applies_to_categories: '' })
     await loadPosOperations()
   }
 
@@ -1671,8 +1981,12 @@ export default function POS() {
       id: activeTabId || undefined,
       outlet_id: selectedOutlet?.id || null,
       table_name: serviceMode === 'table' ? tableName.trim() || null : null,
+      service_mode: serviceMode,
+      delivery_address: serviceMode === 'delivery' ? deliveryAddress.trim() || null : null,
+      delivery_notes: serviceMode === 'delivery' ? deliveryNotes.trim() || null : null,
       tab_name: name,
       customer_name: walkInName.trim() || null,
+      customer_id: selectedCustomerId || null,
       waiter_name: serviceMode === 'table' ? tableWaiterName || null : null,
       waiter_id: serviceMode === 'table' ? tableWaiterId || null : null,
       room_id: customerType === 'room' ? selectedRoom || null : null,
@@ -1779,6 +2093,91 @@ export default function POS() {
     }
     await loadPosOperations()
   }
+
+  const openSplitModal = () => {
+    if (!currentOpenTab) return
+    setSplitItemIndices([])
+    setSplitTargetTable('')
+    setSplitMode('items')
+    setSplitEvenCount(2)
+    setSplitEvenNames([])
+    setSplitError('')
+    splitOperationIdRef.current = crypto.randomUUID()
+    setSplitModal(true)
+  }
+
+  const toggleSplitItem = (idx) => {
+    setSplitItemIndices((prev) => prev.includes(idx) ? prev.filter((i) => i !== idx) : [...prev, idx])
+  }
+
+  const executeSplitBill = async () => {
+    if (!currentOpenTab?.id) return
+    if (splitMode === 'items' && splitItemIndices.length === 0) return
+    if (splitMode === 'even' && (splitEvenCount < 2 || splitEvenCount > 10)) return
+    setSplitLoading(true)
+    setSplitError('')
+    try {
+      let res
+      if (splitMode === 'even') {
+        res = await window.api.pos.splitBillEvenly?.({
+          source_tab_id: currentOpenTab.id,
+          split_count: splitEvenCount,
+          target_table_names: splitEvenNames.slice(0, splitEvenCount),
+          idempotency_key: splitOperationIdRef.current
+        })
+      } else {
+        res = await window.api.pos.splitBillByItems?.({
+          source_tab_id: currentOpenTab.id,
+          item_indices: splitItemIndices,
+          target_table_name: splitTargetTable.trim() || null
+        })
+      }
+      if (!res?.success) {
+        setSplitError(res?.error || 'Could not split bill.')
+        return
+      }
+      setSplitModal(false)
+      splitOperationIdRef.current = null
+      if (res.source_tab) loadSavedTab(res.source_tab)
+      await loadPosOperations()
+    } catch (err) {
+      setSplitError(err.message || 'Could not split bill.')
+    } finally {
+      setSplitLoading(false)
+    }
+  }
+
+  const submitDiscountApproval = async (e) => {
+    e.preventDefault()
+    if (!discountApprovalPin.trim()) return
+    setDiscountApprovalLoading(true)
+    setDiscountApprovalError('')
+    try {
+      const res = await window.api.pos.approveDiscountWithPin?.({
+        pin: discountApprovalPin.trim(),
+        discount_type: discountMode,
+        discount_value: parsedDiscountValue,
+        reason: discountReason.trim(),
+        cashier_user_id: currentOperator.id || null,
+        outlet_id: selectedOutlet?.id || null,
+        order_total: orderSubtotal
+      })
+      if (!res?.success) {
+        setDiscountApprovalError(res?.error || 'PIN verification failed.')
+        return
+      }
+      setDiscountApprovalModal(false)
+      setDiscountApprovalPin('')
+      pendingDiscountApprovalRef.current = res
+      completeOrder()
+    } catch (err) {
+      setDiscountApprovalError(err.message || 'Could not verify PIN.')
+    } finally {
+      setDiscountApprovalLoading(false)
+    }
+  }
+
+  const pendingDiscountApprovalRef = useRef(null)
 
   const openShift = async () => {
     const res = await window.api.pos.openShift?.({
@@ -1919,7 +2318,7 @@ export default function POS() {
   const qtyButtonPlusClass = touchMode
     ? 'flex h-7 w-7 items-center justify-center rounded-lg bg-green-50 text-sm font-bold text-green-700 active:scale-[0.98]'
     : 'flex h-6 w-6 items-center justify-center rounded bg-slate-100 text-sm font-bold text-slate-600 hover:bg-green-50 hover:text-green-600'
-  const showTouchCategoryRail = touchMode && (showInitialMenuLoading || outletsLoading || terminalCategoryTabs.length > 1)
+  const showCategoryRail = showInitialMenuLoading || outletsLoading || terminalCategoryTabs.length > 1
   const orderItemCount = orderItems.reduce((sum, item) => sum + Number(item.quantity || 0), 0)
   const openNativeKeyboard = useCallback(async () => {
     try {
@@ -1976,7 +2375,14 @@ export default function POS() {
               })}
             </div>
             <div className="bb-card flex gap-1 p-0.5">
-              {[['terminal', 'Terminal'], ...(canManageMenu ? [['menu', 'Menu Items']] : []), ['history', 'History'], ['cashup', 'Cash-Up'], ['tickets', 'Tickets'], ['setup', 'Setup']].map(([v, l]) => (
+              {[
+                ['terminal', 'Terminal'],
+                ...(canManageMenu ? [['menu', 'Menu Items']] : []),
+                ...(canManageMenu ? [['history', 'History']] : []),
+                ...(canCloseCashup ? [['cashup', 'Cash-Up']] : []),
+                ['tickets', 'Tickets'],
+                ...(canManageMenu ? [['setup', 'Setup']] : [])
+              ].map(([v, l]) => (
                 <button
                   key={v}
                   onClick={() => setTab(v)}
@@ -2016,6 +2422,12 @@ export default function POS() {
 
             {/* ── Outlet selector ── */}
             {renderOutletSelector()}
+
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-100 bg-slate-50 px-3 py-1.5 text-[11px] text-slate-600">
+              <span className="font-semibold text-slate-700">{currentOperator.name || 'Operator'}</span>
+              <span>{currentShift ? 'Shift open' : 'No shift open'}</span>
+              <span>{orderItems.length > 0 ? `${orderItemCount} item${orderItemCount === 1 ? '' : 's'} · ${currency} ${fmt(orderTotal)}` : 'Ready for next order'}</span>
+            </div>
 
             {offlineMode && (
               <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
@@ -2062,6 +2474,7 @@ export default function POS() {
                 </div>
                 <div className="flex w-full gap-2 sm:max-w-md">
                   <input
+                    ref={menuSearchInputRef}
                     type="text"
                     className="input w-full"
                     placeholder="Search products or barcode..."
@@ -2081,7 +2494,7 @@ export default function POS() {
                   )}
                 </div>
               </div>
-              {showTouchCategoryRail && (
+              {showCategoryRail && (
                 <div className="mt-2 flex flex-wrap gap-2">
                   {(showInitialMenuLoading || outletsLoading ? ['All', 'Food', 'Drinks', 'Other'] : terminalCategoryTabs).map((category) => {
                     const active = activeTerminalCategory === category
@@ -2116,59 +2529,64 @@ export default function POS() {
                   </div>
                 ) : (
                   <div className="space-y-3">
+                    {/* ── Favourites Quick Tiles ── */}
+                    <POSFavouritesBar
+                      favouriteItems={favouriteItems}
+                      currency={currency}
+                      fmt={fmt}
+                      touchMode={touchMode}
+                      touchItemCardClass={touchItemCardClass}
+                      getCrossOutletName={getCrossOutletName}
+                      getInventoryAvailableUnits={getInventoryAvailableUnits}
+                      inventoryById={inventoryById}
+                      isOrderableMenuItem={isOrderableMenuItem}
+                      onAdd={addToOrder}
+                      onToggleFavourite={toggleFavourite}
+                    />
                     {visibleTerminalCategories.map((cat) => {
-                      const items = cat === 'All'
+                      const allItems = cat === 'All'
                         ? MENU_CATEGORIES.flatMap((category) => menuByCategory[category] || [])
                         : menuByCategory[cat]
+                      const items = allItems.slice(0, menuDisplayLimit)
                       if (items.length === 0) return null
                       return (
                       <div key={cat} className="bb-card p-2">
                           <div className="mb-1.5 flex items-center justify-between">
                             <h3 className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">{cat === 'All' ? 'All Products' : cat}</h3>
                             <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] font-medium text-slate-500">
-                              {items.length} item{items.length === 1 ? '' : 's'}
+                              {allItems.length > items.length ? `Showing ${items.length} of ${allItems.length}` : `${items.length} item${items.length === 1 ? '' : 's'}`}
                             </span>
                           </div>
                           <div className={touchItemGridClass}>
-                            {items.map((item) => {
-                              const crossOutlet = getCrossOutletName(item)
-                              const availableUnits = getInventoryAvailableUnits(inventoryById, item.inventory_item_id, item.depletion_qty)
-                              const soldOut = !isOrderableMenuItem(item, inventoryById)
-                              return (
-                              <button
+                            {items.map((item) => (
+                              <POSTerminalProductCard
                                 key={item.id}
-                                disabled={soldOut || !!crossOutlet}
-                                onClick={() => {
-                                  if (crossOutlet) {
-                                    alert(`"${item.name}" belongs to ${crossOutlet}. Switch outlets to add it.`)
-                                    return
-                                  }
-                                  if (soldOut) {
-                                    alert(`"${item.name}" is sold out on the latest synced stock.`)
-                                    return
-                                  }
-                                  addToOrder(item)
-                                }}
-                                className={`${touchItemCardClass} ${soldOut ? 'cursor-not-allowed opacity-60' : touchMode ? 'hover:ring-2 hover:ring-green-300' : 'hover:-translate-y-[1px] hover:ring-2 hover:ring-green-400'}`}
-                            >
-                                <p className={`truncate font-medium text-slate-800 ${touchMode ? 'text-sm' : 'text-xs'}`}>{item.name}</p>
-                                <p className={`mt-0.5 text-green-700 font-semibold ${touchMode ? 'text-sm' : 'text-xs'}`}>
-                                  {currency} {fmt(item.price)}
-                                </p>
-                                {Number.isFinite(availableUnits) && (
-                                  <p className={`mt-0.5 ${touchMode ? 'text-xs' : 'text-[11px]'} ${soldOut ? 'text-red-600' : availableUnits <= 3 ? 'text-amber-600' : 'text-slate-400'}`}>
-                                    {soldOut ? 'Sold out' : `${availableUnits} left`}
-                                  </p>
-                                )}
-                                {item.barcode && !touchMode && (
-                                  <p className="mt-1 flex items-center gap-1 text-xs text-slate-400">
-                                    <Scan size={10} /> {item.barcode}
-                                  </p>
-                                )}
-                              </button>
-                              )
-                            })}
+                                item={item}
+                                currency={currency}
+                                fmt={fmt}
+                                touchMode={touchMode}
+                                touchItemCardClass={touchItemCardClass}
+                                soldOut={!isOrderableMenuItem(item, inventoryById)}
+                                crossOutlet={getCrossOutletName(item)}
+                                availableUnits={getInventoryAvailableUnits(inventoryById, item.inventory_item_id, item.depletion_qty)}
+                                isFav={isFavourite(item.id)}
+                                isPopular={item.is_popular === true}
+                                dietaryFlags={Array.isArray(item.dietary_flags) ? item.dietary_flags : []}
+                                prepTime={Number(item.prep_time_minutes || 0)}
+                                onAdd={addToOrder}
+                                onToggleFavourite={toggleFavourite}
+                              />
+                            ))}
                           </div>
+                          {allItems.length > items.length && (
+                            <button
+                              type="button"
+                              onClick={() => setMenuDisplayLimit((current) => current + POS_MENU_PAGE_SIZE)}
+                              className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                            >
+                              Show {Math.min(POS_MENU_PAGE_SIZE, allItems.length - items.length)} more products
+                            </button>
+                          )}
                         </div>
                       )
                     })}
@@ -2191,8 +2609,13 @@ export default function POS() {
 
               {/* Barcode scanner hint */}
               {menuItems.some((m) => m.barcode && m.is_available) && (
-                <p className="flex items-center gap-1 text-xs text-slate-400">
+                  <p className="flex items-center gap-1 text-xs text-slate-400">
                   <Scan size={12} /> Barcode scanner ready — click outside inputs and scan
+                </p>
+              )}
+              {!touchMode && (
+                <p className="flex items-center gap-1 text-xs text-slate-400">
+                  Press <kbd className="rounded border border-slate-200 bg-white px-1 text-[10px] font-mono">?</kbd> for keyboard shortcuts
                 </p>
               )}
             </div>
@@ -2204,9 +2627,16 @@ export default function POS() {
               <h2 className={`flex items-center gap-2 font-semibold text-slate-700 ${touchMode ? 'text-base' : 'text-sm'}`}>
                 <ShoppingCart size={touchMode ? 18 : 16} /> Current Order
               </h2>
-              <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-xs font-bold text-emerald-800">
-                {orderItemCount} item{orderItemCount === 1 ? '' : 's'}
-              </span>
+              <div className="flex items-center gap-1.5">
+                {orderItems.length >= POS_COMPACT_CART_THRESHOLD && (
+                  <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-700">
+                    Compact
+                  </span>
+                )}
+                <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-xs font-bold text-emerald-800">
+                  {orderItemCount} item{orderItemCount === 1 ? '' : 's'}
+                </span>
+              </div>
             </div>
             <div className="mb-1.5 shrink-0">
               <button
@@ -2280,21 +2710,25 @@ export default function POS() {
               >
                 Walk-in
               </button>
-              <button
-                onClick={() => setCustomerType('room')}
-                className={`flex-1 transition-colors ${touchMode ? 'py-2' : 'py-1.5'} ${customerType === 'room' ? 'bg-green-600 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
-              >
-                Charge to Room
-              </button>
-              <button
-                onClick={() => setCustomerType('event')}
-                className={`flex-1 transition-colors ${touchMode ? 'py-2' : 'py-1.5'} ${customerType === 'event' ? 'bg-green-600 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
-              >
-                Event Folio
-              </button>
+              {!restaurantMode && (
+                <>
+                  <button
+                    onClick={() => setCustomerType('room')}
+                    className={`flex-1 transition-colors ${touchMode ? 'py-2' : 'py-1.5'} ${customerType === 'room' ? 'bg-green-600 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
+                  >
+                    Charge to Room
+                  </button>
+                  <button
+                    onClick={() => setCustomerType('event')}
+                    className={`flex-1 transition-colors ${touchMode ? 'py-2' : 'py-1.5'} ${customerType === 'event' ? 'bg-green-600 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
+                  >
+                    Event Folio
+                  </button>
+                </>
+              )}
             </div>
 
-            {customerType === 'room' ? (
+            {!restaurantMode && customerType === 'room' ? (
                 <select
                 className={`input mb-1.5 shrink-0 ${touchInputClass}`}
                 value={selectedRoom}
@@ -2307,7 +2741,7 @@ export default function POS() {
                   </option>
                 ))}
               </select>
-            ) : customerType === 'event' ? (
+            ) : !restaurantMode && customerType === 'event' ? (
                 <select
                 className={`input mb-1.5 shrink-0 ${touchInputClass}`}
                 value={selectedEventId}
@@ -2322,12 +2756,34 @@ export default function POS() {
               </select>
             ) : (
               <>
+                {restaurantMode && posCustomers.length > 0 && (
+                  <div className="mb-1.5 shrink-0">
+                    <select
+                      className={`input ${touchInputClass}`}
+                      value={selectedCustomerId}
+                      onChange={(e) => {
+                        const cid = e.target.value
+                        setSelectedCustomerId(cid)
+                        const found = posCustomers.find((c) => c.id === cid)
+                        setSelectedCustomer(found || null)
+                        if (found) setWalkInName(found.name)
+                      }}
+                    >
+                      <option value="">Walk-in customer (no account)</option>
+                      {posCustomers.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name} {c.loyalty_points > 0 ? `(${c.loyalty_points} pts)` : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
                 <div className="mb-1.5 shrink-0">
                   <div className={`grid grid-cols-1 gap-2 ${touchMode ? 'sm:grid-cols-[minmax(0,1fr)_11rem_auto]' : 'sm:grid-cols-[minmax(0,1fr)_11rem]'}`}>
                   <input
                     type="text"
                     className={`input ${touchInputClass}`}
-                    placeholder="Guest name (optional)..."
+                    placeholder={restaurantMode ? "Customer name (optional)..." : "Guest name (optional)..."}
                     value={walkInName}
                     onChange={(e) => setWalkInName(e.target.value)}
                   />
@@ -2383,12 +2839,43 @@ export default function POS() {
                       )}
                     </>
                   )}
+                  {restaurantMode && selectedCustomer && (
+                    <div className="mt-1.5 rounded-lg border border-amber-200 bg-amber-50 p-2">
+                      <p className="text-xs font-semibold text-amber-800">
+                        {selectedCustomer.name} — {selectedCustomer.loyalty_points || 0} loyalty pts
+                      </p>
+                      <p className="text-xs text-amber-700">
+                        {orderTotal > 0 ? `Earn ~${Math.floor(orderTotal / 10)} pts with this order` : ''}
+                      </p>
+                    </div>
+                  )}
+                  {restaurantMode && !selectedCustomer && (
+                    <div className="mt-1.5">
+                      <div className="flex gap-2">
+                        <input
+                          className="input flex-1 text-xs"
+                          placeholder="Voucher code"
+                          value={voucherCode}
+                          onChange={(e) => setVoucherCode(e.target.value.toUpperCase())}
+                        />
+                        <input
+                          className="input w-24 text-xs"
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          placeholder="Amount"
+                          value={voucherAmount}
+                          onChange={(e) => setVoucherAmount(e.target.value)}
+                        />
+                      </div>
+                    </div>
+                  )}
                 </div>
               </>
             )}
 
-            <div className="mb-1.5 grid shrink-0 grid-cols-3 gap-1.5">
-              {['takeaway', 'table', 'room'].map((mode) => (
+            <div className={`mb-1.5 grid shrink-0 ${restaurantMode ? 'grid-cols-4' : 'grid-cols-3'} gap-1.5`}>
+              {(restaurantMode ? ['takeaway', 'table', 'delivery'] : ['takeaway', 'table', 'room']).map((mode) => (
                 <button
                   key={mode}
                   type="button"
@@ -2399,10 +2886,46 @@ export default function POS() {
                   }}
                   className={`rounded-lg px-2 py-1.5 text-xs font-semibold ${serviceMode === mode ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600'}`}
                 >
-                  {mode === 'takeaway' ? 'Quick' : mode === 'table' ? 'Table' : 'Room'}
+                  {mode === 'takeaway' ? 'Quick' : mode === 'table' ? 'Table' : mode === 'delivery' ? 'Delivery' : 'Room'}
                 </button>
               ))}
             </div>
+
+            {serviceMode === 'delivery' && restaurantMode && (
+              <div className="mb-1.5 shrink-0 space-y-1.5 rounded-xl border border-blue-200 bg-blue-50 p-2">
+                <input
+                  type="text"
+                  className={`input text-xs`}
+                  placeholder="Delivery address..."
+                  value={deliveryAddress}
+                  onChange={(e) => setDeliveryAddress(e.target.value)}
+                />
+                <input
+                  type="text"
+                  className={`input text-xs`}
+                  placeholder="Delivery notes (optional)..."
+                  value={deliveryNotes}
+                  onChange={(e) => setDeliveryNotes(e.target.value)}
+                />
+              </div>
+            )}
+
+            {restaurantMode && selectedCustomer && selectedCustomer.account_balance > 0 && (
+              <div className="mb-1.5 shrink-0">
+                <label className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs">
+                  <input
+                    type="checkbox"
+                    checked={customerAccountCharge}
+                    onChange={(e) => setCustomerAccountCharge(e.target.checked)}
+                    className="h-3.5 w-3.5"
+                  />
+                  <span className="font-semibold text-slate-700">Charge to account</span>
+                  <span className="ml-auto text-slate-500">
+                    Balance: {currency} {fmt(selectedCustomer.account_balance)}
+                  </span>
+                </label>
+              </div>
+            )}
 
             {serviceMode === 'table' && (
               <div className="mb-1.5 shrink-0 space-y-2">
@@ -2475,21 +2998,37 @@ export default function POS() {
                     </div>
                   )}
                 </div>
+                <div className="mb-1.5 flex items-center justify-between text-[0.68rem] text-slate-500">
+                  <span>{visibleTables.length} table(s) · {visibleTables.filter((t) => t.status === 'available' || !t.tab).length} available</span>
+                  <span>{visibleTables.filter((t) => t.tab && t.status !== 'available').length} active</span>
+                </div>
                 <div className="grid max-h-40 grid-cols-2 gap-1.5 overflow-y-auto pr-1">
                   {visibleTables.map((table) => {
                     const status = normalizeTableStatus(table.status || table.tab?.status)
                     const selected = tableName === table.name
+                    const tab = table.tab
+                    const elapsed = tab?.created_at ? formatElapsed(tab.created_at) : null
+                    const itemCount = Array.isArray(tab?.items) ? tab.items.reduce((sum, item) => sum + Number(item.quantity || 0), 0) : 0
                     return (
                       <button
                         key={table.id}
                         type="button"
                         onClick={() => selectTable(table)}
-                        className={`min-h-[3rem] rounded-lg border px-2 py-1.5 text-left text-xs font-semibold transition ${getTableStatusClasses(status)} ${selected ? 'ring-2 ring-slate-900/20' : ''}`}
+                        className={`min-h-[3.5rem] rounded-lg border px-2 py-1.5 text-left text-xs font-semibold transition ${getTableStatusClasses(status)} ${selected ? 'ring-2 ring-slate-900/20' : ''}`}
                       >
-                        <span className="block truncate">{table.name}</span>
+                        <div className="flex items-center justify-between">
+                          <span className="block truncate">{table.name}</span>
+                          {table.seats > 0 && <span className="text-[0.6rem] opacity-60">{table.seats}p</span>}
+                        </div>
                         <span className="mt-0.5 block text-[0.68rem] uppercase tracking-wide opacity-75">
                           {status === 'available' ? 'Available' : status === 'ready' ? 'Ready' : status === 'delivered' ? 'Delivered' : 'Running'}
                         </span>
+                        {tab && (
+                          <div className="mt-0.5 flex items-center gap-1 text-[0.6rem] opacity-60">
+                            {elapsed && <span>{elapsed}</span>}
+                            {itemCount > 0 && <span>· {itemCount} item(s)</span>}
+                          </div>
+                        )}
                       </button>
                     )
                   })}
@@ -2532,10 +3071,11 @@ export default function POS() {
                   </button>
                 </div>
                 {showManagerControls && (
-                  <div className="mt-2 grid grid-cols-4 gap-1.5">
+                  <div className="mt-2 grid grid-cols-5 gap-1.5">
                     <button type="button" className="rounded-lg bg-violet-100 px-2 py-1 font-semibold text-violet-700" onClick={() => runTableOverride('deliver')}>Delivered</button>
                     <button type="button" className="rounded-lg bg-slate-100 px-2 py-1 font-semibold text-slate-700" onClick={() => runTableOverride('transfer')}>Transfer</button>
                     <button type="button" className="rounded-lg bg-slate-100 px-2 py-1 font-semibold text-slate-700" onClick={() => runTableOverride('merge')}>Merge</button>
+                    <button type="button" className="rounded-lg bg-amber-50 px-2 py-1 font-semibold text-amber-700" onClick={openSplitModal}>Split</button>
                     <button type="button" className="rounded-lg bg-red-50 px-2 py-1 font-semibold text-red-700" onClick={() => runTableOverride('close')}>Close</button>
                   </div>
                 )}
@@ -2553,51 +3093,23 @@ export default function POS() {
               ) : (
                 <div className="space-y-2">
                 {orderItems.map((item, idx) => (
-                  <div key={item.order_key} className={`rounded-xl border border-slate-100 bg-white ${touchMode ? 'p-2.5' : 'p-1.5'}`}>
-                  <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
-                    <div className="flex-1 min-w-0">
-                      <p className={`truncate text-slate-800 ${touchMode ? 'text-[15px] font-medium' : 'text-sm'}`}>{item.item_name}</p>
-                      <p className={`${touchMode ? 'text-xs' : 'text-xs'} text-slate-400`}>{currency} {fmt(item.unit_price)} ea</p>
-                      {(item.modifiers?.length > 0 || item.item_notes) && (
-                        <p className="mt-0.5 text-[11px] text-slate-500">
-                          {[...(item.modifiers || []).map((mod) => mod.name), item.item_notes].filter(Boolean).join(' · ')}
-                        </p>
-                      )}
-                    </div>
-                    <span className={`${touchMode ? 'text-sm' : 'text-xs'} shrink-0 text-right font-semibold text-slate-800`}>
-                      {currency} {fmt(item.quantity * item.unit_price)}
-                    </span>
-                  </div>
-                  <div className={`mt-1.5 flex items-center justify-between ${touchMode ? 'gap-1.5' : 'gap-1'}`}>
-                    <button
-                      type="button"
-                      onClick={() => openModifierEditor(idx)}
-                      className="rounded bg-slate-100 px-2 py-1 text-[11px] font-semibold text-slate-600 hover:bg-slate-200"
-                    >
-                      Modifiers
-                    </button>
-                    <div className={`flex items-center ${touchMode ? 'gap-1.5' : 'gap-1'}`}>
-                    <button
-                      onClick={() => updateQty(idx, -1)}
-                      className={touchMode ? qtyButtonClass : 'flex h-6 w-6 items-center justify-center rounded bg-slate-100 text-sm font-bold text-slate-600 hover:bg-red-50 hover:text-red-600'}
-                    >−</button>
-                    <input
-                      type="number"
-                      min="1"
-                      step="1"
-                      inputMode="numeric"
-                      value={item.quantity}
-                      onChange={(e) => setQty(idx, e.target.value)}
-                      className={`input px-2 text-center font-medium ${touchMode ? 'w-14 py-1.5 text-sm' : 'w-12 py-1 text-xs'}`}
-                      aria-label={`Quantity for ${item.item_name}`}
-                    />
-                    <button
-                      onClick={() => updateQty(idx, 1)}
-                      className={touchMode ? qtyButtonPlusClass : 'flex h-6 w-6 items-center justify-center rounded bg-slate-100 text-sm font-bold text-slate-600 hover:bg-green-50 hover:text-green-600'}
-                    >+</button>
-                    </div>
-                  </div>
-                  </div>
+                  <POSTerminalCartLine
+                    key={item.order_key}
+                    item={item}
+                    idx={idx}
+                    currency={currency}
+                    fmt={fmt}
+                    touchMode={touchMode}
+                    qtyButtonClass={qtyButtonClass}
+                    qtyButtonPlusClass={qtyButtonPlusClass}
+                    isSelected={idx === selectedLineIdx}
+                    totalLines={orderItems.length}
+                    onIncrement={incrementQty}
+                    onDecrement={decrementQty}
+                    onSetQty={setQty}
+                    onOpenModifiers={openModifierEditor}
+                    onSelect={setSelectedLineIdx}
+                  />
                 ))}
                 </div>
               )}
@@ -2614,7 +3126,7 @@ export default function POS() {
             )}
 
             {orderItems.length > 0 && (
-              <div className="shrink-0">
+              <div className="shrink-0 sticky bottom-0 bg-white/95 backdrop-blur-sm border-t border-slate-100 pt-1.5 -mx-2 px-2 pb-1">
                 <textarea
                   className={`input mb-1.5 shrink-0 resize-none ${touchMode ? 'text-sm' : 'text-xs'}`}
                   rows={touchMode ? 2 : 1}
@@ -2846,7 +3358,7 @@ export default function POS() {
                     disabled={submitting || orderStockIssues.length > 0}
                     className={`btn-primary ${touchMode ? 'min-h-[2.5rem] text-sm' : ''}`}
                   >
-                    {submitting ? 'Processing...' : 'Complete Order'}
+                    {submitting ? 'Processing...' : 'Complete & New Order'}
                   </button>
                 </div>
               </div>
@@ -3178,7 +3690,7 @@ export default function POS() {
                           {o.walk_in_name
                             ? o.walk_in_name
                             : o.room_id
-                            ? 'Room Guest'
+                            ? (restaurantMode ? 'Customer' : 'Room Guest')
                             : '—'}
                         </td>
                         <td className="px-5 py-3">
@@ -3545,7 +4057,7 @@ export default function POS() {
 
       {tab === 'tickets' && (
         <div className="grid gap-4 lg:grid-cols-2">
-          {['kitchen', 'bar'].map((station) => (
+          {(kitchenStations.length > 0 ? kitchenStations.filter((s) => s.enabled !== false).map((s) => s.station_key || s.id) : ['kitchen', 'bar']).map((station) => (
             <div key={station} className="bb-card p-5">
               <div className="mb-4 flex items-center justify-between">
                 <div>
@@ -3559,7 +4071,7 @@ export default function POS() {
                   <div key={ticket.id} className="rounded-xl border border-slate-200 bg-white p-4">
                     <div className="flex items-start justify-between gap-3">
                       <div>
-                        <p className="font-semibold text-slate-900">{ticket.table_name || ticket.tab_name || (ticket.room_id ? 'Room order' : 'POS order')}</p>
+                        <p className="font-semibold text-slate-900">{ticket.table_name || ticket.tab_name || (ticket.room_id ? (restaurantMode ? 'POS order' : 'Room order') : 'POS order')}</p>
                         <p className="mt-1 text-xs text-slate-500">
                           {new Date(ticket.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · Running {formatElapsed(ticket.created_at, ticketClock)}
                         </p>
@@ -3603,17 +4115,27 @@ export default function POS() {
 
       {tab === 'setup' && (
         <>
+        {restaurantMode && (
+          <div className="mb-4 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+            <p className="font-semibold">POS setup is for device configuration.</p>
+            <p className="mt-1">Use the restaurant workspaces in the sidebar for menu, stock, team, cash, control, and service operations.</p>
+          </div>
+        )}
         <div className="mb-4 flex flex-wrap gap-2">
-          {[
+          {(restaurantMode ? [
+            ['displays', 'Displays'],
+            ['hardware', 'Hardware']
+          ] : [
             ['shift', 'Shift'],
             ['tables', 'Tables'],
             ['displays', 'Displays'],
             ['hardware', 'Hardware'],
             ['modifiers', 'Modifiers'],
+            ['recipes', 'Recipes'],
             ['promos', 'Promos'],
             ['floor', 'Floor'],
             ['audit', 'Audit']
-          ].map(([key, label]) => (
+          ]).map(([key, label]) => (
             <button
               key={key}
               type="button"
@@ -4010,6 +4532,20 @@ export default function POS() {
             <div className="mt-4 grid gap-2">
               <input className="input" value={modifierForm.name} onChange={(e) => setModifierForm((prev) => ({ ...prev, name: e.target.value }))} placeholder="Group name, e.g. Burger options" />
               <textarea className="input h-24 resize-none" value={modifierForm.options} onChange={(e) => setModifierForm((prev) => ({ ...prev, options: e.target.value }))} placeholder={'One per line: No onion|0\nExtra cheese|5'} />
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-600">Min selections (0 = optional)</label>
+                  <input type="number" min="0" className="input" value={modifierForm.min_selections} onChange={(e) => setModifierForm((prev) => ({ ...prev, min_selections: e.target.value }))} placeholder="0" />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-600">Max selections (0 = unlimited)</label>
+                  <input type="number" min="0" className="input" value={modifierForm.max_selections} onChange={(e) => setModifierForm((prev) => ({ ...prev, max_selections: e.target.value }))} placeholder="0" />
+                </div>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-slate-600">Applies to categories (comma-separated, or All)</label>
+                <input className="input" value={modifierForm.applies_to_categories} onChange={(e) => setModifierForm((prev) => ({ ...prev, applies_to_categories: e.target.value }))} placeholder="All" />
+              </div>
               <button className="btn-primary" onClick={saveModifierGroup}>Save Modifier Group</button>
               <div className="space-y-2">
                 {modifierGroups.map((group) => (
@@ -4018,6 +4554,156 @@ export default function POS() {
                     <p className="text-xs text-slate-500">{(group.options || []).map((option) => `${option.name}${Number(option.price_delta || 0) ? ` +${currency}${fmt(option.price_delta)}` : ''}`).join(' · ')}</p>
                   </div>
                 ))}
+              </div>
+            </div>
+          </div>
+
+          <div className={`${setupSection === 'recipes' ? '' : 'hidden'} bb-card p-5`}>
+            <h2 className="text-base font-semibold text-slate-900">Recipes & Ingredients</h2>
+            <p className="mt-1 text-xs text-slate-500">Link menu items to multi-ingredient recipes. When a recipe-linked menu item is sold, stock is depleted for all ingredients.</p>
+            {restaurantMode && <p className="mt-1 text-xs text-blue-600">Also available at <strong>Recipes & Costing</strong> in the sidebar.</p>}
+            <div className="mt-4 grid gap-2">
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-600">Recipe Name *</label>
+                  <input className="input" value={recipeForm.name} onChange={(e) => setRecipeForm((prev) => ({ ...prev, name: e.target.value }))} placeholder="e.g. Classic Burger" />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-600">Menu Item</label>
+                  <select className="input" value={recipeForm.menu_item_id} onChange={(e) => setRecipeForm((prev) => ({ ...prev, menu_item_id: e.target.value }))}>
+                    <option value="">None (standalone recipe)</option>
+                    {menuItems.filter((item) => item.template_kind !== 'bar_single').map((item) => (
+                      <option key={item.id} value={item.id}>{item.name}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-600">Serving Size</label>
+                  <input type="number" min="1" step="1" className="input" value={recipeForm.serving_size} onChange={(e) => setRecipeForm((prev) => ({ ...prev, serving_size: e.target.value }))} placeholder="1" />
+                </div>
+                <div></div>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-slate-600">Ingredients</label>
+                {recipeForm.ingredients.length > 0 && (
+                  <div className="mb-2 space-y-1">
+                    {recipeForm.ingredients.map((ing, idx) => {
+                      const item = inventoryItems.find((i) => i.id === ing.inventory_item_id)
+                      return (
+                        <div key={idx} className="flex items-center gap-2 rounded-lg bg-slate-50 px-2 py-1 text-xs">
+                          <span className="flex-1 font-medium text-slate-800">{item?.name || 'Unknown'}</span>
+                          <input type="number" min="0.01" step="0.01" className="w-20 rounded border border-slate-200 px-1 py-0.5 text-xs" value={ing.quantity} onChange={(e) => {
+                            const newIngs = [...recipeForm.ingredients]
+                            newIngs[idx] = { ...newIngs[idx], quantity: e.target.value }
+                            setRecipeForm((prev) => ({ ...prev, ingredients: newIngs }))
+                          }} />
+                          <select className="rounded border border-slate-200 px-1 py-0.5 text-xs" value={ing.unit} onChange={(e) => {
+                            const newIngs = [...recipeForm.ingredients]
+                            newIngs[idx] = { ...newIngs[idx], unit: e.target.value }
+                            setRecipeForm((prev) => ({ ...prev, ingredients: newIngs }))
+                          }}>
+                            <option value="each">each</option>
+                            <option value="g">g</option>
+                            <option value="kg">kg</option>
+                            <option value="ml">ml</option>
+                            <option value="l">L</option>
+                          </select>
+                          <input type="number" min="0" max="100" className="w-14 rounded border border-slate-200 px-1 py-0.5 text-xs" value={ing.waste_percent} onChange={(e) => {
+                            const newIngs = [...recipeForm.ingredients]
+                            newIngs[idx] = { ...newIngs[idx], waste_percent: e.target.value }
+                            setRecipeForm((prev) => ({ ...prev, ingredients: newIngs }))
+                          }} title="Waste %" />
+                          <span className="text-slate-400">%</span>
+                          <button type="button" className="text-red-500 hover:text-red-700" onClick={() => {
+                            setRecipeForm((prev) => ({ ...prev, ingredients: prev.ingredients.filter((_, i) => i !== idx) }))
+                          }}>×</button>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+                <div className="flex gap-2">
+                  <select id="add-recipe-ingredient-select" className="input flex-1">
+                    {inventoryItems.filter((item) => !recipeForm.ingredients.some((ing) => ing.inventory_item_id === item.id)).map((item) => (
+                      <option key={item.id} value={item.id}>{item.name} ({item.unit || 'each'})</option>
+                    ))}
+                  </select>
+                  <button type="button" className="btn-secondary text-sm" onClick={() => {
+                    const sel = document.getElementById('add-recipe-ingredient-select')
+                    const itemId = sel?.value
+                    if (!itemId) return
+                    setRecipeForm((prev) => ({ ...prev, ingredients: [...prev.ingredients, { inventory_item_id: itemId, quantity: '1', unit: 'each', waste_percent: '0' }] }))
+                  }}>+ Add</button>
+                </div>
+              </div>
+              <div className="flex gap-2">
+                <button className="btn-primary text-sm" onClick={async () => {
+                  if (!recipeForm.name.trim()) { alert('Recipe name is required.'); return }
+                  setRecipeSaving(true)
+                  try {
+                    const res = await window.api.pos.saveRecipe?.({
+                      id: editingRecipe?.id || undefined,
+                      name: recipeForm.name.trim(),
+                      menu_item_id: recipeForm.menu_item_id || null,
+                      serving_size: Number(recipeForm.serving_size || 1),
+                      ingredients: recipeForm.ingredients.map((ing, idx) => ({
+                        inventory_item_id: ing.inventory_item_id,
+                        quantity: Number(ing.quantity || 0),
+                        unit: ing.unit || 'each',
+                        waste_percent: Number(ing.waste_percent || 0),
+                        sort_order: idx
+                      }))
+                    })
+                    if (!res?.success) { alert(res?.error || 'Could not save recipe.'); return }
+                    setRecipeForm({ name: '', menu_item_id: '', serving_size: '1', ingredients: [] })
+                    setEditingRecipe(null)
+                    await loadPosOperations()
+                  } finally {
+                    setRecipeSaving(false)
+                  }
+                }} disabled={recipeSaving}>{recipeSaving ? 'Saving...' : editingRecipe ? 'Update Recipe' : 'Save Recipe'}</button>
+                {editingRecipe && (
+                  <button className="btn-secondary text-sm" onClick={() => { setEditingRecipe(null); setRecipeForm({ name: '', menu_item_id: '', serving_size: '1', ingredients: [] }) }}>Cancel</button>
+                )}
+              </div>
+              <div className="space-y-2">
+                {recipes.map((recipe) => {
+                  const totalCost = (recipe.ingredients || []).reduce((sum, ing) => sum + (Number(ing.quantity || 0) * Number(ing.latest_unit_cost || 0) * (1 + Number(ing.waste_percent || 0) / 100)), 0)
+                  return (
+                    <div key={recipe.id} className="rounded-lg bg-slate-50 px-3 py-2 text-sm">
+                      <div className="flex items-center justify-between">
+                        <p className="font-semibold text-slate-800">{recipe.name}</p>
+                        <div className="flex gap-1">
+                          <button type="button" className="text-xs text-blue-600 hover:text-blue-800" onClick={() => {
+                            setEditingRecipe(recipe)
+                            setRecipeForm({
+                              name: recipe.name || '',
+                              menu_item_id: recipe.menu_item_id || '',
+                              serving_size: String(recipe.serving_size || 1),
+                              ingredients: (recipe.ingredients || []).map((ing) => ({
+                                inventory_item_id: ing.inventory_item_id,
+                                quantity: String(ing.quantity || 0),
+                                unit: ing.unit || 'each',
+                                waste_percent: String(ing.waste_percent || 0)
+                              }))
+                            })
+                          }}>Edit</button>
+                          <button type="button" className="text-xs text-red-600 hover:text-red-800" onClick={async () => {
+                            if (!window.confirm(`Delete recipe "${recipe.name}"?`)) return
+                            await window.api.pos.deleteRecipe?.(recipe.id)
+                            await loadPosOperations()
+                          }}>Delete</button>
+                        </div>
+                      </div>
+                      <p className="text-xs text-slate-500">
+                        {(recipe.ingredients || []).length} ingredient(s) · Est. cost: {currency} {fmt(totalCost)}
+                        {recipe.menu_item_id && ' · Linked to menu item'}
+                      </p>
+                    </div>
+                  )
+                })}
               </div>
             </div>
           </div>
@@ -4070,6 +4756,235 @@ export default function POS() {
               {auditLog.length === 0 && <p className="rounded-lg bg-slate-50 px-3 py-6 text-center text-sm text-slate-500">No POS audit events yet.</p>}
             </div>
           </div>
+
+          {restaurantMode && (
+            <>
+              <div className={`${setupSection === 'staff' ? '' : 'hidden'} bb-card p-5`}>
+                <h2 className="text-base font-semibold text-slate-900">Staff Shifts</h2>
+                <p className="mt-1 text-sm text-slate-500">Clock in and out staff members for each shift.</p>
+                {restaurantMode && <p className="mt-1 text-xs text-blue-600">Also available at <strong>Staff</strong> and <strong>Shifts</strong> in the sidebar.</p>}
+                <div className="mt-4 space-y-3">
+                  {activeShifts.map((s) => (
+                    <div key={s.id} className="flex items-center justify-between rounded-lg bg-emerald-50 px-3 py-2">
+                      <div>
+                        <p className="text-sm font-semibold text-emerald-900">{s.staff_name} ({s.role})</p>
+                        <p className="text-xs text-emerald-700">Clocked in {new Date(s.clock_in).toLocaleTimeString()}</p>
+                      </div>
+                      <button className="btn-secondary text-xs" onClick={async () => {
+                        if (!confirm(`Clock out ${s.staff_name}?`)) return
+                        await window.api.pos.clockOutStaff({ shiftId: s.id })
+                        const shifts = await window.api.pos.getActiveShifts().catch(() => [])
+                        setActiveShifts(shifts)
+                      }}>Clock Out</button>
+                    </div>
+                  ))}
+                  {activeShifts.length === 0 && <p className="text-sm text-slate-500">No active shifts.</p>}
+                  <div className="flex gap-2">
+                    <input className="input flex-1" placeholder="Staff name" id="staffNameInput" />
+                    <button className="btn-primary" onClick={async () => {
+                      const name = document.getElementById('staffNameInput')?.value?.trim()
+                      if (!name) return alert('Enter a staff name')
+                      await window.api.pos.clockInStaff({ staffName: name, role: 'cashier' })
+                      document.getElementById('staffNameInput').value = ''
+                      const shifts = await window.api.pos.getActiveShifts().catch(() => [])
+                      setActiveShifts(shifts)
+                    }}>Clock In</button>
+                  </div>
+                </div>
+              </div>
+
+              <div className={`${setupSection === 'cashdrawer' ? '' : 'hidden'} bb-card p-5`}>
+                <h2 className="text-base font-semibold text-slate-900">Cash Drawer</h2>
+                <p className="mt-1 text-sm text-slate-500">Open and close cash drawer sessions with variance tracking.</p>
+                {restaurantMode && <p className="mt-1 text-xs text-blue-600">Also available at <strong>Cash Drawer</strong> in the sidebar.</p>}
+                <div className="mt-4">
+                  {openDrawerSession ? (
+                    <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+                      <p className="font-semibold text-emerald-900">Open Drawer Session</p>
+                      <p className="mt-1 text-sm text-emerald-800">Opened {new Date(openDrawerSession.opened_at).toLocaleString()}</p>
+                      <p className="text-sm text-emerald-800">Opening float: {currency} {fmt(openDrawerSession.opening_float)}</p>
+                      <div className="mt-3 grid grid-cols-2 gap-2">
+                        <input className="input text-sm" type="number" step="0.01" placeholder="Closing total" value={drawerClosingTotal} onChange={(e) => setDrawerClosingTotal(e.target.value)} />
+                        <input className="input text-sm" type="number" step="0.01" placeholder="Declared total" value={drawerDeclaredTotal} onChange={(e) => setDrawerDeclaredTotal(e.target.value)} />
+                      </div>
+                      <button className="btn-primary mt-3 w-full" onClick={async () => {
+                        const r = await window.api.pos.closeCashDrawerSession({
+                          sessionId: openDrawerSession.id,
+                          closingTotal: Number(drawerClosingTotal || 0),
+                          declaredTotal: drawerDeclaredTotal ? Number(drawerDeclaredTotal) : null
+                        }).catch((e) => ({ success: false, error: e.message }))
+                        if (r?.success) {
+                          alert(`Drawer closed. Variance: ${r.variance != null ? `${currency} ${fmt(r.variance)}` : 'N/A'}`)
+                          setOpenDrawerSession(null)
+                          setDrawerClosingTotal('')
+                          setDrawerDeclaredTotal('')
+                        } else alert(r?.error || 'Failed to close drawer')
+                      }}>Close Drawer</button>
+                    </div>
+                  ) : (
+                    <div className="flex gap-2">
+                      <input className="input flex-1" type="number" step="0.01" placeholder="Opening float" value={drawerFloat} onChange={(e) => setDrawerFloat(e.target.value)} />
+                      <button className="btn-primary" onClick={async () => {
+                        const r = await window.api.pos.openCashDrawerSession({ openingFloat: Number(drawerFloat || 0) }).catch((e) => ({ success: false, error: e.message }))
+                        if (r?.success) {
+                          setOpenDrawerSession({ id: r.session_id, opening_float: Number(drawerFloat || 0), opened_at: new Date().toISOString() })
+                          setDrawerFloat('')
+                        } else alert(r?.error || 'Failed to open drawer')
+                      }}>Open Drawer</button>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className={`${setupSection === 'suppliers' ? '' : 'hidden'} bb-card p-5`}>
+                <h2 className="text-base font-semibold text-slate-900">Suppliers</h2>
+                <p className="mt-1 text-sm text-slate-500">Manage supplier directory and create purchase orders.</p>
+                {restaurantMode && <p className="mt-1 text-xs text-blue-600">Also available at <strong>Purchasing</strong> in the sidebar.</p>}
+                <div className="mt-4 space-y-3">
+                  {suppliers.map((s) => (
+                    <div key={s.id} className="rounded-lg bg-slate-50 px-3 py-2">
+                      <p className="text-sm font-semibold text-slate-800">{s.name}</p>
+                      <p className="text-xs text-slate-500">{s.contact_person || ''} {s.phone || ''}</p>
+                    </div>
+                  ))}
+                  {suppliers.length === 0 && <p className="text-sm text-slate-500">No suppliers added yet.</p>}
+                  <div className="grid grid-cols-2 gap-2">
+                    <input className="input text-sm" placeholder="Name" value={supplierForm.name} onChange={(e) => setSupplierForm({ ...supplierForm, name: e.target.value })} />
+                    <input className="input text-sm" placeholder="Contact person" value={supplierForm.contact_person} onChange={(e) => setSupplierForm({ ...supplierForm, contact_person: e.target.value })} />
+                    <input className="input text-sm" placeholder="Phone" value={supplierForm.phone} onChange={(e) => setSupplierForm({ ...supplierForm, phone: e.target.value })} />
+                    <input className="input text-sm" placeholder="Email" value={supplierForm.email} onChange={(e) => setSupplierForm({ ...supplierForm, email: e.target.value })} />
+                  </div>
+                  <button className="btn-primary w-full" onClick={async () => {
+                    if (!supplierForm.name.trim()) return alert('Enter supplier name')
+                    const r = await window.api.pos.createSupplier(supplierForm).catch((e) => ({ success: false, error: e.message }))
+                    if (r?.success) {
+                      setSupplierForm({ name: '', contact_person: '', phone: '', email: '', address: '', payment_terms: '' })
+                      const list = await window.api.pos.getSuppliers().catch(() => [])
+                      setSuppliers(list)
+                    } else alert(r?.error || 'Failed to add supplier')
+                  }}>Add Supplier</button>
+                </div>
+              </div>
+
+              <div className={`${setupSection === 'checklist' ? '' : 'hidden'} bb-card p-5`}>
+                <h2 className="text-base font-semibold text-slate-900">Daily Checklists</h2>
+                <p className="mt-1 text-sm text-slate-500">Opening, closing, and cleaning checklists.</p>
+                {restaurantMode && <p className="mt-1 text-xs text-blue-600">Also available at <strong>Checklists</strong> in the sidebar.</p>}
+                <div className="mt-4">
+                  <div className="flex gap-2">
+                    <select className="input flex-1" value={checklistType} onChange={(e) => setChecklistType(e.target.value)}>
+                      <option value="daily_opening">Daily Opening</option>
+                      <option value="daily_closing">Daily Closing</option>
+                      <option value="cleaning">Cleaning</option>
+                      <option value="equipment_check">Equipment Check</option>
+                    </select>
+                    <button className="btn-primary" onClick={async () => {
+                      const items = checklistType === 'daily_opening'
+                        ? [{ label: 'Check fridges/freezers temperature' }, { label: 'Verify stock levels' }, { label: 'Clean surfaces' }, { label: 'Test POS printer' }]
+                        : checklistType === 'daily_closing'
+                        ? [{ label: 'Run cash-up' }, { label: 'Clean all surfaces' }, { label: 'Turn off equipment' }, { label: 'Lock doors' }]
+                        : checklistType === 'cleaning'
+                        ? [{ label: 'Mop floors' }, { label: 'Clean bathroom' }, { label: 'Empty bins' }]
+                        : [{ label: 'Check fire extinguishers' }, { label: 'Test first aid kit' }, { label: 'Check equipment condition' }]
+                      const r = await window.api.pos.createChecklist({ checklistType, items }).catch((e) => ({ success: false, error: e.message }))
+                      if (r?.success) {
+                        const cl = { id: r.checklist_id, checklist_type: checklistType, status: 'pending', items: items.map((it, i) => ({ id: `${r.checklist_id}-${i}`, ...it, is_completed: false })) }
+                        setChecklists([cl, ...checklists])
+                      } else alert(r?.error || 'Failed to create checklist')
+                    }}>Create Checklist</button>
+                  </div>
+                  <div className="mt-4 space-y-3">
+                    {checklists.slice(0, 5).map((cl) => (
+                      <div key={cl.id} className={`rounded-lg border px-3 py-2 ${cl.status === 'completed' ? 'border-emerald-200 bg-emerald-50' : 'border-slate-200 bg-white'}`}>
+                        <p className="text-sm font-semibold text-slate-800">{cl.checklist_type?.replace(/_/g, ' ')}</p>
+                        {(cl.items || []).map((item) => (
+                          <label key={item.id} className="flex items-center gap-2 py-1 text-xs text-slate-600">
+                            <input type="checkbox" checked={item.is_completed} onChange={async () => {
+                              await window.api.pos.completeChecklistItem({ itemId: item.id })
+                              item.is_completed = !item.is_completed
+                              setChecklists([...checklists])
+                            }} />
+                            {item.label}
+                          </label>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div className={`${setupSection === 'alerts' ? '' : 'hidden'} bb-card p-5`}>
+                <h2 className="text-base font-semibold text-slate-900">Exception Alerts</h2>
+                <p className="mt-1 text-sm text-slate-500">Active alerts for cash variance, stock low, and operational issues.</p>
+                {restaurantMode && <p className="mt-1 text-xs text-blue-600">Also available at <strong>Alerts</strong> in the sidebar.</p>}
+                <div className="mt-4 space-y-2">
+                  {activeAlerts.map((a) => (
+                    <div key={a.id} className={`rounded-lg px-3 py-2 ${a.severity === 'critical' ? 'bg-red-50 border border-red-200' : 'bg-amber-50 border border-amber-200'}`}>
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="text-sm font-semibold text-slate-800">{a.alert_type?.replace(/_/g, ' ')}</p>
+                          <p className="text-xs text-slate-600">{a.message}</p>
+                        </div>
+                        <button className="text-xs text-emerald-700 underline" onClick={async () => {
+                          await window.api.pos.resolveAlert(a.id)
+                          setActiveAlerts(activeAlerts.filter((x) => x.id !== a.id))
+                        }}>Resolve</button>
+                      </div>
+                    </div>
+                  ))}
+                  {activeAlerts.length === 0 && <p className="text-sm text-slate-500">No active alerts.</p>}
+                  <div className="grid grid-cols-3 gap-2">
+                    <select className="input text-sm" value={alertForm.alert_type} onChange={(e) => setAlertForm({ ...alertForm, alert_type: e.target.value })}>
+                      <option value="stock_low">Stock Low</option>
+                      <option value="cash_variance">Cash Variance</option>
+                      <option value="void_spike">Void Spike</option>
+                      <option value="discount_abuse">Discount Abuse</option>
+                      <option value="refund_spike">Refund Spike</option>
+                    </select>
+                    <select className="input text-sm" value={alertForm.severity} onChange={(e) => setAlertForm({ ...alertForm, severity: e.target.value })}>
+                      <option value="info">Info</option>
+                      <option value="warning">Warning</option>
+                      <option value="critical">Critical</option>
+                    </select>
+                    <button className="btn-primary text-sm" onClick={async () => {
+                      if (!alertForm.message.trim()) return alert('Enter alert message')
+                      const r = await window.api.pos.recordAlert(alertForm).catch((e) => ({ success: false, error: e.message }))
+                      if (r?.success) {
+                        setAlertForm({ alert_type: 'stock_low', severity: 'warning', message: '' })
+                        const alerts = await window.api.pos.getActiveAlerts().catch(() => [])
+                        setActiveAlerts(alerts)
+                      }
+                    }}>Add Alert</button>
+                  </div>
+                  <input className="input text-sm" placeholder="Alert message" value={alertForm.message} onChange={(e) => setAlertForm({ ...alertForm, message: e.target.value })} />
+                </div>
+              </div>
+
+              <div className={`${setupSection === 'digest' ? '' : 'hidden'} bb-card p-5`}>
+                <h2 className="text-base font-semibold text-slate-900">Owner Digest</h2>
+                <p className="mt-1 text-sm text-slate-500">Daily summary of revenue, orders, stock, and alerts.</p>
+                {restaurantMode && <p className="mt-1 text-xs text-blue-600">Also available at <strong>Owner Digest</strong> in the sidebar.</p>}
+                <div className="mt-4">
+                  <button className="btn-primary" onClick={async () => {
+                    const r = await window.api.pos.generateOwnerDigest().catch((e) => ({ success: false, error: e.message }))
+                    if (r?.success) setOwnerDigest(r.digest)
+                    else alert(r?.error || 'Failed to generate digest')
+                  }}>Generate Digest</button>
+                  {ownerDigest && (
+                    <div className="mt-4 rounded-xl border border-blue-200 bg-blue-50 p-4">
+                      <p className="text-xs text-blue-600">{ownerDigest.date}</p>
+                      <div className="mt-2 grid grid-cols-2 gap-3">
+                        <div><p className="text-lg font-bold text-blue-900">{currency} {fmt(ownerDigest.total_revenue)}</p><p className="text-xs text-blue-700">Revenue</p></div>
+                        <div><p className="text-lg font-bold text-blue-900">{ownerDigest.total_orders || 0}</p><p className="text-xs text-blue-700">Orders</p></div>
+                        <div><p className="text-lg font-bold text-blue-900">{ownerDigest.active_alerts || 0}</p><p className="text-xs text-blue-700">Active Alerts</p></div>
+                        <div><p className="text-lg font-bold text-blue-900">{ownerDigest.low_stock_items || 0}</p><p className="text-xs text-blue-700">Low Stock Items</p></div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </>
+          )}
         </div>
         </>
       )}
@@ -4077,17 +4992,42 @@ export default function POS() {
       {modifierTargetIdx != null && orderItems[modifierTargetIdx] && (
         <Modal title={`Modifiers: ${orderItems[modifierTargetIdx].item_name}`} onClose={() => setModifierTargetIdx(null)} size="sm">
           <div className="space-y-4">
-            {modifierGroups.filter((group) => group.active !== false).map((group) => (
+            {modifierGroups.filter((group) => {
+              if (group.active === false) return false
+              const appliesTo = Array.isArray(group.applies_to_categories) ? group.applies_to_categories : []
+              if (appliesTo.length === 0 || appliesTo.some((c) => String(c).toLowerCase() === 'all')) return true
+              const itemCategory = String(orderItems[modifierTargetIdx].category || '').toLowerCase()
+              return appliesTo.some((c) => String(c).toLowerCase() === itemCategory)
+            }).map((group) => {
+              const currentMods = orderItems[modifierTargetIdx].modifiers || []
+              const groupSelections = currentMods.filter((mod) =>
+                (group.options || []).some((opt) => opt.name === mod.name)
+              ).length
+              const minRequired = Number(group.min_selections || 0)
+              const maxAllowed = Number(group.max_selections || 0)
+              const showMinWarning = minRequired > 0 && groupSelections < minRequired
+              const showMaxWarning = maxAllowed > 0 && groupSelections >= maxAllowed
+              return (
               <div key={group.id}>
-                <p className="mb-2 text-sm font-semibold text-slate-800">{group.name}</p>
+                <div className="mb-2 flex items-center gap-2">
+                  <p className="text-sm font-semibold text-slate-800">{group.name}</p>
+                  {minRequired > 0 && <span className="text-xs text-slate-500">(min {minRequired})</span>}
+                  {maxAllowed > 0 && <span className="text-xs text-slate-500">(max {maxAllowed})</span>}
+                </div>
+                {showMinWarning && (
+                  <p className="mb-1 text-xs text-amber-600">Select at least {minRequired} option(s)</p>
+                )}
+                {showMaxWarning && (
+                  <p className="mb-1 text-xs text-amber-600">Maximum {maxAllowed} option(s) reached</p>
+                )}
                 <div className="flex flex-wrap gap-2">
                   {(group.options || []).map((option) => {
-                    const selected = (orderItems[modifierTargetIdx].modifiers || []).some((mod) => mod.name === option.name)
+                    const selected = currentMods.some((mod) => mod.name === option.name)
                     return (
                       <button
                         key={option.id || option.name}
                         type="button"
-                        onClick={() => toggleLineModifier(option)}
+                        onClick={() => toggleLineModifier(option, group)}
                         className={`rounded-lg border px-3 py-1.5 text-sm font-semibold ${selected ? 'border-emerald-300 bg-emerald-50 text-emerald-800' : 'border-slate-200 bg-white text-slate-700'}`}
                       >
                         {option.name}{Number(option.price_delta || 0) ? ` +${currency} ${fmt(option.price_delta)}` : ''}
@@ -4096,7 +5036,8 @@ export default function POS() {
                   })}
                 </div>
               </div>
-            ))}
+              )
+            })}
             {modifierGroups.length === 0 && (
               <p className="rounded-lg bg-slate-50 px-3 py-6 text-center text-sm text-slate-500">No modifier groups set up yet.</p>
             )}
@@ -4208,6 +5149,24 @@ export default function POS() {
                 </div>
                 <div>
                   <label className="mb-1 block text-sm font-medium text-slate-700">
+                    Kitchen Station <span className="font-normal text-slate-400">(optional — routes tickets to correct display)</span>
+                  </label>
+                  <select
+                    className="input"
+                    value={menuForm.kitchen_station_id}
+                    onChange={(e) => setMenuForm({ ...menuForm, kitchen_station_id: e.target.value })}
+                  >
+                    <option value="">— Auto (by category/outlet) —</option>
+                    {kitchenStations.filter((s) => s.enabled !== false).map((s) => (
+                      <option key={s.id} value={s.id}>{s.name}</option>
+                    ))}
+                  </select>
+                  <p className="mt-1 text-xs text-slate-500">
+                    When set, orders of this item will be routed to this station's kitchen display.
+                  </p>
+                </div>
+                <div>
+                  <label className="mb-1 block text-sm font-medium text-slate-700">
                     Barcode <span className="font-normal text-slate-400">(optional — scan or type)</span>
                   </label>
                   <div className="relative">
@@ -4223,6 +5182,54 @@ export default function POS() {
                   <p className="mt-1 text-xs text-slate-500">
                     Click this field and scan with your barcode scanner to auto-fill.
                   </p>
+                </div>
+
+                <div className="border-t border-slate-100 pt-4">
+                  <label className="mb-1 block text-sm font-medium text-slate-700">
+                    Visual Cues <span className="font-normal text-slate-400">(optional — for kitchen display)</span>
+                  </label>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <label className="flex items-center gap-1.5 text-sm text-slate-600">
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4 rounded border-slate-300 text-orange-500 focus:ring-orange-400"
+                        checked={menuForm.is_popular}
+                        onChange={(e) => setMenuForm({ ...menuForm, is_popular: e.target.checked })}
+                      />
+                      Popular
+                    </label>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xs text-slate-500">Prep:</span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="1"
+                        className="input w-20 py-1 text-xs"
+                        value={menuForm.prep_time_minutes}
+                        onChange={(e) => setMenuForm({ ...menuForm, prep_time_minutes: parseInt(e.target.value) || 0 })}
+                        placeholder="min"
+                      />
+                      <span className="text-xs text-slate-400">min</span>
+                    </div>
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {['vegetarian', 'vegan', 'gluten-free'].map((flag) => (
+                      <label key={flag} className="flex items-center gap-1.5 text-xs text-slate-600">
+                        <input
+                          type="checkbox"
+                          className="h-3.5 w-3.5 rounded border-slate-300 text-green-500 focus:ring-green-400"
+                          checked={menuForm.dietary_flags.includes(flag)}
+                          onChange={(e) => {
+                            const flags = e.target.checked
+                              ? [...menuForm.dietary_flags, flag]
+                              : menuForm.dietary_flags.filter((f) => f !== flag)
+                            setMenuForm({ ...menuForm, dietary_flags: flags })
+                          }}
+                        />
+                        {flag === 'gluten-free' ? 'GF' : flag === 'vegan' ? 'VG' : 'V'}
+                      </label>
+                    ))}
+                  </div>
                 </div>
 
                 <div className="border-t border-slate-100 pt-4">
@@ -4479,12 +5486,189 @@ export default function POS() {
         </Modal>
       )}
 
+      {splitModal && currentOpenTab && (
+        <Modal title="Split Bill" onClose={() => { setSplitModal(false); setSplitError('') }} size="md">
+          <div className="space-y-4">
+            <div className="flex gap-2 rounded-xl bg-slate-100 p-1">
+              <button type="button" onClick={() => setSplitMode('items')} className={`flex-1 rounded-lg py-2 text-sm font-medium transition ${splitMode === 'items' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Split by Items</button>
+              <button type="button" onClick={() => setSplitMode('even')} className={`flex-1 rounded-lg py-2 text-sm font-medium transition ${splitMode === 'even' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Split Evenly</button>
+            </div>
+
+            {splitError && (
+              <div className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">
+                {splitError}
+              </div>
+            )}
+
+            {splitMode === 'items' && (
+              <>
+                <p className="text-sm text-slate-600">
+                  Select items to split to a new or existing table tab. Unselected items remain on this tab.
+                </p>
+                <div className="max-h-64 overflow-y-auto rounded-xl border border-slate-100 bg-slate-50/45 p-2">
+                  {(Array.isArray(currentOpenTab.items) ? currentOpenTab.items : []).map((item, idx) => {
+                    const selected = splitItemIndices.includes(idx)
+                    return (
+                      <button
+                        key={idx}
+                        type="button"
+                        onClick={() => toggleSplitItem(idx)}
+                        className={`mb-1 flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm ${selected ? 'bg-amber-50 ring-1 ring-amber-300' : 'bg-white hover:bg-slate-50'}`}
+                      >
+                        <span className={`flex h-5 w-5 items-center justify-center rounded border ${selected ? 'border-amber-500 bg-amber-500 text-white' : 'border-slate-300'}`}>
+                          {selected && '✓'}
+                        </span>
+                        <span className="flex-1 truncate font-medium text-slate-800">{item.item_name}</span>
+                        <span className="text-slate-500">×{item.quantity}</span>
+                        <span className="font-semibold text-slate-700">{currency} {fmt(item.quantity * item.unit_price)}</span>
+                      </button>
+                    )
+                  })}
+                </div>
+                <div>
+                  <label className="mb-1 block text-sm font-medium text-slate-700">Target Table (leave blank for new tab)</label>
+                  <input
+                    type="text"
+                    className="input"
+                    placeholder="e.g. Table 2 or leave empty"
+                    value={splitTargetTable}
+                    onChange={(e) => setSplitTargetTable(e.target.value)}
+                  />
+                </div>
+              </>
+            )}
+
+            {splitMode === 'even' && (
+              <>
+                <p className="text-sm text-slate-600">
+                  Split the total bill evenly into equal parts. Each part becomes its own tab.
+                </p>
+                <div className="rounded-xl bg-blue-50 px-4 py-3 text-xs text-blue-700">
+                  Tip: Split the bill before taking any payments. Payments already taken must be voided first.
+                </div>
+                <div className="rounded-xl bg-amber-50 p-3 text-center">
+                  <p className="text-xs text-amber-600">Total</p>
+                  <p className="text-lg font-bold text-amber-800">{currency} {fmt((Array.isArray(currentOpenTab.items) ? currentOpenTab.items : []).reduce((s, i) => s + i.quantity * i.unit_price, 0))}</p>
+                </div>
+                <div>
+                  <label className="mb-1 block text-sm font-medium text-slate-700">Number of splits (2–10)</label>
+                  <div className="flex items-center gap-3">
+                    <button type="button" onClick={() => setSplitEvenCount((c) => Math.max(2, c - 1))} className="h-10 w-10 rounded-xl border border-slate-200 bg-white text-lg font-bold text-slate-600 hover:bg-slate-50">−</button>
+                    <span className="min-w-[3rem] text-center text-xl font-bold text-slate-900">{splitEvenCount}</span>
+                    <button type="button" onClick={() => setSplitEvenCount((c) => Math.min(10, c + 1))} className="h-10 w-10 rounded-xl border border-slate-200 bg-white text-lg font-bold text-slate-600 hover:bg-slate-50">+</button>
+                    <span className="ml-2 text-sm text-slate-500">= {currency} {fmt((Array.isArray(currentOpenTab.items) ? currentOpenTab.items : []).reduce((s, i) => s + i.quantity * i.unit_price, 0) / splitEvenCount)} each</span>
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <label className="block text-sm font-medium text-slate-700">Tab names (optional)</label>
+                  {Array.from({ length: splitEvenCount }).map((_, i) => (
+                    <input
+                      key={i}
+                      type="text"
+                      className="input text-sm"
+                      placeholder={`Split ${i + 1} (auto-named if empty)`}
+                      value={splitEvenNames[i] || ''}
+                      onChange={(e) => {
+                        const next = [...splitEvenNames]
+                        next[i] = e.target.value
+                        setSplitEvenNames(next)
+                      }}
+                    />
+                  ))}
+                </div>
+              </>
+            )}
+
+            <div className="flex gap-3 pt-1">
+              <button
+                type="button"
+                onClick={() => setSplitModal(false)}
+                disabled={splitLoading}
+                className="flex-1 rounded-xl border border-slate-200 py-2 text-sm text-slate-600 hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={executeSplitBill}
+                disabled={splitLoading || (splitMode === 'items' && splitItemIndices.length === 0) || (splitMode === 'even' && (splitEvenCount < 2 || splitEvenCount > 10))}
+                className="flex-1 rounded-xl bg-amber-600 py-2 text-sm font-medium text-white hover:bg-amber-700 disabled:opacity-50"
+              >
+                {splitLoading ? 'Splitting...' : splitMode === 'even' ? `Split into ${splitEvenCount} Equal Parts` : `Split ${splitItemIndices.length} Item(s)`}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {discountApprovalModal && (
+        <Modal title="Discount Approval Required" onClose={() => { setDiscountApprovalModal(false); setDiscountApprovalPin(''); setDiscountApprovalError('') }} size="sm">
+          <form onSubmit={submitDiscountApproval} className="space-y-4">
+            <p className="text-sm text-slate-600">
+              A manual discount of {currency} {fmt(orderDiscountAmount)} requires manager approval. Enter a supervisor PIN to continue.
+            </p>
+
+            {discountApprovalError && (
+              <div className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">
+                {discountApprovalError}
+              </div>
+            )}
+
+            <div>
+              <label className="mb-1 block text-sm font-medium text-slate-700">Manager PIN *</label>
+              <div className="relative">
+                <input
+                  type={showDiscountApprovalPin ? 'text' : 'password'}
+                  inputMode="numeric"
+                  className="input pr-10"
+                  placeholder="Enter PIN"
+                  value={discountApprovalPin}
+                  onChange={(e) => setDiscountApprovalPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                  autoFocus
+                  maxLength={6}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowDiscountApprovalPin((current) => !current)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                >
+                  {showDiscountApprovalPin ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
+              </div>
+            </div>
+
+            <div className="flex gap-3 pt-1">
+              <button
+                type="button"
+                onClick={() => { setDiscountApprovalModal(false); setDiscountApprovalPin(''); setDiscountApprovalError('') }}
+                disabled={discountApprovalLoading}
+                className="flex-1 rounded-xl border border-slate-200 py-2 text-sm text-slate-600 hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={discountApprovalLoading || !discountApprovalPin.trim()}
+                className="flex-1 rounded-xl bg-emerald-600 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
+              >
+                {discountApprovalLoading ? 'Verifying...' : 'Approve & Submit Order'}
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
       {showReceiptOrder && (
         <POSReceipt
           order={showReceiptOrder}
           autoPrint={showReceiptOrder?._auto_print === true}
           onClose={() => setShowReceiptOrder(null)}
         />
+      )}
+
+      {/* Keyboard shortcuts help overlay */}
+      {showKeyboardHelp && (
+        <POSKeyboardHelp onClose={() => setShowKeyboardHelp(false)} />
       )}
     </div>
   )

@@ -3,6 +3,7 @@ import { HashRouter, Routes, Route, Navigate, useNavigate } from 'react-router-d
 import { BellRing, ChevronDown, ChevronUp, Download, FileText, RefreshCw, RotateCcw, X } from 'lucide-react'
 import { APP_FEATURES, FEATURE_LABELS, buildCapabilitySnapshot, isPosFullAccessRole } from '../../shared/accessControl'
 import { SUBSCRIPTION_PLAN_ORDER, getAllSubscriptionPlans, getFeatureRequiredPlan, getSubscriptionPlan, normalizeSubscriptionPlan } from '../../shared/subscriptionPlans'
+import { isRestaurantOnly } from '../../shared/propertyTypes'
 import AppErrorBoundary from './components/AppErrorBoundary'
 import { ToastProvider } from './components/shared/Toast'
 import { Modal } from './components/shared/Modal'
@@ -53,6 +54,66 @@ const Quotations     = lazy(() => import('./components/Quotations'))
 const BookingInvoices = lazy(() => import('./components/BookingInvoices'))
 const Prepayments = lazy(() => import('./components/Prepayments'))
 const OpsAi = lazy(() => import('./components/OpsAi'))
+const HotelDashboard = lazy(() => import('./components/HotelDashboard'))
+const RoomTypes = lazy(() => import('./components/RoomTypes'))
+const FloorsSections = lazy(() => import('./components/FloorsSections'))
+const HotelKpis = lazy(() => import('./components/HotelKpis'))
+const Folios = lazy(() => import('./components/Folios'))
+const EnterpriseAddonPlaceholder = lazy(() => import('./components/EnterpriseAddonPlaceholder'))
+const AdvancedHousekeeping = lazy(() => import('./components/AdvancedHousekeeping'))
+const CorporateAccounts = lazy(() => import('./components/CorporateAccounts'))
+const RatePlans = lazy(() => import('./components/RatePlans'))
+const RoomMoves = lazy(() => import('./components/RoomMoves'))
+const SubscriptionPackageBuilder = lazy(() => import('./components/SubscriptionPackageBuilder'))
+const EnterpriseWorkflowWorkspace = lazy(() => import('./components/EnterpriseWorkflowWorkspace'))
+const ChannelManager = lazy(() => import('./components/ChannelManager'))
+const GuestMessaging = lazy(() => import('./components/GuestMessaging'))
+const GuestPortalConfig = lazy(() => import('./components/GuestPortalConfig'))
+const MultiPropertyDashboard = lazy(() => import('./components/MultiPropertyDashboard'))
+const RevenueManager = lazy(() => import('./components/RevenueManager'))
+const AdvancedReports = lazy(() => import('./components/AdvancedReports'))
+const GuestCRM = lazy(() => import('./components/GuestCRM'))
+const OperationsCompliance = lazy(() => import('./components/OperationsCompliance'))
+const MultiOutletPos = lazy(() => import('./components/MultiOutletPos'))
+const RoomAttributes = lazy(() => import('./components/RoomAttributes'))
+const CorporateBilling = lazy(() => import('./components/CorporateBilling'))
+const DocumentSystem = lazy(() => import('./components/DocumentSystem'))
+const HotelRolesConfig = lazy(() => import('./components/HotelRolesConfig'))
+const CheckinWorkflow = lazy(() => import('./components/CheckinWorkflow'))
+const EarlyLateCheckout = lazy(() => import('./components/EarlyLateCheckout'))
+const CancellationPolicies = lazy(() => import('./components/CancellationPolicies'))
+const BookingEngine = lazy(() => import('./components/BookingEngine'))
+const RateCalendar = lazy(() => import('./components/RateCalendar'))
+const HousekeepingCommandCenter = lazy(() => import('./components/HousekeepingCommandCenter'))
+const MaintenanceEnterprise = lazy(() => import('./components/MaintenanceEnterprise'))
+const GroupOperations = lazy(() => import('./components/GroupOperations'))
+const PaymentGatewayConfig = lazy(() => import('./components/PaymentGatewayConfig'))
+const PromoCodes = lazy(() => import('./components/PromoCodes'))
+
+// ── Restaurant standalone modules ─────────────────────────────────────────────
+const RestaurantTables = lazy(() => import('./components/restaurant/RestaurantTables'))
+const RestaurantKitchen = lazy(() => import('./components/restaurant/RestaurantKitchen'))
+const RestaurantMenu = lazy(() => import('./components/restaurant/RestaurantMenu'))
+const RestaurantRecipes = lazy(() => import('./components/restaurant/RestaurantRecipes'))
+const RestaurantStock = lazy(() => import('./components/restaurant/RestaurantStock'))
+const RestaurantPurchasing = lazy(() => import('./components/restaurant/RestaurantPurchasing'))
+const RestaurantShifts = lazy(() => import('./components/restaurant/RestaurantShifts'))
+const RestaurantCashDrawer = lazy(() => import('./components/restaurant/RestaurantCashDrawer'))
+const RestaurantDailyClose = lazy(() => import('./components/restaurant/RestaurantDailyClose'))
+const RestaurantCustomers = lazy(() => import('./components/restaurant/RestaurantCustomers'))
+const RestaurantChecklists = lazy(() => import('./components/restaurant/RestaurantChecklists'))
+const RestaurantAlerts = lazy(() => import('./components/restaurant/RestaurantAlerts'))
+const RestaurantOwnerDigest = lazy(() => import('./components/restaurant/RestaurantOwnerDigest'))
+
+// ── Phase 6: Restaurant Differentiators ──────────────────────────────────────
+const RestaurantReservations = lazy(() => import('./components/restaurant/RestaurantReservations'))
+const RestaurantCombos = lazy(() => import('./components/restaurant/RestaurantCombos'))
+const RestaurantRecipeVariance = lazy(() => import('./components/restaurant/RestaurantRecipeVariance'))
+const RestaurantStaffPerformance = lazy(() => import('./components/restaurant/RestaurantStaffPerformance'))
+const RestaurantPrepBatches = lazy(() => import('./components/restaurant/RestaurantPrepBatches'))
+const RestaurantKitchenAnalytics = lazy(() => import('./components/restaurant/RestaurantKitchenAnalytics'))
+const RestaurantPurchaseSuggestions = lazy(() => import('./components/restaurant/RestaurantPurchaseSuggestions'))
+const RestaurantWorkspace = lazy(() => import('./components/restaurant/RestaurantWorkspace'))
 
 // ── Loading fallback for lazy routes ─────────────────────────────────────────
 function PageLoader() {
@@ -92,6 +153,7 @@ function isEditableFieldTarget(target) {
 function UpgradeWall({ feature, children }) {
   const features = useContext(FeaturesContext)
   const access = useContext(AccessContext)
+
   // Only block when flags have been loaded AND this feature is explicitly false
   if (Object.keys(features).length > 0 && features[feature] === false) {
     const requiredTier = getFeatureRequiredPlan(feature)
@@ -120,6 +182,44 @@ function UpgradeWall({ feature, children }) {
       </div>
     )
   }
+  return children
+}
+
+// ── Restaurant Route Guard ────────────────────────────────────────────────────
+const RESTAURANT_EXCLUDED_PATHS = [
+  '/bookings', '/rooms', '/guests', '/housekeeping', '/maintenance',
+  '/calendar', '/roomgrid', '/conference', '/dayuse', '/quotations',
+  '/invoices', '/prepayments', '/folios', '/corporate', '/rate-plans',
+  '/room-moves', '/channel-manager', '/guest-messaging', '/guest-portal',
+  '/multi-property', '/guest-crm', '/operations-compliance', '/group-operations',
+  '/hotel-dashboard', '/room-types', '/floors', '/room-attributes',
+  '/hotel-reports', '/enterprise-reports', '/advanced-housekeeping',
+  '/housekeeping-command-center', '/maintenance-enterprise', '/hotel-roles',
+  '/corporate-billing', '/rate-calendar', '/revenue-manager', '/promo-codes',
+  '/checkin-workflow', '/early-late-checkout', '/cancellation-policies',
+  '/documents', '/payment-links', '/booking-engine', '/night-audit-enterprise',
+  '/payment-gateway-config', '/subscription-builder', '/custom-website',
+  '/supplies'
+]
+
+function RestaurantGuard({ children }) {
+  const { settings } = useContext(SettingsContext)
+  const propertyType = settings?.property_type || settings?.business_type || 'lodge'
+  const restaurantMode = isRestaurantOnly(propertyType)
+  const location = window.location.hash.replace('#', '').split('?')[0]
+
+  if (restaurantMode && RESTAURANT_EXCLUDED_PATHS.some(path => location.startsWith(path))) {
+    return <Navigate to="/" replace />
+  }
+
+  return children
+}
+
+// ── Restaurant-Only Route Guard ────────────────────────────────────────────────
+function RestaurantOnlyRoute({ children }) {
+  const { settings } = useContext(SettingsContext)
+  const propertyType = settings?.property_type || settings?.business_type || 'lodge'
+  if (!isRestaurantOnly(propertyType)) return <Navigate to="/" replace />
   return children
 }
 
@@ -1474,7 +1574,9 @@ export default function App() {
                 path="/"
                 element={
                   <ProtectedRoute fallbackPath={preAuthFallbackPath} isTransitioning={isLoggingIn}>
-                    <Lazy><Layout /></Lazy>
+                    <RestaurantGuard>
+                      <Lazy><Layout /></Lazy>
+                    </RestaurantGuard>
                   </ProtectedRoute>
                 }
               >
@@ -1505,6 +1607,75 @@ export default function App() {
                 <Route path="inventory"  element={<UpgradeWall feature="inventory"> <Lazy><Inventory /></Lazy>  </UpgradeWall>} />
                 <Route path="supplies"   element={<UpgradeWall feature="supplies">  <Lazy><RoomSupplies /></Lazy></UpgradeWall>} />
                 <Route path="ai"         element={<Lazy><OpsAi /></Lazy>} />
+
+                {/* Hotel / Enterprise — consolidated redirects */}
+                <Route path="hotel-dashboard" element={<Navigate to="/" replace />} />
+                <Route path="room-types" element={<Navigate to="/rooms?tab=room-types" replace />} />
+                <Route path="floors" element={<Navigate to="/rooms?tab=floors-sections" replace />} />
+                <Route path="room-attributes" element={<Navigate to="/rooms?tab=attributes" replace />} />
+                <Route path="hotel-reports" element={<Navigate to="/reports?tab=hotel-kpis" replace />} />
+                <Route path="enterprise-reports" element={<Navigate to="/reports?tab=enterprise" replace />} />
+                <Route path="advanced-housekeeping" element={<Navigate to="/housekeeping?tab=turnover" replace />} />
+                <Route path="housekeeping-command-center" element={<Navigate to="/housekeeping?tab=assignments" replace />} />
+                <Route path="maintenance-enterprise" element={<Navigate to="/maintenance?tab=preventive" replace />} />
+                <Route path="hotel-roles" element={<Navigate to="/staff?tab=hotel-roles" replace />} />
+                <Route path="corporate-billing" element={<Navigate to="/corporate?tab=billing" replace />} />
+                <Route path="rate-calendar" element={<Navigate to="/rate-plans?tab=calendar" replace />} />
+                <Route path="revenue-manager" element={<Navigate to="/rate-plans?tab=revenue" replace />} />
+                <Route path="promo-codes" element={<Navigate to="/rate-plans?tab=promo-codes" replace />} />
+                <Route path="checkin-workflow" element={<Navigate to="/bookings?tab=checkin" replace />} />
+                <Route path="early-late-checkout" element={<Navigate to="/bookings?tab=early-late" replace />} />
+                <Route path="cancellation-policies" element={<Navigate to="/bookings?tab=cancellations" replace />} />
+                <Route path="documents" element={<Navigate to="/settings?tab=document-templates" replace />} />
+                <Route path="payment-links" element={<Navigate to="/folios" replace />} />
+                <Route path="booking-engine" element={<Navigate to="/rate-plans?tab=booking-engine" replace />} />
+                <Route path="night-audit-enterprise" element={<Navigate to="/audit" replace />} />
+                <Route path="payment-gateway-config" element={<Navigate to="/" replace />} />
+                {/* Hotel / Enterprise — distinct modules */}
+                <Route path="folios" element={<UpgradeWall feature="folios"><Lazy><Folios /></Lazy></UpgradeWall>} />
+                <Route path="corporate" element={<UpgradeWall feature="corporate_accounts"><Lazy><CorporateAccounts /></Lazy></UpgradeWall>} />
+                <Route path="rate-plans" element={<UpgradeWall feature="rate_plans"><Lazy><RatePlans /></Lazy></UpgradeWall>} />
+                <Route path="room-moves" element={<UpgradeWall feature="room_moves"><Lazy><RoomMoves /></Lazy></UpgradeWall>} />
+                <Route path="subscription-builder" element={<Lazy><SubscriptionPackageBuilder /></Lazy>} />
+                <Route path="custom-website" element={<Navigate to="/" replace />} />
+                <Route path="channel-manager" element={<UpgradeWall feature="channel_manager"><Lazy><ChannelManager /></Lazy></UpgradeWall>} />
+                <Route path="guest-messaging" element={<UpgradeWall feature="guest_messaging"><Lazy><GuestMessaging /></Lazy></UpgradeWall>} />
+                <Route path="guest-portal" element={<UpgradeWall feature="guest_portal"><Lazy><GuestPortalConfig /></Lazy></UpgradeWall>} />
+                <Route path="multi-property" element={<UpgradeWall feature="multi_property"><Lazy><MultiPropertyDashboard /></Lazy></UpgradeWall>} />
+                <Route path="guest-crm" element={<UpgradeWall feature="guest_crm"><Lazy><GuestCRM /></Lazy></UpgradeWall>} />
+                <Route path="operations-compliance" element={<UpgradeWall feature="operations_compliance"><Lazy><OperationsCompliance /></Lazy></UpgradeWall>} />
+                <Route path="multi-outlet-pos" element={<UpgradeWall feature="multi_outlet_pos"><Lazy><MultiOutletPos /></Lazy></UpgradeWall>} />
+                <Route path="group-operations" element={<UpgradeWall feature="group_operations"><Lazy><GroupOperations /></Lazy></UpgradeWall>} />
+                {/* Restaurant workspaces. The legacy standalone routes below remain valid deep links. */}
+                <Route path="restaurant/floor" element={<RestaurantOnlyRoute><Lazy><RestaurantWorkspace workspace="floor" /></Lazy></RestaurantOnlyRoute>} />
+                <Route path="restaurant/kitchen-workspace" element={<RestaurantOnlyRoute><Lazy><RestaurantWorkspace workspace="kitchen" /></Lazy></RestaurantOnlyRoute>} />
+                <Route path="restaurant/menu-production" element={<RestaurantOnlyRoute><Lazy><RestaurantWorkspace workspace="menu" /></Lazy></RestaurantOnlyRoute>} />
+                <Route path="restaurant/stock-purchasing" element={<RestaurantOnlyRoute><Lazy><RestaurantWorkspace workspace="stock" /></Lazy></RestaurantOnlyRoute>} />
+                <Route path="restaurant/team" element={<RestaurantOnlyRoute><Lazy><RestaurantWorkspace workspace="team" /></Lazy></RestaurantOnlyRoute>} />
+                <Route path="restaurant/cash-close" element={<RestaurantOnlyRoute><Lazy><RestaurantWorkspace workspace="close" /></Lazy></RestaurantOnlyRoute>} />
+                <Route path="restaurant/control" element={<RestaurantOnlyRoute><Lazy><RestaurantWorkspace workspace="control" /></Lazy></RestaurantOnlyRoute>} />
+                {/* ── Restaurant standalone modules ─────────────────────────────── */}
+                <Route path="restaurant/tables" element={<RestaurantOnlyRoute><UpgradeWall feature="pos"><Lazy><RestaurantTables /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
+                <Route path="restaurant/kitchen" element={<RestaurantOnlyRoute><UpgradeWall feature="pos"><Lazy><RestaurantKitchen /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
+                <Route path="restaurant/menu" element={<RestaurantOnlyRoute><UpgradeWall feature="pos"><Lazy><RestaurantMenu /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
+                <Route path="restaurant/recipes" element={<RestaurantOnlyRoute><UpgradeWall feature="inventory"><Lazy><RestaurantRecipes /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
+                <Route path="restaurant/stock" element={<RestaurantOnlyRoute><UpgradeWall feature="inventory"><Lazy><RestaurantStock /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
+                <Route path="restaurant/purchasing" element={<RestaurantOnlyRoute><UpgradeWall feature="inventory"><Lazy><RestaurantPurchasing /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
+                <Route path="restaurant/shifts" element={<RestaurantOnlyRoute><UpgradeWall feature="staff"><Lazy><RestaurantShifts /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
+                <Route path="restaurant/cash-drawer" element={<RestaurantOnlyRoute><UpgradeWall feature="pos"><Lazy><RestaurantCashDrawer /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
+                <Route path="restaurant/daily-close" element={<RestaurantOnlyRoute><UpgradeWall feature="reports"><Lazy><RestaurantDailyClose /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
+                <Route path="restaurant/customers" element={<RestaurantOnlyRoute><UpgradeWall feature="pos"><Lazy><RestaurantCustomers /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
+                <Route path="restaurant/checklists" element={<RestaurantOnlyRoute><UpgradeWall feature="pos"><Lazy><RestaurantChecklists /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
+                <Route path="restaurant/alerts" element={<RestaurantOnlyRoute><UpgradeWall feature="reports"><Lazy><RestaurantAlerts /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
+                <Route path="restaurant/owner-digest" element={<RestaurantOnlyRoute><UpgradeWall feature="reports"><Lazy><RestaurantOwnerDigest /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
+                {/* Phase 6: Differentiators */}
+                <Route path="restaurant/reservations" element={<RestaurantOnlyRoute><UpgradeWall feature="pos"><Lazy><RestaurantReservations /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
+                <Route path="restaurant/combos" element={<RestaurantOnlyRoute><UpgradeWall feature="pos"><Lazy><RestaurantCombos /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
+                <Route path="restaurant/recipe-variance" element={<RestaurantOnlyRoute><UpgradeWall feature="inventory"><Lazy><RestaurantRecipeVariance /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
+                <Route path="restaurant/staff-performance" element={<RestaurantOnlyRoute><UpgradeWall feature="staff"><Lazy><RestaurantStaffPerformance /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
+                <Route path="restaurant/prep-batches" element={<RestaurantOnlyRoute><UpgradeWall feature="inventory"><Lazy><RestaurantPrepBatches /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
+                <Route path="restaurant/kitchen-analytics" element={<RestaurantOnlyRoute><UpgradeWall feature="reports"><Lazy><RestaurantKitchenAnalytics /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
+                <Route path="restaurant/purchase-suggestions" element={<RestaurantOnlyRoute><UpgradeWall feature="inventory"><Lazy><RestaurantPurchaseSuggestions /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
               </Route>
               <Route
                 path="/pos/customer-display"

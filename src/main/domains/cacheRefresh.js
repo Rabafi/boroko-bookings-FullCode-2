@@ -231,7 +231,7 @@ async function refreshCacheStrict(...names) {
     eq('lodge_id', state.lodgeId).
     order('created_at', { ascending: false }).
     limit(500),
-    'pos-menu-items': () => state.supabase.from('pos_menu_items').select('id, name, category, price, is_available, barcode, inventory_item_id, depletion_qty, outlet_id, template_kind, lodge_id, created_at, updated_at').eq('lodge_id', state.lodgeId).order('category').order('name').limit(500),
+    'pos-menu-items': () => state.supabase.from('pos_menu_items').select('id, name, category, price, is_available, barcode, inventory_item_id, depletion_qty, outlet_id, template_kind, lodge_id, created_at, updated_at, kitchen_station_id').eq('lodge_id', state.lodgeId).order('category').order('name').limit(500),
     outlets: () => state.supabase.from('outlets').select('id, name, type, sort_order, is_active').eq('lodge_id', state.lodgeId).order('sort_order').limit(100)
   };
 

@@ -18,6 +18,9 @@ import Notifications from './Notifications'
 import Fleet from './Fleet'
 import Releases from './Releases'
 import SurfaceIntelligence from './SurfaceIntelligence'
+import SubscriptionRequests from './SubscriptionRequests'
+import EnterpriseWorkflowWorkspace from './EnterpriseWorkflowWorkspace'
+import PaymentGatewayConfig from './PaymentGatewayConfig'
 import Pagination, { usePagination } from './shared/Pagination'
 import {
   MONTHLY_USAGE_RESET_COPY,
@@ -224,14 +227,14 @@ function ShortcutsModal({ onClose }) {
     { keys: ['Ctrl', 'K'], desc: 'Open Global Search' },
     { keys: ['?'], desc: 'Show keyboard shortcuts' },
     { keys: ['1'], desc: 'Go to Dashboard' },
-    { keys: ['2'], desc: 'Go to Executive Cockpit' },
-    { keys: ['3'], desc: 'Go to Companies' },
-    { keys: ['4'], desc: 'Go to Licensing' },
-    { keys: ['5'], desc: 'Go to Finance' },
-    { keys: ['6'], desc: 'Go to Tickets' },
-    { keys: ['7'], desc: 'Go to Activity Log' },
-    { keys: ['8'], desc: 'Go to Fleet' },
-    { keys: ['9'], desc: 'Go to Releases' },
+    { keys: ['2'], desc: 'Go to Companies' },
+    { keys: ['3'], desc: 'Go to Licensing' },
+    { keys: ['4'], desc: 'Go to Finance' },
+    { keys: ['5'], desc: 'Go to Client Desk' },
+    { keys: ['6'], desc: 'Go to Communications' },
+    { keys: ['7'], desc: 'Go to Platform Operations' },
+    { keys: ['8'], desc: 'Go to Activity Log' },
+    { keys: ['9'], desc: 'Go to Admin Tools' },
     { keys: ['Esc'], desc: 'Close modal / drawer' },
   ]
   return (
@@ -3236,54 +3239,189 @@ function Bookkeeping({ companies }) {
 // ════════════════════════════════════════════════════════════════════
 const NAV_GROUPS = [
   {
-    label: 'Overview',
+    label: 'Command',
     items: [
-      { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, tip: 'Business metrics, charts, and company overview' },
-      { id: 'cockpit', label: 'Executive Cockpit', icon: BarChart3, tip: 'High-level business intelligence and KPIs' },
-      { id: 'health', label: 'System Health', icon: Shield, tip: 'System status checks and connectivity diagnostics' },
-      { id: 'surfaces', label: 'Surface Intelligence', icon: Activity, tip: 'Cross-device sync health and network topology' },
+      { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, tip: 'Business metrics, executive cockpit, and company overview' },
+      { id: 'companies', label: 'Companies', icon: Building2, tip: 'Manage lodge and hotel accounts' },
+      { id: 'licensing', label: 'Licensing', icon: CreditCard, tip: 'Manage plans, trials, license keys, and subscription requests' },
+      { id: 'finance', label: 'Finance Office', icon: DollarSign, tip: 'Revenue reports, invoices, and bookkeeping' },
     ]
   },
   {
-    label: 'Clients & Money',
+    label: 'Client Work',
     items: [
-      { id: 'companies', label: 'Companies', icon: Building2, tip: 'Manage lodge and hotel accounts' },
-      { id: 'licensing', label: 'Licensing', icon: CreditCard, tip: 'Manage plans, trials, and license keys' },
-      { id: 'finance', label: 'Finance Office', icon: DollarSign, tip: 'Revenue reports, invoices, and bookkeeping' },
-      { id: 'leads', label: 'Marketing Leads', icon: Users, tip: 'Sales CRM pipeline and follow-ups' },
+      { id: 'client-desk', label: 'Client Desk', icon: LifeBuoy, tip: 'Support tickets and sales leads' },
+      { id: 'communications', label: 'Communications', icon: Bell, tip: 'Notifications, broadcasts, and email delivery settings' },
     ]
   },
   {
     label: 'Operations',
     items: [
-      { id: 'tickets', label: 'Support Tickets', icon: LifeBuoy, tip: 'Customer support requests and responses' },
-      { id: 'broadcasts', label: 'Broadcasts', icon: Megaphone, tip: 'Announcements shown as banners to all users' },
+      { id: 'platform', label: 'Platform Operations', icon: Server, tip: 'System health, surfaces, fleet, and releases' },
       { id: 'activity', label: 'Activity Log', icon: Activity, tip: 'Audit trail of all admin actions' },
     ]
   },
   {
-    label: 'Fleet & Releases',
+    label: 'Implementation',
     items: [
-      { id: 'notifications', label: 'Notifications', icon: Bell, tip: 'Automated alerts and notification rules' },
-      { id: 'fleet', label: 'Fleet', icon: Server, tip: 'Device health, sync status, and push updates' },
-      { id: 'releases', label: 'Releases', icon: Rocket, tip: 'App version rollout and feature flags' },
+      { id: 'implementation', label: 'Add-ons', icon: Rocket, tip: 'Website builds, payment setup, and Enterprise workflow readiness' },
     ]
   },
   {
-    label: 'Configuration',
+    label: 'Tools',
     items: [
-      { id: 'email-alerts', label: 'Email Config', icon: Mail, tip: 'SMTP settings for email delivery' },
-    ]
-  },
-  {
-    label: 'Developer Tools',
-    items: [
-      { id: 'search', label: 'Global Search', icon: Search, tip: 'Search across all entities (Ctrl+K)' },
-      { id: 'bulk', label: 'Bulk Actions', icon: CheckSquare, tip: 'Batch operations on tickets and leads' },
-      { id: 'test-reset', label: 'Test Reset', icon: Trash2, tip: 'Reset test data — destructive, use with caution' },
+      { id: 'tools', label: 'Admin Tools', icon: Search, tip: 'Global search, bulk actions, and test reset' },
     ]
   }
 ]
+
+function SectionTabs({ tabs, active, onChange }) {
+  return (
+    <div className="mb-4 flex flex-wrap gap-1 rounded-xl bg-gray-900/80 p-1">
+      {tabs.map(({ id, label, icon: Icon }) => (
+        <button
+          key={id}
+          type="button"
+          onClick={() => onChange(id)}
+          className={`flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium transition-colors ${
+            active === id ? 'bg-purple-600 text-white' : 'text-gray-400 hover:bg-gray-800 hover:text-white'
+          }`}
+        >
+          {Icon && <Icon size={14} />}
+          {label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function DashboardHub({ companies, licenses, tickets, activityLogs, onOpenCompany, initialTab = 'overview' }) {
+  const [tab, setTab] = useState(initialTab)
+  const tabs = [
+    { id: 'overview', label: 'Overview', icon: LayoutDashboard },
+    { id: 'executive', label: 'Executive Cockpit', icon: BarChart3 }
+  ]
+  return (
+    <div>
+      <SectionTabs tabs={tabs} active={tab} onChange={setTab} />
+      {tab === 'overview'
+        ? <Dashboard companies={companies} licenses={licenses} tickets={tickets} activityLogs={activityLogs} onOpenCompany={onOpenCompany} />
+        : <ExecutiveCockpit companies={companies} licenses={licenses} tickets={tickets} activityLogs={activityLogs} />}
+    </div>
+  )
+}
+
+function LicensingHub({ companies, licenses, tickets, onRefresh, initialTab = 'workbench' }) {
+  const [tab, setTab] = useState(initialTab)
+  const tabs = [
+    { id: 'workbench', label: 'Licensing Workbench', icon: CreditCard },
+    { id: 'requests', label: 'Subscription Requests', icon: FileText }
+  ]
+  return (
+    <div>
+      <SectionTabs tabs={tabs} active={tab} onChange={setTab} />
+      {tab === 'workbench'
+        ? <LicensingWorkbench companies={companies} licenses={licenses} tickets={tickets} onRefresh={onRefresh} />
+        : <SubscriptionRequests companies={companies} licenses={licenses} />}
+    </div>
+  )
+}
+
+function ClientDesk({ companies, onOpenCompany, initialTab = 'support' }) {
+  const [tab, setTab] = useState(initialTab)
+  const tabs = [
+    { id: 'support', label: 'Support Tickets', icon: LifeBuoy },
+    { id: 'leads', label: 'Marketing Leads', icon: Users }
+  ]
+  return (
+    <div>
+      <SectionTabs tabs={tabs} active={tab} onChange={setTab} />
+      {tab === 'support'
+        ? <SupportTickets companies={companies} onOpenCompany={onOpenCompany} />
+        : <Leads />}
+    </div>
+  )
+}
+
+function CommunicationsHub({ companies, onOpenCompany, initialTab = 'notifications' }) {
+  const [tab, setTab] = useState(initialTab)
+  const tabs = [
+    { id: 'notifications', label: 'Notifications', icon: Bell },
+    { id: 'broadcasts', label: 'Broadcasts', icon: Megaphone },
+    { id: 'email', label: 'Email Config', icon: Mail }
+  ]
+  return (
+    <div>
+      <SectionTabs tabs={tabs} active={tab} onChange={setTab} />
+      {tab === 'notifications' && <Notifications onOpenCompany={onOpenCompany} companies={companies} />}
+      {tab === 'broadcasts' && <Broadcasts />}
+      {tab === 'email' && <EmailSettings />}
+    </div>
+  )
+}
+
+function PlatformOperations({ companies, onOpenCompany, initialTab = 'health' }) {
+  const [tab, setTab] = useState(initialTab)
+  const tabs = [
+    { id: 'health', label: 'System Health', icon: Shield },
+    { id: 'surfaces', label: 'Surface Intelligence', icon: Activity },
+    { id: 'fleet', label: 'Fleet', icon: Server },
+    { id: 'releases', label: 'Releases', icon: Rocket }
+  ]
+  return (
+    <div>
+      <SectionTabs tabs={tabs} active={tab} onChange={setTab} />
+      {tab === 'health' && <SystemHealth />}
+      {tab === 'surfaces' && <SurfaceIntelligence />}
+      {tab === 'fleet' && <Fleet onOpenCompany={onOpenCompany} companies={companies} />}
+      {tab === 'releases' && <Releases />}
+    </div>
+  )
+}
+
+function ImplementationAddons() {
+  const [tab, setTab] = useState('website')
+  const tabs = [
+    { id: 'website', label: 'Website Build', icon: Rocket },
+    { id: 'payment-readiness', label: 'Payment Links Readiness', icon: CheckSquare },
+    { id: 'gateway', label: 'Payment Gateway Setup', icon: CreditCard }
+  ]
+  return (
+    <div className="space-y-4">
+      <div className="rounded-xl border border-purple-500/30 bg-purple-500/10 p-5">
+        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-purple-300">Implementation & Add-ons</p>
+        <h2 className="mt-2 text-xl font-bold text-white">Website, payment, and Enterprise workflow readiness</h2>
+        <p className="mt-2 max-w-3xl text-sm text-gray-300">
+          This Command Central area is reserved for Boroko-managed add-on setup. Website Build, Payment Gateway Setup,
+          Payment Links Readiness, and Enterprise workflow checklists should be mounted here as internal/admin tools.
+        </p>
+      </div>
+      <SectionTabs tabs={tabs} active={tab} onChange={setTab} />
+      <div className="rounded-xl border border-gray-800 bg-gray-950/40">
+        {tab === 'website' && <EnterpriseWorkflowWorkspace workflowKey="custom_website" />}
+        {tab === 'payment-readiness' && <EnterpriseWorkflowWorkspace workflowKey="payment_gateway" />}
+        {tab === 'gateway' && <PaymentGatewayConfig />}
+      </div>
+    </div>
+  )
+}
+
+function AdminTools({ companies, onNavigate, onOpenCompany, initialTab = 'search' }) {
+  const [tab, setTab] = useState(initialTab)
+  const tabs = [
+    { id: 'search', label: 'Global Search', icon: Search },
+    { id: 'bulk', label: 'Bulk Actions', icon: CheckSquare },
+    { id: 'test-reset', label: 'Test Reset', icon: Trash2 }
+  ]
+  return (
+    <div>
+      <SectionTabs tabs={tabs} active={tab} onChange={setTab} />
+      {tab === 'search' && <GlobalSearch onNavigate={onNavigate} onOpenCompany={onOpenCompany} companies={companies} />}
+      {tab === 'bulk' && <BulkActions />}
+      {tab === 'test-reset' && <TestResetMaintenance companies={companies} />}
+    </div>
+  )
+}
 
 function FinanceOffice({ companies }) {
   const [tab, setTab] = useState('accounting')
@@ -4074,7 +4212,7 @@ export default function AdminCentral() {
       }
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return
       if (e.key === '?') { e.preventDefault(); setShowShortcuts(true); return }
-      const sectionMap = { '1': 'dashboard', '2': 'cockpit', '3': 'companies', '4': 'licensing', '5': 'finance', '6': 'tickets', '7': 'activity', '8': 'fleet', '9': 'releases' }
+      const sectionMap = { '1': 'dashboard', '2': 'companies', '3': 'licensing', '4': 'finance', '5': 'client-desk', '6': 'communications', '7': 'platform', '8': 'activity', '9': 'tools' }
       if (sectionMap[e.key]) { e.preventDefault(); setSection(sectionMap[e.key]) }
     }
     document.addEventListener('keydown', handleKey)
@@ -4198,8 +4336,8 @@ export default function AdminCentral() {
             <div key={group.label} className="space-y-1">
               <p className="px-3 text-[10px] font-semibold uppercase tracking-wide text-gray-600">{group.label}</p>
               {group.items.map(({ id, label, icon: Icon, tip }) => {
-                const ticketBadge = id === 'tickets' && openTickets > 0 ? openTickets : null
-                const upgradeBadge = id === 'tickets' && upgradeCount > 0 ? upgradeCount : null
+                const ticketBadge = id === 'client-desk' && openTickets > 0 ? openTickets : null
+                const upgradeBadge = id === 'licensing' && upgradeCount > 0 ? upgradeCount : null
                 const overdueBadge = id === 'finance' && overdueCount > 0 ? overdueCount : null
                 const expiringBadge = id === 'licensing' && expiringCount > 0 ? expiringCount : null
                 const activeBadge = ticketBadge || upgradeBadge || overdueBadge || expiringBadge
@@ -4248,24 +4386,16 @@ export default function AdminCentral() {
             <ErrorBoundary><Client360 company={viewClient360} licenses={licenses} onBack={() => setViewClient360(null)} /></ErrorBoundary>
           ) : (
           <>
-          {section === 'dashboard' && <ErrorBoundary><Dashboard companies={companies} licenses={licenses} tickets={tickets} activityLogs={activityLogs} onOpenCompany={(company) => setViewClient360(company)} /></ErrorBoundary>}
-          {section === 'cockpit' && <ErrorBoundary><ExecutiveCockpit companies={companies} licenses={licenses} tickets={tickets} activityLogs={activityLogs} /></ErrorBoundary>}
+          {(section === 'dashboard' || section === 'cockpit') && <ErrorBoundary><DashboardHub companies={companies} licenses={licenses} tickets={tickets} activityLogs={activityLogs} onOpenCompany={(company) => setViewClient360(company)} initialTab={section === 'cockpit' ? 'executive' : 'overview'} /></ErrorBoundary>}
           {section === 'companies' && <ErrorBoundary><Companies companies={companies} licenses={licenses} loading={loading} onReload={loadAll} /></ErrorBoundary>}
-          {section === 'licensing' && <ErrorBoundary><LicensingWorkbench companies={companies} licenses={licenses} tickets={tickets} onRefresh={loadAll} /></ErrorBoundary>}
-          {section === 'test-reset' && <ErrorBoundary><TestResetMaintenance companies={companies} /></ErrorBoundary>}
+          {(section === 'licensing' || section === 'subscription-requests') && <ErrorBoundary><LicensingHub companies={companies} licenses={licenses} tickets={tickets} onRefresh={loadAll} initialTab={section === 'subscription-requests' ? 'requests' : 'workbench'} /></ErrorBoundary>}
           {(section === 'finance' || section === 'bookkeeping' || section === 'accounting') && <ErrorBoundary><FinanceOffice companies={companies} /></ErrorBoundary>}
-          {section === 'broadcasts' && <ErrorBoundary><Broadcasts /></ErrorBoundary>}
-          {section === 'email-alerts' && <ErrorBoundary><EmailSettings /></ErrorBoundary>}
-          {section === 'tickets' && <ErrorBoundary><SupportTickets companies={companies} onOpenCompany={(company) => setViewClient360(company)} /></ErrorBoundary>}
+          {(section === 'tickets' || section === 'leads' || section === 'client-desk') && <ErrorBoundary><ClientDesk companies={companies} onOpenCompany={(company) => setViewClient360(company)} initialTab={section === 'leads' ? 'leads' : 'support'} /></ErrorBoundary>}
+          {(section === 'notifications' || section === 'broadcasts' || section === 'email-alerts' || section === 'communications') && <ErrorBoundary><CommunicationsHub companies={companies} onOpenCompany={(company) => setViewClient360(company)} initialTab={section === 'broadcasts' ? 'broadcasts' : section === 'email-alerts' ? 'email' : 'notifications'} /></ErrorBoundary>}
           {section === 'activity' && <ErrorBoundary><ActivityLog companies={companies} onOpenCompany={(company) => setViewClient360(company)} /></ErrorBoundary>}
-          {section === 'notifications' && <ErrorBoundary><Notifications onOpenCompany={(company) => setViewClient360(company)} companies={companies} /></ErrorBoundary>}
-          {section === 'fleet' && <ErrorBoundary><Fleet onOpenCompany={(company) => setViewClient360(company)} companies={companies} /></ErrorBoundary>}
-          {section === 'releases' && <ErrorBoundary><Releases /></ErrorBoundary>}
-          {section === 'leads' && <ErrorBoundary><Leads /></ErrorBoundary>}
-          {section === 'health' && <ErrorBoundary><SystemHealth /></ErrorBoundary>}
-          {section === 'surfaces' && <ErrorBoundary><SurfaceIntelligence /></ErrorBoundary>}
-          {section === 'search' && <ErrorBoundary><GlobalSearch onNavigate={(s) => setSection(s)} onOpenCompany={(company) => setViewClient360(company)} companies={companies} /></ErrorBoundary>}
-          {section === 'bulk' && <ErrorBoundary><BulkActions /></ErrorBoundary>}
+          {(section === 'health' || section === 'surfaces' || section === 'fleet' || section === 'releases' || section === 'platform') && <ErrorBoundary><PlatformOperations onOpenCompany={(company) => setViewClient360(company)} companies={companies} initialTab={['health', 'surfaces', 'fleet', 'releases'].includes(section) ? section : 'health'} /></ErrorBoundary>}
+          {section === 'implementation' && <ErrorBoundary><ImplementationAddons /></ErrorBoundary>}
+          {(section === 'search' || section === 'bulk' || section === 'test-reset' || section === 'tools') && <ErrorBoundary><AdminTools onNavigate={(s) => setSection(s)} onOpenCompany={(company) => setViewClient360(company)} companies={companies} initialTab={['search', 'bulk', 'test-reset'].includes(section) ? section : 'search'} /></ErrorBoundary>}
           </>
           )}
         </div>

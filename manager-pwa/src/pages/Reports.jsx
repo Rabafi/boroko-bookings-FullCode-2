@@ -1,12 +1,13 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { useFeatures } from '../contexts/FeaturesContext'
-import { getReportsSnapshot, getDashboardSnapshot, listBookings, listRooms, listStaff } from '../lib/api'
+import { getReportsSnapshot, getDashboardSnapshot, listBookings, listRooms, listStaff, getSettings } from '../lib/api'
 import { RefreshCw, Lock } from 'lucide-react'
 import { format } from 'date-fns'
 import { readCacheEntry } from '../lib/runtime'
 import { shortDateTime } from '../lib/format'
 import { MONTHLY_USAGE_RESET_COPY, countMonthlyUsageBookings, getPlanRecommendation, getPlanUsageLimits, getUsageLimitStatus } from '@shared/subscriptionPlans'
+import { isRestaurantOnly } from '@shared/propertyTypes'
 
 function StatRow({ label, value, sub, color = 'text-white' }) {
   return (
@@ -115,6 +116,7 @@ export default function Reports() {
   const [lastUpdated, setLastUpdated] = useState(null)
   const [loadError, setLoadError] = useState('')
   const [usage, setUsage] = useState({ monthlyBookings: 0, rooms: 0, users: 0, plan: 'Starter' })
+  const [restaurantMode, setRestaurantMode] = useState(false)
   const now = new Date()
 
   const load = useCallback(async () => {
@@ -122,7 +124,7 @@ export default function Reports() {
     setLoadError('')
     try {
       const today = new Date()
-      const [snapshot, dashboard, bookings, rooms, staff] = await Promise.all([
+      const [snapshot, dashboard, bookings, rooms, staff, settings] = await Promise.all([
         getReportsSnapshot(user.lodge_id, {
           today: format(today, 'yyyy-MM-dd'),
           forceFresh: true
@@ -130,7 +132,8 @@ export default function Reports() {
         getDashboardSnapshot(user.lodge_id).catch(() => null),
         listBookings(user.lodge_id).catch(() => []),
         listRooms(user.lodge_id).catch(() => []),
-        listStaff(user.lodge_id).catch(() => [])
+        listStaff(user.lodge_id).catch(() => []),
+        getSettings(user.lodge_id).catch(() => null)
       ])
       setData(snapshot)
       const plan = dashboard?.entitlement?.plan || 'Starter'
@@ -141,6 +144,9 @@ export default function Reports() {
         plan
       })
       setLastUpdated(readCacheEntry(user.lodge_id, 'reports_snapshot', null)?.updatedAt || null)
+      if (settings) {
+        setRestaurantMode(isRestaurantOnly(settings.property_type || settings.business_type || 'lodge'))
+      }
     } catch (e) {
       console.error('Reports load error:', e)
       setLoadError(e?.message || 'Reports could not load.')
@@ -198,12 +204,12 @@ export default function Reports() {
           {reportsUsingOfflineData && (
             <div className="mb-3 rounded-2xl border border-amber-900/60 bg-amber-950/30 px-4 py-3">
               <p className="text-sm font-semibold text-amber-200">{offlineDataLabel}</p>
-              <p className="mt-1 text-xs text-amber-300">Revenue, expenses, and occupancy figures are using offline or cached data and should not be treated as final until live sync resumes.</p>
+              <p className="mt-1 text-xs text-amber-300">{restaurantMode ? 'Revenue, expenses, and sales figures are using offline or cached data and should not be treated as final until live sync resumes.' : 'Revenue, expenses, and occupancy figures are using offline or cached data and should not be treated as final until live sync resumes.'}</p>
             </div>
           )}
           <Section title={`Subscription Usage · ${usage.plan}`}>
-            <StatRow label="Bookings this month" value={`${usage.monthlyBookings}/${usageLimits.monthlyBookings ?? 'unlimited'}`} sub={usageLimits.monthlyBookingsGrace ? `Grace +${usageLimits.monthlyBookingsGrace}` : ''} color={usageStatus.state === 'blocked' ? 'text-rose-300' : usageStatus.state === 'critical' || usageStatus.state === 'grace' ? 'text-amber-300' : 'text-white'} />
-            <StatRow label="Rooms" value={`${usage.rooms}/${usageLimits.rooms ?? 'unlimited'}`} />
+            <StatRow label={restaurantMode ? 'Orders this month' : 'Bookings this month'} value={`${usage.monthlyBookings}/${usageLimits.monthlyBookings ?? 'unlimited'}`} sub={usageLimits.monthlyBookingsGrace ? `Grace +${usageLimits.monthlyBookingsGrace}` : ''} color={usageStatus.state === 'blocked' ? 'text-rose-300' : usageStatus.state === 'critical' || usageStatus.state === 'grace' ? 'text-amber-300' : 'text-white'} />
+            {!restaurantMode && <StatRow label="Rooms" value={`${usage.rooms}/${usageLimits.rooms ?? 'unlimited'}`} />}
             <StatRow label="Users" value={`${usage.users}/${usageLimits.users ?? 'unlimited'}`} />
             <p className="mt-2 text-[11px] text-gray-500">{MONTHLY_USAGE_RESET_COPY}</p>
             <p className="mt-1 text-[11px] text-blue-300">{usageRecommendation.label}</p>
@@ -214,6 +220,7 @@ export default function Reports() {
             </div>
           ) : (
             <>
+          {!restaurantMode && (
           <div className="bg-green-900/30 border border-green-700/40 rounded-2xl p-4 mb-3">
             <p className="text-xs font-semibold text-green-400 uppercase tracking-wide mb-2">Live Now</p>
             <div className="flex items-center justify-between">
@@ -221,19 +228,32 @@ export default function Reports() {
               <div className="text-right"><p className="text-2xl font-bold text-green-400">{data.totalRooms > 0 ? Math.round((data.currentOcc / data.totalRooms) * 100) : 0}%</p><p className="text-xs text-gray-400">Occupancy</p></div>
             </div>
           </div>
+          )}
+
+          {restaurantMode && (
+          <div className="bg-green-900/30 border border-green-700/40 rounded-2xl p-4 mb-3">
+            <p className="text-xs font-semibold text-green-400 uppercase tracking-wide mb-2">Today's Summary</p>
+            <div className="flex items-center justify-between">
+              <div><p className="text-3xl font-bold text-white">{fmt(data.todayRev || 0)}</p><p className="text-xs text-gray-400">Sales today</p></div>
+              <div className="text-right"><p className="text-2xl font-bold text-green-400">{fmt(data.posRevenue || 0)}</p><p className="text-xs text-gray-400">POS revenue</p></div>
+            </div>
+          </div>
+          )}
 
           <Section title="Trends">
+            {!restaurantMode && (
+              <ComparisonBar
+                label="Occupancy"
+                current={data.monthOcc}
+                previous={data.lastMonthOcc}
+                formatValue={(v) => `${v}%`}
+                accent="green"
+              />
+            )}
             <ComparisonBar
-              label="Occupancy"
-              current={data.monthOcc}
-              previous={data.lastMonthOcc}
-              formatValue={(v) => `${v}%`}
-              accent="green"
-            />
-            <ComparisonBar
-              label="Cash Collected"
-              current={data.monthRev}
-              previous={data.lastMonthRev}
+              label={restaurantMode ? 'Sales' : 'Cash Collected'}
+              current={restaurantMode ? (data.posRevenue || 0) : data.monthRev}
+              previous={restaurantMode ? 0 : data.lastMonthRev}
               formatValue={fmt}
               accent="blue"
             />
@@ -248,7 +268,7 @@ export default function Reports() {
             )}
           </Section>
 
-          {isEnabled('pos') && totalRevenue > 0 && (
+          {isEnabled('pos') && !restaurantMode && totalRevenue > 0 && (
             <Section title="Revenue Mix">
               <p className="text-xs text-gray-500 mb-1">Breakdown of total revenue this month</p>
               <RevenueMixBar
@@ -264,40 +284,46 @@ export default function Reports() {
             </Section>
           )}
 
-          <Section title="Cash Collected">
-            <p className="text-xs text-gray-500 mb-2">Actual payments received · not total booking value. Fees kept from refunds are shown separately.</p>
+          <Section title={restaurantMode ? 'Revenue' : 'Cash Collected'}>
+            <p className="text-xs text-gray-500 mb-2">{restaurantMode ? 'Actual payments received from sales.' : 'Actual payments received · not total booking value. Fees kept from refunds are shown separately.'}</p>
             <StatRow label="Today" value={fmt(data.todayRev)} color="text-emerald-400" />
             <StatRow label="This Week" value={fmt(data.weekRev)} color="text-emerald-400" />
             <StatRow label="This Month" value={fmt(data.monthRev)} color="text-emerald-400" />
-            <StatRow label="Refunds (this month)" value={fmt(data.monthRefunds)} color="text-rose-300" />
+            {!restaurantMode && <StatRow label="Refunds (this month)" value={fmt(data.monthRefunds)} color="text-rose-300" />}
+            {!restaurantMode && (
             <StatRow
               label="Fees kept from refunds (this month)"
               value={fmt(retainedThisMonth)}
               sub={Number(data.monthRetainedCount || 0) > 0 ? `${Number(data.monthRetainedCount || 0)} cancelled booking${Number(data.monthRetainedCount || 0) === 1 ? '' : 's'}` : 'No fees kept'}
               color="text-amber-300"
             />
-            <StatRow label="Last Month" value={fmt(data.lastMonthRev)} color="text-gray-300" />
-            <StatRow label="Refunds (last month)" value={fmt(data.lastMonthRefunds)} color="text-gray-400" />
+            )}
+            {!restaurantMode && <StatRow label="Last Month" value={fmt(data.lastMonthRev)} color="text-gray-300" />}
+            {!restaurantMode && <StatRow label="Refunds (last month)" value={fmt(data.lastMonthRefunds)} color="text-gray-400" />}
+            {!restaurantMode && (
             <StatRow
               label="Fees kept from refunds (last month)"
               value={fmt(retainedLastMonth)}
               sub={Number(data.lastMonthRetainedCount || 0) > 0 ? `${Number(data.lastMonthRetainedCount || 0)} cancelled booking${Number(data.lastMonthRetainedCount || 0) === 1 ? '' : 's'}` : 'No fees kept'}
               color="text-amber-300"
             />
+            )}
             {isEnabled('pos') && <StatRow label="POS Revenue (this month)" value={fmt(data.posRevenue)} color="text-blue-400" />}
-            {isEnabled('conference') && data.conferenceRevenue > 0 && <StatRow label="Conference (this month)" value={fmt(data.conferenceRevenue)} color="text-indigo-400" />}
-            {isEnabled('pool') && data.poolRevenue > 0 && <StatRow label="Day Use (this month)" value={fmt(data.poolRevenue)} color="text-cyan-400" />}
+            {!restaurantMode && isEnabled('conference') && data.conferenceRevenue > 0 && <StatRow label="Conference (this month)" value={fmt(data.conferenceRevenue)} color="text-indigo-400" />}
+            {!restaurantMode && isEnabled('pool') && data.poolRevenue > 0 && <StatRow label="Day Use (this month)" value={fmt(data.poolRevenue)} color="text-cyan-400" />}
           </Section>
 
+          {!restaurantMode && (
           <Section title="Occupancy Rate">
             <StatRow label="This Month" value={pct(data.monthOcc)} color={data.monthOcc >= 70 ? 'text-green-400' : data.monthOcc >= 40 ? 'text-yellow-400' : 'text-red-400'} />
             <StatRow label="Last Month" value={pct(data.lastMonthOcc)} color="text-gray-300" />
           </Section>
+          )}
 
           {isEnabled('expenses') && (
             <Section title="Expenses (this month)">
               <StatRow label="Manual Expenses" value={fmt(data.monthExpenses)} color="text-red-400" />
-              <StatRow label="Maintenance Repairs" value={fmt(maintenanceTotal)} color="text-rose-300" sub="Read-only repair costs" />
+              {!restaurantMode && <StatRow label="Maintenance Repairs" value={fmt(maintenanceTotal)} color="text-rose-300" sub="Read-only repair costs" />}
               <StatRow label="Total Expenses" value={fmt(expenseTotal)} color="text-red-400" />
               <StatRow
                 label="Net Cash (All Revenue − Expenses)"
@@ -307,10 +333,12 @@ export default function Reports() {
             </Section>
           )}
 
+          {!restaurantMode && (
           <Section title="Outstanding Payments">
             <StatRow label="Unpaid / Partial Bookings" value={data.unpaidCount} color={data.unpaidCount > 0 ? 'text-yellow-400' : 'text-gray-500'} sub="Includes fully unpaid and partially paid" />
             <StatRow label="Amount Outstanding" value={fmt(data.unpaidTotal)} color={data.unpaidTotal > 0 ? 'text-red-400' : 'text-gray-500'} />
           </Section>
+          )}
             </>
           )}
         </div>

@@ -82,6 +82,22 @@ No Enterprise feature is considered production-ready because it exists in the re
 - release smoke checks pass on the packaged desktop app where relevant;
 - `PROJECT_STATE.md` accurately distinguishes repository implementation, deployment, and release status.
 
+### 2.4 Development Preview Rule
+
+Development and QA need a way to see Enterprise work before a real paid entitlement exists.
+
+Required behavior:
+
+- Customer-facing Enterprise Preview Mode is not part of the product. Add-on testing and enablement belongs in Command Central, where Boroko admins can activate or deactivate grouped add-on bundles for a client account.
+- Preview Mode must be visibly labelled in the app.
+- Preview Mode must never grant server-side authority, bypass RLS, bypass RPC role checks, or confirm paid add-ons.
+- Preview Mode may bypass renderer `UpgradeWall` screens for Enterprise UI so builders can inspect routes.
+- Preview Mode must not bypass Pro-only or lower-tier gates unless explicitly designed for test fixtures.
+- Add-on placeholders and planned modules may be visible in Preview Mode, but must say whether they are active, requestable, or planned.
+- Real production activation must still come from subscription/add-on entitlement state controlled by Command Central or the backend.
+
+Implementation agents must not use Preview Mode as proof that an entitlement, migration, or commercial activation works.
+
 ## 3. Non-Negotiable System Rules
 
 ### 3.1 Financial Rules
@@ -147,6 +163,36 @@ Enterprise implementation must not break:
 
 Any implementation agent must run the relevant regression bundle before claiming done.
 
+### 3.5 Enterprise Depth Without Lower-Tier Clutter
+
+Starter, Standard, and Pro are already valid products. Enterprise work must not turn those tiers into a hotel-PMS interface by default.
+
+Default rule:
+
+- Do not broaden Starter, Standard, or Pro screens unless the change is small, backward-compatible, and obviously improves the existing workflow.
+- Put deep hotel workflows behind Enterprise plan, hotel-relevant property type, module visibility, feature flags, add-on entitlement, and role capability.
+- Where a feature exists in lower tiers, keep the lower-tier version simple and familiar.
+- Where Enterprise needs deeper capability for the same concept, build an Enterprise extension, Enterprise route, Enterprise panel, Enterprise mode, or conditional advanced section.
+- Do not force small guest houses, BnBs, lodges, camps, or restaurants to see hotel-only terms, dense hotel controls, or add-on complexity.
+- Do not remove lower-tier shortcuts just because Enterprise needs a more formal workflow.
+- Do not make an Enterprise-only table, status, or field mandatory for lower-tier operation unless there is a safe fallback and regression coverage.
+
+Examples:
+
+- Rooms may keep simple `room_type` text for lower tiers while Enterprise can link rooms to structured `room_types`, floor/section, attributes, and hotel inventory metadata.
+- Housekeeping may remain a simple clean/dirty workflow for lower tiers while Enterprise adds assignment, inspection, supervisor approval, linen, and SLA timers.
+- Night Audit may remain a light reporting/close helper for lower tiers while Enterprise gets daily close, exception checks, folio posting, date locks, and audit packs.
+- Maintenance may remain a ticket list for lower tiers while Enterprise adds out-of-order/out-of-service inventory blocking, downtime analytics, and room-readiness integration.
+- Reports may remain simple summaries for lower tiers while Enterprise adds pace, pickup, debtor, channel/source, housekeeping productivity, and maintenance downtime reports.
+
+If an implementation touches a shared screen, it must explicitly answer:
+
+1. What stays unchanged for Starter, Standard, and Pro?
+2. What appears only for Enterprise?
+3. What appears only for hotel/motel/resort property types?
+4. What is controlled by add-on entitlement?
+5. What regression test proves lower-tier behavior remains clean?
+
 ## 4. Product Model
 
 ### 4.1 Separate Concepts
@@ -159,6 +205,35 @@ The system must separate four concepts:
 4. Enterprise add-ons: which advanced paid modules are activated.
 
 Do not collapse these into one field.
+
+### 4.1.1 Customization Standard
+
+Every Enterprise feature must be customizable by property without creating a different codebase per client.
+
+Enterprise customization should be stored as configuration, not hard-coded branching, wherever practical.
+
+Each major Enterprise module should define which of these are configurable:
+
+- labels and terminology;
+- visible modules;
+- custom statuses;
+- custom categories;
+- required fields;
+- approval rules;
+- role permissions;
+- document templates;
+- message templates;
+- fee policies;
+- tax/VAT display rules;
+- workflow steps;
+- default filters and dashboard widgets;
+- report columns;
+- export formats;
+- notification rules.
+
+Customization must be scoped by `lodge_id` or future property/group identity. It must not leak between properties.
+
+Customization must not bypass financial rules, RLS, RPC validation, audit, idempotency, or entitlement gates.
 
 ### 4.2 Property Type
 
@@ -700,7 +775,132 @@ Build add-on infrastructure before building every add-on:
 6. Tests for Enterprise with and without add-ons.
 7. Tests proving Pro cannot access Enterprise add-ons.
 
+### 8.5 Command Central Control Plane
+
+Enterprise work must update Command Central. Command Central is the owner/admin control plane for commercial activation, support visibility, and entitlement correction.
+
+Command Central must eventually support:
+
+1. Viewing every lodge/company subscription plan.
+2. Viewing property type and operating profile.
+3. Viewing selected/requested Enterprise add-ons.
+4. Viewing generated upgrade quotations from desktop app requests.
+5. Viewing generated upgrade quotations from the public website.
+6. Converting a request/quotation into an invoice or payable pro-forma document.
+7. Recording manual payment review status without pretending online payment was processed.
+8. Activating or deactivating subscription plan entitlements.
+9. Activating or deactivating Enterprise add-ons individually.
+10. Seeing effective feature flags that result from plan + add-ons + overrides.
+11. Auditing who changed plan/add-on entitlements, when, and why.
+12. Sending an activation/update response back to the client app.
+13. Searching/filtering pending upgrade requests, paid-awaiting-activation requests, and expired quotes.
+
+Command Central must not:
+
+- use service-role credentials in renderers;
+- activate features from a public website request without admin review;
+- treat an uploaded proof of payment as confirmed settlement unless the admin has reviewed it or a future verified payment gateway webhook confirms it;
+- silently overwrite existing client entitlements without an audit trail.
+
+### 8.6 In-App Upgrade and Add-on Request Flow
+
+The desktop app must let existing clients request plan upgrades and add-ons from inside Settings/Subscription.
+
+Required in-app flow:
+
+1. App already knows lodge/company details from settings and entitlement state.
+2. User opens Settings/Subscription.
+3. User chooses target plan.
+4. If target plan is Enterprise, user can select relevant add-ons.
+5. App shows clear pricing/quote summary once pricing is configured.
+6. App captures notes such as room count, property type, expected users, requested add-ons, website/domain needs, and implementation urgency.
+7. App generates a quotation/pro-forma request document for the client to save.
+8. App submits the same structured request to the backend/Command Central.
+9. Command Central shows the request with selected plan and selected add-ons already parsed.
+10. Admin may convert the request to an invoice/pro-forma, mark payment review state, and activate the plan/add-ons after manual approval.
+11. Client app refreshes entitlement and unlocks only approved plan/add-on features.
+
+The in-app request must be non-financial unless a future payment gateway is implemented. It must not mark a subscription paid, activate add-ons, or mutate payment state by itself.
+
+### 8.7 Public Website Package Builder Flow
+
+The public website should support a similar sales flow for new or existing prospects.
+
+Required website flow:
+
+1. Prospect selects a package: Starter, Standard, Pro, or Enterprise.
+2. If Enterprise is selected, prospect selects property type and relevant add-ons.
+3. Website captures company/property details, contact person, email, phone, country, property type, room count, expected users, add-ons, and notes.
+4. Website generates a downloadable quotation/pro-forma request.
+5. Website submits the same structured request to the backend/Command Central.
+6. Command Central shows the request as a pending sales/upgrade request with all selected add-ons already parsed.
+7. Admin reviews the request, converts it to invoice/pro-forma if needed, handles payment manually, then activates the plan/add-ons in Command Central.
+
+The public website must not require online payment gateway work for this flow. Manual payment is allowed. Payment gateway integration remains a separate future add-on.
+
+### 8.8 Quote, Invoice, and Activation Data Contract
+
+Upgrade/add-on requests should use a structured contract, not free-text only.
+
+Minimum request payload:
+
+```js
+{
+  source: 'desktop_app' | 'public_website' | 'command_central',
+  request_type: 'new_subscription' | 'plan_upgrade' | 'addon_request' | 'capacity_pack',
+  lodge_id: string | null,
+  existing_license_id: string | null,
+  company_name: string,
+  property_name: string,
+  contact_name: string,
+  contact_email: string,
+  contact_phone: string,
+  country: string,
+  property_type: 'guest_house' | 'bnb' | 'lodge' | 'camp' | 'motel' | 'hotel' | 'resort' | 'restaurant',
+  current_plan: 'Trial' | 'Starter' | 'Standard' | 'Pro' | 'Enterprise' | null,
+  requested_plan: 'Starter' | 'Standard' | 'Pro' | 'Enterprise',
+  requested_addons: string[],
+  room_count: number | null,
+  user_count: number | null,
+  expected_monthly_bookings: number | null,
+  pricing_snapshot: object | null,
+  quote_number: string | null,
+  quote_pdf_path_or_url: string | null,
+  notes: string,
+  status: 'draft' | 'submitted' | 'quoted' | 'invoice_sent' | 'payment_under_review' | 'approved' | 'activated' | 'rejected' | 'expired',
+  submitted_at: string
+}
+```
+
+Activation must be a separate admin action:
+
+```js
+{
+  license_id: string,
+  lodge_id: string,
+  plan: 'Starter' | 'Standard' | 'Pro' | 'Enterprise',
+  enterprise_addons: string[],
+  effective_features: object,
+  activated_by: string,
+  activation_reason: string,
+  related_request_id: string | null,
+  related_invoice_id: string | null
+}
+```
+
+No client-facing request may directly write the activation record. Activation must be server/admin controlled and audited.
+
 ## 9. Public Booking, Custom Website, and Payments
+
+Product packaging rule:
+
+- Customers should see this as **Direct Booking Website with Online Payments**, not as scattered technical add-ons.
+- Boroko builds or configures the client website.
+- Boroko connects the website to the property's payment provider.
+- Guests book and pay online.
+- The desktop app receives the booking and the verified payment confirmation.
+- Payment links are a later operational tool for special invoices, balances, deposits, and folios; they should not lead the first customer-facing offer.
+- Terms such as webhook, payment intent, and reconciliation are internal implementation concepts. Customer copy should say automatic payment confirmation and payment matching.
 
 ### 9.1 Tier Rules
 
@@ -804,6 +1004,27 @@ Secrets must never be exposed to:
 
 ## 10. Enterprise Add-on Catalog
 
+### 10.0 Add-on Boundaries and Suite Packaging
+
+Enterprise add-ons should be treated as commercial modules with clear buyer-facing promises, not as one-to-one copies of every internal table, screen, or implementation layer.
+
+The product rule for overlapping areas is:
+
+- keep add-ons separate when the buyer-facing operational promise is different;
+- share technical foundations where the data, permissions, workflow events, or reports naturally overlap;
+- do not duplicate lower-tier features under a new name;
+- do not merge distinct operational departments merely because they touch the same room, booking, guest, staff member, asset, folio, or report;
+- bundle related add-ons into suites when useful for sales and implementation, while preserving individual activation keys internally.
+
+Recommended suite packaging:
+
+- **Enterprise Operations Suite**: Staff Operations & Workforce, Maintenance & Asset Management, Operations Compliance, Housekeeping Command Center, and related hotel role templates.
+- **Events & Groups Suite**: Events & Venue Management, Group Operations, Corporate Accounts, Advanced Folios/Documents, and event/group reporting.
+- **Revenue & Distribution Suite**: Rate Plans, Advanced Rate Engine, Revenue Manager, Channel Manager, Promo Codes, and Rate Calendar.
+- **Guest Experience Suite**: Guest Portal, Guest Messaging, Guest CRM, Direct Booking Website, and Online Payments where enabled.
+
+Suite packaging must not bypass individual feature gates. A bundle is a commercial shortcut; the effective access state must still resolve through plan, property type, add-on entitlement, module visibility, and role/capability checks.
+
 ### 10.1 Direct Booking, Custom Website, and Payments
 
 Includes:
@@ -871,6 +1092,11 @@ Includes:
 Includes:
 
 - department-based permissions;
+- staff scheduling;
+- attendance and clock-in/clock-out;
+- task assignment;
+- training and checklist completion;
+- casual/temporary worker records;
 - shift handover log;
 - incident log;
 - approval workflows;
@@ -907,6 +1133,12 @@ Includes:
 
 Includes:
 
+- property asset registry;
+- equipment service history;
+- warranty and inspection reminders;
+- technician assignment;
+- preventive maintenance;
+- downtime analytics;
 - key/card tracking;
 - future door-lock integration;
 - visitor register;
@@ -925,6 +1157,20 @@ Includes:
 - group-wide corporate accounts;
 - multi-property website;
 - consolidated reporting.
+
+### 10.11 Events, Venues, Banquets, and Packages
+
+Includes:
+
+- wedding, conference, retreat, workshop, memorial, birthday, and private-dining workflows;
+- venue availability;
+- event package builder;
+- banquet/event food and beverage;
+- event timelines and run sheets;
+- deposits, milestones, cancellation terms, and post-event settlement;
+- supplier coordination;
+- group-room linkage;
+- event profitability and settlement reporting.
 
 ## 11. Edge Cases To Design and Test
 
@@ -1116,6 +1362,1035 @@ This section is part of the implementation contract. Enterprise work should add 
 
 ## 12. Implementation Phases
 
+### 12.0 Enterprise World-Class Feature Matrix
+
+This matrix compares the world-class Enterprise feature set against the current product line.
+
+Status meanings:
+
+- `Existing simple`: already exists in Starter/Standard/Pro or shared app, and lower tiers should remain simple.
+- `Enterprise foundation`: started in the Enterprise branch but not mature enough to call world-class.
+- `Missing`: not meaningfully built yet.
+- `Add-on`: should require explicit Enterprise add-on activation.
+- `Shared infrastructure`: may use existing lower-tier concepts, but deep behavior belongs in Enterprise.
+
+Implementation rule:
+
+- Build Enterprise depth without cluttering Starter, Standard, or Pro.
+- Reuse shared data/contracts where sensible, but hide advanced controls unless Enterprise gates pass.
+- Every feature below must include property-level customization where practical.
+
+| # | Feature Area | Current State | Mega Plan Coverage | Build Direction |
+|---|---|---|---|---|
+| 1 | True hotel folio ledger | Existing simple booking charges and Enterprise folio foundation | Phase 5 | Build Enterprise folio ledger with folio lines, transfers, split billing, void/reversal audit, close/reopen rules, guest/company/master allocation, and folio documents. Lower tiers keep simple booking receipts/invoices. |
+| 2 | Night audit | Existing light night-audit/reporting concepts | Phase 5, reporting edge cases | Build Enterprise daily close: room charge posting, arrivals/departures/no-show checks, open-balance checks, date locks, exceptions, audit pack, and rollback/manager override rules. Lower tiers keep lightweight reports. |
+| 3 | Rate management | Simple room rates and Enterprise rate-plan foundation | Phase 4, Phase 8, Phase 10 | Build Enterprise rate calendar, seasons, weekday/weekend rules, occupancy rules, min stay, closed-to-arrival/departure, package rates, corporate rates, and approval/audit. Lower tiers keep simple room rate fields. |
+| 4 | Corporate accounts/debtors | Enterprise foundation started | Phase 9 | Build credit limits, billing profiles, statements, debtor aging, payment allocation, suspension rules, contacts, tax details, and document templates. Add-on entitlement required. |
+| 5 | Group bookings | Existing multi-room/group invoice model plus Enterprise group foundation | Phase 9 | Build group blocks, pickup/release, rooming lists, group check-in/out, group folio, group documents, and room allocation workflows. Keep existing multi-room bookings stable for lower tiers. |
+| 6 | Housekeeping command center | Existing simple housekeeping plus Enterprise advanced board | Phase 4, Phase 10 | Build assignments, attendants, supervisor inspection, custom statuses, refused service, room readiness, linen integration, SLA timers, mobile view, and productivity reporting. Lower tiers keep simple clean/dirty flow. |
+| 7 | Maintenance management | Existing maintenance tickets | Current app preservation plus operations | Build Enterprise out-of-order/out-of-service controls, room inventory blocking, downtime reports, preventive maintenance, escalation, attachments, and room history. Lower tiers keep simple tickets. |
+| 8 | Channel manager foundation | Contract-backed foundation exists: workflow workspace, channel sync queue table/RPC, idempotency key requirement, and audit event path | Phase 8/10 direction | Continue from the add-on contract into channel mapping, source mapping, availability/rate sync queue, reservation import, conflict handling, and provider adapters. Do not fake live OTA integration. |
+| 9 | Payment gateway/payment links | Payment foundation, manual commercial flow, payment-link request table/RPC, and controlled workflow workspace exist | Phase 8 | Continue into verified provider configs, server-side checkout, webhook verification, reconciliation, failed/expired payment handling, and provider status. Add-on entitlement required. Client requests must not mark money as paid. |
+| 10 | Guest messaging | Contract-backed foundation exists: workflow workspace and guest-message storage contract | Phase 10 guest experience | Continue into template engine for email/WhatsApp/SMS-ready messages, pre-arrival, check-in, balance reminder, no-show, cancellation, post-stay, and custom triggers. Keep transport provider configurable. |
+| 11 | Hotel command center | Enterprise Hotel Dashboard exists | Phase 4, Command Central control plane | Expand into operational command center: arrivals, departures, in-house, no-shows, dirty rooms, maintenance blocks, unpaid balances, VIPs, groups, tasks, alerts, and exceptions. |
+| 12 | Multi-property management | Contract-backed add-on foundation exists: gated route/workspace and Enterprise workflow records/events | Phase 10 | Continue into property switcher, central dashboard, consolidated reports, cross-property permissions, shared corporate accounts, group-level settings, and property isolation. Add-on entitlement required. |
+| 13 | Hotel roles and permissions | Shared role/capability model exists | Definition of done | Add hotel roles/capabilities: night auditor, housekeeping supervisor, housekeeper, revenue manager, GM, maintenance, finance/debtors, group sales. Do not infer permission from visible UI. |
+| 14 | Advanced reporting | Existing reports, Enterprise KPI estimates, and report snapshot contract exist | Phase 5, Phase 10 | Continue into Enterprise reports: occupancy by room type, ADR/RevPAR, pickup, pace, channel/source, no-show/cancellation, debtor aging, housekeeping productivity, maintenance downtime, rate performance, and group pickup. |
+| 15 | Guest profiles/CRM | Existing Guests screen/customer credit plus CRM notes contract and gated workspace exist | Phase 10 guest experience | Continue into Enterprise guest preferences, VIP tags, stay history, incidents, blacklist/watchlist controls, company affiliation, lifetime value, document history, and consent/preferences. Lower tiers keep simple guest records. |
+| 16 | Document system | Receipts/PDFs, commercial PDFs, and Enterprise document contract exist | Phase 5/7 | Continue standardizing Enterprise documents: folio, tax invoice, pro-forma, quote, registration card, group contract, corporate statement, payment receipt, cancellation/no-show notice, and branded templates. |
+| 17 | Check-in/check-out workflow | Existing booking status flow | Phase 4 edge cases | Build Enterprise arrival/departure workflows: checklist, ID/document capture, deposit check, room assignment, key/card notes, signatures, balance settlement, late checkout, and room status handoff. |
+| 18 | No-show/cancellation workflow | Basic cancellation/refund support and no-show board foundation | Phase 4, edge cases | Build configurable no-show/cancellation policies, fee retention, deposit handling, room release, audit reasons, guest/customer-credit outcomes, and reporting. |
+| 19 | Custom booking website add-on | Public booking site exists; marketing builder exists | Phase 8 | Build Enterprise custom website package: branded pages, room type pages, offers/packages, inquiry forms, quote request, optional payment links, domain/branding workflow, and Command Central activation. |
+| 20 | Guest portal add-on | Contract-backed foundation exists: gated route/workspace and guest portal request table/RPC contract | Phase 10 | Continue into guest self-service portal: view booking, pay/request payment link, upload details, request changes, message property, view documents, and pre-arrival tasks. Add-on entitlement required. |
+| 21 | Revenue manager add-on | Rate/KPI foundations plus revenue recommendation contract and gated workspace exist | Phase 10 advanced rates | Continue into demand calendar, pickup/pace insights, manual competitor notes, pricing recommendations, forecast, restrictions suggestions, and approval workflow. Add-on entitlement required. |
+| 22 | Operations compliance add-ons | Linen/lost/incident/visitor/emergency foundations plus compliance workspace and shared Enterprise event contract exist | Phase 10 | Continue maturing linen/laundry, lost and found, incident log, visitor register, emergency list, shift handover, exports, privacy controls, retention rules, and manager-only visibility. |
+| 23 | Staff operations/workforce add-on | Existing staff/admin foundations and hotel role templates exist, but no full workforce module | Future Enterprise add-on | Build staff scheduling, attendance, task assignment, shift handover, training checklists, casual worker tracking, and productivity reports. Add-on entitlement required when requestable. |
+| 24 | Maintenance and asset management add-on | Existing maintenance tickets plus Enterprise maintenance foundation exist, but no full asset registry | Future Enterprise add-on | Build property asset registry, equipment service history, preventive schedules, warranties, technician/vendor workflows, downtime analytics, and cost reporting. Lower tiers keep simple tickets. Add-on entitlement required when requestable. |
+| 25 | Events and venue management add-on | Events & Venues foundation exists for bookings/line items/payments, but advanced event operations are not complete | Future Enterprise add-on | Build event pipeline, venue availability, package builder, banquet/event orders, supplier coordination, timelines, group-room linkage, deposits/milestones, documents, settlement, and profitability reporting. Add-on entitlement required when requestable. |
+
+### 12.0.1 Customization Requirements By Feature
+
+Each feature implementation must include a customization checklist.
+
+Minimum customization expectations:
+
+- Folios: charge categories, folio types, document branding, tax labels, approval rules, close/reopen permissions.
+- Night audit: business day close time, required checks, exception tolerances, manager override rules, audit pack sections.
+- Rates: seasons, restrictions, packages, corporate rate labels, approval flow, rounding/currency rules.
+- Corporate accounts: payment terms, credit limits, statement templates, debtor aging buckets, tax fields.
+- Groups: block statuses, release rules, rooming-list import columns, group document templates.
+- Housekeeping: room statuses, inspection steps, attendant assignment rules, SLA timers, linen categories.
+- Maintenance: ticket categories, severity, out-of-order/out-of-service labels, escalation rules, downtime reporting.
+- Channel manager: channel names, source mapping, sync cadence, overbooking rules, fallback behavior.
+- Payments: provider, currency, deposit policy, payment link expiry, reconciliation rules, proof-of-payment workflow.
+- Messaging: templates, triggers, language, opt-in/out, sender identity, escalation rules.
+- Command center: dashboard widgets, alert thresholds, daily focus filters.
+- Multi-property: property groups, cross-property roles, consolidated report defaults, shared account rules.
+- Roles: custom role names, capabilities, approval powers, restricted reports.
+- Reports: visible columns, saved filters, export formats, scheduled report preferences.
+- Guest CRM: VIP categories, preferences, consent fields, blacklist/watchlist reasons.
+- Documents: logo, footer, numbering, legal text, tax/VAT copy, signature blocks.
+- Check-in/out: required fields, ID rules, deposit rules, signature rules, room readiness gates.
+- No-show/cancellation: fee policy, retention rules, release timing, reason categories, refund/customer-credit outcomes.
+- Custom website: brand colors, domain, images, offers, room type display, inquiry fields.
+- Guest portal: visible actions, required uploads, message categories, payment request behavior.
+- Revenue manager: forecast assumptions, rate recommendation thresholds, approval rules.
+- Compliance add-ons: categories, retention, restricted visibility, export formats, incident severity.
+
+### 12.0.2 Lower-Tier Compatibility For Shared Concepts
+
+Some Enterprise features share concepts with lower tiers. Implement them as layered capabilities.
+
+Rooms:
+
+- Starter/Standard/Pro: keep simple rooms, simple type text, rate, occupancy, status, basic housekeeping.
+- Enterprise: add structured room types, floor/section, room attributes, inventory grouping, room move audit, out-of-order/out-of-service, and hotel room readiness.
+
+Night Audit:
+
+- Lower tiers: simple daily summary and existing reports.
+- Enterprise: formal daily close with locked business date, room charge posting, exception resolution, folio checks, and audit pack.
+
+Housekeeping:
+
+- Lower tiers: simple clean/dirty/maintenance status.
+- Enterprise: assignments, inspection, supervisor approval, linen/laundry, maintenance escalation, and productivity reports.
+
+Maintenance:
+
+- Lower tiers: ticket tracking.
+- Enterprise: room availability blocking, downtime, preventive schedules, escalation, and full room history.
+
+Guests:
+
+- Lower tiers: basic customer record, payments/prepayments visibility, blacklist where already supported.
+- Enterprise: CRM preferences, VIPs, stay history, company links, consent, incidents, and personalization.
+
+Reports:
+
+- Lower tiers: operational and financial summaries already present.
+- Enterprise: hotel KPIs, pace/pickup, channel/source, debtor, housekeeping, maintenance, rate, and group reports.
+
+Documents:
+
+- Lower tiers: existing receipts/invoices.
+- Enterprise: customizable hotel document suite and branded templates.
+
+### 12.0.3 Detailed Enterprise Build Requirements
+
+This section is intentionally detailed. Implementation agents must treat it as the working Enterprise backlog, not as optional inspiration.
+
+Each item must be implemented with:
+
+- Enterprise/property/add-on/capability gating where applicable;
+- server-side lodge isolation;
+- audit history for operationally or financially meaningful changes;
+- customization settings where listed;
+- regression tests for lower-tier non-clutter;
+- clear labels when values are estimates rather than authoritative financial truth.
+
+#### 1. True Hotel Folio Ledger
+
+Build a real Enterprise folio ledger, separate from the current simple booking-charge foundation.
+
+Required capabilities:
+
+- create guest folios per booking/stay;
+- create additional folios for incidentals, company charges, group charges, and split billing;
+- post room charges to folio through an authoritative RPC;
+- post service/extra charges such as minibar, laundry, room service, damages, late checkout, early check-in, tourism levy, and custom fees;
+- transfer charges between folios;
+- split a folio by guest, company, department, date range, charge type, percentage, or manual line selection;
+- allocate payments across folio lines without double-counting booking payments;
+- support company-paid room and guest-paid extras;
+- support group master folio plus individual guest extras;
+- void/reverse folio lines with reason, actor, timestamp, and before/after audit;
+- close, reopen, and lock folios based on role/capability;
+- prevent checkout when configured required folio checks fail;
+- generate folio statement, pro-forma folio, final invoice, and receipt PDFs;
+- expose folio balance, deposits, payments, refunds, transfers, and adjustments;
+- support offline-safe pending local folio actions only if replay uses the same RPC/idempotency contract.
+
+Customization:
+
+- charge categories;
+- folio types;
+- tax/VAT labels;
+- document numbering;
+- mandatory close checks;
+- manager override rules;
+- line-item templates;
+- approval thresholds;
+- default split rules for corporate/group bookings.
+
+Do not:
+
+- mutate `bookings.amount_paid` directly;
+- compute final settlement in React;
+- treat cache-derived balances as authoritative;
+- replace the existing lower-tier simple receipt flow.
+
+#### 2. Night Audit
+
+Build Enterprise night audit as a formal daily close workflow.
+
+Required capabilities:
+
+- define hotel business date and close time;
+- run pre-close checks for unresolved arrivals, departures, no-shows, open folios, unpaid balances, dirty occupied rooms, out-of-order rooms, pending room moves, and failed payment/folio postings;
+- post daily room charges where the folio model requires it;
+- record audit close batch with actor, timestamp, business date, exceptions, overrides, and generated reports;
+- lock closed business dates for normal edits;
+- allow privileged reopen/reversal workflow with reason and audit;
+- generate night audit pack PDF/export;
+- separate revenue recognition from cash movement;
+- detect stale cache/report data before close;
+- show warnings for local/offline pending operations before close;
+- include occupancy, ADR, RevPAR, room revenue, payments, taxes, refunds, deposits, house-use, complimentary rooms, no-shows, cancellations, and exceptions.
+
+Customization:
+
+- close time;
+- required checks;
+- optional checks;
+- exception tolerances;
+- override roles;
+- audit pack sections;
+- report recipients;
+- document branding.
+
+Lower tiers:
+
+- keep simple daily summaries and current reporting;
+- do not force formal hotel close on Starter, Standard, or Pro.
+
+#### 3. Rate Management
+
+Build Enterprise rate management as a rate calendar and rule engine.
+
+Required capabilities:
+
+- rate calendar by room type and date;
+- base, weekday, weekend, seasonal, holiday, event, and peak rates;
+- minimum stay;
+- maximum stay;
+- closed-to-arrival;
+- closed-to-departure;
+- stop-sell;
+- occupancy-based rate rules;
+- package rates;
+- corporate negotiated rates;
+- group block rates;
+- promo codes or named offers;
+- child/adult occupancy pricing where needed;
+- rate override approval and audit;
+- rate preview before publishing;
+- conflict detection between overlapping rules;
+- public website/channel-ready availability and rate export contract;
+- clear fallback to simple room rate when no Enterprise rate rule applies.
+
+Customization:
+
+- seasons;
+- rate rule names;
+- rounding rules;
+- currency;
+- tax-inclusive/tax-exclusive display;
+- approval thresholds;
+- default restrictions;
+- package inclusions;
+- corporate rate labels.
+
+Lower tiers:
+
+- keep simple room rate fields;
+- optional small improvement: room type selection may appear when harmless, but complex rate calendar stays Enterprise.
+
+#### 4. Corporate Accounts And Debtors
+
+Build Enterprise corporate account management as a B2B billing module.
+
+Required capabilities:
+
+- company profiles;
+- billing contacts;
+- tax/VAT details;
+- credit limits;
+- payment terms;
+- negotiated rates;
+- authorized bookers;
+- linked guests/stays;
+- master folios;
+- company statements;
+- debtor aging;
+- payment allocation;
+- partial payment handling;
+- credit note/adjustment workflow;
+- over-limit warning and blocking rules;
+- account suspension;
+- statement PDF/export;
+- audit trail for credit-limit and term changes.
+
+Customization:
+
+- payment terms;
+- statement layout;
+- aging buckets;
+- credit-limit enforcement strictness;
+- company categories;
+- required billing fields;
+- tax copy;
+- approval roles.
+
+Add-on:
+
+- Corporate Accounts should require explicit Enterprise add-on entitlement unless product strategy later includes it by default.
+
+#### 5. Group Bookings
+
+Build Enterprise group booking workflows on top of the existing multi-room/group-invoice foundation.
+
+Required capabilities:
+
+- group block creation;
+- block name, source, contact, company, check-in, check-out, release date, cutoff date, rate, deposit, and notes;
+- room block inventory by room type and date;
+- pickup tracking;
+- unsold-room release;
+- rooming list import;
+- rooming list validation;
+- group member assignment to rooms;
+- group check-in;
+- group check-out;
+- master folio;
+- individual guest extras;
+- group documents/contracts;
+- group cancellation policy;
+- reporting for pickup, released rooms, revenue, and outstanding balances.
+
+Customization:
+
+- group statuses;
+- release rules;
+- rooming-list columns;
+- contract template;
+- deposit policy;
+- approval roles;
+- default billing split.
+
+Lower tiers:
+
+- preserve existing direct multi-room bookings and accommodation group invoice behavior.
+
+#### 6. Housekeeping Command Center
+
+Build Enterprise housekeeping as a command center, not just a status field.
+
+Required capabilities:
+
+- room attendant assignment;
+- supervisor assignment;
+- clean/dirty/inspected/out-of-service/out-of-order/custom statuses;
+- inspection checklist;
+- failed inspection workflow;
+- refused service;
+- do-not-disturb;
+- room readiness timer;
+- checkout cleaning queue;
+- stayover cleaning queue;
+- arrival priority;
+- late checkout impact;
+- maintenance escalation from housekeeping;
+- linen usage/shortage integration;
+- mobile-friendly housekeeping view;
+- productivity report by attendant;
+- supervisor dashboard.
+
+Customization:
+
+- housekeeping statuses;
+- checklist items;
+- attendant teams;
+- SLA timers;
+- inspection requirement rules;
+- linen categories;
+- escalation rules;
+- mobile visibility.
+
+Lower tiers:
+
+- keep simple clean/dirty/maintenance flow.
+
+#### 7. Maintenance Management
+
+Upgrade Enterprise maintenance without disrupting the current lower-tier ticket flow.
+
+Required capabilities:
+
+- out-of-order room status;
+- out-of-service room status;
+- prevent sale of blocked rooms;
+- maintenance tickets linked to rooms, equipment, area, or general property;
+- severity and priority;
+- photos/attachments;
+- assignment;
+- due dates;
+- preventive maintenance schedules;
+- downtime tracking;
+- room return-to-service workflow;
+- maintenance history per room;
+- housekeeping escalation;
+- reporting on downtime, recurring issues, and average repair time.
+
+Customization:
+
+- ticket categories;
+- severity labels;
+- room block types;
+- escalation rules;
+- preventive schedule templates;
+- required close fields.
+
+Lower tiers:
+
+- retain simple maintenance tickets.
+
+#### 8. Channel Manager Foundation
+
+Build the channel manager foundation before any live OTA integration.
+
+Required capabilities:
+
+- channel catalog;
+- source mapping;
+- room type mapping;
+- rate plan mapping;
+- availability export queue;
+- rate export queue;
+- reservation import queue;
+- cancellation import queue;
+- idempotency keys for imported reservations;
+- conflict/overbooking detection;
+- manual review queue for uncertain imports;
+- audit history for every channel message;
+- retry/dead-letter handling;
+- safe mode where sync is disabled but mappings remain;
+- readiness screen showing what is configured and what is missing.
+
+Customization:
+
+- channel names;
+- sync cadence;
+- room/rate mappings;
+- overbooking rules;
+- manual approval thresholds;
+- fallback behavior.
+
+Do not:
+
+- fake live Booking.com/Expedia integration;
+- mark sync as successful without provider confirmation;
+- bypass authoritative booking conflict checks.
+
+#### 9. Payment Gateway And Payment Links
+
+Build payment gateway support as property-owned payment processing, not Boroko-as-merchant.
+
+Required capabilities:
+
+- provider configuration per property;
+- test/live mode;
+- public key/secret storage server-side only;
+- payment links for deposits, balances, folios, pro-formas, and booking intents;
+- payment intent table;
+- booking intent table;
+- provider checkout creation;
+- webhook signature verification;
+- late webhook handling;
+- duplicate webhook idempotency;
+- failed, expired, abandoned, and mismatched payment states;
+- reconciliation report;
+- manual proof-of-payment workflow remains available;
+- payment status must be confirmed only server-side.
+
+Customization:
+
+- provider;
+- currency;
+- deposit policy;
+- payment link expiry;
+- payment methods;
+- payment instructions;
+- reconciliation rules;
+- proof-of-payment review workflow.
+
+Add-on:
+
+- Online Payment Gateway requires explicit Enterprise add-on entitlement.
+
+#### 10. Guest Messaging
+
+Build guest messaging as configurable templates and triggers.
+
+Required capabilities:
+
+- pre-arrival messages;
+- check-in instructions;
+- balance reminder;
+- payment link message;
+- cancellation confirmation;
+- no-show notice;
+- post-stay thank-you;
+- review request;
+- custom manual message;
+- template variables;
+- opt-in/opt-out handling;
+- delivery status;
+- retry/failure tracking;
+- message history on guest profile and booking;
+- WhatsApp/email/SMS-ready provider abstraction.
+
+Customization:
+
+- templates;
+- trigger timing;
+- language;
+- sender identity;
+- channels enabled;
+- escalation rules;
+- opt-in text.
+
+#### 11. Hotel Command Center
+
+Expand Hotel Dashboard into a full operational command center.
+
+Required capabilities:
+
+- today’s arrivals;
+- today’s departures;
+- in-house guests;
+- no-shows;
+- dirty rooms;
+- inspection queue;
+- maintenance blocks;
+- room moves;
+- unpaid balances;
+- open folio exceptions;
+- VIPs;
+- groups in house;
+- late checkouts;
+- early check-ins;
+- task list;
+- manager alerts;
+- night-audit readiness;
+- quick actions with role/capability checks.
+
+Customization:
+
+- visible widgets;
+- alert thresholds;
+- default date scope;
+- department filters;
+- priority rules;
+- dashboard layout.
+
+#### 12. Multi-Property Management
+
+Build multi-property as a controlled Enterprise add-on.
+
+Required capabilities:
+
+- property group;
+- central office dashboard;
+- property switcher;
+- cross-property role assignments;
+- per-property isolation;
+- consolidated reports;
+- property-specific reports;
+- shared guest profile strategy;
+- shared blacklist/watchlist strategy;
+- shared corporate accounts where enabled;
+- inter-property booking visibility rules;
+- support ticket property identification;
+- cross-property audit trail.
+
+Customization:
+
+- property groups;
+- cross-property permissions;
+- shared-account rules;
+- report defaults;
+- currency/tax handling;
+- central office roles.
+
+#### 13. Hotel Roles And Permissions
+
+Extend the existing capability model with hotel-specific roles.
+
+Required roles/capability areas:
+
+- night auditor;
+- housekeeping supervisor;
+- housekeeper;
+- maintenance;
+- finance/debtors;
+- revenue manager;
+- group sales;
+- general manager;
+- front office manager;
+- reservations agent.
+
+Required capabilities:
+
+- view/manage folios;
+- close/reopen night audit;
+- override rate restrictions;
+- approve discounts;
+- approve refunds;
+- manage corporate credit;
+- manage groups;
+- inspect rooms;
+- mark room out of order;
+- configure rates;
+- export sensitive reports.
+
+Customization:
+
+- custom role names;
+- role templates;
+- capability overrides;
+- approval powers;
+- report restrictions.
+
+#### 14. Advanced Reporting
+
+Build Enterprise reporting beyond current summaries and KPI estimates.
+
+Required reports:
+
+- occupancy by date and room type;
+- ADR;
+- RevPAR;
+- pickup;
+- pace;
+- source/channel;
+- cancellation/no-show;
+- debtor aging;
+- corporate account balances;
+- group pickup;
+- rate performance;
+- housekeeping productivity;
+- room downtime;
+- maintenance recurring issues;
+- tax/VAT;
+- deposits/liabilities;
+- folio exceptions;
+- night audit pack.
+
+Customization:
+
+- columns;
+- saved filters;
+- scheduled reports;
+- export format;
+- date basis;
+- revenue recognition basis;
+- department visibility.
+
+#### 15. Guest Profiles And CRM
+
+Extend Guests into Enterprise CRM without cluttering lower tiers.
+
+Required capabilities:
+
+- stay history;
+- lifetime value;
+- preferences;
+- VIP tags;
+- blacklist/watchlist;
+- company affiliation;
+- corporate authorized guest;
+- incidents linked to guest;
+- lost-and-found links;
+- document history;
+- messaging history;
+- consent/preferences;
+- nationality/ID/passport details where configured;
+- duplicate detection.
+
+Customization:
+
+- VIP categories;
+- preference fields;
+- required fields;
+- consent wording;
+- blacklist reasons;
+- watchlist visibility.
+
+#### 16. Document System
+
+Build a unified Enterprise document system.
+
+Required documents:
+
+- booking confirmation;
+- registration card;
+- guest folio;
+- pro-forma invoice;
+- tax invoice;
+- payment receipt;
+- refund receipt;
+- corporate statement;
+- group contract;
+- group rooming list;
+- cancellation notice;
+- no-show notice;
+- night audit pack;
+- housekeeping report;
+- maintenance report.
+
+Customization:
+
+- logo;
+- colors;
+- footer;
+- legal text;
+- numbering;
+- tax labels;
+- signature blocks;
+- terms and conditions;
+- language.
+
+#### 17. Check-In And Check-Out Workflow
+
+Build hotel-grade arrival and departure workflows.
+
+Required check-in capabilities:
+
+- arrival checklist;
+- ID/passport capture where configured;
+- registration card;
+- deposit/prepayment check;
+- room assignment;
+- room readiness check;
+- key/card note;
+- guest preferences;
+- special requests;
+- signature capture or confirmation;
+- group check-in handling.
+
+Required check-out capabilities:
+
+- folio review;
+- payment settlement;
+- company/guest split confirmation;
+- late checkout fee;
+- room status handoff;
+- receipt/invoice generation;
+- checkout block when required checks fail;
+- manager override with reason.
+
+Customization:
+
+- checklist steps;
+- required documents;
+- deposit rules;
+- room readiness gates;
+- signature rules;
+- settlement rules.
+
+#### 18. No-Show And Cancellation Workflow
+
+Build configurable hotel no-show and cancellation handling.
+
+Required capabilities:
+
+- mark no-show;
+- release room inventory;
+- retain deposit/fee according to policy;
+- move retained amount to revenue/liability correctly;
+- transfer refundable amount to customer credit where configured;
+- cancellation reason categories;
+- cancellation fee rules;
+- no-show reporting;
+- guest messaging;
+- manager override;
+- audit trail.
+
+Customization:
+
+- policy by rate plan/booking source;
+- fee amount/percentage;
+- free-cancellation windows;
+- reason categories;
+- deposit-retention behavior;
+- customer-credit behavior.
+
+#### 19. Custom Booking Website Add-On
+
+Build Enterprise custom website as a paid add-on, separate from the existing public booking site baseline.
+
+Required capabilities:
+
+- branded property website;
+- custom domain workflow;
+- room type pages;
+- package/offer pages;
+- image/gallery management;
+- inquiry forms;
+- quote request forms;
+- direct booking flow where enabled;
+- payment link support where payment gateway add-on is enabled;
+- SEO metadata;
+- analytics-ready events;
+- Command Central activation and setup status.
+
+Customization:
+
+- brand colors;
+- logo;
+- hero images;
+- room type descriptions;
+- offer content;
+- inquiry fields;
+- domain;
+- policies and terms.
+
+#### 20. Guest Portal Add-On
+
+Build guest self-service as an Enterprise add-on.
+
+Required capabilities:
+
+- guest can view booking;
+- guest can view balance;
+- guest can request payment link;
+- guest can upload required details;
+- guest can request date/room changes;
+- guest can message property;
+- guest can view documents;
+- guest can complete pre-arrival tasks;
+- guest can see cancellation policy;
+- property can approve/deny guest requests.
+
+Customization:
+
+- visible actions;
+- required upload fields;
+- message categories;
+- payment behavior;
+- portal branding;
+- terms and privacy copy.
+
+#### 21. Revenue Manager Add-On
+
+Build revenue management as an Enterprise add-on layered on rates and reports.
+
+Required capabilities:
+
+- demand calendar;
+- pickup report;
+- pace report;
+- occupancy forecast;
+- manual competitor notes;
+- event/holiday demand markers;
+- recommended rate changes;
+- restriction recommendations;
+- approval workflow;
+- rate-change audit.
+
+Customization:
+
+- forecast assumptions;
+- recommendation thresholds;
+- comp set labels;
+- approval roles;
+- rate floors/ceilings;
+- alert thresholds.
+
+#### 22. Operations Compliance Add-Ons
+
+Mature the operational add-on foundations.
+
+Required capabilities:
+
+- linen/laundry inventory;
+- laundry batches;
+- damaged/missing linen tracking;
+- lost-and-found intake;
+- lost-and-found claim/return/disposal workflow;
+- incident log;
+- restricted incident visibility;
+- visitor register;
+- visitor checkout;
+- emergency/evacuation list;
+- shift handover log;
+- exports for compliance;
+- retention/privacy controls.
+
+Customization:
+
+- linen categories;
+- lost item categories;
+- incident severity;
+- incident visibility;
+- visitor purpose categories;
+- emergency list fields;
+- handover categories;
+- export format;
+- data retention rules.
+
+#### 23. Staff Operations and Workforce Add-On
+
+Build staff operations as a hotel Enterprise add-on layered on existing staff/admin permissions, not as default clutter for smaller properties.
+
+Boundary:
+
+- This add-on overlaps with existing `staff`, `hotel_roles`, and `operations_compliance`, but it should not be merged into them.
+- `staff` remains the simple staff/user management surface.
+- `hotel_roles` supplies role templates and permissions.
+- `operations_compliance` supplies incident, visitor, emergency, handover, and compliance records.
+- Staff Operations & Workforce is the higher-level workforce operating layer: rosters, attendance, tasking, training, handovers, and productivity.
+- Technical implementations may share staff profile, role, audit, workflow-event, and reporting contracts.
+
+Required capabilities:
+
+- staff profile extensions for departments, positions, employment type, and availability;
+- shift scheduling by department and outlet;
+- clock-in/clock-out or attendance import;
+- task assignment for front desk, housekeeping, maintenance, restaurant, events, and management;
+- shift handover notes;
+- daily duty rosters;
+- training and checklist completion;
+- casual/temporary worker tracking;
+- absence, lateness, and replacement notes;
+- productivity reports by department, role, and shift;
+- manager approval for schedule changes where configured;
+- role/capability enforcement for roster edits, attendance edits, and private staff notes.
+
+Customization:
+
+- departments;
+- roles/job titles;
+- shift templates;
+- attendance rules;
+- overtime/late thresholds;
+- task categories;
+- checklist templates;
+- approval roles;
+- privacy rules for staff notes.
+
+Lower tiers:
+
+- retain the current simpler Staff/admin behavior.
+- Do not expose hotel workforce scheduling, attendance, or productivity dashboards outside Enterprise hotel/lodge/resort contexts unless explicitly enabled.
+
+Add-on:
+
+- Staff Operations & Workforce should require explicit Enterprise add-on entitlement when it moves from planned to requestable.
+- It may be sold individually or bundled inside the Enterprise Operations Suite.
+
+#### 24. Maintenance and Asset Management Add-On
+
+Build asset management as a hotel Enterprise add-on that deepens the existing maintenance ticket flow.
+
+Boundary:
+
+- This add-on is the premium expansion of existing maintenance and `maintenance_enterprise`, not a separate replacement for maintenance tickets.
+- Lower tiers keep simple maintenance ticketing.
+- Enterprise maintenance can continue to own room out-of-order/out-of-service logic, preventive maintenance, and downtime.
+- Maintenance & Asset Management adds the full asset registry, equipment lifecycle, warranty/service history, technician/vendor workflow, asset costing, and asset-level reporting.
+- Technical implementations may share maintenance ticket, room readiness, housekeeping escalation, report snapshot, audit, and attachment contracts.
+
+Required capabilities:
+
+- asset registry for rooms, equipment, vehicles, kitchen equipment, generators, pumps, HVAC, fire/safety equipment, and property infrastructure;
+- asset location and ownership;
+- warranty, supplier, serial number, purchase date, and replacement-value metadata;
+- preventive maintenance schedules per asset;
+- inspection checklists;
+- service history;
+- technician/vendor assignment;
+- attachments/photos;
+- downtime tracking;
+- return-to-service approval;
+- recurring-failure analytics;
+- cost tracking by asset, room, area, and department;
+- room-availability impact where the asset blocks sale or guest readiness;
+- reporting for upcoming services, overdue inspections, downtime, repeated failures, and asset cost.
+
+Customization:
+
+- asset categories;
+- service intervals;
+- inspection checklist templates;
+- downtime categories;
+- escalation rules;
+- technician/vendor lists;
+- required close fields;
+- report columns and export formats.
+
+Lower tiers:
+
+- keep simple maintenance tickets and room maintenance status.
+- Do not force full asset records for ordinary ticket creation.
+
+Add-on:
+
+- Maintenance & Asset Management should require explicit Enterprise add-on entitlement when it moves from planned to requestable.
+- It may be sold individually or bundled inside the Enterprise Operations Suite.
+
+#### 25. Events and Venue Management Add-On
+
+Build advanced Events & Venue Management as a hotel Enterprise add-on on top of the existing Events & Venues foundation.
+
+Boundary:
+
+- This add-on extends the existing Events & Venues/conference foundation; it must not replace the simpler conference/event flows already available to lower tiers.
+- Basic venue-only, conference, and event booking behavior can remain in the current product.
+- Group Operations remains responsible for group room blocks, pickup/release, rooming lists, and group check-in/out.
+- Corporate Accounts remains responsible for company profiles, credit limits, statements, and debtor workflows.
+- Advanced Folios/Documents remains responsible for folio allocation and formal documents.
+- Events & Venue Management owns the event department layer: lead pipeline, venue/package design, banquet/event orders, timelines, supplier coordination, deposits/milestones, and post-event settlement/profitability.
+- Technical implementations may share event booking, group operation, folio, POS/inventory, document, payment, and reporting contracts.
+
+Required capabilities:
+
+- event opportunity/lead pipeline;
+- venue availability calendar;
+- event package builder for venue hire, meals, equipment, accommodation, and extras;
+- weddings, conferences, retreats, workshops, private dining, memorials, birthdays, and corporate events;
+- event timelines, run sheets, setup/teardown tasks, and department assignments;
+- menu and banquet linkage to POS/inventory where applicable;
+- supplier coordination and cost tracking;
+- deposits, milestones, cancellation terms, and payment schedule;
+- event documents: quote, contract, pro-forma, banquet event order, invoice, and settlement statement;
+- linked room blocks/group operations;
+- event-specific folio/settlement handling without bypassing payment ledger rules;
+- profitability and post-event reporting.
+
+Customization:
+
+- event types;
+- venue types;
+- package templates;
+- deposit and cancellation rules;
+- document templates;
+- banquet task templates;
+- supplier categories;
+- approval roles;
+- reporting categories.
+
+Lower tiers:
+
+- preserve existing conference/events behavior and public event/venue inquiry paths.
+- Do not require hotels to use the advanced add-on for simpler venue-only or conference bookings that the current system already supports.
+
+Add-on:
+
+- Events & Venue Management should require explicit Enterprise add-on entitlement when it moves from planned to requestable.
+- It may be sold individually or bundled inside the Events & Groups Suite.
+
 ### Phase 0: Truth and Documentation Cleanup
 
 1. Confirm repo package version.
@@ -1196,7 +2471,22 @@ This section is part of the implementation contract. Enterprise work should add 
 4. Add admin activation.
 5. Add tests proving correct gating.
 
-### Phase 7: Custom Website and Payments Foundation
+### Phase 7: Commercial Request and Command Central Activation
+
+1. Add shared subscription/add-on request data contract.
+2. Add in-app package/add-on builder in Settings/Subscription.
+3. Generate downloadable quotation/pro-forma request from the app.
+4. Submit structured app requests to backend/Command Central.
+5. Add public website package builder with the same structured payload.
+6. Generate downloadable quotation/pro-forma request from the website.
+7. Add Command Central request inbox with selected plan/add-ons parsed.
+8. Add Command Central quote-to-invoice/pro-forma workflow.
+9. Add manual payment-review states.
+10. Add audited admin activation for plan and individual add-ons.
+11. Add entitlement refresh so activated features appear in the client app.
+12. Add tests proving requests do not directly activate paid features.
+
+### Phase 8: Custom Website and Payments Foundation
 
 1. Booking intent table.
 2. Payment intent table.
@@ -1207,7 +2497,7 @@ This section is part of the implementation contract. Enterprise work should add 
 7. App inbox alerts.
 8. No change to existing Pro booking slug beyond compatibility.
 
-### Phase 8: Corporate, Groups, and Advanced Folios
+### Phase 9: Corporate, Groups, and Advanced Folios
 
 1. Company profiles.
 2. Corporate accounts.
@@ -1218,7 +2508,7 @@ This section is part of the implementation contract. Enterprise work should add 
 7. Credit limits.
 8. Rooming list import.
 
-### Phase 9: Expanded Add-ons
+### Phase 10: Expanded Add-ons
 
 1. Advanced rates.
 2. Advanced housekeeping mobile.
@@ -1248,6 +2538,9 @@ An Enterprise change is not done until:
 11. Migrations are deployed only after review.
 12. Deployment status is stated accurately.
 13. `PROJECT_STATE.md` is updated if architecture, risk, release state, or deployment assumptions change.
+14. Command Central is updated when work changes plan, entitlement, add-on, quote, invoice, support, activation, or admin-review behavior.
+15. Development Preview Mode is available for local review of Enterprise UI without granting production authority.
+16. Client-facing package/add-on requests generate structured backend records and do not directly activate paid entitlements.
 
 ## 14. Verification Checklist For Reviewers
 

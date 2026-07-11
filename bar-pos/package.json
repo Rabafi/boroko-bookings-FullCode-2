@@ -1,0 +1,74 @@
+{
+  "name": "boroko-bar-pos",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Boroko Bar POS — Offline-first point of sale for bars, pubs, and shebeens",
+  "author": {
+    "name": "Botswapelo Studios Pty Ltd"
+  },
+  "main": "out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "dist": "npm run build && electron-builder --win nsis --publish never",
+    "dist:dir": "npm run build && electron-builder --win dir --publish never",
+    "version:patch": "npm version patch --no-git-tag-version",
+    "version:minor": "npm version minor --no-git-tag-version",
+    "version:major": "npm version major --no-git-tag-version"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "2.39.0",
+    "bcryptjs": "^2.4.3",
+    "cross-fetch": "^3.2.0",
+    "dotenv": "^17.4.2",
+    "lucide-react": "^0.344.0",
+    "react": "18.2.0",
+    "react-dom": "18.2.0",
+    "react-router-dom": "^6.22.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.2.0",
+    "autoprefixer": "^10.4.18",
+    "electron": "^42.2.0",
+    "electron-builder": "^24.9.1",
+    "electron-vite": "^2.3.0",
+    "postcss": "^8.4.35",
+    "tailwindcss": "^3.4.1",
+    "vite": "^5.4.0"
+  },
+  "build": {
+    "appId": "com.boroko.barpos",
+    "productName": "Boroko Bar POS",
+    "asar": true,
+    "artifactName": "Boroko-Bar-POS-${version}-${arch}.${ext}",
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false
+    },
+    "files": [
+      "out/**/*",
+      "!out/**/*.map"
+    ],
+    "extraResources": [
+      {
+        "from": "build/bar-pos-config.json",
+        "to": "bar-pos-config.json"
+      }
+    ]
+  }
+}

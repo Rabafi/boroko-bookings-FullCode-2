@@ -37,6 +37,7 @@ const DayUse = lazy(() => import('./pages/DayUse'))
 const Inventory = lazy(() => import('./pages/Inventory'))
 const Control = lazy(() => import('./pages/Control'))
 const PosSales = lazy(() => import('./pages/PosSales'))
+const RestaurantOwner = lazy(() => import('./pages/RestaurantOwner'))
 
 const ToastContext = createContext({ showToast: () => {} })
 
@@ -1026,6 +1027,7 @@ function AuthenticatedApp({ alertCount, dark, setAlertCount, notificationCount, 
           <Route path="/day-use" element={<Suspense fallback={<PageLoader />}><Guard capability="pool.view"><DayUse /></Guard></Suspense>} />
           <Route path="/inventory" element={<Suspense fallback={<PageLoader />}><Guard capability="inventory.view"><Inventory /></Guard></Suspense>} />
           <Route path="/pos" element={<Suspense fallback={<PageLoader />}><Guard capability="pos.reports"><PosSales /></Guard></Suspense>} />
+          <Route path="/restaurant-owner" element={<Suspense fallback={<PageLoader />}><RestaurantOwner /></Suspense>} />
           <Route path="/control" element={<Suspense fallback={<PageLoader />}><Control /></Suspense>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

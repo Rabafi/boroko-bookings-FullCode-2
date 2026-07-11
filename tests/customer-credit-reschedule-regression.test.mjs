@@ -233,6 +233,7 @@ async function run() {
   assert.match(desktopQuotations, /accommodation_lines/, 'Desktop quotations must capture multi-room accommodation lines')
   assert.match(desktopQuotations, /Add Room/, 'Desktop quotations must expose room line entry')
   assert.match(desktopQuotations, /quotationRoomLines/, 'Desktop quotations must render multi-room quotation summaries')
+  assert.match(desktopQuotations, /function QuotationPreview[\s\S]*const roomLines = quotationRoomLines\(q\)[\s\S]*roomLines\.length > 1/, 'Quotation preview must define roomLines before rendering multi-room line details')
   assert.match(publicLodgePage, /get_public_booking_offers/, 'Public lodge page must read lodge-specific online offer configuration')
   assert.match(publicLodgePage, /selectedRoomIds/, 'Public lodge page must support selecting multiple rooms')
   assert.match(publicLodgePage, /handleBookSelected\(\{ fullLodge: true \}\)/, 'Public lodge page must expose full-lodge requests when enabled')

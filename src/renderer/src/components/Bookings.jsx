@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, lazy, Suspense } from 'react'
 import {
   Plus,
   Search,
@@ -20,7 +20,7 @@ import {
   Mail,
   CalendarClock
 } from 'lucide-react'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { StatusBadge } from './shared/StatusBadge'
 import { Modal } from './shared/Modal'
 import { Receipt } from './shared/Receipt'
@@ -29,9 +29,13 @@ import UsageLimitIndicator from './shared/UsageLimitIndicator'
 import UsageUpgradePrompt from './shared/UpgradePromptModal'
 import UpgradeNudgeBanner from './shared/UpgradeNudgeBanner'
 import { DESKTOP_PAYMENT_METHODS, PAYMENT_METHOD_LABELS } from '../constants/paymentMethods'
-import { useAccess, useAuth, useSettings } from '../app-context'
+import { useAccess, useAuth, useSettings, useFeatures } from '../app-context'
 import { MONTHLY_USAGE_RESET_COPY, canCreateBooking, countMonthlyUsageBookings, getEarlyUpgradePromptState, getPlanUsageLimits, normalizeSubscriptionPlan } from '../../../shared/subscriptionPlans'
 import { formatLocalDate, localToday } from '../utils/localDate'
+
+const CheckinWorkflow = lazy(() => import('./CheckinWorkflow'))
+const EarlyLateCheckout = lazy(() => import('./EarlyLateCheckout'))
+const CancellationPolicies = lazy(() => import('./CancellationPolicies'))
 
 const STATUS_OPTIONS = ['confirmed', 'checked_in', 'checked_out', 'cancelled']
 
@@ -232,6 +236,27 @@ export default function Bookings() {
   const meshLockIdRef = useRef(null)
   const meshLockSignatureRef = useRef('')
   const FINANCIAL_SYNC_BLOCK_MESSAGE = 'Financial actions are temporarily locked until booking and payment sync are fully confirmed. Review System Health, then try again.'
+
+  const [searchParams, setSearchParams] = useSearchParams()
+  const features = useFeatures()
+  const [activeTab, setActiveTab] = useState('bookings')
+
+  const hasCheckinWorkflow = features?.checkin_workflow === true
+  const hasEarlyLate = features?.early_late_checkout === true
+  const hasCancellation = features?.cancellation_policies === true
+  const hasAnyBookingFeature = hasCheckinWorkflow || hasEarlyLate || hasCancellation
+
+  useEffect(() => {
+    const tabParam = searchParams.get('tab')
+    if (tabParam) setActiveTab(tabParam)
+  }, [searchParams])
+
+  const tabs = [
+    { key: 'bookings', label: 'Bookings' },
+    ...(hasCheckinWorkflow ? [{ key: 'checkin', label: 'Check-in Workflow' }] : []),
+    ...(hasEarlyLate ? [{ key: 'early-late', label: 'Early / Late Checkout' }] : []),
+    ...(hasCancellation ? [{ key: 'cancellations', label: 'Cancellation Policies' }] : [])
+  ]
 
   // Poll sync status every 30s (independent of bookings refresh — sync can change without a data reload)
   useEffect(() => {
@@ -1209,12 +1234,42 @@ export default function Bookings() {
   )
 
   return (
-    <div className="bb-page">
+    <div className="mx-auto flex max-w-7xl flex-col gap-6">
       <div className="bb-page-header">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.22em] text-emerald-700/70">Front Desk</p>
           <h1 className="bb-page-header-title mt-2">Bookings</h1>
-          <p className="bb-page-header-subtitle">{bookings.length} total bookings across current and upcoming stays.</p>
+          <p className="bb-page-header-subtitle">
+            Manage reservations, check-ins, and guest workflows.
+          </p>
+        </div>
+      </div>
+
+      {tabs.length > 1 && (
+        <div className="flex gap-1 border-b border-slate-200">
+          {tabs.map(({ key, label }) => (
+            <button
+              key={key}
+              onClick={() => { setActiveTab(key); setSearchParams({ tab: key }, { replace: true }) }}
+              className={`px-4 py-2 text-xs font-semibold transition-colors ${
+                activeTab === key
+                  ? 'border-b-2 border-emerald-600 text-emerald-700'
+                  : 'text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {activeTab === 'bookings' && (
+        <div className="bb-page">
+          <div className="bb-page-header">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.22em] text-emerald-700/70">Front Desk</p>
+              <h1 className="bb-page-header-title mt-2">Bookings</h1>
+              <p className="bb-page-header-subtitle">{bookings.length} total bookings across current and upcoming stays.</p>
           <div className="mt-2">
             {isProPlan ? (
               <span className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700">
@@ -2662,6 +2717,11 @@ export default function Bookings() {
         lodgeName={settings?.lodge_name || settings?.company_name || ''}
         lodgeId={settings?.lodge_id || ''}
       />
+        </div>
+      )}
+      {activeTab === 'checkin' && <Suspense fallback={<div className="p-8 text-center text-slate-500">Loading...</div>}><CheckinWorkflow /></Suspense>}
+      {activeTab === 'early-late' && <Suspense fallback={<div className="p-8 text-center text-slate-500">Loading...</div>}><EarlyLateCheckout /></Suspense>}
+      {activeTab === 'cancellations' && <Suspense fallback={<div className="p-8 text-center text-slate-500">Loading...</div>}><CancellationPolicies /></Suspense>}
     </div>
   )
 }

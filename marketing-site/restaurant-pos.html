@@ -1,0 +1,1021 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Boroko Restaurant POS | Point of Sale for Restaurants &amp; Bars</title>
+    <meta name="description" content="A powerful, offline-ready point of sale system built for restaurants and bars. Menu management, table tabs, kitchen display, cash drawer, staff shifts, and real-time reports — all in one system." />
+    <meta property="og:title" content="Boroko Restaurant POS" />
+    <meta property="og:description" content="Point of sale built for restaurants and bars. Menu management, table tabs, kitchen display, cash drawer, staff shifts, and real-time reports." />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="https://borokobookings.com/assets/og-image.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:site" content="@borokobookings" />
+    <meta name="twitter:title" content="Boroko Restaurant POS" />
+    <meta name="twitter:description" content="Point of sale built for restaurants and bars. Menu management, table tabs, kitchen display, cash drawer, staff shifts, and real-time reports." />
+    <meta name="twitter:image" content="https://borokobookings.com/assets/og-image.png" />
+    <meta name="theme-color" content="#18352b" />
+    <link rel="canonical" href="https://borokobookings.com/restaurant-pos" />
+    <link rel="icon" type="image/svg+xml" href="./assets/boroko-bookings-logo.svg" />
+    <link rel="alternate icon" type="image/png" href="./assets/boroko-bookings-logo-light.png" />
+    <link rel="stylesheet" href="./styles.css" />
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "BreadcrumbList",
+      "itemListElement": [
+        { "@type": "ListItem", "position": 1, "name": "Home", "item": "https://borokobookings.com/" },
+        { "@type": "ListItem", "position": 2, "name": "Restaurant POS", "item": "https://borokobookings.com/restaurant-pos" }
+      ]
+    }
+    </script>
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-37DYXS6K47"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('consent', 'default', { analytics_storage: 'denied' });
+      gtag('config', 'G-37DYXS6K47');
+    </script>
+    <style>
+      .pos-hero-gradient {
+        background: linear-gradient(135deg, rgba(23,76,58,0.92) 0%, rgba(22,50,41,0.88) 50%, rgba(203,126,48,0.72) 100%);
+      }
+      .pos-feature-highlight {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 48px;
+        align-items: center;
+      }
+      .pos-feature-highlight.reverse {
+        direction: rtl;
+      }
+      .pos-feature-highlight.reverse > * {
+        direction: ltr;
+      }
+      .pos-mockup-browser {
+        width: 100%;
+        max-width: 680px;
+        border-radius: 16px;
+        border: 1px solid var(--line);
+        box-shadow: var(--shadow);
+        overflow: hidden;
+      }
+      .pos-mockup-browser-bar {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 10px 14px;
+        background: linear-gradient(180deg,rgba(255,255,255,0.96),rgba(239,230,217,0.88));
+        border-bottom: 1px solid var(--line);
+      }
+      .pos-mockup-browser-bar .dot { width: 10px; height: 10px; border-radius: 50%; }
+      .pos-mockup-browser-bar .dot-red { background: #ff5f57; }
+      .pos-mockup-browser-bar .dot-yellow { background: #ffbd2e; }
+      .pos-mockup-browser-bar .dot-green { background: #28c840; }
+      .pos-mockup-browser-bar .url { flex:1; text-align:center; font-size:0.7rem; color:var(--ink-soft); font-weight:600; letter-spacing:0.04em; }
+      .pos-phone-frame {
+        background: linear-gradient(180deg,rgba(23,76,58,0.06),rgba(23,76,58,0.02));
+        border-radius: 32px;
+        padding: 14px 10px;
+        border: 1px solid var(--line);
+        box-shadow: var(--shadow);
+        width: 260px;
+      }
+      .pos-phone-notch {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 4px 0 10px;
+      }
+      .pos-phone-notch div {
+        width: 52px;
+        height: 5px;
+        border-radius: 3px;
+        background: var(--line);
+      }
+      .pos-phone-screen {
+        border-radius: 22px;
+        overflow: hidden;
+      }
+      .pos-kpi-strip {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 18px;
+        margin-top: 32px;
+      }
+      .pos-kpi-card {
+        background: var(--surface);
+        border-radius: var(--radius-lg);
+        padding: 24px;
+        text-align: center;
+        border: 1px solid var(--line);
+        box-shadow: 0 18px 48px rgba(28,42,37,0.07);
+        transition: transform 0.3s var(--transition-smooth), box-shadow 0.3s ease;
+      }
+      .pos-kpi-card:hover {
+        transform: translateY(-4px);
+        box-shadow: 0 24px 56px rgba(28,42,37,0.12);
+      }
+      .pos-kpi-number {
+        font-size: clamp(1.8rem, 3vw, 2.6rem);
+        font-weight: 800;
+        color: var(--brand);
+        line-height: 1.1;
+        margin-bottom: 6px;
+      }
+      .pos-kpi-label {
+        font-size: 0.85rem;
+        color: var(--ink-soft);
+        font-weight: 600;
+      }
+      .pos-screenshot-strip {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 18px;
+        margin-top: 32px;
+      }
+      .pos-screenshot-card {
+        border-radius: 16px;
+        border: 1px solid var(--line);
+        box-shadow: var(--shadow);
+        overflow: hidden;
+        transition: transform 0.3s var(--transition-smooth), box-shadow 0.3s ease;
+      }
+      .pos-screenshot-card:hover {
+        transform: translateY(-4px) scale(1.01);
+        box-shadow: 0 24px 56px rgba(28,42,37,0.12);
+      }
+      .pos-screenshot-card img {
+        width: 100%;
+        display: block;
+        object-fit: cover;
+      }
+      .pos-screenshot-label {
+        padding: 14px 18px;
+        background: var(--surface);
+        border-top: 1px solid var(--line);
+      }
+      .pos-screenshot-label h4 {
+        font-size: 0.9rem;
+        margin: 0 0 2px;
+      }
+      .pos-screenshot-label p {
+        font-size: 0.78rem;
+        color: var(--ink-soft);
+        margin: 0;
+      }
+      .pos-workflow-grid {
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        gap: 18px;
+        margin-top: 32px;
+      }
+      .pos-workflow-step {
+        text-align: center;
+        position: relative;
+      }
+      .pos-workflow-step::after {
+        content: '';
+        position: absolute;
+        top: 28px;
+        right: -12px;
+        width: 24px;
+        height: 2px;
+        background: var(--brand-2);
+        opacity: 0.4;
+      }
+      .pos-workflow-step:last-child::after {
+        display: none;
+      }
+      .pos-workflow-num {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 56px;
+        height: 56px;
+        border-radius: 16px;
+        background: linear-gradient(135deg, var(--brand), rgba(23,76,58,0.85));
+        color: #fff;
+        font-weight: 800;
+        font-size: 1.2rem;
+        margin-bottom: 14px;
+        box-shadow: 0 8px 24px rgba(23,76,58,0.25);
+      }
+      .pos-workflow-step h3 {
+        font-size: 0.95rem;
+        margin-bottom: 4px;
+      }
+      .pos-workflow-step p {
+        font-size: 0.82rem;
+        color: var(--ink-soft);
+        line-height: 1.5;
+      }
+      @media (max-width: 1080px) {
+        .pos-feature-highlight {
+          grid-template-columns: 1fr;
+          gap: 32px;
+        }
+        .pos-feature-highlight.reverse {
+          direction: ltr;
+        }
+        .pos-kpi-strip {
+          grid-template-columns: repeat(2, 1fr);
+        }
+        .pos-screenshot-strip {
+          grid-template-columns: 1fr;
+        }
+        .pos-workflow-grid {
+          grid-template-columns: repeat(3, 1fr);
+        }
+        .pos-workflow-step::after {
+          display: none;
+        }
+      }
+      @media (max-width: 640px) {
+        .pos-kpi-strip {
+          grid-template-columns: 1fr 1fr;
+          gap: 12px;
+        }
+        .pos-workflow-grid {
+          grid-template-columns: 1fr;
+          gap: 24px;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .pos-kpi-card, .pos-screenshot-card {
+          transition: none;
+        }
+      }
+    </style>
+  </head>
+  <body data-page="restaurant-pos">
+    <a href="#main" class="skip-link">Skip to content</a>
+    <div class="scroll-progress" id="scroll-progress"></div>
+    <div class="site-shell">
+      <header class="topbar" id="topbar">
+        <div class="topbar-pill">
+          <a class="brand" href="./index.html" aria-label="Boroko Bookings home">
+            <span class="brand-mark">
+              <img src="./assets/boroko-bookings-logo-light.png" alt="" aria-hidden="true" width="150" height="54" />
+            </span>
+            <span class="brand-copy">
+              <strong>Boroko Bookings</strong>
+            </span>
+          </a>
+          <nav id="site-nav" class="site-nav" aria-label="Main navigation">
+            <a href="./features.html" data-nav="features">Product</a>
+            <a href="./restaurant-pos.html" data-nav="restaurant-pos">Restaurant POS</a>
+            <a href="./booking-site.html" data-nav="booking-site">Booking Site</a>
+            <a href="./manager-app.html" data-nav="manager-app">Manager App</a>
+            <a href="./packages.html" data-nav="packages">Packages</a>
+            <a href="./why-switch.html" data-nav="why-switch">Why Switch</a>
+            <a href="./contact.html" data-nav="contact">Contact</a>
+          </nav>
+          <div class="topbar-actions">
+            <a class="nav-cta-pill" href="#" data-action="download">Start trial</a>
+          </div>
+          <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Open navigation menu">
+            <span class="sr-only">Menu</span>
+            <span class="menu-bar"></span>
+            <span class="menu-bar"></span>
+            <span class="menu-bar"></span>
+          </button>
+        </div>
+      </header>
+
+      <div class="mobile-overlay" id="mobile-overlay" aria-hidden="true">
+        <div class="mobile-overlay-bg"></div>
+        <div class="mobile-overlay-content">
+          <nav class="mobile-nav" aria-label="Mobile navigation">
+            <a href="./index.html" data-nav="home" data-stagger="0">Home</a>
+            <a href="./features.html" data-nav="features" data-stagger="1">Product</a>
+            <a href="./restaurant-pos.html" data-nav="restaurant-pos" data-stagger="2">Restaurant POS</a>
+            <a href="./booking-site.html" data-nav="booking-site" data-stagger="3">Booking Site</a>
+            <a href="./manager-app.html" data-nav="manager-app" data-stagger="4">Manager App</a>
+            <a href="./packages.html" data-nav="packages" data-stagger="5">Packages</a>
+            <a href="./why-switch.html" data-nav="why-switch" data-stagger="6">Why Switch</a>
+            <a href="./contact.html" data-nav="contact" data-stagger="7">Contact</a>
+          </nav>
+          <div class="mobile-overlay-footer">
+            <a class="mobile-cta" href="#" data-action="download">Start free trial</a>
+            <a class="mobile-cta-secondary" href="./packages.html">See packages</a>
+            <div class="mobile-contact">
+              <a href="https://wa.me/26772789415" target="_blank" rel="noreferrer">WhatsApp: +267 72 789 415</a>
+              <a href="mailto:hello@borokobookings.com">hello@borokobookings.com</a>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <main id="main">
+        <nav class="container" aria-label="Breadcrumb" style="padding-top:100px;">
+          <ol class="breadcrumbs">
+            <li><a href="./index.html">Home</a></li>
+            <li><span class="breadcrumbs-current">Restaurant POS</span></li>
+          </ol>
+        </nav>
+
+        <!-- ═══════════════════════════════════════════════════════════════
+             HERO
+        ═══════════════════════════════════════════════════════════════ -->
+        <section class="page-hero page-hero-with-image">
+          <div class="page-hero-bg" aria-hidden="true">
+            <picture class="responsive-picture">
+              <source type="image/avif" srcset="./assets/generated/photos/bar-stock-640.avif 640w, ./assets/generated/photos/bar-stock-960.avif 960w, ./assets/generated/photos/bar-stock-1280.avif 1280w, ./assets/generated/photos/bar-stock-1600.avif 1600w" sizes="(max-width: 900px) 92vw, 1180px" />
+              <source type="image/webp" srcset="./assets/generated/photos/bar-stock-640.webp 640w, ./assets/generated/photos/bar-stock-960.webp 960w, ./assets/generated/photos/bar-stock-1280.webp 1280w, ./assets/generated/photos/bar-stock-1600.webp 1600w" sizes="(max-width: 900px) 92vw, 1180px" />
+              <img src="./assets/photos/bar-stock.jpg" alt="" width="1600" height="1067" decoding="async" />
+            </picture>
+          </div>
+          <div class="container page-hero-grid">
+            <div>
+              <div class="section-tag">Restaurant &amp; Bar POS</div>
+              <h1>Know your pour cost. Close without surprises. Never stop selling.</h1>
+              <p class="hero-lead">A complete restaurant operations system — not just a cash register. Menu management, live kitchen display, table tabs, staff shifts, inventory with recipe costing, cash drawer with variance checks, and an end-of-day that balances to the cent. All offline-ready.</p>
+              <div class="hero-actions">
+                <a class="btn btn-primary" href="#" data-action="download">Start free trial</a>
+                <a class="btn btn-secondary" href="./packages.html">See packages</a>
+              </div>
+            </div>
+            <div class="hero-surface" style="min-height:360px;">
+              <div class="pos-mockup-browser" style="margin:0 auto;">
+                <div class="pos-mockup-browser-bar">
+                  <span class="dot dot-red"></span>
+                  <span class="dot dot-yellow"></span>
+                  <span class="dot dot-green"></span>
+                  <span class="url">pos.yourbar.co.bw</span>
+                </div>
+                <picture class="responsive-picture">
+                  <source type="image/avif" srcset="./assets/generated/screenshots/desktop-pos-640.avif 640w, ./assets/generated/screenshots/desktop-pos-960.avif 960w, ./assets/generated/screenshots/desktop-pos-1280.avif 1280w" sizes="(max-width: 900px) 92vw, 680px" />
+                  <source type="image/webp" srcset="./assets/generated/screenshots/desktop-pos-640.webp 640w, ./assets/generated/screenshots/desktop-pos-960.webp 960w, ./assets/generated/screenshots/desktop-pos-1280.webp 1280w" sizes="(max-width: 900px) 92vw, 680px" />
+                  <img src="./assets/screenshots/desktop-pos.png" alt="Boroko POS terminal showing menu items, order summary, and payment options" width="1280" height="900" style="object-fit:cover;" fetchpriority="high" decoding="async" />
+                </picture>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ═══════════════════════════════════════════════════════════════
+             TRUST STRIP
+        ═══════════════════════════════════════════════════════════════ -->
+        <section class="band-section">
+          <div class="container" style="display:flex;align-items:center;justify-content:space-between;gap:24px;flex-wrap:wrap;">
+            <div style="flex:1;min-width:200px;">
+              <p style="font-weight:700;font-size:0.95rem;margin:0;">Built for the pace of hospitality.</p>
+              <p style="font-size:0.88rem;color:var(--ink-soft);margin:4px 0 0;">Offline-ready. Works on any screen. Scales from one bar to a chain.</p>
+            </div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;">
+              <span class="plan-chip">Offline-Ready</span>
+              <span class="plan-chip">Multi-Station</span>
+              <span class="plan-chip">Kitchen Display</span>
+              <span class="plan-chip">Cash Drawer</span>
+            </div>
+          </div>
+        </section>
+
+        <!-- ═══════════════════════════════════════════════════════════════
+             THE FULL SYSTEM
+        ═══════════════════════════════════════════════════════════════ -->
+        <section class="section">
+          <div class="container">
+            <div class="section-head">
+              <div class="section-tag">The full system</div>
+              <h2>Seven workspaces. One application.</h2>
+              <p>Boroko POS is organised around the way a restaurant or bar actually runs — from the floor to the kitchen, from menu creation to end-of-day close. Each workspace groups the tools your team needs, without switching between disconnected apps.</p>
+            </div>
+            <div class="pos-kpi-strip">
+              <div class="pos-kpi-card">
+                <div class="pos-kpi-number">Floor</div>
+                <div class="pos-kpi-label">Tables, reservations, waitlist</div>
+              </div>
+              <div class="pos-kpi-card">
+                <div class="pos-kpi-number">Kitchen</div>
+                <div class="pos-kpi-label">Tickets, stations, timing</div>
+              </div>
+              <div class="pos-kpi-card">
+                <div class="pos-kpi-number">Menu</div>
+                <div class="pos-kpi-label">Items, combos, recipes, prep</div>
+              </div>
+              <div class="pos-kpi-card">
+                <div class="pos-kpi-number">Stock</div>
+                <div class="pos-kpi-label">Inventory, purchasing, lots</div>
+              </div>
+              <div class="pos-kpi-card">
+                <div class="pos-kpi-number">Team</div>
+                <div class="pos-kpi-label">Shifts, performance, tips</div>
+              </div>
+              <div class="pos-kpi-card">
+                <div class="pos-kpi-number">Cash</div>
+                <div class="pos-kpi-label">Drawer, close, digest</div>
+              </div>
+              <div class="pos-kpi-card">
+                <div class="pos-kpi-number">Control</div>
+                <div class="pos-kpi-label">Alerts, checklists, feedback</div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ═══════════════════════════════════════════════════════════════
+             FLOOR & SERVICE
+        ═══════════════════════════════════════════════════════════════ -->
+        <section class="band-section">
+          <div class="container">
+            <div class="pos-feature-highlight">
+              <div>
+                <div class="section-tag" style="margin-bottom:12px;">Floor &amp; Service</div>
+                <h2 style="margin-bottom:16px;">See every table. Manage every reservation.</h2>
+                <p style="margin-bottom:20px;">A live floor plan shows every table at a glance — colour-coded by status. Staff open tables, assign waiters, transfer tabs, and manage reservations from the same view. No paper waitlist, no sticky notes.</p>
+                <ul style="list-style:none;padding:0;margin:0;display:grid;gap:12px;">
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand);font-weight:800;">&#10003;</span> Visual floor grid with colour-coded table status — available, occupied, running, ready</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand);font-weight:800;">&#10003;</span> Reservations with 7 statuses — booked, confirmed, seated, completed, cancelled, no-show</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand);font-weight:800;">&#10003;</span> Waitlist with quoted wait times and automated notification</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand);font-weight:800;">&#10003;</span> Tab transfers — move a running tab to a different table in one step</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand);font-weight:800;">&#10003;</span> Waiter assignment per table with operator or waiter service modes</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand);font-weight:800;">&#10003;</span> Group tables by area — main floor, patio, bar counter, VIP</li>
+                </ul>
+              </div>
+              <div style="display:flex;justify-content:center;">
+                <div class="pos-mockup-browser">
+                  <div class="pos-mockup-browser-bar">
+                    <span class="dot dot-red"></span>
+                    <span class="dot dot-yellow"></span>
+                    <span class="dot dot-green"></span>
+                    <span class="url">Floor &amp; Service</span>
+                  </div>
+                  <picture class="responsive-picture">
+                    <source type="image/avif" srcset="./assets/generated/photos/restaurant-640.avif 640w, ./assets/generated/photos/restaurant-960.avif 960w, ./assets/generated/photos/restaurant-1280.avif 1280w" sizes="(max-width: 900px) 92vw, 560px" />
+                    <source type="image/webp" srcset="./assets/generated/photos/restaurant-640.webp 640w, ./assets/generated/photos/restaurant-960.webp 960w, ./assets/generated/photos/restaurant-1280.webp 1280w" sizes="(max-width: 900px) 92vw, 560px" />
+                    <img src="./assets/photos/restaurant.jpg" alt="Restaurant floor with tables and seating" width="1600" height="1067" style="object-fit:cover;" loading="lazy" decoding="async" />
+                  </picture>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ═══════════════════════════════════════════════════════════════
+             KITCHEN DISPLAY & ANALYTICS
+        ═══════════════════════════════════════════════════════════════ -->
+        <section class="section">
+          <div class="container">
+            <div class="pos-feature-highlight reverse">
+              <div>
+                <div class="section-tag" style="margin-bottom:12px;">Kitchen &amp; Bar Display</div>
+                <h2 style="margin-bottom:16px;">Orders appear instantly. Tickets route by station.</h2>
+                <p style="margin-bottom:20px;">When staff places an order, it appears on the correct station display in real time — cocktails to the bar, burgers to the grill. Every ticket is timed with colour-coded urgency. The analytics view shows prep time averages and bottleneck trends.</p>
+                <ul style="list-style:none;padding:0;margin:0;display:grid;gap:12px;">
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand-2);font-weight:800;">&#9679;</span> Live ticket board — new, preparing, ready, served columns per station</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand-2);font-weight:800;">&#9679;</span> Kitchen stations — assign menu items to kitchen, bar, grill, prep stations</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand-2);font-weight:800;">&#9679;</span> Time-pressure colour coding — emerald, amber, orange, red</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand-2);font-weight:800;">&#9679;</span> Kitchen timing analytics — average prep time, busiest station, slow ticket identification</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand-2);font-weight:800;">&#9679;</span> Standalone prep display for dedicated kitchen tablets or TVs</li>
+                </ul>
+              </div>
+              <div style="display:flex;justify-content:center;">
+                <div style="width:100%;max-width:560px;border-radius:14px;border:1px solid var(--line);box-shadow:var(--shadow);overflow:hidden;">
+                  <div style="display:flex;align-items:center;gap:5px;padding:8px 12px;background:linear-gradient(180deg,rgba(255,255,255,0.96),rgba(239,230,217,0.88));border-bottom:1px solid var(--line);">
+                    <span style="width:8px;height:8px;border-radius:50%;background:#ff5f57;"></span>
+                    <span style="width:8px;height:8px;border-radius:50%;background:#ffbd2e;"></span>
+                    <span style="width:8px;height:8px;border-radius:50%;background:#28c840;"></span>
+                    <span style="flex:1;text-align:center;font-size:0.65rem;color:var(--ink-soft);font-weight:600;">Kitchen &amp; Analytics</span>
+                  </div>
+                  <picture class="responsive-picture">
+                    <source type="image/avif" srcset="./assets/generated/photos/restaurant-640.avif 640w, ./assets/generated/photos/restaurant-960.avif 960w, ./assets/generated/photos/restaurant-1280.avif 1280w" sizes="(max-width: 900px) 92vw, 560px" />
+                    <source type="image/webp" srcset="./assets/generated/photos/restaurant-640.webp 640w, ./assets/generated/photos/restaurant-960.webp 960w, ./assets/generated/photos/restaurant-1280.webp 1280w" sizes="(max-width: 900px) 92vw, 560px" />
+                    <img src="./assets/photos/restaurant.jpg" alt="Restaurant kitchen environment" width="1600" height="1067" style="object-fit:cover;" loading="lazy" decoding="async" />
+                  </picture>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ═══════════════════════════════════════════════════════════════
+             MENU & PRODUCTION
+        ═══════════════════════════════════════════════════════════════ -->
+        <section class="band-section">
+          <div class="container">
+            <div class="pos-feature-highlight">
+              <div>
+                <div class="section-tag" style="margin-bottom:12px;">Menu &amp; Production</div>
+                <h2 style="margin-bottom:16px;">From menu items to prep batches. All connected.</h2>
+                <p style="margin-bottom:20px;">Build your menu with categories, modifiers, and combos. Link every item to its recipe ingredients so stock deductions and margins are automatic. Record prep batches for sauces, dough, and marinades with actual yield tracking.</p>
+                <ul style="list-style:none;padding:0;margin:0;display:grid;gap:12px;">
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand);font-weight:800;">&#10003;</span> Menu items with categories, pricing, and availability toggles</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand);font-weight:800;">&#10003;</span> Modifier groups with min/max selections and applies-to-category rules</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand);font-weight:800;">&#10003;</span> Combo/meal-deal builder with required and optional item slots</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand);font-weight:800;">&#10003;</span> Recipe costing — link each menu item to its ingredient list with waste percentages</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand);font-weight:800;">&#10003;</span> Prep batch recording — sauces, dough, marinades with planned vs actual yield</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand);font-weight:800;">&#10003;</span> Recipe variance report — theoretical ingredient usage vs actual stock movement</li>
+                </ul>
+              </div>
+              <div style="display:flex;justify-content:center;">
+                <div style="width:100%;max-width:560px;border-radius:14px;border:1px solid var(--line);box-shadow:var(--shadow);overflow:hidden;">
+                  <div style="display:flex;align-items:center;gap:5px;padding:8px 12px;background:linear-gradient(180deg,rgba(255,255,255,0.96),rgba(239,230,217,0.88));border-bottom:1px solid var(--line);">
+                    <span style="width:8px;height:8px;border-radius:50%;background:#ff5f57;"></span>
+                    <span style="width:8px;height:8px;border-radius:50%;background:#ffbd2e;"></span>
+                    <span style="width:8px;height:8px;border-radius:50%;background:#28c840;"></span>
+                    <span style="flex:1;text-align:center;font-size:0.65rem;color:var(--ink-soft);font-weight:600;">Recipes &amp; Costing</span>
+                  </div>
+                  <picture class="responsive-picture">
+                    <source type="image/avif" srcset="./assets/generated/photos/inventory-tablet-640.avif 640w, ./assets/generated/photos/inventory-tablet-960.avif 960w, ./assets/generated/photos/inventory-tablet-1280.avif 1280w" sizes="(max-width: 900px) 92vw, 560px" />
+                    <source type="image/webp" srcset="./assets/generated/photos/inventory-tablet-640.webp 640w, ./assets/generated/photos/inventory-tablet-960.webp 960w, ./assets/generated/photos/inventory-tablet-1280.webp 1280w" sizes="(max-width: 900px) 92vw, 560px" />
+                    <img src="./assets/photos/inventory-tablet.jpg" alt="Recipe costing and ingredient management on tablet" width="1600" height="1067" style="object-fit:cover;" loading="lazy" decoding="async" />
+                  </picture>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ═══════════════════════════════════════════════════════════════
+             STOCK & PURCHASING
+        ═══════════════════════════════════════════════════════════════ -->
+        <section class="section">
+          <div class="container">
+            <div class="pos-feature-highlight reverse">
+              <div>
+                <div class="section-tag" style="margin-bottom:12px;">Stock &amp; Purchasing</div>
+                <h2 style="margin-bottom:16px;">Know what you have. Know what to order.</h2>
+                <p style="margin-bottom:20px;">Stock levels update with every sale. Low-stock alerts notify you before items run out. Purchase suggestions turn low-stock signals into draft orders. Track lots with expiry dates so nothing goes to waste.</p>
+                <ul style="list-style:none;padding:0;margin:0;display:grid;gap:12px;">
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand-2);font-weight:800;">&#9679;</span> Live stock control with current levels and unit costs</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand-2);font-weight:800;">&#9679;</span> Low-stock alerts with reorder level thresholds</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand-2);font-weight:800;">&#9679;</span> Supplier management and purchase order creation</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand-2);font-weight:800;">&#9679;</span> Purchase suggestions — automatically generated from low-stock signals</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand-2);font-weight:800;">&#9679;</span> Lot and batch tracking with expiry dates and near-expiry alerts</li>
+                </ul>
+              </div>
+              <div style="display:flex;justify-content:center;">
+                <div style="width:100%;max-width:560px;border-radius:14px;border:1px solid var(--line);box-shadow:var(--shadow);overflow:hidden;">
+                  <div style="display:flex;align-items:center;gap:5px;padding:8px 12px;background:linear-gradient(180deg,rgba(255,255,255,0.96),rgba(239,230,217,0.88));border-bottom:1px solid var(--line);">
+                    <span style="width:8px;height:8px;border-radius:50%;background:#ff5f57;"></span>
+                    <span style="width:8px;height:8px;border-radius:50%;background:#ffbd2e;"></span>
+                    <span style="width:8px;height:8px;border-radius:50%;background:#28c840;"></span>
+                    <span style="flex:1;text-align:center;font-size:0.65rem;color:var(--ink-soft);font-weight:600;">Stock &amp; Purchasing</span>
+                  </div>
+                  <picture class="responsive-picture">
+                    <source type="image/avif" srcset="./assets/generated/photos/bar-stock-640.avif 640w, ./assets/generated/photos/bar-stock-960.avif 960w, ./assets/generated/photos/bar-stock-1280.avif 1280w" sizes="(max-width: 900px) 92vw, 560px" />
+                    <source type="image/webp" srcset="./assets/generated/photos/bar-stock-640.webp 640w, ./assets/generated/photos/bar-stock-960.webp 960w, ./assets/generated/photos/bar-stock-1280.webp 1280w" sizes="(max-width: 900px) 92vw, 560px" />
+                    <img src="./assets/photos/bar-stock.jpg" alt="Bar stock shelves and inventory management" width="1600" height="1067" style="object-fit:cover;" loading="lazy" decoding="async" />
+                  </picture>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ═══════════════════════════════════════════════════════════════
+             TEAM
+        ═══════════════════════════════════════════════════════════════ -->
+        <section class="band-section">
+          <div class="container">
+            <div class="pos-feature-highlight">
+              <div>
+                <div class="section-tag" style="margin-bottom:12px;">Team</div>
+                <h2 style="margin-bottom:16px;">Know who is working. Know who is performing.</h2>
+                <p style="margin-bottom:20px;">Staff clock in and out with role assignment — cashier, bartender, server, kitchen, manager. Track sales per staff member, voids, discounts, and shift hours. Record tip-pool payouts with full audit trail.</p>
+                <ul style="list-style:none;padding:0;margin:0;display:grid;gap:12px;">
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand);font-weight:800;">&#10003;</span> Staff clock-in/out with role selection and active shift view</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand);font-weight:800;">&#10003;</span> Staff performance — orders taken, total sales, voids, discounts per staff member</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand);font-weight:800;">&#10003;</span> Shift history with hours worked and date range filtering</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand);font-weight:800;">&#10003;</span> Tips pool payouts with manager approval and traceable payment method</li>
+                </ul>
+              </div>
+              <div style="display:flex;justify-content:center;">
+                <div class="pos-mockup-browser">
+                  <div class="pos-mockup-browser-bar">
+                    <span class="dot dot-red"></span>
+                    <span class="dot dot-yellow"></span>
+                    <span class="dot dot-green"></span>
+                    <span class="url">Team Workspace</span>
+                  </div>
+                  <picture class="responsive-picture">
+                    <source type="image/avif" srcset="./assets/generated/photos/reports-screen-640.avif 640w, ./assets/generated/photos/reports-screen-960.avif 960w, ./assets/generated/photos/reports-screen-1280.avif 1280w" sizes="(max-width: 900px) 92vw, 560px" />
+                    <source type="image/webp" srcset="./assets/generated/photos/reports-screen-640.webp 640w, ./assets/generated/photos/reports-screen-960.webp 960w, ./assets/generated/photos/reports-screen-1280.webp 1280w" sizes="(max-width: 900px) 92vw, 560px" />
+                    <img src="./assets/photos/reports-screen.jpg" alt="Staff performance and shift tracking" width="1600" height="1152" style="object-fit:cover;" loading="lazy" decoding="async" />
+                  </picture>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ═══════════════════════════════════════════════════════════════
+             CASH & CLOSE
+        ═══════════════════════════════════════════════════════════════ -->
+        <section class="section">
+          <div class="container">
+            <div class="pos-feature-highlight reverse">
+              <div>
+                <div class="section-tag" style="margin-bottom:12px;">Cash &amp; Close</div>
+                <h2 style="margin-bottom:16px;">Open with a float. Close with certainty.</h2>
+                <p style="margin-bottom:20px;">The cash drawer session tracks every cent from opening float to declared close. The daily close checklist catches open tables, pending tickets, and active shifts before the day ends. The owner digest gives managers a one-page performance snapshot.</p>
+                <ul style="list-style:none;padding:0;margin:0;display:grid;gap:12px;">
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand-2);font-weight:800;">&#9679;</span> Cash drawer sessions — open with float, track transactions, close with counted total, automated variance</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand-2);font-weight:800;">&#9679;</span> Pre-close checklist — open tables, pending tickets, drawer status, active shifts, unresolved alerts</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand-2);font-weight:800;">&#9679;</span> Owner digest — today's revenue, orders, low stock, exceptions in one snapshot</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand-2);font-weight:800;">&#9679;</span> Settlement reconciliation — compare POS totals to card terminal or mobile money settlements</li>
+                </ul>
+              </div>
+              <div style="display:flex;justify-content:center;">
+                <div style="width:100%;max-width:560px;border-radius:14px;border:1px solid var(--line);box-shadow:var(--shadow);overflow:hidden;">
+                  <div style="display:flex;align-items:center;gap:5px;padding:8px 12px;background:linear-gradient(180deg,rgba(255,255,255,0.96),rgba(239,230,217,0.88));border-bottom:1px solid var(--line);">
+                    <span style="width:8px;height:8px;border-radius:50%;background:#ff5f57;"></span>
+                    <span style="width:8px;height:8px;border-radius:50%;background:#ffbd2e;"></span>
+                    <span style="width:8px;height:8px;border-radius:50%;background:#28c840;"></span>
+                    <span style="flex:1;text-align:center;font-size:0.65rem;color:var(--ink-soft);font-weight:600;">Cash &amp; Close</span>
+                  </div>
+                  <picture class="responsive-picture">
+                    <source type="image/avif" srcset="./assets/generated/photos/financial-dashboard-640.avif 640w, ./assets/generated/photos/financial-dashboard-960.avif 960w, ./assets/generated/photos/financial-dashboard-1280.avif 1280w" sizes="(max-width: 900px) 92vw, 560px" />
+                    <source type="image/webp" srcset="./assets/generated/photos/financial-dashboard-640.webp 640w, ./assets/generated/photos/financial-dashboard-960.webp 960w, ./assets/generated/photos/financial-dashboard-1280.webp 1280w" sizes="(max-width: 900px) 92vw, 560px" />
+                    <img src="./assets/photos/financial-dashboard.jpg" alt="Cash drawer reconciliation and daily close" width="1600" height="1067" style="object-fit:cover;" loading="lazy" decoding="async" />
+                  </picture>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ═══════════════════════════════════════════════════════════════
+             CONTROL
+        ═══════════════════════════════════════════════════════════════ -->
+        <section class="band-section">
+          <div class="container">
+            <div class="pos-feature-highlight">
+              <div>
+                <div class="section-tag" style="margin-bottom:12px;">Control</div>
+                <h2 style="margin-bottom:16px;">Exceptions, checklists, feedback, and policies.</h2>
+                <p style="margin-bottom:20px;">The control workspace keeps operational exceptions visible. Alerts flag low stock and cash variances. Checklists standardise opening, closing, and cleaning routines. Customer feedback is captured and actionable. Gift cards and reservation policies give you full commercial control.</p>
+                <ul style="list-style:none;padding:0;margin:0;display:grid;gap:12px;">
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand);font-weight:800;">&#10003;</span> Alerts system — stock, cash, and operational exceptions with severity levels (critical, high, medium, low)</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand);font-weight:800;">&#10003;</span> Opening, closing, and cleaning checklists with item completion tracking</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand);font-weight:800;">&#10003;</span> Customer feedback with ratings and follow-up status</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand);font-weight:800;">&#10003;</span> Gift cards and digital vouchers with stored-value tracking</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand);font-weight:800;">&#10003;</span> Reservation deposits with audit trail</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand);font-weight:800;">&#10003;</span> Cancellation and no-show policy configuration</li>
+                </ul>
+              </div>
+              <div style="display:flex;justify-content:center;">
+                <div class="pos-mockup-browser">
+                  <div class="pos-mockup-browser-bar">
+                    <span class="dot dot-red"></span>
+                    <span class="dot dot-yellow"></span>
+                    <span class="dot dot-green"></span>
+                    <span class="url">Control Workspace</span>
+                  </div>
+                  <picture class="responsive-picture">
+                    <source type="image/avif" srcset="./assets/generated/photos/reports-screen-640.avif 640w, ./assets/generated/photos/reports-screen-960.avif 960w, ./assets/generated/photos/reports-screen-1280.avif 1280w" sizes="(max-width: 900px) 92vw, 560px" />
+                    <source type="image/webp" srcset="./assets/generated/photos/reports-screen-640.webp 640w, ./assets/generated/photos/reports-screen-960.webp 960w, ./assets/generated/photos/reports-screen-1280.webp 1280w" sizes="(max-width: 900px) 92vw, 560px" />
+                    <img src="./assets/photos/reports-screen.jpg" alt="Alerts, checklists, and operational control" width="1600" height="1152" style="object-fit:cover;" loading="lazy" decoding="async" />
+                  </picture>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ═══════════════════════════════════════════════════════════════
+             POS TERMINAL
+        ═══════════════════════════════════════════════════════════════ -->
+        <section class="section">
+          <div class="container">
+            <div class="section-head">
+              <div class="section-tag">The Terminal</div>
+              <h2>The transaction screen your staff will actually use.</h2>
+              <p>Speed matters when the bar is three deep. The POS terminal is built for muscle memory — tap a category, pick an item, take payment, done. Touch mode, keyboard shortcuts, and barcode scanning all work out of the box.</p>
+            </div>
+            <div class="feature-grid" style="margin-top:32px;">
+              <div class="feature-card">
+                <div class="feature-icon" style="background:rgba(23,76,58,0.08);">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+                </div>
+                <h3>Tap-to-Order</h3>
+                <p>Menu grid with categories, modifier options, favourites bar, and search. Add items in two taps. Works with touch screens and mouse.</p>
+              </div>
+              <div class="feature-card">
+                <div class="feature-icon" style="background:rgba(203,126,48,0.08);">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                </div>
+                <h3>Payment Methods</h3>
+                <p>18 payment methods including cash, card, bank transfers, Orange Money, MyZaka, Smega, and 9 bank e-wallet variants. Split payments across multiple methods.</p>
+              </div>
+              <div class="feature-card">
+                <div class="feature-icon" style="background:rgba(23,76,58,0.08);">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                </div>
+                <h3>Service Modes</h3>
+                <p>Table service with waiter assignment, takeaway, delivery with address capture, and room/event charge. Each mode adjusts the payment and routing flow.</p>
+              </div>
+              <div class="feature-card">
+                <div class="feature-icon" style="background:rgba(203,126,48,0.08);">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                </div>
+                <h3>Manager Controls</h3>
+                <p>PIN-based discount authorisation, void approval with reason tracking, tax overrides. Every exception is logged with who, when, and why.</p>
+              </div>
+              <div class="feature-card">
+                <div class="feature-icon" style="background:rgba(23,76,58,0.08);">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+                </div>
+                <h3>Offline-First</h3>
+                <p>Orders, payments, and inventory adjustments queue locally when internet drops. Sync automatically when connection returns. No lost sales, no double-entry.</p>
+              </div>
+              <div class="feature-card">
+                <div class="feature-icon" style="background:rgba(203,126,48,0.08);">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.21 15.89A10 10 0 1 1 8 2.83"/><path d="M22 12A10 10 0 0 0 12 2v10z"/></svg>
+                </div>
+                <h3>Hardware Ready</h3>
+                <p>Receipt printing (ESC/POS with configurable paper width), cash drawer kick, customer-facing display, and kitchen/bar prep displays. Works on tablets, laptops, or dedicated terminals.</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ═══════════════════════════════════════════════════════════════
+             ALL FEATURES GRID
+        ═══════════════════════════════════════════════════════════════ -->
+        <section class="band-section">
+          <div class="container">
+            <div class="section-head">
+              <div class="section-tag">Everything inside</div>
+              <h2>Features that keep your bar running.</h2>
+              <p>From the first drink poured to the last till count, Boroko POS covers every part of your operation.</p>
+            </div>
+            <div class="feature-grid" style="margin-top:32px;">
+              <div class="feature-card">
+                <div class="feature-icon" style="background:rgba(23,76,58,0.08);">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+                </div>
+                <h3>Cash Drawer &amp; Till</h3>
+                <p>Open with a float, track every transaction, close with a counted total. Variance is calculated automatically. Know exactly where every cent went.</p>
+              </div>
+              <div class="feature-card">
+                <div class="feature-icon" style="background:rgba(203,126,48,0.08);">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                </div>
+                <h3>Staff Shifts</h3>
+                <p>Clock in and out with role assignment — cashier, bartender, server, kitchen, supervisor. Track who sold what, who voided, who needs training.</p>
+              </div>
+              <div class="feature-card">
+                <div class="feature-icon" style="background:rgba(23,76,58,0.08);">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+                </div>
+                <h3>Multi-Station Display</h3>
+                <p>Run kitchen displays, bar displays, and customer displays on separate screens. Each shows only what's relevant. Scales to any layout.</p>
+              </div>
+              <div class="feature-card">
+                <div class="feature-icon" style="background:rgba(203,126,48,0.08);">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                </div>
+                <h3>Manager Controls</h3>
+                <p>PIN-based discount approval, void authorisation, and override tracking. Every exception is logged with who, when, and why.</p>
+              </div>
+              <div class="feature-card">
+                <div class="feature-icon" style="background:rgba(23,76,58,0.08);">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                </div>
+                <h3>Daily Close &amp; Reports</h3>
+                <p>Pre-close checklist ensures nothing is missed — open tabs, pending tickets, drawer status, shift totals. Owner digest sent automatically.</p>
+              </div>
+              <div class="feature-card">
+                <div class="feature-icon" style="background:rgba(203,126,48,0.08);">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.21 15.89A10 10 0 1 1 8 2.83"/><path d="M22 12A10 10 0 0 0 12 2v10z"/></svg>
+                </div>
+                <h3>Real-Time Reports</h3>
+                <p>Sales by hour, by item, by category, by staff member. Revenue, voids, discounts, average ticket size, and top sellers — updated live.</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ═══════════════════════════════════════════════════════════════
+             INVENTORY & RECIPES
+        ═══════════════════════════════════════════════════════════════ -->
+        <section class="section">
+          <div class="container">
+            <div class="pos-feature-highlight reverse">
+              <div>
+                <div class="section-tag" style="margin-bottom:12px;">Stock &amp; Recipe Costing</div>
+                <h2 style="margin-bottom:16px;">Know your pour cost. Stop the bleed.</h2>
+                <p style="margin-bottom:20px;">Track every ingredient from purchase to pour. Recipe costing tells you exactly what each drink costs to make. Variance reports show when actual usage doesn't match what was sold.</p>
+                <ul style="list-style:none;padding:0;margin:0;display:grid;gap:12px;">
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand-2);font-weight:800;">&#9679;</span> Recipe costing with ingredient lists and waste percentages</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand-2);font-weight:800;">&#9679;</span> Pour cost analysis — cost per drink, margin per category</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand-2);font-weight:800;">&#9679;</span> Stock variance — theoretical vs actual usage with severity alerts</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand-2);font-weight:800;">&#9679;</span> Purchase orders, supplier management, and reorder suggestions</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand-2);font-weight:800;">&#9679;</span> Lot tracking with expiry dates and near-expiry alerts</li>
+                </ul>
+              </div>
+              <div style="display:flex;justify-content:center;">
+                <div style="width:100%;max-width:560px;border-radius:14px;border:1px solid var(--line);box-shadow:var(--shadow);overflow:hidden;">
+                  <div style="display:flex;align-items:center;gap:5px;padding:8px 12px;background:linear-gradient(180deg,rgba(255,255,255,0.96),rgba(239,230,217,0.88));border-bottom:1px solid var(--line);">
+                    <span style="width:8px;height:8px;border-radius:50%;background:#ff5f57;"></span>
+                    <span style="width:8px;height:8px;border-radius:50%;background:#ffbd2e;"></span>
+                    <span style="width:8px;height:8px;border-radius:50%;background:#28c840;"></span>
+                    <span style="flex:1;text-align:center;font-size:0.65rem;color:var(--ink-soft);font-weight:600;">Inventory &amp; Recipes</span>
+                  </div>
+                  <picture class="responsive-picture">
+                    <source type="image/avif" srcset="./assets/generated/photos/inventory-tablet-640.avif 640w, ./assets/generated/photos/inventory-tablet-960.avif 960w, ./assets/generated/photos/inventory-tablet-1280.avif 1280w" sizes="(max-width: 900px) 92vw, 560px" />
+                    <source type="image/webp" srcset="./assets/generated/photos/inventory-tablet-640.webp 640w, ./assets/generated/photos/inventory-tablet-960.webp 960w, ./assets/generated/photos/inventory-tablet-1280.webp 1280w" sizes="(max-width: 900px) 92vw, 560px" />
+                    <img src="./assets/photos/inventory-tablet.jpg" alt="Inventory management on tablet showing stock levels, purchase orders, and recipe costing" width="1600" height="1067" style="object-fit:cover;" loading="lazy" decoding="async" />
+                  </picture>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ═══════════════════════════════════════════════════════════════
+             HOW IT WORKS
+        ═══════════════════════════════════════════════════════════════ -->
+        <section class="band-section">
+          <div class="container">
+            <div class="section-head">
+              <div class="section-tag">How it works</div>
+              <h2>From first pour to last count. Five steps.</h2>
+              <p>Boroko POS follows the natural flow of a bar shift — open up, take orders, serve, close out, and know exactly where you stand.</p>
+            </div>
+            <div class="pos-workflow-grid">
+              <div class="pos-workflow-step">
+                <div class="pos-workflow-num">1</div>
+                <h3>Open the till</h3>
+                <p>Start your shift with a cash float. The system knows what's in the drawer.</p>
+              </div>
+              <div class="pos-workflow-step">
+                <div class="pos-workflow-num">2</div>
+                <h3>Take orders</h3>
+                <p>Tap items on the POS. Orders route to the right station automatically.</p>
+              </div>
+              <div class="pos-workflow-step">
+                <div class="pos-workflow-num">3</div>
+                <h3>Serve &amp; track</h3>
+                <p>Kitchen display shows tickets. Staff mark items ready or served. Tabs update in real time.</p>
+              </div>
+              <div class="pos-workflow-step">
+                <div class="pos-workflow-num">4</div>
+                <h3>Close tabs</h3>
+                <p>Split bills, apply discounts, accept payment. Cash, card, or mobile — it's all tracked.</p>
+              </div>
+              <div class="pos-workflow-step">
+                <div class="pos-workflow-num">5</div>
+                <h3>End of day</h3>
+                <p>Count the drawer. See variance. Review sales, stock, and staff performance. Owner gets a digest.</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ═══════════════════════════════════════════════════════════════
+             SCREENSHOTS
+        ═══════════════════════════════════════════════════════════════ -->
+        <section class="section">
+          <div class="container">
+            <div class="section-head">
+              <div class="section-tag">See it in action</div>
+              <h2>Built for the way you work.</h2>
+              <p>Every screen is designed for speed. No training manual needed — if you can use a phone, you can use Boroko POS.</p>
+            </div>
+            <div class="pos-screenshot-strip">
+              <div class="pos-screenshot-card">
+                <picture class="responsive-picture">
+                  <source type="image/avif" srcset="./assets/generated/photos/restaurant-640.avif 640w, ./assets/generated/photos/restaurant-960.avif 960w, ./assets/generated/photos/restaurant-1280.avif 1280w" sizes="(max-width: 900px) 92vw, 380px" />
+                  <source type="image/webp" srcset="./assets/generated/photos/restaurant-640.webp 640w, ./assets/generated/photos/restaurant-960.webp 960w, ./assets/generated/photos/restaurant-1280.webp 1280w" sizes="(max-width: 900px) 92vw, 380px" />
+                  <img src="./assets/photos/restaurant.jpg" alt="Restaurant floor with tables, staff, and ambient lighting" width="1600" height="1067" style="object-fit:cover;aspect-ratio:4/3;" loading="lazy" decoding="async" />
+                </picture>
+                <div class="pos-screenshot-label">
+                  <h4>Built for real environments</h4>
+                  <p>Works on any screen — tablets, laptops, POS terminals, or TVs mounted behind the bar.</p>
+                </div>
+              </div>
+              <div class="pos-screenshot-card">
+                <picture class="responsive-picture">
+                  <source type="image/avif" srcset="./assets/generated/photos/bar-stock-640.avif 640w, ./assets/generated/photos/bar-stock-960.avif 960w, ./assets/generated/photos/bar-stock-1280.avif 1280w" sizes="(max-width: 900px) 92vw, 380px" />
+                  <source type="image/webp" srcset="./assets/generated/photos/bar-stock-640.webp 640w, ./assets/generated/photos/bar-stock-960.webp 960w, ./assets/generated/photos/bar-stock-1280.webp 1280w" sizes="(max-width: 900px) 92vw, 380px" />
+                  <img src="./assets/photos/bar-stock.jpg" alt="Bar back with bottles, taps, and stock" width="1600" height="1067" style="object-fit:cover;aspect-ratio:4/3;" loading="lazy" decoding="async" />
+                </picture>
+                <div class="pos-screenshot-label">
+                  <h4>Track every bottle</h4>
+                  <p>Inventory follows every pour. Know what's on the shelf, what's running low, and what to reorder.</p>
+                </div>
+              </div>
+              <div class="pos-screenshot-card">
+                <picture class="responsive-picture">
+                  <source type="image/avif" srcset="./assets/generated/photos/financial-dashboard-640.avif 640w, ./assets/generated/photos/financial-dashboard-960.avif 960w, ./assets/generated/photos/financial-dashboard-1280.avif 1280w" sizes="(max-width: 900px) 92vw, 380px" />
+                  <source type="image/webp" srcset="./assets/generated/photos/financial-dashboard-640.webp 640w, ./assets/generated/photos/financial-dashboard-960.webp 960w, ./assets/generated/photos/financial-dashboard-1280.webp 1280w" sizes="(max-width: 900px) 92vw, 380px" />
+                  <img src="./assets/photos/financial-dashboard.jpg" alt="Financial dashboard showing sales, revenue, and performance metrics" width="1600" height="1067" style="object-fit:cover;aspect-ratio:4/3;" loading="lazy" decoding="async" />
+                </picture>
+                <div class="pos-screenshot-label">
+                  <h4>Know your numbers</h4>
+                  <p>Real-time revenue, sales by hour, top sellers, and staff performance — all in one view.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ═══════════════════════════════════════════════════════════════
+             WHY BOROKO POS
+        ═══════════════════════════════════════════════════════════════ -->
+        <section class="band-section section-contrast">
+          <div class="container">
+            <div class="section-head">
+              <div class="section-tag">Why Boroko POS</div>
+              <h2>Built for Southern Africa. Priced for reality.</h2>
+              <p>We built Boroko POS because the options in our market were either too expensive, too complex, or designed for a different continent. This is built for how we actually work.</p>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:32px;">
+              <div class="feature-card" style="border-color:rgba(23,76,58,0.2);">
+                <h3 style="color:var(--brand);margin-bottom:16px;">What you get</h3>
+                <ul style="list-style:none;padding:0;margin:0;display:grid;gap:10px;">
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand);font-weight:800;">&#10003;</span> Full POS, kitchen display, and inventory — one price</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand);font-weight:800;">&#10003;</span> Offline mode — keeps selling when the internet drops</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand);font-weight:800;">&#10003;</span> No per-terminal fees — unlimited screens per location</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand);font-weight:800;">&#10003;</span> WhatsApp support from the team that built it</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand);font-weight:800;">&#10003;</span> Free 1-month trial — no credit card required</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand);font-weight:800;">&#10003;</span> Works on any device — tablet, laptop, phone, or POS terminal</li>
+                </ul>
+              </div>
+              <div class="feature-card" style="border-color:rgba(203,126,48,0.2);">
+                <h3 style="color:var(--brand-2);margin-bottom:16px;">What you don't get</h3>
+                <ul style="list-style:none;padding:0;margin:0;display:grid;gap:10px;">
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand-2);font-weight:800;">&#10007;</span> Hidden fees for "add-on" modules</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand-2);font-weight:800;">&#10007;</span> Per-terminal or per-user pricing</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand-2);font-weight:800;">&#10007;</span> Contracts that lock you in for years</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand-2);font-weight:800;">&#10007;</span> Support that takes days to respond</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand-2);font-weight:800;">&#10007;</span> Software that stops working when the internet does</li>
+                  <li style="display:flex;gap:10px;align-items:start;font-size:0.92rem;"><span style="color:var(--brand-2);font-weight:800;">&#10007;</span> Generic templates that don't fit your bar</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ═══════════════════════════════════════════════════════════════
+             CTA
+        ═══════════════════════════════════════════════════════════════ -->
+        <section class="cta-banner">
+          <div class="container cta-inner">
+            <div>
+              <h2>Ready to upgrade your bar?</h2>
+              <p>Start with a free 1-month trial. No credit card. No commitment. See what Boroko POS can do for your bar or restaurant.</p>
+            </div>
+            <div class="demo-actions">
+              <a class="btn btn-primary" href="#" data-action="download">Start free trial</a>
+              <a class="btn btn-secondary" href="https://wa.me/26772789415" target="_blank" rel="noreferrer">Chat on WhatsApp</a>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <footer class="site-footer">
+        <div class="container footer-grid">
+          <div>
+            <div class="brand footer-brand">
+              <span class="brand-mark">
+                <img src="./assets/boroko-bookings-logo-light.png" alt="" aria-hidden="true" width="150" height="54" />
+              </span>
+              <span class="brand-copy">
+                <strong>Boroko Bookings</strong>
+                <span>Built by Batswana for Batswana hospitality businesses</span>
+              </span>
+            </div>
+            <p class="footer-copy">Built to help lodges operate smoothly, make better decisions, and grow into stronger hospitality businesses.</p>
+            <div class="social-links">
+              <a class="social-link" href="https://www.facebook.com/borokobookings" target="_blank" rel="noreferrer" aria-label="Follow us on Facebook"><span class="sr-only">Facebook</span>fb</a>
+              <a class="social-link" href="https://www.instagram.com/borokobookings" target="_blank" rel="noreferrer" aria-label="Follow us on Instagram"><span class="sr-only">Instagram</span>ig</a>
+              <a class="social-link" href="https://www.linkedin.com/company/borokobookings" target="_blank" rel="noreferrer" aria-label="Follow us on LinkedIn"><span class="sr-only">LinkedIn</span>in</a>
+            </div>
+          </div>
+          <div class="footer-links">
+            <a href="./index.html">Home</a>
+            <a href="./restaurant-pos.html">Restaurant POS</a>
+            <a href="./booking-site.html">Booking Site</a>
+            <a href="./manager-app.html">Manager App</a>
+            <a href="./packages.html">Packages</a>
+            <a href="./why-switch.html">Why Switch</a>
+            <a href="./download.html">Download</a>
+            <a href="./blog.html">Blog</a>
+            <a href="./contact.html">Contact</a>
+            <a href="https://wa.me/26772789415" target="_blank" rel="noreferrer">WhatsApp: +267 72 789 415</a>
+            <a href="mailto:hello@borokobookings.com">hello@borokobookings.com</a>
+            <a href="./privacy.html">Privacy Policy</a>
+            <a href="./terms.html">Terms of Service</a>
+          </div>
+        </div>
+      </footer>
+
+      <div class="cookie-banner" role="dialog" aria-modal="true" aria-label="Cookie consent">
+        <div class="container cookie-inner">
+          <p>We use minimal cookies for analytics. By continuing, you accept our <a href="./privacy.html">Privacy Policy</a>.</p>
+          <div class="cookie-actions">
+            <button class="btn btn-primary cookie-accept" type="button">Accept</button>
+            <button class="btn btn-cookie-decline" type="button">Decline</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <script src="./script.js" defer></script>
+  </body>
+</html>

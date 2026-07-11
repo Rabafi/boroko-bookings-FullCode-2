@@ -16,6 +16,8 @@ import {
   ShieldAlert
 } from 'lucide-react'
 import { formatLocalDate } from '../utils/localDate'
+import { useSettings } from '../app-context'
+import { isRestaurantOnly } from '../../../shared/propertyTypes'
 
 // ── Field definitions ────────────────────────────────────────────────────────
 const IMPORT_FIELD_SETS = {
@@ -72,6 +74,48 @@ const IMPORT_FIELD_SETS = {
     { key: 'amount', label: 'Amount', required: true, hint: 'Expense amount' },
     { key: 'paid_by', label: 'Paid By', required: false, hint: 'Optional payment note' },
     { key: 'notes', label: 'Notes', required: false, hint: 'Optional extra notes' },
+  ],
+  menu_items: [
+    { key: 'name', label: 'Name', required: true, hint: 'Menu item name' },
+    { key: 'category', label: 'Category', required: false, hint: 'Food, Drinks, Sides, etc.' },
+    { key: 'selling_price', label: 'Selling Price', required: false, hint: 'POS selling price' },
+    { key: 'cost_price', label: 'Cost Price', required: false, hint: 'Ingredient cost estimate' },
+    { key: 'unit', label: 'Unit', required: false, hint: 'portion, bottle, plate' },
+    { key: 'available', label: 'Available', required: false, hint: 'Yes or No' },
+  ],
+  customers: [
+    { key: 'name', label: 'Name', required: true, hint: 'Customer full name' },
+    { key: 'phone', label: 'Phone', required: false, hint: 'Contact phone number' },
+    { key: 'email', label: 'Email', required: false, hint: 'Customer email address' },
+    { key: 'notes', label: 'Notes', required: false, hint: 'e.g. loyalty member' },
+  ],
+  ingredients: [
+    { key: 'name', label: 'Name', required: true, hint: 'Ingredient or stock item name' },
+    { key: 'category', label: 'Category', required: false, hint: 'Food, Drinks, Packaging, etc.' },
+    { key: 'unit', label: 'Unit', required: false, hint: 'kg, litre, piece, pack' },
+    { key: 'current_stock', label: 'Current Stock', required: false, hint: 'Opening stock quantity' },
+    { key: 'reorder_level', label: 'Reorder Level', required: false, hint: 'Low-stock threshold' },
+    { key: 'cost_per_unit', label: 'Cost Per Unit', required: false, hint: 'Purchase cost per unit' },
+  ],
+  recipes: [
+    { key: 'menu_item', label: 'Menu Item', required: true, hint: 'Must match a menu item name' },
+    { key: 'ingredient', label: 'Ingredient', required: true, hint: 'Must match an inventory item name' },
+    { key: 'quantity', label: 'Quantity', required: true, hint: 'Amount used per serving' },
+    { key: 'unit', label: 'Unit', required: false, hint: 'kg, litre, piece, ml' },
+    { key: 'wastage_pct', label: 'Wastage %', required: false, hint: 'Percentage wastage (default: 0)' },
+  ],
+  suppliers: [
+    { key: 'name', label: 'Name', required: true, hint: 'Supplier or vendor name' },
+    { key: 'contact_person', label: 'Contact Person', required: false, hint: 'Primary contact name' },
+    { key: 'phone', label: 'Phone', required: false, hint: 'Contact phone number' },
+    { key: 'email', label: 'Email', required: false, hint: 'Supplier email address' },
+    { key: 'category', label: 'Category', required: false, hint: 'produce, meat, beverages, packaging' },
+  ],
+  staff: [
+    { key: 'name', label: 'Name', required: true, hint: 'Staff member full name' },
+    { key: 'role', label: 'Role', required: false, hint: 'cashier, waiter, chef, manager' },
+    { key: 'email', label: 'Email', required: false, hint: 'Staff email address' },
+    { key: 'phone', label: 'Phone', required: false, hint: 'Contact phone number' },
   ]
 }
 
@@ -111,6 +155,14 @@ const FIELD_ALIASES = {
   description:    ['description', 'details', 'item', 'expense', 'expense item', 'particulars'],
   amount:         ['amount', 'cost', 'total', 'expense amount', 'value'],
   paid_by:        ['paid by', 'method', 'payment method', 'paid via', 'payment type'],
+  menu_item:      ['menu item', 'item', 'product', 'dish', 'menu item name'],
+  ingredient:     ['ingredient', 'stock item', 'raw material', 'input'],
+  quantity:       ['quantity', 'qty', 'amount', 'usage', 'used'],
+  wastage_pct:    ['wastage %', 'wastage', 'waste', 'waste %'],
+  cost_per_unit:  ['cost per unit', 'unit cost', 'cost', 'purchase price'],
+  contact_person: ['contact person', 'contact', 'representative'],
+  available:      ['available', 'active', 'is available', 'in stock'],
+  cost_price:     ['cost price', 'cost', 'food cost'],
 }
 
 function normalizeHeaderText(value) {
@@ -368,7 +420,7 @@ function StepIndicator({ current }) {
 }
 
 // Step 1 ─ Upload
-function UploadStep({ onParsed, importType, setImportType, importTypes }) {
+function UploadStep({ onParsed, importType, setImportType, importTypes, restaurantMode }) {
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState('')
   const [templateSaving, setTemplateSaving] = useState(false)
@@ -506,13 +558,26 @@ function UploadStep({ onParsed, importType, setImportType, importTypes }) {
       )}
       <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 max-w-md w-full text-xs text-blue-700 space-y-1">
         <p className="font-semibold text-blue-800">Tips for best results:</p>
-        <p>• First row should be column headers (e.g. "Guest Name", "Check-In", "Room")</p>
-        <p>• Dates should be in YYYY-MM-DD or DD/MM/YYYY format</p>
-        <p>• Room numbers must match rooms already set up in the system</p>
-        <p>• Download the template for a clean "Import Data" sheet and short read-me guide</p>
-        <p>• For bookings, optional "Total Amount" overrides calculated rate x nights</p>
-        <p>• Maximum 500 rows per import</p>
-        <p>• Import and undo both require an internet connection</p>
+        {restaurantMode ? (
+          <>
+            <p>• First row should be column headers (e.g. "Name", "Category", "Price")</p>
+            <p>• Dates should be in YYYY-MM-DD or DD/MM/YYYY format</p>
+            <p>• Menu item and ingredient names must match existing records for recipe linking</p>
+            <p>• Download the template for a clean sample sheet with column headers</p>
+            <p>• Maximum 500 rows per import</p>
+            <p>• Import requires an internet connection</p>
+          </>
+        ) : (
+          <>
+            <p>• First row should be column headers (e.g. "Guest Name", "Check-In", "Room")</p>
+            <p>• Dates should be in YYYY-MM-DD or DD/MM/YYYY format</p>
+            <p>• Room numbers must match rooms already set up in the system</p>
+            <p>• Download the template for a clean "Import Data" sheet and short read-me guide</p>
+            <p>• For bookings, optional "Total Amount" overrides calculated rate x nights</p>
+            <p>• Maximum 500 rows per import</p>
+            <p>• Import and undo both require an internet connection</p>
+          </>
+        )}
       </div>
     </div>
   )
@@ -1048,6 +1113,9 @@ function ImportHistory() {
   const [batches, setBatches] = useState([])
   const [loading, setLoading] = useState(true)
   const [undoing, setUndoing] = useState(null)
+  const { settings } = useSettings()
+  const propertyType = settings?.property_type || settings?.business_type || 'lodge'
+  const restaurantMode = isRestaurantOnly(propertyType)
 
   useEffect(() => {
     window.api.import.getBatches().then((data) => {
@@ -1057,7 +1125,9 @@ function ImportHistory() {
   }, [])
 
   const handleUndo = async (batchId) => {
-    if (!confirm('This will permanently delete all bookings and auto-created guests from this import. Continue?')) return
+    if (!confirm(restaurantMode
+      ? 'This will permanently delete all imported records from this import. Continue?'
+      : 'This will permanently delete all bookings and auto-created guests from this import. Continue?')) return
     setUndoing(batchId)
     try {
       const res = await window.api.import.undoBatch(batchId)
@@ -1122,7 +1192,14 @@ export default function DataImport() {
   const [importTypes, setImportTypes] = useState([{ key: 'bookings', label: 'Bookings', executable: true }])
   const [dryRunReport, setDryRunReport] = useState(null)
   const [dryRunning, setDryRunning] = useState(false)
+  const { settings } = useSettings()
+  const propertyType = settings?.property_type || settings?.business_type || 'lodge'
+  const restaurantMode = isRestaurantOnly(propertyType)
   const fields = useMemo(() => getFieldsForType(importType), [importType])
+
+  const LODGE_ONLY_TYPES = new Set(['bookings', 'guests', 'rooms', 'supplies'])
+  const RESTAURANT_TYPES = new Set(['menu_items', 'customers', 'ingredients', 'recipes', 'suppliers', 'staff', 'inventory', 'expenses'])
+  const COMMON_TYPES = new Set(['inventory', 'expenses'])
 
   // Listen for progress events from main process
   useEffect(() => {
@@ -1132,9 +1209,18 @@ export default function DataImport() {
 
   useEffect(() => {
     window.api.import.getTypes?.()
-      .then((types) => setImportTypes(Array.isArray(types) && types.length ? types : [{ key: 'bookings', label: 'Bookings', executable: true }]))
+      .then((types) => {
+        const allTypes = Array.isArray(types) && types.length ? types : [{ key: 'bookings', label: 'Bookings', executable: true }]
+        const filtered = restaurantMode
+          ? allTypes.filter((t) => RESTAURANT_TYPES.has(t.key) || COMMON_TYPES.has(t.key))
+          : allTypes.filter((t) => LODGE_ONLY_TYPES.has(t.key) || COMMON_TYPES.has(t.key))
+        setImportTypes(filtered.length ? filtered : allTypes.slice(0, 1))
+        if (filtered.length && !filtered.some((t) => t.key === importType)) {
+          setImportType(filtered[0].key)
+        }
+      })
       .catch(() => {})
-  }, [])
+  }, [restaurantMode])
 
   const handleParsed = (data) => {
     const detected = detectImportType(data.columns || [], importTypes)
@@ -1192,7 +1278,9 @@ export default function DataImport() {
   }
 
   const handleUndo = async (batchId) => {
-    if (!confirm('This will permanently delete all bookings and auto-created guests from this import. Continue?')) return
+    if (!confirm(restaurantMode
+      ? 'This will permanently delete all imported records from this import. Continue?'
+      : 'This will permanently delete all bookings and auto-created guests from this import. Continue?')) return
     setUndoing(true)
     try {
       const res = await window.api.import.undoBatch(batchId)
@@ -1223,10 +1311,12 @@ export default function DataImport() {
         <div>
           <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
             <Download size={24} className="text-green-600" />
-            Data Import
+            {restaurantMode ? 'Restaurant Data Import' : 'Data Import'}
           </h1>
           <p className="text-gray-500 text-sm mt-1">
-            Import historical guest and booking records from an Excel spreadsheet. Online only.
+            {restaurantMode
+              ? 'Import menu items, ingredients, recipes, customers, suppliers, staff, and expenses from an Excel spreadsheet. Online only.'
+              : 'Import historical guest and booking records from an Excel spreadsheet. Online only.'}
           </p>
         </div>
         <button
@@ -1244,7 +1334,9 @@ export default function DataImport() {
         <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
           <h2 className="text-lg font-bold text-gray-800 mb-4">Import History</h2>
           <p className="text-sm text-gray-500 mb-4">
-            View past imports and undo them if needed. Undoing deletes all bookings and auto-created guests from that batch.
+            {restaurantMode
+              ? 'View past imports and undo them if needed. Undoing deletes all imported records from that batch.'
+              : 'View past imports and undo them if needed. Undoing deletes all bookings and auto-created guests from that batch.'}
           </p>
           <ImportHistory />
         </div>
@@ -1258,6 +1350,7 @@ export default function DataImport() {
               importType={importType}
               setImportType={setImportType}
               importTypes={importTypes}
+              restaurantMode={restaurantMode}
             />
           )}
           {step === 1 && parsed && (

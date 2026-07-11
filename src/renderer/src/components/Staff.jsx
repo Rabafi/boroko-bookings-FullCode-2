@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState, useCallback } from 'react'
-import { useNavigate } from 'react-router-dom'
+import React, { useEffect, useMemo, useState, useCallback, Suspense, lazy } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   Plus,
   Pencil,
@@ -23,13 +23,15 @@ import {
   Users2,
   Eye,
   EyeOff,
-  Mail
+  Mail,
+  Briefcase
 } from 'lucide-react'
 import { Modal } from './shared/Modal'
 import UsageLimitIndicator from './shared/UsageLimitIndicator'
 import UsageUpgradePrompt from './shared/UpgradePromptModal'
 import UpgradeNudgeBanner from './shared/UpgradeNudgeBanner'
-import { useAccess, useAuth, useSettings } from '../app-context'
+import { useAccess, useAuth, useSettings, useFeatures } from '../app-context'
+import { isRestaurantOnly } from '../../../shared/propertyTypes'
 import {
   CAPABILITY_LABELS,
   ROLE_DEFINITIONS,
@@ -43,6 +45,8 @@ import {
   normalizeStaffStatus
 } from '../../../shared/accessControl'
 import { MONTHLY_USAGE_RESET_COPY, canCreateUser, getEarlyUpgradePromptState, getPlanUsageLimits, normalizeSubscriptionPlan } from '../../../shared/subscriptionPlans'
+
+const HotelRolesConfig = lazy(() => import('./HotelRolesConfig'))
 
 const emptyForm = {
   name: '',
@@ -72,6 +76,17 @@ function roleTone(role) {
     manager: 'bg-violet-100 text-violet-700',
     admin: 'bg-rose-100 text-rose-700'
   }[role] || 'bg-gray-100 text-gray-600'
+}
+
+function roleDescription(role, restaurantMode) {
+  if (!restaurantMode) return ROLE_DEFINITIONS[role]?.description || ROLE_DEFINITIONS.receptionist.description
+  return {
+    cashier: 'Takes orders, payments, and table tabs at assigned outlets.',
+    supervisor: 'Supervises service, approves discounts and voids, and reviews outlet sales.',
+    finance: 'Reviews payments, refunds, expenses, settlements, and restaurant reports.',
+    manager: 'Runs daily restaurant operations, staff access, cash controls, and owner reporting.',
+    admin: 'Owns restaurant configuration, subscriptions, recovery tools, and high-risk controls.'
+  }[role] || ROLE_DEFINITIONS[role]?.description || 'Restaurant operational access.'
 }
 
 function formatShortDate(value) {
@@ -152,6 +167,9 @@ function StaffMembers() {
   const { user: currentUser } = useAuth()
   const access = useAccess()
   const { settings } = useSettings()
+  const propertyType = settings?.property_type || settings?.business_type || 'lodge'
+  const restaurantMode = isRestaurantOnly(propertyType)
+  const propertyLabel = restaurantMode ? 'restaurant' : 'lodge'
   const canManageStaff = canAccessCapability(access, 'staff.manage')
   const usageLimits = getPlanUsageLimits(access?.entitlement?.plan || 'Starter')
   const canSetRoles = canAccessCapability(access, 'staff.permissions')
@@ -191,10 +209,11 @@ function StaffMembers() {
   const availableRoles = useMemo(() => {
     return getRoleOptions().filter((role) => {
       if (role.value === 'super_admin') return false
+      if (restaurantMode && ['receptionist', 'operations'].includes(role.value)) return false
       if (role.value === 'admin') return currentUser?.role === 'admin' || currentUser?.role === 'super_admin' || currentUser?.isMasterAdmin
       return true
     })
-  }, [currentUser?.isMasterAdmin, currentUser?.role])
+  }, [currentUser?.isMasterAdmin, currentUser?.role, restaurantMode])
 
   const load = useCallback(async () => {
     const data = await window.api.users.getAll()
@@ -224,7 +243,7 @@ function StaffMembers() {
         role: user.role,
         features: access?.features || {}
       })
-      const roleInfo = ROLE_DEFINITIONS[snapshot.role] || ROLE_DEFINITIONS.receptionist
+          const roleInfo = ROLE_DEFINITIONS[snapshot.role] || ROLE_DEFINITIONS[restaurantMode ? 'cashier' : 'receptionist']
       return roleInfo.label || snapshot.role || ''
     }
 
@@ -249,9 +268,9 @@ function StaffMembers() {
     })
   }, [access?.features, sortBy, users])
   const userLimitMessage = userLimitStatus.isAbovePlan
-    ? `This lodge is above the ${usageSnapshot?.plan || access?.entitlement?.plan || 'Starter'} plan limits. Existing records remain available, but new records are restricted until usage is reduced or the plan is upgraded.`
+    ? `This ${propertyLabel} is above the ${usageSnapshot?.plan || access?.entitlement?.plan || 'Starter'} plan limits. Existing records remain available, but new records are restricted until usage is reduced or the plan is upgraded.`
     : userLimitStatus.isBlocked
-      ? `Staff creation is restricted because this lodge has reached the ${usageSnapshot?.plan || access?.entitlement?.plan || 'Starter'} user limit.`
+      ? `Staff creation is restricted because this ${propertyLabel} has reached the ${usageSnapshot?.plan || access?.entitlement?.plan || 'Starter'} user limit.`
       : ''
   const rolePreview = useMemo(() => {
     const previousRole = editingUser?.role || 'receptionist'
@@ -290,7 +309,7 @@ function StaffMembers() {
     }
     setEditingId(null)
     setEditingUser(null)
-    setForm(emptyForm)
+    setForm({ ...emptyForm, role: restaurantMode ? 'cashier' : 'receptionist' })
     setResetForm(emptyResetForm)
     setShowCreatePassword(false)
     setShowPin(false)
@@ -306,7 +325,7 @@ function StaffMembers() {
       name: user.name,
       email: user.email,
       pin: '',
-      role: user.role || 'receptionist',
+      role: user.role || (restaurantMode ? 'cashier' : 'receptionist'),
       status: normalizeStaffStatus(user.status),
       pwa_enabled: user.pwa_enabled === true,
       pwa_password: '',
@@ -338,7 +357,7 @@ function StaffMembers() {
     setLoading(true)
     setError('')
 
-    if (!canSetRoles && form.role !== 'receptionist') {
+    if (!canSetRoles && form.role !== (restaurantMode ? 'cashier' : 'receptionist')) {
       setLoading(false)
       setError('Your role can add staff, but only managers and admins can assign advanced access templates.')
       return
@@ -579,7 +598,7 @@ function StaffMembers() {
             features: access?.features || {},
             capabilityOverrides: staffUser.capability_overrides || {}
           })
-          const roleInfo = ROLE_DEFINITIONS[snapshot.role] || ROLE_DEFINITIONS.receptionist
+      const roleInfo = ROLE_DEFINITIONS[snapshot.role] || ROLE_DEFINITIONS[restaurantMode ? 'cashier' : 'receptionist']
           const pwaEligible = isPwaEligibleRole(staffUser.role)
           const pwaEnabled = pwaEligible && staffUser.pwa_enabled === true
           const isSelf = staffUser.id === currentUser?.id
@@ -589,7 +608,7 @@ function StaffMembers() {
           const deleteBlockedReason = isSelf
             ? 'You cannot delete the account you are currently signed in with.'
             : isLastAdmin
-              ? 'You cannot delete the last admin in this lodge.'
+              ? `You cannot delete the last admin in this ${propertyLabel}.`
               : normalizeStaffStatus(staffUser.status) !== 'archived'
                 ? 'Archive this account first. Permanent deletion is reserved for already archived staff.'
               : ''
@@ -835,7 +854,7 @@ function StaffMembers() {
                 ))}
               </select>
               <p className="mt-2 text-xs text-slate-500">
-                {ROLE_DEFINITIONS[form.role]?.description || ROLE_DEFINITIONS.receptionist.description}
+                {roleDescription(form.role, restaurantMode)}
               </p>
             </div>
 
@@ -1045,7 +1064,7 @@ function StaffMembers() {
         limit={usageLimits.users}
         grace={0}
         status={userLimitStatus}
-        message={userLimitMessage || 'Upgrade to add more staff users for this lodge.'}
+        message={userLimitMessage || `Upgrade to add more staff users for this ${propertyLabel}.`}
         usage={usageSnapshot?.usage}
         recommendation={usageSnapshot?.recommendation}
         lodgeName={access?.entitlement?.lodge_name || settings?.lodge_name || settings?.company_name || ''}
@@ -1134,7 +1153,7 @@ function StaffMembers() {
               <p className="mt-1">{deleteTarget.email}</p>
             </div>
             <p className="text-sm text-slate-500">
-              This action removes the staff member from this lodge. It cannot be undone from the Staff screen.
+              This action removes the staff member from this {propertyLabel}. It cannot be undone from the Staff screen.
             </p>
             {deleteError && <div className="rounded-xl bg-red-50 px-4 py-2 text-sm text-red-600">{deleteError}</div>}
             <div className="flex gap-3 pt-2">
@@ -1193,7 +1212,7 @@ function fmtSize(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
-function ActivityLog() {
+function ActivityLog({ restaurantMode = false }) {
   const access = useAccess()
   const canClear = canAccessCapability(access, 'sync.manage')
   const [entries, setEntries] = useState([])
@@ -1226,7 +1245,11 @@ function ActivityLog() {
     setEntries([])
   }
 
-  const filtered = filter === 'all' ? entries : entries.filter((entry) => entry.action === filter)
+  const restaurantEntries = restaurantMode
+    ? entries.filter((entry) => !['booking_created', 'booking_cancelled', 'booking_confirmed', 'booking_updated', 'check_in', 'check_out', 'housekeeping_updated', 'room_created', 'event_booking_created'].includes(entry.action))
+    : entries
+  const visibleFilters = restaurantMode ? FILTER_OPTIONS.filter((option) => !['booking_created', 'check_in', 'check_out', 'housekeeping_updated', 'booking_cancelled'].includes(option.value)) : FILTER_OPTIONS
+  const filtered = filter === 'all' ? restaurantEntries : restaurantEntries.filter((entry) => entry.action === filter)
   const grouped = filtered.reduce((accumulator, entry) => {
     const day = new Date(entry.timestamp).toDateString()
     if (!accumulator[day]) accumulator[day] = []
@@ -1240,7 +1263,7 @@ function ActivityLog() {
     <div>
       <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
         <div className="flex gap-1.5 flex-wrap">
-          {FILTER_OPTIONS.map((option) => (
+          {visibleFilters.map((option) => (
             <button
               key={option.value}
               onClick={() => setFilter(option.value)}
@@ -1278,7 +1301,7 @@ function ActivityLog() {
         <div className="text-center py-16 text-gray-400">
           <ClipboardList size={40} className="mx-auto mb-3 opacity-30" />
           <p className="text-sm">No activity recorded yet</p>
-          <p className="text-xs mt-1">Actions like check-ins, bookings and payments will appear here</p>
+          <p className="text-xs mt-1">{restaurantMode ? 'POS, stock, payment, shift, and staff actions will appear here.' : 'Actions like check-ins, bookings and payments will appear here.'}</p>
         </div>
       ) : (
         <div className="space-y-6">
@@ -1374,9 +1397,9 @@ function ActivityLog() {
   )
 }
 
-function RolesAndPermissions() {
+function RolesAndPermissions({ restaurantMode = false }) {
   const access = useAccess()
-  const roles = getRoleOptions().filter((role) => role.value !== 'super_admin')
+  const roles = getRoleOptions().filter((role) => role.value !== 'super_admin' && (!restaurantMode || !['receptionist', 'operations'].includes(role.value)))
 
   return (
     <div className="space-y-4">
@@ -1402,7 +1425,7 @@ function RolesAndPermissions() {
               <div className="flex items-start justify-between gap-4">
                 <div>
                   <p className="font-semibold text-gray-800">{role.label}</p>
-                  <p className="text-sm text-gray-500 mt-1">{role.description}</p>
+                  <p className="text-sm text-gray-500 mt-1">{roleDescription(role.value, restaurantMode)}</p>
                 </div>
                 <span className={`text-xs px-2 py-1 rounded-full ${roleTone(role.value)}`}>
                   {Object.values(snapshot.capabilities).filter(Boolean).length} live permissions
@@ -1451,11 +1474,25 @@ function RolesAndPermissions() {
 
 export default function Staff() {
   const [tab, setTab] = useState('staff')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const features = useFeatures()
+  const hasHotelRoles = features?.hotel_roles === true
   const access = useAccess()
+  const { settings } = useSettings()
+  const propertyType = settings?.property_type || settings?.business_type || 'lodge'
+  const restaurantMode = isRestaurantOnly(propertyType)
+
+  const propertyLabel = restaurantMode ? 'restaurant' : 'lodge'
+
+  useEffect(() => {
+    const tabParam = searchParams.get('tab')
+    if (tabParam) setTab(tabParam)
+  }, [searchParams])
 
   const tabs = [
     { key: 'staff', label: 'Staff Members', icon: User },
     { key: 'roles', label: 'Roles & Permissions', icon: ShieldCheck },
+    ...(hasHotelRoles ? [{ key: 'hotel-roles', label: 'Hotel Roles', icon: Briefcase }] : []),
     { key: 'activity', label: 'Activity Log', icon: ClipboardList }
   ]
 
@@ -1479,7 +1516,7 @@ export default function Staff() {
         {tabs.map(({ key, label, icon: Icon }) => (
           <button
             key={key}
-            onClick={() => setTab(key)}
+            onClick={() => { setTab(key); setSearchParams({ tab: key }, { replace: true }) }}
             className={`flex items-center gap-2 rounded-2xl px-4 py-2.5 text-sm font-medium transition-colors ${
               tab === key
                 ? 'bg-gradient-to-r from-emerald-500 to-green-600 text-white shadow-[0_10px_24px_rgba(22,101,52,0.24)]'
@@ -1493,8 +1530,9 @@ export default function Staff() {
       </div>
 
       {tab === 'staff' && <StaffMembers />}
-      {tab === 'roles' && <RolesAndPermissions />}
-      {tab === 'activity' && <ActivityLog />}
+      {tab === 'roles' && <RolesAndPermissions restaurantMode={restaurantMode} />}
+      {tab === 'hotel-roles' && <Suspense fallback={<div className="p-8 text-center text-slate-500">Loading...</div>}><HotelRolesConfig /></Suspense>}
+      {tab === 'activity' && <ActivityLog restaurantMode={restaurantMode} />}
     </div>
   )
 }

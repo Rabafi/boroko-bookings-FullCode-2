@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
 import { TrendingUp, BedDouble, DollarSign, Calendar, Download, Printer, FileDown, Table, PiggyBank, ShoppingCart, Package, Building2, CreditCard, Presentation, Briefcase } from 'lucide-react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { formatPaymentMethod } from '../constants/paymentMethods'
-import { useSettings, useAccess } from '../app-context'
+import { useSettings, useAccess, useFeatures } from '../app-context'
+import HotelKpis from './HotelKpis'
+import AdvancedReports from './AdvancedReports'
 import HorizontalScrollArea from './shared/HorizontalScrollArea'
 import { canAccessCapability } from '../../../shared/accessControl'
 import { getDayUseActivityLabel, normalizeDayUseReportRow, summarizeDayUseExtras } from '../../../shared/dayUseReporting'
+import { isRestaurantOnly } from '../../../shared/propertyTypes'
 
 function formatLocalDate(value = new Date()) {
   const d = value instanceof Date ? value : new Date(value)
@@ -80,7 +83,8 @@ const REPORT_TITLES = {
   expenses: 'Expenses Report',
   pos: 'POS Sales Report',
   costs: 'Stock Costs Report',
-  pl: 'Profit & Loss Report'
+  pl: 'Profit & Loss Report',
+  prepayments: 'Customer Credit Report'
 }
 
 function formatFilenameStamp(date = new Date()) {
@@ -123,12 +127,48 @@ export default function Reports() {
   const { settings } = useSettings()
   const currency = settings?.currency || 'P'
   const access = useAccess()
+  const features = useFeatures()
+  const hasHotelKpis = features?.hotel_kpis === true
+  const hasAdvancedReports = features?.advanced_reports === true
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const canViewCombinedReports = canAccessCapability(access, 'pos.combined_reports')
 
-  const [activeTab, setActiveTab] = useState('bookings')
+  const propertyType = settings?.property_type || settings?.business_type || 'lodge'
+  const restaurantMode = isRestaurantOnly(propertyType)
+
+  const restaurantTabs = useMemo(() => {
+    const tabs = []
+    tabs.push(['pos', 'POS Sales'])
+    tabs.push(['expenses', 'Expenses'])
+    tabs.push(['costs', 'Stock Costs'])
+    tabs.push(['pl', 'P&L'])
+    return tabs
+  }, [])
+
+  const accommodationTabs = useMemo(() => {
+    const tabs = []
+    tabs.push(['bookings', 'Bookings'])
+    tabs.push(['prepayments', 'Prepayments'])
+    tabs.push(['expenses', 'Expenses'])
+    tabs.push(['pos', 'POS Sales'])
+    tabs.push(['costs', 'Stock Costs'])
+    tabs.push(['pl', 'P&L'])
+    if (hasHotelKpis) tabs.push(['hotel-kpis', 'Hotel KPIs'])
+    if (hasAdvancedReports) tabs.push(['enterprise', 'Enterprise'])
+    return tabs
+  }, [hasHotelKpis, hasAdvancedReports])
+
+  const TABS = restaurantMode ? restaurantTabs : accommodationTabs
+
+  const [activeTab, setActiveTab] = useState(restaurantMode ? 'pos' : 'bookings')
   const [start, setStart] = useState(monthStart)
   const [end, setEnd]     = useState(monthEnd)
+
+  useEffect(() => {
+    const tabParam = searchParams.get('tab')
+    if (tabParam) setActiveTab(tabParam)
+  }, [searchParams])
 
   // Bookings tab
   const [occupancy, setOccupancy] = useState([])
@@ -327,22 +367,35 @@ export default function Reports() {
     setLoading(true)
     setError('')
     try {
-      const [occ, rev, bookings, reportsSnapshot, confBookings, dayUseRows] = await Promise.all([
-        window.api.reports.occupancy(s, e),
-        window.api.reports.revenue(s, e),
-        window.api.bookings.getAll().catch(() => []),
-        window.api.reports.snapshot(e).catch(() => null),
-        window.api.conference.getAll(s, e).catch(() => []),
-        window.api.dayuse.getAll(s, e).catch(() => [])
-      ])
-      setOccupancy(Array.isArray(occ) ? occ : [])
-      setRevenue(rev && typeof rev === 'object' ? rev : null)
-      setReportBookings(Array.isArray(bookings) ? bookings : [])
-      setConferenceBookings(Array.isArray(confBookings) ? confBookings : [])
-      setDayUseEntries(Array.isArray(dayUseRows) ? dayUseRows : [])
-      setSnapshot(reportsSnapshot && typeof reportsSnapshot === 'object' ? reportsSnapshot : null)
-      const roomRows = await window.api.reports.roomProfitability(s, e).catch(() => [])
-      setRoomProfitability(Array.isArray(roomRows) ? roomRows : [])
+      if (restaurantMode) {
+        const [reportsSnapshot] = await Promise.all([
+          window.api.reports.snapshot(e).catch(() => null),
+        ])
+        setOccupancy([])
+        setRevenue(null)
+        setReportBookings([])
+        setConferenceBookings([])
+        setDayUseEntries([])
+        setSnapshot(reportsSnapshot && typeof reportsSnapshot === 'object' ? reportsSnapshot : null)
+        setRoomProfitability([])
+      } else {
+        const [occ, rev, bookings, reportsSnapshot, confBookings, dayUseRows] = await Promise.all([
+          window.api.reports.occupancy(s, e),
+          window.api.reports.revenue(s, e),
+          window.api.bookings.getAll().catch(() => []),
+          window.api.reports.snapshot(e).catch(() => null),
+          window.api.conference.getAll(s, e).catch(() => []),
+          window.api.dayuse.getAll(s, e).catch(() => [])
+        ])
+        setOccupancy(Array.isArray(occ) ? occ : [])
+        setRevenue(rev && typeof rev === 'object' ? rev : null)
+        setReportBookings(Array.isArray(bookings) ? bookings : [])
+        setConferenceBookings(Array.isArray(confBookings) ? confBookings : [])
+        setDayUseEntries(Array.isArray(dayUseRows) ? dayUseRows : [])
+        setSnapshot(reportsSnapshot && typeof reportsSnapshot === 'object' ? reportsSnapshot : null)
+        const roomRows = await window.api.reports.roomProfitability(s, e).catch(() => [])
+        setRoomProfitability(Array.isArray(roomRows) ? roomRows : [])
+      }
     } catch (err) {
       setError(`Could not load report: ${err?.message || 'Unknown error'}`)
       setReportBookings([])
@@ -364,7 +417,7 @@ export default function Reports() {
 
     // Header block (common)
     pushRow(`${companyDisplayName} — ${REPORT_TITLES[activeTab] || 'Report'}`)
-    pushRow('Lodge', companyDisplayName)
+    pushRow(restaurantMode ? 'Outlet' : 'Lodge', companyDisplayName)
     if (companyLegalName) pushRow('Company', companyLegalName)
     pushRow(`Period: ${exportPeriod}`)
     pushRow(`Generated: ${new Date().toLocaleString()}`)
@@ -429,7 +482,7 @@ export default function Reports() {
       }
     } else if (activeTab === 'pl' && pl) {
       pushRow('PROFIT & LOSS')
-      pushRow('Booking Revenue', Number(pl.bookingRevenue || 0).toFixed(2))
+      if (!restaurantMode) pushRow('Booking Revenue', Number(pl.bookingRevenue || 0).toFixed(2))
       pushRow('POS Revenue', Number(pl.posRevenue || 0).toFixed(2))
       pushRow('Total Revenue', Number(pl.totalRevenue || 0).toFixed(2))
       pushBlank()
@@ -476,7 +529,9 @@ export default function Reports() {
       })
       if (result.success) {
         const reconNote = result.reconciliationStatus === 'PASSED' ? '' : ` (${result.reconciliationStatus})`
-        const tabLabels = { bookings: 'Booking Register, Payments, Outstanding, Cancelled, Refunds, Quotations, Invoices, Exceptions, Reconciliation', expenses: 'Expenses, Maintenance, Summary', pos: 'POS Summary, Payment Methods, Operators, Top Items, Daily Sales', costs: 'Inventory Purchases, Room Supplies, Category Breakdown, Summary', pl: 'P&L Statement, Expense Breakdown, Payment Methods', prepayments: 'Customer Credit, Summary' }
+        const tabLabels = restaurantMode
+          ? { pos: 'POS Summary, Payment Methods, Operators, Top Items, Daily Sales', expenses: 'Expenses, Summary', costs: 'Inventory Purchases, Category Breakdown, Summary', pl: 'P&L Statement, Expense Breakdown, Payment Methods' }
+          : { bookings: 'Booking Register, Payments, Outstanding, Cancelled, Refunds, Quotations, Invoices, Exceptions, Reconciliation', expenses: 'Expenses, Maintenance, Summary', pos: 'POS Summary, Payment Methods, Operators, Top Items, Daily Sales', costs: 'Inventory Purchases, Room Supplies, Category Breakdown, Summary', pl: 'P&L Statement, Expense Breakdown, Payment Methods', prepayments: 'Customer Credit, Summary' }
         setExportSuccess(`Excel workbook saved: ${result.filePath}${reconNote}. Sheets: ${tabLabels[activeTab] || 'Report data'}.`)
         setTimeout(() => setExportSuccess(''), 6500)
       }
@@ -696,24 +751,15 @@ export default function Reports() {
     }}
   ]
 
-  const TABS = [
-    ['bookings', '🛏️ Bookings'],
-    ['prepayments', '💳 Prepayments'],
-    ['expenses', '💸 Expenses'],
-    ['pos',      '🍺 POS Sales'],
-    ['costs',    '📦 Stock Costs'],
-    ['pl',       '📊 P&L']
-  ]
-
   return (
     <div className="mx-auto flex max-w-7xl flex-col gap-6" id="printable-report">
 
       {/* Header */}
       <div className="bb-page-header no-print">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-emerald-700/70">Finance & Analytics</p>
+          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-emerald-700/70">{restaurantMode ? 'Sales & Stock Analytics' : 'Finance & Analytics'}</p>
           <h1 className="bb-page-header-title mt-2">Reports</h1>
-          <p className="bb-page-header-subtitle">Occupancy, revenue, cost, and performance analysis across operations.</p>
+          <p className="bb-page-header-subtitle">{restaurantMode ? 'Sales, stock, expenses, and performance analysis across outlets.' : 'Occupancy, revenue, cost, and performance analysis across operations.'}</p>
         </div>
 
 <div className="flex flex-wrap gap-2">
@@ -744,7 +790,7 @@ export default function Reports() {
       {/* Tabs */}
       <div className="bb-card no-print flex flex-wrap gap-2 p-2">
         {TABS.map(([v, l]) => (
-          <button key={v} onClick={() => setActiveTab(v)}
+          <button key={v} onClick={() => { setActiveTab(v); setSearchParams({ tab: v }, { replace: true }) }}
             className={`rounded-2xl px-4 py-2.5 text-sm font-medium transition-colors ${
               activeTab === v ? 'bg-gradient-to-r from-emerald-500 to-green-600 text-white shadow-[0_10px_24px_rgba(22,101,52,0.24)]' : 'bg-white text-slate-600 hover:bg-slate-50 shadow-sm'
             }`}>
@@ -797,7 +843,10 @@ export default function Reports() {
         </div>
         <div className="w-full text-xs text-slate-500">
           Choose a date range or use a preset to refresh the currently selected report. Exports always use the active tab and current dates.
-          <span className="mt-1 block">Excel export bundles the report pack into separate sheets for bookings, occupancy, expenses, POS sales, stock costs, and P&amp;L.</span>
+          {restaurantMode
+            ? <span className="mt-1 block">Excel export bundles the report pack into separate sheets for POS sales, expenses, stock costs, and P&amp;L.</span>
+            : <span className="mt-1 block">Excel export bundles the report pack into separate sheets for bookings, occupancy, expenses, POS sales, stock costs, and P&amp;L.</span>
+          }
         </div>
       </div>
 
@@ -1088,7 +1137,7 @@ export default function Reports() {
                 <SummaryCard icon={Package} label="Inventory Spend"
                   value={`${currency} ${Number(invSpend?.total || 0).toFixed(2)}`}
                   color="bg-orange-50 text-orange-600" />
-                <SummaryCard icon={Package} label="Room Supplies Spend"
+                <SummaryCard icon={Package} label={restaurantMode ? 'Consumables Spend' : 'Room Supplies Spend'}
                   value={`${currency} ${Number(supSpend?.total || 0).toFixed(2)}`}
                   color="bg-teal-50 text-teal-600" />
                 <SummaryCard icon={DollarSign} label="Total Stock Costs"
@@ -1174,7 +1223,7 @@ export default function Reports() {
               {supSpend?.purchases?.length > 0 && (
                 <div className="bb-table-shell">
                   <div className="flex items-center justify-between border-b border-slate-200/80 px-5 py-4">
-                    <h2 className="font-semibold text-slate-700">Room Supplies Purchases</h2>
+                    <h2 className="font-semibold text-slate-700">{restaurantMode ? 'Consumables Purchases' : 'Room Supplies Purchases'}</h2>
                     <span className="text-sm font-bold text-slate-800">
                       Total: {currency} {Number(supSpend.total).toFixed(2)}
                     </span>
@@ -2045,6 +2094,16 @@ export default function Reports() {
             </>
           )}
         </div>
+      )}
+
+      {/* ── HOTEL KPIs TAB ─────────────────────────────────────────────────────── */}
+      {activeTab === 'hotel-kpis' && hasHotelKpis && (
+        <HotelKpis embedded />
+      )}
+
+      {/* ── ENTERPRISE REPORTS TAB ─────────────────────────────────────────────── */}
+      {activeTab === 'enterprise' && hasAdvancedReports && (
+        <AdvancedReports embedded />
       )}
     </div>
   )

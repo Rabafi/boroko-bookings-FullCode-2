@@ -2248,7 +2248,16 @@ export async function rescheduleBooking(bookingId, {
     const currentBooking = readCache('bookings').find((b) => b.id === bookingId) || null;
     const expectedUpdatedAt = currentBooking?.updated_at || null;
 
-    const idempotencyKey = `reschedule:${bookingId}:${newRoomId}:${newCheckIn}:${newCheckOut}:${Date.now()}`;
+    const idempotencyKey = createOperationIdempotencyKey(`booking:reschedule:${bookingId}`, {
+      new_room_id: newRoomId,
+      new_check_in: newCheckIn,
+      new_check_out: newCheckOut,
+      reason: reason.trim(),
+      overpayment_action: overpaymentAction,
+      allow_total_override: Boolean(allowTotalOverride),
+      override_total: allowTotalOverride ? overrideTotal : null,
+      expected_updated_at: expectedUpdatedAt
+    });
 
     if (state.isOnline) {
       const { data: result, error } = await state.supabase.rpc('reschedule_booking', {

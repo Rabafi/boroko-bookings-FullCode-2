@@ -1,0 +1,10 @@
+{
+  "app_name": "Boroko Bar POS",
+  "data_dir": "bar-pos-data",
+  "currency": "BWP",
+  "currency_symbol": "P",
+  "default_outlet_name": "Main Bar",
+  "default_lodge_name": "My Bar",
+  "version": "1.0.0",
+  "offline": true
+}

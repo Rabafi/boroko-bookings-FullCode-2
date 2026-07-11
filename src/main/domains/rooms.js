@@ -18,7 +18,7 @@ async function _getAllRooms() {
   try {
     const { data, error } = await state.supabase.
     from('rooms').
-    select('id, room_number, room_type, rate_per_night, max_occupancy, status, amenities, description, photo, photos, lodge_id, created_at, updated_at, housekeeping_status, housekeeping_notes').
+    select('id, room_number, room_type, room_type_id, floor_section_id, rate_per_night, max_occupancy, status, amenities, description, photo, photos, lodge_id, created_at, updated_at, housekeeping_status, housekeeping_notes').
     eq('lodge_id', state.lodgeId).
     order('room_number').
     limit(200);
@@ -68,6 +68,8 @@ export async function createRoom(data) {
     id,
     room_number: data.room_number,
     room_type: data.room_type,
+    room_type_id: data.room_type_id || null,
+    floor_section_id: data.floor_section_id || null,
     rate_per_night: data.rate_per_night,
     max_occupancy: data.max_occupancy || 2,
     status: data.status || 'available',
@@ -119,6 +121,8 @@ export async function updateRoom(id, data) {
   const update = {
     room_number: data.room_number,
     room_type: data.room_type,
+    room_type_id: data.room_type_id || null,
+    floor_section_id: data.floor_section_id || null,
     rate_per_night: data.rate_per_night,
     max_occupancy: data.max_occupancy,
     status: data.status,

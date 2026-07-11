@@ -1,11 +1,14 @@
 import { useEffect, useState } from 'react'
 import { useLocation } from 'react-router-dom'
-import { Database, Upload, Download, FileSpreadsheet, Users, BedDouble, Receipt, ShoppingCart, CheckCircle2, AlertCircle, Loader2, HardDrive, ShieldCheck } from 'lucide-react'
+import { Database, Upload, Download, FileSpreadsheet, Users, BedDouble, Receipt, ShoppingCart, CheckCircle2, AlertCircle, Loader2, HardDrive, ShieldCheck, Clock, Wallet, ClipboardCheck, AlertTriangle } from 'lucide-react'
 import DataImport from './DataImport'
+import { useSettings } from '../app-context'
+import { isRestaurantOnly } from '../../../shared/propertyTypes'
 
-const TABS = ['Import Bookings', 'Export Data', 'Backups']
+const LODGE_TABS = ['Import Bookings', 'Export Data', 'Backups']
+const RESTAURANT_TABS = ['Import Data', 'Export Data', 'Backups']
 
-const EXPORT_PRESETS = [
+const LODGE_EXPORT_PRESETS = [
   { key: 'full', label: 'Full Backup Export', desc: 'Everything needed for archiving and support-led recovery.' },
   { key: 'finance', label: 'Finance Export', desc: 'Invoices, expenses, POS, purchases, conference, and day-use income.' },
   { key: 'bookingGuest', label: 'Bookings & Guests', desc: 'Bookings, guests, invoices, and quotations.' },
@@ -13,7 +16,17 @@ const EXPORT_PRESETS = [
   { key: 'inventory', label: 'Inventory & Supplies', desc: 'Stock items and purchase history only.' },
 ]
 
-const EXPORT_SECTIONS = [
+const RESTAURANT_EXPORT_PRESETS = [
+  { key: 'restaurant_full', label: 'Full Restaurant Backup', desc: 'Everything needed for archiving and support-led recovery.' },
+  { key: 'restaurant_dailyClose', label: 'Daily Close Pack', desc: 'POS sales, expenses, shifts, cash drawer, checklists, and alerts for end-of-day.' },
+  { key: 'restaurant_sales', label: 'Sales & Payments', desc: 'POS orders, expenses, cash drawer sessions, and customer data.' },
+  { key: 'restaurant_stock', label: 'Stock & Recipe Costing', desc: 'Inventory items, purchases, recipes, and stock movements.' },
+  { key: 'restaurant_purchasing', label: 'Purchasing & Suppliers', desc: 'Suppliers, purchase orders, and purchase history.' },
+  { key: 'restaurant_staff', label: 'Staff & Shifts', desc: 'Staff roster, shift history, and activity log.' },
+  { key: 'restaurant_customers', label: 'Customers & Loyalty', desc: 'Customer directory and activity history.' },
+]
+
+const LODGE_EXPORT_SECTIONS = [
   { icon: FileSpreadsheet, label: 'Bookings',   desc: 'All booking records — guest, room, dates, status, payments' },
   { icon: ShieldCheck,     label: 'Invoices',   desc: 'Booking invoice register with balances and guest contacts' },
   { icon: Users,           label: 'Guests',     desc: 'Full guest directory with contact and ID details' },
@@ -24,7 +37,21 @@ const EXPORT_SECTIONS = [
   { icon: Database,        label: 'Operations', desc: 'Maintenance, inventory, supplies, conference, and day-use data' },
 ]
 
-function ExportTab() {
+const RESTAURANT_EXPORT_SECTIONS = [
+  { icon: ShoppingCart,    label: 'POS Sales',       desc: 'Transaction history with line items and payment methods' },
+  { icon: Receipt,         label: 'Expenses',         desc: 'All expense records by category' },
+  { icon: Database,        label: 'Inventory',        desc: 'Stock items, ingredients, and purchase history' },
+  { icon: FileSpreadsheet, label: 'Recipes',          desc: 'Recipe compositions and ingredient costing' },
+  { icon: Users,           label: 'Staff',            desc: 'Staff roster with roles and contact details' },
+  { icon: Clock,           label: 'Shifts',           desc: 'Clock-in/out history with durations' },
+  { icon: Wallet,          label: 'Cash Drawer',      desc: 'Cash drawer sessions with float and variance' },
+  { icon: FileSpreadsheet, label: 'Purchasing',       desc: 'Suppliers, purchase orders, and receiving records' },
+  { icon: FileSpreadsheet, label: 'Customers',        desc: 'Customer directory with loyalty status' },
+  { icon: AlertTriangle,   label: 'Alerts',           desc: 'Exception alerts and operational issues' },
+  { icon: ClipboardCheck,  label: 'Checklists',       desc: 'Daily opening, closing, and cleaning checklists' },
+]
+
+function ExportTab({ restaurantMode, EXPORT_PRESETS, EXPORT_SECTIONS }) {
   const [loading, setLoading] = useState(false)
   const [result, setResult]   = useState(null) // { success, filePath, error, canceled }
   const [preset, setPreset] = useState('full')
@@ -60,7 +87,7 @@ function ExportTab() {
   return (
     <div className="p-6 max-w-3xl">
       <p className="text-gray-500 text-sm mb-6">
-        Export lodge data into a multi-sheet Excel workbook. Choose a focused export when you do
+        Export {restaurantMode ? 'restaurant' : 'lodge'} data into a multi-sheet Excel workbook. Choose a focused export when you do
         not need the full backup snapshot.
       </p>
 
@@ -119,7 +146,7 @@ function ExportTab() {
             onChange={(e) => setPrivacyMode(e.target.checked)}
             className="mt-1"
           />
-          <span>Privacy mode: hide guest email, phone, and ID/passport fields in the export.</span>
+          <span>Privacy mode: hide {restaurantMode ? 'customer' : 'guest'} email, phone, and ID/passport fields in the export.</span>
         </label>
       </div>
 
@@ -176,7 +203,7 @@ function ExportTab() {
   )
 }
 
-function BackupsTab() {
+function BackupsTab({ restaurantMode }) {
   const [info, setInfo] = useState({ backups: [], backupDir: '', policy: null })
   const [policySaving, setPolicySaving] = useState(false)
   const [policyRunning, setPolicyRunning] = useState(false)
@@ -284,7 +311,7 @@ function BackupsTab() {
           <div>
             <h2 className="text-lg font-bold text-gray-900">Weekly Data Archiving</h2>
             <p className="mt-1 text-sm text-gray-500">
-              Create a complete Excel snapshot of all lodge transactions, guests, and operational history. Keep this enabled so System Health can warn you when a fresh off-device backup is overdue.
+              Create a complete Excel snapshot of all {restaurantMode ? 'restaurant' : 'lodge'} {restaurantMode ? 'sales, stock, and operational' : 'transactions, guests, and operational'} history. Keep this enabled so System Health can warn you when a fresh off-device backup is overdue.
             </p>
           </div>
           <span className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-semibold ${statusClass}`}>
@@ -423,6 +450,12 @@ function BackupsTab() {
 export default function DataManagement() {
   const location = useLocation()
   const [tab, setTab] = useState(0)
+  const { settings } = useSettings()
+  const propertyType = settings?.property_type || settings?.business_type || 'lodge'
+  const restaurantMode = isRestaurantOnly(propertyType)
+  const TABS = restaurantMode ? RESTAURANT_TABS : LODGE_TABS
+  const EXPORT_PRESETS = restaurantMode ? RESTAURANT_EXPORT_PRESETS : LODGE_EXPORT_PRESETS
+  const EXPORT_SECTIONS = restaurantMode ? RESTAURANT_EXPORT_SECTIONS : LODGE_EXPORT_SECTIONS
 
   useEffect(() => {
     const requestedTab = location.state?.activeTab
@@ -440,7 +473,7 @@ export default function DataManagement() {
         </div>
         <div>
           <h1 className="text-2xl font-bold text-gray-800">Data Management</h1>
-          <p className="text-gray-500 text-sm mt-0.5">Import or export lodge data</p>
+          <p className="text-gray-500 text-sm mt-0.5">Import or export {restaurantMode ? 'restaurant' : 'lodge'} data</p>
         </div>
       </div>
 
@@ -463,7 +496,7 @@ export default function DataManagement() {
       </div>
 
       {/* Tab content */}
-      {tab === 0 ? <DataImport /> : tab === 1 ? <ExportTab /> : <BackupsTab />}
+      {tab === 0 ? <DataImport /> : tab === 1 ? <ExportTab restaurantMode={restaurantMode} EXPORT_PRESETS={EXPORT_PRESETS} EXPORT_SECTIONS={EXPORT_SECTIONS} /> : <BackupsTab restaurantMode={restaurantMode} />}
     </div>
   )
 }

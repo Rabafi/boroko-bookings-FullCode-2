@@ -295,6 +295,7 @@ function QuotationPreview({ quotation: q, settings, onClose, onConvert, canConve
   const [pdfError, setPdfError] = useState('')
   const currency = q.currency || settings?.currency || 'BWP'
   const isEvent  = q.quotation_type === 'exclusive_event'
+  const roomLines = quotationRoomLines(q)
   const nights   = q.check_in && q.check_out
     ? Math.max(0, Math.ceil((new Date(q.check_out) - new Date(q.check_in)) / 86400000))
     : null

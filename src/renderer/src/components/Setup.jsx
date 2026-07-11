@@ -1,8 +1,9 @@
 import { useNavigate } from 'react-router-dom'
 import { useState, useRef } from 'react'
-import { Building2, Phone, Mail, MapPin, Globe, Hash, CheckCircle, Upload, Image, X, User, Lock, Eye, EyeOff } from 'lucide-react'
+import { Building2, Phone, Mail, MapPin, Globe, Hash, CheckCircle, Upload, Image, X, User, Lock, Eye, EyeOff, Home, BedDouble, Tent, Car, Hotel, Palmtree, UtensilsCrossed } from 'lucide-react'
 import { useProfiles } from '../app-context'
 import borokoLogoDark from '../assets/boroko-bookings-logo-dark.png'
+import { PROPERTY_TYPE_ORDER, PROPERTY_TYPE_LABELS, PROPERTY_TYPE_DESCRIPTIONS, propertyTypeToBusinessType } from '../../../shared/propertyTypes'
 
 export default function Setup({ onComplete }) {
   const navigate = useNavigate()
@@ -16,6 +17,7 @@ export default function Setup({ onComplete }) {
   const fileInputRef = useRef(null)
   const [admin, setAdmin] = useState({ name: '', email: '', password: '', confirm: '' })
   const [form, setForm] = useState({
+    property_type: '',
     business_type: 'lodge',
     lodge_name: '',
     company_name: '',
@@ -30,7 +32,62 @@ export default function Setup({ onComplete }) {
     logo: ''
   })
 
+  const [operatingAnswers, setOperatingAnswers] = useState({
+    food_beverage: false,
+    events_conferences: false,
+    day_visitors_pool: false,
+    public_booking_page: false,
+    pos_outlets: false,
+    room_supplies: false,
+    corporate_clients: false,
+    hotel_rates: false,
+    room_types_feature: false,
+    online_payments: false,
+    multi_property_interest: false
+  })
+
+  const setOA = (key, value) => setOperatingAnswers(prev => ({ ...prev, [key]: value }))
+
+  const OPERATING_QUESTIONS = [
+    { key: 'food_beverage', label: 'Does your property serve food and/or drinks?' },
+    { key: 'events_conferences', label: 'Do you host events or conferences?' },
+    { key: 'day_visitors_pool', label: 'Do you allow day visitors or pool access?' },
+    { key: 'public_booking_page', label: 'Do you want a public booking page?' },
+    { key: 'pos_outlets', label: 'Do you have food & beverage POS outlets?' },
+    { key: 'room_supplies', label: 'Do you track room supplies or minibar?' },
+    { key: 'corporate_clients', label: 'Do you serve corporate or company clients?' },
+    { key: 'hotel_rates', label: 'Do you need hotel-style rates (seasonal, corporate, packages)?' },
+    { key: 'room_types_feature', label: 'Do you need room type management (view types, bed types)?' },
+    { key: 'online_payments', label: 'Do you need online payment processing?' },
+    { key: 'multi_property_interest', label: 'Do you manage multiple properties?' }
+  ]
+
   const set = (field, value) => setForm((f) => ({ ...f, [field]: value }))
+
+  const handleContinueOperating = async () => {
+    try {
+      const recommended = Object.entries(operatingAnswers)
+        .filter(([_, v]) => v)
+        .map(([k]) => k === 'food_beverage' ? 'food_beverage' :
+          k === 'events_conferences' ? 'events_conferences' :
+          k === 'day_visitors_pool' ? 'day_visitors' :
+          k === 'public_booking_page' ? 'public_booking_page' :
+          k === 'pos_outlets' ? 'multi_outlet_pos' :
+          k === 'room_supplies' ? 'room_supplies' :
+          k === 'corporate_clients' ? 'corporate_clients' :
+          k === 'hotel_rates' ? 'hotel_rates' :
+          k === 'room_types_feature' ? 'room_types' :
+          k === 'online_payments' ? 'online_payments' :
+          k === 'multi_property_interest' ? 'multi_property' : k)
+      await window.api.settings.updateOperatingProfile({
+        ...operatingAnswers,
+        recommended_features: recommended
+      })
+    } catch (e) {
+      console.warn('[SETUP] Failed to save operating profile:', e)
+    }
+    setStep(3)
+  }
 
   const getSetupErrorMessage = (res) => {
     const code = res?.code || res?.data?.auth_health?.code
@@ -124,7 +181,7 @@ export default function Setup({ onComplete }) {
     try {
       console.log('[SETUP] Before API')
       const res = await window.api.setup.initializeCompany({
-        settings: form,
+        settings: { ...form, operating_profile: operatingAnswers },
         admin: {
           name: admin.name.trim(),
           email: admin.email.trim().toLowerCase(),
@@ -150,12 +207,25 @@ export default function Setup({ onComplete }) {
     }
   }
 
-  const STEP_LABELS = ['Property Info', 'Contact Details', 'Admin Account']
+  const STEP_LABELS = ['Property Type', 'Operating Questions', 'Property Info', 'Contact Details', 'Admin Account']
 
   const stepSubtitle = {
-    1: 'Tell us about your property — this appears on all receipts and invoices.',
-    2: 'Where can guests and staff reach you?',
-    3: 'Create your administrator login. You can add more staff accounts after setup.'
+    1: 'What do you operate? This shapes your default modules and navigation.',
+    2: 'Answer a few questions about your operations to customise your experience.',
+    3: 'Tell us about your property — this appears on all receipts and invoices.',
+    4: 'Where can guests and staff reach you?',
+    5: 'Create your administrator login. You can add more staff accounts after setup.'
+  }
+
+  const PROPERTY_TYPE_ICONS = {
+    guest_house: Home,
+    bnb: BedDouble,
+    lodge: Tent,
+    camp: Tent,
+    motel: Car,
+    hotel: Hotel,
+    resort: Palmtree,
+    restaurant: UtensilsCrossed
   }
 
   return (
@@ -179,7 +249,7 @@ export default function Setup({ onComplete }) {
 
         {/* Progress Steps */}
         <div className="flex px-8 pt-5 gap-1">
-          {[1, 2, 3].map((s) => (
+          {[1, 2, 3, 4, 5].map((s) => (
             <div key={s} className="flex items-center gap-1.5 flex-1">
               <div
                 className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 transition-colors ${
@@ -195,15 +265,108 @@ export default function Setup({ onComplete }) {
               <span className={`text-xs font-medium hidden sm:block ${step === s ? 'text-green-700' : 'text-gray-400'}`}>
                 {STEP_LABELS[s - 1]}
               </span>
-              {s < 3 && <div className={`flex-1 h-0.5 ${step > s ? 'bg-green-500' : 'bg-gray-200'}`} />}
+              {s < 5 && <div className={`flex-1 h-0.5 ${step > s ? 'bg-green-500' : 'bg-gray-200'}`} />}
             </div>
           ))}
         </div>
 
         <div className="px-8 py-6">
 
-          {/* ── Step 1: Property Info ── */}
+          {/* ── Step 1: Property Type ── */}
           {step === 1 && (
+            <div className="space-y-4">
+              <p className="text-sm text-gray-600">Select the type that best describes your operation. You can change this later in Settings.</p>
+              <div className="grid grid-cols-2 gap-2.5">
+                {PROPERTY_TYPE_ORDER.map((key) => {
+                  const Icon = PROPERTY_TYPE_ICONS[key] || Building2
+                  const isSelected = form.property_type === key
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => setForm(f => ({
+                        ...f,
+                        property_type: key,
+                        business_type: propertyTypeToBusinessType(key)
+                      }))}
+                      className={`flex items-start gap-3 rounded-xl border-2 p-3 text-left transition-all ${
+                        isSelected
+                          ? 'border-green-500 bg-green-50 ring-1 ring-green-200'
+                          : 'border-gray-200 bg-gray-50/50 hover:border-green-300 hover:bg-green-50/30'
+                      }`}
+                    >
+                      <div className={`mt-0.5 flex-shrink-0 rounded-lg p-1.5 ${isSelected ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-400'}`}>
+                        <Icon size={16} />
+                      </div>
+                      <div className="min-w-0">
+                        <p className={`text-sm font-semibold ${isSelected ? 'text-green-800' : 'text-gray-700'}`}>
+                          {PROPERTY_TYPE_LABELS[key]}
+                        </p>
+                        <p className="text-[11px] text-gray-400 mt-0.5 leading-tight">
+                          {PROPERTY_TYPE_DESCRIPTIONS[key]}
+                        </p>
+                      </div>
+                    </button>
+                  )
+                })}
+              </div>
+
+              <button
+                onClick={() => setStep(2)}
+                disabled={!form.property_type}
+                className="btn-primary w-full mt-2"
+              >
+                Next →
+              </button>
+            </div>
+          )}
+
+          {/* ── Step 2: Operating Questions ── */}
+          {step === 2 && (
+            <div className="space-y-3">
+              <div className="max-h-[360px] overflow-y-auto -mx-1 px-1 space-y-2">
+                {OPERATING_QUESTIONS.map((q) => (
+                  <div key={q.key} className="flex items-center justify-between bg-gray-50 rounded-lg p-3 border border-gray-100">
+                    <p className="text-sm text-gray-700 pr-3">{q.label}</p>
+                    <div className="flex items-center gap-1.5 flex-shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => setOA(q.key, true)}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                          operatingAnswers[q.key]
+                            ? 'bg-green-600 text-white shadow-sm'
+                            : 'bg-gray-200 text-gray-500 hover:bg-gray-300'
+                        }`}
+                      >
+                        Yes
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setOA(q.key, false)}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                          !operatingAnswers[q.key]
+                            ? 'bg-gray-600 text-white shadow-sm'
+                            : 'bg-gray-200 text-gray-500 hover:bg-gray-300'
+                        }`}
+                      >
+                        No
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <p className="text-xs text-gray-400">You can change these anytime in Settings → Modules</p>
+              <button
+                onClick={handleContinueOperating}
+                className="btn-primary w-full mt-2"
+              >
+                Continue →
+              </button>
+            </div>
+          )}
+
+          {/* ── Step 3: Property Info ── */}
+          {step === 3 && (
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -293,18 +456,21 @@ export default function Setup({ onComplete }) {
                 </div>
               </div>
 
-              <button
-                onClick={() => setStep(2)}
-                disabled={!form.lodge_name.trim()}
-                className="btn-primary w-full mt-2"
-              >
-                Next →
-              </button>
+              <div className="flex gap-3 pt-1">
+                <button onClick={() => setStep(2)} className="btn-secondary flex-1">← Back</button>
+                <button
+                  onClick={() => setStep(4)}
+                  disabled={!form.lodge_name.trim()}
+                  className="btn-primary flex-1"
+                >
+                  Next →
+                </button>
+              </div>
             </div>
           )}
 
-          {/* ── Step 2: Contact Details ── */}
-          {step === 2 && (
+          {/* ── Step 4: Contact Details ── */}
+          {step === 4 && (
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -382,14 +548,14 @@ export default function Setup({ onComplete }) {
               </div>
 
               <div className="flex gap-3 pt-1">
-                <button onClick={() => setStep(1)} className="btn-secondary flex-1">← Back</button>
-                <button onClick={() => setStep(3)} className="btn-primary flex-1">Next →</button>
+                <button onClick={() => setStep(3)} className="btn-secondary flex-1">← Back</button>
+                <button onClick={() => setStep(5)} className="btn-primary flex-1">Next →</button>
               </div>
             </div>
           )}
 
-          {/* ── Step 3: Admin Account ── */}
-          {step === 3 && (
+          {/* ── Step 5: Admin Account ── */}
+          {step === 5 && (
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -462,7 +628,7 @@ export default function Setup({ onComplete }) {
               {adminError && <p className="text-red-500 text-sm">{adminError}</p>}
 
               <div className="flex gap-3 pt-1">
-                <button onClick={() => setStep(2)} className="btn-secondary flex-1">← Back</button>
+                <button onClick={() => setStep(4)} className="btn-secondary flex-1">← Back</button>
                 <button onClick={handleFinish} disabled={saving} className="btn-primary flex-1">
                   {saving ? 'Creating account...' : '✓ Finish Setup'}
                 </button>

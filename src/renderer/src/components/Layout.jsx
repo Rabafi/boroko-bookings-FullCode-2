@@ -42,6 +42,31 @@ import { normalizeSupportMessages, supportMessageSide, supportSenderName } from 
 
 // ── Tier definitions (mirrors AdminCentral) ───────────────────────────────────
 const TIERS = SUBSCRIPTION_PLAN_ORDER
+const ADDON_FEATURE_KEYS = [
+  'custom_website',
+  'payment_gateway',
+  'channel_manager',
+  'guest_portal',
+  'multi_property',
+  'advanced_rates',
+  'multi_outlet_pos',
+  'guest_messaging',
+  'guest_crm',
+  'advanced_reports',
+  'advanced_booking_engine',
+  'operations_compliance',
+  'group_operations'
+]
+
+function getEffectiveAddonsFromEntitlement(entitlement = {}) {
+  const addons = new Set(Array.isArray(entitlement.enterprise_addons) ? entitlement.enterprise_addons : [])
+  const features = entitlement.effective_features || {}
+  for (const key of ADDON_FEATURE_KEYS) {
+    if (features[key] === true) addons.add(key)
+  }
+  if (features.rate_calendar === true || features.promo_codes === true) addons.add('advanced_rates')
+  return [...addons]
+}
 
 function latestSupportMessage(row) {
   const messages = normalizeSupportMessages(row)
@@ -197,14 +222,14 @@ function UpgradeModal({ lockedItem, onClose, settings, currentPlan: currentPlanP
     setTimeout(onClose, 2000)
   }
 
-  const tierBorder = { Starter: 'border-slate-300', Standard: 'border-blue-400', Pro: 'border-purple-400' }
-  const tierBg    = { Starter: 'bg-slate-100',      Standard: 'bg-blue-50',      Pro: 'bg-purple-50' }
-  const tierBadge = { Starter: 'bg-slate-200 text-slate-700', Standard: 'bg-blue-600 text-blue-50', Pro: 'bg-purple-600 text-purple-50' }
-  const tierBtn   = { Starter: 'bg-gray-600 hover:bg-gray-500', Standard: 'bg-blue-600 hover:bg-blue-500', Pro: 'bg-purple-600 hover:bg-purple-500' }
+  const tierBorder = { Starter: 'border-slate-300', Standard: 'border-blue-400', Pro: 'border-purple-400', Enterprise: 'border-emerald-500' }
+  const tierBg    = { Starter: 'bg-slate-100',      Standard: 'bg-blue-50',      Pro: 'bg-purple-50',      Enterprise: 'bg-emerald-50' }
+  const tierBadge = { Starter: 'bg-slate-200 text-slate-700', Standard: 'bg-blue-600 text-blue-50', Pro: 'bg-purple-600 text-purple-50', Enterprise: 'bg-emerald-700 text-emerald-50' }
+  const tierBtn   = { Starter: 'bg-gray-600 hover:bg-gray-500', Standard: 'bg-blue-600 hover:bg-blue-500', Pro: 'bg-purple-600 hover:bg-purple-500', Enterprise: 'bg-emerald-700 hover:bg-emerald-600' }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4 backdrop-blur-sm" onClick={onClose}>
-      <div className="w-full max-w-lg rounded-[28px] border border-white/70 bg-white/95 p-6 shadow-[0_28px_90px_rgba(15,23,42,0.28)]" onClick={e => e.stopPropagation()}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-3 sm:p-4 backdrop-blur-sm" onClick={onClose}>
+      <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-[28px] border border-white/70 bg-white/95 p-5 sm:p-6 shadow-[0_28px_90px_rgba(15,23,42,0.28)]" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-1">
         <div className="flex items-center gap-2">
           <Lock size={18} className="text-amber-500" />
@@ -212,10 +237,10 @@ function UpgradeModal({ lockedItem, onClose, settings, currentPlan: currentPlanP
         </div>
         <button onClick={onClose} className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-transparent text-slate-400 transition-all hover:border-slate-200 hover:bg-slate-100 hover:text-slate-700"><X size={18} /></button>
       </div>
-      <p className="text-slate-500 text-xs mb-5">
+      <p className="text-slate-500 text-xs mb-4">
         {lockedItem?.label} is locked on {currentPlan}. Upgrade to {selectedPlan} to unlock it for this lodge.
       </p>
-      <div className="mb-5 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs text-slate-600">
+      <div className="mb-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs text-slate-600">
         <p className="font-semibold text-slate-700">Current plan: {currentPlan}</p>
         <p className="mt-1">{currentLimits.bookings} · {currentLimits.grace} · {currentLimits.rooms} · {currentLimits.users}</p>
         <p className="mt-2 font-semibold text-slate-700">Required plan: {selectedPlan}</p>
@@ -230,19 +255,23 @@ function UpgradeModal({ lockedItem, onClose, settings, currentPlan: currentPlanP
           </div>
         ) : (
           <>
-            <div className="grid grid-cols-3 gap-3 mb-5">
+            <div className="grid grid-cols-2 gap-2 sm:gap-3 mb-5">
               {TIERS.map(tier => {
                 const plan = getSubscriptionPlan(tier)
                 const spotlight = plan.spotlight
                 const isRecommended = spotlight === 'Most Popular'
                 const isPremium = tier === 'Pro'
+                const isSelected = selectedTier === tier
+                const modules = getSubscriptionPlan(tier).modules
+                const visibleModules = modules.slice(0, 3)
+                const extraCount = modules.length - 3
                 return (
                 <button
                   key={tier}
                   onClick={() => setSelectedTier(tier)}
-                  className={`rounded-xl border-2 p-3 text-left transition-all ${
-                    selectedTier === tier
-                      ? `${tierBorder[tier]} ${tierBg[tier]}`
+                  className={`rounded-xl border-2 p-2.5 sm:p-3 text-left transition-all ${
+                    isSelected
+                      ? `${tierBorder[tier]} ${tierBg[tier]} ring-1 ring-offset-1 ${tierBorder[tier]}`
                       : isRecommended
                         ? 'border-emerald-200 bg-emerald-50/60'
                         : isPremium
@@ -250,28 +279,31 @@ function UpgradeModal({ lockedItem, onClose, settings, currentPlan: currentPlanP
                           : 'border-slate-200 bg-slate-50/80 opacity-80'
                   }`}
                 >
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${tierBadge[tier]}`}>{tier}</span>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <div className="flex flex-wrap items-center gap-1">
+                      <span className={`text-[10px] sm:text-xs font-bold px-1.5 sm:px-2 py-0.5 rounded-full ${tierBadge[tier]}`}>{tier}</span>
                       {spotlight && (
-                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                        <span className={`text-[9px] sm:text-[10px] font-bold px-1.5 py-0.5 rounded-full ${
                           isRecommended ? 'bg-emerald-600 text-white' : 'bg-purple-600 text-purple-50'
                         }`}>
                           {spotlight}
                         </span>
                       )}
                     </div>
-                    {selectedTier === tier && <CheckCircle2 size={13} className="text-emerald-500" />}
+                    {isSelected && <CheckCircle2 size={13} className="text-emerald-500 flex-shrink-0" />}
                   </div>
-                  <p className="text-xs text-slate-500 mb-2">{getSubscriptionPlan(tier).priceLabel}</p>
-                  <p className="mb-2 text-[11px] font-medium text-slate-700">{getSubscriptionPlan(tier).pitch}</p>
-                  <ul className="space-y-1">
-                    {getSubscriptionPlan(tier).modules.map(f => (
-                      <li key={f} className="flex items-start gap-1 text-xs text-slate-600">
-                        <Zap size={10} className="mt-0.5 flex-shrink-0 text-amber-500" />
-                        {f}
+                  <p className="text-[10px] sm:text-xs text-slate-500 mb-1">{getSubscriptionPlan(tier).priceLabel}</p>
+                  <p className="mb-1.5 text-[10px] sm:text-[11px] font-medium text-slate-700 line-clamp-2">{getSubscriptionPlan(tier).pitch}</p>
+                  <ul className="space-y-0.5">
+                    {visibleModules.map(f => (
+                      <li key={f} className="flex items-start gap-1 text-[10px] sm:text-xs text-slate-600">
+                        <Zap size={9} className="mt-0.5 flex-shrink-0 text-amber-500" />
+                        <span className="truncate">{f}</span>
                       </li>
                     ))}
+                    {extraCount > 0 && (
+                      <li className="text-[10px] text-slate-400 pl-3.5">+{extraCount} more</li>
+                    )}
                   </ul>
                 </button>
                 )
@@ -629,7 +661,8 @@ export default function Layout() {
     }
   }, [isBrowserPreview, settings?.id, settings?.lodge_id, user?.email, user?.id])
 
-  const bizType = settings?.business_type || 'lodge'
+  const propertyType = settings?.property_type || settings?.business_type || 'lodge'
+  const bizType = propertyType === 'restaurant' ? 'restaurant' : 'lodge'
   const assistantEnabled = settings?.assistant_enabled === true
 
   useEffect(() => {
@@ -644,9 +677,15 @@ export default function Layout() {
     return () => window.removeEventListener('keydown', handleQuickSearch)
   }, [])
 
+  const subscriptionPlan = access?.entitlement?.plan || access?.subscription_plan || null
+  const effectiveUiPlan = subscriptionPlan
+  const effectiveUiBizType = bizType
+  const effectiveUiPropertyType = propertyType
+  const effectiveUiAddons = getEffectiveAddonsFromEntitlement(access?.entitlement || {})
+  const effectiveUiAccess = access
   const navItems = useMemo(() => (
-    getDesktopNavItems(bizType, access).filter((item) => assistantEnabled || item.to !== '/ai')
-  ), [bizType, access, assistantEnabled])
+    getDesktopNavItems(effectiveUiBizType, effectiveUiAccess, effectiveUiPropertyType, effectiveUiPlan, effectiveUiAddons).filter((item) => assistantEnabled || item.to !== '/ai')
+  ), [effectiveUiBizType, effectiveUiAccess, assistantEnabled, effectiveUiPlan, effectiveUiPropertyType, effectiveUiAddons])
   const standaloneTop = useMemo(
     () => navItems.filter((item) => !item.group && item.to !== '/settings'),
     [navItems]
@@ -662,7 +701,7 @@ export default function Layout() {
         .filter((item) => item.group === groupName)
         .map((item) => ({
           ...item,
-          isLocked: item.capability && access?.blockedByFeature?.[item.capability]
+          isLocked: item.isLocked === true || Boolean(item.capability && access?.blockedByFeature?.[item.capability])
         }))
     })).filter((group) => group.items.length > 0)
   ), [access, navItems])
@@ -688,6 +727,22 @@ export default function Layout() {
 
   const BIZ_EMOJI = { lodge: '🏕️', restaurant: '🍽️' }
   const BIZ_LABEL = { lodge: 'Lodge Manager', restaurant: 'Restaurant Manager' }
+  const PAGE_PURPOSE = {
+    Dashboard: 'See today’s sales, service, stock, and exceptions at a glance.',
+    POS: 'Create orders, take payment, and send work to the right station.',
+    Reports: 'Review sales, margins, payments, and operational trends.',
+    Inventory: 'Maintain stock levels, counts, and purchasing decisions.',
+    Expenses: 'Record and review business costs with clear categories.',
+    Staff: 'Manage the team and the access they need for their work.',
+    Settings: 'Configure this restaurant, its devices, and operating defaults.',
+    'Floor & Service': 'Manage live tables, reservations, and front-of-house flow.',
+    Kitchen: 'Track preparation from new ticket to ready service.',
+    'Menu & Production': 'Manage menu items, recipes, combos, and preparation.',
+    'Stock & Purchasing': 'Keep purchasing, stock risk, and expiry work together.',
+    Team: 'Review shifts, performance, and staff accountability.',
+    'Cash & Close': 'Reconcile cash, close the day, and review owner controls.',
+    Control: 'Handle checklists, alerts, deposits, feedback, and operating policies.'
+  }
   const workspaceName = settings?.lodge_name || settings?.company_name || 'Boroko Workspace'
   const logoSrc = borokoLogo
   const darkLogoSrc = borokoLogoDark
@@ -1093,7 +1148,7 @@ export default function Layout() {
                   </span>
                 </div>
                 <p className="mt-0.5 text-sm text-slate-500">
-                  {activeNavItem?.group ? `${activeNavItem.group} workspace` : 'Daily operations'} for quick decisions and clean handovers.
+                  {PAGE_PURPOSE[activeNavItem?.label] || 'Use this page to complete the current operational task safely and clearly.'}
                 </p>
               </div>
 

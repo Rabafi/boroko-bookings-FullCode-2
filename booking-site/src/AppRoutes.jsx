@@ -4,6 +4,7 @@ import { Routes, Route } from 'react-router-dom'
 const LodgePage = lazy(() => import('./pages/LodgePage.jsx'))
 const BookingPage = lazy(() => import('./pages/BookingPage.jsx'))
 const SuccessPage = lazy(() => import('./pages/SuccessPage.jsx'))
+const GuestPortal = lazy(() => import('./pages/GuestPortal.jsx'))
 const NotFoundPage = lazy(() => import('./pages/NotFoundPage.jsx'))
 
 function RouteLoader() {
@@ -28,6 +29,9 @@ export default function AppRoutes() {
 
         {/* Success: booking reference confirmation */}
         <Route path="/:slug/success" element={<SuccessPage />} />
+
+        {/* Guest portal: self-service for existing bookings */}
+        <Route path="/portal" element={<GuestPortal />} />
 
         {/* Root — nothing to show without a slug */}
         <Route path="/" element={<NotFoundPage />} />
