@@ -13,6 +13,7 @@ Run these checks from the repository root:
 - `npm run test:inventory-offline-sync`
 - `npm run test:import-critical`
 - `npm run test:release-behavior`
+- `npm run test:release-architecture`
 - `npm run test:enterprise`
 - `npm run test:marketing-site`
 - `npm run test:web-surfaces`
@@ -20,6 +21,18 @@ Run these checks from the repository root:
 - `npm run build`
 
 Do not publish if any required check is red.
+
+## Product release-feed gate
+
+The existing Boroko Bookings customer application is a compatibility product with the fixed Windows identity `com.boroko.bookings` and update feed `Rabafi/boroko-bookings-releases`. Do not change either value as part of releasing Lodge & Camp, Hotel, or Hospitality POS.
+
+Each standalone product must use both its own Windows application ID and its own public GitHub Releases feed:
+
+- Lodge & Camp: `com.boroko.lodgecamp` / `Rabafi/boroko-lodge-camp-releases`
+- Hotel: `com.boroko.hotel` / `Rabafi/boroko-hotel-releases`
+- Restaurant & Bar POS: `com.boroko.hospitalitypos` / `Rabafi/boroko-hospitality-pos-releases`
+
+Never publish two product installers to the same GitHub Releases feed. Before publishing, run `npm run test:release-architecture`, verify the selected workspace and version, and build products serially because the shared Electron output directory is not safe for parallel builds.
 
 Run every feature-specific regression script present in `package.json` for the area being released, including customer-credit/reschedule or report-export tests when those changes are part of the release.
 

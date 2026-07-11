@@ -1,7 +1,7 @@
 {
   "appId": "com.boroko.hospitalitypos",
   "productName": "Boroko Restaurant & Bar POS",
-  "publish": { "provider": "github", "owner": "Rabafi", "repo": "boroko-bookings-releases" },
+  "publish": { "provider": "github", "owner": "Rabafi", "repo": "boroko-hospitality-pos-releases" },
   "artifactName": "Boroko-Restaurant-Bar-POS-${version}-${arch}.${ext}",
   "directories": { "output": "dist/hospitality-pos" },
   "asar": true,

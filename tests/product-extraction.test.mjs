@@ -7,14 +7,14 @@ import { HOSPITALITY_MODES, getHospitalityMode, isBarOnlyMode } from '../src/sha
 
 const root = process.cwd()
 const products = [
-  ['lodge-camp', 'com.boroko.lodgecamp', 'Boroko Lodge & Camp'],
-  ['hotel', 'com.boroko.hotel', 'Boroko Hotel'],
-  ['hospitality-pos', 'com.boroko.hospitalitypos', 'Boroko Restaurant & Bar POS']
+  ['lodge-camp', 'com.boroko.lodgecamp', 'Boroko Lodge & Camp', 'boroko-lodge-camp-releases'],
+  ['hotel', 'com.boroko.hotel', 'Boroko Hotel', 'boroko-hotel-releases'],
+  ['hospitality-pos', 'com.boroko.hospitalitypos', 'Boroko Restaurant & Bar POS', 'boroko-hospitality-pos-releases']
 ]
 
 test('each physical product app has an independent installer identity', () => {
   const appIds = new Set()
-  for (const [id, appId, productName] of products) {
+  for (const [id, appId, productName, releaseRepo] of products) {
     const appDir = path.join(root, 'apps', id)
     const manifest = JSON.parse(fs.readFileSync(path.join(appDir, 'product.json'), 'utf8'))
     const packageJson = JSON.parse(fs.readFileSync(path.join(appDir, 'package.json'), 'utf8'))
@@ -22,7 +22,7 @@ test('each physical product app has an independent installer identity', () => {
     assert.equal(manifest.id, id)
     assert.equal(builder.appId, appId)
     assert.equal(builder.productName, productName)
-    assert.equal(builder.publish?.repo, 'boroko-bookings-releases')
+    assert.equal(builder.publish?.repo, releaseRepo)
     assert.ok(packageJson.scripts.build.includes(`product-app.mjs ${id} build`))
     assert.ok(packageJson.scripts.dist.includes(`product-app.mjs ${id} dist`))
     assert.ok(packageJson.scripts['dist:publish'].includes(`product-app.mjs ${id} publish`))

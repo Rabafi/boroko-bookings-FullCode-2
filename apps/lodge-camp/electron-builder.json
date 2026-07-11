@@ -1,7 +1,7 @@
 {
   "appId": "com.boroko.lodgecamp",
   "productName": "Boroko Lodge & Camp",
-  "publish": { "provider": "github", "owner": "Rabafi", "repo": "boroko-bookings-releases" },
+  "publish": { "provider": "github", "owner": "Rabafi", "repo": "boroko-lodge-camp-releases" },
   "artifactName": "Boroko-Lodge-Camp-${version}-${arch}.${ext}",
   "directories": { "output": "dist/lodge-camp" },
   "asar": true,
