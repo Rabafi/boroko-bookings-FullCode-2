@@ -182,9 +182,18 @@ begin
     return jsonb_build_object('success', false, 'error', 'A payment reason of at least 8 characters is required');
   end if;
 
-  select i, a into v_invoice, v_account
-    from public.commercial_invoices i join public.commercial_accounts a on a.id = i.commercial_account_id
-   where i.id = v_invoice_id for update of i, a;
+  -- PostgreSQL does not allow a composite record variable to be one member of
+  -- a multi-item SELECT INTO list. Lock and load each row explicitly instead.
+  select i.* into v_invoice
+    from public.commercial_invoices i
+   where i.id = v_invoice_id
+   for update;
+  if found then
+    select a.* into v_account
+      from public.commercial_accounts a
+     where a.id = v_invoice.commercial_account_id
+     for update;
+  end if;
   if not found then return jsonb_build_object('success', false, 'error', 'Commercial invoice was not found'); end if;
   v_claim := public.command_central_claim_operation(v_operation_id, 'commercial_payment.record', v_account.lodge_id, v_account.product_id, md5(p_payload::text), v_reason, nullif(p_payload->>'actor_id', '')::uuid, nullif(p_payload->>'actor_email', ''));
   if coalesce((v_claim->>'ok')::boolean, false) = false then return jsonb_build_object('success', false, 'error', coalesce(v_claim->>'error', 'Could not claim payment operation')); end if;
