@@ -194,9 +194,17 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
     [selectedOrder?.id, voidHistory],
   );
   const selectedPaymentBreakdown = useMemo(() => {
-    const breakdown = selectedOrder?.payment_breakdown;
-    if (!breakdown || typeof breakdown !== 'object' || Array.isArray(breakdown)) return [];
-    return Object.entries(breakdown).filter(([, value]) => Number(value || 0) !== 0);
+    let breakdown = selectedOrder?.payment_breakdown;
+    if (typeof breakdown === 'string') {
+      try { breakdown = JSON.parse(breakdown); } catch { breakdown = null; }
+    }
+    if (Array.isArray(breakdown)) {
+      return breakdown
+        .filter((row) => Number(row?.amount || 0) !== 0)
+        .map((row) => [row.method || 'Unspecified', Number(row.amount || 0), row.reference || null]);
+    }
+    if (!breakdown || typeof breakdown !== 'object') return [];
+    return Object.entries(breakdown).filter(([, value]) => Number(value || 0) !== 0).map(([method, value]) => [method, Number(value || 0), null]);
   }, [selectedOrder]);
   const closeDetail = (force = false) => {
     if (voiding && !force) return;
@@ -420,7 +428,7 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
             </div>
             <div className="hpos-report-detail-grid">
               <div><h3>Receipt detail</h3><p>{orderDate(selectedOrder) || '—'} · {selectedOrder.table_name || selectedOrder.service_mode || 'Counter'}</p><p>{selectedOrder.waiter_name || selectedOrder.cashier_name || 'Operator not recorded'}</p><p>{selectedOrder.notes || 'No receipt note.'}</p></div>
-              <div><h3>Payment information</h3>{selectedPaymentBreakdown.length ? selectedPaymentBreakdown.map(([method, value]) => <p key={method}>{method}: <strong>{money(value, currency)}</strong></p>) : <p>{selectedOrder.payment_method || 'Unspecified'}: <strong>{money(selectedOrder.total || selectedOrder.total_amount, currency)}</strong></p>}</div>
+              <div><h3>Payment information</h3>{selectedPaymentBreakdown.length ? selectedPaymentBreakdown.map(([method, value, reference], index) => <p key={`${method}-${index}`}>{method}: <strong>{money(value, currency)}</strong>{reference && <small className="ml-2 text-slate-500">Ref {reference}</small>}</p>) : <p>{selectedOrder.payment_method || 'Unspecified'}: <strong>{money(selectedOrder.total || selectedOrder.total_amount, currency)}</strong></p>}</div>
             </div>
             <div className="hpos-report-detail-items"><h3>Items</h3>{(selectedOrder.pos_order_items || []).length ? selectedOrder.pos_order_items.map((item) => <p key={item.id || `${item.item_name}-${item.quantity}`}>{item.quantity} × {item.item_name} <strong>{money(item.subtotal, currency)}</strong></p>) : <p>Item detail is unavailable for this receipt.</p>}</div>
             {selectedVoid && <div className="hpos-inline-notice"><CheckCircle2 size={17} /> <span><strong>Void audit reference</strong><br />{selectedVoid.reason} · approved by {selectedVoid.approver_name || 'authorised PIN holder'} · {new Date(selectedVoid.created_at).toLocaleString()}</span></div>}

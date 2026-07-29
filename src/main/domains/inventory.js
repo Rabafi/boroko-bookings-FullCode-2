@@ -173,6 +173,22 @@ export function getInventoryItems() {
   return dedupePromise('getInventoryItems', _getInventoryItems);
 }
 
+/**
+ * Return the server-authoritative Bar Base stock-age projection.  Unlike the
+ * general movement history this intentionally has no cache fallback: an age
+ * bucket is an operational signal and must never be presented as current when
+ * the ledger read failed or the device is offline.
+ */
+export async function getBarStockAging(outletId = null) {
+  if (!state.isOnline) throw new Error('Stock aging requires an online connection.');
+  const { data, error } = await state.supabase.rpc('get_bar_stock_aging', {
+    p_lodge_id: state.lodgeId,
+    p_outlet_id: outletId || null
+  });
+  if (error) throw new Error(error.message);
+  return Array.isArray(data) ? data : [];
+}
+
 export async function getDayUseInventoryItems() {
   const rows = await getInventoryItems().catch(() => readCache('inventory-items'));
   return (rows || []).filter((item) => !item?.outlet_id);

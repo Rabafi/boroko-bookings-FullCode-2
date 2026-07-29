@@ -7936,6 +7936,15 @@ app.whenReady().then(async () => {
       throw new Error(e?.message || 'Could not load inventory items right now.')
     }
   })
+  ipcMain.handle('inventory:getBarStockAging', async (_, outletId) => {
+    try {
+      await requireCapability('inventory.view')
+      return await db.getBarStockAging(outletId || null)
+    } catch (e) {
+      console.error('inventory:getBarStockAging failed:', e)
+      throw new Error(e?.message || 'Could not load stock aging right now.')
+    }
+  })
   ipcMain.handle('users:sendInvite', async (_, id) => {
     try {
       await requireCapability('staff.manage')

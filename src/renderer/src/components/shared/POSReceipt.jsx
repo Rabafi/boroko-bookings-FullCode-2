@@ -219,7 +219,10 @@ export function POSReceipt({ order, onClose, autoPrint = false }) {
                   <p className="mb-2 text-[10px] font-bold uppercase tracking-widest text-slate-400">Payments</p>
                   {payments.map((payment, idx) => (
                     <div key={idx} className="flex justify-between text-xs font-semibold text-slate-600">
-                      <span>{payment.method}</span>
+                      <span>
+                        {payment.method}
+                        {payment.reference && <span className="ml-2 text-[10px] font-medium text-slate-400">Ref {payment.reference}</span>}
+                      </span>
                       <span>{currency} {Number(payment.amount || 0).toFixed(2)}</span>
                     </div>
                   ))}

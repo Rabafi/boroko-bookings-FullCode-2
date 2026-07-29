@@ -99,6 +99,19 @@ test('bar setup and products stay focused on a ten-stage drinks-and-simple-food 
   assert.match(products, /stock_method === ["']recipe["']/)
 })
 
+test('bar product stock links support measured pours and fail closed around recipe add-on access', () => {
+  const products = read('src/renderer/src/components/hospitality-pos/HposMenu.jsx')
+  const posDomain = read('src/main/domains/pos.js')
+  assert.match(products, /depletion_qty: ["']1["']/)
+  assert.match(products, /Stock units consumed per sale/)
+  assert.match(products, /step=["']any["']/)
+  assert.match(products, /Number\.isFinite\(depletionQty\).*depletionQty <= 0/)
+  assert.match(products, /depletion_qty: isDirect \? depletionQty : null/)
+  assert.match(products, /getCommercialFeatureSet/)
+  assert.match(products, /recipesEnabled = !barOnly \|\| commercialFeatures\.has\(["']recipes["']\)/)
+  assert.match(posDomain, /depletion_qty: data\.inventory_item_id \? normalizePositiveQty\(data\.depletion_qty, 1\) : null/)
+})
+
 test('base bar sales and day close reuse authoritative shared reporting without table or kitchen blockers', () => {
   const app = read('src/renderer/src/App.jsx')
   assert.match(app, /path="hpos\/reports"/)

@@ -496,6 +496,7 @@ const api = {
   },
   inventory: {
     getItems: () => ipcRenderer.invoke('inventory:getItems'),
+    getBarStockAging: (outletId) => ipcRenderer.invoke('inventory:getBarStockAging', outletId || null),
     createItem: (data) => ipcRenderer.invoke('inventory:createItem', data),
     updateItem: (id, data) => ipcRenderer.invoke('inventory:updateItem', id, data),
     deleteItem: (id) => ipcRenderer.invoke('inventory:deleteItem', id),

@@ -185,6 +185,7 @@ export {
 } from './domains/customers.js'
 export {
   getInventoryItems,
+  getBarStockAging,
   getDayUseInventoryItems,
   getInventoryItemById,
   createInventoryItem,

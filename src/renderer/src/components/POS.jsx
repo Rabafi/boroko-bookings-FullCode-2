@@ -1177,6 +1177,15 @@ export default function POS() {
       alert(`Split payments must match the order total. Remaining balance: ${currency} ${fmt(splitBalance)}`)
       return
     }
+    const missingTenderReferences = normalizedPaymentBreakdown.filter((row) =>
+      ['card', 'mobile_money'].includes(String(row.method || '').toLowerCase()) &&
+      !String(row.reference || '').trim()
+    )
+    if (missingTenderReferences.length > 0) {
+      alert('Enter the card or mobile-money transaction/approval reference before completing this sale.')
+      setShowPaymentDetails(true)
+      return
+    }
     if (!appliedPromotionId && orderDiscountAmount > 0 && !discountReason.trim()) {
       alert('Enter a reason for the manual discount.')
       return

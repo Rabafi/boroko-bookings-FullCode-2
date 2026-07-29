@@ -456,6 +456,10 @@ export default function HposTerminal() {
   const [paymentMethod, setPaymentMethod] = useState("cash");
   const [splitCashAmount, setSplitCashAmount] = useState("");
   const [splitRemainderMethod, setSplitRemainderMethod] = useState("card");
+  const [paymentReferences, setPaymentReferences] = useState({
+    card: "",
+    mobile_money: "",
+  });
   const [tipAmount, setTipAmount] = useState("");
   const [showPayment, setShowPayment] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -1128,14 +1132,42 @@ export default function HposTerminal() {
       setSubmitError(`Enter a cash amount above zero and below ${currency} ${fmt(total)}. The balance will be assigned to ${splitRemainderMethod === "card" ? "card" : "mobile money"}.`);
       return;
     }
+    const tenderReference = (method) =>
+      String(paymentReferences[method] || "").trim() || null;
     const paymentBreakdown = chargeToAccount
       ? [{ method: "account", amount: total, reference: null }]
       : paymentMethod === "split"
         ? [
             { method: "cash", amount: splitCash, reference: null },
-            { method: splitRemainderMethod, amount: Number((total - splitCash).toFixed(2)), reference: null },
+            {
+              method: splitRemainderMethod,
+              amount: Number((total - splitCash).toFixed(2)),
+              reference: tenderReference(splitRemainderMethod),
+            },
           ]
-        : [{ method: paymentMethod, amount: total, reference: null }];
+        : [
+            {
+              method: paymentMethod,
+              amount: total,
+              reference: tenderReference(paymentMethod),
+            },
+          ];
+    const missingReferences = paymentBreakdown.filter(
+      (tender) =>
+        ["card", "mobile_money"].includes(tender.method) &&
+        !tender.reference,
+    );
+    if (missingReferences.length > 0) {
+      const methodLabels = missingReferences
+        .map((tender) =>
+          tender.method === "mobile_money" ? "mobile money" : "card",
+        )
+        .join(" and ");
+      setSubmitError(
+        `Enter the ${methodLabels} transaction or approval reference before recording payment.`,
+      );
+      return;
+    }
 
     const servicePayload = resolvePosServicePayload(serviceMode, {
       tableName,
@@ -1326,6 +1358,7 @@ export default function HposTerminal() {
       setVoucherAmount("");
       setTipAmount("");
       setSplitCashAmount("");
+      setPaymentReferences({ card: "", mobile_money: "" });
       setShowPayment(false);
       if (sharedTerminalMode) {
         void window.api?.pos?.lockSharedTillOperator?.();
@@ -1357,6 +1390,7 @@ export default function HposTerminal() {
     deliveryAddress,
     deliveryNotes,
     paymentMethod,
+    paymentReferences,
     splitCashAmount,
     splitRemainderMethod,
     sharedTerminalMode,
@@ -2293,7 +2327,43 @@ export default function HposTerminal() {
                           <option value="mobile_money">Mobile money</option>
                         </select>
                       </label>
+                      <label style={{ gridColumn: "1 / -1", fontSize: "12px", fontWeight: 700, color: "#5d4b52" }}>
+                        {splitRemainderMethod === "mobile_money" ? "Mobile money reference" : "Card approval/reference"} *
+                        <input
+                          type="text"
+                          required
+                          maxLength={120}
+                          value={paymentReferences[splitRemainderMethod] || ""}
+                          onChange={(event) =>
+                            setPaymentReferences((previous) => ({
+                              ...previous,
+                              [splitRemainderMethod]: event.target.value,
+                            }))
+                          }
+                          placeholder={splitRemainderMethod === "mobile_money" ? "Transaction ID" : "Terminal approval code"}
+                          style={{ display: "block", boxSizing: "border-box", width: "100%", marginTop: "5px", border: "1px solid rgba(55,70,57,.18)", borderRadius: "8px", padding: "9px 10px", fontSize: "14px" }}
+                        />
+                      </label>
                     </div>
+                  )}
+                  {!chargeToAccount && paymentMethod !== "cash" && paymentMethod !== "split" && (
+                    <label style={{ display: "block", marginBottom: "10px", fontSize: "12px", fontWeight: 700, color: "#5d4b52" }}>
+                      {paymentMethod === "mobile_money" ? "Mobile money reference" : "Card approval/reference"} *
+                      <input
+                        type="text"
+                        required
+                        maxLength={120}
+                        value={paymentReferences[paymentMethod] || ""}
+                        onChange={(event) =>
+                          setPaymentReferences((previous) => ({
+                            ...previous,
+                            [paymentMethod]: event.target.value,
+                          }))
+                        }
+                        placeholder={paymentMethod === "mobile_money" ? "Transaction ID" : "Terminal approval code"}
+                        style={{ display: "block", boxSizing: "border-box", width: "100%", marginTop: "5px", border: "1px solid rgba(55,70,57,.18)", borderRadius: "8px", padding: "9px 10px", fontSize: "14px" }}
+                      />
+                    </label>
                   )}
                   <div
                     style={{
@@ -2316,8 +2386,10 @@ export default function HposTerminal() {
                         : paymentMethod === "split"
                           ? `Cash + ${splitRemainderMethod === "card" ? "Card" : "Mobile money"}`
                           : paymentMethod === "cash"
-                          ? "Collect Cash"
-                          : "Process Card"}
+                            ? "Collect Cash"
+                            : paymentMethod === "mobile_money"
+                              ? "Confirm mobile money"
+                              : "Process Card"}
                     </div>
                     <div
                       style={{

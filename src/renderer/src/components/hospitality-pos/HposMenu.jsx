@@ -15,12 +15,13 @@ import {
   UtensilsCrossed,
   X,
 } from "lucide-react";
-import { useSettings } from "../../app-context";
+import { useAccess, useSettings } from "../../app-context";
 import { isBarOnlyMode } from "../../../../shared/propertyTypes";
 import {
   BAR_PACK_SIZES,
   getBarModeProfile,
 } from "../../../../shared/barModeProfile";
+import { getCommercialFeatureSet } from "../../../../shared/commercialAccess";
 
 const RESTAURANT_MENU_SECTIONS = [
   "Breakfast",
@@ -66,6 +67,11 @@ function MenuItemCard({
     !isArchived &&
     !isAvailable &&
     ["missing", "conflict"].includes(stockMethod);
+  const rawDepletionQty = Number(item.depletion_qty);
+  const depletionQty =
+    Number.isFinite(rawDepletionQty) && rawDepletionQty > 0
+      ? rawDepletionQty
+      : 1;
 
   return (
     <article
@@ -132,6 +138,12 @@ function MenuItemCard({
           <span>Cost P{Number(item.cost_price).toFixed(2)}</span>
         )}
       </div>
+      {barOnly && stockMethod === "direct" && item.inventory_item_id && (
+        <div className="hpos-service-menu-archive">
+          <Boxes size={14} />
+          Uses {depletionQty.toLocaleString(undefined, { maximumFractionDigits: 6 })} stock unit{depletionQty === 1 ? "" : "s"} per sale
+        </div>
+      )}
       {isArchived ? (
         <div className="hpos-service-menu-archive">
           <Archive size={14} />
@@ -182,6 +194,7 @@ const emptyDraft = () => ({
   price: "",
   barcode: "",
   inventory_item_id: "",
+  depletion_qty: "1",
   stock_method: "direct",
   pack6: false,
   pack12: false,
@@ -191,8 +204,22 @@ const emptyDraft = () => ({
 export default function HposMenu() {
   const navigate = useNavigate();
   const { settings } = useSettings();
+  const access = useAccess();
   const barOnly = isBarOnlyMode(settings);
   const profile = useMemo(() => getBarModeProfile(settings), [settings]);
+  const commercialFeatures = useMemo(
+    () =>
+      getCommercialFeatureSet(
+        access?.entitlement?.product_id || "hospitality-pos",
+        access?.entitlement?.commercial_package_key,
+        access?.entitlement?.enterprise_addons || [],
+      ),
+    [access?.entitlement],
+  );
+  // Recipes are an optional Bar Stock & Purchasing Pro capability. Keep the
+  // UI fail-closed when entitlement data is missing or stale; the server RPC
+  // remains the final authority for the saved stock method.
+  const recipesEnabled = !barOnly || commercialFeatures.has("recipes");
   const defaultCategory = barOnly ? "Beer" : "Mains";
 
   const [items, setItems] = useState([]);
@@ -303,6 +330,7 @@ export default function HposMenu() {
       price: String(item.price ?? ""),
       barcode: item.barcode || "",
       inventory_item_id: invId,
+      depletion_qty: invId ? String(item.depletion_qty ?? "1") : "1",
       stock_method: item.stock_method || (invId ? "direct" : recipeMenuItemIds.has(item.id) ? "recipe" : "direct"),
       ...packFlags,
     });
@@ -332,8 +360,13 @@ export default function HposMenu() {
       );
       return;
     }
-    if (barOnly && draft.stock_method === "recipe") {
-      setSaveError("Base Bar POS sells prepared food as a counted finished portion. Choose Direct stock and link the prepared-portion stock item.");
+    const depletionQty = Number(draft.depletion_qty);
+    if (draft.stock_method === "direct" && (!Number.isFinite(depletionQty) || depletionQty <= 0)) {
+      setSaveError("Enter the positive stock quantity consumed by one sale. Use a decimal for measured pours, for example 0.05.");
+      return;
+    }
+    if (draft.stock_method === "recipe" && !recipesEnabled) {
+      setSaveError("Recipes are part of Stock & Purchasing Pro. Enable that add-on before using the recipe stock method.");
       return;
     }
     if (draft.stock_method === "direct" && !draft.inventory_item_id) {
@@ -351,6 +384,7 @@ export default function HposMenu() {
         barcode: draft.barcode.trim() || null,
         stock_method: draft.stock_method,
         is_available: isRecipe ? false : isDirect ? Boolean(draft.inventory_item_id) : true,
+        depletion_qty: isDirect ? depletionQty : null,
       };
       if (isDirect && draft.inventory_item_id)
         payload.inventory_item_id = draft.inventory_item_id;
@@ -367,7 +401,7 @@ export default function HposMenu() {
 
       setEditing(null);
       await loadMenu();
-      if (!barOnly && isRecipe && menuItemId) {
+      if (isRecipe && menuItemId) {
         navigate(`/restaurant/menu-production?tab=recipes&menu_item_id=${encodeURIComponent(menuItemId)}&recipe_name=${encodeURIComponent(draft.name.trim())}`);
       }
     } catch (error) {
@@ -814,7 +848,13 @@ export default function HposMenu() {
                   }
                 >
                   <option value="direct">Packaged / pre-made item — direct stock</option>
-                  {!barOnly && <option value="recipe">Prepared food or cocktail — recipe required</option>}
+                  {(recipesEnabled || draft.stock_method === "recipe") && (
+                    <option value="recipe">
+                      {recipesEnabled
+                        ? "Prepared food or cocktail — recipe required"
+                        : "Recipe method — Stock & Purchasing Pro required"}
+                    </option>
+                  )}
                   <option value="non_stock">Non-stock service — no inventory</option>
                 </select>
                 <small>
@@ -831,31 +871,52 @@ export default function HposMenu() {
                   <span><strong>Non-stock service.</strong> Use only for something that genuinely consumes no stock, such as a cover charge or delivery fee.</span>
                 </div>
               ) : (
-              <label>
-                Direct stock link
-                <select
-                  value={draft.inventory_item_id}
-                  onChange={(event) =>
-                    setDraft({
-                      ...draft,
-                      inventory_item_id: event.target.value,
-                    })
-                  }
-                >
-                  <option value="">
-                    No direct link — save as recipe draft
-                  </option>
-                  {inventoryItems.map((stockItem) => (
-                    <option key={stockItem.id} value={stockItem.id}>
-                      {stockItem.name} · {Number(stockItem.current_stock || 0)}{" "}
-                      {stockItem.unit || "each"}
-                    </option>
-                  ))}
-                </select>
-                <small>
-                  Choose the exact purchased item the Till should deplete, for example Heineken 330ml or Coca-Cola 330ml.
-                </small>
-              </label>
+                <>
+                  <label>
+                    Direct stock link
+                    <select
+                      value={draft.inventory_item_id}
+                      onChange={(event) =>
+                        setDraft({
+                          ...draft,
+                          inventory_item_id: event.target.value,
+                        })
+                      }
+                    >
+                      <option value="">
+                        No direct link — save as {recipesEnabled ? "recipe draft" : "unlinked draft"}
+                      </option>
+                      {inventoryItems.map((stockItem) => (
+                        <option key={stockItem.id} value={stockItem.id}>
+                          {stockItem.name} · {Number(stockItem.current_stock || 0)}{" "}
+                          {stockItem.unit || "each"}
+                        </option>
+                      ))}
+                    </select>
+                    <small>
+                      Choose the exact purchased item the Till should deplete, for example Heineken 330ml or Coca-Cola 330ml.
+                    </small>
+                  </label>
+                  {barOnly && (
+                    <label>
+                      Stock units consumed per sale
+                      <input
+                        type="number"
+                        min="0.000001"
+                        step="any"
+                        inputMode="decimal"
+                        required
+                        value={draft.depletion_qty}
+                        onChange={(event) =>
+                          setDraft({ ...draft, depletion_qty: event.target.value })
+                        }
+                      />
+                      <small>
+                        Use 1 for one bottle/can, or a decimal for measured pours such as 0.05 litres. Pack templates keep their own 6/12/24-unit depletion.
+                      </small>
+                    </label>
+                  )}
+                </>
               )}
             </div>
             {barOnly && draft.inventory_item_id && (

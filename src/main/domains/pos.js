@@ -419,7 +419,11 @@ export async function createPosMenuItem(data) {
     barcode: data.barcode || null,
     stock_method: data.stock_method || (data.inventory_item_id ? 'direct' : 'recipe'),
     inventory_item_id: data.inventory_item_id || null,
-    depletion_qty: data.inventory_item_id ? Number(data.depletion_qty) || 1 : null,
+    // Keep measured pours (for example 0.05 bottles/litres) intact while
+    // failing closed to one stock unit for invalid client payloads. The
+    // authoritative catalog/order contracts apply the same positive-quantity
+    // rule when this value reaches the database.
+    depletion_qty: data.inventory_item_id ? normalizePositiveQty(data.depletion_qty, 1) : null,
     outlet_id: data.outlet_id || null,
     dietary_flags: Array.isArray(data.dietary_flags) ? data.dietary_flags : [],
     prep_time_minutes: Number(data.prep_time_minutes) || 0,
@@ -448,7 +452,7 @@ export async function updatePosMenuItem(id, data) {
     barcode: data.barcode || null,
     stock_method: data.stock_method || existing?.stock_method || (data.inventory_item_id ? 'direct' : 'recipe'),
     inventory_item_id: data.inventory_item_id || null,
-    depletion_qty: data.inventory_item_id ? Number(data.depletion_qty) || 1 : null,
+    depletion_qty: data.inventory_item_id ? normalizePositiveQty(data.depletion_qty, 1) : null,
     ...(data.outlet_id !== undefined ? { outlet_id: data.outlet_id || null } : {}),
     dietary_flags: Array.isArray(data.dietary_flags) ? data.dietary_flags : [],
     prep_time_minutes: Number(data.prep_time_minutes) || 0,
@@ -2067,6 +2071,22 @@ export async function getMyPosCashupSubmission(shiftId) {
     p_lodge_id: state.lodgeId, p_shift_id: shiftId
   });
   if (error) throw new Error(error.message);
+  // Keep the renderer blind even when it is connected to an older linked
+  // database that still returns legacy expected/variance fields. Manager
+  // review uses the separate pending-submissions contract.
+  if (data?.submission) {
+    return {
+      ...data,
+      submission: {
+        id: data.submission.id,
+        status: data.submission.status,
+        counted_by_method: { cash: data.submission.counted_by_method?.cash },
+        submitted_at: data.submission.submitted_at,
+        notes: data.submission.notes,
+        review_notes: data.submission.review_notes,
+      },
+    };
+  }
   return data || { success: true, submission: null };
 }
 
