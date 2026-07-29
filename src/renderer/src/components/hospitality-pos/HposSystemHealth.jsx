@@ -10,6 +10,7 @@ import {
   Monitor,
   Printer,
   RefreshCw,
+  ScanLine,
   Server,
   Settings2,
   Wifi,
@@ -17,6 +18,7 @@ import {
 import { useAccess, useSettings } from '../../app-context';
 import { canAccessCapability } from '../../../../shared/accessControl';
 import { isBarOnlyMode } from '../../../../shared/propertyTypes';
+import { createBarcodeScannerDecoder } from '../../../../shared/barcodeScanner';
 import {
   HposButton,
   HposEmptyState,
@@ -46,6 +48,78 @@ export default function HposSystemHealth() {
   const [running, setRunning] = useState(false);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
+  const [scannerVerifying, setScannerVerifying] = useState(false);
+  const [scannerCaptureCount, setScannerCaptureCount] = useState(0);
+  const [pendingScannerVerification, setPendingScannerVerification] = useState(null);
+
+  const scannerVerification = useCallback(async (result) => {
+    setScannerVerifying(false);
+    setScannerCaptureCount(0);
+    if (!result?.success) {
+      setPendingScannerVerification(null);
+      setError(result?.error || `Barcode scan failed: ${result?.code || 'invalid_scan'}.`);
+      return;
+    }
+    setPendingScannerVerification(result);
+    setNotice(`Barcode captured: ${result.barcode}. Confirm that it matches the product label.`);
+  }, []);
+
+  const confirmScannerVerification = useCallback(async () => {
+    const result = pendingScannerVerification;
+    if (!result?.success) return;
+    try {
+      const saved = await window.api?.pos?.verifyBarcodeScanner?.({
+        barcode: result.barcode,
+        terminator: result.terminator,
+        characterCount: result.characterCount,
+        averageInterKeyMs: result.averageInterKeyMs,
+      });
+      if (saved?.success === false) throw new Error(saved.error || 'Scanner verification failed.');
+      if (saved?.settings) setHardware(saved.settings);
+      setNotice(`Scanner input verified (${result.characterCount} characters, ${result.terminator || 'idle'} terminator).`);
+      setPendingScannerVerification(null);
+    } catch (verificationError) {
+      setError(verificationError?.message || 'Scanner verification failed.');
+    }
+  }, [pendingScannerVerification]);
+
+  useEffect(() => {
+    if (!scannerVerifying) return undefined;
+    let idleTimer = null;
+    const decoder = createBarcodeScannerDecoder({
+      minLength: Number(hardware.barcode_scanner_min_length) || 4,
+      maxLength: Number(hardware.barcode_scanner_max_length) || 128,
+      interKeyMs: Number(hardware.barcode_scanner_inter_key_ms) || 120,
+      idleCompleteMs: Number(hardware.barcode_scanner_idle_complete_ms) || 180,
+      prefix: hardware.barcode_scanner_prefix || '',
+      suffix: hardware.barcode_scanner_suffix || '',
+      acceptEnter: hardware.barcode_scanner_accept_enter !== false,
+      acceptTab: hardware.barcode_scanner_accept_tab !== false,
+    });
+    const finishIdle = () => {
+      const outcome = decoder.flush('idle');
+      if (outcome.type === 'completed') scannerVerification(outcome.result);
+    };
+    const onKeyDown = (event) => {
+      const key = String(event.key || '');
+      if (!(key.length === 1 || key === 'Enter' || key === 'NumpadEnter' || key === 'Tab')) return;
+      const outcome = decoder.consumeKey(event);
+      if (outcome.type === 'buffered' || outcome.type === 'completed') event.preventDefault();
+      if (idleTimer) window.clearTimeout(idleTimer);
+      if (outcome.type === 'buffered') {
+        setScannerCaptureCount(outcome.length || 0);
+        idleTimer = window.setTimeout(finishIdle, Number(hardware.barcode_scanner_idle_complete_ms) || 180);
+      } else if (outcome.type === 'completed') {
+        scannerVerification(outcome.result);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown, true);
+      if (idleTimer) window.clearTimeout(idleTimer);
+      decoder.reset();
+    };
+  }, [hardware, scannerVerification, scannerVerifying]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -253,6 +327,31 @@ export default function HposSystemHealth() {
 
       {activeTab === 'devices' && (
         <div className="hpos-device-layout">
+          <section className="hpos-device-panel" aria-live="polite">
+            <div className="hpos-section-heading"><span><ScanLine size={18} /></span><div><h2>Barcode scanner</h2><p>Keyboard-wedge scanners are verified by a real scan on this POS computer.</p></div></div>
+            <div className="hpos-form-grid">
+              <label><span>Scanner status</span><strong>{scannerVerifying ? `Waiting for scan${scannerCaptureCount ? ` · ${scannerCaptureCount} characters` : '…'}` : pendingScannerVerification ? 'Captured · confirmation required' : hardware.scanner_last_verified_at ? `Verified ${new Date(hardware.scanner_last_verified_at).toLocaleString('en-GB')}` : 'Not tested on this computer'}</strong></label>
+              <label><span>Input framing</span><small>{hardware.barcode_scanner_accept_enter !== false ? 'Enter' : ''}{hardware.barcode_scanner_accept_enter !== false && hardware.barcode_scanner_accept_tab !== false ? ' or ' : ''}{hardware.barcode_scanner_accept_tab !== false ? 'Tab' : ''} terminator · idle completion supported</small></label>
+            </div>
+            <p className="hpos-help-text">Configure the scanner as USB/Bluetooth keyboard mode. Click Verify, scan one real product label, and confirm the captured length and terminator. The audit stores only a one-way hash of the test barcode.</p>
+            {canManagePos && <div className="hpos-form-grid" aria-label="Barcode scanner configuration">
+              <label><span>Scanner enabled</span><input type="checkbox" checked={hardware.barcode_scanner_enabled !== false} onChange={(event) => setHardware({ ...hardware, barcode_scanner_enabled: event.target.checked })} /></label>
+              <label><span>Minimum characters</span><input type="number" min="1" max="128" value={hardware.barcode_scanner_min_length ?? 4} onChange={(event) => setHardware({ ...hardware, barcode_scanner_min_length: Number(event.target.value) })} /></label>
+              <label><span>Maximum characters</span><input type="number" min="1" max="128" value={hardware.barcode_scanner_max_length ?? 128} onChange={(event) => setHardware({ ...hardware, barcode_scanner_max_length: Number(event.target.value) })} /></label>
+              <label><span>Inter-key limit (ms)</span><input type="number" min="10" max="1000" value={hardware.barcode_scanner_inter_key_ms ?? 120} onChange={(event) => setHardware({ ...hardware, barcode_scanner_inter_key_ms: Number(event.target.value) })} /></label>
+              <label><span>Idle completion (ms)</span><input type="number" min="50" max="2000" value={hardware.barcode_scanner_idle_complete_ms ?? 180} onChange={(event) => setHardware({ ...hardware, barcode_scanner_idle_complete_ms: Number(event.target.value) })} /></label>
+              <label><span>Terminator keys</span><select value={hardware.barcode_scanner_accept_enter !== false ? hardware.barcode_scanner_accept_tab !== false ? 'enter+tab' : 'enter' : 'tab'} onChange={(event) => { const value = event.target.value; setHardware({ ...hardware, barcode_scanner_accept_enter: value.includes('enter'), barcode_scanner_accept_tab: value.includes('tab') }); }}><option value="enter+tab">Enter or Tab</option><option value="enter">Enter only</option><option value="tab">Tab only</option></select></label>
+              <label><span>Prefix (optional)</span><input maxLength="16" value={hardware.barcode_scanner_prefix || ''} onChange={(event) => setHardware({ ...hardware, barcode_scanner_prefix: event.target.value })} placeholder="e.g. ]C1" /></label>
+              <label><span>Suffix (optional)</span><input maxLength="16" value={hardware.barcode_scanner_suffix || ''} onChange={(event) => setHardware({ ...hardware, barcode_scanner_suffix: event.target.value })} placeholder="Optional framing" /></label>
+            </div>}
+            {pendingScannerVerification && <div className="hpos-health-guidance"><ScanLine size={18} /><div><strong>Captured barcode: <code>{pendingScannerVerification.barcode}</code></strong><p>{pendingScannerVerification.characterCount} characters · {pendingScannerVerification.terminator || 'idle'} terminator</p></div></div>}
+            <div className="hpos-device-actions">
+              <HposButton tone="primary" icon={ScanLine} onClick={() => { setError(''); setNotice('Scanner verification is listening. Scan one barcode now.'); setPendingScannerVerification(null); setScannerCaptureCount(0); setScannerVerifying(true); }} disabled={!canManagePos || scannerVerifying || hardware.barcode_scanner_enabled === false}>{scannerVerifying ? 'Waiting for scan…' : 'Verify scanner input'}</HposButton>
+              {pendingScannerVerification && <HposButton tone="primary" onClick={confirmScannerVerification}>Confirm captured barcode</HposButton>}
+              {pendingScannerVerification && <HposButton onClick={() => { setPendingScannerVerification(null); setNotice('Captured barcode discarded.'); }}>Discard</HposButton>}
+              {scannerVerifying && <HposButton onClick={() => { setScannerVerifying(false); setScannerCaptureCount(0); setNotice('Scanner verification cancelled.'); }}>Cancel</HposButton>}
+            </div>
+          </section>
           <section className="hpos-device-panel">
             <div className="hpos-section-heading"><span><Printer size={18} /></span><div><h2>Receipt & cash hardware</h2><p>Settings apply to this POS computer.</p></div></div>
             <div className="hpos-form-grid">

@@ -322,6 +322,7 @@ export {
   getPosHardwareSettings,
   savePosHardwareSettings,
   testPosHardware,
+  verifyPosBarcodeScanner,
   recordPosHardwareEvent,
   getPosStaff,
   selectPosStaffWithPin,

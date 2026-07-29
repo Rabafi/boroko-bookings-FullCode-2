@@ -21,6 +21,7 @@ import {
   writeSyncQueue
 } from './syncStore.js'
 import { parseOptionalNonNegativeCost } from '../../shared/inventoryStockForm.js'
+import { normalizeBarcode } from '../../shared/barcodeScanner.js'
 
 // ─── INVENTORY ────────────────────────────────────────────────────────────────
 
@@ -58,6 +59,23 @@ function readOptionalUnitCost(data = {}) {
   const parsed = parseOptionalNonNegativeCost(data.unit_cost)
   if (!parsed.ok) throw new Error('Unit cost must be a finite non-negative number, or blank to keep the current cost.')
   return parsed.value
+}
+
+/**
+ * Barcodes are identifiers, not numbers: preserve leading zeroes and reject
+ * control characters/overlong values before they reach the RPC or offline
+ * queue. `undefined` means the caller did not intend to change the barcode;
+ * `null` is an explicit clear operation.
+ */
+function readOptionalBarcode(data = {}) {
+  if (!Object.prototype.hasOwnProperty.call(data, 'barcode')) return undefined
+  if (data.barcode == null || String(data.barcode).trim() === '') return null
+  const raw = String(data.barcode).trim()
+  const normalized = normalizeBarcode(raw)
+  if (!normalized || normalized !== raw) {
+    throw new Error('Barcode must be 1–128 characters without control characters.')
+  }
+  return normalized
 }
 
 function movementSort(a, b) {
@@ -221,6 +239,7 @@ export async function getInventoryItemById(id) {
 export async function createInventoryItem(data) {
   const id = randomUUID();
   const unitCost = readOptionalUnitCost(data)
+  const barcode = readOptionalBarcode(data)
   const item = {
     id,
     lodge_id: state.lodgeId,
@@ -231,7 +250,8 @@ export async function createInventoryItem(data) {
     reorder_level: Number(data.reorder_level) || 0,
     latest_unit_cost: unitCost ?? 0,
     selling_price: Number(data.selling_price) || 0,
-    outlet_id: data.outlet_id || null
+    outlet_id: data.outlet_id || null,
+    barcode: barcode ?? null
   };
   if (state.isOnline) {
     const { data: result, error } = await state.supabase.rpc('create_inventory_item', { payload: item });
@@ -278,6 +298,7 @@ export async function createInventoryItem(data) {
 
 export async function updateInventoryItem(id, data) {
   const unitCost = readOptionalUnitCost(data)
+  const barcode = readOptionalBarcode(data)
   const update = {
     name: data.name,
     category: data.category,
@@ -287,7 +308,8 @@ export async function updateInventoryItem(id, data) {
     ...(Object.prototype.hasOwnProperty.call(data, 'selling_price') ?
     { selling_price: Number(data.selling_price) || 0 } :
     {}),
-    ...(data.outlet_id !== undefined ? { outlet_id: data.outlet_id || null } : {})
+    ...(data.outlet_id !== undefined ? { outlet_id: data.outlet_id || null } : {}),
+    ...(barcode !== undefined ? { barcode } : {})
   };
   const cached = readCache('inventory-items') || [];
   const existing = cached.find((row) => row.id === id);

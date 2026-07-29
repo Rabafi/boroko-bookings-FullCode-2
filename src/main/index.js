@@ -7305,6 +7305,14 @@ app.whenReady().then(async () => {
       return { success: false, error: e.message }
     }
   })
+  ipcMain.handle('pos:verifyBarcodeScanner', async (_, data) => {
+    try {
+      await requireCapability('pos.view')
+      return await db.verifyPosBarcodeScanner(data || {})
+    } catch (e) {
+      return { success: false, error: e.message || 'Barcode scanner verification failed.' }
+    }
+  })
   ipcMain.handle('pos:getStaff', async () => {
     try { await requireCapability('pos.view'); return await db.getPosStaff() }
     catch { return [] }

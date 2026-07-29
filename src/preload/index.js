@@ -370,6 +370,7 @@ const api = {
     getHardwareSettings: () => ipcRenderer.invoke('pos:getHardwareSettings'),
     saveHardwareSettings: (data) => ipcRenderer.invoke('pos:saveHardwareSettings', data),
     testHardware: (kind) => ipcRenderer.invoke('pos:testHardware', kind),
+    verifyBarcodeScanner: (data) => ipcRenderer.invoke('pos:verifyBarcodeScanner', data),
     openCashDrawer: (data) => ipcRenderer.invoke('pos:openCashDrawer', data),
     getStaff: () => ipcRenderer.invoke('pos:getStaff'),
     selectStaffWithPin: (data) => ipcRenderer.invoke('pos:selectStaffWithPin', data),

@@ -22,7 +22,7 @@ import {
   ReceiptText,
   WalletCards,
 } from "lucide-react";
-import { useSettings, useAuth } from "../../app-context";
+import { useSettings, useAuth, useAccess } from "../../app-context";
 import { isBarOnlyMode } from "../../../../shared/propertyTypes";
 import {
   getBarModeProfile,
@@ -32,6 +32,11 @@ import {
 } from "../../../../shared/barModeProfile";
 import HposTillOperatorDialog from "./HposTillOperatorDialog";
 import { POSReceipt } from "../shared/POSReceipt";
+import {
+  createBarcodeScannerDecoder,
+  normalizeBarcode,
+  isScannerEditableTarget,
+} from "../../../../shared/barcodeScanner";
 
 const TERMINAL_OUTLET_STORAGE_PREFIX = "hpos-terminal-outlet:";
 
@@ -416,6 +421,7 @@ export default function HposTerminal() {
   const navigate = useNavigate();
   const { settings } = useSettings();
   const { user } = useAuth();
+  const { allowedOutletIds } = useAccess();
   const lodgeId = settings?.lodge_id || user?.lodge_id || null;
   const sharedTerminalMode = [
     "manager",
@@ -480,6 +486,7 @@ export default function HposTerminal() {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
+  const [scannerFeedback, setScannerFeedback] = useState(null);
   const [completedReceipt, setCompletedReceipt] = useState(null);
   const [serviceStaff, setServiceStaff] = useState([]);
   const [operatorStaffId, setOperatorStaffId] = useState("");
@@ -488,9 +495,74 @@ export default function HposTerminal() {
   const [operatorBusy, setOperatorBusy] = useState(false);
   const [showOperatorUnlock, setShowOperatorUnlock] = useState(false);
   const searchRef = useRef(null);
+  const barcodeDecoderRef = useRef(null);
+  const [scannerSettings, setScannerSettings] = useState({});
+  const scannerIdleTimerRef = useRef(null);
+  const scannerFeedbackTimerRef = useRef(null);
+  if (!barcodeDecoderRef.current)
+    barcodeDecoderRef.current = createBarcodeScannerDecoder();
+
+  useEffect(() => {
+    let active = true;
+    window.api?.pos?.getHardwareSettings?.().then((settings) => {
+      if (active && settings && typeof settings === "object") setScannerSettings(settings);
+    }).catch(() => {});
+    return () => { active = false; };
+  }, []);
+
+  const scannerOptions = useMemo(() => ({
+    minLength: Number(scannerSettings.barcode_scanner_min_length) || 4,
+    maxLength: Number(scannerSettings.barcode_scanner_max_length) || 128,
+    interKeyMs: Number(scannerSettings.barcode_scanner_inter_key_ms) || 120,
+    idleCompleteMs: Number(scannerSettings.barcode_scanner_idle_complete_ms) || 180,
+    prefix: scannerSettings.barcode_scanner_prefix || "",
+    suffix: scannerSettings.barcode_scanner_suffix || "",
+    acceptEnter: scannerSettings.barcode_scanner_accept_enter !== false,
+    acceptTab: scannerSettings.barcode_scanner_accept_tab !== false,
+  }), [scannerSettings]);
+
+  useEffect(() => {
+    barcodeDecoderRef.current = createBarcodeScannerDecoder(scannerOptions);
+  }, [scannerOptions]);
+
+  const outletRestricted = Array.isArray(allowedOutletIds);
+  const outletIsAllowed = useCallback(
+    (outletId) =>
+      !outletRestricted ||
+      (Boolean(outletId) && allowedOutletIds.includes(outletId)),
+    [allowedOutletIds, outletRestricted],
+  );
+
+  const reportScanner = useCallback((feedback) => {
+    if (scannerFeedbackTimerRef.current)
+      window.clearTimeout(scannerFeedbackTimerRef.current);
+    setScannerFeedback(feedback || null);
+    if (feedback) {
+      scannerFeedbackTimerRef.current = window.setTimeout(
+        () => setScannerFeedback(null),
+        feedback.level === "success" ? 2200 : 4200,
+      );
+    }
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (scannerFeedbackTimerRef.current)
+        window.clearTimeout(scannerFeedbackTimerRef.current);
+    },
+    [],
+  );
 
   const chooseTerminalOutlet = useCallback(
     (outletId) => {
+      if (outletId && !outletIsAllowed(outletId)) {
+        reportScanner({
+          level: "error",
+          code: "outlet_not_allowed",
+          message: "You are not authorised to use that outlet.",
+        });
+        return;
+      }
       const outlet =
         outlets.find(
           (row) =>
@@ -501,7 +573,7 @@ export default function HposTerminal() {
       setSelectedOutlet(outlet);
       writeTerminalOutletPreference(lodgeId, outlet?.id || null);
     },
-    [lodgeId, outlets],
+    [lodgeId, outletIsAllowed, outlets, reportScanner],
   );
 
   // Keep service mode valid when hospitality mode flips (e.g. settings change).
@@ -554,7 +626,10 @@ export default function HposTerminal() {
           (tab) => tab.id === location.state?.tabId,
         );
         const activeOutlets = nextOutlets.filter(
-          (outlet) => outlet.is_active !== false && outlet.active !== false,
+          (outlet) =>
+            outlet.is_active !== false &&
+            outlet.active !== false &&
+            outletIsAllowed(outlet.id),
         );
         const resumedOutlet =
           activeOutlets.find((outlet) => outlet.id === resumedTab?.outlet_id) ||
@@ -620,7 +695,7 @@ export default function HposTerminal() {
     return () => {
       active = false;
     };
-  }, [location.state?.tabId]);
+  }, [location.state?.tabId, outletIsAllowed]);
 
   useEffect(() => {
     if (!selectedOutlet?.id) {
@@ -699,6 +774,7 @@ export default function HposTerminal() {
   );
   const hasStockSetupIssue = useCallback(
     (item) => {
+      if (String(item?.stock_method || "").toLowerCase() === "non_stock") return false;
       const hasDirectStock = Boolean(item.inventory_item_id);
       const hasRecipeStock = recipeMenuItemIds.has(item.id);
       return hasDirectStock === hasRecipeStock;
@@ -759,26 +835,210 @@ export default function HposTerminal() {
     [lodgeId, location.state?.tabId],
   );
 
-  // Barcode / exact name scan: Enter or barcode wedge completes with a match.
+  const outletName = useCallback(
+    (outletId) =>
+      outlets.find((outlet) => outlet.id === outletId)?.name ||
+      "another outlet",
+    [outlets],
+  );
+
+  /** Resolve an exact barcode against the currently selected Till outlet. */
+  const resolveBarcodeScan = useCallback(
+    (query) => {
+      const barcode = normalizeBarcode(query);
+      if (!barcode) return { success: false, code: "empty_scan" };
+      if (!selectedOutlet?.id)
+        return {
+          success: false,
+          code: "select_outlet_first",
+          message: "Select an outlet before scanning a product.",
+        };
+      const matches = tillMenuItems.filter(
+        (item) => String(item.barcode || "").trim() === barcode,
+      );
+      if (matches.length === 0)
+        return {
+          success: false,
+          code: "barcode_not_found",
+          barcode,
+          message: `Barcode not found: ${barcode}`,
+        };
+      const eligible = matches.filter(
+        (item) => !item.outlet_id || item.outlet_id === selectedOutlet.id,
+      );
+      if (eligible.length === 0) {
+        const firstOutlet = matches.find((item) => item.outlet_id)?.outlet_id;
+        return {
+          success: false,
+          code: "wrong_outlet",
+          barcode,
+          message: `This barcode belongs to ${outletName(firstOutlet)}.`,
+        };
+      }
+      const availableEligible = eligible.filter(
+        (item) => item.is_available !== false && item.available !== false && !item.sold_out,
+      );
+      if (availableEligible.length > 1)
+        return {
+          success: false,
+          code: "duplicate_barcode",
+          barcode,
+          message: "Two active products share this barcode. Manager setup is required.",
+        };
+      const match = availableEligible[0] || eligible[0];
+      if (!match || match.is_available === false || match.available === false || match.sold_out)
+        return {
+          success: false,
+          code: "product_unavailable",
+          barcode,
+          message: `${match.name || "Product"} is unavailable or sold out.`,
+        };
+      if (hasStockSetupIssue(match))
+        return {
+          success: false,
+          code: "stock_setup_required",
+          barcode,
+          message: `${match.name || "Product"} needs stock setup before it can be sold.`,
+        };
+      return { success: true, barcode, item: match };
+    },
+    [hasStockSetupIssue, outletName, selectedOutlet?.id, tillMenuItems],
+  );
+
+  const handleCompletedScan = useCallback(
+    (result) => {
+      if (!result?.success) {
+        if (result?.code === "scan_too_short") return;
+        reportScanner({
+          level: "error",
+          code: result?.code || "scan_failed",
+          message:
+            result?.message ||
+            (result?.code === "scan_too_long"
+              ? "Scanner input was too long. Check the scanner configuration."
+              : "Scanner input could not be read."),
+        });
+        return;
+      }
+      const resolved = resolveBarcodeScan(result.barcode);
+      if (!resolved.success) {
+        reportScanner({
+          level: "error",
+          code: resolved.code,
+          message: resolved.message || "Barcode could not be added.",
+        });
+        return;
+      }
+      addToCart(resolved.item);
+      reportScanner({
+        level: "success",
+        code: "scan_added",
+        message: `${resolved.item.name || "Product"} added.`,
+      });
+      setSearch("");
+    },
+    [addToCart, reportScanner, resolveBarcodeScan],
+  );
+
+  // A wedge scanner is a keyboard, so capture fast keystrokes at page level
+  // when Till controls have focus. Editable payment/PIN fields suspend it.
+  useEffect(() => {
+    const decoder = barcodeDecoderRef.current;
+    const suspended = () =>
+      showPayment ||
+      showShiftStart ||
+      showOperatorUnlock ||
+      modifierLineId != null ||
+      Boolean(completedReceipt);
+    const clearIdleTimer = () => {
+      if (scannerIdleTimerRef.current) {
+        window.clearTimeout(scannerIdleTimerRef.current);
+        scannerIdleTimerRef.current = null;
+      }
+    };
+    const onKeyDown = (event) => {
+      if (scannerSettings.barcode_scanner_enabled === false) {
+        decoder.reset();
+        clearIdleTimer();
+        return;
+      }
+      if (suspended()) {
+        decoder.reset();
+        clearIdleTimer();
+        return;
+      }
+      // The search input has its own exact-match Enter handling. Other
+      // editable fields are deliberately excluded to prevent scan text from
+      // entering payment, tab, customer or PIN fields.
+      if (event.target === searchRef.current || isScannerEditableTarget(event.target)) return;
+      const outcome = decoder.consumeKey(event);
+      if (outcome.type === "buffered") {
+        if (event.key?.length === 1) event.preventDefault();
+        clearIdleTimer();
+        scannerIdleTimerRef.current = window.setTimeout(() => {
+          const idleResult = decoder.flush("idle");
+          if (idleResult.type === "completed") handleCompletedScan(idleResult.result);
+        }, decoder.getOptions().idleCompleteMs);
+        return;
+      }
+      if (outcome.type === "completed") {
+        event.preventDefault();
+        event.stopPropagation();
+        clearIdleTimer();
+        handleCompletedScan(outcome.result);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown, true);
+      clearIdleTimer();
+      decoder.reset();
+    };
+  }, [completedReceipt, handleCompletedScan, modifierLineId, scannerSettings.barcode_scanner_enabled, showOperatorUnlock, showPayment, showShiftStart, scannerOptions]);
+
+  // Barcode / exact name search: Enter completes a manual search or a scan
+  // that happened while the search field was focused.
   const tryAddBySearch = useCallback(
     (query) => {
       const q = String(query || "").trim();
       if (!q) return false;
+      const barcodeResult = resolveBarcodeScan(q);
+      if (barcodeResult.success) {
+        addToCart(barcodeResult.item);
+        setSearch("");
+        reportScanner({
+          level: "success",
+          code: "scan_added",
+          message: `${barcodeResult.item.name || "Product"} added.`,
+        });
+        return true;
+      }
+      if (barcodeResult.code !== "barcode_not_found") {
+        reportScanner({
+          level: "error",
+          code: barcodeResult.code,
+          message: barcodeResult.message || "Barcode could not be added.",
+        });
+        return true;
+      }
       const lower = q.toLowerCase();
-      const byBarcode = tillMenuItems.find(
-        (item) => String(item.barcode || "").trim() === q,
-      );
       const byName = tillMenuItems.find(
         (item) => String(item.name || "").toLowerCase() === lower,
       );
-      const match = byBarcode || byName;
-      if (!match || match.is_available === false || match.available === false)
+      const match = byName;
+      if (!match || match.is_available === false || match.available === false) {
+        reportScanner({
+          level: "error",
+          code: "barcode_not_found",
+          message: `Barcode or product not found: ${q}`,
+        });
         return false;
+      }
       addToCart(match);
       setSearch("");
       return true;
     },
-    [addToCart, tillMenuItems],
+    [addToCart, reportScanner, resolveBarcodeScan, tillMenuItems],
   );
 
   const updateQty = useCallback((id, qty) => {
@@ -1493,6 +1753,39 @@ export default function HposTerminal() {
                   outline: "none",
                 }}
               />
+              <div
+                aria-live="polite"
+                style={{
+                  position: "absolute",
+                  left: 0,
+                  right: 0,
+                  top: "calc(100% + 4px)",
+                  zIndex: 4,
+                  pointerEvents: "none",
+                }}
+              >
+                {scannerFeedback && (
+                  <div
+                    role={scannerFeedback.level === "error" ? "alert" : "status"}
+                    style={{
+                      padding: "7px 9px",
+                      borderRadius: "8px",
+                      fontSize: "11px",
+                      fontWeight: 700,
+                      color:
+                        scannerFeedback.level === "error" ? "#9f2f1f" : "#176447",
+                      background:
+                        scannerFeedback.level === "error" ? "#fff1ed" : "#edfbf3",
+                      border:
+                        scannerFeedback.level === "error"
+                          ? "1px solid #f3c0b4"
+                          : "1px solid #b5e4c9",
+                    }}
+                  >
+                    {scannerFeedback.message}
+                  </div>
+                )}
+              </div>
             </div>
 
             <div style={{ display: "flex", gap: "4px" }}>
@@ -1518,6 +1811,36 @@ export default function HposTerminal() {
                   {mode.emoji ? `${mode.emoji} ${mode.label}` : mode.label}
                 </button>
               ))}
+            </div>
+            <div
+              role="status"
+              title="USB/Bluetooth keyboard-wedge scanners are verified by successful input, not by a permanent connection signal."
+              style={{
+                marginLeft: "auto",
+                padding: "5px 8px",
+                borderRadius: "999px",
+                whiteSpace: "nowrap",
+                fontSize: "10px",
+                fontWeight: 800,
+                  color:
+                    scannerSettings.barcode_scanner_enabled === false
+                      ? "#7b6d72"
+                      : showPayment || showShiftStart || showOperatorUnlock || modifierLineId != null
+                      ? "#8b5a11"
+                      : "#176447",
+                  background:
+                    scannerSettings.barcode_scanner_enabled === false
+                      ? "#f1ece8"
+                      : showPayment || showShiftStart || showOperatorUnlock || modifierLineId != null
+                      ? "#fff6df"
+                      : "#edfbf3",
+                }}
+              >
+              {scannerSettings.barcode_scanner_enabled === false
+                ? "Scanner disabled"
+                : showPayment || showShiftStart || showOperatorUnlock || modifierLineId != null
+                ? "Scanner paused"
+                : "Scanner ready"}
             </div>
           </div>
 
@@ -1551,6 +1874,7 @@ export default function HposTerminal() {
                   (outlet) =>
                     outlet.is_active !== false && outlet.active !== false,
                 )
+                .filter((outlet) => outletIsAllowed(outlet.id))
                 .map((outlet) => (
                   <option key={outlet.id} value={outlet.id}>
                     {outlet.name}

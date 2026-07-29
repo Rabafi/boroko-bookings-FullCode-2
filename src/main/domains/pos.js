@@ -190,6 +190,8 @@ function buildPosTotals(items = [], data = {}) {
 function readPosHardwareSettings() {
   const rows = readCache('pos-hardware-settings');
   const current = Array.isArray(rows) && rows[0] ? rows[0] : {};
+  const barcodeMinLength = Math.max(1, Math.min(128, Number(current.barcode_scanner_min_length) || 4));
+  const barcodeMaxLength = Math.max(barcodeMinLength, Math.min(128, Number(current.barcode_scanner_max_length) || 128));
   return {
     receipt_printer_name: current.receipt_printer_name || '',
     receipt_paper_width: current.receipt_paper_width || '80mm',
@@ -215,6 +217,20 @@ function readPosHardwareSettings() {
     payment_terminal_mode: current.payment_terminal_mode || 'manual',
     payment_terminal_bridge_url: current.payment_terminal_bridge_url || '',
     payment_terminal_timeout_ms: current.payment_terminal_timeout_ms || 8000,
+    barcode_scanner_enabled: current.barcode_scanner_enabled !== false,
+    barcode_scanner_min_length: barcodeMinLength,
+    barcode_scanner_max_length: barcodeMaxLength,
+    barcode_scanner_inter_key_ms: Number.isFinite(Number(current.barcode_scanner_inter_key_ms)) ? Number(current.barcode_scanner_inter_key_ms) : 120,
+    barcode_scanner_idle_complete_ms: Number.isFinite(Number(current.barcode_scanner_idle_complete_ms)) ? Number(current.barcode_scanner_idle_complete_ms) : 180,
+    barcode_scanner_accept_enter: current.barcode_scanner_accept_enter !== false,
+    barcode_scanner_accept_tab: current.barcode_scanner_accept_tab !== false,
+    barcode_scanner_prefix: String(current.barcode_scanner_prefix || '').replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 16),
+    barcode_scanner_suffix: String(current.barcode_scanner_suffix || '').replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 16),
+    barcode_scanner_sound_enabled: current.barcode_scanner_sound_enabled !== false,
+    scanner_last_verified_at: current.scanner_last_verified_at || null,
+    scanner_last_terminator: String(current.scanner_last_terminator || '').replace(/[\u0000-\u001f\u007f]/g, ''),
+    scanner_last_character_count: Number.isFinite(Number(current.scanner_last_character_count)) ? Number(current.scanner_last_character_count) : null,
+    scanner_last_average_inter_key_ms: Number.isFinite(Number(current.scanner_last_average_inter_key_ms)) ? Number(current.scanner_last_average_inter_key_ms) : null,
     customer_display_enabled: current.customer_display_enabled === true,
     updated_at: current.updated_at || null
   };
@@ -512,16 +528,24 @@ export async function deletePosMenuItem(id) {
 
 export async function setBarPosPackTemplate(data) {
   if (!state.isOnline) throw new Error('No internet connection. Please check your connection and try again.');
+  const rawBarcode = data?.barcode == null ? '' : String(data.barcode).trim();
+  if (rawBarcode.length > 128 || /[\u0000-\u001f\u007f]/.test(rawBarcode)) {
+    throw new Error('Pack barcode must be 128 characters or fewer and contain no control characters.');
+  }
   const payload = {
     lodge_id: state.lodgeId,
     inventory_item_id: data.inventory_item_id,
     pack_size: Number(data.pack_size),
-    enabled: data.enabled === true
+    enabled: data.enabled === true,
+    ...(Object.prototype.hasOwnProperty.call(data || {}, 'barcode') ? { barcode: rawBarcode || null } : {})
   };
   const { data: result, error } = await state.supabase.rpc('set_bar_pos_pack_template', { payload });
   if (error) throw new Error(error.message);
   if (!result?.success) throw new Error(result?.error || 'Could not update Bar POS template');
-  return { success: true };
+  await publishPosCatalogSnapshotsForChange([result?.outlet_id || null]).catch((publishError) => {
+    throw new Error(`Pack template was saved, but catalog publication failed: ${publishError.message}`);
+  });
+  return { ...result, success: true };
 }
 
 // outletFilter: null = all, [] = no access, [uuid1,...] = restrict to these outlet IDs
@@ -2711,6 +2735,65 @@ export async function testPosHardware(kind = 'receipt') {
       : kind === 'escpos'
         ? 'ESC/POS test command prepared. Install a supported direct-print bridge before live drawer kicks.'
         : 'Receipt printer test is ready. Use the test receipt print button.'
+  };
+}
+
+function normalizeBarcodeScannerVerification(data = {}, settings = {}) {
+  const barcode = String(data.barcode || '').trim();
+  const minLength = Math.max(1, Math.min(128, Number(settings.barcode_scanner_min_length) || 4));
+  const maxLength = Math.max(minLength, Math.min(128, Number(settings.barcode_scanner_max_length) || 128));
+  if (settings.barcode_scanner_enabled === false) return { success: false, error: 'Barcode scanner verification is disabled for this POS computer.', code: 'scanner_disabled' };
+  if (!barcode) return { success: false, error: 'Scan a barcode before confirming verification.', code: 'empty_scan' };
+  if (barcode.length < minLength) return { success: false, error: `The scanned barcode is too short (minimum ${minLength} characters).`, code: 'scan_too_short' };
+  if (barcode.length > maxLength) return { success: false, error: `The scanned barcode is too long (maximum ${maxLength} characters).`, code: 'scan_too_long' };
+  for (let index = 0; index < barcode.length; index += 1) {
+    const code = barcode.charCodeAt(index);
+    if (code < 32 || code === 127) return { success: false, error: 'The scanned barcode contains unsupported control characters.', code: 'invalid_characters' };
+  }
+  const averageInterKeyMs = Number(data.averageInterKeyMs ?? data.average_inter_key_ms);
+  const characterCount = Number(data.characterCount ?? data.character_count);
+  return {
+    success: true,
+    barcode,
+    terminator: String(data.terminator || '').trim().slice(0, 32) || null,
+    characterCount: Number.isFinite(characterCount) ? Math.max(0, Math.min(maxLength, Math.round(characterCount))) : barcode.length,
+    averageInterKeyMs: Number.isFinite(averageInterKeyMs) ? Math.max(0, Math.min(10000, Math.round(averageInterKeyMs * 10) / 10)) : null
+  };
+}
+
+export async function verifyPosBarcodeScanner(data = {}) {
+  const current = readPosHardwareSettings();
+  const normalized = normalizeBarcodeScannerVerification(data, current);
+  if (!normalized.success) return normalized;
+
+  const verifiedAt = new Date().toISOString();
+  const barcodeHash = createHash('sha256').update(normalized.barcode).digest('hex');
+  const settings = writePosHardwareSettings({
+    scanner_last_verified_at: verifiedAt,
+    scanner_last_terminator: normalized.terminator,
+    scanner_last_character_count: normalized.characterCount,
+    scanner_last_average_inter_key_ms: normalized.averageInterKeyMs
+  });
+  appendPosAudit('barcode_scanner_verified', {
+    entity_type: 'pos_hardware',
+    details: {
+      verification: 'keyboard_wedge_scan',
+      barcode_sha256: barcodeHash,
+      character_count: normalized.characterCount,
+      terminator: normalized.terminator,
+      average_inter_key_ms: normalized.averageInterKeyMs,
+      verified_at: verifiedAt
+    }
+  });
+  return {
+    success: true,
+    settings,
+    verification: {
+      verified_at: verifiedAt,
+      character_count: normalized.characterCount,
+      terminator: normalized.terminator,
+      average_inter_key_ms: normalized.averageInterKeyMs
+    }
   };
 }
 

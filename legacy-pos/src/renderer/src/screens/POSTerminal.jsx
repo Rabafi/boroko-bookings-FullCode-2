@@ -3,6 +3,7 @@ import { ShoppingCart, X, Plus, Minus, Search, Banknote, ReceiptText, Check, Clo
 import { buildPosTotals } from '@shared/totals.js';
 import { buildCreatePosOrderPayload } from '@shared/payloads.js';
 import { sanitizePosError } from '@shared/errors.js';
+import { createBarcodeScannerDecoder, normalizeBarcode, isScannerEditableTarget } from '@shared/barcodeScanner.js';
 
 const CURRENCY = 'P';
 const fmt = (v) => Number(v || 0).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -143,8 +144,12 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
   const [detailsExpanded, setDetailsExpanded] = useState(false);
 
   const searchRef = useRef(null);
-  const barcodeBufferRef = useRef('');
-  const barcodeTimerRef = useRef(null);
+  const barcodeDecoderRef = useRef(null);
+  // Compatibility name retained for diagnostics/tests that identify the
+  // Legacy POS scanner buffer; the decoder now owns the actual buffer.
+  const barcodeBufferRef = barcodeDecoderRef;
+  const barcodeIdleTimerRef = useRef(null);
+  if (!barcodeDecoderRef.current) barcodeDecoderRef.current = createBarcodeScannerDecoder();
   const menuItemsRef = useRef([]);
   const selectedOutletRef = useRef(null);
   const outletsRef = useRef([]);
@@ -297,45 +302,60 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
   }, [taxEnabled, settings?.vat_rate]);
 
   useEffect(() => {
-    const handleKeyDown = (event) => {
-      if (event.ctrlKey || event.altKey || event.metaKey) return;
-      const target = event.target;
-      const tag = String(target?.tagName || '').toLowerCase();
-      if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
-
-      if (event.key === 'Enter') {
-        const code = barcodeBufferRef.current.trim();
-        barcodeBufferRef.current = '';
-        if (barcodeTimerRef.current) clearTimeout(barcodeTimerRef.current);
-        barcodeTimerRef.current = null;
-        if (code.length < 4) return;
-        const currentInventoryMap = new Map((inventoryItemsRef.current || []).map((item) => [item.id, item]));
-        const found = (menuItemsRef.current || []).find((item) => String(item.barcode || '') === code && item.is_available !== false);
-        if (!found) {
-          setBarcodeFlash({ ok: false, message: `Barcode not found: ${code}` });
-        } else if ((found.outlet_id || currentInventoryMap.get(found.inventory_item_id)?.outlet_id) && selectedOutletRef.current?.id && (found.outlet_id || currentInventoryMap.get(found.inventory_item_id)?.outlet_id) !== selectedOutletRef.current.id) {
-          const foundOutletId = found.outlet_id || currentInventoryMap.get(found.inventory_item_id)?.outlet_id;
-          const outletName = (outletsRef.current || []).find((o) => o.id === foundOutletId)?.name || 'another outlet';
-          setBarcodeFlash({ ok: false, message: `${found.name} belongs to ${outletName}` });
-        } else if (!isOrderableMenuItem(found, currentInventoryMap)) {
-          setBarcodeFlash({ ok: false, message: `${found.name} is sold out` });
-        } else {
-          addToCart(found);
-          setBarcodeFlash({ ok: true, message: `${found.name} added` });
-        }
-        setTimeout(() => setBarcodeFlash(null), 2500);
-      } else if (event.key.length === 1) {
-        barcodeBufferRef.current += event.key;
-        if (barcodeTimerRef.current) clearTimeout(barcodeTimerRef.current);
-        barcodeTimerRef.current = setTimeout(() => {
-          barcodeBufferRef.current = '';
-        }, 80);
+    const decoder = barcodeDecoderRef.current;
+    const clearIdleTimer = () => {
+      if (barcodeIdleTimerRef.current) {
+        window.clearTimeout(barcodeIdleTimerRef.current);
+        barcodeIdleTimerRef.current = null;
       }
     };
-    window.addEventListener('keydown', handleKeyDown);
+    const showScan = (result) => {
+      const code = normalizeBarcode(result?.barcode || '');
+      if (!code) return;
+      const currentInventoryMap = new Map((inventoryItemsRef.current || []).map((item) => [item.id, item]));
+      const matches = (menuItemsRef.current || []).filter((item) => String(item.barcode || '').trim() === code);
+      const itemOutlet = (item) => item.outlet_id || currentInventoryMap.get(item.inventory_item_id)?.outlet_id || null;
+      const eligible = matches.filter((item) => !itemOutlet(item) || itemOutlet(item) === selectedOutletRef.current?.id);
+      const available = eligible.filter((item) => item.is_available !== false);
+      let message = '';
+      if (!selectedOutletRef.current?.id) message = 'Select an outlet before scanning a product.';
+      else if (matches.length === 0) message = `Barcode not found: ${code}`;
+      else if (eligible.length === 0) {
+        const foundOutletId = itemOutlet(matches[0]);
+        const outletName = (outletsRef.current || []).find((o) => o.id === foundOutletId)?.name || 'another outlet';
+        message = `This barcode belongs to ${outletName}`;
+      } else if (available.length > 1) message = 'Two active products share this barcode. Manager setup is required.';
+      else if (!available[0] || !isOrderableMenuItem(available[0], currentInventoryMap)) message = `${(available[0] || eligible[0]).name} is sold out`;
+      if (message) {
+        setBarcodeFlash({ ok: false, message });
+      } else {
+        addToCart(available[0]);
+        setBarcodeFlash({ ok: true, message: `${available[0].name} added` });
+      }
+      window.setTimeout(() => setBarcodeFlash(null), 2500);
+    };
+    const handleKeyDown = (event) => {
+      if (isScannerEditableTarget(event.target, searchRef.current)) return;
+      const outcome = decoder.consumeKey(event);
+      if (outcome.type === 'buffered') {
+        if (event.key?.length === 1) event.preventDefault();
+        clearIdleTimer();
+        barcodeIdleTimerRef.current = window.setTimeout(() => {
+          const idleResult = decoder.flush('idle');
+          if (idleResult.type === 'completed') showScan(idleResult.result);
+        }, decoder.getOptions().idleCompleteMs);
+      } else if (outcome.type === 'completed') {
+        event.preventDefault();
+        event.stopPropagation();
+        clearIdleTimer();
+        if (outcome.result.success) showScan(outcome.result);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown, true);
     return () => {
-      window.removeEventListener('keydown', handleKeyDown);
-      if (barcodeTimerRef.current) clearTimeout(barcodeTimerRef.current);
+      window.removeEventListener('keydown', handleKeyDown, true);
+      clearIdleTimer();
+      decoder.reset();
     };
   }, [inventoryItems]);
 
@@ -770,6 +790,28 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
           <div className="relative flex-1">
             <Search className="absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-slate-400" />
             <input ref={searchRef} type="text" value={search} onChange={(e) => setSearch(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key !== 'Enter') return;
+                e.preventDefault();
+                const code = normalizeBarcode(search);
+                if (!code) return;
+                const currentInventoryMap = new Map((inventoryItemsRef.current || []).map((item) => [item.id, item]));
+                const matches = (menuItemsRef.current || []).filter((item) => String(item.barcode || '').trim() === code);
+                const itemOutlet = (item) => item.outlet_id || currentInventoryMap.get(item.inventory_item_id)?.outlet_id || null;
+                const eligible = matches.filter((item) => !itemOutlet(item) || itemOutlet(item) === selectedOutletRef.current?.id);
+                const available = eligible.filter((item) => item.is_available !== false);
+                if (!selectedOutletRef.current?.id) setBarcodeFlash({ ok: false, message: 'Select an outlet before scanning a product.' });
+                else if (matches.length === 0) setBarcodeFlash({ ok: false, message: `Barcode not found: ${code}` });
+                else if (eligible.length === 0) setBarcodeFlash({ ok: false, message: 'This barcode belongs to another outlet.' });
+                else if (available.length !== 1) setBarcodeFlash({ ok: false, message: 'Barcode is unavailable or duplicated. Manager setup is required.' });
+                else if (!isOrderableMenuItem(available[0], currentInventoryMap)) setBarcodeFlash({ ok: false, message: `${available[0].name} is sold out` });
+                else {
+                  addToCart(available[0]);
+                  setSearch('');
+                  setBarcodeFlash({ ok: true, message: `${available[0].name} added` });
+                }
+                window.setTimeout(() => setBarcodeFlash(null), 2500);
+              }}
               placeholder="Search items or scan barcode..."
               className="min-h-12 w-full rounded-lg border border-slate-200 bg-slate-50 py-3 pl-12 pr-4 text-base focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500" />
           </div>

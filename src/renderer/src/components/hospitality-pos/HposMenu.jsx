@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Archive,
@@ -9,6 +9,7 @@ import {
   Eye,
   EyeOff,
   Plus,
+  ScanLine,
   Search,
   Tag,
   Trash2,
@@ -22,6 +23,7 @@ import {
   getBarModeProfile,
 } from "../../../../shared/barModeProfile";
 import { getCommercialFeatureSet } from "../../../../shared/commercialAccess";
+import { createBarcodeScannerDecoder } from "../../../../shared/barcodeScanner";
 
 const RESTAURANT_MENU_SECTIONS = [
   "Breakfast",
@@ -199,6 +201,9 @@ const emptyDraft = () => ({
   pack6: false,
   pack12: false,
   pack24: false,
+  pack6Barcode: "",
+  pack12Barcode: "",
+  pack24Barcode: "",
 });
 
 export default function HposMenu() {
@@ -234,6 +239,12 @@ export default function HposMenu() {
   const [saveError, setSaveError] = useState("");
   const [actionNotice, setActionNotice] = useState("");
   const [packBusy, setPackBusy] = useState(false);
+  const [barcodeCaptureActive, setBarcodeCaptureActive] = useState(false);
+  const [barcodeCaptureTarget, setBarcodeCaptureTarget] = useState("menu");
+  const [barcodeScanStatus, setBarcodeScanStatus] = useState("");
+  const [barcodeTouched, setBarcodeTouched] = useState(false);
+  const barcodeInputRef = useRef(null);
+  const packBarcodeInputRefs = useRef({});
   const [availabilityBusyId, setAvailabilityBusyId] = useState(null);
   const [showArchived, setShowArchived] = useState(false);
   const [showModifiers, setShowModifiers] = useState(false);
@@ -247,6 +258,42 @@ export default function HposMenu() {
     max_selections: "1",
     applies_to_categories: "All",
   });
+
+  // Product setup uses the same keyboard-wedge decoder as Till and stock
+  // setup. Capture is explicitly armed so manual typing remains unaffected.
+  useEffect(() => {
+    if (!editing || !barcodeCaptureActive) return undefined;
+    const decoder = createBarcodeScannerDecoder();
+    let idleTimer = null;
+    const completeScan = (result = {}) => {
+      setBarcodeCaptureActive(false);
+      if (!result.success) {
+        setBarcodeScanStatus(`Barcode scan failed: ${result.code || "invalid_scan"}.`);
+        return;
+      }
+      const field = barcodeCaptureTarget === "menu" ? "barcode" : `pack${barcodeCaptureTarget}Barcode`;
+      setDraft((current) => ({ ...current, [field]: result.barcode }));
+      setBarcodeTouched(true);
+      setBarcodeScanStatus(`Barcode captured: ${result.barcode}`);
+    };
+    const onKeyDown = (event) => {
+      const key = String(event.key || "");
+      if (!(key.length === 1 || key === "Enter" || key === "NumpadEnter" || key === "Tab")) return;
+      const outcome = decoder.consumeKey(event);
+      if (outcome.type === "buffered" || outcome.type === "completed") event.preventDefault();
+      if (outcome.type === "buffered") {
+        clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => {
+          const flushed = decoder.flush();
+          if (flushed.type === "completed") completeScan(flushed.result);
+        }, decoder.getOptions().idleCompleteMs);
+        return;
+      }
+      if (outcome.type === "completed") completeScan(outcome.result);
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => { clearTimeout(idleTimer); window.removeEventListener("keydown", onKeyDown, true); };
+  }, [editing, barcodeCaptureActive, barcodeCaptureTarget]);
 
   const loadMenu = async () => {
     const menuData = (await window.api?.pos?.getMenuItems?.()) ?? [];
@@ -303,15 +350,23 @@ export default function HposMenu() {
 
   const openCreate = () => {
     setSaveError("");
+    setBarcodeScanStatus("");
+    setBarcodeCaptureActive(false);
+    setBarcodeCaptureTarget("menu");
+    setBarcodeTouched(false);
     setEditing("new");
     setDraft(emptyDraft());
   };
 
   const openEdit = (item) => {
     setSaveError("");
+    setBarcodeScanStatus("");
+    setBarcodeCaptureActive(false);
+    setBarcodeCaptureTarget("menu");
+    setBarcodeTouched(false);
     setEditing(item);
     const invId = item.inventory_item_id || "";
-    const packFlags = { pack6: false, pack12: false, pack24: false };
+    const packFlags = { pack6: false, pack12: false, pack24: false, pack6Barcode: "", pack12Barcode: "", pack24Barcode: "" };
     if (invId) {
       for (const row of items) {
         if (
@@ -321,6 +376,9 @@ export default function HposMenu() {
           if (Number(row.template_pack_size) === 6) packFlags.pack6 = true;
           if (Number(row.template_pack_size) === 12) packFlags.pack12 = true;
           if (Number(row.template_pack_size) === 24) packFlags.pack24 = true;
+          if (Number(row.template_pack_size) === 6) packFlags.pack6Barcode = row.barcode || "";
+          if (Number(row.template_pack_size) === 12) packFlags.pack12Barcode = row.barcode || "";
+          if (Number(row.template_pack_size) === 24) packFlags.pack24Barcode = row.barcode || "";
         }
       }
     }
@@ -349,6 +407,7 @@ export default function HposMenu() {
         inventory_item_id: inventoryItemId,
         pack_size: size,
         enabled: enabled === true,
+        barcode: flags[`pack${size}Barcode`] || null,
       });
     }
   };
@@ -727,7 +786,7 @@ export default function HposMenu() {
             <button
               type="button"
               className="hpos-service-dialog__close"
-              onClick={() => setEditing(null)}
+              onClick={() => { setBarcodeCaptureActive(false); setBarcodeScanStatus(""); setEditing(null); }}
               disabled={packBusy}
               aria-label="Close"
             >
@@ -825,14 +884,37 @@ export default function HposMenu() {
               </label>
               <label>
                 Barcode
-                <input
-                  type="text"
-                  value={draft.barcode}
-                  onChange={(event) =>
-                    setDraft({ ...draft, barcode: event.target.value })
-                  }
-                  placeholder="Optional scan code"
-                />
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <input
+                    ref={barcodeInputRef}
+                    type="text"
+                    value={draft.barcode}
+                    onChange={(event) => {
+                      setBarcodeTouched(true);
+                      setBarcodeScanStatus("");
+                      setDraft({ ...draft, barcode: event.target.value });
+                    }}
+                    placeholder="Scan or enter barcode"
+                    inputMode="text"
+                    autoComplete="off"
+                    style={{ flex: 1 }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setBarcodeCaptureActive(true);
+                      setBarcodeScanStatus("Waiting for scanner…");
+                      requestAnimationFrame(() => barcodeInputRef.current?.focus());
+                    }}
+                    disabled={packBusy}
+                    aria-label="Scan product barcode"
+                  >
+                    <ScanLine size={14} /> {barcodeCaptureActive && barcodeCaptureTarget === "menu" ? "Scanning…" : "Scan"}
+                  </button>
+                  {draft.barcode && <button type="button" onClick={() => { setDraft({ ...draft, barcode: "" }); setBarcodeTouched(true); setBarcodeScanStatus("Barcode cleared"); }} disabled={packBusy} aria-label="Clear product barcode"><X size={14} /></button>}
+                </div>
+                <small>Leading zeroes are preserved. Singles and physical packs may use different barcodes.</small>
+                {barcodeScanStatus && barcodeCaptureTarget === "menu" && <span role="status" style={{ display: "block", marginTop: 4, color: barcodeCaptureActive ? "#79551e" : "#28624d", fontSize: 11 }}>{barcodeScanStatus}</span>}
               </label>
               <label>
                 How is this sold?
@@ -876,12 +958,18 @@ export default function HposMenu() {
                     Direct stock link
                     <select
                       value={draft.inventory_item_id}
-                      onChange={(event) =>
+                      onChange={(event) => {
+                        const inventoryItemId = event.target.value;
+                        const stockItem = inventoryItems.find((row) => row.id === inventoryItemId);
                         setDraft({
                           ...draft,
-                          inventory_item_id: event.target.value,
-                        })
-                      }
+                          inventory_item_id: inventoryItemId,
+                          // A direct stock barcode is a safe default for a
+                          // newly linked single; never overwrite a manager's
+                          // explicit menu/package barcode.
+                          barcode: draft.barcode.trim() ? draft.barcode : (stockItem?.barcode || ""),
+                        });
+                      }}
                     >
                       <option value="">
                         No direct link — save as {recipesEnabled ? "recipe draft" : "unlinked draft"}
@@ -924,25 +1012,60 @@ export default function HposMenu() {
                 <strong>Pack / case sell templates</strong>
                 <p>
                   Create sellable packs that use the existing bar-pack depletion
-                  contract.
+                  contract. Scan each physical package barcode separately; a
+                  pack barcode must never be reused for a single bottle.
                 </p>
-                <div>
+                <div style={{ display: "grid", gap: 10 }}>
                   {BAR_PACK_SIZES.map((size) => {
                     const key = `pack${size}`;
+                    const barcodeKey = `${key}Barcode`;
                     return (
-                      <label key={size}>
-                        <input
-                          type="checkbox"
-                          checked={draft[key] === true}
-                          onChange={(event) =>
-                            setDraft({ ...draft, [key]: event.target.checked })
-                          }
-                        />
-                        {size === 24 ? "Case 24" : `${size}-pack`}
-                      </label>
+                      <div key={size} style={{ display: "grid", gap: 5 }}>
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={draft[key] === true}
+                            onChange={(event) =>
+                              setDraft({ ...draft, [key]: event.target.checked })
+                            }
+                          />
+                          {size === 24 ? "Case 24" : `${size}-pack`}
+                        </label>
+                        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                          <input
+                            ref={(node) => { packBarcodeInputRefs.current[size] = node; }}
+                            type="text"
+                            value={draft[barcodeKey] || ""}
+                            onChange={(event) => {
+                              setBarcodeTouched(true);
+                              setBarcodeScanStatus("");
+                              setDraft({ ...draft, [barcodeKey]: event.target.value });
+                            }}
+                            placeholder={`${size === 24 ? "Case 24" : `${size}-pack`} barcode (optional)`}
+                            inputMode="text"
+                            autoComplete="off"
+                            style={{ flex: 1 }}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setBarcodeCaptureTarget(String(size));
+                              setBarcodeCaptureActive(true);
+                              setBarcodeScanStatus(`Waiting for ${size === 24 ? "case 24" : `${size}-pack`} scanner input…`);
+                              requestAnimationFrame(() => packBarcodeInputRefs.current[size]?.focus());
+                            }}
+                            disabled={packBusy}
+                            aria-label={`Scan ${size === 24 ? "case 24" : `${size}-pack`} barcode`}
+                          >
+                            <ScanLine size={14} /> {barcodeCaptureActive && barcodeCaptureTarget === String(size) ? "Scanning…" : "Scan"}
+                          </button>
+                          {draft[barcodeKey] && <button type="button" onClick={() => { setDraft({ ...draft, [barcodeKey]: "" }); setBarcodeTouched(true); setBarcodeScanStatus("Pack barcode cleared"); }} disabled={packBusy} aria-label={`Clear ${size === 24 ? "case 24" : `${size}-pack`} barcode`}><X size={14} /></button>}
+                        </div>
+                      </div>
                     );
                   })}
                 </div>
+                {barcodeScanStatus && barcodeCaptureTarget !== "menu" && <div role="status" className="hpos-inline-notice">{barcodeScanStatus}</div>}
               </section>
             )}
             {saveError && <div className="hpos-inline-error">{saveError}</div>}
@@ -950,7 +1073,7 @@ export default function HposMenu() {
               <button
                 type="button"
                 className="hpos-secondary-action"
-                onClick={() => setEditing(null)}
+                onClick={() => { setBarcodeCaptureActive(false); setBarcodeScanStatus(""); setEditing(null); }}
                 disabled={packBusy}
               >
                 Cancel

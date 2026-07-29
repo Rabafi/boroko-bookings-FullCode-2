@@ -2,7 +2,16 @@
 
 As of: 2026-07-29 (wrong-folder recovery and canonical snapshot)
 
-## Status: Bar Mode guardrail implementation is pushed and its ordered Supabase migrations are deployed through `20260729150000`. Authenticated cashier/manager smoke proof remains the final operational gate.
+## Status: Bar Mode guardrail and barcode-scanner implementation is pushed and its ordered Supabase migrations are deployed through `20260729170000`. Authenticated cashier/manager smoke proof and a physical scanner run-through remain the final operational gates.
+
+### 2026-07-29 — Bar Mode scanner and barcode hardening (deployed)
+
+- Hospitality POS Till and Legacy POS now share one keyboard-wedge decoder with Enter/Numpad Enter/Tab and idle completion, timing-gap reset, prefix/suffix framing, length/control validation, leading-zero preservation, duplicate terminator protection, outlet-safe lookup, stock-availability checks, and suspension while payment, PIN, shift, modifier, or receipt workflows have focus.
+- Bar Base Stock and Products support manual barcode entry or an explicit Scan flow. Stock create/edit preserves barcode values through online RPCs, cache and retry payloads; Products can inherit a linked stock barcode without overwriting an explicit menu code. 6/12/24-pack templates have independent scan/edit fields and cannot silently reuse a single-bottle code.
+- System Health now verifies a real scanner input on the current POS computer, displays captured length/terminator for operator confirmation, exposes bounded framing/timing settings, and records only a SHA-256 barcode hash in the local POS audit. A keyboard-wedge device has no OS-level “connected” signal; this explicit capture is the authoritative connection proof.
+- Forward migrations `20260729160000_barcode_scanner_guardrails.sql` and `20260729170000_bar_pack_template_barcodes.sql` are applied to the linked Supabase project. They normalize and lock active inventory/menu assignments, enforce lodge/outlet duplicate rules, provide manager-only conflict checks, preserve single-product sync, and persist distinct package barcodes through the authoritative pack RPC.
+- Verification passes: 57 Bar tests, 217 Legacy POS regressions, 3 critical financial/offline/inventory gates, POS hardware-adapter tests, 15 product tests, 2 release-architecture tests, main-process syntax checks, both Hospitality POS and Legacy POS production builds, and linked migration history through `20260729170000`. Linked lint still reports the repository’s existing unrelated schema errors plus one non-blocking loop-variable warning in `normalize_pos_barcode`; no new scanner/pack errors were reported.
+- No installer was built or published. Before customer handoff, run System Health → Devices → Verify scanner input with the actual scanner, scan a known product, confirm the displayed count/terminator, then scan that product at Till, Stock setup, and (if used) each pack template. Keep a printed/manual fallback until that physical smoke test passes.
 
 ### 2026-07-29 — Bar Mode guardrail repair pass (deployed)
 
