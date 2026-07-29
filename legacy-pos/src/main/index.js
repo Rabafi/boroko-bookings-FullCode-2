@@ -14,7 +14,8 @@ import {
   buildVoidPayload,
   buildReturnPayloadV3,
   buildFinalizeCashupPayloadV2,
-  normalizePaymentBreakdown
+  normalizePaymentBreakdown,
+  validateProviderPaymentReferences
 } from '../shared/payloads.js';
 import {
   createQueueItem,
@@ -1648,6 +1649,7 @@ function registerIpcHandlers() {
       cashier_id: data.cashier_id || state.currentUser?.id,
       cashier_name: data.cashier_name || state.currentUser?.name
     });
+    validateProviderPaymentReferences(payload.payment_breakdown, payload.payment_method);
     const estimates = buildPosTotals(data.items || [], data);
 
     // Offline folio guard: require the cached room or event target to be

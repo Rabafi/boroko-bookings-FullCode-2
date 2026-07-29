@@ -592,6 +592,16 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
       setError(`Split payments must match the total. Balance: ${currency} ${fmt(paymentBalance)}`);
       return;
     }
+    const missingProviderReferences = paymentBreakdown.filter((row) => {
+      const method = String(row?.method || '').trim().toLowerCase();
+      const reference = String(row?.reference || '').trim();
+      return ['card', 'mobile_money'].includes(method) && (!reference || reference.length > 120);
+    });
+    if (missingProviderReferences.length > 0) {
+      const labels = [...new Set(missingProviderReferences.map((row) => String(row.method).toLowerCase() === 'mobile_money' ? 'mobile money' : 'card'))];
+      setError(`Enter the ${labels.join(' and ')} transaction or approval reference before recording payment.`);
+      return;
+    }
 
     // Offline folio guard
     if (customerType === 'room' && paymentMethod === 'folio' && !isOnline) {

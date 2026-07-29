@@ -20,6 +20,7 @@ import {
   writeFailedSyncQueue,
   writeSyncQueue
 } from './syncStore.js'
+import { parseOptionalNonNegativeCost } from '../../shared/inventoryStockForm.js'
 
 // ─── INVENTORY ────────────────────────────────────────────────────────────────
 
@@ -50,6 +51,13 @@ function normalizeStockNumber(value, fallback = 0) {
 function normalizePositiveQty(value, fallback = 1) {
   const numeric = Number(value);
   return Number.isFinite(numeric) && numeric > 0 ? numeric : fallback;
+}
+
+function readOptionalUnitCost(data = {}) {
+  if (!Object.prototype.hasOwnProperty.call(data, 'unit_cost')) return undefined
+  const parsed = parseOptionalNonNegativeCost(data.unit_cost)
+  if (!parsed.ok) throw new Error('Unit cost must be a finite non-negative number, or blank to keep the current cost.')
+  return parsed.value
 }
 
 function movementSort(a, b) {
@@ -212,6 +220,7 @@ export async function getInventoryItemById(id) {
 
 export async function createInventoryItem(data) {
   const id = randomUUID();
+  const unitCost = readOptionalUnitCost(data)
   const item = {
     id,
     lodge_id: state.lodgeId,
@@ -220,7 +229,7 @@ export async function createInventoryItem(data) {
     unit: data.unit || 'unit',
     current_stock: Number(data.current_stock) || 0,
     reorder_level: Number(data.reorder_level) || 0,
-    latest_unit_cost: Number(data.unit_cost) || 0,
+    latest_unit_cost: unitCost ?? 0,
     selling_price: Number(data.selling_price) || 0,
     outlet_id: data.outlet_id || null
   };
@@ -268,12 +277,13 @@ export async function createInventoryItem(data) {
 }
 
 export async function updateInventoryItem(id, data) {
+  const unitCost = readOptionalUnitCost(data)
   const update = {
     name: data.name,
     category: data.category,
     unit: data.unit,
     reorder_level: Number(data.reorder_level) || 0,
-    ...(Object.prototype.hasOwnProperty.call(data, 'unit_cost') ? { latest_unit_cost: Number(data.unit_cost) || 0 } : {}),
+    ...(unitCost === undefined ? {} : { latest_unit_cost: unitCost }),
     ...(Object.prototype.hasOwnProperty.call(data, 'selling_price') ?
     { selling_price: Number(data.selling_price) || 0 } :
     {}),
@@ -308,9 +318,9 @@ export async function updateInventoryItem(id, data) {
     });
     if (error) throw new Error(error.message);
     if (!result?.success) throw new Error(result?.error || 'Could not update inventory item');
-    if (Object.prototype.hasOwnProperty.call(data, 'unit_cost')) {
+    if (unitCost !== undefined) {
       const { data: costResult, error: costError } = await state.supabase.rpc('set_inventory_unit_cost', {
-        p_item_id: id, p_lodge_id: state.lodgeId, p_unit_cost: Number(data.unit_cost) || 0
+        p_item_id: id, p_lodge_id: state.lodgeId, p_unit_cost: unitCost
       });
       if (costError) throw new Error(costError.message);
       if (!costResult?.success) throw new Error(costResult?.error || 'Could not update the unit cost');

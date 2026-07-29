@@ -2,7 +2,15 @@
 
 As of: 2026-07-29 (wrong-folder recovery and canonical snapshot)
 
-## Status: Phase 4–6 database integrity repairs are deployed. Disposable-database behavioral proof and the broader Phase 8 product backlog remain release gates.
+## Status: Bar Mode forward guardrail implementation is verified locally and pushed; linked Supabase deployment and authenticated behavioral proof remain release gates.
+
+### 2026-07-29 — Bar Mode guardrail repair pass (local, not deployed)
+
+- Stock editing now preserves `latest_unit_cost`: blank cost means unchanged, zero remains an explicit valid value, invalid/negative/non-finite values fail closed, and edit forms cannot change on-hand quantity outside Receive/Count. Restricted stock users select only assigned outlets; managers/admins may use lodge-wide or explicit outlet aging views.
+- Provider payment references are enforced at the Hospitality POS main-process boundary, Legacy POS renderer/main/offline queue boundaries, and a forward database trigger repair that rejects empty/non-array provider breakdowns as well as missing or oversized references.
+- Cash-up idempotency now serializes retries and validates shift, cashier/operator, actor, rounded physical cash, and notes before returning a replay. Shared attendance-PIN handovers use the same conflict contract.
+- Focused verification passes: 43 Bar tests, 217 Legacy POS regressions, 4 critical financial/offline/hardware gates, 15 product tests, 2 release-architecture tests, main-process syntax checks, and the Hospitality POS production build. Supabase dry run lists all missing Command Central, Bar bundle, and Bar guardrail migrations in timestamp order without applying them.
+- No Supabase migration has been deployed in this pass and no installer has been built or published. Production deployment requires reconciliation of the remote migration history, backup/PITR confirmation, and authenticated cashier/manager smoke tests.
 ### 2026-07-29 — Wrong-folder Restaurant/Bar recovery audit
 
 - Compared the canonical `Tsa Bonno HospitalityOS` worktree with the accidental `Boroko Bookings` worktree. The accidental branch is the canonical branch's June 6 ancestor and is 41 commits behind; its July 29 work is uncommitted and targets the obsolete pre-v3 POS architecture.

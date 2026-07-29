@@ -4,7 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { buildPosTotals } from '../src/shared/totals.js';
-import { normalizePaymentBreakdown, buildCreatePosOrderPayload, buildVoidPayload, buildCashupPayload } from '../src/shared/payloads.js';
+import { normalizePaymentBreakdown, validateProviderPaymentReferences, buildCreatePosOrderPayload, buildVoidPayload, buildCashupPayload } from '../src/shared/payloads.js';
 import { createQueueItem, isQueueItemReady, markItemSyncing, markItemSynced, markItemFailed, isNetworkError, isBusinessError } from '../src/shared/offlineQueue.js';
 import { sanitizePosError } from '../src/shared/errors.js';
 import { normalizePosHardwareSettings } from '../src/shared/hardwareSettings.js';
@@ -1264,6 +1264,15 @@ test('Cash-up recomputes variance in main process (ignores renderer values)', ()
   assert.ok(cashupSection.includes('varianceByMethod'), 'Must compute varianceByMethod');
   assert.ok(content.includes("countedCash = Number(normalizedCounted.cash) || 0"), 'Must compute countedCash from normalized counted values');
   assert.ok(!cashupSection.includes('payload.variance_by_method'), 'Must ignore renderer-supplied variance');
+});
+
+test('provider payment references are required before Legacy POS queueing', () => {
+  assert.throws(
+    () => validateProviderPaymentReferences([{ method: 'card', amount: 20, reference: null }], 'card'),
+    /card transaction or approval reference/i
+  );
+  assert.doesNotThrow(() => validateProviderPaymentReferences([{ method: 'card', amount: 20, reference: 'AUTH-123' }], 'card'));
+  assert.doesNotThrow(() => validateProviderPaymentReferences([{ method: 'cash', amount: 20, reference: null }], 'cash'));
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════

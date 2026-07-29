@@ -25,6 +25,23 @@ export function normalizePaymentBreakdown(payments = [], fallbackMethod = 'cash'
   return normalized;
 }
 
+export function validateProviderPaymentReferences(paymentBreakdown = [], fallbackMethod = 'cash') {
+  const rows = Array.isArray(paymentBreakdown) && paymentBreakdown.length > 0
+    ? paymentBreakdown
+    : [{ method: fallbackMethod, amount: 0, reference: null }];
+  const missing = rows.filter((row) => {
+    const method = String(row?.method || fallbackMethod || 'cash').trim().toLowerCase();
+    if (!['card', 'mobile_money'].includes(method)) return false;
+    const reference = String(row?.reference || '').trim();
+    return !reference || reference.length > 120;
+  });
+  if (missing.length > 0) {
+    const labels = [...new Set(missing.map((row) => String(row?.method || fallbackMethod || 'cash').trim().toLowerCase() === 'mobile_money' ? 'mobile money' : 'card'))];
+    throw new Error(`Enter the ${labels.join(' and ')} transaction or approval reference before recording payment.`);
+  }
+  return paymentBreakdown;
+}
+
 export function buildCreatePosOrderPayload(input = {}) {
   const items = input.items || [];
   const totals = buildPosTotals(items, input);

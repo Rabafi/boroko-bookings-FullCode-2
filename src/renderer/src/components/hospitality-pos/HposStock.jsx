@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, Boxes, ClipboardCheck, PackageCheck, Plus, RefreshCw, Search, X } from 'lucide-react'
 import { useAccess, useSettings } from '../../app-context'
 import { canAccessCapability } from '../../../../shared/accessControl'
+import { buildOptionalUnitCostPatch } from '../../../../shared/inventoryStockForm'
 
 const stockNumber = (item) => Number(item.current_stock || 0)
 const reorderNumber = (item) => Number(item.reorder_level || 0)
@@ -24,8 +25,17 @@ export default function HposStock() {
   const { settings } = useSettings()
   const currency = settings?.currency || 'P'
   const canManage = canAccessCapability(access, 'inventory.manage')
+  // `null` is the canonical unrestricted value (manager/admin); an array is
+  // an assigned-outlet scope (cashier/supervisor). Never turn an empty scoped
+  // array into a lodge-wide request.
+  const allowedOutletIds = Array.isArray(access?.allowedOutletIds)
+    ? access.allowedOutletIds.map((id) => String(id))
+    : null
+  const outletScoped = Array.isArray(allowedOutletIds)
   const [items, setItems] = useState([])
   const [aging, setAging] = useState([])
+  const [outlets, setOutlets] = useState([])
+  const [outletId, setOutletId] = useState('')
   const [search, setSearch] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -38,13 +48,31 @@ export default function HposStock() {
   const [newItem, setNewItem] = useState({ name: '', category: 'Beer', opening_stock: '', unit: 'bottle', reorder_level: '', unit_cost: '' })
   const [actionForm, setActionForm] = useState({ quantity: '', reason: '' })
 
-  const loadItems = async () => {
+  const loadItems = async (requestedOutletId = outletId) => {
     setLoading(true)
     setError('')
     setAgingError('')
+    let outletRows = []
+    try {
+      outletRows = await window.api?.outlets?.getAll?.() ?? []
+    } catch (outletError) {
+      if (outletScoped) setError(outletError?.message || 'Assigned stock outlets could not be loaded.')
+    }
+    const activeOutlets = (Array.isArray(outletRows) ? outletRows : [])
+      .filter((outlet) => outlet?.is_active !== false)
+      .filter((outlet) => !outletScoped || allowedOutletIds.includes(String(outlet.id)))
+    const requested = requestedOutletId ? String(requestedOutletId) : ''
+    const nextOutletId = outletScoped
+      ? (activeOutlets.some((outlet) => String(outlet.id) === requested) ? requested : String(activeOutlets[0]?.id || ''))
+      : requested
+    setOutlets(activeOutlets)
+    setOutletId(nextOutletId)
+    const agingPromise = outletScoped && !nextOutletId
+      ? Promise.reject(new Error('No assigned outlet is available for stock aging.'))
+      : (window.api?.inventory?.getBarStockAging?.(nextOutletId || null) ?? [])
     const [itemsResult, agingResult] = await Promise.allSettled([
       window.api?.inventory?.getItems?.() ?? [],
-      window.api?.inventory?.getBarStockAging?.() ?? []
+      agingPromise
     ])
     if (itemsResult.status === 'fulfilled') setItems(Array.isArray(itemsResult.value) ? itemsResult.value : [])
     else setError(itemsResult.reason?.message || 'Stock could not be refreshed.')
@@ -56,7 +84,9 @@ export default function HposStock() {
   useEffect(() => { loadItems() }, [])
 
   const filtered = useMemo(() => items.filter((item) =>
-    String(item.name || '').toLowerCase().includes(search.trim().toLowerCase())), [items, search])
+    (!outletScoped ? (!outletId || !item.outlet_id || String(item.outlet_id) === String(outletId)) :
+      (Boolean(outletId) && (!item.outlet_id || String(item.outlet_id) === String(outletId)))) &&
+    String(item.name || '').toLowerCase().includes(search.trim().toLowerCase())), [items, search, outletId, outletScoped])
   const lowStock = filtered.filter(isLow)
   const healthyStock = filtered.filter((item) => !isLow(item))
   const agingByItem = useMemo(() => new Map(aging.map((row) => [row.item_id, row])), [aging])
@@ -77,13 +107,18 @@ export default function HposStock() {
       opening_stock: '',
       unit: item.unit || 'each',
       reorder_level: String(item.reorder_level ?? ''),
-      unit_cost: item.unit_cost == null ? '' : String(item.unit_cost),
+      unit_cost: item.latest_unit_cost == null ? '' : String(item.latest_unit_cost),
     })
     setShowCreate(true)
   }
 
   const saveItem = async () => {
     if (!newItem.name.trim()) { setError('Enter the stock item name.'); return }
+    const costPatch = buildOptionalUnitCostPatch(newItem.unit_cost)
+    if (!costPatch.ok) {
+      setError('Enter a valid non-negative unit cost, or leave it blank to keep the current cost.')
+      return
+    }
     setSaving(true); setError(''); setNotice('')
     try {
       const result = editingItem
@@ -92,7 +127,7 @@ export default function HposStock() {
             category: newItem.category.trim() || null,
             unit: newItem.unit.trim() || 'each',
             reorder_level: Number(newItem.reorder_level || 0),
-            unit_cost: newItem.unit_cost === '' ? 0 : Number(newItem.unit_cost),
+            ...costPatch.patch,
             outlet_id: editingItem.outlet_id || null,
           })
         : await window.api.inventory.createItem({
@@ -101,7 +136,8 @@ export default function HposStock() {
             current_stock: Number(newItem.opening_stock || 0),
             unit: newItem.unit.trim() || 'each',
             reorder_level: Number(newItem.reorder_level || 0),
-            unit_cost: newItem.unit_cost === '' ? null : Number(newItem.unit_cost),
+            ...costPatch.patch,
+            outlet_id: outletId || null,
           })
       if (!result?.success) throw new Error(result?.error || 'Could not create this stock item.')
       setNewItem({ name: '', category: 'Beer', opening_stock: '', unit: 'bottle', reorder_level: '', unit_cost: '' })
@@ -161,7 +197,7 @@ export default function HposStock() {
         </div>
         <div style={{ position: 'relative', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(145px, 1fr))', gap: 10, marginTop: 22 }}>
           {[
-            ['Tracked items', items.length, Boxes, 'All inventory records'],
+            ['Tracked items', filtered.length, Boxes, outletScoped ? 'Assigned outlet stock' : outletId ? 'Selected outlet stock' : 'All inventory records'],
             ['Need attention', lowStock.length, AlertTriangle, lowStock.length ? 'Below reorder level' : 'Nothing below reorder level'],
             ['Available', healthyStock.length, PackageCheck, 'Not below reorder level']
           ].map(([label, value, Icon, description]) => <div key={label} style={{ padding: '13px 14px', borderRadius: 13, border: '1px solid rgba(255,255,255,.13)', background: 'rgba(16,10,16,.22)' }}><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: 'rgba(255,255,255,.75)', fontSize: 11, fontWeight: 800 }}><span>{label}</span><Icon size={15} /></div><strong style={{ display: 'block', marginTop: 5, fontSize: 24 }}>{value}</strong><small style={{ color: 'rgba(255,255,255,.64)', fontSize: 10 }}>{description}</small></div>)}
@@ -171,7 +207,18 @@ export default function HposStock() {
       <section style={{ marginTop: 18, borderRadius: 18, border: '1px solid rgba(72, 45, 56, .13)', background: 'linear-gradient(145deg, #fffdf9, #f8f2ed)', boxShadow: '0 10px 28px rgba(57, 38, 46, .08)', overflow: 'hidden' }}>
         <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', gap: 12, padding: '18px 18px 14px', borderBottom: '1px solid rgba(72,45,56,.1)' }}>
           <div><h3 style={{ margin: 0, color: '#33232b', fontSize: 16 }}>Service stock list</h3><p style={{ margin: '4px 0 0', color: '#806f76', fontSize: 12 }}>Red rows need a manager decision before they affect service.</p></div>
-          <label style={{ position: 'relative', minWidth: 240 }}><Search size={15} style={{ position: 'absolute', left: 11, top: 10, color: '#8c7b82' }} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Find stock…" style={{ width: '100%', boxSizing: 'border-box', padding: '9px 12px 9px 34px', borderRadius: 10, border: '1px solid rgba(72,45,56,.18)', background: '#fff', color: '#33232b', outline: 'none', fontSize: 12 }} /></label>
+          <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'end', justifyContent: 'flex-end', gap: 8 }}>
+            <label style={{ minWidth: 190, color: '#695961', fontSize: 10, fontWeight: 800, letterSpacing: '.05em', textTransform: 'uppercase' }}>
+              Stock outlet
+              <select aria-label="Stock outlet" value={outletScoped ? outletId : outletId || 'all'} onChange={(event) => { const next = event.target.value === 'all' ? '' : event.target.value; setOutletId(next); loadItems(next) }} disabled={loading || (outletScoped && !outlets.length)} style={{ display: 'block', width: '100%', boxSizing: 'border-box', marginTop: 4, padding: '9px 10px', borderRadius: 10, border: '1px solid rgba(72,45,56,.18)', background: '#fff', color: '#33232b', outline: 'none', fontSize: 12 }}>
+                {!outletScoped && <option value="all">All outlets</option>}
+                {outletScoped && !outlets.length && <option value="">No assigned outlet</option>}
+                {outlets.map((outlet) => <option key={outlet.id} value={outlet.id}>{outlet.name}</option>)}
+              </select>
+              <small style={{ display: 'block', marginTop: 3, color: '#917f87', fontSize: 10, fontWeight: 500, letterSpacing: 0, textTransform: 'none' }}>{outletScoped ? 'Assigned outlet only' : 'Lodge-wide or selected outlet'}</small>
+            </label>
+            <label style={{ position: 'relative', minWidth: 240 }}><Search size={15} style={{ position: 'absolute', left: 11, top: 10, color: '#8c7b82' }} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Find stock…" style={{ width: '100%', boxSizing: 'border-box', padding: '9px 12px 9px 34px', borderRadius: 10, border: '1px solid rgba(72,45,56,.18)', background: '#fff', color: '#33232b', outline: 'none', fontSize: 12 }} /></label>
+          </div>
         </div>
         {error && <div role="alert" style={{ margin: 16, padding: '10px 12px', borderRadius: 10, color: '#9a3027', background: '#fff1ef', fontSize: 12 }}>{error}</div>}
         {notice && <div role="status" style={{ margin: 16, padding: '10px 12px', borderRadius: 10, color: '#215e47', background: '#e9f6ef', fontSize: 12 }}>{notice}</div>}
@@ -181,8 +228,8 @@ export default function HposStock() {
           const age = agingByItem.get(item.id)
           const receiptDate = formatAgeDate(age?.last_received_at)
           const soldDate = formatAgeDate(age?.last_sold_at)
-          return <tr key={item.id} style={{ background: attention ? 'rgba(194, 70, 55, .055)' : 'transparent', borderTop: '1px solid rgba(72,45,56,.08)' }}><td style={{ padding: '13px 18px', color: '#33232b', fontWeight: 800 }}>{item.name}<small style={{ display: 'block', marginTop: 2, color: '#917f87', fontWeight: 500 }}>{item.category || 'Uncategorised'}</small></td><td style={{ padding: '13px 18px' }}><span style={{ display: 'inline-block', padding: '4px 8px', borderRadius: 999, fontSize: 10, fontWeight: 800, color: attention ? '#a53a30' : '#28624d', background: attention ? '#fde5e1' : '#e4f4ea' }}>{attention ? 'Needs attention' : 'Available'}</span></td><td style={{ padding: '13px 18px', color: attention ? '#a53a30' : '#2e6450', fontWeight: 800 }}>{stockNumber(item)} {item.unit || 'each'}</td><td style={{ padding: '13px 18px', color: '#695961' }}>{reorderNumber(item) || '—'}</td><td style={{ padding: '13px 18px', color: '#695961' }}>{item.unit_cost != null ? `${currency}${Number(item.unit_cost).toFixed(2)}` : '—'}</td><td style={{ padding: '13px 18px', color: '#695961' }}><strong style={{ display: 'block', color: age?.age_bucket?.startsWith('Critical') ? '#a53a30' : '#5b4851', fontSize: 11 }}>{age?.age_bucket || 'Unavailable'}</strong><small style={{ display: 'block', marginTop: 2 }}>{ageDescription(age)}{receiptDate ? ` · ${receiptDate}` : ''}</small><small style={{ display: 'block', marginTop: 2, color: '#917f87' }}>{soldDate ? `Last sold ${soldDate}` : 'No recorded sale'}</small></td><td style={{ padding: '13px 18px' }}>{canManage ? <div style={{ display: 'flex', gap: 6 }}><button type="button" onClick={() => openEdit(item)} style={{ border: '1px solid #d7c4ba', background: '#fff', borderRadius: 8, padding: '6px 8px', fontWeight: 800, fontSize: 11 }}>Edit</button><button type="button" onClick={() => { setActionForm({ quantity: '', reason: '' }); setStockAction({ mode: 'receive', item }) }} style={{ border: '1px solid #d7c4ba', background: '#fff', borderRadius: 8, padding: '6px 8px', fontWeight: 800, fontSize: 11 }}>Receive</button><button type="button" onClick={() => { setActionForm({ quantity: String(stockNumber(item)), reason: '' }); setStockAction({ mode: 'count', item }) }} style={{ border: 0, background: '#3d2b34', color: '#fff', borderRadius: 8, padding: '6px 8px', fontWeight: 800, fontSize: 11 }}><ClipboardCheck size={12} style={{ display: 'inline', marginRight: 4 }}/>Count</button></div> : '—'}</td></tr>
-        })}{!filtered.length && <tr><td colSpan="7" style={{ padding: 44, textAlign: 'center', color: '#806f76' }}>{items.length ? 'No stock items match that search.' : 'No stock items yet. Add the first bottle, keg, snack or prepared portion.'}</td></tr>}</tbody></table></div>}
+          return <tr key={item.id} style={{ background: attention ? 'rgba(194, 70, 55, .055)' : 'transparent', borderTop: '1px solid rgba(72,45,56,.08)' }}><td style={{ padding: '13px 18px', color: '#33232b', fontWeight: 800 }}>{item.name}<small style={{ display: 'block', marginTop: 2, color: '#917f87', fontWeight: 500 }}>{item.category || 'Uncategorised'}</small></td><td style={{ padding: '13px 18px' }}><span style={{ display: 'inline-block', padding: '4px 8px', borderRadius: 999, fontSize: 10, fontWeight: 800, color: attention ? '#a53a30' : '#28624d', background: attention ? '#fde5e1' : '#e4f4ea' }}>{attention ? 'Needs attention' : 'Available'}</span></td><td style={{ padding: '13px 18px', color: attention ? '#a53a30' : '#2e6450', fontWeight: 800 }}>{stockNumber(item)} {item.unit || 'each'}</td><td style={{ padding: '13px 18px', color: '#695961' }}>{reorderNumber(item) || '—'}</td><td style={{ padding: '13px 18px', color: '#695961' }}>{item.latest_unit_cost != null ? `${currency}${Number(item.latest_unit_cost).toFixed(2)}` : '—'}</td><td style={{ padding: '13px 18px', color: '#695961' }}><strong style={{ display: 'block', color: age?.age_bucket?.startsWith('Critical') ? '#a53a30' : '#5b4851', fontSize: 11 }}>{age?.age_bucket || 'Unavailable'}</strong><small style={{ display: 'block', marginTop: 2 }}>{ageDescription(age)}{receiptDate ? ` · ${receiptDate}` : ''}</small><small style={{ display: 'block', marginTop: 2, color: '#917f87' }}>{soldDate ? `Last sold ${soldDate}` : 'No recorded sale'}</small></td><td style={{ padding: '13px 18px' }}>{canManage ? <div style={{ display: 'flex', gap: 6 }}><button type="button" onClick={() => openEdit(item)} style={{ border: '1px solid #d7c4ba', background: '#fff', borderRadius: 8, padding: '6px 8px', fontWeight: 800, fontSize: 11 }}>Edit</button><button type="button" onClick={() => { setActionForm({ quantity: '', reason: '' }); setStockAction({ mode: 'receive', item }) }} style={{ border: '1px solid #d7c4ba', background: '#fff', borderRadius: 8, padding: '6px 8px', fontWeight: 800, fontSize: 11 }}>Receive</button><button type="button" onClick={() => { setActionForm({ quantity: String(stockNumber(item)), reason: '' }); setStockAction({ mode: 'count', item }) }} style={{ border: 0, background: '#3d2b34', color: '#fff', borderRadius: 8, padding: '6px 8px', fontWeight: 800, fontSize: 11 }}><ClipboardCheck size={12} style={{ display: 'inline', marginRight: 4 }}/>Count</button></div> : '—'}</td></tr>
+        })}{!filtered.length && <tr><td colSpan="7" style={{ padding: 44, textAlign: 'center', color: '#806f76' }}>{items.length ? (outletScoped && !outletId ? 'No assigned outlet is available for this operator.' : 'No stock items match this outlet or search.') : 'No stock items yet. Add the first bottle, keg, snack or prepared portion.'}</td></tr>}</tbody></table></div>}
       </section>
 
       {showCreate && <div className="hpos-modal-backdrop" role="presentation"><section className="hpos-service-dialog" role="dialog" aria-modal="true" aria-labelledby="bar-stock-create-title"><button className="hpos-service-dialog__close" type="button" onClick={() => { setShowCreate(false); setEditingItem(null) }} disabled={saving} aria-label="Close"><X size={18}/></button><p className="hpos-eyebrow">Base bar stock</p><h2 id="bar-stock-create-title">{editingItem ? 'Edit stock item' : 'Add a counted stock item'}</h2><p>{editingItem ? 'Update the name, category, counted unit, reorder point or cost basis. Use Receive or Count to change on-hand stock.' : 'Use one record for the exact unit you count, such as a 330ml bottle, one keg, one snack packet, or one prepared food portion.'}</p><div className="hpos-service-form hpos-service-form--two"><label className="is-wide">Item name<input autoFocus value={newItem.name} onChange={(e) => setNewItem({ ...newItem, name: e.target.value })} placeholder="Heineken 330ml"/></label><label>Category<input value={newItem.category} onChange={(e) => setNewItem({ ...newItem, category: e.target.value })}/></label><label>Counted unit<select value={newItem.unit} onChange={(e) => setNewItem({ ...newItem, unit: e.target.value })}><option value="bottle">Bottle</option><option value="can">Can</option><option value="keg">Keg</option><option value="packet">Packet</option><option value="portion">Prepared portion</option><option value="each">Each</option></select></label>{!editingItem && <label>Opening quantity<input type="number" min="0" step="0.01" value={newItem.opening_stock} onChange={(e) => setNewItem({ ...newItem, opening_stock: e.target.value })}/></label>}<label>Low-stock level<input type="number" min="0" step="0.01" value={newItem.reorder_level} onChange={(e) => setNewItem({ ...newItem, reorder_level: e.target.value })}/></label><label>Unit cost ({currency})<input type="number" min="0" step="0.01" value={newItem.unit_cost} onChange={(e) => setNewItem({ ...newItem, unit_cost: e.target.value })}/></label></div><footer><button type="button" onClick={() => { setShowCreate(false); setEditingItem(null) }} disabled={saving}>Cancel</button><button type="button" className="hpos-primary-action" onClick={saveItem} disabled={saving}>{saving ? 'Saving…' : editingItem ? 'Save changes' : 'Add stock item'}</button></footer></section></div>}

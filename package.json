@@ -35,7 +35,7 @@
     "audit:brand": "node .\\scripts\\audit-brand-migration.mjs",
     "audit:brand:strict": "node .\\scripts\\audit-brand-migration.mjs --strict",
     "test:pos-hardware-adapter": "node .\\tests\\pos-hardware-adapter.test.mjs",
-    "test:bar": "node --test tests/bar-base-product.test.mjs tests/bar-mode-curation.test.mjs tests/bar-addon-bundles.test.mjs tests/bar-cashup-blind.test.mjs tests/bar-stock-aging.test.mjs tests/bar-payment-references.test.mjs",
+    "test:bar": "node --test tests/bar-base-product.test.mjs tests/bar-mode-curation.test.mjs tests/bar-addon-bundles.test.mjs tests/bar-cashup-blind.test.mjs tests/bar-cashup-idempotency.test.mjs tests/bar-stock-aging.test.mjs tests/bar-stock-cost-safety.test.mjs tests/bar-payment-references.test.mjs",
     "build:hospitality-pos": "node ./scripts/product-app.mjs hospitality-pos build",
     "test:pos-rush": "node .\\tests\\pos-rush-simulation.test.mjs",
     "products:list": "node .\\scripts\\list-products.mjs",

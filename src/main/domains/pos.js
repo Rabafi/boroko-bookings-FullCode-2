@@ -140,6 +140,23 @@ function normalizePaymentBreakdown(payments = [], fallbackMethod = 'cash', total
   return normalized;
 }
 
+function validateProviderPaymentReferences(paymentBreakdown = [], fallbackMethod = 'cash') {
+  const rows = Array.isArray(paymentBreakdown) && paymentBreakdown.length > 0
+    ? paymentBreakdown
+    : [{ method: fallbackMethod, amount: 0, reference: null }];
+  const missing = rows.filter((row) => {
+    const method = String(row?.method || fallbackMethod || 'cash').trim().toLowerCase();
+    if (!['card', 'mobile_money'].includes(method)) return false;
+    const reference = String(row?.reference || '').trim();
+    return !reference || reference.length > 120;
+  });
+  if (missing.length > 0) {
+    const labels = [...new Set(missing.map((row) => String(row?.method || fallbackMethod || 'cash').trim().toLowerCase() === 'mobile_money' ? 'mobile money' : 'card'))];
+    throw new Error(`Enter the ${labels.join(' and ')} transaction or approval reference before recording payment.`);
+  }
+  return paymentBreakdown;
+}
+
 function getOrderPaymentRows(order = {}) {
   const breakdown = parseJsonField(order.payment_breakdown, null);
   if (Array.isArray(breakdown) && breakdown.length > 0) return normalizePaymentBreakdown(breakdown, order.payment_method || 'cash', order.total || 0);
@@ -755,6 +772,7 @@ export async function createPosOrder(data) {
     const total = totals.total;
     const paymentBreakdown = normalizePaymentBreakdown(data.payment_breakdown || data.payments, data.payment_method || 'cash', total);
     const paymentMethod = data.payment_method || (paymentBreakdown.length > 1 ? 'split' : paymentBreakdown[0]?.method || 'cash');
+    validateProviderPaymentReferences(paymentBreakdown, paymentMethod);
     const callerOrderId = String(data?.id || '').trim();
     const callerSubmitIntentId = String(data?.submit_intent_id || '').trim();
     const submitIntentId = callerSubmitIntentId || randomUUID();
