@@ -210,7 +210,7 @@ export default function Reports() {
   const [outlets, setOutlets]           = useState([])
   const [selectedOutlet, setSelectedOutlet] = useState('all')
   const reportTitle = REPORT_TITLES[activeTab] || 'Report'
-  const companyDisplayName = settings?.lodge_name || settings?.company_name || 'Boroko Lodge'
+  const companyDisplayName = settings?.lodge_name || settings?.company_name || 'Tsa Bonno LodgingOS'
   const companyLegalName = settings?.company_name && settings?.company_name !== companyDisplayName ? settings.company_name : ''
   const selectedOutletLabel = useMemo(() => {
     if (selectedOutlet === 'all') return 'All Outlets'
@@ -504,7 +504,7 @@ export default function Reports() {
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `boroko-${activeTab}-report-${start}-to-${end}-${csvStamp}.csv`
+    a.download = `tsa-bonno-${activeTab}-report-${start}-to-${end}-${csvStamp}.csv`
     a.click()
     URL.revokeObjectURL(url)
     setExportSuccess(`CSV export started for ${activeTab} report (${exportPeriod}). Your download should begin shortly.`)

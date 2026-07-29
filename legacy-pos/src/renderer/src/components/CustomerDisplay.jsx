@@ -39,7 +39,7 @@ export default function CustomerDisplay() {
         <header className="flex shrink-0 items-center justify-between border-b border-white/10 bg-slate-900 px-8 py-5">
           <div>
             <p className="text-sm font-bold uppercase tracking-[0.22em] text-emerald-300">
-              {display?.lodge_name || 'Boroko POS'}
+              {display?.lodge_name || 'Tsa Bonno POS Legacy'}
             </p>
             <h1 className="mt-1 text-4xl font-bold">
               {hasOrder ? (display?.table_name ? `Table ${display.table_name}` : 'Current order') : 'Welcome'}

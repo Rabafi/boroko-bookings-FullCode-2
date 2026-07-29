@@ -1,62 +1,105 @@
 import { state } from '../state.js';
 import { dedupePromise } from './infrastructure.js';
 
-async function callReportRpc(rpcName, params) {
-  if (!state.isOnline) return { data: null, error: 'Online connection required for advanced reports' };
+/**
+ * Advanced hotel reports are online-only RPC reads.
+ * Parameter names match the live (post lint-repair) signatures: p_from / p_to.
+ * Values are never invented client-side — empty/error responses surface as-is.
+ */
+async function callReportRpc(rpcName, params = {}) {
+  if (!state.isOnline) {
+    return {
+      data: null,
+      error: 'Online connection required for advanced reports',
+      source: 'unavailable',
+      authority: 'none'
+    };
+  }
+  if (!state.supabase || !state.lodgeId) {
+    return {
+      data: null,
+      error: 'Lodge session required for advanced reports',
+      source: 'unavailable',
+      authority: 'none'
+    };
+  }
   try {
     const { data, error } = await state.supabase.rpc(rpcName, {
       p_lodge_id: state.lodgeId,
       ...params
     });
     if (error) throw error;
-    return { data, error: null };
+    if (data?.success === false) {
+      return {
+        data: null,
+        error: data.error || `${rpcName} failed`,
+        source: 'server_rpc',
+        authority: 'none'
+      };
+    }
+    return {
+      data,
+      error: null,
+      source: 'server_rpc',
+      authority: 'ledger_derived'
+    };
   } catch (err) {
-    return { data: null, error: err?.message || `${rpcName} failed` };
+    return {
+      data: null,
+      error: err?.message || `${rpcName} failed`,
+      source: 'server_rpc',
+      authority: 'none'
+    };
   }
 }
 
+function dateRangeParams(startDate, endDate) {
+  return { p_from: startDate, p_to: endDate };
+}
+
 function _getOccupancy(startDate, endDate) {
-  return callReportRpc('get_occupancy_report', { p_start_date: startDate, p_end_date: endDate });
+  return callReportRpc('get_occupancy_report', dateRangeParams(startDate, endDate));
 }
 
 function _getPace(startDate, endDate) {
-  return callReportRpc('get_pace_report', { p_start_date: startDate, p_end_date: endDate });
+  return callReportRpc('get_pace_report', dateRangeParams(startDate, endDate));
 }
 
 function _getPickup(startDate, endDate) {
-  return callReportRpc('get_pickup_report', { p_start_date: startDate, p_end_date: endDate });
+  return callReportRpc('get_pickup_report', dateRangeParams(startDate, endDate));
 }
 
 function _getChannelSource(startDate, endDate) {
-  return callReportRpc('get_channel_source_report', { p_start_date: startDate, p_end_date: endDate });
+  return callReportRpc('get_channel_source_report', dateRangeParams(startDate, endDate));
 }
 
 function _getDebtorAging() {
-  return callReportRpc('get_debtor_aging_detail', {});
+  // Optional second arg for corporate filter; null = all accounts
+  return callReportRpc('get_debtor_aging_detail', { p_corporate_account_id: null });
 }
 
 function _getRatePerformance(startDate, endDate) {
-  return callReportRpc('get_rate_performance_report', { p_start_date: startDate, p_end_date: endDate });
+  return callReportRpc('get_rate_performance_report', dateRangeParams(startDate, endDate));
 }
 
 function _getHousekeepingProductivity(startDate, endDate) {
-  return callReportRpc('get_housekeeping_productivity', { p_start_date: startDate, p_end_date: endDate });
+  return callReportRpc('get_housekeeping_productivity', dateRangeParams(startDate, endDate));
 }
 
 function _getRoomDowntime(startDate, endDate) {
-  return callReportRpc('get_room_downtime_report', { p_start_date: startDate, p_end_date: endDate });
+  return callReportRpc('get_room_downtime_report', dateRangeParams(startDate, endDate));
 }
 
 function _getGroupPickup(startDate, endDate) {
-  return callReportRpc('get_group_pickup_report', { p_start_date: startDate, p_end_date: endDate });
+  return callReportRpc('get_group_pickup_report', dateRangeParams(startDate, endDate));
 }
 
 function _getCancellationNoShow(startDate, endDate) {
-  return callReportRpc('get_cancellation_no_show_report', { p_start_date: startDate, p_end_date: endDate });
+  return callReportRpc('get_cancellation_no_show_report', dateRangeParams(startDate, endDate));
 }
 
 function _getTaxVat(startDate, endDate) {
-  return callReportRpc('get_tax_vat_report', { p_start_date: startDate, p_end_date: endDate });
+  return callReportRpc('get_tax_vat_report', dateRangeParams(startDate, endDate));
 }
 
 function _getDepositLiability() {

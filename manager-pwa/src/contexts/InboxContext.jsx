@@ -105,7 +105,7 @@ export function InboxProvider({ children }) {
     if (!user?.lodge_id) return undefined
     const interval = window.setInterval(() => {
       if (document.visibilityState !== 'hidden') load()
-    }, 30_000)
+    }, 60_000)
     const handleVisible = () => {
       if (document.visibilityState === 'visible') load({ forceFresh: true })
     }

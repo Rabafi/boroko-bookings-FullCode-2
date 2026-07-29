@@ -1,4 +1,4 @@
-# Boroko Bookings Architecture
+# Tsa Bonno HospitalityOS Architecture
 
 Last reviewed: 2026-07-03
 
@@ -32,6 +32,10 @@ UI intent
   -> authoritative result
   -> cache/UI reconciliation
 ```
+
+### Guardrail standard
+
+Every operator-facing workflow must be designed with its failure and recovery paths, not only its happy path. Apply the relevant guardrails: capability and tenant/outlet checks, valid state transitions, server-side input validation, idempotency or duplicate protection, atomic mutation where truth changes, audit/ledger evidence, clear in-product status/error guidance, and focused regression coverage. For financial, inventory, availability, and irreversible actions, these controls are mandatory and must fail closed. A disabled or hidden UI button is helpful guidance, never the authorization boundary.
 
 On an eligible offline path, the RPC name, payload, stable key, and dependencies are stored and replayed. Offline estimates are visibly pending and are not authoritative balances. Desktop queue writes are accompanied by a local operation journal so long-outage work can be audited and exported without changing the final replay authority.
 

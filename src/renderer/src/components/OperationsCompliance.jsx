@@ -22,24 +22,59 @@ export default function OperationsCompliance() {
   const [evacuationList, setEvacuationList] = useState([])
   const [shiftHandovers, setShiftHandovers] = useState([])
 
+  const [warnings, setWarnings] = useState([])
+
   const loadData = useCallback(async () => {
     setLoading(true)
     setError(null)
+    setWarnings([])
     try {
+      const labels = ['Linen', 'Lost & Found', 'Incidents', 'Visitors', 'Emergency list', 'Shift handover']
       const results = await Promise.allSettled([
-        window.api.operationsCompliance.getLinenDashboard().catch(() => null),
-        window.api.operationsCompliance.getLostFoundDashboard().catch(() => null),
-        window.api.operationsCompliance.getIncidentDashboard().catch(() => null),
-        window.api.operationsCompliance.getVisitorDashboard().catch(() => null),
-        window.api.operationsCompliance.getEvacuationList().catch(() => []),
-        window.api.operationsCompliance.getShiftHandoverHistory().catch(() => [])
+        window.api.operationsCompliance.getLinenDashboard(),
+        window.api.operationsCompliance.getLostFoundDashboard(),
+        window.api.operationsCompliance.getIncidentDashboard(),
+        window.api.operationsCompliance.getVisitorDashboard(),
+        window.api.operationsCompliance.getEvacuationList(),
+        window.api.operationsCompliance.getShiftHandoverHistory()
       ])
-      if (results[0].status === 'fulfilled') setLinenDashboard(results[0].value)
-      if (results[1].status === 'fulfilled') setLostFoundDashboard(results[1].value)
-      if (results[2].status === 'fulfilled') setIncidentDashboard(results[2].value)
-      if (results[3].status === 'fulfilled') setVisitorDashboard(results[3].value)
-      if (results[4].status === 'fulfilled') setEvacuationList(Array.isArray(results[4].value) ? results[4].value : [])
-      if (results[5].status === 'fulfilled') setShiftHandovers(Array.isArray(results[5].value) ? results[5].value : [])
+      const partial = []
+      const apply = (idx, setter, isList = false) => {
+        const r = results[idx]
+        if (r.status === 'fulfilled') {
+          const value = r.value
+          if (value?.warning || value?.stale) partial.push(`${labels[idx]}: ${value.warning || 'cached'}`)
+          if (isList) {
+            if (Array.isArray(value)) setter(value)
+            else if (value?.cached) {
+              setter(value.cached)
+              partial.push(`${labels[idx]}: showing cached data`)
+            } else setter([])
+          } else {
+            setter(value)
+          }
+        } else {
+          const reason = r.reason
+          if (reason?.cached) {
+            setter(isList ? reason.cached : reason.cached)
+            partial.push(`${labels[idx]}: ${reason.message || 'cached'}`)
+          } else {
+            if (isList) setter([])
+            else setter(null)
+            partial.push(`${labels[idx]}: ${reason?.message || 'failed to load'}`)
+          }
+        }
+      }
+      apply(0, setLinenDashboard)
+      apply(1, setLostFoundDashboard)
+      apply(2, setIncidentDashboard)
+      apply(3, setVisitorDashboard)
+      apply(4, setEvacuationList, true)
+      apply(5, setShiftHandovers, true)
+      if (partial.length) setWarnings(partial)
+      if (partial.length === labels.length) {
+        setError('All operations compliance sections failed to load')
+      }
     } catch (err) {
       setError(err?.message || 'Failed to load operations data')
     } finally {
@@ -91,6 +126,14 @@ export default function OperationsCompliance() {
         <div className="bb-card p-4 mb-4 border-red-200 bg-red-50">
           <p className="text-xs text-red-600 font-medium">{error}</p>
           <button onClick={() => setError(null)} className="text-xs text-slate-500 mt-1 hover:underline">Dismiss</button>
+        </div>
+      )}
+      {warnings.length > 0 && !error && (
+        <div className="bb-card p-4 mb-4 border-amber-200 bg-amber-50">
+          <p className="text-xs text-amber-800 font-medium mb-1">Partial load warnings</p>
+          <ul className="text-xs text-amber-700 list-disc pl-4 space-y-0.5">
+            {warnings.map((w) => <li key={w}>{w}</li>)}
+          </ul>
         </div>
       )}
 

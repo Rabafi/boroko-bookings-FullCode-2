@@ -16,14 +16,29 @@ function scoped(prefix, lodgeId) {
 }
 
 export function normalizeSessionUser(row = {}) {
+  const productFamily = String(row.product_family || '').trim().toLowerCase() || null
+  const propertyType = String(row.property_type || '').trim().toLowerCase() || null
   return {
     id: row.id || row.user_id || row.manager_id || '',
-    name: row.name || row.user_name || 'Boroko User',
+    name: row.name || row.user_name || 'Tsa Bonno User',
     email: String(row.email || '').trim().toLowerCase(),
     role: normalizeAppRole(row.role || 'manager'),
     status: normalizeStaffStatus(row.status),
     lodge_id: String(row.lodge_id || '').trim().toLowerCase(),
     lodge_display_name: row.lodge_display_name || row.lodge_name || row.company_name || 'Your Lodge',
+    // Server-authoritative product identity — never invent from a client mode choice.
+    property_type: propertyType,
+    product_family: productFamily,
+    product_family_label: row.product_family_label || null,
+    product_id: row.product_id || null,
+    commercial_package_key: row.commercial_package_key || null,
+    package_label: row.package_label || null,
+    hospitality_mode: row.hospitality_mode || null,
+    pwa_plan: row.pwa_plan || row.plan || null,
+    effective_features:
+      row.effective_features && typeof row.effective_features === 'object' && !Array.isArray(row.effective_features)
+        ? row.effective_features
+        : null,
     capability_overrides:
       row.capability_overrides && typeof row.capability_overrides === 'object' && !Array.isArray(row.capability_overrides)
         ? row.capability_overrides

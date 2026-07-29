@@ -12,7 +12,7 @@
  *   SMTP_PORT                  – e.g. 587
  *   SMTP_USER                  – sender email address
  *   SMTP_PASS                  – sender email password / app password
- *   SMTP_FROM_NAME             – display name, e.g. "Boroko Bookings"
+ *   SMTP_FROM_NAME             – display name, e.g. "Tsa Bonno HospitalityOS"
  *   BOOKING_FUNCTION_SECRET    – optional server-to-server override secret
  */
 
@@ -24,7 +24,7 @@ const SMTP_HOST    = Deno.env.get('SMTP_HOST') || ''
 const SMTP_PORT    = parseInt(Deno.env.get('SMTP_PORT') || '587')
 const SMTP_USER    = Deno.env.get('SMTP_USER') || ''
 const SMTP_PASS    = Deno.env.get('SMTP_PASS') || ''
-const FROM_NAME    = Deno.env.get('SMTP_FROM_NAME') || 'Boroko Bookings'
+const FROM_NAME    = Deno.env.get('SMTP_FROM_NAME') || 'Tsa Bonno HospitalityOS'
 const FUNCTION_SECRET = Deno.env.get('BOOKING_FUNCTION_SECRET') || ''
 
 const corsHeaders = {
@@ -273,7 +273,7 @@ Deno.serve(async (req) => {
       </p>
     </div>
     <div style="background:#f5f5f4;padding:16px 32px;text-align:center;">
-      <p style="font-size:11px;color:#a8a29e;margin:0;">Powered by Boroko Bookings</p>
+      <p style="font-size:11px;color:#a8a29e;margin:0;">Powered by Tsa Bonno HospitalityOS</p>
     </div>
   </div>
 </body>

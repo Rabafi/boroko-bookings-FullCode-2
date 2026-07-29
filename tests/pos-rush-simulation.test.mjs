@@ -293,7 +293,7 @@ test('pos.js updatePosMenuItem includes visual cue fields in RPC payload', () =>
 })
 
 test('pos.js _getPosMenuItems selects visual cue columns from database', () => {
-  assert.match(posDomain, /select\('id, name, category, price, is_available, barcode, inventory_item_id, depletion_qty, outlet_id, template_kind, lodge_id, created_at, updated_at, dietary_flags, prep_time_minutes, is_popular'\)/)
+  assert.match(posDomain, /select\('id, name, category, price, is_available, barcode, inventory_item_id, depletion_qty, outlet_id, template_kind, lodge_id, created_at, updated_at, dietary_flags, prep_time_minutes, is_popular, kitchen_station_id'\)/)
 })
 
 test('Full pipeline: form state -> pos.js payload -> RPC column -> POS read back', () => {

@@ -70,6 +70,9 @@ import {
 import {
   buildCommercialPricingSnapshot,
   getAdvertisedEnterpriseAddons,
+  getCommercialPackageCatalog,
+  getCommercialPackageLabel,
+  getCommercialPackagePlanNames,
   TRIAL_POLICY
 } from '../src/shared/commercialPackages.js'
 import {
@@ -232,7 +235,8 @@ test('normalizePropertyType handles various inputs', () => {
   assert.equal(normalizePropertyType('bnb'), 'bnb')
   assert.equal(normalizePropertyType('bed_and_breakfast'), 'bnb')
   assert.equal(normalizePropertyType('lodge'), 'lodge')
-  assert.equal(normalizePropertyType('camp'), 'lodge')
+  assert.equal(normalizePropertyType('camp'), 'camp')
+  assert.equal(normalizePropertyType('campsite'), 'camp')
   assert.equal(normalizePropertyType('motel'), 'motel')
   assert.equal(normalizePropertyType('hotel'), 'hotel')
   assert.equal(normalizePropertyType('resort'), 'resort')
@@ -245,7 +249,8 @@ test('normalizePropertyType handles various inputs', () => {
 test('getPropertyTypeLabel returns correct labels', () => {
   assert.equal(getPropertyTypeLabel('guest_house'), 'Guest House')
   assert.equal(getPropertyTypeLabel('bnb'), 'Bed & Breakfast')
-  assert.equal(getPropertyTypeLabel('lodge'), 'Lodge / Camp')
+  assert.equal(getPropertyTypeLabel('lodge'), 'Lodge')
+  assert.equal(getPropertyTypeLabel('camp'), 'Camp / Campsite')
   assert.equal(getPropertyTypeLabel('motel'), 'Motel')
   assert.equal(getPropertyTypeLabel('hotel'), 'Hotel')
   assert.equal(getPropertyTypeLabel('resort'), 'Resort')
@@ -524,8 +529,11 @@ test('motel + Enterprise shows hotel-relevant modules visible, addons without en
   assert.ok(visible.some(m => m.key === 'folios'), 'folios should be visible on Enterprise')
   assert.ok(visible.some(m => m.key === 'hotel_kpis'), 'hotel_kpis should be visible on Enterprise')
   assert.ok(visible.some(m => m.key === 'advanced_housekeeping'), 'advanced_housekeeping should be visible on Enterprise')
-  assert.ok(hidden.some(m => m.key === 'corporate_accounts'), 'corporate_accounts should be hidden (addon without entitlement)')
-  assert.ok(hidden.some(m => m.key === 'rate_plans'), 'rate_plans should be hidden (addon without entitlement)')
+  // Hotel Core includes basic rates and corporate settlement — no separate add-on entitlement required
+  assert.ok(visible.some(m => m.key === 'corporate_accounts'), 'corporate_accounts is Hotel Core')
+  assert.ok(visible.some(m => m.key === 'rate_plans'), 'rate_plans is Hotel Core')
+  assert.ok(hidden.some(m => m.key === 'channel_manager'), 'channel_manager remains premium without entitlement')
+  assert.ok(hidden.some(m => m.key === 'guest_portal'), 'guest_portal remains premium without entitlement')
 })
 
 test('hotel + Enterprise shows all hotel modules visible', () => {
@@ -647,8 +655,8 @@ test('getDesktopNavItems hotel + Enterprise returns accommodation nav plus Hotel
   assert.ok(!labels.includes('Floors & Sections'), 'Floors & Sections is now a tab under Rooms, not a separate sidebar item')
   assert.ok(labels.includes('Folios'), 'should include Folios')
   assert.ok(!labels.includes('Hotel KPIs'), 'Hotel KPIs is folded into Reports/Enterprise Reports in hotel mode')
-  assert.ok(!labels.includes('Corporate Accounts'), 'Corporate Accounts should not appear (addon without entitlement)')
-  assert.ok(!labels.includes('Rate Plans'), 'Rate Plans should not appear (addon without entitlement)')
+  assert.ok(labels.includes('Corporate Accounts'), 'Corporate Accounts is Hotel Core')
+  assert.ok(labels.includes('Rate Plans'), 'Rate Plans is Hotel Core')
 })
 
 test('getDesktopNavItems resort + Enterprise returns accommodation nav plus Hotel group', () => {
@@ -699,8 +707,11 @@ test('getDesktopNavItems hotel + Starter with realistic access shows locked Hote
   assert.ok(!lockedLabels.includes('Floors & Sections'), 'Floors & Sections is now a tab under Rooms, not a separate locked sidebar item')
   assert.ok(lockedLabels.includes('Folios'), 'Folios should be locked on Starter as an Enterprise upgrade prompt')
   assert.ok(!lockedLabels.includes('Hotel KPIs'), 'Hotel KPIs should not be a separate locked sidebar prompt')
-  assert.ok(!lockedLabels.includes('Corporate Accounts'), 'Corporate Accounts should be hidden (addon without entitlement)')
-  assert.ok(!lockedLabels.includes('Rate Plans'), 'Rate Plans should be hidden (addon without entitlement)')
+  // Hotel Core modules may appear as locked upgrade prompts on lower tiers (not paid add-ons)
+  assert.ok(lockedLabels.includes('Corporate Accounts') || !labels.includes('Corporate Accounts'),
+    'Corporate Accounts is either locked upgrade prompt or curated out on Starter')
+  assert.ok(lockedLabels.includes('Rate Plans') || !labels.includes('Rate Plans'),
+    'Rate Plans is either locked upgrade prompt or curated out on Starter')
 
   for (const item of lockedItems) {
     assert.equal(item.visibility, 'locked', `${item.label} should have locked visibility`)
@@ -734,8 +745,8 @@ test('getDesktopNavItems hotel + Enterprise with realistic access shows Hotel it
   assert.ok(!labels.includes('Floors & Sections'), 'Floors & Sections is now a tab under Rooms, not a separate sidebar item')
   assert.ok(labels.includes('Folios'), 'Folios should appear')
   assert.ok(!labels.includes('Hotel KPIs'), 'Hotel KPIs should not appear as a separate hotel sidebar item')
-  assert.ok(!labels.includes('Corporate Accounts'), 'Corporate Accounts should not appear (addon without entitlement)')
-  assert.ok(!labels.includes('Rate Plans'), 'Rate Plans should not appear (addon without entitlement)')
+  assert.ok(labels.includes('Corporate Accounts'), 'Corporate Accounts is Hotel Core')
+  assert.ok(labels.includes('Rate Plans'), 'Rate Plans is Hotel Core')
 
   const hotelItems = items.filter(i => i.group === 'Hotel')
   assert.ok(hotelItems.length >= 2, 'Hotel group should have curated hotel items')
@@ -799,10 +810,12 @@ test('getDesktopNavItems hotel + Pro: Hotel items are present and isLocked === t
   assert.equal(folios.isLocked, true, 'Folios should be locked on Pro')
 
   const corporateAccounts = findItem(items, 'Corporate Accounts')
-  assert.equal(corporateAccounts, undefined, 'Corporate Accounts should be hidden (addon without entitlement)')
+  assert.ok(corporateAccounts, 'Corporate Accounts should appear as a locked Hotel Core upgrade prompt on Pro')
+  assert.equal(corporateAccounts.isLocked, true, 'Corporate Accounts should be locked on Pro')
 
   const ratePlans = findItem(items, 'Rate Plans')
-  assert.equal(ratePlans, undefined, 'Rate Plans should be hidden (addon without entitlement)')
+  assert.ok(ratePlans, 'Rate Plans should appear as a locked Hotel Core upgrade prompt on Pro')
+  assert.equal(ratePlans.isLocked, true, 'Rate Plans should be locked on Pro')
 })
 
 test('getDesktopNavItems hotel + Enterprise: core Hotel items isLocked === false, add-ons isLocked === true', () => {
@@ -819,10 +832,17 @@ test('getDesktopNavItems hotel + Enterprise: core Hotel items isLocked === false
   assert.equal(folios.isLocked, false, 'Folios.isLocked should be false')
 
   const corporateAccounts = findItem(items, 'Corporate Accounts')
-  assert.equal(corporateAccounts, undefined, 'Corporate Accounts should be hidden (addon without entitlement)')
+  assert.ok(corporateAccounts, 'Corporate Accounts is Hotel Core')
+  assert.equal(corporateAccounts.isLocked, false, 'Corporate Accounts should be unlocked on Enterprise')
 
   const ratePlans = findItem(items, 'Rate Plans')
-  assert.equal(ratePlans, undefined, 'Rate Plans should be hidden (addon without entitlement)')
+  assert.ok(ratePlans, 'Rate Plans is Hotel Core')
+  assert.equal(ratePlans.isLocked, false, 'Rate Plans should be unlocked on Enterprise')
+
+  const channelManager = findItem(items, 'Channel Manager')
+  if (channelManager) {
+    assert.equal(channelManager.isLocked, true, 'Channel Manager remains a premium add-on until entitled')
+  }
 })
 
 test('getDesktopNavItems hotel + Enterprise: non-Hotel items are never locked', () => {
@@ -1297,9 +1317,9 @@ test('Rooms.jsx room type dropdown sets both room_type and room_type_id', () => 
   assert.ok(roomsJsxSource.includes('room_type_id: selectedType ? selectedType.id : null'), 'dropdown onChange must set room_type_id from selected dbRoomType')
 })
 
-test('Rooms.jsx falls back to hardcoded ROOM_TYPES when no db room types', () => {
+test('Rooms.jsx falls back to shared room and campsite types when no db room types', () => {
   assert.ok(roomsJsxSource.includes('dbRoomTypes.length > 0'), 'should check dbRoomTypes before using hardcoded ROOM_TYPES')
-  assert.ok(roomsJsxSource.includes("const ROOM_TYPES = ['Single', 'Double', 'Twin', 'Suite', 'Family', 'Deluxe']"), 'hardcoded fallback ROOM_TYPES must exist')
+  assert.ok(roomsJsxSource.includes("const ROOM_TYPES = ['Single', 'Double', 'Twin', 'Suite', 'Family', 'Deluxe', 'Campsite', 'Powered site', 'Unpowered site', 'Cabin', 'Chalet']"), 'shared fallback accommodation types must exist')
 })
 
 test('linkage migration validates room_type_id belongs to same lodge', () => {
@@ -1552,8 +1572,11 @@ test('Enterprise add-on catalog covers every add-on module key', () => {
 })
 
 test('Enterprise add-on catalog distinguishes requestable and planned add-ons', () => {
-  assert.equal(getEnterpriseAddonByKey('rate_plans').status, ENTERPRISE_ADDON_STATUS.requestable)
-  assert.equal(getEnterpriseAddonByKey('corporate_accounts').status, ENTERPRISE_ADDON_STATUS.requestable)
+  // Basic rates/corporate are Hotel Core (catalog retained for legacy keys, not sold)
+  assert.equal(getEnterpriseAddonByKey('rate_plans').status, ENTERPRISE_ADDON_STATUS.active)
+  assert.equal(getEnterpriseAddonByKey('rate_plans').advertise, false)
+  assert.equal(getEnterpriseAddonByKey('corporate_accounts').status, ENTERPRISE_ADDON_STATUS.active)
+  assert.equal(getEnterpriseAddonByKey('corporate_accounts').advertise, false)
   assert.equal(getEnterpriseAddonByKey('payment_gateway').status, ENTERPRISE_ADDON_STATUS.requestable)
   assert.equal(getEnterpriseAddonByKey('channel_manager').status, ENTERPRISE_ADDON_STATUS.planned)
   assert.equal(getEnterpriseAddonByKey('custom_website').status, ENTERPRISE_ADDON_STATUS.planned)
@@ -1563,25 +1586,26 @@ test('Enterprise add-on catalog distinguishes requestable and planned add-ons', 
 
 test('Enterprise add-on helper filters by property type and enabled state', () => {
   const hotelAddons = getEligibleEnterpriseAddons('hotel')
-  assert.ok(hotelAddons.some((addon) => addon.key === 'rate_plans'))
-  assert.ok(hotelAddons.some((addon) => addon.key === 'corporate_accounts'))
+  assert.ok(hotelAddons.some((addon) => addon.key === 'payment_gateway'))
+  assert.ok(hotelAddons.some((addon) => addon.key === 'guest_portal'))
 
   const bnbAddons = getEligibleEnterpriseAddons('bnb')
   assert.ok(bnbAddons.some((addon) => addon.key === 'custom_website'))
-  assert.ok(!bnbAddons.some((addon) => addon.key === 'rate_plans'))
+  assert.ok(!bnbAddons.some((addon) => addon.key === 'advanced_rates'))
 
-  const requestable = getRequestableEnterpriseAddons('hotel', ['rate_plans'])
-  assert.equal(requestable.find((addon) => addon.key === 'rate_plans')?.enabled, true)
-  assert.equal(requestable.find((addon) => addon.key === 'corporate_accounts')?.enabled, false)
-  assert.equal(isEnterpriseAddonEnabled('rate_plans', ['rate_plans']), true)
-  assert.equal(isEnterpriseAddonEnabled('rate_plans', []), false)
+  const requestable = getRequestableEnterpriseAddons('hotel', ['payment_gateway'])
+  assert.equal(requestable.find((addon) => addon.key === 'payment_gateway')?.enabled, true)
+  assert.equal(requestable.find((addon) => addon.key === 'guest_portal')?.enabled, false)
+  assert.equal(requestable.some((addon) => addon.key === 'rate_plans'), false, 'rate_plans must not be sold as requestable add-on')
+  assert.equal(isEnterpriseAddonEnabled('payment_gateway', ['payment_gateway']), true)
+  assert.equal(isEnterpriseAddonEnabled('payment_gateway', []), false)
 })
 
 test('commercial package catalog prices Starter/Standard/Pro and excludes weak public add-ons', () => {
   const starterQuote = buildCommercialPricingSnapshot({ plan: 'Starter', trialAlreadyUsed: false })
   const standardQuote = buildCommercialPricingSnapshot({ plan: 'Standard', trialAlreadyUsed: true })
   const proQuote = buildCommercialPricingSnapshot({ plan: 'Pro', trialAlreadyUsed: false })
-  const enterpriseQuote = buildCommercialPricingSnapshot({ plan: 'Enterprise', addons: ['rate_plans'] })
+  const enterpriseQuote = buildCommercialPricingSnapshot({ plan: 'Enterprise', addons: ['payment_gateway'] })
 
   assert.equal(starterQuote.annual_subtotal, 8999)
   assert.equal(starterQuote.total_due_now, 0)
@@ -1590,22 +1614,48 @@ test('commercial package catalog prices Starter/Standard/Pro and excludes weak p
   assert.equal(standardQuote.total_due_now, 12999)
   assert.equal(standardQuote.trial.eligible, false)
   assert.equal(proQuote.annual_subtotal, 18999)
-  assert.equal(enterpriseQuote.annual_subtotal, 46998)
-  assert.equal(enterpriseQuote.setup_total, 0)
+  // Enterprise base + payment gateway annual only (rate_plans no longer priced as add-on)
+  assert.equal(enterpriseQuote.annual_subtotal, 37998 + 9000)
+  assert.equal(enterpriseQuote.setup_total, 6000)
   assert.equal(TRIAL_POLICY.trialDays, 30)
 
   const advertisedKeys = getAdvertisedEnterpriseAddons('hotel').map((addon) => addon.key)
   assert.ok(advertisedKeys.includes('payment_gateway'))
+  assert.ok(advertisedKeys.includes('advanced_rates'))
+  assert.ok(!advertisedKeys.includes('rate_plans'), 'basic rate plans are Hotel Core, not advertised add-ons')
+  assert.ok(!advertisedKeys.includes('corporate_accounts'))
   assert.ok(!advertisedKeys.includes('channel_manager'))
   assert.ok(!advertisedKeys.includes('custom_website'))
   assert.ok(!advertisedKeys.includes('emergency_list'))
   assert.ok(!advertisedKeys.includes('visitor_register'))
 })
 
-test('Pro cannot access Enterprise add-ons and Enterprise needs explicit add-on entitlement', () => {
+test('commercial packages follow the separated product boundary', () => {
+  assert.deepEqual(getCommercialPackagePlanNames('lodge-camp'), ['Starter', 'Standard', 'Pro'])
+  assert.equal(getCommercialPackageCatalog('lodge-camp').some((entry) => entry.name === 'Enterprise'), false)
+
+  const hotelPackages = getCommercialPackageCatalog('hotel')
+  assert.deepEqual(hotelPackages.map((entry) => entry.name), ['Hotel'])
+  assert.deepEqual(hotelPackages.map((entry) => entry.internalPlan), ['Enterprise'])
+  assert.equal(getCommercialPackageLabel('Enterprise', 'hotel'), 'Hotel')
+
+  const hotelQuote = buildCommercialPricingSnapshot({
+    plan: 'Enterprise',
+    productId: 'hotel',
+    addons: ['payment_gateway']
+  })
+  assert.equal(hotelQuote.package_label, 'Hotel')
+  assert.equal(hotelQuote.annual_subtotal, null)
+  assert.equal(hotelQuote.setup_total, null)
+  assert.equal(hotelQuote.total_due_now, null)
+  assert.equal(getAdvertisedEnterpriseAddons('lodge', 'lodge-camp').length, 0)
+})
+
+test('Pro cannot access Hotel Core modules; Enterprise includes rate plans without add-on purchase', () => {
   assert.equal(resolveModuleVisibility('rate_plans', 'hotel', 'Pro', ['rate_plans']), MODULE_VISIBILITY_STATES.locked)
-  assert.equal(resolveModuleVisibility('rate_plans', 'hotel', 'Enterprise', []), MODULE_VISIBILITY_STATES.hidden)
-  assert.equal(resolveModuleVisibility('rate_plans', 'hotel', 'Enterprise', ['rate_plans']), MODULE_VISIBILITY_STATES.visible)
+  assert.equal(resolveModuleVisibility('rate_plans', 'hotel', 'Enterprise', []), MODULE_VISIBILITY_STATES.visible)
+  assert.equal(resolveModuleVisibility('channel_manager', 'hotel', 'Enterprise', []), MODULE_VISIBILITY_STATES.hidden)
+  assert.equal(resolveModuleVisibility('channel_manager', 'hotel', 'Enterprise', ['channel_manager']), MODULE_VISIBILITY_STATES.visible)
 })
 
 test('requestable add-on nav routes land on controlled Enterprise workflow screens', () => {
@@ -1634,7 +1684,7 @@ test('advertised add-ons have priced workflow coverage and no weak public add-on
   const workflowsByKey = new Set(ENTERPRISE_WORKFLOWS.flatMap((workflow) => [workflow.key, ...(workflow.addonKeys || [])]))
   const advertised = getAdvertisedEnterpriseAddons('hotel')
 
-  assert.ok(advertised.length >= 6, 'hotel website should advertise a serious add-on set')
+  assert.ok(advertised.length >= 5, 'hotel website should advertise a serious premium add-on set')
 
   for (const addon of advertised) {
     assert.equal(typeof addon.price?.annual, 'number', `${addon.key} must have annual Pula pricing`)
@@ -1643,7 +1693,7 @@ test('advertised add-ons have priced workflow coverage and no weak public add-on
 
     const hasWorkflow = workflowsByKey.has(addon.key)
       || addon.moduleKeys.some((moduleKey) => workflowsByKey.has(moduleKey))
-      || addon.moduleKeys.some((moduleKey) => ['rate_plans', 'corporate_accounts', 'advanced_housekeeping'].includes(moduleKey))
+      || addon.moduleKeys.some((moduleKey) => ['guest_portal', 'multi_property', 'advanced_rates', 'multi_outlet_pos', 'payment_gateway'].includes(moduleKey))
     assert.equal(hasWorkflow, true, `${addon.key} must have a real app workflow or mature screen`)
   }
 

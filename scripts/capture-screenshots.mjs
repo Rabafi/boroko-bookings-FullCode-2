@@ -322,7 +322,7 @@ async function captureBookingSiteScreenshots(port, slug) {
 }
 
 async function generateOgImage() {
-  const logoPath = path.resolve(repoRoot, 'marketing-site', 'assets', 'boroko-bookings-logo-light.png')
+  const logoPath = path.resolve(repoRoot, 'marketing-site', 'assets', 'tsa-bonno-hospitalityos-logo-light.png')
   const ogDir = path.resolve(repoRoot, 'marketing-site', 'assets')
   const ogPath = path.join(ogDir, 'og-image.png')
 
@@ -336,8 +336,8 @@ async function generateOgImage() {
         </linearGradient>
       </defs>
       <rect width="1200" height="630" fill="url(#bg)"/>
-      <text x="600" y="280" text-anchor="middle" font-family="system-ui, sans-serif" font-size="56" font-weight="700" fill="#ffffff">Boroko Bookings</text>
-      <text x="600" y="350" text-anchor="middle" font-family="system-ui, sans-serif" font-size="24" fill="#c8e6d9">Lodge Operations, Billing, and Online Reservations</text>
+      <text x="600" y="280" text-anchor="middle" font-family="system-ui, sans-serif" font-size="56" font-weight="700" fill="#ffffff">Tsa Bonno HospitalityOS</text>
+      <text x="600" y="350" text-anchor="middle" font-family="system-ui, sans-serif" font-size="24" fill="#c8e6d9">Lodging, Hotel, Restaurant and Bar Operations</text>
       <text x="600" y="420" text-anchor="middle" font-family="system-ui, sans-serif" font-size="18" fill="#8ab4a0">Built by Batswana for Batswana hospitality businesses</text>
     </svg>
   `
@@ -360,8 +360,8 @@ async function generateOgImage() {
     const simpleSvg = `
       <svg width="1200" height="630" xmlns="http://www.w3.org/2000/svg">
         <rect width="1200" height="630" fill="#18352b"/>
-        <text x="600" y="280" text-anchor="middle" font-family="system-ui, sans-serif" font-size="56" font-weight="700" fill="#ffffff">Boroko Bookings</text>
-        <text x="600" y="350" text-anchor="middle" font-family="system-ui, sans-serif" font-size="24" fill="#c8e6d9">Lodge Operations, Billing, and Online Reservations</text>
+        <text x="600" y="280" text-anchor="middle" font-family="system-ui, sans-serif" font-size="56" font-weight="700" fill="#ffffff">Tsa Bonno HospitalityOS</text>
+        <text x="600" y="350" text-anchor="middle" font-family="system-ui, sans-serif" font-size="24" fill="#c8e6d9">Lodging, Hotel, Restaurant and Bar Operations</text>
       </svg>
     `
     await sharp(Buffer.from(simpleSvg)).png().toFile(ogPath)

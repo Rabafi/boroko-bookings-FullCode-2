@@ -44,6 +44,7 @@ import {
 import { createLegacyMeshController } from './mesh/legacyMesh.js';
 
 const { autoUpdater } = autoUpdaterPkg;
+const LEGACY_POS_PRODUCT_ID = 'hospitality-pos';
 
 // ── Offline Inventory Reservation Helpers ────────────────────────────────────
 function readInventoryCache() { return readArrayCacheForCurrentLodge('inventory-items'); }
@@ -529,7 +530,7 @@ async function resolveCurrentUserProfile(authUser) {
     await lookupUserProfileBy('id', authId, authUser) ||
     await lookupUserProfileBy('email', email, authUser);
   if (!profile) {
-    throw new Error('Login succeeded, but this Supabase account is not linked to a Boroko staff profile.');
+    throw new Error('Login succeeded, but this Supabase account is not linked to a Tsa Bonno staff profile.');
   }
   if (profile.status && !['active', 'enabled'].includes(profile.status)) {
     throw new Error(`This staff account is ${profile.status}. Ask an administrator to reactivate it.`);
@@ -559,14 +560,14 @@ async function issueLegacyBorokoSession(profile) {
     return normalizeBorokoSession(row);
   } catch (error) {
     if (isMissingRpcError(error)) return null;
-    throw new Error(error?.message || 'Could not issue Boroko app session.');
+    throw new Error(error?.message || 'Could not issue Tsa Bonno app session.');
   }
 }
 
 function requireBorokoSession(session) {
   const normalized = normalizeBorokoSession(session);
   if (!normalized?.token) {
-    throw new Error('Login succeeded, but the database did not issue a Boroko app session for this lodge. Apply the legacy POS app-session migration, then sign in again.');
+    throw new Error('Login succeeded, but the database did not issue a Tsa Bonno app session for this lodge. Apply the legacy POS app-session migration, then sign in again.');
   }
   return normalized;
 }
@@ -1077,7 +1078,8 @@ async function publishLegacyPosDeviceHealth() {
 async function gatePosUpdateCheck() {
   if (!state.supabase || !state.isOnline) return true;
   try {
-    const { data, error } = await state.supabase.rpc('app_check_update_availability', {
+    const { data, error } = await state.supabase.rpc('app_check_product_update_availability', {
+      p_product_id: LEGACY_POS_PRODUCT_ID,
       p_current_version: app.getVersion(),
       p_device_id: getLegacyPosDeviceId()
     });
@@ -1220,7 +1222,7 @@ function setupAutoUpdater() {
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1280, height: 800, minWidth: 1024, minHeight: 600,
-    title: 'Boroko POS Legacy',
+    title: 'Tsa Bonno POS Legacy',
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.cjs'),
       contextIsolation: true, nodeIntegration: false, sandbox: false
@@ -1359,7 +1361,7 @@ function isCashOrder(order = {}) {
 function formatAuthLoginError(error) {
   const message = String(error?.message || 'Login failed.');
   if (/email not confirmed/i.test(message)) {
-    return 'This staff email is not confirmed in Supabase Auth. Reset this staff member password in Boroko Desktop or Command Central, then try again.';
+    return 'This staff email is not confirmed in Supabase Auth. Reset this staff member password in Tsa Bonno desktop or Command Central, then try again.';
   }
   return message;
 }

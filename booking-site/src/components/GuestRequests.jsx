@@ -201,16 +201,25 @@ export default function GuestRequests() {
         </form>
       )}
 
-      {error && requests.length === 0 ? (
-        <div className="rounded-2xl border border-red-200 bg-red-50 p-6 text-center">
+      {error && (
+        <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-center">
           <p className="text-sm text-red-700">{error}</p>
+          <button
+            type="button"
+            onClick={loadRequests}
+            className="mt-3 rounded-full border border-red-200 bg-white px-4 py-2 text-xs font-semibold text-red-700"
+          >
+            Retry
+          </button>
         </div>
-      ) : requests.length === 0 && !showForm ? (
+      )}
+
+      {!error && requests.length === 0 && !showForm ? (
         <div className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-8 text-center">
           <ClipboardList className="mx-auto mb-3 h-10 w-10 text-[var(--muted)]" />
           <p className="text-sm text-[var(--muted)]">No requests yet. Tap "New Request" to get started.</p>
         </div>
-      ) : (
+      ) : requests.length > 0 ? (
         <div className="space-y-3">
           {requests.map((req, i) => {
             const cfg = STATUS_CONFIG[req.status] || STATUS_CONFIG.new
@@ -246,7 +255,7 @@ export default function GuestRequests() {
             )
           })}
         </div>
-      )}
+      ) : null}
     </div>
   )
 }

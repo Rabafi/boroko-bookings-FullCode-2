@@ -102,7 +102,7 @@ async function scanAddress(address, metadata = {}) {
     if (messages.some((message) => /timestamp drift|clock/i.test(message))) {
       throw new Error(`The clock on ${address} differs too much. Correct the date and time on both computers, then try again.`);
     }
-    throw new Error(`No Boroko device responded at ${address}. Check the IP, Windows Firewall, and extender client isolation.`);
+    throw new Error(`No Tsa Bonno device responded at ${address}. Check the IP, Windows Firewall, and extender client isolation.`);
   }
 }
 

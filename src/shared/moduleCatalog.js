@@ -22,7 +22,7 @@ export const MODULE_CATALOG = [
   {
     key: 'dashboard',
     label: 'Dashboard',
-    description: 'Overview of lodge performance and key metrics',
+    description: 'Overview of property performance and key metrics',
     category: MODULE_CATEGORIES.core,
     requiredPlan: 'Starter',
     isAddon: false,
@@ -312,7 +312,8 @@ export const MODULE_CATALOG = [
     requiredPlan: 'Pro',
     isAddon: false,
     addonKey: null,
-    allowedPropertyTypes: ['lodge', 'camp', 'motel', 'hotel', 'resort'],
+    // Room amenities/consumables apply to every accommodation property type.
+    allowedPropertyTypes: ['guest_house', 'bnb', 'lodge', 'camp', 'motel', 'hotel', 'resort'],
     visibility: 'property_type_relevant',
     upsellPriority: 70,
     routes: ['/supplies'],
@@ -345,9 +346,24 @@ export const MODULE_CATALOG = [
     allowedPropertyTypes: ['motel', 'hotel', 'resort'],
     visibility: 'hotel_only',
     upsellPriority: 100,
-    routes: [],
+    routes: ['/hotel-dashboard', '/folios', '/checkin-workflow'],
     capabilities: ['hotel_mode.view'],
-    rolloutStatus: 'planned'
+    rolloutStatus: 'active'
+  },
+  {
+    key: 'checkin_workflow',
+    label: 'Check-in / Check-out Workflow',
+    description: 'Structured arrival and departure checklists with folio and room status updates',
+    category: MODULE_CATEGORIES.hotel,
+    requiredPlan: 'Enterprise',
+    isAddon: false,
+    addonKey: null,
+    allowedPropertyTypes: ['motel', 'hotel', 'resort'],
+    visibility: 'hotel_only',
+    upsellPriority: 96,
+    routes: ['/checkin-workflow'],
+    capabilities: ['checkin.manage', 'checkout.manage'],
+    rolloutStatus: 'active'
   },
   {
     key: 'room_types',
@@ -367,17 +383,17 @@ export const MODULE_CATALOG = [
   {
     key: 'room_attributes',
     label: 'Room Attributes',
-    description: 'Manage room attributes (view type, bed type, amenities, accessibility)',
-    category: 'addon',
+    description: 'Essential room attributes (view type, bed type, amenities, accessibility) for Hotel Core inventory',
+    category: MODULE_CATEGORIES.hotel,
     requiredPlan: 'Enterprise',
-    isAddon: true,
-    addonKey: 'room_attributes',
+    isAddon: false,
+    addonKey: null,
     allowedPropertyTypes: ['motel', 'hotel', 'resort', 'lodge'],
     visibility: 'hotel_only',
     upsellPriority: 68,
     routes: ['/room-attributes'],
     capabilities: ['room_attributes.view', 'room_attributes.manage'],
-    rolloutStatus: 'planned'
+    rolloutStatus: 'active'
   },
   {
     key: 'physical_inventory',
@@ -487,11 +503,11 @@ export const MODULE_CATALOG = [
   {
     key: 'corporate_accounts',
     label: 'Corporate Accounts',
-    description: 'Corporate billing and group blocks',
-    category: MODULE_CATEGORIES.enterprise,
+    description: 'Company billing profiles, settlement, invoices, and outstanding balances (Hotel Core)',
+    category: MODULE_CATEGORIES.hotel,
     requiredPlan: 'Enterprise',
-    isAddon: true,
-    addonKey: 'corporate_accounts',
+    isAddon: false,
+    addonKey: null,
     allowedPropertyTypes: ['motel', 'hotel', 'resort', 'lodge'],
     visibility: 'hotel_only',
     upsellPriority: 75,
@@ -502,11 +518,11 @@ export const MODULE_CATALOG = [
   {
     key: 'rate_plans',
     label: 'Rate Plans',
-    description: 'Seasonal rates, corporate rates, and packages',
-    category: MODULE_CATEGORIES.enterprise,
+    description: 'Basic seasonal, corporate, package, and restriction rates (Hotel Core)',
+    category: MODULE_CATEGORIES.hotel,
     requiredPlan: 'Enterprise',
-    isAddon: true,
-    addonKey: 'rate_plans',
+    isAddon: false,
+    addonKey: null,
     allowedPropertyTypes: ['motel', 'hotel', 'resort'],
     visibility: 'hotel_only',
     upsellPriority: 80,
@@ -588,7 +604,7 @@ export const MODULE_CATALOG = [
     upsellPriority: 65,
     routes: ['/revenue-manager', '/promo-codes'],
     capabilities: ['rate_plans.view', 'rate_plans.manage'],
-    rolloutStatus: 'planned'
+    rolloutStatus: 'active'
   },
   {
     key: 'rate_calendar',
@@ -618,7 +634,7 @@ export const MODULE_CATALOG = [
     upsellPriority: 67,
     routes: ['/guest-messaging'],
     capabilities: ['guest_messaging.manage', 'guest_messaging.send'],
-    rolloutStatus: 'planned'
+    rolloutStatus: 'foundation'
   },
   {
     key: 'guest_portal',
@@ -633,7 +649,7 @@ export const MODULE_CATALOG = [
     upsellPriority: 68,
     routes: ['/guest-portal'],
     capabilities: ['guest_portal.view', 'guest_portal.configure'],
-    rolloutStatus: 'planned'
+    rolloutStatus: 'foundation'
   },
   {
     key: 'guest_crm',
@@ -648,7 +664,7 @@ export const MODULE_CATALOG = [
     upsellPriority: 69,
     routes: ['/guest-crm'],
     capabilities: ['guest_crm.view', 'guest_crm.manage', 'guest_crm.vip', 'guest_crm.blacklist'],
-    rolloutStatus: 'planned'
+    rolloutStatus: 'active'
   },
   {
     key: 'advanced_reports',
@@ -663,7 +679,7 @@ export const MODULE_CATALOG = [
     upsellPriority: 68,
     routes: ['/enterprise-reports'],
     capabilities: ['advanced_reports.view', 'reports.export'],
-    rolloutStatus: 'planned'
+    rolloutStatus: 'active'
   },
   {
     key: 'multi_outlet_pos',
@@ -678,7 +694,7 @@ export const MODULE_CATALOG = [
     upsellPriority: 72,
     routes: ['/multi-outlet-pos'],
     capabilities: ['pos.view', 'outlets.view'],
-    rolloutStatus: 'planned'
+    rolloutStatus: 'active'
   },
   {
     key: 'linen_laundry',
@@ -773,32 +789,32 @@ export const MODULE_CATALOG = [
   {
     key: 'documents',
     label: 'Document System',
-    description: 'Folio, invoice, registration card, and statement templates with rendering',
-    category: MODULE_CATEGORIES.addon,
+    description: 'Operational templates for folio, invoice, registration card, and statement rendering (Hotel Core)',
+    category: MODULE_CATEGORIES.hotel,
     requiredPlan: 'Enterprise',
-    isAddon: true,
-    addonKey: 'documents',
+    isAddon: false,
+    addonKey: null,
     allowedPropertyTypes: ['motel', 'hotel', 'resort', 'lodge'],
     visibility: 'hotel_only',
     upsellPriority: 70,
     routes: ['/documents'],
     capabilities: ['documents.view', 'documents.manage', 'documents.generate'],
-    rolloutStatus: 'planned'
+    rolloutStatus: 'active'
   },
   {
     key: 'hotel_roles',
     label: 'Hotel Role Templates',
-    description: 'Predefined role templates for hotel-specific staff positions',
-    category: MODULE_CATEGORIES.addon,
+    description: 'Predefined role templates for hotel-specific staff positions (Hotel Core)',
+    category: MODULE_CATEGORIES.hotel,
     requiredPlan: 'Enterprise',
-    isAddon: true,
-    addonKey: 'hotel_roles',
+    isAddon: false,
+    addonKey: null,
     allowedPropertyTypes: ['motel', 'hotel', 'resort', 'lodge'],
     visibility: 'hotel_only',
     upsellPriority: 65,
     routes: ['/hotel-roles'],
     capabilities: ['hotel_roles.view'],
-    rolloutStatus: 'planned'
+    rolloutStatus: 'active'
   },
   {
     key: 'night_audit_enterprise',
@@ -813,7 +829,7 @@ export const MODULE_CATALOG = [
     upsellPriority: 95,
     routes: ['/night-audit-enterprise'],
     capabilities: ['night_audit.close', 'night_audit.reopen', 'night_audit.checks'],
-    rolloutStatus: 'planned'
+    rolloutStatus: 'active'
   },
   {
     key: 'checkin_workflow',
@@ -828,7 +844,7 @@ export const MODULE_CATALOG = [
     upsellPriority: 90,
     routes: ['/checkin-workflow'],
     capabilities: ['checkin.manage'],
-    rolloutStatus: 'planned'
+    rolloutStatus: 'active'
   },
   {
     key: 'early_late_checkout',
@@ -843,7 +859,7 @@ export const MODULE_CATALOG = [
     upsellPriority: 85,
     routes: ['/early-late-checkout'],
     capabilities: ['early_checkin.manage', 'late_checkout.manage'],
-    rolloutStatus: 'planned'
+    rolloutStatus: 'active'
   },
   {
     key: 'cancellation_policies',
@@ -858,7 +874,7 @@ export const MODULE_CATALOG = [
     upsellPriority: 80,
     routes: ['/cancellation-policies'],
     capabilities: ['cancellation.manage', 'cancellation.approve'],
-    rolloutStatus: 'planned'
+    rolloutStatus: 'active'
   },
   {
     key: 'advanced_booking_engine',
@@ -873,7 +889,7 @@ export const MODULE_CATALOG = [
     upsellPriority: 66,
     routes: ['/booking-engine'],
     capabilities: ['advanced_booking_engine.view', 'advanced_booking_engine.manage'],
-    rolloutStatus: 'planned'
+    rolloutStatus: 'active'
   },
   {
     key: 'maintenance_enterprise',
@@ -888,7 +904,7 @@ export const MODULE_CATALOG = [
     upsellPriority: 78,
     routes: ['/maintenance-enterprise'],
     capabilities: ['maintenance.view', 'maintenance.preventive', 'maintenance.ooo'],
-    rolloutStatus: 'planned'
+    rolloutStatus: 'active'
   },
   {
     key: 'group_operations',
@@ -903,7 +919,7 @@ export const MODULE_CATALOG = [
     upsellPriority: 77,
     routes: ['/group-operations'],
     capabilities: ['group_operations.manage'],
-    rolloutStatus: 'planned'
+    rolloutStatus: 'active'
   },
   {
     key: 'operations_compliance',
@@ -918,7 +934,67 @@ export const MODULE_CATALOG = [
     upsellPriority: 81,
     routes: ['/operations-compliance'],
     capabilities: ['operations_compliance.view', 'operations_compliance.manage'],
-    rolloutStatus: 'planned'
+    rolloutStatus: 'active'
+  },
+  {
+    key: 'workforce_management',
+    label: 'Workforce Management',
+    description: 'Staff scheduling, shift templates, attendance, task assignment, handovers, and productivity',
+    category: MODULE_CATEGORIES.addon,
+    requiredPlan: 'Enterprise',
+    isAddon: true,
+    addonKey: 'staff_operations_workforce',
+    allowedPropertyTypes: ['lodge', 'motel', 'hotel', 'resort'],
+    visibility: 'hotel_only',
+    upsellPriority: 82,
+    routes: ['/workforce'],
+    capabilities: ['workforce_scheduling.view', 'workforce_scheduling.manage'],
+    rolloutStatus: 'foundation'
+  },
+  {
+    key: 'asset_management',
+    label: 'Asset Management',
+    description: 'Property asset registry, equipment history, preventive schedules, warranty tracking, and vendor management',
+    category: MODULE_CATEGORIES.addon,
+    requiredPlan: 'Enterprise',
+    isAddon: true,
+    addonKey: 'maintenance_asset_management',
+    allowedPropertyTypes: ['lodge', 'camp', 'motel', 'hotel', 'resort'],
+    visibility: 'hotel_only',
+    upsellPriority: 83,
+    routes: ['/assets'],
+    capabilities: ['asset_registry.view', 'asset_registry.manage'],
+    rolloutStatus: 'foundation'
+  },
+  {
+    key: 'venue_management',
+    label: 'Venue Management',
+    description: 'Venue packages, event planning, run sheets, supplier coordination, deposit milestones, and settlement',
+    category: MODULE_CATEGORIES.addon,
+    requiredPlan: 'Enterprise',
+    isAddon: true,
+    addonKey: 'events_venue_management',
+    allowedPropertyTypes: ['lodge', 'motel', 'hotel', 'resort'],
+    visibility: 'hotel_only',
+    upsellPriority: 84,
+    routes: ['/venues'],
+    capabilities: ['venue_management.view', 'venue_management.manage'],
+    rolloutStatus: 'foundation'
+  },
+  {
+    key: 'restaurant_accounting',
+    label: 'Restaurant & Bar Accounting',
+    description: 'Business accounting, supplier finance, bank, tax, budgets, statements and payroll',
+    category: MODULE_CATEGORIES.finance,
+    requiredPlan: 'Pro',
+    isAddon: false,
+    addonKey: null,
+    allowedPropertyTypes: ['restaurant'],
+    visibility: 'property_type_relevant',
+    upsellPriority: 91,
+    routes: ['/restaurant/chart-of-accounts', '/restaurant/general-ledger', '/restaurant/accounts-payable', '/restaurant/bank-reconciliation', '/restaurant/tax-returns', '/restaurant/budgets', '/restaurant/balance-sheet', '/restaurant/payroll'],
+    capabilities: ['restaurant_accounting.view', 'restaurant_payroll.view'],
+    rolloutStatus: 'guarded'
   }
 ]
 

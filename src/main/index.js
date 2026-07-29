@@ -9,7 +9,23 @@ import autoUpdaterPkg from 'electron-updater'
 const { autoUpdater } = autoUpdaterPkg
 import * as db from './database.js'
 
-// Guard console output against EPIPE errors in packaged builds
+// A development terminal (or a parent process) can disappear while Electron is
+// still running. Node reports that as an asynchronous EPIPE event on stdout or
+// stderr, which a try/catch around console.log cannot intercept. Logging must
+// never terminate a POS session, mesh replay, or financial operation.
+const brokenPipeHandlerInstalled = Symbol.for('tsa-bonno.broken-pipe-handler-installed')
+for (const stream of [process.stdout, process.stderr]) {
+  if (!stream || stream[brokenPipeHandlerInstalled]) continue
+  stream[brokenPipeHandlerInstalled] = true
+  stream.on('error', (error) => {
+    // There is no safe output destination once the pipe is closed. Deliberately
+    // ignore it rather than allowing Node's unhandled stream error to crash the
+    // main process.
+    if (error?.code === 'EPIPE') return
+  })
+}
+
+// Guard synchronous console output errors as well.
 for (const method of ['warn', 'error', 'log', 'info']) {
   const original = console[method]
   console[method] = (...args) => { try { original(...args) } catch {} }
@@ -18,6 +34,7 @@ import { state } from './state.js'
 import { readCache } from './domains/cacheStore.js'
 import { createAiOrchestrator, writeAiAuditLog } from './ai/aiOrchestrator.js'
 import { buildCapabilitySnapshot, normalizeAppRole } from '../shared/accessControl.js'
+import { isCommercialFeatureIncluded } from '../shared/commercialAccess.js'
 import { normalizeDayUseReportRow } from '../shared/dayUseReporting.js'
 import {
   getEmailConfig,
@@ -26,6 +43,7 @@ import {
   sendNotificationEmail,
   sendLicenseEmail,
   sendInvoiceEmail,
+  sendPurchaseOrderEmail,
   sendBookingInvoiceEmail,
   sendQuotationEmail,
   sendBookingConfirmationEmail,
@@ -33,6 +51,7 @@ import {
   buildSupportTicketEmail,
   buildUpgradeRequestEmail
 } from './emailNotifications.js'
+import { assertCommandCentralTarget, assertMasterAdmin, createActorBoundElevationGate } from './commandCentralAuthorization.js'
 import { createLocalLock, releaseLocalLock } from './domains/mesh/meshLocks.js'
 import {
   connectManualMeshPeer,
@@ -51,10 +70,49 @@ import { getProductDefinition, getRuntimeProductId } from '../shared/productIden
 const currentDir = dirname(fileURLToPath(import.meta.url))
 const BUILD_PRODUCT_ID = getRuntimeProductId()
 const BUILD_PRODUCT = getProductDefinition(BUILD_PRODUCT_ID)
+const APP_BRAND_NAME = BUILD_PRODUCT.brandName
+const APP_WINDOW_TITLE = APP_BRAND_NAME
+const PRODUCT_TITLE_BAR_COLORS = Object.freeze({
+  'lodge-camp': '#102a22',
+  hotel: '#7a432b',
+  'hospitality-pos': '#8f3524'
+})
+const APP_TITLE_BAR_COLOR = PRODUCT_TITLE_BAR_COLORS[BUILD_PRODUCT_ID] || PRODUCT_TITLE_BAR_COLORS['lodge-camp']
+const APP_EXPORT_PREFIX = 'tsa-bonno'
 const INPUT_FOCUS_DEBUG = false
-const APP_LOGO_FILENAME = 'boroko-bookings-logo.svg'
-const APP_DARK_LOGO_FILENAME = 'boroko-bookings-logo-dark.png'
+const PRODUCT_LOGO_STEMS = Object.freeze({
+  'lodge-camp': 'tsa-bonno-lodgingos',
+  hotel: 'tsa-bonno-hotelos',
+  'hospitality-pos': 'tsa-bonno-restaurant-bar-os'
+})
+const APP_LOGO_STEM = PRODUCT_LOGO_STEMS[BUILD_PRODUCT_ID] || 'tsa-bonno-hospitalityos'
+// Electron nativeImage does not reliably decode SVG files on Windows. Use the
+// generated transparent PNG so splash/window branding cannot resolve empty.
+const APP_LOGO_FILENAME = `${APP_LOGO_STEM}-logo-color.png`
+const APP_DARK_LOGO_FILENAME = `${APP_LOGO_STEM}-logo-light.png`
 let activeSplashWindow = null
+const SHARED_TILL_OPERATOR_SESSION_MS = 10 * 60 * 1000
+const sharedTillOperatorSessions = new Map()
+
+function setSharedTillOperatorSession(webContents, staff, outletId) {
+  if (!webContents?.id || !staff?.id) return
+  sharedTillOperatorSessions.set(webContents.id, {
+    staffId: staff.id,
+    staffName: staff.name || staff.email || 'Till operator',
+    outletId: outletId || null,
+    expiresAt: Date.now() + SHARED_TILL_OPERATOR_SESSION_MS,
+  })
+}
+
+function getSharedTillOperatorSession(webContents) {
+  const session = sharedTillOperatorSessions.get(webContents?.id)
+  if (!session || session.expiresAt <= Date.now()) {
+    if (webContents?.id) sharedTillOperatorSessions.delete(webContents.id)
+    return null
+  }
+  session.expiresAt = Date.now() + SHARED_TILL_OPERATOR_SESSION_MS
+  return session
+}
 
 function readStartupJson(filePath, fallback = null) {
   try {
@@ -84,7 +142,7 @@ function getOrCreateLocalDevMeshSecret(appDataDir) {
   writeStartupJson(secretPath, {
     lodge_mesh_secret: secret,
     created_at: new Date().toISOString(),
-    note: 'Local development mesh secret shared by unpackaged Boroko desk test instances only.'
+    note: 'Local development mesh secret shared by unpackaged Tsa Bonno desk test instances only.'
   })
   return secret
 }
@@ -147,7 +205,7 @@ function seedDevDeskFromInstalledApp(installedUserDataDir, devUserDataDir) {
       filter: (sourcePath) => !skippedFiles.has(basename(sourcePath))
     })
 
-    console.log('[DevDesk] Seeded terminal desk profile from installed Boroko Bookings data.')
+    console.log('[DevDesk] Seeded terminal desk profile from installed legacy application data.')
   } catch (error) {
     console.warn('[DevDesk] Could not seed terminal desk profile:', error?.message || error)
   }
@@ -264,10 +322,10 @@ function getAppDarkLogoPath() {
 
 function createAppLogoNativeImage() {
   try {
-    const icoPath = join(process.resourcesPath, 'assets', 'boroko-bookings-icon.ico')
-    const devIcoPath = join(app.getAppPath(), 'src', 'main', 'assets', 'boroko-bookings-icon.ico')
-    const cwdIcoPath = join(process.cwd(), 'src', 'main', 'assets', 'boroko-bookings-icon.ico')
-    const moduleIcoPath = join(fileURLToPath(import.meta.url), '..', 'assets', 'boroko-bookings-icon.ico')
+    const icoPath = join(process.resourcesPath, 'assets', 'tsa-bonno-icon.ico')
+    const devIcoPath = join(app.getAppPath(), 'src', 'main', 'assets', 'tsa-bonno-icon.ico')
+    const cwdIcoPath = join(process.cwd(), 'src', 'main', 'assets', 'tsa-bonno-icon.ico')
+    const moduleIcoPath = join(fileURLToPath(import.meta.url), '..', 'assets', 'tsa-bonno-icon.ico')
 
     let logoPath = null
     if (app.isPackaged && fs.existsSync(icoPath)) {
@@ -339,7 +397,7 @@ function buildImportTemplateWorkbook({ type, fields, sample }) {
 
   const required = fields.filter((field) => field.required).map((field) => field.label).join(', ') || 'None'
   const readMeRows = [
-    ['Boroko Bookings Import Template'],
+    [`${APP_BRAND_NAME} Import Template`],
     ['Template type', type],
     ['Use this sheet', 'Import Data'],
     ['Required columns', required],
@@ -360,8 +418,8 @@ function buildImportTemplateWorkbook({ type, fields, sample }) {
 function buildSplashHtml() {
   const logoPath = getAppDarkLogoPath()
   const logoMarkup = logoPath
-    ? `<img src="data:image/png;base64,${fs.readFileSync(logoPath).toString('base64')}" alt="Boroko Bookings" />`
-    : '<div class="fallback">Boroko</div>'
+    ? `<img src="data:image/png;base64,${fs.readFileSync(logoPath).toString('base64')}" alt="${escapeHtml(APP_BRAND_NAME)}" />`
+    : `<div class="fallback">${escapeHtml(APP_BRAND_NAME)}</div>`
 
   return `<!doctype html>
   <html>
@@ -484,7 +542,7 @@ function buildSplashHtml() {
     <body>
       <div class="card">
         <div class="logo">${logoMarkup}</div>
-        <div class="title">Boroko Bookings</div>
+        <div class="title">${escapeHtml(APP_BRAND_NAME)}</div>
         <div class="subtitle">Starting up <span class="dots"><span></span><span></span><span></span></span></div>
         <div class="status" role="status" aria-live="polite">
           <div class="status-text">Checking internet connection and online database access</div>
@@ -514,7 +572,7 @@ function createStartupSplashWindow() {
     show: true,
     skipTaskbar: true,
     alwaysOnTop: false,
-    title: 'Boroko Bookings Starting',
+    title: `${APP_WINDOW_TITLE} STARTING`,
     icon: appIcon,
     webPreferences: {
       sandbox: false,
@@ -551,6 +609,20 @@ async function assertResourceBelongsToCurrentLodge(resourceLabel, resourceId, lo
   return resource
 }
 
+const MANAGER_MANAGED_STAFF_ROLES = new Set(['cashier', 'supervisor', 'receptionist', 'operations'])
+
+function assertManagerStaffScope(actor, targetUser, payload = {}) {
+  if (normalizeAppRole(actor?.role) !== 'manager' || actor?.isMasterAdmin) return
+  const currentRole = normalizeAppRole(targetUser?.role || payload?.role || 'receptionist')
+  const requestedRole = normalizeAppRole(payload?.role || currentRole)
+  if (!MANAGER_MANAGED_STAFF_ROLES.has(currentRole) || !MANAGER_MANAGED_STAFF_ROLES.has(requestedRole)) {
+    throw new Error('Managers can manage service-team accounts only. An administrator must assign finance, manager, or owner access.')
+  }
+  if (payload?.capability_overrides && JSON.stringify(payload.capability_overrides) !== JSON.stringify(targetUser?.capability_overrides || {})) {
+    throw new Error('Managers cannot set custom permission exceptions. Ask an administrator to make this access change.')
+  }
+}
+
 function slugifyFilenamePart(value, fallback = 'report') {
   return String(value || fallback)
     .normalize('NFKD')
@@ -567,9 +639,9 @@ function formatFilenameStamp(date = new Date()) {
   return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}-${String(d.getMilliseconds()).padStart(3, '0')}`
 }
 
-function buildReportExportFilename({ prefix = 'boroko', reportTitle = 'report', period = '', extension = 'pdf' } = {}) {
+function buildReportExportFilename({ prefix = APP_EXPORT_PREFIX, reportTitle = 'report', period = '', extension = 'pdf' } = {}) {
   const parts = [
-    slugifyFilenamePart(prefix, 'boroko'),
+    slugifyFilenamePart(prefix, APP_EXPORT_PREFIX),
     slugifyFilenamePart(reportTitle, 'report'),
     period ? slugifyFilenamePart(period, 'period') : null,
     formatFilenameStamp()
@@ -578,7 +650,7 @@ function buildReportExportFilename({ prefix = 'boroko', reportTitle = 'report', 
 }
 
 function buildWorkbookMetaRows({ lodgeName, companyName, periodLabel, outletLabel, generatedAt, includeOutlet = false }) {
-  const resolvedLodge = lodgeName || companyName || 'Boroko Lodge'
+  const resolvedLodge = lodgeName || companyName || APP_BRAND_NAME
   const rows = [
     ['Lodge', resolvedLodge]
   ]
@@ -728,8 +800,18 @@ function buildPrepaymentReceiptPdfHtml(receipt = {}) {
     <div class="amount"><span>Amount received</span><strong>${money(receipt.amount)}</strong><span>Remaining customer credit: ${money(receipt.balance)}</span></div>
     ${receipt.notes ? `<div class="notes"><div class="label">Notes</div><div class="value">${escapeHtml(receipt.notes)}</div></div>` : ''}
     <div class="warning">This payment is held as customer credit. It does not reserve accommodation or guarantee room availability until a booking is confirmed.</div>
-    <div class="footer">Generated by Boroko Bookings - ${escapeHtml(receipt.receiptNumber || '')}</div>
+    <div class="footer">Generated by ${escapeHtml(APP_BRAND_NAME)} - ${escapeHtml(receipt.receiptNumber || '')}</div>
   </div></body></html>`
+}
+
+function buildPurchaseOrderPdfHtml({ purchaseOrder, business = {}, currency = 'P' }) {
+  const reference = `PO-${String(purchaseOrder?.id || '').slice(-6).toUpperCase() || 'DRAFT'}`
+  const businessName = business.lodge_name || business.company_name || APP_BRAND_NAME
+  const supplier = purchaseOrder?.supplier || {}
+  const formatDate = (value) => value ? new Date(value).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '—'
+  const rows = (purchaseOrder?.items || []).map((item) => `<tr><td>${escapeHtml(item.description || 'Stock item')}</td><td class="number">${Number(item.quantity || 0).toFixed(2)}</td><td class="number">${escapeHtml(currency)} ${Number(item.unit_cost || 0).toFixed(2)}</td><td class="number">${escapeHtml(currency)} ${Number(item.total ?? (Number(item.quantity || 0) * Number(item.unit_cost || 0))).toFixed(2)}</td></tr>`).join('') || '<tr><td colspan="4">No stock lines recorded.</td></tr>'
+  const isDraft = purchaseOrder?.status === 'draft'
+  return `<!doctype html><html><head><meta charset="utf-8"><style>body{font-family:Arial,sans-serif;color:#30242a;padding:42px;font-size:12px}header{border-bottom:3px solid #d87945;padding-bottom:20px;display:flex;justify-content:space-between}h1{margin:0;font-size:25px}.muted{color:#76636b}.status{display:inline-block;border-radius:12px;padding:5px 10px;background:${isDraft ? '#fff3df' : '#eaf8f0'};font-weight:bold;text-transform:uppercase;font-size:10px}section{margin-top:25px}table{width:100%;border-collapse:collapse;margin-top:12px}th{background:#35242c;color:#fff;text-align:left;padding:10px;font-size:10px;text-transform:uppercase}td{padding:10px;border-bottom:1px solid #eadedb}.number{text-align:right}.total{margin-top:16px;margin-left:auto;width:280px;border-top:2px solid #35242c;padding-top:10px;font-weight:bold;font-size:16px;text-align:right}.footer{position:fixed;bottom:28px;color:#8b777e;font-size:10px}.draft{margin-top:18px;border:1px solid #efd09e;background:#fff3df;padding:10px;color:#794017}</style></head><body><header><div><h1>${escapeHtml(businessName)}</h1><p class="muted">Purchase order ${escapeHtml(reference)}</p></div><div style="text-align:right"><span class="status">${escapeHtml(purchaseOrder?.status || 'draft')}</span><p class="muted">Issued ${escapeHtml(formatDate(purchaseOrder?.created_at || purchaseOrder?.order_date))}</p></div></header>${isDraft ? '<p class="draft">Draft only — do not treat this as an approved supplier order.</p>' : ''}<section><strong>Supplier</strong><p>${escapeHtml(supplier.name || 'Supplier not recorded')}<br>${escapeHtml(supplier.contact_person || '')}${supplier.email ? `<br>${escapeHtml(supplier.email)}` : ''}${supplier.phone ? `<br>${escapeHtml(supplier.phone)}` : ''}</p></section><section><strong>Order lines</strong><table><thead><tr><th>Description</th><th class="number">Quantity</th><th class="number">Unit cost</th><th class="number">Line total</th></tr></thead><tbody>${rows}</tbody></table><div class="total">Total: ${escapeHtml(currency)} ${Number(purchaseOrder?.total || 0).toFixed(2)}</div></section>${purchaseOrder?.expected_delivery ? `<section><strong>Expected delivery</strong><p>${escapeHtml(formatDate(purchaseOrder.expected_delivery))}</p></section>` : ''}${purchaseOrder?.notes ? `<section><strong>Notes</strong><p>${escapeHtml(purchaseOrder.notes)}</p></section>` : ''}<p class="footer">Generated by ${escapeHtml(APP_BRAND_NAME)} · ${escapeHtml(reference)}</p></body></html>`
 }
 
 function buildSubscriptionRequestDocumentPdfHtml(documentPayload = {}) {
@@ -767,7 +849,7 @@ function buildSubscriptionRequestDocumentPdfHtml(documentPayload = {}) {
   </style></head><body><div class="page">
     <div class="header">
       <div>
-        <h1>Boroko Bookings</h1>
+        <h1>${escapeHtml(APP_BRAND_NAME)}</h1>
         <p class="muted">Hospitality operating system package request</p>
       </div>
       <div class="docno">
@@ -800,9 +882,9 @@ function buildSubscriptionRequestDocumentPdfHtml(documentPayload = {}) {
       </tbody>
     </table>
     <div class="total"><span>Total due now</span><strong>${money(totals.total_due_now)}</strong></div>
-    <div class="warning">${escapeHtml(documentPayload.notes || 'Final pricing must be confirmed by Boroko before payment activation.')}</div>
+    <div class="warning">${escapeHtml(documentPayload.notes || 'Final pricing must be confirmed by Tsa Bonno before payment activation.')}</div>
     ${documentPayload.payment_instructions ? `<div class="box" style="margin-top:18px"><div class="label">Payment instructions</div><p>${escapeHtml(documentPayload.payment_instructions)}</p></div>` : ''}
-    <div class="footer">Generated by Boroko Bookings Command Central - ${escapeHtml(documentPayload.document_number || '')}</div>
+    <div class="footer">Generated by ${escapeHtml(APP_BRAND_NAME)} Command Central - ${escapeHtml(documentPayload.document_number || '')}</div>
   </div></body></html>`
 }
 
@@ -1463,7 +1545,7 @@ function buildDetailedReportPdfHtml({ lodgeName, companyName, reportType, startD
   bodyContent += `
     <div style="margin-top:32px;padding-top:12px;border-top:2px solid #e2e8f0;font-size:10px;color:#888">
       <p style="margin:0"><strong>Reconciliation:</strong> ${escapeHtml(reconciliation.reconciliationStatus)} | Ledger variance: ${money(reconciliation.ledgerVariance)}</p>
-      <p style="margin:4px 0 0">Server as-of: ${escapeHtml(reconciliation.asOf)} | Generated by: Boroko Bookings Desktop v${escapeHtml('2.0')}</p>
+      <p style="margin:4px 0 0">Server as-of: ${escapeHtml(reconciliation.asOf)} | Generated by: ${escapeHtml(APP_BRAND_NAME)} Desktop v${escapeHtml('2.0')}</p>
       <p style="margin:4px 0 0;font-style:italic">Confidential - For internal use only. This report is server-authoritative.</p>
     </div>`
 
@@ -1566,7 +1648,7 @@ function buildPosHistoryPdfHtml({
   orders = [],
   voidHistory = []
 } = {}) {
-  const resolvedLodge = lodgeName || companyName || 'Boroko Lodge'
+  const resolvedLodge = lodgeName || companyName || APP_BRAND_NAME
   const summary = getPosHistorySummary(orders)
   const fmt = (value) => formatReportMoney(currency, value)
   const orderRows = orders.length
@@ -1688,7 +1770,7 @@ function buildRoomSuppliesPdfHtml({
   byItem = []
 } = {}) {
   const resolvedTitle = reportTitle || 'Room Supplies Report'
-  const resolvedLodge = lodgeName || companyName || 'Boroko Lodge'
+  const resolvedLodge = lodgeName || companyName || APP_BRAND_NAME
   const resolvedCompany = companyName && companyName !== resolvedLodge ? companyName : ''
   const rows = Array.isArray(allocations) ? allocations : []
   const roomRows = Array.isArray(byRoom) ? byRoom : []
@@ -1948,8 +2030,8 @@ function notifyLodge(lodgeId, title, body, options = {}) {
   }).catch(() => {})
 }
 
-function showDesktopNotification({ title = 'Boroko Bookings', body = '', sound = true, flash = true } = {}) {
-  const safeTitle = String(title || 'Boroko Bookings')
+function showDesktopNotification({ title = APP_BRAND_NAME, body = '', sound = true, flash = true } = {}) {
+  const safeTitle = String(title || APP_BRAND_NAME)
   const safeBody = String(body || '')
 
   try {
@@ -2142,10 +2224,19 @@ function createWindow() {
     height: 800,
     minWidth: 900,
     minHeight: 600,
-    maximized: true,
     show: false,
     autoHideMenuBar: true,
-    title: 'Boroko Bookings',
+    title: APP_WINDOW_TITLE,
+    ...(process.platform === 'win32'
+      ? {
+          titleBarStyle: 'hidden',
+          titleBarOverlay: {
+            color: APP_TITLE_BAR_COLOR,
+            symbolColor: '#ffffff',
+            height: 36
+          }
+        }
+      : {}),
     icon: appIcon,
     webPreferences: {
       preload: join(currentDir, '../preload/index.mjs'),
@@ -2192,6 +2283,7 @@ function createWindow() {
   }
 
   const startAiWatcher = () => {
+    if (BUILD_PRODUCT_ID === 'hospitality-pos') return
     if (aiWatcherTimer) return
     aiWatcherTimer = setInterval(async () => {
       try {
@@ -2254,7 +2346,6 @@ function createWindow() {
     didShowWindow = true
     if (INPUT_FOCUS_DEBUG) console.log('[WINDOW] show requested:', reason)
     mainWindow.show()
-    if (!mainWindow.isMaximized()) mainWindow.maximize()
     mainWindow.focus()
     mainWindow.webContents.focus()
     closeSplashWindow()
@@ -2600,7 +2691,7 @@ function openPosDisplayWindow(kind = 'customer', options = {}) {
     minHeight: 560,
     autoHideMenuBar: true,
     fullscreen: openFullScreen,
-    title: `Boroko Bookings - ${POS_DISPLAY_TITLES[displayKind]}`,
+    title: `${APP_BRAND_NAME} - ${POS_DISPLAY_TITLES[displayKind]}`,
     icon: appIcon,
     webPreferences: {
       preload: join(currentDir, '../preload/index.mjs'),
@@ -3345,7 +3436,7 @@ async function runManagedBackupPolicy(force = false) {
   }
 
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
-  const excelPath = join(policy.target_dir, `boroko-full-${stamp}.xlsx`)
+  const excelPath = join(policy.target_dir, `${APP_EXPORT_PREFIX}-full-${stamp}.xlsx`)
 
   try {
     fs.mkdirSync(policy.target_dir, { recursive: true })
@@ -3364,8 +3455,19 @@ app.whenReady().then(async () => {
   ipcMain.handle('app:getProduct', () => ({
     id: BUILD_PRODUCT.id,
     name: BUILD_PRODUCT.name,
+    brandName: BUILD_PRODUCT.brandName,
+    shortName: BUILD_PRODUCT.shortName,
+    businessNoun: BUILD_PRODUCT.businessNoun,
+    businessNounTitle: BUILD_PRODUCT.businessNounTitle,
+    businessNounPlural: BUILD_PRODUCT.businessNounPlural,
+    tagline: BUILD_PRODUCT.tagline,
+    loginTagline: BUILD_PRODUCT.loginTagline,
     allowedPropertyTypes: BUILD_PRODUCT.allowedPropertyTypes,
-    hospitalityModes: BUILD_PRODUCT.hospitalityModes
+    hospitalityModes: BUILD_PRODUCT.hospitalityModes,
+    allowedRoutePrefixes: BUILD_PRODUCT.allowedRoutePrefixes,
+    defaultHome: BUILD_PRODUCT.defaultHome,
+    theme: BUILD_PRODUCT.theme,
+    releaseRepo: BUILD_PRODUCT.releaseRepo
   }))
 
   app.on('browser-window-created', (_, window) => {
@@ -3378,7 +3480,7 @@ app.whenReady().then(async () => {
   await db.initDatabase()
 
   // -- Auth ------------------------------------------------------------------
-  ipcMain.handle('auth:login', async (_, email, password) => {
+  ipcMain.handle('auth:login', async (_, email, password, selectedLodgeId = null) => {
     try {
       console.log('[AUTH] Login attempt')
 
@@ -3389,6 +3491,9 @@ app.whenReady().then(async () => {
         console.log('[AUTH] Master admin result:', masterAdmin ? 'FOUND' : 'NOT FOUND')
       } catch (err) {
         console.error('[AUTH] Master admin check failed:', err.message)
+        if (err?.code === 'MASTER_ADMIN_LOCKED') {
+          return { ok: false, code: 'master_admin_locked', error: err.message }
+        }
       }
 
       if (masterAdmin) {
@@ -3402,7 +3507,7 @@ app.whenReady().then(async () => {
 
       // Regular user login
       console.log('[AUTH] Trying regular user login...')
-      const result = await db.loginUser(email, password)
+      const result = await db.loginUser(email, password, selectedLodgeId)
 
       if (result?.user) {
         console.log('[AUTH] SUCCESS')
@@ -3421,7 +3526,7 @@ app.whenReady().then(async () => {
 
       console.warn('[AUTH] FAILED:', result?.error)
 
-      return { ok: false, code: result?.code || 'sign_in_failed', error: result?.error || 'Sign-in failed.' }
+      return { ok: false, code: result?.code || 'sign_in_failed', error: result?.error || 'Sign-in failed.', memberships: result?.memberships || [] }
     } catch (err) {
       console.error('[AUTH DEBUG][MAIN ERROR]', {
         message: err?.message,
@@ -3484,6 +3589,7 @@ app.whenReady().then(async () => {
   // Clears the active app session on logout, but keeps the trusted device session.
   // Offline-first front desks must be able to log out and reopen while offline.
   ipcMain.handle('auth:logout', () => {
+    commandCentralElevation.clear()
     try { db.logoutCurrentUser(); return { ok: true } } catch { return { ok: true } }
   })
 
@@ -3510,6 +3616,8 @@ app.whenReady().then(async () => {
   })
 
   // -- Role enforcement helper ------------------------------------------------
+  const commandCentralElevation = createActorBoundElevationGate()
+
   function getCurrentUserOrRestore() {
     const existing = db.getCurrentUser()
     if (existing) return existing
@@ -3527,15 +3635,28 @@ app.whenReady().then(async () => {
   function requireRole(...roles) {
     const user = getCurrentUserOrRestore()
     if (!user) throw new Error('Not authenticated')
+    if (roles.length === 1 && roles[0] === 'super_admin') {
+      return assertMasterAdmin(user)
+    }
     if (user.isMasterAdmin) return
     if (roles.length > 0 && !roles.includes(normalizeAppRole(user.role))) {
       throw new Error('Unauthorized')
     }
   }
 
+  function requireMasterAdmin() {
+    return assertMasterAdmin(getCurrentUserOrRestore())
+  }
+
+  function requireFreshCommandCentralReauth() {
+    const user = requireMasterAdmin()
+    commandCentralElevation.assertFresh(user.id)
+    return user
+  }
+
   function requireCurrentLodgeOrSuperAdmin(targetLodgeId) {
     const user = getCurrentUserOrRestore()
-    if (normalizeAppRole(user?.role) === 'super_admin') return
+    if (user?.isMasterAdmin === true) return
 
     const activeProfile = db.getActiveProfile?.()
     const currentLodgeId = String(activeProfile?.lodge_id || '').trim().toLowerCase()
@@ -3564,10 +3685,22 @@ app.whenReady().then(async () => {
     return {
       ...buildCapabilitySnapshot({
         role: normalizeAppRole(user.role),
-        features: entitlement?.effective_features || {}
+        features: entitlement?.effective_features || {},
+        productId: entitlement?.product_id || null,
+        commercialPackageKey: entitlement?.commercial_package_key || null
       }),
       entitlement
     }
+  }
+
+  async function requireCommercialFeature(featureKey, errorMessage) {
+    const snapshot = await getAccessSnapshot()
+    const productId = snapshot?.entitlement?.product_id || snapshot?.productId || null
+    const commercialPackageKey = snapshot?.entitlement?.commercial_package_key || snapshot?.commercialPackageKey || null
+    if (productId && commercialPackageKey && !isCommercialFeatureIncluded(productId, commercialPackageKey, featureKey)) {
+      throw new Error(errorMessage || 'This feature is not included in the current commercial package.')
+    }
+    return snapshot
   }
 
   async function requireFeature(featureName) {
@@ -3654,7 +3787,8 @@ app.whenReady().then(async () => {
   const ai = createAiOrchestrator({
     appUserDataPath: app.getPath('userData'),
     db,
-    requireCapability
+    requireCapability,
+    requireCommercialFeature
   })
 
   ipcMain.handle('ai:turn', async (_, payload = {}) => {
@@ -4018,6 +4152,24 @@ app.whenReady().then(async () => {
 
   // -- Master Admin Setup -----------------------------------------------------
   ipcMain.handle('admin:exists', async () => db.masterAdminExists().catch(() => false))
+  ipcMain.handle('admin:getCommandCentralReauthStatus', async () => {
+    const user = requireMasterAdmin()
+    const status = commandCentralElevation.status(user.id)
+    return { ok: true, verified: status.verified, expires_at: status.expiresAt }
+  })
+  ipcMain.handle('admin:reauthenticateCommandCentral', async (_, password) => {
+    try {
+      const user = requireMasterAdmin()
+      if (!String(password || '')) throw new Error('Master password is required')
+      const verified = await db.checkMasterAdmin(user.email, String(password))
+      if (!verified?.isMasterAdmin || verified.id !== user.id) throw new Error('Master password was not accepted')
+      const status = commandCentralElevation.grant(user.id)
+      return { ok: true, verified: true, expires_at: status.expiresAt }
+    } catch (error) {
+      commandCentralElevation.clear()
+      return { ok: false, verified: false, error: error?.message || 'Could not re-authenticate Command Central' }
+    }
+  })
   ipcMain.handle('admin:setup', async (_, name, email, password) => {
     try { return await db.createMasterAdmin(name, email, password) }
     catch (e) { return { success: false, error: e.message } }
@@ -4025,67 +4177,63 @@ app.whenReady().then(async () => {
 
   // -- Admin: Company & License Management -----------------------------------
   ipcMain.handle('admin:getCompanies', async () => {
-    try { requireRole('super_admin'); return await db.getAllCompanies() }
+    try { requireMasterAdmin(); await requireCapability('command_central.companies.manage'); return await db.getAllCompanies() }
     catch (e) { console.error('[admin:getCompanies]', e?.message || e); throw e }
   })
   ipcMain.handle('admin:getLicenses', async () => {
-    try { requireRole('super_admin'); return await db.getLicenses() }
+    try { requireMasterAdmin(); await requireCapability('command_central.licensing.manage'); return await db.getLicenses() }
     catch (e) { console.error('[admin:getLicenses]', e?.message || e); throw e }
   })
-  ipcMain.handle('admin:createLicense', async (_, data) => {
-    try { requireRole('super_admin'); return await db.createLicense(data) }
+  // These legacy channels are intentionally retained as explicit refusals for
+  // older renderer builds. They must not remain alternate write paths around
+  // the governed commercial subscription RPC and its operation/audit envelope.
+  const legacyLicenseMutationRefusal = 'Direct license mutation is disabled. Use the Command Central commercial subscription assignment workflow.'
+  ipcMain.handle('admin:createLicense', async () => ({ success: false, error: legacyLicenseMutationRefusal }))
+  ipcMain.handle('admin:assignCommercialSubscription', async (_, payload) => {
+    try { requireFreshCommandCentralReauth(); return await db.assignCommercialSubscription(payload || {}) }
     catch (e) { return { success: false, error: e.message } }
   })
-  ipcMain.handle('admin:issueSubscriptionContract', async (_, payload) => {
-    try { requireRole('super_admin'); return await db.issueSubscriptionContract(payload || {}) }
-    catch (e) { return { success: false, error: e.message } }
-  })
-  ipcMain.handle('admin:updateLicense', async (_, id, updates) => {
-    try { requireRole('super_admin'); return await db.updateLicense(id, updates) }
-    catch (e) { return { success: false, error: e.message } }
-  })
-  ipcMain.handle('admin:deleteLicense', async (_, id) => {
-    try { requireRole('super_admin'); return await db.deleteLicense(id) }
-    catch (e) { return { success: false, error: e.message } }
-  })
+  ipcMain.handle('admin:issueSubscriptionContract', async () => ({ success: false, error: legacyLicenseMutationRefusal }))
+  ipcMain.handle('admin:updateLicense', async () => ({ success: false, error: legacyLicenseMutationRefusal }))
+  ipcMain.handle('admin:deleteLicense', async () => ({ success: false, error: 'Direct license deletion is disabled. Use the governed company lifecycle or subscription workflow.' }))
 
   // -- Admin: Broadcasts -----------------------------------------------------
   ipcMain.handle('admin:getBroadcasts', async () => {
-    try { requireRole('super_admin'); return await db.getBroadcasts() }
-    catch { return [] }
+    try { requireMasterAdmin(); await requireCapability('command_central.view'); return await db.getBroadcasts() }
+    catch (error) { throw new Error(error?.message || 'Unable to load Command Central broadcasts') }
   })
   ipcMain.handle('admin:getActiveBroadcasts', async () => db.getActiveBroadcasts().catch(() => []))
   ipcMain.handle('admin:getExpenses', async () => {
-    try { requireRole('super_admin'); return await db.getAdminExpenses() }
-    catch { return [] }
+    try { requireMasterAdmin(); await requireCapability('command_central.view'); return await db.getAdminExpenses() }
+    catch (error) { throw new Error(error?.message || 'Unable to load Command Central expenses') }
   })
   ipcMain.handle('admin:createExpense', async (_, data) => {
-    try { requireRole('super_admin'); return await db.createAdminExpense(data) }
+    try { requireFreshCommandCentralReauth(); return await db.createAdminExpense(data) }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('admin:updateExpense', async (_, id, data) => {
-    try { requireRole('super_admin'); return await db.updateAdminExpense(id, data) }
+    try { requireFreshCommandCentralReauth(); return await db.updateAdminExpense(id, data) }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('admin:deleteExpense', async (_, id) => {
-    try { requireRole('super_admin'); return await db.deleteAdminExpense(id) }
+    try { requireFreshCommandCentralReauth(); return await db.deleteAdminExpense(id) }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('admin:createBroadcast', async (_, data) => {
     try {
-      requireRole('super_admin')
+      requireFreshCommandCentralReauth()
       return await db.createBroadcast(data)
     } catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('admin:updateBroadcast', async (_, id, data) => {
     try {
-      requireRole('super_admin')
+      requireFreshCommandCentralReauth()
       return await db.updateBroadcast(id, data)
     } catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('admin:deleteBroadcast', async (_, id) => {
     try {
-      requireRole('super_admin')
+      requireFreshCommandCentralReauth()
       return await db.deleteBroadcast(id)
     } catch (e) { return { success: false, error: e.message } }
   })
@@ -4093,327 +4241,411 @@ app.whenReady().then(async () => {
   // -- Admin: Feature Flags --------------------------------------------------
   ipcMain.handle('admin:getLodgeFeatures', async (_, lodgeId) => {
     try { requireCurrentLodgeOrSuperAdmin(lodgeId); return await db.getLodgeFeatures(lodgeId) }
-    catch { return [] }
+    catch (error) { throw new Error(error?.message || 'Unable to load lodge feature overrides') }
   })
   ipcMain.handle('admin:setLodgeFeature', async (_, lodgeId, name, enabled, metadata) => {
     try {
-      requireRole('super_admin')
+      requireFreshCommandCentralReauth()
       return await db.setLodgeFeature(lodgeId, name, enabled, metadata || {})
     } catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('admin:clearLodgeFeature', async (_, lodgeId, name) => {
     try {
-      requireRole('super_admin')
+      requireFreshCommandCentralReauth()
       return await db.clearLodgeFeature(lodgeId, name)
     } catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('admin:getAllLodgeFeatures', async () => {
-    try { requireRole('super_admin'); return await db.getAllLodgeFeatures() }
-    catch { return [] }
+    try { requireMasterAdmin(); await requireCapability('command_central.companies.manage'); return await db.getAllLodgeFeatures() }
+    catch (error) { throw new Error(error?.message || 'Unable to load lodge feature overrides') }
   })
   ipcMain.handle('admin:getTestDataResetPreview', async (_, lodgeId, payload) => {
     try {
-      requireRole('super_admin')
+      requireMasterAdmin()
+      await requireCapability('command_central.destructive.manage')
+      assertCommandCentralTarget(lodgeId)
       return await db.getTestDataResetPreview(lodgeId, payload || {})
     } catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('admin:runTestDataReset', async (_, lodgeId, payload) => {
     try {
-      requireRole('super_admin')
+      requireFreshCommandCentralReauth()
       return await db.runTestDataReset(lodgeId, payload || {})
     } catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('admin:getTestDataResetAudit', async (_, lodgeId, limit) => {
     try {
-      requireRole('super_admin')
+      requireMasterAdmin()
+      await requireCapability('command_central.destructive.manage')
+      assertCommandCentralTarget(lodgeId)
       return await db.getTestDataResetAudit(lodgeId, limit || 20)
-    } catch { return [] }
+    } catch (error) { throw new Error(error?.message || 'Unable to load reset audit history') }
   })
 
   // -- Admin: Support Tickets ------------------------------------------------
   ipcMain.handle('admin:getSupportTickets', async (_, filters) => {
-    try { requireRole('super_admin'); return await db.getSupportTickets(filters || {}) }
-    catch { return [] }
+    try { requireMasterAdmin(); await requireCapability('command_central.support.manage'); return await db.getSupportTickets(filters || {}) }
+    catch (error) { throw new Error(error?.message || 'Unable to load support tickets') }
   })
   ipcMain.handle('admin:createSupportTicket', async (_, data) => {
     try {
       requireRole()
-      const result = await db.createSupportTicket(data)
+      const user = getCurrentUserOrRestore()
+      const submitted = data && typeof data === 'object' ? data : {}
+      const activeProfile = db.getActiveProfile?.()
+      // A normal lodge session may report only against its current company.
+      // Command Central retains the explicit target selection needed to support
+      // another company, but it is already behind the master-admin boundary.
+      const ticketData = user?.isMasterAdmin
+        ? submitted
+        : {
+            ...submitted,
+            lodge_id: user?.lodge_id || activeProfile?.lodge_id || null,
+            lodge_name: activeProfile?.lodge_name || activeProfile?.company_name || null
+          }
+      if (!ticketData.lodge_id) throw new Error('An active company is required to create a support request')
+      const result = await db.createSupportTicket(ticketData)
       // Fire-and-forget email notification
-      const isUpgrade = data.category === 'Upgrade Request'
+      const isUpgrade = ticketData.category === 'Upgrade Request'
       const { subject, html } = isUpgrade
-        ? buildUpgradeRequestEmail(data)
-        : buildSupportTicketEmail(data)
+        ? buildUpgradeRequestEmail(ticketData)
+        : buildSupportTicketEmail(ticketData)
       sendNotificationEmail(subject, html).catch(() => {})
       return result
     } catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('admin:updateSupportTicket', async (_, id, updates) => {
-    try { requireRole('super_admin'); return await db.updateSupportTicket(id, updates) }
+    try { requireFreshCommandCentralReauth(); return await db.updateSupportTicket(id, updates) }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('admin:addSupportTicketMessage', async (_, id, payload) => {
-    try { requireRole('super_admin'); return await db.addSupportTicketMessage(id, payload || {}) }
+    try { requireFreshCommandCentralReauth(); return await db.addSupportTicketMessage(id, payload || {}) }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('admin:deleteSupportTicket', async (_, id) => {
-    try { requireRole('super_admin'); return await db.deleteSupportTicket(id) }
+    try { requireFreshCommandCentralReauth(); return await db.deleteSupportTicket(id) }
     catch (e) { return { success: false, error: e.message } }
   })
 
   // -- Admin: Activity Logs --------------------------------------------------
   ipcMain.handle('admin:getActivityLogs', async (_, filters) => {
-    try { requireRole('super_admin'); return await db.getActivityLogs(filters || {}) }
-    catch { return [] }
+    try { requireMasterAdmin(); await requireCapability('command_central.view'); return await db.getActivityLogs(filters || {}) }
+    catch (error) { throw new Error(error?.message || 'Unable to load Command Central activity') }
   })
 
   ipcMain.handle('admin:getAuditSummary', async (_, filters) => {
-    try { requireRole('super_admin'); return await db.getAuditSummary(filters || {}) }
-    catch { return [] }
+    try { requireMasterAdmin(); await requireCapability('command_central.view'); return await db.getAuditSummary(filters || {}) }
+    catch (error) { throw new Error(error?.message || 'Unable to load Command Central audit summary') }
+  })
+  ipcMain.handle('admin:recordCommandCentralHealthRun', async (_, payload = {}) => {
+    try {
+      const actor = requireMasterAdmin()
+      return await db.recordCommandCentralHealthRun({ ...payload, actor_id: actor.id, actor_email: actor.email })
+    } catch (error) { return { ok: false, error: error?.message || 'Unable to record Command Central diagnostic run' } }
+  })
+  ipcMain.handle('admin:listCommandCentralHealthRuns', async (_, limit) => {
+    try { requireMasterAdmin(); return await db.listCommandCentralHealthRuns(limit || 20) }
+    catch (error) { throw new Error(error?.message || 'Unable to load Command Central diagnostic history') }
   })
 
   // -- Admin Notifications --------------------------------------------------
   ipcMain.handle('admin:createNotification', async (_, payload) => {
-    try { requireRole('super_admin'); return { id: await db.createNotification(payload) } }
-    catch { return { error: 'Failed to create notification' } }
+    try { requireFreshCommandCentralReauth(); return { ok: true, id: await db.createNotification(payload) } }
+    catch (error) { return { ok: false, error: error?.message || 'Failed to create notification' } }
   })
   ipcMain.handle('admin:getNotifications', async (_, filters) => {
-    try { requireRole('super_admin'); return await db.getNotifications(filters || {}) }
-    catch { return [] }
+    try { requireMasterAdmin(); await requireCapability('command_central.view'); return await db.getNotifications(filters || {}) }
+    catch (error) { throw new Error(error?.message || 'Unable to load Command Central notifications') }
   })
   ipcMain.handle('admin:getUnreadCount', async () => {
-    try { requireRole('super_admin'); return await db.getUnreadCount() }
+    try { requireMasterAdmin(); await requireCapability('command_central.view'); return await db.getUnreadCount() }
     catch { return 0 }
   })
   ipcMain.handle('admin:markNotificationsRead', async (_, ids) => {
-    try { requireRole('super_admin'); return { count: await db.markNotificationsRead(ids) } }
+    try { requireMasterAdmin(); await requireCapability('command_central.view'); return { count: await db.markNotificationsRead(ids) } }
     catch { return { count: 0 } }
   })
   ipcMain.handle('admin:cleanupNotifications', async (_, days) => {
-    try { requireRole('super_admin'); return { ok: true, count: await db.cleanupNotifications(days) } }
+    try { requireFreshCommandCentralReauth(); return { ok: true, count: await db.cleanupNotifications(days) } }
     catch (e) { return { ok: false, count: 0, error: e.message } }
   })
 
   // -- Release Control --------------------------------------------------------
   ipcMain.handle('admin:getScheduledReleases', async () => {
-    try { requireRole('super_admin'); return await db.getScheduledReleases() }
-    catch { return [] }
+    try { requireMasterAdmin(); await requireCapability('command_central.releases.manage'); return await db.getScheduledReleases() }
+    catch (error) { throw new Error(error?.message || 'Unable to load scheduled releases') }
   })
   ipcMain.handle('admin:expireOverdueFeatures', async () => {
-    try { requireRole('super_admin'); return { ok: true, count: await db.expireOverdueFeatures() } }
+    try { requireFreshCommandCentralReauth(); return { ok: true, count: await db.expireOverdueFeatures() } }
     catch (e) { return { ok: false, count: 0, error: e.message } }
   })
 
   // -- Notification Automation ----------------------------------------------
   ipcMain.handle('admin:getNotificationRules', async () => {
-    try { requireRole('super_admin'); return await db.getNotificationRules() }
-    catch { return [] }
+    try { requireMasterAdmin(); await requireCapability('command_central.view'); return await db.getNotificationRules() }
+    catch (error) { throw new Error(error?.message || 'Unable to load notification automation rules') }
   })
   ipcMain.handle('admin:upsertNotificationRule', async (_, rule) => {
-    try { requireRole('super_admin'); return await db.upsertNotificationRule(rule) }
+    try { requireFreshCommandCentralReauth(); return await db.upsertNotificationRule(rule) }
     catch (e) { return { ok: false, error: e.message } }
   })
   ipcMain.handle('admin:evaluateRule', async (_, ruleKey) => {
-    try { requireRole('super_admin'); return await db.evaluateRule(ruleKey) }
+    try { requireFreshCommandCentralReauth(); return await db.evaluateRule(ruleKey) }
     catch (e) { return { ok: false, error: e.message } }
   })
   ipcMain.handle('admin:evaluateAllRules', async () => {
-    try { requireRole('super_admin'); return await db.evaluateAllRules() }
+    try { requireFreshCommandCentralReauth(); return await db.evaluateAllRules() }
     catch (e) { return { ok: false, error: e.message, results: [] } }
   })
   ipcMain.handle('admin:getNotificationEvents', async (_, opts) => {
-    try { requireRole('super_admin'); return await db.getNotificationEvents(opts || {}) }
+    try { requireMasterAdmin(); await requireCapability('command_central.view'); return await db.getNotificationEvents(opts || {}) }
     catch { return [] }
   })
   ipcMain.handle('admin:getNotificationEventSummary', async () => {
-    try { requireRole('super_admin'); return await db.getNotificationEventSummary() }
+    try { requireMasterAdmin(); await requireCapability('command_central.view'); return await db.getNotificationEventSummary() }
     catch { return { total_events: 0, undispatched: 0, active_rules: 0, events_by_rule_7d: {} } }
   })
   ipcMain.handle('admin:markEventsDispatched', async (_, eventIds) => {
-    try { requireRole('super_admin'); return await db.markEventsDispatched(eventIds) }
+    try { requireFreshCommandCentralReauth(); return await db.markEventsDispatched(eventIds) }
     catch (e) { return { ok: false, error: e.message } }
   })
 
   // -- Accounting ----------------------------------------------------------
   ipcMain.handle('admin:getMrrSummary', async () => {
-    try { requireRole('super_admin'); return await db.getMrrSummary() }
-    catch { return { ok: true, mrr: 0, arr: 0, lodge_count: 0, trials_active: 0, by_plan: {} } }
+    try { requireMasterAdmin(); await requireCapability('command_central.billing.manage'); return await db.getMrrSummary() }
+    catch (error) { return { ok: false, error: error?.message || 'Unable to load commercial subscription summary', mrr: 0, arr: 0, lodge_count: 0, trials_active: 0, by_plan: {} } }
   })
   ipcMain.handle('admin:getRevenueSummary', async (_, days) => {
-    try { requireRole('super_admin'); return await db.getRevenueSummary(days) }
-    catch { return { ok: true, daily: [], total_revenue: 0, payment_count: 0, avg_daily: 0 } }
+    try { requireMasterAdmin(); await requireCapability('command_central.billing.manage'); return await db.getRevenueSummary(days) }
+    catch (error) { return { ok: false, error: error?.message || 'Unable to load customer booking revenue summary', daily: [], total_revenue: 0, payment_count: 0, avg_daily: 0 } }
   })
   ipcMain.handle('admin:getLodgeFinancialSummary', async () => {
-    try { requireRole('super_admin'); return await db.getLodgeFinancialSummary() }
-    catch { return { ok: true, lodges: [] } }
+    try { requireMasterAdmin(); await requireCapability('command_central.billing.manage'); return await db.getLodgeFinancialSummary() }
+    catch (error) { return { ok: false, error: error?.message || 'Unable to load customer booking balances', lodges: [] } }
   })
   ipcMain.handle('admin:getCollectionsQueue', async () => {
-    try { requireRole('super_admin'); return await db.getCollectionsQueue() }
-    catch { return { ok: true, queue: [] } }
+    try { requireMasterAdmin(); await requireCapability('command_central.billing.manage'); return await db.getCollectionsQueue() }
+    catch (error) { return { ok: false, error: error?.message || 'Unable to load customer booking collections', queue: [] } }
   })
   ipcMain.handle('admin:getRevenueByMethod', async (_, days) => {
-    try { requireRole('super_admin'); return await db.getRevenueByMethod(days) }
-    catch { return { ok: true, methods: [] } }
+    try { requireMasterAdmin(); await requireCapability('command_central.billing.manage'); return await db.getRevenueByMethod(days) }
+    catch (error) { return { ok: false, error: error?.message || 'Unable to load customer booking payment methods', methods: [] } }
+  })
+  ipcMain.handle('admin:generateCommercialInvoice', async (_, payload) => {
+    try {
+      const admin = requireFreshCommandCentralReauth()
+      return await db.generateCommercialInvoice({ ...payload, actor_id: admin.id, actor_email: admin.email })
+    } catch (error) {
+      return { success: false, error: error?.message || 'Unable to generate commercial invoice' }
+    }
+  })
+  ipcMain.handle('admin:recordCommercialPayment', async (_, payload) => {
+    try {
+      const admin = requireFreshCommandCentralReauth()
+      return await db.recordCommercialPayment({ ...payload, actor_id: admin.id, actor_email: admin.email })
+    } catch (error) {
+      return { success: false, error: error?.message || 'Unable to record commercial payment' }
+    }
+  })
+  ipcMain.handle('admin:getCommercialInvoices', async (_, filters = {}) => {
+    try {
+      requireMasterAdmin()
+      await requireCapability('command_central.billing.manage')
+      if (filters?.lodgeId) assertCommandCentralTarget(filters.lodgeId)
+      return await db.listCommercialInvoices(filters)
+    } catch (error) {
+      throw new Error(error?.message || 'Unable to load commercial invoices')
+    }
+  })
+  ipcMain.handle('admin:getCommercialBillingSummary', async () => {
+    try {
+      requireMasterAdmin()
+      await requireCapability('command_central.billing.manage')
+      return await db.getCommercialBillingSummary()
+    } catch (error) {
+      throw new Error(error?.message || 'Unable to load commercial billing summary')
+    }
   })
 
   // -- Task Center ---------------------------------------------------------
   ipcMain.handle('admin:getAdminToday', async () => {
-    try { requireRole('super_admin'); return await db.getAdminToday() }
+    try { requireMasterAdmin(); await requireCapability('command_central.view'); return await db.getAdminToday() }
     catch { return { ok: false, error: 'Failed to load', summary: {}, overdue_bookings: [], trials_ending: [], failed_devices: [], urgent_tickets: [], lead_followups: [], recent_payments: [] } }
   })
 
   // -- Global Search -------------------------------------------------------
   ipcMain.handle('admin:globalSearch', async (_, query, limit) => {
-    try { requireRole('super_admin'); return await db.globalSearch(query, limit) }
+    try { requireMasterAdmin(); await requireCapability('command_central.view'); return await db.globalSearch(query, limit) }
     catch { return { ok: true, results: [] } }
   })
 
   // -- Bulk Actions --------------------------------------------------------
   ipcMain.handle('admin:bulkUpdateStatus', async (_, entityType, entityIds, newStatus) => {
-    try { requireRole('super_admin'); return await db.bulkUpdateStatus(entityType, entityIds, newStatus) }
+    try { requireFreshCommandCentralReauth(); return await db.bulkUpdateStatus(entityType, entityIds, newStatus) }
     catch (e) { return { ok: false, error: e.message } }
   })
   ipcMain.handle('admin:bulkDelete', async (_, entityType, entityIds) => {
-    try { requireRole('super_admin'); return await db.bulkDelete(entityType, entityIds) }
+    try { requireFreshCommandCentralReauth(); return await db.bulkDelete(entityType, entityIds) }
     catch (e) { return { ok: false, error: e.message } }
   })
   ipcMain.handle('admin:bulkNotify', async (_, entityType, entityIds, message) => {
-    try { requireRole('super_admin'); return await db.bulkNotify(entityType, entityIds, message) }
+    try { requireFreshCommandCentralReauth(); return await db.bulkNotify(entityType, entityIds, message) }
     catch (e) { return { ok: false, error: e.message } }
   })
 
   // -- Deep Fleet Health + App Update Control ------------------------------
   ipcMain.handle('admin:pushUpdateNotification', async (_, version, message, force) => {
-    try { requireRole('super_admin'); return await db.pushUpdateNotification(version, message, force) }
+    try { requireFreshCommandCentralReauth(); return await db.pushUpdateNotification(version, message, force) }
     catch (e) { return { ok: false, error: e.message } }
   })
   ipcMain.handle('admin:getSyncQueueStatus', async () => {
-    try { requireRole('super_admin'); return await db.getSyncQueueStatus() }
-    catch { return { ok: true, devices: [], stale_count: 0, total_devices: 0 } }
+    try { requireMasterAdmin(); await requireCapability('command_central.view'); return await db.getSyncQueueStatus() }
+    catch (error) { return { ok: false, error: error?.message || 'Unable to load sync queue status', devices: [], stale_count: null, total_devices: null } }
   })
 
   // -- Release Rollout Control --------------------------------------------
   ipcMain.handle('admin:createRelease', async (_, release) => {
-    try { requireRole('super_admin'); return await db.createRelease(release) }
+    try { requireFreshCommandCentralReauth(); return await db.createRelease(release) }
     catch (e) { return { ok: false, error: e.message } }
   })
   ipcMain.handle('admin:updateRelease', async (_, version, updates) => {
-    try { requireRole('super_admin'); return await db.updateRelease(version, updates) }
+    try { requireFreshCommandCentralReauth(); return await db.updateRelease(version, updates) }
     catch (e) { return { ok: false, error: e.message } }
   })
   ipcMain.handle('admin:checkUpdateAvailability', async (_, currentVersion, deviceId) => {
-    try { requireRole('super_admin'); return await db.checkUpdateAvailability(currentVersion, deviceId) }
-    catch { return { ok: true, update_available: false } }
+    try { requireMasterAdmin(); await requireCapability('command_central.releases.manage'); return await db.checkUpdateAvailability(currentVersion, deviceId) }
+    catch (error) { return { ok: false, error: error?.message || 'Unable to check the product update gate', update_available: false } }
   })
-  ipcMain.handle('admin:getReleases', async () => {
-    try { requireRole('super_admin'); return await db.getReleases() }
-    catch { return [] }
+  ipcMain.handle('admin:getReleases', async (_, productId) => {
+    try { requireMasterAdmin(); return await db.getReleases(productId || BUILD_PRODUCT_ID) }
+    catch (error) { throw new Error(error?.message || 'Unable to load product releases') }
   })
   ipcMain.handle('admin:getSurfaceIntelligence', async () => {
-    try { requireRole('super_admin'); return await db.getSurfaceIntelligence() }
+    try { requireMasterAdmin(); await requireCapability('command_central.view'); return await db.getSurfaceIntelligence() }
     catch (e) { return { ok: false, error: e.message, surfaces: [], totals: {} } }
   })
 
   // -- Admin: Company Stats --------------------------------------------------
   ipcMain.handle('admin:getCompanyStats', async (_, lodgeId) => {
-    try { requireRole('super_admin'); return await db.getCompanyStats(lodgeId) }
-    catch { return null }
+    try { requireMasterAdmin(); await requireCapability('command_central.view'); assertCommandCentralTarget(lodgeId); return await db.getCompanyStats(lodgeId) }
+    catch (error) { throw new Error(error?.message || 'Unable to load company statistics') }
   })
 
   // -- Admin: Billing --------------------------------------------------------
-  ipcMain.handle('admin:updateLicenseBilling', async (_, id, data) => {
-    try { requireRole('super_admin'); return await db.updateLicenseBilling(id, data) }
-    catch (e) { return { success: false, error: e.message } }
-  })
+  ipcMain.handle('admin:updateLicenseBilling', async () => ({ success: false, error: legacyLicenseMutationRefusal }))
   ipcMain.handle('admin:getOverdueLicenses', async () => {
-    try { requireRole('super_admin'); return await db.getOverdueLicenses() }
-    catch { return [] }
+    try { requireMasterAdmin(); await requireCapability('command_central.billing.manage'); return await db.getOverdueLicenses() }
+    catch (error) { throw new Error(error?.message || 'Unable to load overdue licenses') }
   })
 
   // -- Invoices --------------------------------------------------------------
   ipcMain.handle('admin:getNextInvoiceNumber', async () => {
-    try { requireRole('super_admin'); return await db.getNextInvoiceNumber() }
+    try { requireMasterAdmin(); await requireCapability('command_central.billing.manage'); return await db.getNextInvoiceNumber() }
     catch (e) { return { error: e.message } }
   })
   ipcMain.handle('admin:createInvoice', async (_, data) => {
-    try { requireRole('super_admin'); return await db.createInvoice(data) }
+    try { requireFreshCommandCentralReauth(); return await db.createInvoice(data) }
     catch (e) { return { error: e.message } }
   })
   ipcMain.handle('admin:getInvoices', async (_, filters) => {
-    try { requireRole('super_admin'); return await db.getInvoices(filters) }
-    catch { return [] }
+    try { requireMasterAdmin(); await requireCapability('command_central.billing.manage'); return await db.getInvoices(filters) }
+    catch (error) { throw new Error(error?.message || 'Unable to load invoices') }
   })
   ipcMain.handle('admin:getInvoicesByLodge', async (_, lodgeId) => {
-    try { requireRole('super_admin'); return await db.getInvoicesByLodge(lodgeId) }
-    catch { return [] }
+    try { requireMasterAdmin(); await requireCapability('command_central.billing.manage'); return await db.getInvoicesByLodge(lodgeId) }
+    catch (error) { throw new Error(error?.message || 'Unable to load booking invoices') }
   })
   ipcMain.handle('admin:getClientBookingInvoices', async (_, lodgeId) => {
-    try { requireRole('super_admin'); return await db.getClientBookingInvoices(lodgeId) }
+    try { requireMasterAdmin(); await requireCapability('command_central.billing.manage'); assertCommandCentralTarget(lodgeId); return await db.getClientBookingInvoices(lodgeId) }
     catch (e) { throw new Error(e.message) }
   })
   ipcMain.handle('admin:updateInvoice', async (_, id, data) => {
-    try { requireRole('super_admin'); return await db.updateInvoice(id, data) }
+    try { requireFreshCommandCentralReauth(); return await db.updateInvoice(id, data) }
     catch (e) { return { error: e.message } }
   })
   ipcMain.handle('admin:deleteInvoice', async (_, id) => {
-    try { requireRole('super_admin'); await db.deleteInvoice(id); return { success: true } }
+    try { requireFreshCommandCentralReauth(); await db.deleteInvoice(id); return { success: true } }
     catch (e) { return { error: e.message } }
   })
   ipcMain.handle('admin:getInvoiceSummary', async () => {
-    try { requireRole('super_admin'); return await db.getInvoiceSummary() }
-    catch { return { total: 0, byPlan: {}, byMonth: [], allRows: [] } }
+    try { requireMasterAdmin(); await requireCapability('command_central.billing.manage'); return await db.getInvoiceSummary() }
+    catch (error) { throw new Error(error?.message || 'Unable to load invoice summary') }
   })
   ipcMain.handle('admin:updateCompany', async (_, lodgeId, updates) => {
-    try { requireRole('super_admin'); await db.updateCompany(lodgeId, updates); return { success: true } }
+    try {
+      const admin = requireFreshCommandCentralReauth()
+      assertCommandCentralTarget(lodgeId)
+      const payload = updates && typeof updates === 'object' ? updates : {}
+      const reason = String(payload.reason || '').trim()
+      if (reason.length < 8) throw new Error('A reason of at least 8 characters is required for company settings changes')
+      return await db.updateCompany(lodgeId, {
+        ...payload,
+        operation_id: payload.operation_id || crypto.randomUUID(),
+        reason,
+        actor_id: admin.id,
+        actor_email: admin.email
+      })
+    }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('admin:archiveCompany', async (_, lodgeId) => {
-    try { requireRole('super_admin'); return await db.archiveCompany(lodgeId) }
+    try { requireMasterAdmin(); assertCommandCentralTarget(lodgeId); return { success: false, error: 'Use the governed company lifecycle workflow with a recorded reason.' } }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('admin:restoreCompany', async (_, lodgeId) => {
-    try { requireRole('super_admin'); return await db.restoreCompany(lodgeId) }
+    try { requireMasterAdmin(); assertCommandCentralTarget(lodgeId); return { success: false, error: 'Use the governed company lifecycle workflow with a recorded reason.' } }
     catch (e) { return { success: false, error: e.message } }
   })
+  ipcMain.handle('admin:applyCompanyLifecycle', async (_, payload) => {
+    try {
+      const admin = requireFreshCommandCentralReauth()
+      assertCommandCentralTarget(payload?.lodge_id)
+      return await db.applyCompanyLifecycle({ ...payload, actor_id: admin.id, actor_email: admin.email })
+    } catch (e) { return { success: false, error: e.message } }
+  })
   ipcMain.handle('admin:permanentlyDeleteCompany', async (_, lodgeId) => {
-    try { requireRole('super_admin'); return await db.permanentlyDeleteCompany(lodgeId) }
+    try {
+      requireMasterAdmin()
+      assertCommandCentralTarget(lodgeId)
+      return { success: false, error: 'Permanent company deletion is disabled while the governed lifecycle workflow is being implemented.' }
+    }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('admin:repairDuplicateEventBookings', async (_, lodgeId) => {
-    try { requireRole('super_admin'); return await db.repairDuplicateEventBookings(lodgeId) }
+    try { requireFreshCommandCentralReauth(); return await db.repairDuplicateEventBookings(lodgeId) }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('admin:getCompanyUsers', async (_, lodgeId) => {
-    try { requireRole('super_admin'); return await db.getCompanyUsers(lodgeId) }
-    catch { return [] }
+    try { requireMasterAdmin(); await requireCapability('command_central.security.manage'); assertCommandCentralTarget(lodgeId); return await db.getCompanyUsers(lodgeId) }
+    catch (error) { throw new Error(error?.message || 'Unable to load company users') }
   })
   ipcMain.handle('admin:resetCompanyUserPassword', async (_, lodgeId, userId, password) => {
-    try { requireRole('super_admin'); return await db.resetCompanyUserPassword(lodgeId, userId, password) }
+    try { requireFreshCommandCentralReauth(); return await db.resetCompanyUserPassword(lodgeId, userId, password) }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('admin:updateCompanyUserPwaAccess', async (_, lodgeId, userId, payload) => {
-    try { requireRole('super_admin'); return await db.updateCompanyUserPwaAccess(lodgeId, userId, payload || {}) }
+    try { requireFreshCommandCentralReauth(); return await db.updateCompanyUserPwaAccess(lodgeId, userId, payload || {}) }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('admin:sendInvoiceEmail', async (_, payload) => {
-    try { requireRole('super_admin'); return await sendInvoiceEmail(payload) }
+    try { requireFreshCommandCentralReauth(); return await sendInvoiceEmail(payload) }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('admin:getMarketingLeads', async (_, filters) => {
-    try { requireRole('super_admin'); return await db.getMarketingLeads(filters || {}) }
-    catch (e) { return { success: false, error: e.message, leads: [] } }
+    try { requireMasterAdmin(); await requireCapability('command_central.view'); return await db.getMarketingLeads(filters || {}) }
+    catch (e) { throw new Error(e?.message || 'Unable to load marketing leads') }
   })
   ipcMain.handle('admin:updateMarketingLeadStatus', async (_, id, status) => {
-    try { requireRole('super_admin'); return await db.updateMarketingLeadStatus(id, status) }
+    try { requireFreshCommandCentralReauth(); return await db.updateMarketingLeadStatus(id, status) }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('admin:updateLeadCrm', async (_, id, fields) => {
-    try { requireRole('super_admin'); return await db.updateLeadCrm(id, fields || {}) }
+    try { requireFreshCommandCentralReauth(); return await db.updateLeadCrm(id, fields || {}) }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('admin:getSalesPipelineSummary', async () => {
-    try { requireRole('super_admin'); return await db.getSalesPipelineSummary() }
-    catch (e) { return [] }
+    try { requireMasterAdmin(); await requireCapability('command_central.view'); return await db.getSalesPipelineSummary() }
+    catch (e) { throw new Error(e?.message || 'Unable to load sales pipeline') }
   })
 
   // -- Generic Admin Excel Export --------------------------------------------
@@ -4422,7 +4654,7 @@ app.whenReady().then(async () => {
     const win = BrowserWindow.fromWebContents(event.sender)
     const { filePath, canceled } = await dialog.showSaveDialog(win, {
       title: `Export ${title} to Excel`,
-      defaultPath: `boroko-${title.toLowerCase().replace(/\s+/g, '-')}-${new Date().toISOString().slice(0, 10)}.xlsx`,
+      defaultPath: `${APP_EXPORT_PREFIX}-${title.toLowerCase().replace(/\s+/g, '-')}-${new Date().toISOString().slice(0, 10)}.xlsx`,
       filters: [{ name: 'Excel Files', extensions: ['xlsx'] }]
     })
     if (canceled || !filePath) return { success: false }
@@ -4447,7 +4679,7 @@ app.whenReady().then(async () => {
     const win = BrowserWindow.fromWebContents(event.sender)
     const { filePath, canceled } = await dialog.showSaveDialog(win, {
       title: `Export ${title} to PDF`,
-      defaultPath: `boroko-${title.toLowerCase().replace(/\s+/g, '-')}-${new Date().toISOString().slice(0, 10)}.pdf`,
+      defaultPath: `${APP_EXPORT_PREFIX}-${title.toLowerCase().replace(/\s+/g, '-')}-${new Date().toISOString().slice(0, 10)}.pdf`,
       filters: [{ name: 'PDF Files', extensions: ['pdf'] }]
     })
     if (canceled || !filePath) return { success: false }
@@ -4461,7 +4693,7 @@ app.whenReady().then(async () => {
       h1{font-size:18px;margin-bottom:4px;} p.sub{font-size:12px;color:#888;margin-top:0;}
       table{width:100%;border-collapse:collapse;margin-top:16px;}
     </style></head><body>
-      <h1>${escapeHtml(title)}</h1><p class="sub">Boroko Bookings - Generated ${escapeHtml(new Date().toLocaleString())}</p>
+      <h1>${escapeHtml(title)}</h1><p class="sub">${escapeHtml(APP_BRAND_NAME)} - Generated ${escapeHtml(new Date().toLocaleString())}</p>
       <table><thead><tr>${headers}</tr></thead><tbody>${bodyRows}</tbody></table>
     </body></html>`
     await printWin.loadURL(`data:text/html,${encodeURIComponent(html)}`)
@@ -4567,7 +4799,7 @@ app.whenReady().then(async () => {
       const today = new Date().toISOString().slice(0, 10)
       const result = await dialog.showSaveDialog(win, {
         title: 'Export Support Bundle',
-        defaultPath: `boroko-support-bundle-${today}.json`,
+        defaultPath: `${APP_EXPORT_PREFIX}-support-bundle-${today}.json`,
         filters: [{ name: 'JSON Files', extensions: ['json'] }]
       })
       if (result.canceled || !result.filePath) return { success: false }
@@ -4654,7 +4886,7 @@ app.whenReady().then(async () => {
     return testEmailConfig(config)
   })
   ipcMain.handle('email:sendLicense', async (_, payload) => {
-    try { requireRole('super_admin'); return await sendLicenseEmail(payload) }
+    try { requireMasterAdmin(); await requireCapability('command_central.licensing.manage'); return await sendLicenseEmail(payload) }
     catch (e) { return { success: false, error: e.message } }
   })
 
@@ -4665,9 +4897,11 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('users:create', async (_, data) => {
     try {
-      requireRole('admin', 'super_admin')
+      requireRole('manager', 'admin', 'super_admin')
       await requireCapability('staff.manage')
-      if (data?.role && normalizeAppRole(data.role) !== 'receptionist') {
+      const actor = db.getCurrentUser?.()
+      assertManagerStaffScope(actor, null, data)
+      if (normalizeAppRole(actor?.role) !== 'manager' && data?.role && normalizeAppRole(data.role) !== 'receptionist') {
         await requireCapability('staff.permissions')
       }
       return { success: true, id: await db.createUser(data) }
@@ -4675,30 +4909,200 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('users:update', async (_, id, data) => {
     try {
-      requireRole('admin', 'super_admin')
+      requireRole('manager', 'admin', 'super_admin')
       await requireCapability('staff.manage')
-      if (data?.role) {
+      const actor = db.getCurrentUser?.()
+      const targetUser = await assertResourceBelongsToCurrentLodge('User', id, db.getUserById)
+      assertManagerStaffScope(actor, targetUser, data)
+      if (normalizeAppRole(actor?.role) !== 'manager' && data?.role) {
         await requireCapability('staff.permissions')
       }
-      await assertResourceBelongsToCurrentLodge('User', id, db.getUserById)
       await db.updateUser(id, data); return { success: true }
     } catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('users:resetPassword', async (_, id, password) => {
     try {
-      requireRole('admin', 'super_admin')
+      requireRole('manager', 'admin', 'super_admin')
       await requireCapability('staff.manage')
-      await assertResourceBelongsToCurrentLodge('User', id, db.getUserById)
+      const targetUser = await assertResourceBelongsToCurrentLodge('User', id, db.getUserById)
+      assertManagerStaffScope(db.getCurrentUser?.(), targetUser)
       await db.resetUserPassword(id, password); return { success: true }
     } catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('users:delete', async (_, id) => {
     try {
-      requireRole('admin', 'super_admin')
+      requireRole('manager', 'admin', 'super_admin')
       await requireCapability('staff.manage')
-      await assertResourceBelongsToCurrentLodge('User', id, db.getUserById)
+      const targetUser = await assertResourceBelongsToCurrentLodge('User', id, db.getUserById)
+      assertManagerStaffScope(db.getCurrentUser?.(), targetUser)
       await db.deleteUser(id); return { success: true }
     } catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('users:getAccessAudit', async () => {
+    try {
+      requireRole('manager', 'admin', 'super_admin')
+      await requireCapability('staff.manage')
+      return { success: true, entries: await db.getStaffAccessAudit(100) }
+    } catch (e) { return { success: false, error: e.message, entries: [] } }
+  })
+
+  // -- Staff Scheduling & Attendance --------------------------------------------
+  ipcMain.handle('staffScheduling:getSchedule', async (_, date) => {
+    try { return await db.getStaffSchedule(date) }
+    catch (e) { return [] }
+  })
+  ipcMain.handle('staffScheduling:getScheduleRange', async (_, startDate, endDate) => {
+    try { return await db.getStaffScheduleRange(startDate, endDate) }
+    catch (e) { return [] }
+  })
+  ipcMain.handle('staffScheduling:upsertSchedule', async (_, staffId, scheduleDate, shiftLabel, startTime, endTime, roleAtShift, notes) => {
+    try {
+      requireRole('manager', 'admin', 'super_admin')
+      await requireCapability('staff.manage')
+      return await db.upsertStaffSchedule(staffId, scheduleDate, shiftLabel, startTime, endTime, roleAtShift, notes)
+    } catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('staffScheduling:deleteEntry', async (_, id) => {
+    try {
+      requireRole('manager', 'admin', 'super_admin')
+      await requireCapability('staff.manage')
+      return await db.deleteStaffScheduleEntry(id)
+    } catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('staffScheduling:getAttendanceToday', async () => {
+    try { return await db.getStaffAttendanceToday() }
+    catch (e) { return [] }
+  })
+  ipcMain.handle('staffScheduling:getAttendanceRange', async (_, startDate, endDate, staffId) => {
+    try { return await db.getStaffAttendanceRange(startDate, endDate, staffId) }
+    catch (e) { return [] }
+  })
+  ipcMain.handle('staffScheduling:getAttendanceDashboard', async () => {
+    try { return await db.getStaffAttendanceDashboard() }
+    catch (e) { return null }
+  })
+  ipcMain.handle('staffScheduling:clockIn', async (_, staffId, shiftLabel, notes) => {
+    try {
+      await requireCapability('staff.manage')
+      return await db.clockInStaffHotel(staffId, shiftLabel, notes)
+    } catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('staffScheduling:clockOut', async (_, attendanceId, notes) => {
+    try {
+      await requireCapability('staff.manage')
+      return await db.clockOutStaffHotel(attendanceId, notes)
+    } catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('staffScheduling:getLeaveRequests', async (_, status, staffId) => {
+    try { return await db.getStaffLeaveRequests(status, staffId) }
+    catch (e) { return [] }
+  })
+  ipcMain.handle('staffScheduling:requestLeave', async (_, staffId, leaveType, startDate, endDate, reason) => {
+    try {
+      await requireCapability('staff.manage')
+      return await db.requestStaffLeave(staffId, leaveType, startDate, endDate, reason)
+    } catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('staffScheduling:approveLeave', async (_, id, status, rejectionReason) => {
+    try {
+      requireRole('manager', 'admin', 'super_admin')
+      await requireCapability('staff.manage')
+      return await db.approveStaffLeave(id, status, rejectionReason)
+    } catch (e) { return { success: false, error: e.message } }
+  })
+
+  // -- Staff Operations (Phase 4 depth) ------------------------------------
+  ipcMain.handle('staffOperations:getStaffDepartments', async () => {
+    try { await requireCapability('workforce_scheduling.view'); return await db.getStaffDepartments() }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('staffOperations:createStaffDepartment', async (_, name, description, color) => {
+    try { requireRole('manager', 'admin', 'super_admin'); await requireCapability('workforce_scheduling.manage'); return await db.createStaffDepartment(name, description, color) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('staffOperations:updateStaffDepartment', async (_, id, payload) => {
+    try { requireRole('manager', 'admin', 'super_admin'); await requireCapability('workforce_scheduling.manage'); return await db.updateStaffDepartment(id, payload) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('staffOperations:deleteStaffDepartment', async (_, id) => {
+    try { requireRole('manager', 'admin', 'super_admin'); await requireCapability('workforce_scheduling.manage'); return await db.deleteStaffDepartment(id) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('staffOperations:getShiftTemplates', async (_, departmentId) => {
+    try { await requireCapability('workforce_scheduling.view'); return await db.getShiftTemplates(departmentId) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('staffOperations:createShiftTemplate', async (_, payload) => {
+    try { requireRole('manager', 'admin', 'super_admin'); await requireCapability('workforce_scheduling.manage'); return await db.createShiftTemplate(payload) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('staffOperations:updateShiftTemplate', async (_, id, payload) => {
+    try { requireRole('manager', 'admin', 'super_admin'); await requireCapability('workforce_scheduling.manage'); return await db.updateShiftTemplate(id, payload) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('staffOperations:deleteShiftTemplate', async (_, id) => {
+    try { requireRole('manager', 'admin', 'super_admin'); await requireCapability('workforce_scheduling.manage'); return await db.deleteShiftTemplate(id) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('staffOperations:getTaskCategories', async () => {
+    try { await requireCapability('workforce_scheduling.view'); return await db.getTaskCategories() }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('staffOperations:createTaskCategory', async (_, name, color) => {
+    try { requireRole('manager', 'admin', 'super_admin'); await requireCapability('workforce_scheduling.manage'); return await db.createTaskCategory(name, color) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('staffOperations:getTaskAssignments', async (_, staffId, status, date) => {
+    try { await requireCapability('workforce_scheduling.view'); return await db.getTaskAssignments(staffId, status, date) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('staffOperations:createTaskAssignment', async (_, payload) => {
+    try { requireRole('manager', 'admin', 'super_admin'); await requireCapability('workforce_scheduling.manage'); return await db.createTaskAssignment(payload) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('staffOperations:updateTaskAssignment', async (_, id, payload) => {
+    try { requireRole('manager', 'admin', 'super_admin'); await requireCapability('workforce_scheduling.manage'); return await db.updateTaskAssignment(id, payload) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('staffOperations:completeTaskAssignment', async (_, id, notes) => {
+    try { requireRole('manager', 'admin', 'super_admin'); await requireCapability('workforce_scheduling.manage'); return await db.completeTaskAssignment(id, notes) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('staffOperations:getTrainingChecklists', async (_, departmentId) => {
+    try { await requireCapability('workforce_scheduling.view'); return await db.getTrainingChecklists(departmentId) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('staffOperations:createTrainingChecklist', async (_, payload) => {
+    try { requireRole('manager', 'admin', 'super_admin'); await requireCapability('workforce_scheduling.manage'); return await db.createTrainingChecklist(payload) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('staffOperations:recordTrainingCompletion', async (_, staffId, checklistId, notes) => {
+    try { requireRole('manager', 'admin', 'super_admin'); await requireCapability('workforce_scheduling.manage'); return await db.recordTrainingCompletion(staffId, checklistId, notes) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('staffOperations:getTrainingRecords', async (_, staffId) => {
+    try { await requireCapability('workforce_scheduling.view'); return await db.getTrainingRecords(staffId) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('staffOperations:createShiftHandover', async (_, payload) => {
+    try { requireRole('manager', 'admin', 'super_admin'); await requireCapability('workforce_scheduling.manage'); return await db.createShiftHandover(payload) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('staffOperations:getShiftHandovers', async (_, date) => {
+    try { await requireCapability('workforce_scheduling.view'); return await db.getShiftHandovers(date) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('staffOperations:getStaffProductivityDashboard', async (_, startDate, endDate) => {
+    try { await requireCapability('workforce_scheduling.view'); return await db.getStaffProductivityDashboard(startDate, endDate) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('staffOperations:publishWeeklySchedule', async (_, weekStart) => {
+    try { requireRole('manager', 'admin', 'super_admin'); await requireCapability('workforce_scheduling.manage'); return await db.publishWeeklySchedule(weekStart) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('staffOperations:getScheduleConflicts', async (_, weekStart) => {
+    try { await requireCapability('workforce_scheduling.view'); return await db.getScheduleConflicts(weekStart) }
+    catch (e) { return { success: false, error: e.message } }
   })
 
   // -- Rooms -----------------------------------------------------------------
@@ -5155,7 +5559,7 @@ app.whenReady().then(async () => {
     const period = start && end ? `${start}-to-${end}` : date || ''
     const result = await dialog.showSaveDialog(win, {
       title: `Save ${reportTitle} as PDF`,
-      defaultPath: buildReportExportFilename({ prefix: 'boroko', reportTitle: reportTitle || reportType, period, extension: 'pdf' }),
+      defaultPath: buildReportExportFilename({ prefix: APP_EXPORT_PREFIX, reportTitle: reportTitle || reportType, period, extension: 'pdf' }),
       filters: [{ name: 'PDF Files', extensions: ['pdf'] }]
     })
     if (result.canceled || !result.filePath) return { success: false }
@@ -5237,7 +5641,7 @@ app.whenReady().then(async () => {
     const period = start && end ? `${start}-to-${end}` : ''
     const { filePath, canceled } = await dialog.showSaveDialog(win, {
       title: `Export ${reportTitle} to Excel`,
-      defaultPath: buildReportExportFilename({ prefix: 'boroko', reportTitle, period, extension: 'xlsx' }),
+      defaultPath: buildReportExportFilename({ prefix: APP_EXPORT_PREFIX, reportTitle, period, extension: 'xlsx' }),
       filters: [{ name: 'Excel Files', extensions: ['xlsx'] }]
     })
     if (canceled || !filePath) return { success: false }
@@ -5245,7 +5649,7 @@ app.whenReady().then(async () => {
       const wb = XLSX.utils.book_new()
       const sym = currency || 'P'
       const totalDays = Math.max(1, Math.ceil((new Date(end) - new Date(start)) / 86400000))
-      const resolvedLodge = lodgeName || companyName || 'Boroko Lodge'
+      const resolvedLodge = lodgeName || companyName || APP_BRAND_NAME
       const sharedMeta = { lodgeName: resolvedLodge, companyName, periodLabel: `${start} to ${end}`, generatedAt }
       const outletMeta = { ...sharedMeta, outletLabel }
 
@@ -5466,7 +5870,7 @@ app.whenReady().then(async () => {
     const period = `${startDate}-to-${endDate}`
     const { filePath, canceled } = await dialog.showSaveDialog(win, {
       title: 'Export Detailed Reports to Excel',
-      defaultPath: buildReportExportFilename({ prefix: 'boroko', reportTitle: 'detailed-reports', period, extension: 'xlsx' }),
+      defaultPath: buildReportExportFilename({ prefix: APP_EXPORT_PREFIX, reportTitle: 'detailed-reports', period, extension: 'xlsx' }),
       filters: [{ name: 'Excel Files', extensions: ['xlsx'] }]
     })
     if (canceled || !filePath) return { success: false, canceled: true }
@@ -5475,7 +5879,7 @@ app.whenReady().then(async () => {
       const reconciliation = db.computeReconciliation(data)
       const generatedAt = new Date().toLocaleString()
       const sym = currency || 'P'
-      const resolvedLodge = lodgeName || companyName || 'Boroko Lodge'
+      const resolvedLodge = lodgeName || companyName || APP_BRAND_NAME
       const wb = XLSX.utils.book_new()
 
       const sharedMeta = { lodgeName: resolvedLodge, companyName, periodLabel: `${startDate} to ${endDate}`, currency: sym, outletLabel, generatedAt, asOf: reconciliation.asOf, reconciliationStatus: reconciliation.reconciliationStatus, exportVersion: db.EXPORT_VERSION }
@@ -5958,7 +6362,7 @@ app.whenReady().then(async () => {
     const period = `${startDate}-to-${endDate}`
     const result = await dialog.showSaveDialog(win, {
       title: 'Save Detailed Report as PDF',
-      defaultPath: buildReportExportFilename({ prefix: 'boroko', reportTitle: `${reportType}-report`, period, extension: 'pdf' }),
+      defaultPath: buildReportExportFilename({ prefix: APP_EXPORT_PREFIX, reportTitle: `${reportType}-report`, period, extension: 'pdf' }),
       filters: [{ name: 'PDF Files', extensions: ['pdf'] }]
     })
     if (result.canceled || !result.filePath) return { success: false, canceled: true }
@@ -5966,7 +6370,7 @@ app.whenReady().then(async () => {
       const data = await db.loadDetailedReportData(state.lodgeId, startDate, endDate, outletLabel)
       const reconciliation = db.computeReconciliation(data)
       const sym = currency || 'P'
-      const resolvedLodge = lodgeName || companyName || 'Boroko Lodge'
+      const resolvedLodge = lodgeName || companyName || APP_BRAND_NAME
       const generatedAt = new Date().toLocaleString()
 
       // For tabs that need additional data, load it from existing report functions
@@ -6070,17 +6474,28 @@ app.whenReady().then(async () => {
       const privacyLabel = normalized.privacyMode ? '-redacted' : ''
       const { filePath, canceled } = await dialog.showSaveDialog(win, {
         title: 'Export All Lodge Data',
-        defaultPath: `boroko-${presetLabel}-export-${rangeLabel}-${today}${privacyLabel}.xlsx`,
+        defaultPath: `${APP_EXPORT_PREFIX}-${presetLabel}-export-${rangeLabel}-${today}${privacyLabel}.xlsx`,
         filters: [{ name: 'Excel Workbook', extensions: ['xlsx'] }]
       })
       if (canceled || !filePath) return { canceled: true }
       const sender = event.sender
-      return await exportAllDataWorkbookToPath(filePath, {
+      const result = await exportAllDataWorkbookToPath(filePath, {
         ...normalized,
         onProgress: (progress) => {
           try { sender.send('data:exportProgress', progress) } catch {}
         }
       })
+      if (result?.success) {
+        try {
+          await db.recordRestaurantSetupEvidence({
+            evidence_key: 'data_export',
+            details: { preset: normalized.preset, start_date: normalized.startDate, end_date: normalized.endDate }
+          })
+        } catch (evidenceError) {
+          console.warn('[SETUP READINESS] Export succeeded but setup evidence could not be recorded:', evidenceError?.message || evidenceError)
+        }
+      }
+      return result
     } catch (e) {
       return { success: false, error: e.message }
     }
@@ -6526,7 +6941,7 @@ app.whenReady().then(async () => {
       const period = start && end ? `${start}-to-${end}` : ''
       const { filePath, canceled } = await dialog.showSaveDialog(parentWin, {
         title: 'Export POS History to Excel',
-        defaultPath: buildReportExportFilename({ prefix: 'boroko', reportTitle: 'pos-history', period, extension: 'xlsx' }),
+        defaultPath: buildReportExportFilename({ prefix: APP_EXPORT_PREFIX, reportTitle: 'pos-history', period, extension: 'xlsx' }),
         filters: [{ name: 'Excel Files', extensions: ['xlsx'] }]
       })
       if (canceled || !filePath) return { success: false }
@@ -6538,7 +6953,7 @@ app.whenReady().then(async () => {
         db.getSettings().catch(() => ({}))
       ])
       const currency = settings?.currency || 'P'
-      const resolvedLodge = settings?.lodge_name || settings?.company_name || 'Boroko Lodge'
+      const resolvedLodge = settings?.lodge_name || settings?.company_name || APP_BRAND_NAME
       const periodLabel = start && end ? `${start} to ${end}` : 'All dates'
       const generatedAt = new Date().toLocaleString()
       const summary = getPosHistorySummary(orders || [])
@@ -6640,7 +7055,7 @@ app.whenReady().then(async () => {
       const period = start && end ? `${start}-to-${end}` : ''
       const { filePath, canceled } = await dialog.showSaveDialog(parentWin, {
         title: 'Export POS History as PDF',
-        defaultPath: buildReportExportFilename({ prefix: 'boroko', reportTitle: 'pos-history', period, extension: 'pdf' }),
+        defaultPath: buildReportExportFilename({ prefix: APP_EXPORT_PREFIX, reportTitle: 'pos-history', period, extension: 'pdf' }),
         filters: [{ name: 'PDF Files', extensions: ['pdf'] }]
       })
       if (canceled || !filePath) return { success: false }
@@ -6759,8 +7174,8 @@ app.whenReady().then(async () => {
       return { success: false, error: e.message }
     }
   })
-  ipcMain.handle('pos:getTabs', async () => {
-    try { await requireCapability('pos.view'); return await db.getPosTabs() }
+  ipcMain.handle('pos:getTabs', async (_, filters) => {
+    try { await requireCapability('pos.view'); return await db.getPosTabs(filters) }
     catch { return [] }
   })
   ipcMain.handle('pos:saveTab', async (_, data) => {
@@ -6794,16 +7209,17 @@ app.whenReady().then(async () => {
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('pos:getTablesWithStatus', async (_, outletId) => {
-    try { await requireCapability('pos.view'); return await db.getPosTablesWithStatus(outletId || null) }
+    try { await requireCapability('pos.view'); await requireCommercialFeature('tables'); return await db.getPosTablesWithStatus(outletId || null) }
     catch { return [] }
   })
   ipcMain.handle('pos:getActiveTableTab', async (_, tableName, outletId) => {
-    try { await requireCapability('pos.view'); return await db.getActivePosTableTab(tableName, outletId || null) }
+    try { await requireCapability('pos.view'); await requireCommercialFeature('tables'); return await db.getActivePosTableTab(tableName, outletId || null) }
     catch { return null }
   })
   ipcMain.handle('pos:openTableSession', async (_, data) => {
     try {
       await requireCapability('pos.manage')
+      await requireCommercialFeature('tables')
       const outletFilter = db.getUserPosOutletFilter()
       if (outletFilter !== null && data?.outlet_id && !outletFilter.includes(data.outlet_id)) {
         return { success: false, error: 'Access denied: you do not have access to this outlet.' }
@@ -6812,12 +7228,13 @@ app.whenReady().then(async () => {
     } catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('pos:getTables', async () => {
-    try { await requireCapability('pos.view'); return await db.getPosTables() }
+    try { await requireCapability('pos.view'); await requireCommercialFeature('tables'); return await db.getPosTables() }
     catch { return [] }
   })
   ipcMain.handle('pos:saveTable', async (_, data) => {
     try {
-      await requireCapability('pos.view')
+      await requireCapability('pos.manage')
+      await requireCommercialFeature('tables')
       const outletFilter = db.getUserPosOutletFilter()
       if (outletFilter !== null && data?.outlet_id && !outletFilter.includes(data.outlet_id)) {
         return { success: false, error: 'Access denied: you do not have access to this outlet.' }
@@ -6826,27 +7243,27 @@ app.whenReady().then(async () => {
     } catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('pos:deleteTable', async (_, id) => {
-    try { await requireCapability('pos.view'); return await db.deletePosTable(id) }
+    try { await requireCapability('pos.manage'); await requireCommercialFeature('tables'); return await db.deletePosTable(id) }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('pos:getStations', async () => {
-    try { await requireCapability('pos.view'); return await db.getPosStations() }
+    try { await requireCapability('pos.view'); await requireCommercialFeature('kitchen_tickets'); return await db.getPosStations() }
     catch { return [] }
   })
   ipcMain.handle('pos:saveStation', async (_, data) => {
-    try { await requireCapability('pos.manage'); return await db.savePosStation(data || {}) }
+    try { await requireCapability('pos.manage'); await requireCommercialFeature('kitchen_tickets'); return await db.savePosStation(data || {}) }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('pos:deleteStation', async (_, id) => {
-    try { await requireCapability('pos.manage'); return await db.deletePosStation(id) }
+    try { await requireCapability('pos.manage'); await requireCommercialFeature('kitchen_tickets'); return await db.deletePosStation(id) }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('pos:getTickets', async (_, filters) => {
-    try { await requireCapability('pos.view'); return await db.getPosTickets(filters || {}) }
+    try { await requireCapability('pos.view'); await requireCommercialFeature('kitchen_tickets'); return await db.getPosTickets(filters || {}) }
     catch { return [] }
   })
   ipcMain.handle('pos:updateTicketStatus', async (_, id, status) => {
-    try { await requireCapability('pos.manage'); return await db.updatePosTicketStatus(id, status) }
+    try { await requireCapability('pos.manage'); await requireCommercialFeature('kitchen_tickets'); return await db.updatePosTicketStatus(id, status) }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('pos:getCurrentShift', async (_, outletId, cashierId) => {
@@ -6913,51 +7330,51 @@ app.whenReady().then(async () => {
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('pos:getFloorLayout', async () => {
-    try { await requireCapability('pos.view'); return await db.getPosFloorLayout() }
+    try { await requireCapability('pos.view'); await requireCommercialFeature('tables'); return await db.getPosFloorLayout() }
     catch { return { areas: [] } }
   })
   ipcMain.handle('pos:saveFloorLayout', async (_, data) => {
-    try { await requireCapability('pos.manage'); return await db.savePosFloorLayout(data || {}) }
+    try { await requireCapability('pos.manage'); await requireCommercialFeature('tables'); return await db.savePosFloorLayout(data || {}) }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('pos:getRecipes', async () => {
-    try { await requireCapability('pos.view'); return await db.getPosRecipes() }
+    try { await requireCapability('pos.view'); await requireCommercialFeature('recipes'); return await db.getPosRecipes() }
     catch { return [] }
   })
   ipcMain.handle('pos:saveRecipe', async (_, data) => {
-    try { await requireCapability('pos.manage'); return await db.savePosRecipe(data || {}) }
+    try { await requireCapability('pos.manage'); await requireCommercialFeature('recipes'); return await db.savePosRecipe(data || {}) }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('pos:deleteRecipe', async (_, recipeId) => {
-    try { await requireCapability('pos.manage'); return await db.deletePosRecipe(recipeId) }
+    try { await requireCapability('pos.manage'); await requireCommercialFeature('recipes'); return await db.deletePosRecipe(recipeId) }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('pos:getCustomers', async () => {
-    try { await requireCapability('pos.view'); return await db.getPosCustomers() }
+    try { await requireCapability('pos.view'); await requireCommercialFeature('customer_accounts'); return await db.getPosCustomers() }
     catch { return [] }
   })
   ipcMain.handle('pos:saveCustomer', async (_, data) => {
-    try { await requireCapability('pos.manage'); return await db.savePosCustomer(data || {}) }
+    try { await requireCapability('pos.manage'); await requireCommercialFeature('customer_accounts'); return await db.savePosCustomer(data || {}) }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('pos:awardLoyalty', async (_, data) => {
-    try { await requireCapability('pos.manage'); return await db.awardLoyaltyPoints(data || {}) }
+    try { await requireCapability('pos.manage'); await requireCommercialFeature('loyalty'); return await db.awardLoyaltyPoints(data || {}) }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('pos:redeemLoyalty', async (_, data) => {
-    try { await requireCapability('pos.manage'); return await db.redeemLoyaltyPoints(data || {}) }
+    try { await requireCapability('pos.manage'); await requireCommercialFeature('loyalty'); return await db.redeemLoyaltyPoints(data || {}) }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('pos:chargeCustomerAccount', async (_, data) => {
-    try { await requireCapability('pos.manage'); return await db.chargeCustomerAccount(data || {}) }
+    try { await requireCapability('pos.manage'); await requireCommercialFeature('customer_accounts'); return await db.chargeCustomerAccount(data || {}) }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('pos:redeemVoucher', async (_, code, amount) => {
-    try { await requireCapability('pos.manage'); return await db.redeemVoucher(code, amount) }
+    try { await requireCapability('pos.manage'); await requireCommercialFeature('vouchers'); return await db.redeemVoucher(code, amount) }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('pos:recordDelivery', async (_, data) => {
-    try { await requireCapability('pos.manage'); return await db.recordDelivery(data || {}) }
+    try { await requireCapability('pos.manage'); await requireCommercialFeature('delivery_tracking'); return await db.recordDelivery(data || {}) }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('pos:clockInStaff', async (_, data) => {
@@ -6966,6 +7383,65 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('pos:clockOutStaff', async (_, data) => {
     try { await requireCapability('pos.manage'); return await db.clockOutStaff(data || {}) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:clockInStaffWithAttendancePin', async (_, data) => {
+    try { await requireCapability('pos.manage'); return await db.clockInStaffWithAttendancePin(data || {}) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:getSharedTillHistory', async (event, start, end, options = {}) => {
+    try {
+      await requireCapability('pos.view')
+      const operator = getSharedTillOperatorSession(event.sender)
+      if (!operator) throw new Error('Unlock Till with your Staff PIN to view your sales history.')
+      const outletFilter = db.getUserPosOutletFilter()
+      return await db.getSharedTillOperatorOrders(start, end, outletFilter, operator.staffId, {
+        refresh: options?.refresh === true,
+      })
+    } catch (e) {
+      throw new Error(e?.message || 'Could not load the PIN-verified Till history')
+    }
+  })
+  ipcMain.handle('pos:getMyOrders', async (_, start, end) => {
+    try {
+      await requireCapability('pos.view')
+      const currentUser = await db.getCurrentUser()
+      if (!currentUser?.id) throw new Error('Sign in again before requesting a sale correction.')
+      const outletFilter = db.getUserPosOutletFilter()
+      const rows = await db.getPosOrders(start, end, outletFilter)
+      return (rows || []).filter((order) => order.cashier_id === currentUser.id)
+    } catch (e) {
+      throw new Error(e?.message || 'Failed to load your Till sales')
+    }
+  })
+  ipcMain.handle('pos:getStaffOpenShift', async (_, staffId) => {
+    try { await requireCapability('pos.manage'); return await db.getStaffOpenPosShift(staffId) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:getStaffCashupSubmission', async (_, shiftId) => {
+    try { await requireCapability('pos.manage'); return await db.getStaffPosCashupSubmission(shiftId) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:activateSharedTillOperator', async (event, data) => {
+    try {
+      await requireCapability('pos.manage')
+      const result = await db.activateSharedTillOperator(data || {})
+      if (result?.success && result?.staff?.id) setSharedTillOperatorSession(event.sender, result.staff, data?.outlet_id || data?.outletId)
+      return result
+    }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:lockSharedTillOperator', async (event) => {
+    sharedTillOperatorSessions.delete(event.sender?.id)
+    return { success: true }
+  })
+  ipcMain.handle('pos:linkMyShiftAttendance', async (_, data) => { try { await requireCapability('pos.manage'); return await db.linkMyPosShiftToAttendance(data || {}) } catch (e) { return { success:false,error:e.message } } })
+  ipcMain.handle('pos:clockInSelfForPos', async (_, data) => {
+    try { await requireCapability('pos.manage'); return await db.clockInSelfForPos(data || {}) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:clockOutStaffWithAttendancePin', async (_, data) => {
+    try { await requireCapability('pos.manage'); return await db.clockOutStaffWithAttendancePin(data || {}) }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('pos:getActiveShifts', async () => {
@@ -6985,52 +7461,139 @@ app.whenReady().then(async () => {
     catch { return null }
   })
   ipcMain.handle('pos:getSuppliers', async () => {
-    try { await requireCapability('pos.view'); return await db.getPosSuppliers() }
+    try { await requireCapability('pos.view'); await requireCommercialFeature('suppliers'); return await db.getPosSuppliers() }
     catch { return [] }
   })
   ipcMain.handle('pos:createSupplier', async (_, data) => {
-    try { await requireCapability('pos.manage'); return await db.createPosSupplier(data || {}) }
+    try { await requireCapability('pos.manage'); await requireCommercialFeature('suppliers'); return await db.createPosSupplier(data || {}) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:submitCashup', async (_, data) => {
+    try {
+      await requireCapability('pos.manage')
+      return await db.submitPosCashup(data || {})
+    } catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:submitCashupWithAttendancePin', async (_, data) => {
+    try { await requireCapability('pos.manage'); return await db.submitPosCashupWithAttendancePin(data || {}) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:getMyCashupSubmission', async (_, shiftId) => {
+    try { await requireCapability('pos.view'); return await db.getMyPosCashupSubmission(shiftId) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:getPendingCashupSubmissions', async () => {
+    try { await requireCapability('pos.cashup'); return await db.getPendingPosCashupSubmissions() }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:reviewCashupSubmission', async (_, data) => {
+    try { await requireCapability('pos.cashup'); return await db.reviewPosCashupSubmission(data || {}) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:updateSupplier', async (_, supplierId, data) => {
+    try { await requireCapability('pos.manage'); await requireCommercialFeature('suppliers'); return await db.updatePosSupplier(supplierId, data || {}) }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('pos:createPurchaseOrder', async (_, data) => {
-    try { await requireCapability('pos.manage'); return await db.createPurchaseOrder(data || {}) }
+    try { await requireCapability('pos.manage'); await requireCommercialFeature('purchasing'); return await db.createPurchaseOrder(data || {}) }
     catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:updatePurchaseOrderDraft', async (_, orderId, data) => {
+    try { await requireCapability('inventory.manage'); await requireCommercialFeature('purchasing'); return await db.updatePurchaseOrderDraft(orderId, data || {}) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  const getPurchaseOrderForDocument = async (orderId) => {
+    const orders = await db.getPosPurchaseOrders()
+    const order = (orders || []).find((row) => row.id === orderId)
+    if (!order) throw new Error('Purchase order was not found for this business.')
+    const settings = await db.getSettings().catch(() => ({}))
+    return { order, settings: settings || {} }
+  }
+  ipcMain.handle('pos:savePurchaseOrderPdf', async (event, orderId) => {
+    try {
+      await requireCapability('inventory.view'); await requireCommercialFeature('purchasing')
+      const { order, settings } = await getPurchaseOrderForDocument(orderId)
+      const reference = `po-${String(order.id).slice(-6).toLowerCase()}`
+      const win = BrowserWindow.fromWebContents(event.sender)
+      const result = await dialog.showSaveDialog(win, { title: 'Save purchase order as PDF', defaultPath: `${reference}.pdf`, filters: [{ name: 'PDF Files', extensions: ['pdf'] }] })
+      if (result.canceled || !result.filePath) return { success: false, canceled: true }
+      const pdf = await renderHtmlToPdfBuffer(buildPurchaseOrderPdfHtml({ purchaseOrder: order, business: settings, currency: settings.currency || 'P' }), { pageSize: 'A4', printBackground: true }, { minTextLength: 40 })
+      fs.writeFileSync(result.filePath, pdf)
+      return { success: true, filePath: result.filePath }
+    } catch (error) { return { success: false, error: error?.message || 'Could not save purchase order PDF.' } }
+  })
+  ipcMain.handle('pos:sendPurchaseOrderEmail', async (_, orderId) => {
+    try {
+      await requireCapability('inventory.manage'); await requireCommercialFeature('purchasing')
+      const { order, settings } = await getPurchaseOrderForDocument(orderId)
+      if (order.status !== 'approved') return { success: false, error: 'Approve this purchase order before sending it to the supplier.' }
+      const recipient = String(order.supplier?.email || '').trim()
+      if (!recipient) return { success: false, error: 'Add an email address to this supplier before sending the purchase order.' }
+      const reference = `po-${String(order.id).slice(-6).toLowerCase()}.pdf`
+      const pdf = await renderHtmlToPdfBuffer(buildPurchaseOrderPdfHtml({ purchaseOrder: order, business: settings, currency: settings.currency || 'P' }), { pageSize: 'A4', printBackground: true }, { minTextLength: 40 })
+      const sent = await sendPurchaseOrderEmail({ to: recipient, purchaseOrder: order, businessName: settings.lodge_name || settings.company_name, currency: settings.currency || 'P', pdfBuffer: pdf, filename: reference })
+      if (sent?.success) Promise.resolve(db.recordActivity?.('purchase_order_emailed', `Purchase order ${String(order.id).slice(-6).toUpperCase()} emailed to ${recipient}`)).catch(() => {})
+      return sent
+    } catch (error) { return { success: false, error: error?.message || 'Could not email purchase order.' } }
   })
   ipcMain.handle('pos:approvePurchaseOrder', async (_, orderId) => {
-    try { await requireCapability('pos.manage'); return await db.approvePurchaseOrder(orderId) }
+    try { await requireCapability('pos.manage'); await requireCommercialFeature('purchasing'); return await db.approvePurchaseOrder(orderId) }
     catch (e) { return { success: false, error: e.message } }
   })
-  ipcMain.handle('pos:receivePurchaseOrder', async (_, orderId) => {
-    try { await requireCapability('pos.manage'); return await db.receivePurchaseOrder(orderId) }
+  ipcMain.handle('pos:receivePurchaseOrder', async (_, orderId, stockLocationId) => {
+    try { await requireCapability('pos.manage'); await requireCommercialFeature('purchasing'); return await db.receivePurchaseOrder(orderId, stockLocationId) }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('pos:createStockTransfer', async (_, data) => {
-    try { await requireCapability('pos.manage'); return await db.createStockTransfer(data || {}) }
+    try { await requireCapability('pos.manage'); await requireCommercialFeature('stock_transfers'); return await db.createStockTransfer(data || {}) }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('pos:createChecklist', async (_, data) => {
-    try { await requireCapability('pos.manage'); return await db.createDailyChecklist(data || {}) }
+    try { await requireCapability('pos.manage'); await requireCommercialFeature('checklists'); return await db.createDailyChecklist(data || {}) }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('pos:completeChecklistItem', async (_, data) => {
-    try { await requireCapability('pos.manage'); return await db.completeChecklistItem(data || {}) }
+    try { await requireCapability('pos.manage'); await requireCommercialFeature('checklists'); return await db.completeChecklistItem(data || {}) }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('pos:getActiveAlerts', async () => {
-    try { await requireCapability('pos.view'); return await db.getActiveAlerts() }
+    try { await requireCapability('pos.view'); await requireCommercialFeature('alerts'); return await db.getActiveAlerts() }
     catch { return [] }
   })
   ipcMain.handle('pos:recordAlert', async (_, data) => {
-    try { await requireCapability('pos.manage'); return await db.recordExceptionAlert(data || {}) }
+    try { await requireCapability('pos.manage'); await requireCommercialFeature('alerts'); return await db.recordExceptionAlert(data || {}) }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('pos:resolveAlert', async (_, alertId) => {
-    try { await requireCapability('pos.manage'); return await db.resolveExceptionAlert(alertId) }
+    try { await requireCapability('pos.manage'); await requireCommercialFeature('alerts'); return await db.resolveExceptionAlert(alertId) }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('pos:getPurchaseOrders', async (_, startDate, endDate) => {
-    try { await requireCapability('pos.view'); return await db.getPosPurchaseOrders(startDate, endDate) }
+    try { await requireCapability('pos.view'); await requireCommercialFeature('purchasing'); return await db.getPosPurchaseOrders(startDate, endDate) }
     catch { return [] }
+  })
+  ipcMain.handle('pos:getPurchasingSnapshot', async () => {
+    try {
+      await requireCapability('pos.view')
+      await requireCapability('inventory.view')
+      await requireCommercialFeature('suppliers')
+      await requireCommercialFeature('purchasing')
+      const [suppliers, orders, inventoryItems] = await Promise.all([
+        db.getPosSuppliers().catch(() => []),
+        db.getPosPurchaseOrders().catch(() => []),
+        db.getInventoryItems().catch(() => [])
+      ])
+      // Electron IPC must receive a structured-clone-safe value. This explicit
+      // JSON normalisation prevents a stale cache or SDK relation object from
+      // breaking the entire Purchasing refresh with "could not be cloned".
+      return JSON.stringify({
+        suppliers: Array.isArray(suppliers) ? suppliers : [],
+        orders: Array.isArray(orders) ? orders : [],
+        inventoryItems: Array.isArray(inventoryItems) ? inventoryItems : []
+      })
+    } catch (e) {
+      return JSON.stringify({ suppliers: [], orders: [], inventoryItems: [], error: e?.message || 'Purchasing data could not be loaded.' })
+    }
   })
   ipcMain.handle('pos:getShiftHistory', async (_, startDate, endDate) => {
     try { await requireCapability('pos.view'); return await db.getShiftHistory(startDate, endDate) }
@@ -7041,109 +7604,142 @@ app.whenReady().then(async () => {
     catch { return [] }
   })
   ipcMain.handle('pos:getChecklists', async () => {
-    try { await requireCapability('pos.view'); return await db.getChecklists() }
+    try { await requireCapability('pos.view'); await requireCommercialFeature('checklists'); return await db.getChecklists() }
     catch { return [] }
   })
   ipcMain.handle('pos:getExceptionAlerts', async () => {
-    try { await requireCapability('pos.view'); return await db.getExceptionAlerts() }
+    try { await requireCapability('pos.view'); await requireCommercialFeature('alerts'); return await db.getExceptionAlerts() }
     catch { return [] }
   })
   ipcMain.handle('pos:generateOwnerDigest', async () => {
-    try { await requireCapability('pos.manage'); return await db.generateOwnerDigest() }
+    try { await requireCapability('pos.manage'); await requireCommercialFeature('owner_digest'); return await db.generateOwnerDigest() }
     catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:getRestaurantShiftPlans', async (_, startDate, endDate) => {
+    try { await requireCapability('pos.view'); return await db.getRestaurantShiftPlans(startDate, endDate) } catch { return [] }
+  })
+  ipcMain.handle('pos:saveRestaurantShiftPlan', async (_, data) => {
+    try { await requireCapability('pos.manage'); return await db.saveRestaurantShiftPlan(data || {}) } catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:deleteRestaurantShiftPlan', async (_, id) => {
+    try { await requireCapability('pos.manage'); return await db.deleteRestaurantShiftPlan(id) } catch (e) { return { success: false, error: e.message } }
   })
   // ── Phase 6.1: Reservations ──────────────────────────────────────────────
   ipcMain.handle('pos:getRestaurantReservations', async (_, startDate, endDate, outletId) => {
-    try { await requireCapability('pos.view'); return await db.getRestaurantReservations(startDate, endDate, outletId) }
+    try { await requireCapability('pos.view'); await requireCommercialFeature('tables'); return await db.getRestaurantReservations(startDate, endDate, outletId) }
     catch { return [] }
   })
   ipcMain.handle('pos:createRestaurantReservation', async (_, data) => {
-    try { await requireCapability('pos.manage'); return await db.createRestaurantReservation(data || {}) }
+    try { await requireCapability('pos.service'); await requireCommercialFeature('tables'); return await db.createRestaurantReservation(data || {}) }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('pos:updateRestaurantReservation', async (_, id, data) => {
-    try { await requireCapability('pos.manage'); return await db.updateRestaurantReservation(id, data || {}) }
+    try { await requireCapability('pos.manage'); await requireCommercialFeature('tables'); return await db.updateRestaurantReservation(id, data || {}) }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('pos:cancelRestaurantReservation', async (_, id, reason) => {
-    try { await requireCapability('pos.manage'); return await db.cancelRestaurantReservation(id, reason) }
+    try { await requireCapability('pos.manage'); await requireCommercialFeature('tables'); return await db.cancelRestaurantReservation(id, reason) }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('pos:seatRestaurantReservation', async (_, id, tableId) => {
-    try { await requireCapability('pos.manage'); return await db.seatRestaurantReservation(id, tableId) }
+    try { await requireCapability('pos.manage'); await requireCommercialFeature('tables'); return await db.seatRestaurantReservation(id, tableId) }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('pos:markRestaurantReservationNoShow', async (_, id, reason) => {
-    try { await requireCapability('pos.manage'); return await db.markRestaurantReservationNoShow(id, reason) }
+    try { await requireCapability('pos.manage'); await requireCommercialFeature('tables'); return await db.markRestaurantReservationNoShow(id, reason) }
     catch (e) { return { success: false, error: e.message } }
   })
-  ipcMain.handle('pos:getRestaurantWaitlist', async (_, outletId) => {
-    try { await requireCapability('pos.view'); return await db.getRestaurantWaitlist(outletId) }
+  ipcMain.handle('pos:getRestaurantWaitlist', async (_, outletId, includeReservationWaitlist) => {
+    try { await requireCapability('pos.view'); await requireCommercialFeature('tables'); return await db.getRestaurantWaitlist(outletId, Boolean(includeReservationWaitlist)) }
     catch { return [] }
   })
   ipcMain.handle('pos:createRestaurantWaitlistEntry', async (_, data) => {
-    try { await requireCapability('pos.manage'); return await db.createRestaurantWaitlistEntry(data || {}) }
+    try { await requireCapability('pos.service'); await requireCommercialFeature('tables'); return await db.createRestaurantWaitlistEntry(data || {}) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:updateRestaurantWaitlistEntry', async (_, id, data) => {
+    try { await requireCapability('pos.service'); await requireCommercialFeature('tables'); return await db.updateRestaurantWaitlistEntry(id, data || {}) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:removeRestaurantWaitlistEntry', async (_, id, reason) => {
+    try { await requireCapability('pos.service'); await requireCommercialFeature('tables'); return await db.removeRestaurantWaitlistEntry(id, reason) }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('pos:seatRestaurantWaitlistEntry', async (_, id, tableId) => {
-    try { await requireCapability('pos.manage'); return await db.seatRestaurantWaitlistEntry(id, tableId) }
+    try { await requireCapability('pos.service'); await requireCommercialFeature('tables'); return await db.seatRestaurantWaitlistEntry(id, tableId) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:serviceRestaurantReservationAction', async (_, id, action, tableIds) => {
+    try { await requireCapability('pos.service'); await requireCommercialFeature('tables'); return await db.serviceRestaurantReservationAction(id, action, tableIds) }
     catch (e) { return { success: false, error: e.message } }
   })
   // ── Phase 6.2: Combos ────────────────────────────────────────────────────
   ipcMain.handle('pos:getRestaurantCombos', async (_, outletId) => {
-    try { await requireCapability('pos.view'); return await db.getRestaurantCombos(outletId) }
+    try { await requireCapability('pos.view'); await requireCommercialFeature('recipes'); return await db.getRestaurantCombos(outletId) }
     catch { return [] }
   })
   ipcMain.handle('pos:saveRestaurantCombo', async (_, data) => {
-    try { await requireCapability('pos.manage'); return await db.saveRestaurantCombo(data || {}) }
+    try { await requireCapability('pos.manage'); await requireCommercialFeature('recipes'); return await db.saveRestaurantCombo(data || {}) }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('pos:deleteRestaurantCombo', async (_, comboId) => {
-    try { await requireCapability('pos.manage'); return await db.deleteRestaurantCombo(comboId) }
+    try { await requireCapability('pos.manage'); await requireCommercialFeature('recipes'); return await db.deleteRestaurantCombo(comboId) }
     catch (e) { return { success: false, error: e.message } }
   })
   // ── Phase 6.3: Recipe Variance ───────────────────────────────────────────
   ipcMain.handle('pos:getRecipeVarianceReport', async (_, startDate, endDate, outletId) => {
-    try { await requireCapability('reports.view'); return await db.getRecipeVarianceReport(startDate, endDate, outletId) }
+    try { await requireCapability('reports.view'); await requireCommercialFeature('variance'); return await db.getRecipeVarianceReport(startDate, endDate, outletId) }
+    catch { return [] }
+  })
+  ipcMain.handle('pos:getRecipePreparationLosses', async (_, startDate, endDate, outletId) => {
+    try { await requireCapability('reports.view'); await requireCommercialFeature('variance'); return await db.getRecipePreparationLosses(startDate, endDate, outletId) }
+    catch { return [] }
+  })
+  ipcMain.handle('pos:getRecipePreparationLossIngredientSummary', async (_, startDate, endDate, outletId) => {
+    try { await requireCapability('reports.view'); await requireCommercialFeature('variance'); return await db.getRecipePreparationLossIngredientSummary(startDate, endDate, outletId) }
     catch { return [] }
   })
   // ── Phase 6.5: Prep Batches ──────────────────────────────────────────────
   ipcMain.handle('pos:getRestaurantPrepItems', async () => {
-    try { await requireCapability('pos.view'); return await db.getRestaurantPrepItems() }
+    try { await requireCapability('pos.view'); await requireCommercialFeature('prep'); return await db.getRestaurantPrepItems() }
     catch { return [] }
   })
   ipcMain.handle('pos:saveRestaurantPrepItem', async (_, data) => {
-    try { await requireCapability('pos.manage'); return await db.saveRestaurantPrepItem(data || {}) }
+    try { await requireCapability('pos.manage'); await requireCommercialFeature('prep'); return await db.saveRestaurantPrepItem(data || {}) }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('pos:getRestaurantPrepBatches', async (_, startDate, endDate, outletId) => {
-    try { await requireCapability('pos.view'); return await db.getRestaurantPrepBatches(startDate, endDate, outletId) }
+    try { await requireCapability('pos.view'); await requireCommercialFeature('prep'); return await db.getRestaurantPrepBatches(startDate, endDate, outletId) }
     catch { return [] }
   })
   ipcMain.handle('pos:createRestaurantPrepBatch', async (_, data) => {
-    try { await requireCapability('pos.manage'); return await db.createRestaurantPrepBatch(data || {}) }
+    try { await requireCapability('pos.manage'); await requireCommercialFeature('prep'); return await db.createRestaurantPrepBatch(data || {}) }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('pos:postRestaurantPrepBatch', async (_, batchId) => {
-    try { await requireCapability('pos.manage'); return await db.postRestaurantPrepBatch(batchId) }
+    try { await requireCapability('pos.manage'); await requireCommercialFeature('prep'); return await db.postRestaurantPrepBatch(batchId) }
     catch (e) { return { success: false, error: e.message } }
   })
   // ── Phase 6.6: Kitchen Timing ────────────────────────────────────────────
   ipcMain.handle('pos:recordTicketStatusEvent', async (_, data) => {
-    try { await requireCapability('pos.manage'); return await db.recordTicketStatusEvent(data || {}) }
+    try { await requireCapability('pos.manage'); await requireCommercialFeature('kitchen_tickets'); return await db.recordTicketStatusEvent(data || {}) }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('pos:getKitchenTimingReport', async (_, startDate, endDate, outletId, station) => {
-    try { await requireCapability('reports.view'); return await db.getKitchenTimingReport(startDate, endDate, outletId, station) }
+    try { await requireCapability('reports.view'); await requireCommercialFeature('performance'); return await db.getKitchenTimingReport(startDate, endDate, outletId, station) }
     catch { return [] }
   })
   // ── Phase 6.7: Purchase Suggestions ──────────────────────────────────────
   ipcMain.handle('pos:getLowStockPurchaseSuggestions', async (_, outletId) => {
-    try { await requireCapability('inventory.view'); return await db.getLowStockPurchaseSuggestions(outletId) }
+    try { await requireCapability('inventory.view'); await requireCommercialFeature('stock_control'); return await db.getLowStockPurchaseSuggestions(outletId) }
     catch { return [] }
   })
+  ipcMain.handle('pos:setPreferredSupplierForInventoryItem', async (_, inventoryItemId, supplierId, lastUnitCost) => {
+    try { await requireCapability('inventory.manage'); await requireCommercialFeature('purchasing'); return await db.setPreferredSupplierForInventoryItem(inventoryItemId, supplierId, lastUnitCost) }
+    catch (e) { return { success: false, error: e.message } }
+  })
   ipcMain.handle('pos:convertPurchaseSuggestionsToPo', async (_, supplierId, suggestions, notes) => {
-    try { await requireCapability('inventory.manage'); return await db.convertPurchaseSuggestionsToPo(supplierId, suggestions, notes) }
+    try { await requireCapability('inventory.manage'); await requireCommercialFeature('purchasing'); return await db.convertPurchaseSuggestionsToPo(supplierId, suggestions, notes) }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('pos:recordSettlement', async (_, data) => {
@@ -7158,15 +7754,79 @@ app.whenReady().then(async () => {
     try { await requireCapability('pos.manage'); return await db.recordRestaurantReservationDeposit(data || {}) }
     catch (e) { return { success: false, error: e.message } }
   })
+  ipcMain.handle('pos:getSettlementExpectedTotal', async (_, startDate, endDate, channel) => {
+    try { await requireCapability('reports.view'); return await db.getRestaurantSettlementExpectedTotal(startDate, endDate, channel) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:getReservationDeposits', async (_, days) => {
+    try { await requireCapability('pos.manage'); return await db.getRestaurantReservationDeposits(days) }
+    catch { return [] }
+  })
+  ipcMain.handle('pos:getRestaurantOutletControls', async () => {
+    try { await requireCapability('pos.manage'); return await db.getRestaurantOutletControls() }
+    catch (e) { throw new Error(e?.message || 'Could not load outlet control.') }
+  })
+  ipcMain.handle('pos:getRestaurantStockLocations', async () => {
+    try { await requireCapability('pos.manage'); return await db.getRestaurantStockLocations() }
+    catch (e) { throw new Error(e?.message || 'Could not load stock locations.') }
+  })
+  ipcMain.handle('pos:getRestaurantStockLocationBalances', async () => {
+    try { await requireCapability('inventory.view'); return await db.getRestaurantStockLocationBalances() }
+    catch (e) { throw new Error(e?.message || 'Could not load stock balances.') }
+  })
+  ipcMain.handle('pos:createRestaurantStockLocation', async (_, data) => {
+    try { await requireCapability('pos.manage'); return await db.createRestaurantStockLocation(data || {}) }
+    catch (e) { return { success: false, error: e?.message || 'Could not create stock location.' } }
+  })
+  ipcMain.handle('pos:updateRestaurantStockLocation', async (_, locationId, data) => {
+    try { await requireCapability('pos.manage'); return await db.updateRestaurantStockLocation(locationId, data || {}) }
+    catch (e) { return { success: false, error: e?.message || 'Could not update stock location.' } }
+  })
+  ipcMain.handle('pos:deleteRestaurantStockLocation', async (_, locationId) => {
+    try { await requireCapability('pos.manage'); return await db.deleteRestaurantStockLocation(locationId) }
+    catch (e) { return { success: false, error: e?.message || 'Could not delete stock location.' } }
+  })
+  ipcMain.handle('pos:setRestaurantOutletStockLocation', async (_, outletId, stockLocationId) => {
+    try { await requireCapability('pos.manage'); return await db.setRestaurantOutletStockLocation(outletId, stockLocationId) }
+    catch (e) { return { success: false, error: e?.message || 'Could not update stock source.' } }
+  })
+  ipcMain.handle('pos:createRestaurantOutlet', async (_, data) => {
+    try { await requireCapability('pos.manage'); return await db.createRestaurantOutlet(data || {}) }
+    catch (e) { return { success: false, error: e?.message || 'Could not create outlet.' } }
+  })
+  ipcMain.handle('pos:updateRestaurantOutlet', async (_, outletId, data) => {
+    try { await requireCapability('pos.manage'); return await db.updateRestaurantOutlet(outletId, data || {}) }
+    catch (e) { return { success: false, error: e?.message || 'Could not update outlet.' } }
+  })
   ipcMain.handle('pos:recordFeedback', async (_, data) => {
     try { await requireCapability('pos.manage'); return await db.recordRestaurantFeedback(data || {}) }
     catch (e) { return { success: false, error: e.message } }
   })
+  ipcMain.handle('pos:submitStaffFeedback', async (_, data) => {
+    try { await requireCapability('pos.view'); return await db.recordRestaurantFeedback(data || {}) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:getFeedback', async (_, days) => {
+    try { await requireCapability('pos.manage'); return await db.getRestaurantFeedback(days) }
+    catch { return [] }
+  })
+  ipcMain.handle('pos:getSetupProgress', async () => {
+    try { await requireCapability('pos.manage'); return await db.getRestaurantSetupProgress() }
+    catch (e) { throw new Error(e.message || 'Could not load setup progress') }
+  })
+  ipcMain.handle('pos:setSetupStage', async (_, data) => {
+    try { await requireCapability('pos.manage'); return await db.setRestaurantSetupStage(data || {}) }
+    catch (e) { return { success: false, error: e.message } }
+  })
   ipcMain.handle('pos:createGiftCard', async (_, data) => { try { await requireCapability('pos.manage'); return await db.createRestaurantGiftCard(data || {}) } catch (e) { return { success: false, error: e.message } } })
   ipcMain.handle('pos:recordTipPayout', async (_, data) => { try { await requireCapability('pos.manage'); return await db.recordRestaurantTipPayout(data || {}) } catch (e) { return { success: false, error: e.message } } })
+  ipcMain.handle('pos:getTipPayouts', async (_, days) => { try { await requireCapability('pos.manage'); return await db.getRestaurantTipPayouts(days) } catch (e) { return [] } })
+  ipcMain.handle('pos:getTipBalances', async (_, days) => { try { await requireCapability('pos.manage'); return await db.getRestaurantTipBalances(days) } catch (e) { return [] } })
   ipcMain.handle('pos:saveReservationPolicy', async (_, data) => { try { await requireCapability('pos.manage'); return await db.saveRestaurantReservationPolicy(data || {}) } catch (e) { return { success: false, error: e.message } } })
-  ipcMain.handle('pos:recordInventoryLot', async (_, data) => { try { await requireCapability('inventory.manage'); return await db.recordRestaurantInventoryLot(data || {}) } catch (e) { return { success: false, error: e.message } } })
-  ipcMain.handle('pos:getExpiryLots', async (_, days) => { try { await requireCapability('inventory.view'); return await db.getRestaurantExpiryLots(days) } catch { return [] } })
+  ipcMain.handle('pos:recordInventoryLot', async (_, data) => { try { await requireCapability('inventory.manage'); await requireCommercialFeature('stock_control'); return await db.recordRestaurantInventoryLot(data || {}) } catch (e) { return { success: false, error: e.message } } })
+  ipcMain.handle('pos:updateInventoryLotExpiry', async (_, lotId, data) => { try { await requireCapability('inventory.manage'); await requireCommercialFeature('stock_control'); return await db.updateRestaurantInventoryLotExpiry(lotId, data || {}) } catch (e) { return { success: false, error: e.message } } })
+  ipcMain.handle('pos:writeOffExpiredInventoryLot', async (_, lotId, data) => { try { await requireCapability('inventory.manage'); await requireCommercialFeature('stock_control'); return await db.writeOffExpiredRestaurantInventoryLot(lotId, data || {}) } catch (e) { return { success: false, error: e.message } } })
+  ipcMain.handle('pos:getExpiryLots', async (_, days) => { try { await requireCapability('inventory.view'); await requireCommercialFeature('stock_control'); return await db.getRestaurantExpiryLots(days) } catch { return [] } })
   ipcMain.handle('pos:updateCustomerDisplay', async (_, data) => {
     try { await requireCapability('pos.view'); return await db.updatePosCustomerDisplay(data || {}) }
     catch (e) { return { success: false, error: e.message } }
@@ -7279,7 +7939,8 @@ app.whenReady().then(async () => {
   ipcMain.handle('users:sendInvite', async (_, id) => {
     try {
       await requireCapability('staff.manage')
-      await assertResourceBelongsToCurrentLodge('User', id, db.getUserById)
+      const targetUser = await assertResourceBelongsToCurrentLodge('User', id, db.getUserById)
+      assertManagerStaffScope(db.getCurrentUser?.(), targetUser)
       return await db.sendUserInviteOrReset(id)
     } catch (e) { return { success: false, error: e.message } }
   })
@@ -7345,6 +8006,27 @@ app.whenReady().then(async () => {
     catch (e) {
       console.error('inventory:getStocktakes failed:', e)
       return []
+    }
+  })
+  ipcMain.handle('inventory:getRestaurantStockSnapshot', async (_, movementDate) => {
+    try {
+      await requireCapability('inventory.view')
+      const [items, lowStock, movements, stocktakes] = await Promise.all([
+        db.getInventoryItems().catch(() => []),
+        db.getLowStockItems().catch(() => []),
+        db.getInventoryMovements({ limit: 200, start_date: movementDate, end_date: movementDate }).catch(() => []),
+        db.getInventoryStocktakes(12).catch(() => [])
+      ])
+      // A single JSON string keeps the live stock dashboard resilient when a
+      // cached row or database client value is not structured-cloneable.
+      return JSON.stringify({
+        items: Array.isArray(items) ? items : [],
+        lowStock: Array.isArray(lowStock) ? lowStock : [],
+        movements: Array.isArray(movements) ? movements : [],
+        stocktakes: Array.isArray(stocktakes) ? stocktakes : []
+      })
+    } catch (e) {
+      return JSON.stringify({ items: [], lowStock: [], movements: [], stocktakes: [], error: e?.message || 'Could not load restaurant inventory.' })
     }
   })
   ipcMain.handle('inventory:createStocktake', async (_, data) => {
@@ -7462,7 +8144,7 @@ app.whenReady().then(async () => {
       const period = payload.start && payload.end ? `${payload.start}-to-${payload.end}` : ''
       const { filePath, canceled } = await dialog.showSaveDialog(win, {
         title: `Export ${reportTitle} to Excel`,
-        defaultPath: buildReportExportFilename({ prefix: 'boroko', reportTitle, period, extension: 'xlsx' }),
+        defaultPath: buildReportExportFilename({ prefix: APP_EXPORT_PREFIX, reportTitle, period, extension: 'xlsx' }),
         filters: [{ name: 'Excel Files', extensions: ['xlsx'] }]
       })
       if (canceled || !filePath) return { success: false }
@@ -7472,7 +8154,7 @@ app.whenReady().then(async () => {
       const byRoom = Array.isArray(payload.byRoom) ? payload.byRoom : []
       const byItem = Array.isArray(payload.byItem) ? payload.byItem : []
       const grandTotal = Number(payload.grandTotal || 0)
-      const resolvedLodge = payload.lodgeName || payload.companyName || 'Boroko Lodge'
+      const resolvedLodge = payload.lodgeName || payload.companyName || APP_BRAND_NAME
       const resolvedCompany = payload.companyName && payload.companyName !== resolvedLodge ? payload.companyName : ''
       const generatedAt = payload.generatedAt || new Date().toLocaleString()
 
@@ -7553,7 +8235,7 @@ app.whenReady().then(async () => {
       const period = payload.start && payload.end ? `${payload.start}-to-${payload.end}` : ''
       const { filePath, canceled } = await dialog.showSaveDialog(parentWin, {
         title: `Export ${reportTitle} as PDF`,
-        defaultPath: buildReportExportFilename({ prefix: 'boroko', reportTitle, period, extension: 'pdf' }),
+        defaultPath: buildReportExportFilename({ prefix: APP_EXPORT_PREFIX, reportTitle, period, extension: 'pdf' }),
         filters: [{ name: 'PDF Files', extensions: ['pdf'] }]
       })
       if (canceled || !filePath) return { success: false }
@@ -7728,6 +8410,129 @@ app.whenReady().then(async () => {
     await requireCapability('conference.view')
     return await db.checkEventResourceAvailability(resourceKey, startAt, endAt, excludeEventId)
   })
+  ipcMain.handle('events:getVenuePackages', async (_, category, activeOnly) => {
+    try { return await db.getVenuePackages(category, activeOnly) }
+    catch { return [] }
+  })
+  ipcMain.handle('events:createVenuePackage', async (_, data) => {
+    try {
+      await requireCapability('conference.manage')
+      return await db.createVenuePackage(data)
+    } catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('events:updateVenuePackage', async (_, id, data) => {
+    try {
+      await requireCapability('conference.manage')
+      return await db.updateVenuePackage(id, data)
+    } catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('events:deleteVenuePackage', async (_, id) => {
+    try {
+      requireRole('manager', 'admin', 'super_admin')
+      await requireCapability('conference.manage')
+      return await db.deleteVenuePackage(id)
+    } catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('events:applyPackage', async (_, packageId, eventBookingId, quantity, intentKey) => {
+    try {
+      await requireCapability('conference.manage')
+      return await db.applyVenuePackageToEvent(packageId, eventBookingId, quantity, intentKey)
+    } catch (e) { return { success: false, error: e.message } }
+  })
+
+  // -- Venue Management (Phase 6 depth) ------------------------------------
+  ipcMain.handle('venueManagement:getEventLeads', async (_, status) => {
+    try { await requireCapability('venue_management.view'); return await db.getEventLeads(status) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('venueManagement:createEventLead', async (_, data) => {
+    try { requireRole('manager', 'admin', 'super_admin'); await requireCapability('venue_management.manage'); return await db.createEventLead(data) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('venueManagement:updateEventLead', async (_, id, data) => {
+    try { requireRole('manager', 'admin', 'super_admin'); await requireCapability('venue_management.manage'); return await db.updateEventLead(id, data) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('venueManagement:convertLeadToBooking', async (_, leadId) => {
+    try { requireRole('manager', 'admin', 'super_admin'); await requireCapability('venue_management.manage'); return await db.convertLeadToBooking(leadId) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('venueManagement:getVenueAvailabilityRules', async (_, resourceKey) => {
+    try { await requireCapability('venue_management.view'); return await db.getVenueAvailabilityRules(resourceKey) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('venueManagement:upsertVenueAvailabilityRule', async (_, data) => {
+    try { requireRole('manager', 'admin', 'super_admin'); await requireCapability('venue_management.manage'); return await db.upsertVenueAvailabilityRule(data) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('venueManagement:getVenueAvailabilityCalendar', async (_, resourceKey, startDate, endDate) => {
+    try { await requireCapability('venue_management.view'); return await db.getVenueAvailabilityCalendar(resourceKey, startDate, endDate) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('venueManagement:getRunSheet', async (_, eventBookingId) => {
+    try { await requireCapability('venue_management.view'); return await db.getRunSheet(eventBookingId) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('venueManagement:createRunSheet', async (_, data) => {
+    try { requireRole('manager', 'admin', 'super_admin'); await requireCapability('venue_management.manage'); return await db.createRunSheet(data) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('venueManagement:updateRunSheet', async (_, id, data) => {
+    try { requireRole('manager', 'admin', 'super_admin'); await requireCapability('venue_management.manage'); return await db.updateRunSheet(id, data) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('venueManagement:finalizeRunSheet', async (_, id) => {
+    try { requireRole('manager', 'admin', 'super_admin'); await requireCapability('venue_management.manage'); return await db.finalizeRunSheet(id) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('venueManagement:executeRunSheet', async (_, id) => {
+    try { requireRole('manager', 'admin', 'super_admin'); await requireCapability('venue_management.manage'); return await db.executeRunSheet(id) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('venueManagement:getEventSuppliers', async (_, eventBookingId) => {
+    try { await requireCapability('venue_management.view'); return await db.getEventSuppliers(eventBookingId) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('venueManagement:createSupplierEntry', async (_, data) => {
+    try { requireRole('manager', 'admin', 'super_admin'); await requireCapability('venue_management.manage'); return await db.createSupplierEntry(data) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('venueManagement:updateSupplierEntry', async (_, id, data) => {
+    try { requireRole('manager', 'admin', 'super_admin'); await requireCapability('venue_management.manage'); return await db.updateSupplierEntry(id, data) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('venueManagement:updateSupplierStatus', async (_, id, status, actualAmount) => {
+    try { requireRole('manager', 'admin', 'super_admin'); await requireCapability('venue_management.manage'); return await db.updateSupplierStatus(id, status, actualAmount) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('venueManagement:getDepositMilestones', async (_, eventBookingId) => {
+    try { await requireCapability('venue_management.view'); return await db.getDepositMilestones(eventBookingId) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('venueManagement:createDepositMilestone', async (_, data) => {
+    try { requireRole('manager', 'admin', 'super_admin'); await requireCapability('venue_management.manage'); return await db.createDepositMilestone(data) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('venueManagement:markMilestonePaid', async (_, id, paidDate, method, reference) => {
+    try { requireRole('manager', 'admin', 'super_admin'); await requireCapability('venue_management.manage'); return await db.markMilestonePaid(id, paidDate, method, reference) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('venueManagement:waiveMilestone', async (_, id, reason) => {
+    try { requireRole('manager', 'admin', 'super_admin'); await requireCapability('venue_management.manage'); return await db.waiveMilestone(id, reason) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('venueManagement:settleEvent', async (_, eventBookingId, idempotencyKey, adjustmentAmount, adjustmentType, adjustmentReason, notes) => {
+    try { requireRole('manager', 'admin', 'super_admin'); await requireCapability('venue_management.manage'); return await db.settleEvent(eventBookingId, idempotencyKey, adjustmentAmount, adjustmentType, adjustmentReason, notes) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('venueManagement:getEventProfitability', async (_, eventBookingId) => {
+    try { await requireCapability('venue_management.view'); return await db.getEventProfitability(eventBookingId) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('venueManagement:getVenueProfitabilityReport', async (_, startDate, endDate) => {
+    try { await requireCapability('venue_management.view'); return await db.getVenueProfitabilityReport(startDate, endDate) }
+    catch (e) { return { success: false, error: e.message } }
+  })
 
   // -- Day Use Entries -------------------------------------------------------
   ipcMain.handle('dayuse:getAll', async (_, start, end) => {
@@ -7806,7 +8611,7 @@ app.whenReady().then(async () => {
     } = payload || {}
     const { filePath, canceled } = await dialog.showSaveDialog(win, {
       title: `Export ${reportTitle} to Excel`,
-      defaultPath: buildReportExportFilename({ prefix: 'boroko', reportTitle, period: date, extension: 'xlsx' }),
+      defaultPath: buildReportExportFilename({ prefix: APP_EXPORT_PREFIX, reportTitle, period: date, extension: 'xlsx' }),
       filters: [{ name: 'Excel Files', extensions: ['xlsx'] }]
     })
     if (canceled || !filePath) return { success: false }
@@ -7814,7 +8619,7 @@ app.whenReady().then(async () => {
       const wb = XLSX.utils.book_new()
       const sym = currency || 'P'
       const safeData = data || {}
-      const resolvedLodge = lodgeName || companyName || 'Boroko Lodge'
+      const resolvedLodge = lodgeName || companyName || APP_BRAND_NAME
       const sharedMeta = {
         lodgeName: resolvedLodge,
         companyName,
@@ -7957,7 +8762,8 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('settings:resetToNewLodge', async () => {
     try {
-      requireRole('super_admin')
+      requireMasterAdmin()
+      await requireCapability('command_central.destructive.manage')
       return { success: true, lodge_id: db.resetToNewLodge() }
     } catch (e) { return { success: false, error: e.message } }
   })
@@ -7987,7 +8793,7 @@ app.whenReady().then(async () => {
     try {
       await requireCapability('sync.manage')
       const today = new Date().toISOString().slice(0, 10)
-      const defaultPath = join(app.getPath('documents'), `boroko-offline-operations-${today}.json`)
+      const defaultPath = join(app.getPath('documents'), `${APP_EXPORT_PREFIX}-offline-operations-${today}.json`)
       const { canceled, filePath } = await dialog.showSaveDialog({
         title: 'Save Offline Operations Bundle',
         defaultPath,
@@ -8031,12 +8837,12 @@ app.whenReady().then(async () => {
     } catch { return { available: false, devices: [] } }
   })
   ipcMain.handle('admin:getFleetHealthRollup', async () => {
-    try { requireRole('super_admin'); return await db.getFleetHealthRollup() }
-    catch { return [] }
+    try { requireMasterAdmin(); await requireCapability('command_central.view'); return await db.getFleetHealthRollup() }
+    catch (error) { throw new Error(error?.message || 'Unable to load fleet health rollup') }
   })
   ipcMain.handle('admin:getFleetHealthSummary', async () => {
-    try { requireRole('super_admin'); return await db.getFleetHealthSummary() }
-    catch { return null }
+    try { requireMasterAdmin(); await requireCapability('command_central.view'); return await db.getFleetHealthSummary() }
+    catch (error) { throw new Error(error?.message || 'Unable to load fleet health summary') }
   })
   ipcMain.handle('trial:getStatus', async (_, lodgeId) => {
     try { return await db.getTrialStatus(lodgeId) }
@@ -8160,7 +8966,7 @@ app.whenReady().then(async () => {
     XLSX.utils.book_append_sheet(wb, ws, 'Rows To Fix')
     const result = await dialog.showSaveDialog(win, {
       title: 'Save Import Issues Workbook',
-      defaultPath: `boroko-import-issues-${new Date().toISOString().slice(0, 10)}.xlsx`,
+      defaultPath: `${APP_EXPORT_PREFIX}-import-issues-${new Date().toISOString().slice(0, 10)}.xlsx`,
       filters: [{ name: 'Excel Files', extensions: ['xlsx'] }]
     })
     if (result.canceled || !result.filePath) return { canceled: true }
@@ -8244,7 +9050,7 @@ app.whenReady().then(async () => {
     })
     const result = await dialog.showSaveDialog(win, {
       title: 'Save Import Template',
-      defaultPath: `boroko-${String(type || 'bookings')}-import-template.xlsx`,
+      defaultPath: `${APP_EXPORT_PREFIX}-${String(type || 'bookings')}-import-template.xlsx`,
       filters: [{ name: 'Excel Files', extensions: ['xlsx'] }]
     })
     if (result.canceled || !result.filePath) return { canceled: true }
@@ -8352,7 +9158,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('app:getVersion', () => app.getVersion())
   ipcMain.handle('app:notify', async (_, payload = {}) => {
     showDesktopNotification({
-      title: payload?.title || 'Boroko Bookings',
+      title: payload?.title || APP_BRAND_NAME,
       body: payload?.body || '',
       sound: payload?.sound !== false,
       flash: payload?.flash !== false
@@ -8752,10 +9558,10 @@ app.whenReady().then(async () => {
   })
 
   // ── Corporate Billing ────────────────────────────────────────────────────
-  ipcMain.handle('corporateBilling:charge', async (_, accountId, bookingId, amount, description) => {
+  ipcMain.handle('corporateBilling:charge', async (_, accountId, bookingId, amount, description, intentId) => {
     try {
       await requireCapability('corporate_billing.charge')
-      return await db.chargeToCorporateAccount(accountId, bookingId, amount, description)
+      return await db.chargeToCorporateAccount(accountId, bookingId, amount, description, { idempotencyKey: intentId })
     } catch (error) {
       throw new Error(error?.message || 'Failed to charge corporate account')
     }
@@ -8768,10 +9574,10 @@ app.whenReady().then(async () => {
       throw new Error(error?.message || 'Failed to get outstanding')
     }
   })
-  ipcMain.handle('corporateBilling:recordPayment', async (_, accountId, invoiceIds, amount, method, reference) => {
+  ipcMain.handle('corporateBilling:recordPayment', async (_, accountId, invoiceIds, amount, method, reference, intentId) => {
     try {
       await requireCapability('corporate_billing.manage')
-      return await db.recordCorporatePayment(accountId, invoiceIds, amount, method, reference)
+      return await db.recordCorporatePayment(accountId, invoiceIds, amount, method, reference, { idempotencyKey: intentId })
     } catch (error) {
       throw new Error(error?.message || 'Failed to record payment')
     }
@@ -8810,6 +9616,14 @@ app.whenReady().then(async () => {
   })
 
   // ── Group Operations ────────────────────────────────────────────────────
+  ipcMain.handle('groupOperations:getAll', async () => {
+    try {
+      await requireCapabilityOrDevEnterprisePreview('group_operations.manage')
+      return await db.getAllGroupOperations()
+    } catch (error) {
+      throw new Error(error?.message || 'Failed to load group operations')
+    }
+  })
   ipcMain.handle('groupOperations:checkinBlock', async (_, blockId) => {
     try {
       await requireCapability('group_operations.manage')
@@ -9039,26 +9853,35 @@ app.whenReady().then(async () => {
   })
 
   // ── Enterprise operations contracts ────────────────────────────────────
-  ipcMain.handle('enterpriseOperations:getRecords', async (_, workflowKey) => {
+  ipcMain.handle('enterpriseOperations:getRecords', async (_, workflowKey, lodgeId = null) => {
     try {
-      await requireCapabilityOrDevEnterprisePreview('front_desk_dashboard.view')
-      return await db.getEnterpriseWorkflowRecords(workflowKey)
+      if (lodgeId) {
+        requireMasterAdmin()
+        assertCommandCentralTarget(lodgeId)
+      } else {
+        await requireCapabilityOrDevEnterprisePreview('front_desk_dashboard.view')
+      }
+      return await db.getEnterpriseWorkflowRecords(workflowKey, lodgeId)
     } catch (error) {
       throw new Error(error?.message || 'Failed to load Enterprise workflow records')
     }
   })
-  ipcMain.handle('enterpriseOperations:upsertRecord', async (_, workflowKey, record) => {
+  ipcMain.handle('enterpriseOperations:upsertRecord', async (_, workflowKey, record, lodgeId = null) => {
     try {
-      await requireCapability('settings.manage')
-      return await db.upsertEnterpriseWorkflowRecord(workflowKey, record)
+      requireFreshCommandCentralReauth()
+      if (lodgeId) assertCommandCentralTarget(lodgeId)
+      await requireCapability('command_central.companies.manage')
+      return await db.upsertEnterpriseWorkflowRecord(workflowKey, record, lodgeId)
     } catch (error) {
       throw new Error(error?.message || 'Failed to save Enterprise workflow record')
     }
   })
-  ipcMain.handle('enterpriseOperations:appendEvent', async (_, workflowKey, event) => {
+  ipcMain.handle('enterpriseOperations:appendEvent', async (_, workflowKey, event, lodgeId = null) => {
     try {
-      await requireCapability('settings.manage')
-      return await db.appendEnterpriseWorkflowEvent(workflowKey, event)
+      requireFreshCommandCentralReauth()
+      if (lodgeId) assertCommandCentralTarget(lodgeId)
+      await requireCapability('command_central.companies.manage')
+      return await db.appendEnterpriseWorkflowEvent(workflowKey, event, lodgeId)
     } catch (error) {
       throw new Error(error?.message || 'Failed to append Enterprise workflow event')
     }
@@ -9169,6 +9992,24 @@ app.whenReady().then(async () => {
       throw new Error(error?.message || 'Failed to load delivery status')
     }
   })
+  ipcMain.handle('guestMessaging:getChannelReadiness', async (_, channel) => {
+    try {
+      await requireCapabilityOrDevEnterprisePreview('guest_messaging.manage')
+      return channel
+        ? db.getGuestMessageChannelReadiness(channel)
+        : db.getGuestMessageAllChannelReadiness()
+    } catch (error) {
+      throw new Error(error?.message || 'Failed to load channel readiness')
+    }
+  })
+  ipcMain.handle('guestMessaging:dispatchMessage', async (_, messageId, options) => {
+    try {
+      await requireCapability('guest_messaging.send')
+      return await db.dispatchGuestMessage(messageId, options || {})
+    } catch (error) {
+      throw new Error(error?.message || 'Failed to dispatch guest message')
+    }
+  })
   // ── Guest Portal ──────────────────────────────────────────────────────────────────────────
   ipcMain.handle('guestPortal:getConfig', async () => {
     try {
@@ -9275,6 +10116,22 @@ app.whenReady().then(async () => {
       throw new Error(error?.message || 'Failed to search')
     }
   })
+  ipcMain.handle('guestCRM:listNotes', async (_, customerId) => {
+    try {
+      await requireCapabilityOrDevEnterprisePreview('guest_crm.view')
+      return await db.listGuestNotes(customerId)
+    } catch (error) {
+      throw new Error(error?.message || 'Failed to load CRM notes')
+    }
+  })
+  ipcMain.handle('guestCRM:addNote', async (_, customerId, noteText, noteType) => {
+    try {
+      await requireCapability('guest_crm.manage')
+      return await db.addGuestNote(customerId, noteText, noteType)
+    } catch (error) {
+      throw new Error(error?.message || 'Failed to add CRM note')
+    }
+  })
   ipcMain.handle('guestCRM:getVipList', async () => {
     try {
       await requireCapabilityOrDevEnterprisePreview('guest_crm.vip')
@@ -9284,18 +10141,28 @@ app.whenReady().then(async () => {
     }
   })
   // ── Payment Foundation ────────────────────────────────────────────────────────────────────
-  ipcMain.handle('payments:getProviderConfig', async (_, provider) => {
+  ipcMain.handle('payments:getProviderConfig', async (_, provider, lodgeId = null) => {
     try {
-      await requireCapability('settings.view')
-      return await db.getPaymentProviderConfig(null, provider)
+      if (lodgeId) {
+        requireMasterAdmin()
+        assertCommandCentralTarget(lodgeId)
+      } else {
+        await requireCapability('settings.view')
+      }
+      return await db.getPaymentProviderConfig(lodgeId, provider)
     } catch (error) {
       throw new Error(error?.message || 'Failed to load payment provider config')
     }
   })
-  ipcMain.handle('payments:saveProviderConfig', async (_, payload) => {
+  ipcMain.handle('payments:saveProviderConfig', async (_, payload, lodgeId = null) => {
     try {
-      await requireCapability('settings.manage')
-      return await db.savePaymentProviderConfig(payload)
+      if (lodgeId) {
+        requireFreshCommandCentralReauth()
+        assertCommandCentralTarget(lodgeId)
+      } else {
+        await requireCapability('payment_gateway.manage')
+      }
+      return await db.savePaymentProviderConfig(payload, lodgeId)
     } catch (error) {
       throw new Error(error?.message || 'Failed to save payment provider config')
     }
@@ -9310,7 +10177,8 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('subscriptionRequests:getAll', async (_, status, limit, offset) => {
     try {
-      await requireCapability('settings.view')
+      requireMasterAdmin()
+      await requireCapability('command_central.licensing.manage')
       return await db.getSubscriptionRequests(status, limit, offset)
     } catch (error) {
       throw new Error(error?.message || 'Failed to load subscription requests')
@@ -9318,7 +10186,8 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('subscriptionRequests:getById', async (_, requestId) => {
     try {
-      await requireCapability('settings.view')
+      requireMasterAdmin()
+      await requireCapability('command_central.licensing.manage')
       return await db.getSubscriptionRequestById(requestId)
     } catch (error) {
       throw new Error(error?.message || 'Failed to load subscription request')
@@ -9326,7 +10195,8 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('subscriptionRequests:updateStatus', async (_, requestId, status, reviewedBy, rejectionReason) => {
     try {
-      await requireCapability('settings.manage')
+      requireMasterAdmin()
+      await requireCapability('command_central.licensing.manage')
       return await db.updateSubscriptionRequestStatus(requestId, status, reviewedBy, rejectionReason)
     } catch (error) {
       throw new Error(error?.message || 'Failed to update subscription request status')
@@ -9334,7 +10204,8 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('subscriptionRequests:createDocument', async (_, requestId, type, documentInput) => {
     try {
-      await requireCapability('settings.manage')
+      requireMasterAdmin()
+      await requireCapability('command_central.licensing.manage')
       return await db.createSubscriptionRequestDocument(requestId, type, documentInput)
     } catch (error) {
       throw new Error(error?.message || 'Failed to create subscription request document')
@@ -9342,7 +10213,8 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('subscriptionRequests:exportDocumentPdf', async (event, documentPayload = {}) => {
     try {
-      await requireCapability('settings.view')
+      requireMasterAdmin()
+      await requireCapability('command_central.licensing.manage')
       const win = BrowserWindow.fromWebContents(event.sender)
       const docNumber = String(documentPayload.document_number || 'subscription-document').replace(/[^\w.-]+/g, '-')
       const result = await dialog.showSaveDialog(win, {
@@ -9364,7 +10236,8 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('subscriptionRequests:activate', async (_, requestId, activatedBy, activationPayload) => {
     try {
-      await requireCapability('settings.manage')
+      requireMasterAdmin()
+      await requireCapability('command_central.licensing.manage')
       return await db.activateSubscriptionRequest(requestId, activatedBy, activationPayload)
     } catch (error) {
       throw new Error(error?.message || 'Failed to activate subscription request')
@@ -9456,6 +10329,14 @@ app.whenReady().then(async () => {
       throw new Error(error?.message || 'Failed to delete rate plan')
     }
   })
+  ipcMain.handle('ratePlans:quoteRoomStay', async (_, roomId, checkIn, checkOut, corporateAccountId) => {
+    try {
+      await requireCapabilityOrDevEnterprisePreview('rate_plans.view')
+      return await db.quoteRoomStayFromPlans(roomId, checkIn, checkOut, corporateAccountId)
+    } catch (error) {
+      throw new Error(error?.message || 'Failed to quote room stay')
+    }
+  })
 
   // -- Channel Manager -------------------------------------------------------
   ipcMain.handle('channelManager:getDashboard', async () => {
@@ -9544,6 +10425,30 @@ app.whenReady().then(async () => {
       return await db.processSyncQueue(channelKey)
     } catch (error) {
       throw new Error(error?.message || 'Failed to process sync queue')
+    }
+  })
+  ipcMain.handle('channelManager:pushAvailability', async (_, channelKey, payload) => {
+    try {
+      await requireCapability('channel_manager.manage')
+      return await db.pushChannelAvailability(channelKey, payload)
+    } catch (error) {
+      throw new Error(error?.message || 'Failed to push channel availability')
+    }
+  })
+  ipcMain.handle('channelManager:pushRates', async (_, channelKey, payload) => {
+    try {
+      await requireCapability('channel_manager.manage')
+      return await db.pushChannelRates(channelKey, payload)
+    } catch (error) {
+      throw new Error(error?.message || 'Failed to push channel rates')
+    }
+  })
+  ipcMain.handle('channelManager:fetchReservations', async (_, channelKey, since) => {
+    try {
+      await requireCapability('channel_manager.manage')
+      return await db.fetchChannelReservations(channelKey, since)
+    } catch (error) {
+      throw new Error(error?.message || 'Failed to fetch channel reservations')
     }
   })
   ipcMain.handle('channelManager:importReservation', async (_, payload) => {
@@ -9656,10 +10561,15 @@ app.whenReady().then(async () => {
   })
 
   // -- Payment Gateway Extensions --------------------------------------------
-  ipcMain.handle('payments:getPaymentDashboard', async () => {
+  ipcMain.handle('payments:getPaymentDashboard', async (_, lodgeId = null) => {
     try {
-      await requireCapabilityOrDevEnterprisePreview('payment_gateway.view')
-      return await db.getPaymentDashboard()
+      if (lodgeId) {
+        requireMasterAdmin()
+        assertCommandCentralTarget(lodgeId)
+      } else {
+        await requireCapabilityOrDevEnterprisePreview('payment_gateway.view')
+      }
+      return await db.getPaymentDashboard(lodgeId)
     } catch (error) {
       throw new Error(error?.message || 'Failed to get payment dashboard')
     }
@@ -9760,6 +10670,14 @@ app.whenReady().then(async () => {
       return await db.getRateCalendarApplicableRate(roomTypeId, date)
     } catch (error) {
       throw new Error(error?.message || 'Failed to get applicable rate')
+    }
+  })
+  ipcMain.handle('rateCalendar:quoteStayTotal', async (_, roomId, checkIn, checkOut, corporateAccountId) => {
+    try {
+      await requireCapabilityOrDevEnterprisePreview('rate_calendar.manage')
+      return await db.quoteRateCalendarStayTotal(roomId, checkIn, checkOut, corporateAccountId)
+    } catch (error) {
+      throw new Error(error?.message || 'Failed to quote stay total')
     }
   })
 
@@ -9954,6 +10872,31 @@ app.whenReady().then(async () => {
       throw new Error(error?.message || 'Failed to get revenue recommendations')
     }
   })
+  ipcMain.handle('revenueManager:approveRecommendation', async (_, recommendation, notes) => {
+    try {
+      await requireCapability('revenue_manager.view')
+      return await db.approveRevenueRecommendation(recommendation, notes)
+    } catch (error) {
+      throw new Error(error?.message || 'Failed to approve revenue recommendation')
+    }
+  })
+  ipcMain.handle('revenueManager:rejectRecommendation', async (_, recommendation, reason) => {
+    try {
+      await requireCapability('revenue_manager.view')
+      return await db.rejectRevenueRecommendation(recommendation, reason)
+    } catch (error) {
+      throw new Error(error?.message || 'Failed to reject revenue recommendation')
+    }
+  })
+  ipcMain.handle('revenueManager:applyRecommendation', async (_, recommendation) => {
+    try {
+      await requireCapability('revenue_manager.view')
+      // Always fail closed — never silently apply rates
+      return await db.applyRevenueRecommendation(recommendation)
+    } catch (error) {
+      throw new Error(error?.message || 'Failed to apply revenue recommendation')
+    }
+  })
 
   // ── Night Audit (Enterprise) ──────────────────────────────────────────────
   ipcMain.handle('nightAudit:runChecks', async () => {
@@ -9964,10 +10907,10 @@ app.whenReady().then(async () => {
       throw new Error(error?.message || 'Night audit checks failed')
     }
   })
-  ipcMain.handle('nightAudit:close', async (_, closedBy, notes) => {
+  ipcMain.handle('nightAudit:close', async (_, closedBy, notes, force = false) => {
     try {
       await requireCapability('night_audit.close')
-      return await db.closeNightAudit(closedBy, notes)
+      return await db.closeNightAudit(closedBy, notes, force)
     } catch (error) {
       throw new Error(error?.message || 'Night audit close failed')
     }
@@ -10044,6 +10987,47 @@ app.whenReady().then(async () => {
       return await db.updateCheckinConfig(config)
     } catch (error) {
       throw new Error(error?.message || 'Failed to update check-in config')
+    }
+  })
+  ipcMain.handle('checkinWorkflow:completeHotelCheckin', async (_, bookingId) => {
+    try {
+      await requireCapability('checkin.manage')
+      return await db.completeHotelCheckin(bookingId)
+    } catch (error) {
+      throw new Error(error?.message || 'Failed to complete hotel check-in')
+    }
+  })
+  ipcMain.handle('checkinWorkflow:completeHotelCheckinWithOverride', async (_, bookingId, overrideReason) => {
+    try {
+      // Manager override needs desk manage capability; reason is audited on step data + activity log
+      await requireCapability('checkin.manage')
+      return await db.completeHotelCheckinWithOverride(bookingId, overrideReason)
+    } catch (error) {
+      throw new Error(error?.message || 'Failed to complete hotel check-in with override')
+    }
+  })
+  ipcMain.handle('checkoutWorkflow:completeHotelCheckout', async (_, bookingId) => {
+    try {
+      await requireCapability('checkout.manage')
+      return await db.completeHotelCheckout(bookingId)
+    } catch (error) {
+      throw new Error(error?.message || 'Failed to complete hotel check-out')
+    }
+  })
+  ipcMain.handle('hotel:getApplicableRoomRate', async (_, roomId, date, corporateAccountId) => {
+    try {
+      await requireCapabilityOrDevEnterprisePreview('bookings.view')
+      return await db.getApplicableRoomRate(roomId, date, corporateAccountId)
+    } catch (error) {
+      throw new Error(error?.message || 'Failed to resolve room rate')
+    }
+  })
+  ipcMain.handle('hotel:quoteRoomStay', async (_, roomId, checkIn, checkOut, corporateAccountId) => {
+    try {
+      await requireCapabilityOrDevEnterprisePreview('bookings.view')
+      return await db.quoteRoomStay(roomId, checkIn, checkOut, corporateAccountId)
+    } catch (error) {
+      throw new Error(error?.message || 'Failed to quote room stay')
     }
   })
 
@@ -10432,58 +11416,58 @@ app.whenReady().then(async () => {
       throw new Error(error?.message || 'Failed to load ledger line items')
     }
   })
-  ipcMain.handle('folioLedger:createFolio', async (_, bookingId, guestId, folioType, label) => {
+  ipcMain.handle('folioLedger:createFolio', async (_, bookingId, guestId, folioType, label, intentId) => {
     try {
       await requireCapability('folios.manage')
-      return await db.folioLedger.createFolio(bookingId, guestId, folioType, label)
+      return await db.folioLedger.createFolio(bookingId, guestId, folioType, label, intentId)
     } catch (e) { return { success: false, error: e.message } }
   })
-  ipcMain.handle('folioLedger:addCharge', async (_, folioId, amount, description, referenceType, referenceId) => {
+  ipcMain.handle('folioLedger:addCharge', async (_, folioId, amount, description, referenceType, referenceId, intentId) => {
     try {
       await requireCapability('folios.manage')
-      return await db.folioLedger.addCharge(folioId, amount, description, referenceType, referenceId)
+      return await db.folioLedger.addCharge(folioId, amount, description, referenceType, referenceId, intentId)
     } catch (e) { return { success: false, error: e.message } }
   })
-  ipcMain.handle('folioLedger:addPayment', async (_, folioId, amount, description) => {
+  ipcMain.handle('folioLedger:addPayment', async (_, folioId, amount, description, intentId) => {
     try {
       await requireCapability('folios.manage')
-      return await db.folioLedger.addPayment(folioId, amount, description)
+      return await db.folioLedger.addPayment(folioId, amount, description, intentId)
     } catch (e) { return { success: false, error: e.message } }
   })
-  ipcMain.handle('folioLedger:transferCharge', async (_, sourceFolioId, targetFolioId, amount, description) => {
+  ipcMain.handle('folioLedger:transferCharge', async (_, sourceFolioId, targetFolioId, amount, description, intentId) => {
     try {
       await requireCapability('folios.manage')
-      return await db.folioLedger.transferCharge(sourceFolioId, targetFolioId, amount, description)
+      return await db.folioLedger.transferCharge(sourceFolioId, targetFolioId, amount, description, intentId)
     } catch (e) { return { success: false, error: e.message } }
   })
-  ipcMain.handle('folioLedger:splitFolio', async (_, sourceFolioId, targetFolioType, targetLabel, amount, description) => {
+  ipcMain.handle('folioLedger:splitFolio', async (_, sourceFolioId, targetFolioType, targetLabel, amount, description, intentId) => {
     try {
       await requireCapability('folios.manage')
-      return await db.folioLedger.splitFolio(sourceFolioId, targetFolioType, targetLabel, amount, description)
+      return await db.folioLedger.splitFolio(sourceFolioId, targetFolioType, targetLabel, amount, description, intentId)
     } catch (e) { return { success: false, error: e.message } }
   })
-  ipcMain.handle('folioLedger:voidLineItem', async (_, lineItemId, reason) => {
+  ipcMain.handle('folioLedger:voidLineItem', async (_, lineItemId, reason, intentId) => {
     try {
       await requireCapability('folios.manage')
-      return await db.folioLedger.voidLineItem(lineItemId, reason)
+      return await db.folioLedger.voidLineItem(lineItemId, reason, intentId)
     } catch (e) { return { success: false, error: e.message } }
   })
-  ipcMain.handle('folioLedger:closeFolio', async (_, folioId) => {
+  ipcMain.handle('folioLedger:closeFolio', async (_, folioId, intentId) => {
     try {
       await requireCapability('folios.manage')
-      return await db.folioLedger.closeFolio(folioId)
+      return await db.folioLedger.closeFolio(folioId, intentId)
     } catch (e) { return { success: false, error: e.message } }
   })
-  ipcMain.handle('folioLedger:reopenFolio', async (_, folioId) => {
+  ipcMain.handle('folioLedger:reopenFolio', async (_, folioId, intentId) => {
     try {
       await requireCapability('folios.manage')
-      return await db.folioLedger.reopenFolio(folioId)
+      return await db.folioLedger.reopenFolio(folioId, intentId)
     } catch (e) { return { success: false, error: e.message } }
   })
-  ipcMain.handle('folioLedger:lockFolio', async (_, folioId) => {
+  ipcMain.handle('folioLedger:lockFolio', async (_, folioId, intentId) => {
     try {
       await requireCapability('folios.manage')
-      return await db.folioLedger.lockFolio(folioId)
+      return await db.folioLedger.lockFolio(folioId, intentId)
     } catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('folioLedger:getBalance', async (_, folioId) => {
@@ -10691,6 +11675,178 @@ app.whenReady().then(async () => {
     }
   })
 
+  // ── Asset Registry & Vendors IPC ──────────────────────────────────────────
+  ipcMain.handle('assetRegistry:getAssets', async (_, assetType, status) => {
+    try { return await db.getPropertyAssets(assetType, status) }
+    catch (e) { return [] }
+  })
+  ipcMain.handle('assetRegistry:createAsset', async (_, data) => {
+    try {
+      await requireCapability('maintenance.manage')
+      return await db.createPropertyAsset(data)
+    } catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('assetRegistry:updateAsset', async (_, id, data) => {
+    try {
+      await requireCapability('maintenance.manage')
+      return await db.updatePropertyAsset(id, data)
+    } catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('assetRegistry:deleteAsset', async (_, id) => {
+    try {
+      requireRole('manager', 'admin', 'super_admin')
+      await requireCapability('maintenance.manage')
+      return await db.deletePropertyAsset(id)
+    } catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('assetRegistry:getMaintenanceHistory', async (_, assetId) => {
+    try { return await db.getAssetMaintenanceHistory(assetId) }
+    catch (e) { return [] }
+  })
+  ipcMain.handle('assetRegistry:logMaintenance', async (_, assetId, ticketId, description, cost, vendorId) => {
+    try {
+      await requireCapability('maintenance.manage')
+      return await db.logAssetMaintenance(assetId, ticketId, description, cost, vendorId)
+    } catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('assetRegistry:getVendors', async (_, specialisation) => {
+    try { return await db.getMaintenanceVendors(specialisation) }
+    catch (e) { return [] }
+  })
+  ipcMain.handle('assetRegistry:createVendor', async (_, data) => {
+    try {
+      await requireCapability('maintenance.manage')
+      return await db.createMaintenanceVendor(data)
+    } catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('assetRegistry:updateVendor', async (_, id, data) => {
+    try {
+      await requireCapability('maintenance.manage')
+      return await db.updateMaintenanceVendor(id, data)
+    } catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('assetRegistry:deleteVendor', async (_, id) => {
+    try {
+      requireRole('manager', 'admin', 'super_admin')
+      await requireCapability('maintenance.manage')
+      return await db.deleteMaintenanceVendor(id)
+    } catch (e) { return { success: false, error: e.message } }
+  })
+
+  // -- Asset Management (Phase 5 depth) ------------------------------------
+  ipcMain.handle('assetManagement:getAssetCategories', async () => {
+    try { await requireCapability('asset_registry.view'); return await db.getAssetCategories() }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('assetManagement:createAssetCategory', async (_, data) => {
+    try { requireRole('manager', 'admin', 'super_admin'); await requireCapability('asset_registry.manage'); return await db.createAssetCategory(data) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('assetManagement:updateAssetCategory', async (_, id, data) => {
+    try { requireRole('manager', 'admin', 'super_admin'); await requireCapability('asset_registry.manage'); return await db.updateAssetCategory(id, data) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('assetManagement:deleteAssetCategory', async (_, id) => {
+    try { requireRole('manager', 'admin', 'super_admin'); await requireCapability('asset_registry.manage'); return await db.deleteAssetCategory(id) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('assetManagement:getAssetWarranties', async (_, assetId) => {
+    try { await requireCapability('asset_registry.view'); return await db.getAssetWarranties(assetId) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('assetManagement:createAssetWarranty', async (_, data) => {
+    try { requireRole('manager', 'admin', 'super_admin'); await requireCapability('asset_registry.manage'); return await db.createAssetWarranty(data) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('assetManagement:updateAssetWarranty', async (_, id, data) => {
+    try { requireRole('manager', 'admin', 'super_admin'); await requireCapability('asset_registry.manage'); return await db.updateAssetWarranty(id, data) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('assetManagement:deleteAssetWarranty', async (_, id) => {
+    try { requireRole('manager', 'admin', 'super_admin'); await requireCapability('asset_registry.manage'); return await db.deleteAssetWarranty(id) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('assetManagement:getAssetInspections', async (_, assetId) => {
+    try { await requireCapability('asset_registry.view'); return await db.getAssetInspections(assetId) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('assetManagement:createAssetInspection', async (_, data) => {
+    try { requireRole('manager', 'admin', 'super_admin'); await requireCapability('asset_registry.manage'); return await db.createAssetInspection(data) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('assetManagement:deleteAssetInspection', async (_, id) => {
+    try { requireRole('manager', 'admin', 'super_admin'); await requireCapability('asset_registry.manage'); return await db.deleteAssetInspection(id) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('assetManagement:getAssetAttachments', async (_, assetId) => {
+    try { await requireCapability('asset_registry.view'); return await db.getAssetAttachments(assetId) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('assetManagement:createAssetAttachment', async (_, data) => {
+    try { requireRole('manager', 'admin', 'super_admin'); await requireCapability('asset_registry.manage'); return await db.createAssetAttachment(data) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('assetManagement:deleteAssetAttachment', async (_, id) => {
+    try { requireRole('manager', 'admin', 'super_admin'); await requireCapability('asset_registry.manage'); return await db.deleteAssetAttachment(id) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('assetManagement:getAssetCosts', async (_, assetId) => {
+    try { await requireCapability('asset_registry.view'); return await db.getAssetCosts(assetId) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('assetManagement:recordAssetCost', async (_, data) => {
+    try { requireRole('manager', 'admin', 'super_admin'); await requireCapability('asset_registry.manage'); return await db.recordAssetCost(data) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('assetManagement:getAssetCostSummary', async (_, startDate, endDate) => {
+    try { await requireCapability('asset_registry.view'); return await db.getAssetCostSummary(startDate, endDate) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('assetManagement:getPreventiveTemplates', async (_, categoryId) => {
+    try { await requireCapability('asset_registry.view'); return await db.getPreventiveTemplates(categoryId) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('assetManagement:createPreventiveTemplate', async (_, data) => {
+    try { requireRole('manager', 'admin', 'super_admin'); await requireCapability('asset_registry.manage'); return await db.createPreventiveTemplate(data) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('assetManagement:updatePreventiveTemplate', async (_, id, data) => {
+    try { requireRole('manager', 'admin', 'super_admin'); await requireCapability('asset_registry.manage'); return await db.updatePreventiveTemplate(id, data) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('assetManagement:deletePreventiveTemplate', async (_, id) => {
+    try { requireRole('manager', 'admin', 'super_admin'); await requireCapability('asset_registry.manage'); return await db.deletePreventiveTemplate(id) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('assetManagement:getPreventiveAssignments', async (_, assetId, status) => {
+    try { await requireCapability('asset_registry.view'); return await db.getPreventiveAssignments(assetId, status) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('assetManagement:createPreventiveAssignment', async (_, data) => {
+    try { requireRole('manager', 'admin', 'super_admin'); await requireCapability('asset_registry.manage'); return await db.createPreventiveAssignment(data) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('assetManagement:completePreventiveAssignment', async (_, id, notes) => {
+    try { requireRole('manager', 'admin', 'super_admin'); await requireCapability('asset_registry.manage'); return await db.completePreventiveAssignment(id, notes) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('assetManagement:skipPreventiveAssignment', async (_, id, notes) => {
+    try { requireRole('manager', 'admin', 'super_admin'); await requireCapability('asset_registry.manage'); return await db.skipPreventiveAssignment(id, notes) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('assetManagement:generatePreventiveAssignments', async () => {
+    try { requireRole('manager', 'admin', 'super_admin'); await requireCapability('asset_registry.manage'); return await db.generatePreventiveAssignments() }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('assetManagement:getAssetDashboard', async () => {
+    try { await requireCapability('asset_registry.view'); return await db.getAssetDashboard() }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('assetManagement:setAssetRoomSellability', async (_, assetId, affectsSellability, sellabilityNotes) => {
+    try { requireRole('manager', 'admin', 'super_admin'); await requireCapability('asset_registry.manage'); return await db.setAssetRoomSellability(assetId, affectsSellability, sellabilityNotes) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+
   // ── Operations Compliance IPC ─────────────────────────────────────────────
   ipcMain.handle('operationsCompliance:createLinenStocktake', async (_, items) => {
     try {
@@ -10791,9 +11947,9 @@ app.whenReady().then(async () => {
   ipcMain.handle('operationsCompliance:createShiftHandover', async (_, data) => {
     try {
       await requireCapability('shift_handover.manage')
-      return await db.createShiftHandover(data)
+      return await db.createComplianceShiftHandover(data)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to create shift handover')
+      return { success: false, error: error?.message || 'Failed to create shift handover' }
     }
   })
   ipcMain.handle('operationsCompliance:completeShiftHandover', async (_, id) => {
@@ -10838,12 +11994,20 @@ app.whenReady().then(async () => {
       throw new Error(error?.message || 'Failed to get booking upsells')
     }
   })
-  ipcMain.handle('bookingEngine:createIntent', async (_, roomTypeId, checkIn, checkOut, numGuests, priceEstimate) => {
+  ipcMain.handle('bookingEngine:createIntent', async (_, roomTypeId, checkIn, checkOut, numGuests, priceEstimate, options) => {
     try {
       await requireCapability('advanced_booking_engine.manage')
-      return await db.createBookingEngineIntent(roomTypeId, checkIn, checkOut, numGuests, priceEstimate)
+      return await db.createBookingEngineIntent(roomTypeId, checkIn, checkOut, numGuests, priceEstimate, options)
     } catch (error) {
       throw new Error(error?.message || 'Failed to create booking intent')
+    }
+  })
+  ipcMain.handle('bookingEngine:confirmIntent', async (_, intentOrId, confirmation) => {
+    try {
+      await requireCapability('advanced_booking_engine.manage')
+      return await db.confirmBookingEngineIntent(intentOrId, confirmation)
+    } catch (error) {
+      throw new Error(error?.message || 'Failed to confirm booking intent')
     }
   })
   ipcMain.handle('bookingEngine:getRules', async () => {
@@ -10910,6 +12074,71 @@ app.whenReady().then(async () => {
       throw new Error(error?.message || 'Failed to delete booking engine upsell')
     }
   })
+
+  const restaurantAccountingV2Operations = {
+    getAccounts: ['accounting.read', db.getRestaurantAccountsV2],
+    createAccount: ['accounting.manage', db.createRestaurantAccountV2],
+    updateAccount: ['accounting.manage', db.updateRestaurantAccountV2],
+    setCashFlow: ['accounting.manage', db.setRestaurantAccountCashFlowV2],
+    deleteAccount: ['accounting.manage', db.deleteRestaurantAccountV2],
+    seedAccounts: ['accounting.manage', db.seedRestaurantAccountsV2],
+    postOpeningBalance: ['accounting.manage', db.postRestaurantOpeningBalanceV2],
+    getLedger: ['accounting.read', db.getRestaurantLedgerWorkspaceV2],
+    createJournal: ['accounting.manage', db.createRestaurantJournalV2],
+    reverseJournal: ['accounting.manage', db.reverseRestaurantJournalV2],
+    getPosMappings: ['accounting.read', db.getRestaurantPosMappingsV2],
+    setPosMapping: ['accounting.manage', db.setRestaurantPosMappingV2],
+    postPosOrder: ['accounting.manage', db.postRestaurantPosOrderV2],
+    getAp: ['accounting.read', db.getRestaurantApWorkspaceV2],
+    setApSettings: ['accounting.manage', db.setRestaurantApGlSettingsV2],
+    createBill: ['accounting.manage', db.createRestaurantBillV2],
+    submitBill: ['accounting.manage', db.submitRestaurantBillV2],
+    approveBill: ['accounting.manage', db.approveRestaurantBillV2],
+    payBill: ['accounting.ap_pay', db.payRestaurantBillV2],
+    saveBankAccount: ['accounting.manage', db.saveRestaurantBankAccountV2],
+    getBank: ['accounting.read', db.getRestaurantBankWorkspaceV2],
+    importBank: ['accounting.manage', db.importRestaurantBankStatementV2],
+    proposeBank: ['accounting.manage', db.proposeRestaurantBankMatchesV2],
+    reviewBank: ['accounting.bank_approve', db.reviewRestaurantBankMatchV2],
+    exceptBank: ['accounting.manage', db.exceptRestaurantBankTransactionV2],
+    createReconciliation: ['accounting.manage', db.createRestaurantBankReconciliationV2],
+    completeReconciliation: ['accounting.bank_approve', db.completeRestaurantBankReconciliationV2],
+    getTax: ['accounting.read', db.getRestaurantTaxWorkspaceV2],
+    setTaxConfig: ['accounting.manage', db.setRestaurantTaxConfigurationV2],
+    generateTax: ['accounting.manage', db.generateRestaurantTaxWorkingPaperV2],
+    reviewTax: ['accounting.manage', db.reviewRestaurantTaxWorkingPaperV2],
+    approveTax: ['accounting.tax_file', db.approveRestaurantTaxWorkingPaperV2],
+    fileTax: ['accounting.tax_file', db.fileRestaurantTaxWorkingPaperV2],
+    getBudgets: ['accounting.read', db.getRestaurantBudgetMatrixV2],
+    saveBudgets: ['accounting.manage', db.saveRestaurantBudgetMatrixV2],
+    createBudgetTemplate: ['accounting.manage', db.createRestaurantBudgetTemplateV2],
+    applyBudgetTemplate: ['accounting.manage', db.applyRestaurantBudgetTemplateV2],
+    getStatements: ['accounting.read', db.getRestaurantFinancialStatementsV2],
+    getPayroll: ['accounting.payroll_view', db.getRestaurantPayrollWorkspaceV2],
+    getPayrollRecords: ['accounting.payroll_view', db.getRestaurantPayrollRecordsV2],
+    setPayrollTerms: ['accounting.payroll_manage', db.setRestaurantPayrollTermsV2],
+    setPayrollConfig: ['accounting.payroll_manage', db.setRestaurantPayrollConfigurationV2],
+    createPayPeriod: ['accounting.payroll_manage', db.createRestaurantPayPeriodV2],
+    setPayrollTime: ['accounting.payroll_manage', db.setRestaurantPayrollTimeV2],
+    approvePayrollTime: ['accounting.payroll_manage', db.approveRestaurantPayrollTimeV2],
+    calculatePayroll: ['accounting.payroll_manage', db.calculateRestaurantPayrollV2],
+    approvePayroll: ['accounting.payroll_manage', db.approveRestaurantPayrollV2],
+    exportPayroll: ['accounting.payroll_manage', db.exportRestaurantPayrollPaymentsV2],
+    setPayrollGl: ['accounting.payroll_manage', db.setRestaurantPayrollGlSettingsV2],
+    postPayroll: ['accounting.payroll_manage', db.postRestaurantPayrollV2]
+  }
+  ipcMain.handle('restaurantAccountingV2:invoke', async (_, operation, args = []) => {
+    const contract = restaurantAccountingV2Operations[operation]
+    if (!contract) throw new Error('Unsupported Restaurant Accounting operation')
+    const [capability, handler] = contract
+    try {
+      await requireCapability(capability)
+      return await handler(...(Array.isArray(args) ? args : []))
+    } catch (error) {
+      throw new Error(error?.message || `Restaurant Accounting ${operation} failed`)
+    }
+  })
+
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

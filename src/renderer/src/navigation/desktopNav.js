@@ -50,9 +50,18 @@ import {
   Store,
   TableProperties
 } from 'lucide-react'
-import { resolveModuleVisibility, MODULE_VISIBILITY_STATES } from '../../../shared/moduleCatalog.js'
+import { resolveModuleVisibility, MODULE_VISIBILITY_STATES, getModuleByKey } from '../../../shared/moduleCatalog.js'
 import { normalizePropertyType, isBarOnlyMode, isHotelPropertyType } from '../../../shared/propertyTypes.js'
 import { normalizeSubscriptionPlan } from '../../../shared/subscriptionPlans.js'
+/**
+ * Resolve product id for nav scoping.
+ * Pass productId explicitly from product shells. Tests may omit it to keep
+ * property-type-level hotel inheritance behavior for catalog assertions.
+ */
+function resolveNavProductId(productId) {
+  if (productId === null || productId === undefined || productId === '') return null
+  return String(productId)
+}
 
 export const ALL_NAV = [
   {
@@ -64,6 +73,16 @@ export const ALL_NAV = [
     capability: 'dashboard.view',
     moduleKey: 'dashboard',
     keywords: ['home', 'overview', 'kpi', 'occupancy']
+  },
+  {
+    to: '/hotel-dashboard',
+    label: 'Front Desk',
+    icon: LayoutDashboardIcon,
+    end: true,
+    types: ['hotel'],
+    capability: 'front_desk_dashboard.view',
+    moduleKey: 'front_desk_dashboard',
+    keywords: ['arrivals', 'departures', 'in house', 'hotel dashboard', 'front desk']
   },
   {
     to: '/ai',
@@ -79,11 +98,31 @@ export const ALL_NAV = [
     to: '/bookings',
     label: 'Bookings',
     icon: BookOpen,
-    types: ['lodge'],
+    types: ['lodge', 'hotel'],
     group: 'Front Desk',
     capability: 'bookings.view',
     moduleKey: 'bookings',
     keywords: ['reservations', 'check in', 'check out']
+  },
+  {
+    to: '/checkin-workflow',
+    label: 'Check-in / Out',
+    icon: LogIn,
+    types: ['hotel'],
+    group: 'Front Desk',
+    capability: 'checkin.manage',
+    moduleKey: 'checkin_workflow',
+    keywords: ['checkin', 'checkout', 'checklist', 'registration']
+  },
+  {
+    to: '/folios',
+    label: 'Folios',
+    icon: Wallet,
+    types: ['hotel'],
+    group: 'Front Desk',
+    capability: 'folios.view',
+    moduleKey: 'folios',
+    keywords: ['billing', 'split folio', 'charges', 'ledger']
   },
   {
     to: '/quotations',
@@ -247,6 +286,19 @@ export const ALL_NAV = [
     moduleKey: 'pos',
     keywords: ['point of sale', 'sales', 'cashier']
   },
+  {
+    to: '/food-beverage/kitchen',
+    label: 'Food & Beverage',
+    icon: UtensilsCrossed,
+    types: ['lodge'],
+    hideInHotelMode: true,
+    group: 'Finance',
+    feature: 'pos',
+    tier: 'Pro',
+    capability: 'pos.view',
+    moduleKey: 'pos',
+    keywords: ['restaurant', 'bar', 'kitchen', 'recipes', 'food cost', 'cash up', 'purchasing', 'outlet']
+  },
   // ── Restaurant-only modules ────────────────────────────────────────────────
   {
     to: '/restaurant/floor',
@@ -286,6 +338,32 @@ export const ALL_NAV = [
     capability: 'pos.manage',
     moduleKey: 'pos',
     keywords: ['menu items', 'modifier groups', 'categories', 'combos', 'recipes', 'prep', 'food cost']
+  },
+  {
+    to: '/hpos/menu',
+    label: 'Products',
+    icon: Salad,
+    types: ['restaurant'],
+    barOnlyOnly: true,
+    group: 'Sell',
+    feature: 'pos',
+    tier: 'Pro',
+    capability: 'pos.manage',
+    moduleKey: 'pos',
+    keywords: ['drinks', 'products', 'barcode', 'packs', 'cases', 'menu items']
+  },
+  {
+    to: '/pos/bar-display',
+    label: 'Bar board',
+    icon: ChefHat,
+    types: ['restaurant'],
+    barOnlyOnly: true,
+    group: 'Sell',
+    feature: 'pos',
+    tier: 'Pro',
+    capability: 'pos.view',
+    moduleKey: 'pos',
+    keywords: ['bar tickets', 'prep display', 'orders board']
   },
   {
     to: '/restaurant/stock-purchasing',
@@ -634,14 +712,16 @@ export const ALL_NAV = [
     to: '/night-audit-enterprise',
     label: 'Night Audit (Enterprise)',
     icon: Moon,
-    types: ['lodge'],
+    // Lodge shell: deep-link / Command Central only (not daily sidebar clutter).
+    // Hotel product surfaces Night Audit through HotelLayout / hotelNav.
+    types: ['lodge', 'hotel'],
     hideFromSidebar: true,
     group: 'Hotel',
     feature: 'night_audit_enterprise',
     tier: 'Enterprise',
     capability: 'night_audit.close',
     moduleKey: 'night_audit_enterprise',
-    keywords: ['night audit', 'enterprise audit', 'reopen', 'exception']
+    keywords: ['night audit', 'enterprise audit', 'reopen', 'exception', 'day cutover', 'force close']
   },
   {
     to: '/checkin-workflow',
@@ -732,33 +812,97 @@ export const ALL_NAV = [
     capability: 'promo_codes.manage',
     moduleKey: 'advanced_rates',
     keywords: ['promo codes', 'discount', 'promotion', 'offer']
-  }
+  },
+  {
+    to: '/workforce',
+    label: 'Workforce Management',
+    icon: Users,
+    types: ['lodge'],
+    group: 'Hotel',
+    feature: 'workforce_management',
+    tier: 'Enterprise',
+    capability: 'workforce_scheduling.view',
+    moduleKey: 'workforce_management',
+    keywords: ['staff', 'scheduling', 'shifts', 'attendance', 'handover']
+  },
+  {
+    to: '/assets',
+    label: 'Asset Management',
+    icon: Wrench,
+    types: ['lodge'],
+    group: 'Hotel',
+    feature: 'asset_management',
+    tier: 'Enterprise',
+    capability: 'asset_registry.view',
+    moduleKey: 'asset_management',
+    keywords: ['assets', 'equipment', 'registry', 'warranty', 'preventive']
+  },
+  {
+    to: '/venues',
+    label: 'Venue Management',
+    icon: Presentation,
+    types: ['lodge'],
+    group: 'Hotel',
+    feature: 'venue_management',
+    tier: 'Enterprise',
+    capability: 'venue_management.view',
+    moduleKey: 'venue_management',
+    keywords: ['venues', 'events', 'packages', 'run sheet', 'supplier']
+  },
 ]
-
 export const NAV_GROUPS = ['Home', 'Front Desk', 'Sell', 'Property', 'Stock', 'Team', 'Money', 'Growth', 'Control', 'Finance', 'Hotel']
 
-export function getDesktopNavItems(bizType, access, propertyType = null, subscriptionPlan = null, addons = [], operatingProfile = null) {
+export function getDesktopNavItems(bizType, access, propertyType = null, subscriptionPlan = null, addons = [], operatingProfile = null, productId = null) {
+  const navProductId = resolveNavProductId(productId)
+  // LodgingOS must not surface HotelOS enterprise navigation or locked hotel
+  // upgrade clutter (including motel, which is hotel-class by property type but
+  // ships on the Lodge product). Hotel product uses HotelLayout, not this shell.
+  const lodgeProductScoped = navProductId === 'lodge-camp'
   const normalizedPropertyType = normalizePropertyType(propertyType || bizType)
   const normalizedPlan = normalizeSubscriptionPlan(subscriptionPlan)
-  const hotelMode = isHotelPropertyType(normalizedPropertyType)
+  // Lodge product never enters hotel nav mode — hotel-class types stay lodge ops.
+  const hotelMode = !lodgeProductScoped && isHotelPropertyType(normalizedPropertyType)
   const barOnlyMode = normalizedPropertyType === 'restaurant' && isBarOnlyMode(operatingProfile)
+  // On lodge product, never inherit pure hotel-type entries via bizType=hotel.
+  const effectiveBizType = lodgeProductScoped && bizType === 'hotel' ? 'lodge' : bizType
 
   return ALL_NAV.reduce((acc, item) => {
-    if (!item.types.includes(bizType)) return acc
+    // Hotel properties inherit lodge navigation plus hotel-only entries.
+    const typeMatch = item.types.includes(effectiveBizType)
+      || (effectiveBizType === 'hotel' && item.types.includes('lodge'))
+    if (!typeMatch) return acc
     if (item.hideFromSidebar) return acc
     if (hotelMode && item.hideInHotelMode) return acc
     if (barOnlyMode && item.barOnlyHidden) return acc
+    if (item.barOnlyOnly && !barOnlyMode) return acc
+
+    // Lodge product: hotel-only catalog modules and pure hotel-type rail items stay out.
+    if (lodgeProductScoped) {
+      if (item.types?.length === 1 && item.types[0] === 'hotel') return acc
+      if (item.moduleKey) {
+        const mod = getModuleByKey(item.moduleKey)
+        if (mod?.visibility === 'hotel_only') return acc
+      }
+    }
 
     let visibility = null
     let isLocked = false
 
     if (item.moduleKey) {
-      visibility = resolveModuleVisibility(item.moduleKey, normalizedPropertyType, normalizedPlan, addons)
+      // Lodge product evaluates visibility as a non-hotel property so hotel_only
+      // modules cannot flip to locked just because settings.property_type is motel.
+      const visibilityPropertyType = lodgeProductScoped && isHotelPropertyType(normalizedPropertyType)
+        ? 'lodge'
+        : normalizedPropertyType
+      visibility = resolveModuleVisibility(item.moduleKey, visibilityPropertyType, normalizedPlan, addons)
       if (visibility === MODULE_VISIBILITY_STATES.hidden) return acc
       if (visibility === MODULE_VISIBILITY_STATES.locked) isLocked = true
     } else {
       visibility = MODULE_VISIBILITY_STATES.visible
     }
+
+    // Lodge product: never show locked Hotel-group upsells as daily nav clutter.
+    if (lodgeProductScoped && isLocked && item.group === 'Hotel') return acc
 
     if (!isLocked) {
       if (item.capability && access?.allowedByRole?.[item.capability] !== true) return acc

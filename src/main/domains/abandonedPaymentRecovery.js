@@ -34,12 +34,38 @@ export function getAbandonedSessions(statusFilter) {
 }
 
 async function _recoverSession(sessionToken) {
+  if (!state.lodgeId) throw new Error('No lodge selected')
+  if (!sessionToken) throw new Error('Session token is required')
+  // Payment recovery is ONLINE-ONLY (docs/OFFLINE_MATRIX.md).
+  if (state.isOnline === false) {
+    const err = new Error(
+      'Recover abandoned payment session requires an internet connection. Payment recovery cannot be queued offline.'
+    )
+    err.onlineOnly = true
+    throw err
+  }
   const { data, error } = await state.supabase.rpc('recover_abandoned_session', {
     p_lodge_id: state.lodgeId,
     p_session_token: sessionToken
   })
   if (error) throw error
-  return data
+  if (data?.success === false) throw new Error(data.error || 'Could not recover abandoned session')
+
+  // Recovery updates abandoned session state only.
+  // Never author payment_status / amount_paid from the client.
+  const session = data && typeof data === 'object' ? { ...data } : { result: data }
+  delete session.payment_status
+  delete session.amount_paid
+  delete session.paid
+  delete session.is_paid
+
+  return {
+    success: true,
+    recovery_status: session.status || 'recovered',
+    session,
+    payment_confirmed: false,
+    note: 'Abandoned session marked recovered. Booking payment totals remain server-authoritative.'
+  }
 }
 
 export function recoverSession(sessionToken) {

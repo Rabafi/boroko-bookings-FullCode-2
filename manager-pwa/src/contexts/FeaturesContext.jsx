@@ -26,13 +26,22 @@ export function FeaturesProvider({ children }) {
       }
 
       setLoading(true)
+      // Prefer live entitlement RPC; seed from server membership/session features when present.
       const nextEntitlement = await getEntitlement(user.lodge_id).catch(() => null)
       if (cancelled) return
 
-      const nextFeatures = nextEntitlement?.effective_features || {}
+      const sessionFeatures = user?.effective_features && typeof user.effective_features === 'object'
+        ? user.effective_features
+        : {}
+      const nextFeatures = nextEntitlement?.effective_features || sessionFeatures || {}
       const nextAccess = buildAccessSnapshot(user, nextFeatures)
 
-      setEntitlement(nextEntitlement)
+      setEntitlement(nextEntitlement || {
+        plan: user?.plan || user?.pwa_plan || 'Starter',
+        product_id: user?.product_id || null,
+        commercial_package_key: user?.commercial_package_key || null,
+        effective_features: sessionFeatures
+      })
       setFeatures(nextFeatures)
       setAccess(nextAccess)
       storeAccessSnapshot(user.lodge_id, nextAccess)
@@ -43,7 +52,7 @@ export function FeaturesProvider({ children }) {
     return () => {
       cancelled = true
     }
-  }, [user?.lodge_id, user?.role, user?.capability_overrides])
+  }, [user?.lodge_id, user?.role, user?.capability_overrides, user?.effective_features, user?.plan, user?.product_id, user?.commercial_package_key, user?.pwa_plan])
 
   const isEnabled = (feature) => {
     if (Object.keys(features).length === 0) return true

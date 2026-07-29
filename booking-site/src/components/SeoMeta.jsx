@@ -82,7 +82,7 @@ function setLink(rel, href) {
 }
 
 function injectJsonLd(schema) {
-  const id = 'boroko-jsonld-schema'
+  const id = 'tsa-bonno-jsonld-schema'
   let el = document.getElementById(id)
   if (!el) {
     el = document.createElement('script')

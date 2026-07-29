@@ -12,6 +12,7 @@ import { appendOperationJournalEntry } from '../syncStore.js';
 
 const ALLOWED_RPC_TABLES = new Set([
   'create_booking',
+  'create_campsite_booking',
   'create_booking_invoice_group',
   'create_booking_record',
   'reschedule_booking',
@@ -291,6 +292,18 @@ export function validateSyncQueueItem(item) {
     if ((payload.check_in || payload.check_out) && !hasValidDateRange(payload.check_in, payload.check_out)) {
       return { isValid: false, reason: 'update_booking has invalid date range' };
     }
+  }
+
+  if (item.table === 'create_campsite_booking') {
+    const data = item.data;
+    const required = ['p_lodge_id', 'p_customer_id', 'p_room_id', 'p_check_in', 'p_check_out', 'p_booking_id', 'p_idempotency_key'];
+    const missing = required.filter((field) => !hasString(data[field]));
+    if (missing.length > 0) return { isValid: false, reason: `create_campsite_booking missing ${missing.join(', ')}` };
+    if (!hasValidDateRange(data.p_check_in, data.p_check_out)) return { isValid: false, reason: 'create_campsite_booking has invalid date range' };
+    for (const field of ['p_adults', 'p_children', 'p_tents', 'p_vehicles']) {
+      if (!Number.isInteger(Number(data[field])) || Number(data[field]) < 0) return { isValid: false, reason: `create_campsite_booking has invalid ${field}` };
+    }
+    if (Number(data.p_adults) + Number(data.p_children) < 1) return { isValid: false, reason: 'create_campsite_booking requires a guest' };
   }
 
   if (item.table === 'reschedule_booking') {
@@ -648,6 +661,56 @@ function applyImportedBookingCacheEffects(items = []) {
         _mesh_imported: true,
         _mesh_source_node_id: item._mesh_source_node_id
       });
+    } else if (item.table === 'create_campsite_booking') {
+      const data = item.data || {};
+      imported.push({
+        id: data.p_booking_id,
+        lodge_id: data.p_lodge_id,
+        customer_id: data.p_customer_id,
+        room_id: data.p_room_id,
+        check_in: data.p_check_in,
+        check_out: data.p_check_out,
+        adults: data.p_adults,
+        children: data.p_children || 0,
+        tents: data.p_tents || 0,
+        vehicles: data.p_vehicles || 0,
+        accommodation_kind: 'campsite',
+        total_amount: Number(data.p_total_amount || 0),
+        amount_paid: Number(data.p_deposit_amount || 0),
+        notes: data.p_notes || '',
+        status: 'pending',
+        payment_status: Number(data.p_deposit_amount || 0) > 0 ? 'partial' : 'unpaid',
+        created_at: item.timestamp || item.created_at || new Date().toISOString(),
+        _pending_sync: true,
+        _sync_state: 'pending',
+        _mesh_imported: true,
+        _mesh_source_node_id: item._mesh_source_node_id
+      });
+    } else if (item.table === 'create_campsite_booking') {
+      const data = item.data || {};
+      imported.push({
+        id: data.p_booking_id,
+        lodge_id: data.p_lodge_id,
+        customer_id: data.p_customer_id,
+        room_id: data.p_room_id,
+        check_in: data.p_check_in,
+        check_out: data.p_check_out,
+        adults: data.p_adults,
+        children: data.p_children || 0,
+        tents: data.p_tents || 0,
+        vehicles: data.p_vehicles || 0,
+        accommodation_kind: 'campsite',
+        total_amount: Number(data.p_total_amount || 0),
+        amount_paid: Number(data.p_deposit_amount || 0),
+        notes: data.p_notes || '',
+        status: 'pending',
+        payment_status: Number(data.p_deposit_amount || 0) > 0 ? 'partial' : 'unpaid',
+        created_at: item.timestamp || item.created_at || new Date().toISOString(),
+        _pending_sync: true,
+        _sync_state: 'pending',
+        _mesh_imported: true,
+        _mesh_source_node_id: item._mesh_source_node_id
+      });
     } else if (item.table === 'create_booking_record') {
       const payload = item.data?.payload || {};
       imported.push({
@@ -865,7 +928,7 @@ export async function syncMeshQueues() {
             appendOperationJournalEntry('mesh_imported', importedItem, {
               imported_from_mesh: true,
               source_node_id: peer.nodeId || peerId,
-              message: 'Operation imported from a nearby Boroko device over local mesh.'
+              message: 'Operation imported from a nearby Tsa Bonno device over local mesh.'
             });
           }
           meshState.lastQueueMergeAt = new Date();
@@ -883,7 +946,6 @@ export async function syncMeshQueues() {
         importedCount: importedFromPeer,
         lastError: ''
       });
-
     } catch (err) {
       repairPeers.push({
         nodeId: peer.nodeId || peerId,

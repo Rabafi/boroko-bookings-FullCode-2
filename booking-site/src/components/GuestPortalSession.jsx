@@ -59,7 +59,7 @@ export default function GuestPortalProvider({ children }) {
     )
   }
 
-  if (error) {
+  if (error || !session) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-[var(--bg)] px-4">
         <div className="surface-card max-w-md rounded-[32px] p-8 text-center">
@@ -69,17 +69,21 @@ export default function GuestPortalProvider({ children }) {
             </svg>
           </div>
           <h1 className="font-display text-2xl text-[var(--text)]">Session Error</h1>
-          <p className="mt-3 text-sm leading-7 text-[var(--muted)]">{error}</p>
+          <p className="mt-3 text-sm leading-7 text-[var(--muted)]">
+            {error || 'Your guest portal session could not be validated.'}
+          </p>
           <p className="mt-6 text-xs font-semibold uppercase tracking-[0.18em] text-[var(--muted)]">
             Please check your link or contact the property
           </p>
+          <a
+            href="/"
+            className="mt-6 inline-flex rounded-full border border-[var(--line)] bg-white px-5 py-2.5 text-xs font-semibold uppercase tracking-[0.12em] text-[var(--muted)] transition-colors hover:border-[var(--line-strong)]"
+          >
+            Return to booking site
+          </a>
         </div>
       </div>
     )
-  }
-
-  if (!session) {
-    return null
   }
 
   return (

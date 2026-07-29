@@ -1,5 +1,11 @@
 import { createContext, useContext, useState, useEffect } from 'react'
-import { authenticateManager, logoutManagerSession, refreshManagerSession, validateManagerSession } from '../lib/api'
+import {
+  authenticateManager,
+  issueManagerPwaSession,
+  logoutManagerSession,
+  refreshManagerSession,
+  validateManagerSession
+} from '../lib/api'
 import { clearSession, getSession, setSession } from '../lib/runtime'
 import { clearSupabaseSessionToken, setSupabaseSessionToken, signOutSupabaseAuth } from '../lib/supabase'
 
@@ -35,37 +41,47 @@ function isOffline() {
   return typeof navigator !== 'undefined' && navigator.onLine === false
 }
 
+function buildSessionRecord(row, previous = null) {
+  return {
+    id: row.id,
+    name: row.name,
+    email: row.email,
+    role: row.role,
+    lodge_id: row.lodge_id,
+    lodge_display_name: row.lodge_display_name || row.lodge_name || 'Your Lodge',
+    property_type: row.property_type || previous?.property_type || null,
+    product_family: row.product_family || previous?.product_family || null,
+    product_family_label: row.product_family_label || previous?.product_family_label || null,
+    product_id: row.product_id || previous?.product_id || null,
+    commercial_package_key: row.commercial_package_key || previous?.commercial_package_key || null,
+    package_label: row.package_label || previous?.package_label || null,
+    hospitality_mode: row.hospitality_mode || previous?.hospitality_mode || null,
+    effective_features: row.effective_features || previous?.effective_features || null,
+    pwa_enabled: row.pwa_enabled === true,
+    pwa_feature_enabled: row.pwa_feature_enabled !== false,
+    plan: row.plan || row.pwa_plan || previous?.plan || 'Starter',
+    session_token: row.session_token,
+    session_expires_at: row.session_expires_at || null,
+    started_at: row.started_at || previous?.started_at || new Date().toISOString(),
+    trusted_device: true,
+    trusted_until: row.trusted_until || previous?.trusted_until || addDaysIso(new Date().toISOString(), 365)
+  }
+}
+
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null)
   const [loading, setLoading] = useState(true)
-  const [pendingLodges, setPendingLodges] = useState(null)
-  const [pendingCredentials, setPendingCredentials] = useState(null)
+  const [pendingMemberships, setPendingMemberships] = useState(null)
 
   const clearAuthSession = () => {
     clearSupabaseSessionToken()
     clearSession()
     setUser(null)
-    setPendingLodges(null)
-    setPendingCredentials(null)
+    setPendingMemberships(null)
   }
 
-  const startSession = (row) => {
-    const session = {
-      id: row.id,
-      name: row.name,
-      email: row.email,
-      role: row.role,
-      lodge_id: row.lodge_id,
-      lodge_display_name: row.lodge_display_name || row.lodge_name || 'Your Lodge',
-      pwa_enabled: row.pwa_enabled === true,
-      pwa_feature_enabled: row.pwa_feature_enabled !== false,
-      plan: row.plan || row.pwa_plan || 'Starter',
-      session_token: row.session_token,
-      session_expires_at: row.session_expires_at || null,
-      started_at: row.started_at || getSession()?.started_at || new Date().toISOString(),
-      trusted_device: true,
-      trusted_until: row.trusted_until || getSession()?.trusted_until || addDaysIso(new Date().toISOString(), 365)
-    }
+  const startSession = (row, previous = null) => {
+    const session = buildSessionRecord(row, previous)
     if (isSessionExpired(session.session_expires_at) && !isTrustedSessionValid(session)) {
       clearAuthSession()
       throw new Error('Your session has expired. Please sign in again.')
@@ -73,6 +89,7 @@ export function AuthProvider({ children }) {
     setSupabaseSessionToken(session.session_token)
     setSession(session)
     setUser(session)
+    setPendingMemberships(null)
     return session
   }
 
@@ -116,6 +133,15 @@ export function AuthProvider({ children }) {
         const mergedProfile = profile ? {
           ...saved,
           ...profile,
+          // Prefer server product identity when refresh returns it; keep saved otherwise.
+          property_type: profile.property_type || saved.property_type || null,
+          product_family: profile.product_family || saved.product_family || null,
+          product_family_label: profile.product_family_label || saved.product_family_label || null,
+          product_id: profile.product_id || saved.product_id || null,
+          commercial_package_key: profile.commercial_package_key || saved.commercial_package_key || null,
+          package_label: profile.package_label || saved.package_label || null,
+          hospitality_mode: profile.hospitality_mode || saved.hospitality_mode || null,
+          effective_features: profile.effective_features || saved.effective_features || null,
           trusted_device: true,
           trusted_until: trustedUntil(saved),
           started_at: saved.started_at || profile.started_at || new Date().toISOString()
@@ -127,7 +153,7 @@ export function AuthProvider({ children }) {
           return
         }
 
-        startSession(mergedProfile)
+        startSession(mergedProfile, saved)
       } catch {
         clearAuthSession()
       } finally {
@@ -174,7 +200,7 @@ export function AuthProvider({ children }) {
             ...profile,
             trusted_device: true,
             trusted_until: trustedUntil(user)
-          })
+          }, user)
         }
       } catch {
         // The saved trusted session remains usable locally; retry next time.
@@ -191,28 +217,28 @@ export function AuthProvider({ children }) {
 
   const login = async (identifier, password) => {
     const result = await authenticateManager(identifier, password)
-    if (result?.lodges?.length > 1) {
-      setPendingLodges(result.lodges)
-      setPendingCredentials({ identifier, password })
+    if (result?.memberships?.length > 1) {
+      // Supabase Auth holds the credential; do not keep the password in React state.
+      setPendingMemberships(result.memberships)
       return null
     }
 
-    setPendingCredentials(null)
+    if (!result?.user) {
+      throw new Error('Could not open a manager session.')
+    }
+
     return startSession(result.user)
   }
 
-  const selectLodge = async (lodgeRow) => {
-    if (!pendingCredentials?.identifier || !pendingCredentials?.password) {
-      throw new Error('Your lodge selection expired. Please sign in again.')
+  const selectMembership = async (membership) => {
+    if (!membership?.lodge_id) {
+      throw new Error('Select a business to continue.')
     }
-    const result = await authenticateManager(
-      pendingCredentials.identifier,
-      pendingCredentials.password,
-      lodgeRow?.lodge_id
-    )
-    setPendingLodges(null)
-    setPendingCredentials(null)
-    return startSession(result.user)
+    const result = await issueManagerPwaSession(membership.lodge_id)
+    if (!result?.user) {
+      throw new Error('Could not open a manager session for that business.')
+    }
+    return startSession(result.user, membership)
   }
 
   const logout = async () => {
@@ -228,8 +254,26 @@ export function AuthProvider({ children }) {
     clearAuthSession()
   }
 
+  const cancelMembershipSelection = async () => {
+    setPendingMemberships(null)
+    await signOutSupabaseAuth()
+    clearSupabaseSessionToken()
+  }
+
   return (
-    <AuthContext.Provider value={{ user, loading, login, logout, pendingLodges, selectLodge }}>
+    <AuthContext.Provider
+      value={{
+        user,
+        loading,
+        login,
+        logout,
+        pendingMemberships,
+        pendingLodges: pendingMemberships,
+        selectMembership,
+        selectLodge: selectMembership,
+        cancelMembershipSelection
+      }}
+    >
       {children}
     </AuthContext.Provider>
   )

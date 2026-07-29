@@ -1,11 +1,27 @@
 import { useEffect, useState, useRef, useContext, useMemo, lazy, Suspense } from 'react'
-import { useLocation, useSearchParams } from 'react-router-dom'
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { Building2, Phone, Mail, MapPin, Globe, Hash, Save, Upload, X, Image, Moon, RefreshCw, CheckCircle2, AlertTriangle, Key, ShieldCheck, Clock, CreditCard, Copy, TrendingUp, ArrowUpCircle, Settings as SettingsIcon, MessageCircle, FileText, Info, Send, Sparkles, Download, RotateCcw, Sun, Monitor } from 'lucide-react'
 import { useSettings, UnsavedChangesContext } from '../app-context'
 import { Modal } from './shared/Modal'
 import { extractReleaseHighlights, formatReleaseDate, normalizeReleaseNotes, toReleaseSections } from '../utils/updatePresentation'
 import { applyThemeMode, getStoredThemeMode, resolveThemeMode, saveThemeMode } from '../utils/themeMode'
-import { buildOperatingProfile, normalizePropertyType, propertyTypeToBusinessType, isRestaurantOnly } from '../../../shared/propertyTypes'
+import {
+  buildOperatingProfile,
+  normalizePropertyType,
+  propertyTypeToBusinessType,
+  isRestaurantOnly,
+  isBarOnlyMode,
+  HOSPITALITY_MODES,
+  getExplicitHospitalityMode,
+  PROPERTY_TYPE_LABELS
+} from '../../../shared/propertyTypes'
+import { getProductDefinition, getRuntimeProductId } from '../../../shared/productIdentity'
+import { getUiVocabulary } from '../../../shared/uiVocabulary'
+
+const BUILD_PRODUCT = getProductDefinition(getRuntimeProductId())
+const IS_HOTEL_PRODUCT = BUILD_PRODUCT.id === 'hotel'
+const IS_LODGE_PRODUCT = BUILD_PRODUCT.id === 'lodge-camp'
+const IS_HOSPITALITY_POS_PRODUCT = BUILD_PRODUCT.id === 'hospitality-pos'
 const SystemHealthPanel = lazy(() => import('./SystemHealthPanel'))
 const SubscriptionAccessPanel = lazy(() => import('./SubscriptionAccessPanel'))
 const DocumentTemplates = lazy(() => import('./DocumentSystem').then(m => ({ default: () => <m.default templatesOnly /> })))
@@ -78,13 +94,34 @@ function normalizePlanName(plan) {
 
 
 export default function Settings() {
+  const navigate = useNavigate()
   const UPDATE_SNOOZE_KEY = 'bb_update_snooze_until'
   const { settings: globalSettings, setSettings: setGlobalSettings } = useSettings()
   const propertyType = globalSettings?.property_type || globalSettings?.business_type || 'lodge'
   const restaurantMode = isRestaurantOnly(propertyType)
+  const barOnlyMode = restaurantMode && isBarOnlyMode(globalSettings)
+  const hotelMode = IS_HOTEL_PRODUCT
+  const vocab = getUiVocabulary({ settings: globalSettings, propertyType, productId: BUILD_PRODUCT.id })
+  const businessLabel = vocab.noun
+  const businessLabelTitle = vocab.nounTitle
   const location = useLocation()
   const [searchParams, setSearchParams] = useSearchParams()
   const [activeTab, setActiveTab] = useState(() => searchParams.get('tab') || location.state?.activeTab || 'general')
+
+  useEffect(() => {
+    if (!restaurantMode) return
+    if (activeTab === 'system') navigate('/hpos/system-health', { replace: true })
+    if (activeTab === 'document-templates') {
+      setActiveTab('general')
+      setSearchParams({ tab: 'general' }, { replace: true })
+    }
+  }, [activeTab, navigate, restaurantMode, setSearchParams])
+
+  // Keep System Health / tab deep-links working from HPOS More menu and banners.
+  useEffect(() => {
+    const nextTab = searchParams.get('tab') || location.state?.activeTab
+    if (nextTab && nextTab !== activeTab) setActiveTab(nextTab)
+  }, [searchParams, location.state?.activeTab])
   const [form, setForm] = useState(null)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -634,6 +671,7 @@ export default function Settings() {
     setSaveError('')
     try {
       const propertyType = normalizePropertyType(form?.property_type || form?.business_type || 'lodge')
+      const existingProfile = form?.operating_profile || globalSettings?.operating_profile || {}
       const savePayload = {
         ...form,
         property_type: propertyType,
@@ -641,7 +679,13 @@ export default function Settings() {
         operating_profile: buildOperatingProfile(
           propertyType,
           form?.subscription_plan || globalSettings?.subscription_plan || 'Starter',
-          form?.enterprise_addons || globalSettings?.enterprise_addons || []
+          form?.enterprise_addons || globalSettings?.enterprise_addons || [],
+          {
+            hospitalityMode: existingProfile.hospitality_mode || form?.hospitality_mode || null,
+            campsitesEnabled: existingProfile?.campsite_profile?.enabled === true,
+            roomsOrUnits: existingProfile?.accommodation_mix?.rooms_or_units !== false,
+            wholeProperty: existingProfile?.accommodation_mix?.whole_property_exclusive_use === true
+          }
         )
       }
       const res = await window.api.settings.save(savePayload)
@@ -768,15 +812,15 @@ export default function Settings() {
   )
 
   return (
-    <div className="p-6 max-w-7xl mx-auto">
-      <div className="mb-5 flex items-center justify-between gap-4">
-        <h1 className="text-2xl font-bold text-gray-800">Settings</h1>
+    <div className={restaurantMode ? 'hpos-settings-workspace' : 'p-6 max-w-7xl mx-auto'}>
+      <div className={restaurantMode ? 'hpos-settings-hero' : 'mb-5 flex items-center justify-between gap-4'}>
+        <div><p className={restaurantMode ? 'hpos-eyebrow' : 'hidden'}>{restaurantMode ? 'Business setup' : ''}</p><h1 className="text-2xl font-bold text-gray-800">{restaurantMode ? `${barOnlyMode ? 'Bar' : 'Restaurant'} settings` : 'Settings'}</h1>{restaurantMode&&<p>Identity, tax, contact details, access and device preferences for this POS.</p>}</div>
         {activeTab === 'general' && (
           <button
             type="button"
             onClick={handleSave}
             disabled={saving}
-            className="btn-primary flex items-center gap-2"
+            className={restaurantMode ? 'hpos-primary-action' : 'btn-primary flex items-center gap-2'}
           >
             <Save size={15} />
             {saving ? 'Saving...' : 'Save Settings'}
@@ -792,8 +836,8 @@ export default function Settings() {
       )}
 
 {/* ── Tab bar ─────────────────────────────────────────────────────── */}
-      <div className="flex gap-1 bg-gray-100 rounded-xl p-1 mb-6">
-        {tabs.map(tab => (
+      <div className={restaurantMode ? 'hpos-settings-tabs' : 'flex gap-1 bg-gray-100 rounded-xl p-1 mb-6'}>
+        {tabs.filter(tab => !restaurantMode || !['document-templates','system'].includes(tab.id)).map(tab => (
           <button
             key={tab.id}
             type="button"
@@ -823,8 +867,12 @@ export default function Settings() {
                 <Sparkles size={17} className="text-emerald-600" />
               </div>
               <div>
-                <p className="text-sm font-semibold text-gray-800">Boroko Assistant</p>
-                <p className="text-xs text-gray-400">Show Assistant in the sidebar, header, and floating guide button</p>
+                <p className="text-sm font-semibold text-gray-800">Tsa Bonno Assistant</p>
+                <p className="text-xs text-gray-400">
+                  {IS_HOSPITALITY_POS_PRODUCT || restaurantMode
+                    ? 'Show Assistant in the top bar and floating guide button (POS dock stays free for selling)'
+                    : 'Show Assistant in the sidebar, header, and floating guide button'}
+                </p>
               </div>
             </div>
             <button
@@ -834,7 +882,7 @@ export default function Settings() {
                 form?.assistant_enabled === true ? 'bg-green-600' : 'bg-gray-200'
               }`}
               aria-pressed={form?.assistant_enabled === true}
-              aria-label="Toggle Boroko Assistant"
+              aria-label="Toggle Tsa Bonno Assistant"
             >
               <span
                 className={`inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform ${
@@ -944,7 +992,7 @@ export default function Settings() {
               <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
-                    <p className="text-sm font-semibold text-slate-800">Boroko Bookings v{updateMeta.version}</p>
+                    <p className="text-sm font-semibold text-slate-800">{BUILD_PRODUCT.brandName} v{updateMeta.version}</p>
                     <p className="mt-1 text-xs text-slate-500">
                       {[updateMeta.releaseName, formatReleaseDate(updateMeta.releaseDate)].filter(Boolean).join(' · ') || 'Latest desktop release'}
                     </p>
@@ -1041,7 +1089,7 @@ export default function Settings() {
               </div>
               <div>
                 <p className="text-sm font-semibold text-gray-800">About</p>
-                <p className="text-xs text-gray-400">Boroko Bookings</p>
+                <p className="text-xs text-gray-400">{BUILD_PRODUCT.brandName}</p>
               </div>
             </div>
             <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 space-y-2">
@@ -1059,7 +1107,7 @@ export default function Settings() {
           </div>
 
           {releaseNotesOpen && (
-            <Modal title={`Boroko Bookings v${updateMeta?.version || ''}`} onClose={() => setReleaseNotesOpen(false)} size="lg">
+            <Modal title={`${BUILD_PRODUCT.brandName} v${updateMeta?.version || ''}`} onClose={() => setReleaseNotesOpen(false)} size="lg">
               <div className="space-y-5">
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
                   <p className="text-sm font-semibold text-slate-900">Release notes</p>
@@ -1094,7 +1142,7 @@ export default function Settings() {
             {/* ── Logo Upload ─────────────────────────────────────────────── */}
             <div className="bg-white rounded-xl shadow-sm p-6">
               <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wider mb-4 flex items-center gap-2">
-                <Image size={15} className="text-green-600" /> {restaurantMode ? 'Business Logo' : 'Lodge Logo'}
+                <Image size={15} className="text-green-600" /> {businessLabelTitle} Logo
               </h2>
 
               <div className="flex items-start gap-6">
@@ -1103,7 +1151,7 @@ export default function Settings() {
                     <div className="relative group">
                       <img
                         src={logoPreview}
-                        alt="Lodge logo"
+                        alt={`${vocab.nounTitle} logo`}
                         className="w-28 h-28 object-contain border-2 border-gray-200 rounded-xl bg-gray-50 p-1"
                       />
                       <button
@@ -1152,42 +1200,67 @@ export default function Settings() {
               </h2>
               <div className="space-y-4">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Business / Property Name *</label>
-                  <input className="input" value={form.lodge_name} onChange={(e) => set('lodge_name', e.target.value)} placeholder="e.g. Sunset Lodge" required />
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    {vocab.nameLabel} *
+                  </label>
+                  <input
+                    className="input"
+                    value={form.lodge_name}
+                    onChange={(e) => set('lodge_name', e.target.value)}
+                    placeholder={
+                      barOnlyMode ? 'e.g. Town Bar, Corner Pub'
+                        : restaurantMode ? 'e.g. River Bistro'
+                          : hotelMode ? 'e.g. Cresta Hotel'
+                            : propertyType === 'camp' ? 'e.g. River Camp'
+                              : propertyType === 'guest_house' ? 'e.g. Garden Guest House'
+                                : propertyType === 'bnb' ? 'e.g. Willow B&B'
+                                  : propertyType === 'motel' ? 'e.g. Highway Motel'
+                                    : 'e.g. Sunset Lodge'
+                    }
+                    required
+                  />
                   <p className="text-xs text-gray-400 mt-1">Shown as the main heading on receipts</p>
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Registered Company Name</label>
-                  <input className="input" value={form.company_name} onChange={(e) => set('company_name', e.target.value)} placeholder="e.g. Sunset Lodge (Pty) Ltd" />
+                  <input
+                    className="input"
+                    value={form.company_name}
+                    onChange={(e) => set('company_name', e.target.value)}
+                    placeholder={
+                      barOnlyMode ? 'e.g. Town Bar (Pty) Ltd'
+                        : restaurantMode ? 'e.g. River Bistro (Pty) Ltd'
+                          : hotelMode ? 'e.g. Cresta Hospitality (Pty) Ltd'
+                            : `e.g. ${businessLabelTitle} Holdings (Pty) Ltd`
+                    }
+                  />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Property Type</label>
-                  <select className="input" value={form.property_type || form.business_type || 'lodge'} onChange={(e) => {
-                    const val = normalizePropertyType(e.target.value)
-                    setForm((current) => ({
-                      ...current,
-                      property_type: val,
-                      business_type: propertyTypeToBusinessType(val),
-                      operating_profile: buildOperatingProfile(
-                        val,
-                        current?.subscription_plan || globalSettings?.subscription_plan || 'Starter',
-                        current?.enterprise_addons || globalSettings?.enterprise_addons || []
-                      )
-                    }))
-                  }}>
-                    <option value="guest_house">Guest House</option>
-                    <option value="bnb">Bed & Breakfast</option>
-                    <option value="lodge">Lodge / Camp</option>
-                    <option value="motel">Motel</option>
-                    <option value="hotel">Hotel</option>
-                    <option value="resort">Resort</option>
-                    <option value="restaurant">Restaurant / POS Only</option>
-                  </select>
-                  <p className="text-xs text-gray-400 mt-1">
-                    {(form.property_type === 'hotel' || form.property_type === 'motel' || form.property_type === 'resort')
-                      ? 'Hotel-grade modules and Enterprise features will be visible.'
-                      : 'Controls which modules and navigation items are relevant for your property.'}
-                  </p>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Product identity (locked)</label>
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-800">
+                    {IS_HOSPITALITY_POS_PRODUCT
+                      ? 'Restaurant / Bar POS'
+                      : IS_HOTEL_PRODUCT
+                        ? 'Hotel'
+                        : 'Tsa Bonno LodgingOS'}
+                    <p className="mt-1 text-xs text-gray-500">
+                      {PROPERTY_TYPE_LABELS[normalizePropertyType(form.property_type || form.business_type || propertyType)]
+                        || (IS_HOSPITALITY_POS_PRODUCT ? 'Restaurant / POS' : IS_HOTEL_PRODUCT ? 'Hotel' : 'Lodge')}
+                      {IS_HOSPITALITY_POS_PRODUCT ? (
+                        <>
+                          {' · '}
+                          {getExplicitHospitalityMode(form?.operating_profile) === HOSPITALITY_MODES.BAR_ONLY
+                            || getExplicitHospitalityMode(globalSettings?.operating_profile) === HOSPITALITY_MODES.BAR_ONLY
+                            ? 'Bar Only'
+                            : 'Restaurant + Bar'}
+                        </>
+                      ) : null}
+                    </p>
+                    <p className="mt-1 text-xs text-gray-500">
+                      Product and property type are set at setup and cannot be switched in Settings.
+                      LodgingOS, HotelOS, and Restaurant &amp; Bar POS are separate apps. Contact Tsa Bonno support if you need a different product.
+                    </p>
+                  </div>
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div>
@@ -1274,11 +1347,11 @@ export default function Settings() {
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1"><Mail size={13} className="inline mr-1" /> Email Address</label>
-                   <input type="email" className="input" value={form.email} onChange={(e) => set('email', e.target.value)} placeholder={restaurantMode ? "info@yourrestaurant.com" : "info@yourlodge.com"} />
+                   <input type="email" className="input" value={form.email} onChange={(e) => set('email', e.target.value)} placeholder={vocab.emailPlaceholder} />
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1"><Globe size={13} className="inline mr-1" /> Website</label>
-                   <input className="input" value={form.website} onChange={(e) => set('website', e.target.value)} placeholder={restaurantMode ? "www.yourrestaurant.com" : "www.yourlodge.com"} />
+                   <input className="input" value={form.website} onChange={(e) => set('website', e.target.value)} placeholder={vocab.websitePlaceholder} />
                 </div>
               </div>
             </div>
@@ -1292,8 +1365,10 @@ export default function Settings() {
                   </h2>
                   <p className="text-sm text-gray-500 mt-2">
                     {restaurantMode
-                      ? 'Connect your restaurant email here so the system can send customer-facing emails automatically.'
-                      : 'Connect your lodge email here so the system can send guest-facing emails automatically.'}
+                      ? `Connect your ${businessLabel} email here so the system can send customer-facing emails automatically.`
+                      : hotelMode
+                        ? 'Connect your hotel email here so the system can send guest-facing emails automatically.'
+                        : 'Connect your lodge email here so the system can send guest-facing emails automatically.'}
                   </p>
                 </div>
                 <div className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
@@ -1302,9 +1377,15 @@ export default function Settings() {
               </div>
 
               <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 mb-5">
-                <p className="text-sm font-medium text-amber-900">Set this up on the main front desk computer.</p>
+                <p className="text-sm font-medium text-amber-900">
+                  {restaurantMode
+                    ? `Set this up on the main ${barOnlyMode ? 'bar counter' : 'restaurant'} computer.`
+                    : 'Set this up on the main front desk computer.'}
+                </p>
                 <p className="text-xs text-amber-800 mt-1">
-                  This computer will send quotations, booking confirmations, cancellations, and booking invoices when those actions happen here.
+                  {restaurantMode
+                    ? 'This computer can send quotations, account statements, and customer emails when those actions happen here.'
+                    : 'This computer will send quotations, booking confirmations, cancellations, and booking invoices when those actions happen here.'}
                 </p>
               </div>
 
@@ -1338,7 +1419,7 @@ export default function Settings() {
                   <div className="grid grid-cols-2 gap-4">
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">Email / username</label>
-                       <input className="input" type="email" value={emailConfig.user} onChange={(e) => setEmailField('user', e.target.value)} placeholder={restaurantMode ? "orders@yourrestaurant.com" : "reservations@yourlodge.com"} />
+                       <input className="input" type="email" value={emailConfig.user} onChange={(e) => setEmailField('user', e.target.value)} placeholder={barOnlyMode || restaurantMode ? vocab.emailPlaceholder.replace(/^info@/, 'orders@') : vocab.emailPlaceholder} />
                     </div>
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">Password / app password</label>
@@ -1349,18 +1430,20 @@ export default function Settings() {
                   <div className="grid grid-cols-2 gap-4">
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">From line</label>
-                      <input className="input" value={emailConfig.from} onChange={(e) => setEmailField('from', e.target.value)} placeholder={`"${form?.lodge_name || 'Your lodge'}" <${emailConfig.user || 'you@example.com'}>`} />
-                      <p className="text-xs text-gray-400 mt-1">{restaurantMode ? 'Leave blank to use your business name automatically.' : 'Leave blank to use your lodge name automatically.'}</p>
+                      <input className="input" value={emailConfig.from} onChange={(e) => setEmailField('from', e.target.value)} placeholder={`"${form?.lodge_name || vocab.nameFallback}" <${emailConfig.user || 'you@example.com'}>`} />
+                      <p className="text-xs text-gray-400 mt-1">
+                        Leave blank to use {vocab.yourNoun} name automatically.
+                      </p>
                     </div>
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">Reply-to address</label>
-                       <input className="input" type="email" value={emailConfig.reply_to} onChange={(e) => setEmailField('reply_to', e.target.value)} placeholder={restaurantMode ? "orders@yourrestaurant.com" : "reservations@yourlodge.com"} />
+                       <input className="input" type="email" value={emailConfig.reply_to} onChange={(e) => setEmailField('reply_to', e.target.value)} placeholder={barOnlyMode || restaurantMode ? vocab.emailPlaceholder.replace(/^info@/, 'orders@') : vocab.emailPlaceholder} />
                     </div>
                   </div>
 
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">Test inbox</label>
-                     <input className="input" type="email" value={emailConfig.to} onChange={(e) => setEmailField('to', e.target.value)} placeholder={restaurantMode ? "manager@yourrestaurant.com" : "manager@yourlodge.com"} />
+                     <input className="input" type="email" value={emailConfig.to} onChange={(e) => setEmailField('to', e.target.value)} placeholder={vocab.emailPlaceholder.replace(/^[^@]+@/, 'manager@')} />
                     <p className="text-xs text-gray-400 mt-1">We use this address for the test email and any local email checks from this computer.</p>
                   </div>
 
@@ -1372,7 +1455,9 @@ export default function Settings() {
                     />
                     <div>
                       <p className="text-sm font-medium text-gray-700">Allow insecure TLS only if your provider asks for it</p>
-                      <p className="text-xs text-gray-400">{restaurantMode ? 'Most restaurants should leave this off.' : 'Most lodges should leave this off.'}</p>
+                      <p className="text-xs text-gray-400">
+                        Most {vocab.nounPlural} should leave this off.
+                      </p>
                     </div>
                   </label>
                 </div>
@@ -1425,7 +1510,7 @@ export default function Settings() {
                     <ul className="space-y-2 text-xs text-blue-900/90">
                       <li>Quotation emails show the quoted room, dates, total, and validity date.</li>
                       <li>Booking confirmations show the stay summary, amount paid, and balance due.</li>
-                      <li>Cancellation emails confirm the stay was cancelled and tell the guest to contact the lodge if needed.</li>
+                      <li>Cancellation emails confirm the stay was cancelled and tell the guest to contact {vocab.theNoun} if needed.</li>
                       <li>Booking invoices are sent as a separate guest invoice email when enabled.</li>
                     </ul>
                   </div>
@@ -1462,12 +1547,12 @@ export default function Settings() {
 
               {!onlinePlanOk ? (
                 <div className="bg-gray-50 border border-gray-200 rounded-lg px-4 py-3 text-sm text-gray-500">
-                  Upgrade to <strong>Pro</strong> to unlock a branded booking page for this lodge, a unique public URL, direct guest enquiries, WhatsApp contact, policies, room amenities, and a stronger direct-booking sales flow.
+                  Upgrade to <strong>Pro</strong> to unlock a branded booking page for {vocab.thisNoun}, a unique public URL, direct guest enquiries, WhatsApp contact, policies, room amenities, and a stronger direct-booking sales flow.
                 </div>
               ) : (
                 <>
                   <p className="text-xs text-gray-500">
-                    This Pro feature gives your lodge its own public booking page. Guests can browse rooms, view amenities and policies, contact you directly, and send booking requests from your unique link.
+                    This Pro feature gives {vocab.yourNoun} its own public booking page. Guests can browse rooms, view amenities and policies, contact you directly, and send booking requests from your unique link.
                     Set a short, memorable URL slug below.
                   </p>
 
@@ -1492,7 +1577,7 @@ export default function Settings() {
                             set('slug', toSlug(form.lodge_name))
                           }
                         }}
-                        placeholder={form?.lodge_name ? toSlug(form.lodge_name) : 'your-lodge-name'}
+                        placeholder={form?.lodge_name ? toSlug(form.lodge_name) : `your-${String(vocab.noun).replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '').toLowerCase() || 'property'}-name`}
                         className="input flex-1 rounded-l-none border-l-0"
                         spellCheck={false}
                       />
@@ -1523,7 +1608,7 @@ export default function Settings() {
                   )}
 
                   <p className="text-xs text-gray-400">
-                    Save your settings to publish the page. Booking requests from this public lodge URL will appear as <strong>Pending</strong> in your Bookings screen for you to confirm or reject.
+                    Save your settings to publish the page. Booking requests from this public {vocab.noun} URL will appear as <strong>Pending</strong> in your Bookings screen for you to confirm or reject.
                   </p>
 
                   <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
@@ -1532,7 +1617,7 @@ export default function Settings() {
                       {[
                         ['public_offer_rooms', 'Room stays', 'Guests can request one room.'],
                         ['public_offer_multi_room', 'Multiple rooms', 'Families and companies can request several rooms together.'],
-                        ['public_offer_full_lodge', 'Full lodge', 'Guests can request exclusive lodge use.'],
+                        ['public_offer_full_lodge', vocab.fullPropertyLabel, `Guests can request exclusive ${vocab.noun} use.`],
                         ['public_offer_day_use', 'Day use', 'Show configured pool, braai, and facility packages.'],
                         ['public_offer_events', 'Events & venues', 'Show venue and event request options.']
                       ].map(([key, label, hint]) => (
@@ -1572,7 +1657,9 @@ export default function Settings() {
                           rows={5}
                           value={form?.booking_description || ''}
                           onChange={(e) => set('booking_description', e.target.value)}
-                          placeholder="Describe what makes your lodge special, who it suits best, and what guests can expect on arrival."
+                          placeholder={hotelMode
+                            ? 'Describe what makes your hotel special, who it suits best, and what guests can expect on arrival.'
+                            : 'Describe what makes your lodge special, who it suits best, and what guests can expect on arrival.'}
                         />
                       </div>
 

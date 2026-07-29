@@ -83,7 +83,7 @@ function CompetitorNoteForm({ onSave, onCancel, loading }) {
   )
 }
 
-function RecommendationCard({ rec }) {
+function RecommendationCard({ rec, onApprove, onReject, busy }) {
   return (
     <div className="bg-white rounded-xl shadow-sm p-4 border border-gray-100 border-l-4 border-l-amber-400">
       <h4 className="font-medium text-gray-800 text-sm">{rec.action}</h4>
@@ -91,6 +91,25 @@ function RecommendationCard({ rec }) {
       <div className="flex items-center gap-4 mt-2 text-xs text-gray-400">
         <span>Current: {rec.current_value}%</span>
         <span>Threshold: {rec.trigger_threshold}%</span>
+      </div>
+      <p className="text-xs text-amber-700 mt-2">Requires approval — rates are never applied automatically.</p>
+      <div className="flex gap-2 mt-3">
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => onApprove?.(rec)}
+          className="text-xs bg-emerald-600 text-white px-3 py-1.5 rounded-lg hover:bg-emerald-700 disabled:opacity-50"
+        >
+          Approve (no auto-apply)
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => onReject?.(rec)}
+          className="text-xs border border-gray-200 text-gray-600 px-3 py-1.5 rounded-lg hover:bg-gray-50 disabled:opacity-50"
+        >
+          Reject
+        </button>
       </div>
     </div>
   )
@@ -184,6 +203,26 @@ export default function RevenueManager() {
       await window.api.revenueManager.createDemandEvent(name, date, impact || null, '')
       setSuccess('Event created'); setShowDemandForm(false)
       loadDemandEvents()
+    } catch (e) { setError(e.message) }
+    finally { setLoading(false) }
+  }
+
+  const handleApproveRecommendation = async (rec) => {
+    setLoading(true); setError(''); setSuccess('')
+    try {
+      const result = await window.api.revenueManager.approveRecommendation(rec)
+      setSuccess(result?.message || 'Recommendation approved — rates were not applied automatically')
+      loadRecommendations()
+    } catch (e) { setError(e.message) }
+    finally { setLoading(false) }
+  }
+
+  const handleRejectRecommendation = async (rec) => {
+    setLoading(true); setError(''); setSuccess('')
+    try {
+      const result = await window.api.revenueManager.rejectRecommendation(rec, 'Rejected by manager')
+      setSuccess(result?.message || 'Recommendation rejected')
+      loadRecommendations()
     } catch (e) { setError(e.message) }
     finally { setLoading(false) }
   }
@@ -288,7 +327,15 @@ export default function RevenueManager() {
       {tab === 'recommendations' && (
         <div className="space-y-3">
           {recommendations.length === 0 && !loading && <p className="text-sm text-gray-400 text-center py-8">No recommendations available.</p>}
-          {recommendations.map((r, i) => <RecommendationCard key={i} rec={r} />)}
+          {recommendations.map((r, i) => (
+            <RecommendationCard
+              key={r.id || i}
+              rec={r}
+              busy={loading}
+              onApprove={handleApproveRecommendation}
+              onReject={handleRejectRecommendation}
+            />
+          ))}
         </div>
       )}
     </div>

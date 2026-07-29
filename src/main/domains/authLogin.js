@@ -20,6 +20,12 @@ import {
   normalizeUserRecord
 } from './shared.js';
 import { normalizeStaffStatus } from '../../shared/accessControl.js';
+import {
+  createProductMismatchError,
+  getProductDefinition,
+  getRuntimeProductId,
+  isProductCompatiblePropertyType
+} from '../../shared/productIdentity.js';
 
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_KEY;
 
@@ -232,6 +238,35 @@ export async function getLodgeAuthContext(targetLodgeId = state.lodgeId) {
   return row || null;
 }
 
+async function assertAuthenticatedLodgeMatchesCurrentProduct(lodgeId) {
+  const { data, error } = await state.supabase.
+  from('settings').
+  select('property_type, business_type').
+  eq('lodge_id', lodgeId).
+  maybeSingle();
+
+  if (error) throw error;
+  const propertyType = data?.property_type || data?.business_type || 'lodge';
+  const productId = getRuntimeProductId();
+  if (isProductCompatiblePropertyType(productId, propertyType)) return;
+  throw createProductMismatchError(productId, propertyType);
+}
+
+/**
+ * Offline / trusted-session path: reject sessions whose cached property type
+ * belongs to a different product binary.
+ */
+function assertOfflineSessionMatchesCurrentProduct(user) {
+  if (!user || user.isMasterAdmin) return;
+  const settings = readCache('settings')?.[0] || null;
+  if (!settings) return;
+  const propertyType = settings.property_type || settings.business_type;
+  if (!propertyType) return;
+  const productId = getRuntimeProductId();
+  if (isProductCompatiblePropertyType(productId, propertyType)) return;
+  throw createProductMismatchError(productId, propertyType);
+}
+
 async function findRemoteUsersByEmailForCurrentLodge(emailLower) {
   try {
     const { data, error } = await state.supabase.
@@ -247,12 +282,12 @@ async function findRemoteUsersByEmailForCurrentLodge(emailLower) {
   }
 }
 
-async function authenticateOnline(emailLower, password) {
+async function authenticateOnline(emailLower, password, selectedLodgeId = null) {
   if (!state.lodgeId) {
-    return authenticateOnlineForDeviceBootstrap(emailLower, password);
+    return authenticateWithSupabaseAuth(emailLower, password, selectedLodgeId);
   }
 
-  const supabaseAuth = await authenticateWithSupabaseAuth(emailLower, password);
+  const supabaseAuth = await authenticateWithSupabaseAuth(emailLower, password, selectedLodgeId);
   if (
     supabaseAuth.user ||
     !['supabase_auth_unavailable', 'supabase_auth_not_migrated'].includes(supabaseAuth.code)
@@ -540,7 +575,7 @@ async function authenticateOnlineForDeviceBootstrap(emailLower, password) {
   }
 }
 
-async function authenticateWithSupabaseAuth(emailLower, password) {
+async function authenticateWithSupabaseAuth(emailLower, password, selectedLodgeId = null) {
   if (!password) {
     return { user: null, code: 'wrong_password', error: 'Enter your password to sign in.' };
   }
@@ -579,8 +614,47 @@ async function authenticateWithSupabaseAuth(emailLower, password) {
       };
     }
 
+    const { data: membershipRows, error: membershipError } = await authClient.rpc('list_desktop_product_memberships', {
+      p_product_id: getRuntimeProductId()
+    });
+    if (membershipError) {
+      return {
+        user: null,
+        code: 'multi_company_login_unavailable',
+        error: 'This database needs the latest multi-company sign-in update before this account can be used.'
+      };
+    }
+
+    const memberships = Array.isArray(membershipRows) ? membershipRows : [];
+    // A cached profile is only a local convenience, not the user's company
+    // selection. Restaurant and bar companies share this product, so silently
+    // preferring the last one would make an email with both memberships open
+    // the wrong business and bypass the chooser.
+    const requestedLodgeId = normalizeLodgeId(selectedLodgeId);
+    if (requestedLodgeId && !memberships.some((membership) => normalizeLodgeId(membership.lodge_id) === requestedLodgeId)) {
+      return {
+        user: null,
+        code: 'invalid_company_selection',
+        error: 'That company is not available for this account in this Tsa Bonno app.',
+        memberships
+      };
+    }
+    if (!requestedLodgeId && memberships.length > 1) {
+      return {
+        user: null,
+        code: 'company_selection_required',
+        error: 'This email belongs to more than one restaurant/bar company. Choose which one to open.',
+        memberships
+      };
+    }
+    if (!requestedLodgeId && memberships.length === 0) {
+      const product = getProductDefinition(getRuntimeProductId());
+      return { user: null, code: 'account_not_found', error: `This account is not assigned to a ${product.name} company.` };
+    }
+
+    const targetLodgeId = requestedLodgeId || normalizeLodgeId(memberships[0]?.lodge_id);
     const { data, error } = await authClient.rpc('authenticate_user_from_supabase', {
-      p_lodge_id: state.lodgeId,
+      p_lodge_id: targetLodgeId,
       p_session_type: 'desktop'
     });
     if (error) {
@@ -618,15 +692,6 @@ async function authenticateWithSupabaseAuth(emailLower, password) {
         error: 'Supabase Auth verified the password, but this account is not linked to the selected lodge yet.'
       };
     }
-    if (!normalized.authenticated || !normalized.session_token) {
-      return {
-        user: null,
-        code: 'auth_failed_real',
-        error: 'The server did not issue a valid Boroko session for this Supabase Auth user.',
-        details: { source: 'authenticate_user_from_supabase' }
-      };
-    }
-
     if (!isStaffAccountActive(normalized)) {
       return {
         user: null,
@@ -634,6 +699,15 @@ async function authenticateWithSupabaseAuth(emailLower, password) {
         error: normalized.status === 'archived'
           ? 'This staff account has been archived. Ask an admin to restore it before signing in.'
           : 'This staff account is suspended. Ask an admin to reactivate it before signing in.'
+      };
+    }
+
+    if (!normalized.authenticated || !normalized.session_token) {
+      return {
+        user: null,
+        code: 'auth_failed_real',
+        error: 'The server did not issue a valid Tsa Bonno session for this Supabase Auth user.',
+        details: { source: 'authenticate_user_from_supabase' }
       };
     }
 
@@ -707,7 +781,7 @@ export async function createSupabaseAuthUserForStaff(emailLower, password) {
   }
 }
 
-export async function loginUser(email, password) {
+export async function loginUser(email, password, selectedLodgeId = null) {
   authTrace('db.loginUser start', {
     email,
     normalizedEmail: normalizeEmail(email),
@@ -732,7 +806,19 @@ export async function loginUser(email, password) {
   const emailLower = normalizeEmail(email);
 
   if (state.isOnline) {
-    const online = await authenticateOnline(emailLower, password);
+    // Only the picker may provide a company for an online sign-in. Do not turn
+    // the previous local profile into an implicit choice for a multi-company
+    // Restaurant & Bar account.
+    const effectiveLodgeId = normalizeLodgeId(selectedLodgeId);
+    const online = await authenticateOnline(emailLower, password, effectiveLodgeId);
+    authTrace('db.loginUser online auth summary', {
+      email: emailLower,
+      effective_lodge_id: effectiveLodgeId,
+      code: online?.code || null,
+      source: online?.source || null,
+      has_user: Boolean(online?.user),
+      membership_count: Array.isArray(online?.memberships) ? online.memberships.length : null
+    });
     if (online.user) {
       let authContext;
       try {
@@ -746,6 +832,7 @@ export async function loginUser(email, password) {
           throw new Error('The server authenticated this user but did not return a lodge ID.');
         }
         authContext = await getLodgeAuthContext(authenticatedLodgeId);
+        await assertAuthenticatedLodgeMatchesCurrentProduct(authenticatedLodgeId);
         if (!state.lodgeId || authenticatedLodgeId !== normalizeLodgeId(state.lodgeId)) {
           ensureReadyProfileForLodge(authenticatedLodgeId, {
             label: authContext?.lodge_display_name || online.user?.name || 'Existing Lodge'
@@ -763,7 +850,7 @@ export async function loginUser(email, password) {
 
         return {
           user: null,
-          code: 'auth_failed_real',
+          code: e?.code || 'auth_failed_real',
           error: e?.message || 'Unknown authentication error',
           details: {
             code: e?.code,
@@ -837,9 +924,27 @@ export async function loginUser(email, password) {
       return result;
     }
 
-    if (online.code === 'wrong_password' || online.code === 'account_not_found' || online.code === 'wrong_lodge' || online.code === 'backend_auth_schema_outdated' || online.code === 'auth_failed_real') {
+    // These are definitive online answers — never hide them behind offline fallback.
+    const definitiveOnlineCodes = new Set([
+      'wrong_password',
+      'account_not_found',
+      'wrong_lodge',
+      'backend_auth_schema_outdated',
+      'auth_failed_real',
+      'company_selection_required',
+      'invalid_company_selection',
+      'multi_company_login_unavailable',
+      'account_inactive',
+      'company_disabled',
+      'ambiguous_lodge',
+      'product_profile_mismatch'
+    ]);
+    if (definitiveOnlineCodes.has(online.code)) {
       logAuthFailure(online.code, { email: emailLower });
-      authTrace('db.loginUser final return', online);
+      authTrace('db.loginUser final return', {
+        ...online,
+        memberships: Array.isArray(online.memberships) ? `[${online.memberships.length}]` : null
+      });
       return online;
     }
 
@@ -850,6 +955,17 @@ export async function loginUser(email, password) {
     });
     const savedSession = restoreSavedTrustedSession(emailLower, password);
     if (savedSession.user) {
+      try {
+        assertOfflineSessionMatchesCurrentProduct(savedSession.user);
+      } catch (e) {
+        const result = {
+          user: null,
+          code: e?.code || 'product_profile_mismatch',
+          error: e?.message || 'This saved session belongs to a different Tsa Bonno product.'
+        };
+        authTrace('db.loginUser final return', result);
+        return result;
+      }
       const result = {
         user: savedSession.user,
         mode: 'offline_trusted_session',
@@ -862,7 +978,10 @@ export async function loginUser(email, password) {
     const result = {
       user: null,
       code: savedSession.code || online.code || 'server_unreachable',
-      error: savedSession.error || 'The server could not verify this sign-in, and this account has no saved offline session on this computer yet.'
+      error: savedSession.error
+        || online.error
+        || 'The server could not verify this sign-in, and this account has no saved offline session on this computer yet.',
+      memberships: online.memberships || []
     };
     authTrace('db.loginUser final return', result);
     return result;
@@ -875,6 +994,17 @@ export async function loginUser(email, password) {
   });
   const savedSession = restoreSavedTrustedSession(emailLower, password);
   if (savedSession.user) {
+    try {
+      assertOfflineSessionMatchesCurrentProduct(savedSession.user);
+    } catch (e) {
+      const result = {
+        user: null,
+        code: e?.code || 'product_profile_mismatch',
+        error: e?.message || 'This saved session belongs to a different Tsa Bonno product.'
+      };
+      authTrace('db.loginUser final return', result);
+      return result;
+    }
     const result = {
       user: savedSession.user,
       mode: 'offline_trusted_session',

@@ -163,7 +163,11 @@ Enterprise implementation must not break:
 
 Any implementation agent must run the relevant regression bundle before claiming done.
 
-### 3.5 Enterprise Depth Without Lower-Tier Clutter
+### 3.5 Guardrails for Every Workflow
+
+Every feature and repair must include guardrails proportionate to its operational risk. Define the allowed actor, property/outlet scope, valid data and state transitions, retry/duplicate behavior, audit evidence, error presentation, and recovery path before calling the work complete. Stock, payments, bookings, availability, and destructive actions must use authoritative, atomic, fail-closed server contracts; UI visibility, confirmation dialogs, and client-side validation supplement those controls but never replace them. A focused regression must prove the guardrail that prevents the important failure mode.
+
+### 3.6 Enterprise Depth Without Lower-Tier Clutter
 
 Starter, Standard, and Pro are already valid products. Enterprise work must not turn those tiers into a hotel-PMS interface by default.
 

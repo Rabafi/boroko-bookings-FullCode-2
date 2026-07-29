@@ -45,6 +45,7 @@ export {
   createUser,
   updateUser,
   resetUserPassword,
+  getStaffAccessAudit,
   getAuthStatus,
   deleteUser
 } from './domains/auth.js'
@@ -108,7 +109,9 @@ export {
   getAllRatePlans,
   createRatePlan,
   updateRatePlan,
-  deleteRatePlan
+  deleteRatePlan,
+  quoteRoomStayFromPlans,
+  estimatePlanTotal
 } from './domains/ratePlans.js'
 export {
   getPaymentProviderConfig,
@@ -151,6 +154,7 @@ export {
   getAllMappings, createMapping, updateMapping, deleteMapping,
   getAllConfigs, createConfig, updateConfig, enableChannel, disableChannel,
   getChannelDashboard, processSyncQueue,
+  pushChannelAvailability, pushChannelRates, fetchChannelReservations,
   importReservation, confirmImport, rejectImport
 } from './domains/channelManager.js'
 export {
@@ -166,7 +170,9 @@ export {
 } from './domains/commandCentral.js'
 export {
   getPaymentDashboard, getProviderSecrets,
-  verifyWebhookSignature
+  verifyWebhookSignature,
+  recoverAbandonedPaymentSession,
+  listAbandonedPaymentSessions
 } from './domains/payments.js'
 export {
   getAllCustomers,
@@ -272,6 +278,7 @@ export {
   deletePosMenuItem,
   setBarPosPackTemplate,
   getPosOrders,
+  getSharedTillOperatorOrders,
   getPosVoidHistory,
   getOutlets,
   getPosOrderById,
@@ -283,6 +290,12 @@ export {
   getPosCashupSummary,
   getPosCashups,
   createPosCashupSession,
+  submitPosCashup,
+  submitPosCashupWithAttendancePin,
+  getStaffPosCashupSubmission,
+  getMyPosCashupSubmission,
+  getPendingPosCashupSubmissions,
+  reviewPosCashupSubmission,
   getPosTabs,
   savePosTab,
   closePosTab,
@@ -300,6 +313,9 @@ export {
   getPosTickets,
   updatePosTicketStatus,
   getCurrentPosShift,
+  getStaffOpenPosShift,
+  activateSharedTillOperator,
+  linkMyPosShiftToAttendance,
   openPosShift,
   closePosShift,
   getPosHardwareSettings,
@@ -333,14 +349,22 @@ export {
   redeemVoucher,
   recordDelivery,
   clockInStaff,
+  clockInSelfForPos,
+  clockInStaffWithAttendancePin,
   clockOutStaff,
+  clockOutStaffWithAttendancePin,
   getActiveShifts,
+  getRestaurantShiftPlans,
+  saveRestaurantShiftPlan,
+  deleteRestaurantShiftPlan,
   openCashDrawerSession,
   closeCashDrawerSession,
   getOpenCashDrawer,
   getPosSuppliers,
   createPosSupplier,
+  updatePosSupplier,
   createPurchaseOrder,
+  updatePurchaseOrderDraft,
   approvePurchaseOrder,
   receivePurchaseOrder,
   createStockTransfer,
@@ -363,11 +387,16 @@ export {
   markRestaurantReservationNoShow,
   getRestaurantWaitlist,
   createRestaurantWaitlistEntry,
+  updateRestaurantWaitlistEntry,
+  removeRestaurantWaitlistEntry,
   seatRestaurantWaitlistEntry,
+  serviceRestaurantReservationAction,
   getRestaurantCombos,
   saveRestaurantCombo,
   deleteRestaurantCombo,
   getRecipeVarianceReport,
+  getRecipePreparationLosses,
+  getRecipePreparationLossIngredientSummary,
   getRestaurantPrepItems,
   saveRestaurantPrepItem,
   getRestaurantPrepBatches,
@@ -376,15 +405,35 @@ export {
   recordTicketStatusEvent,
   getKitchenTimingReport,
   getLowStockPurchaseSuggestions,
+  setPreferredSupplierForInventoryItem,
   convertPurchaseSuggestionsToPo,
   recordRestaurantSettlement,
   getRestaurantSettlements,
+  getRestaurantSettlementExpectedTotal,
   recordRestaurantReservationDeposit,
+  getRestaurantReservationDeposits,
+  getRestaurantOutletControls,
+  getRestaurantStockLocations,
+  getRestaurantStockLocationBalances,
+  createRestaurantStockLocation,
+  updateRestaurantStockLocation,
+  deleteRestaurantStockLocation,
+  setRestaurantOutletStockLocation,
+  createRestaurantOutlet,
+  updateRestaurantOutlet,
   recordRestaurantFeedback,
+  getRestaurantFeedback,
+  getRestaurantSetupProgress,
+  setRestaurantSetupStage,
+  recordRestaurantSetupEvidence,
   createRestaurantGiftCard,
   recordRestaurantTipPayout,
+  getRestaurantTipPayouts,
+  getRestaurantTipBalances,
   saveRestaurantReservationPolicy,
   recordRestaurantInventoryLot,
+  updateRestaurantInventoryLotExpiry,
+  writeOffExpiredRestaurantInventoryLot,
   getRestaurantExpiryLots
 } from './domains/pos.js'
 export {
@@ -488,7 +537,12 @@ export {
   addEventLineItem,
   voidEventLineItem,
   updateEventPayment,
-  checkEventResourceAvailability
+  checkEventResourceAvailability,
+  getVenuePackages,
+  createVenuePackage,
+  updateVenuePackage,
+  deleteVenuePackage,
+  applyVenuePackageToEvent
 } from './domains/events.js'
 export {
   getDayUseEntries,
@@ -519,6 +573,7 @@ export {
   updateCompany,
   archiveCompany,
   restoreCompany,
+  applyCompanyLifecycle,
   permanentlyDeleteCompany,
   repairDuplicateEventBookings,
   getCompanyUsers,
@@ -527,6 +582,7 @@ export {
   getLicenses,
   createLicense,
   issueSubscriptionContract,
+  assignCommercialSubscription,
   updateLicense,
   deleteLicense,
   getBroadcasts,
@@ -554,6 +610,8 @@ export {
   getActivityLogs,
   getAuditSummary,
   logAdminActivity,
+  recordCommandCentralHealthRun,
+  listCommandCentralHealthRuns,
   getScheduledReleases,
   expireOverdueFeatures,
   getCompanyStats,
@@ -580,6 +638,12 @@ export {
   getCollectionsQueue,
   getRevenueByMethod
 } from './domains/accounting.js'
+export {
+  generateCommercialInvoice,
+  recordCommercialPayment,
+  listCommercialInvoices,
+  getCommercialBillingSummary
+} from './domains/commercialBilling.js'
 export {
   getNotificationRules,
   upsertNotificationRule,
@@ -664,6 +728,7 @@ export {
   setRateRestriction,
   getRateConflicts,
   getApplicableRate as getRateCalendarApplicableRate,
+  quoteStayTotal as quoteRateCalendarStayTotal,
   getAllPromoCodes,
   createPromoCode,
   updatePromoCode,
@@ -757,7 +822,18 @@ export {
   getMaintenanceDashboard,
   getDowntimeReport
 } from './domains/maintenanceEnterprise.js'
-
+export {
+  getPropertyAssets,
+  createPropertyAsset,
+  updatePropertyAsset,
+  deletePropertyAsset,
+  getAssetMaintenanceHistory,
+  logAssetMaintenance,
+  getMaintenanceVendors,
+  createMaintenanceVendor,
+  updateMaintenanceVendor,
+  deleteMaintenanceVendor
+} from './domains/assetRegistry.js'
 export {
   createLinenStocktake,
   getLinenDashboard,
@@ -771,7 +847,7 @@ export {
   getVisitorHistory,
   getEvacuationList,
   exportEvacuationReport,
-  createShiftHandover,
+  createComplianceShiftHandover,
   completeShiftHandover,
   getShiftHandoverHistory
 } from './domains/operationsCompliance.js'
@@ -783,7 +859,10 @@ export {
   createCompetitorNote,
   getDemandEvents,
   createDemandEvent,
-  getRevenueRecommendations
+  getRevenueRecommendations,
+  approveRevenueRecommendation,
+  rejectRevenueRecommendation,
+  applyRevenueRecommendation
 } from './domains/revenueManager.js'
 
 export {
@@ -812,7 +891,10 @@ export {
   deleteTrigger as deleteMessageTrigger,
   renderTemplate as renderMessageTemplate,
   queueTriggeredMessages as queueTriggeredMessages,
-  getDeliveryStatus as getMessageDeliveryStatus
+  getDeliveryStatus as getMessageDeliveryStatus,
+  getChannelReadiness as getGuestMessageChannelReadiness,
+  getAllChannelReadiness as getGuestMessageAllChannelReadiness,
+  dispatchMessage as dispatchGuestMessage
 } from './domains/guestMessaging.js'
 export {
   getPortalConfig as getGuestPortalConfig,
@@ -833,7 +915,9 @@ export {
   getGuestStayHistory,
   recordGuestConsent,
   searchGuestsCRM,
-  getVIPList
+  getVIPList,
+  listGuestNotes,
+  addGuestNote
 } from './domains/guestCRM.js'
 export {
   runAuditChecks as runNightAuditChecks,
@@ -851,7 +935,12 @@ export {
   completeCheckoutStep,
   resetCheckoutStep,
   getCheckinConfig,
-  updateCheckinConfig
+  updateCheckinConfig,
+  completeHotelCheckin,
+  completeHotelCheckinWithOverride,
+  completeHotelCheckout,
+  getApplicableRoomRate,
+  quoteRoomStay
 } from './domains/checkinWorkflow.js'
 export {
   getEarlyPolicies,
@@ -895,7 +984,8 @@ export {
   calculateBookingPrice,
   checkBookingAvailability,
   getBookingUpsells,
-  createBookingIntent as createBookingEngineIntent
+  createBookingIntent as createBookingEngineIntent,
+  confirmBookingIntent as confirmBookingEngineIntent
 } from './domains/bookingEngine.js'
 export {
   logAbandonedSession,
@@ -904,3 +994,119 @@ export {
   expireSessions,
   getPendingRecoverySessions
 } from './domains/abandonedPaymentRecovery.js'
+export {
+  getStaffSchedule,
+  getStaffScheduleRange,
+  upsertStaffSchedule,
+  deleteStaffScheduleEntry,
+  getStaffAttendanceToday,
+  getStaffAttendanceRange,
+  getStaffAttendanceDashboard,
+  clockInStaffHotel,
+  clockOutStaffHotel,
+  getStaffLeaveRequests,
+  requestStaffLeave,
+  approveStaffLeave
+} from './domains/staffScheduling.js'
+export {
+  getStaffDepartments,
+  createStaffDepartment,
+  updateStaffDepartment,
+  deleteStaffDepartment,
+  getShiftTemplates,
+  createShiftTemplate,
+  updateShiftTemplate,
+  deleteShiftTemplate,
+  getTaskCategories,
+  createTaskCategory,
+  getTaskAssignments,
+  createTaskAssignment,
+  updateTaskAssignment,
+  completeTaskAssignment,
+  getTrainingChecklists,
+  createTrainingChecklist,
+  recordTrainingCompletion,
+  getTrainingRecords,
+  createShiftHandover,
+  getShiftHandovers,
+  getStaffProductivityDashboard,
+  publishWeeklySchedule,
+  getScheduleConflicts
+} from './domains/staffOperations.js'
+export {
+  getAssetCategories,
+  createAssetCategory,
+  updateAssetCategory,
+  deleteAssetCategory,
+  getAssetWarranties,
+  createAssetWarranty,
+  updateAssetWarranty,
+  deleteAssetWarranty,
+  getAssetInspections,
+  createAssetInspection,
+  deleteAssetInspection,
+  getAssetAttachments,
+  createAssetAttachment,
+  deleteAssetAttachment,
+  getAssetCosts,
+  recordAssetCost,
+  getAssetCostSummary,
+  getPreventiveTemplates,
+  createPreventiveTemplate,
+  updatePreventiveTemplate,
+  deletePreventiveTemplate,
+  getPreventiveAssignments,
+  createPreventiveAssignment,
+  completePreventiveAssignment,
+  skipPreventiveAssignment,
+  generatePreventiveAssignments,
+  getAssetDashboard,
+  setAssetRoomSellability
+} from './domains/assetManagement.js'
+export {
+  getEventLeads,
+  createEventLead,
+  updateEventLead,
+  convertLeadToBooking,
+  getVenueAvailabilityRules,
+  upsertVenueAvailabilityRule,
+  getVenueAvailabilityCalendar,
+  getRunSheet,
+  createRunSheet,
+  updateRunSheet,
+  finalizeRunSheet,
+  executeRunSheet,
+  getEventSuppliers,
+  createSupplierEntry,
+  updateSupplierEntry,
+  updateSupplierStatus,
+  getDepositMilestones,
+  createDepositMilestone,
+  markMilestonePaid,
+  waiveMilestone,
+  settleEvent,
+  getEventProfitability,
+  getVenueProfitabilityReport
+} from './domains/venueManagement.js'
+export {
+  getRestaurantAccountsV2, createRestaurantAccountV2, updateRestaurantAccountV2, setRestaurantAccountCashFlowV2, deleteRestaurantAccountV2,
+  seedRestaurantAccountsV2, postRestaurantOpeningBalanceV2, getRestaurantLedgerWorkspaceV2,
+  createRestaurantJournalV2, reverseRestaurantJournalV2, getRestaurantPosMappingsV2,
+  setRestaurantPosMappingV2, postRestaurantPosOrderV2, getRestaurantApWorkspaceV2,
+  setRestaurantApGlSettingsV2, createRestaurantBillV2, submitRestaurantBillV2,
+  approveRestaurantBillV2, payRestaurantBillV2, saveRestaurantBankAccountV2, getRestaurantBankWorkspaceV2,
+  importRestaurantBankStatementV2, proposeRestaurantBankMatchesV2, reviewRestaurantBankMatchV2,
+  exceptRestaurantBankTransactionV2, createRestaurantBankReconciliationV2,
+  completeRestaurantBankReconciliationV2, getRestaurantTaxWorkspaceV2,
+  setRestaurantTaxConfigurationV2, generateRestaurantTaxWorkingPaperV2,
+  reviewRestaurantTaxWorkingPaperV2, approveRestaurantTaxWorkingPaperV2,
+  fileRestaurantTaxWorkingPaperV2, getRestaurantBudgetMatrixV2,
+  saveRestaurantBudgetMatrixV2, createRestaurantBudgetTemplateV2,
+  applyRestaurantBudgetTemplateV2, getRestaurantFinancialStatementsV2,
+  getRestaurantPayrollWorkspaceV2, getRestaurantPayrollRecordsV2,
+  setRestaurantPayrollTermsV2, setRestaurantPayrollConfigurationV2,
+  createRestaurantPayPeriodV2, setRestaurantPayrollTimeV2,
+  approveRestaurantPayrollTimeV2, calculateRestaurantPayrollV2,
+  approveRestaurantPayrollV2, exportRestaurantPayrollPaymentsV2,
+  setRestaurantPayrollGlSettingsV2, postRestaurantPayrollV2
+} from './domains/restaurantAccountingV2.js'

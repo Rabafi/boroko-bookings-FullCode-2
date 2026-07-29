@@ -41,11 +41,12 @@ import { normalizeStaffStatus } from '../../shared/accessControl.js';
 const AUTH_CONTRACT_VERSION = 2;
 const ADMIN_GUARD_STATUSES = new Set(['active', 'suspended']);
 const SUPABASE_AUTH_USER_PAGE_SIZE = 1000;
+const MANAGER_MANAGED_ROLES = new Set(['cashier', 'supervisor', 'receptionist', 'operations']);
 
 function currentUserCanAdministerStaff() {
   const user = state.currentUser;
   if (user?.isMasterAdmin) return true;
-  return ['admin', 'super_admin'].includes(normalizeStaffRole(user?.role));
+  return ['manager', 'admin', 'super_admin'].includes(normalizeStaffRole(user?.role));
 }
 
 async function hasExistingLodgeUsers() {
@@ -68,7 +69,7 @@ async function hasExistingLodgeUsers() {
 async function requireStaffAdmin({ allowInitialSetup = false } = {}) {
   if (currentUserCanAdministerStaff()) return;
   if (allowInitialSetup && !(await hasExistingLodgeUsers())) return;
-  throw new Error('Only an admin can manage staff accounts.');
+  throw new Error('Only a manager or admin can manage staff accounts.');
 }
 
 function authTrace(label, payload = {}) {
@@ -331,29 +332,23 @@ export async function runAuthHealthCheck(email = '', options = {}) {
 
 export async function createUser(data) {
   await requireStaffAdmin({ allowInitialSetup: true });
+  assertManagerCanManageRole(data?.role);
+  if (currentUserIsLimitedStaffManager() && Object.keys(data?.capability_overrides || {}).length > 0) {
+    throw new Error('Managers cannot set custom permission exceptions. Ask an administrator to make this access change.');
+  }
   await assertCreationWithinUsageLimit('user', { forceRemoteRefresh: state.isOnline });
   const emailLower = data.email.trim().toLowerCase();
-  const isSetupRole = ['admin', 'super_admin'].includes(normalizeStaffRole(data.role));
   if (state.isOnline) {
-    const query = state.supabase.from('users').select('id').eq('email', emailLower);
-    if (!isSetupRole) query.eq('lodge_id', state.lodgeId);
+    const query = state.supabase.from('users').select('id').eq('email', emailLower).eq('lodge_id', state.lodgeId);
     const { data: existing } = await query.limit(1);
     if (existing && existing.length > 0) {
-      const msg = isSetupRole ?
-      `An admin account with the email "${emailLower}" already exists. Each admin email can only be registered to one lodge.` :
-      `A user with the email "${emailLower}" already exists in this lodge.`;
-      throw new Error(msg);
+      throw new Error(`A user with the email "${emailLower}" already exists in this lodge.`);
     }
   } else {
     const cached = readCache('users');
-    const duplicate = isSetupRole ?
-    cached.some((u) => u.email?.toLowerCase() === emailLower) :
-    cached.some((u) => u.email?.toLowerCase() === emailLower && u.lodge_id === state.lodgeId);
+    const duplicate = cached.some((u) => u.email?.toLowerCase() === emailLower && u.lodge_id === state.lodgeId);
     if (duplicate) {
-      const msg = isSetupRole ?
-      `An admin account with the email "${emailLower}" already exists. Each admin email can only be registered to one lodge.` :
-      `A user with the email "${emailLower}" already exists in this lodge.`;
-      throw new Error(msg);
+      throw new Error(`A user with the email "${emailLower}" already exists in this lodge.`);
     }
   }
 
@@ -390,11 +385,26 @@ export async function createUser(data) {
   if (state.isOnline) {
     const { data: result, error } = await state.supabase.rpc('create_user', { payload: user });
     if (error) {
-      const code = isBackendAuthSchemaError(error.message || '') ? 'backend_auth_schema_outdated' : 'user_create_failed';
+      const message = error.message || '';
+      if (/users_admin_email_unique/i.test(message)) {
+        throw createAppError(
+          'admin_email_global_unique_stale',
+          'This database still enforces a global admin-email unique rule that blocks multi-company setup. Apply migration 20260712153000_drop_global_admin_email_unique.sql, then retry.',
+          { email: emailLower, lodge_id: state.lodgeId }
+        );
+      }
+      if (/users_email_lodge_unique|users_lodge_id_email_key|already exists/i.test(message)) {
+        throw createAppError(
+          'user_email_exists_in_company',
+          `A user with the email "${emailLower}" already exists in this company.`,
+          { email: emailLower, lodge_id: state.lodgeId }
+        );
+      }
+      const code = isBackendAuthSchemaError(message) ? 'backend_auth_schema_outdated' : 'user_create_failed';
       const prefix = code === 'backend_auth_schema_outdated' ?
-      'This database is missing the latest Boroko auth schema required to create staff accounts for a lodge.' :
-      'Could not create the staff account for this lodge.';
-      throw createAppError(code, `${prefix} ${error.message}`.trim(), { email: emailLower, lodge_id: state.lodgeId });
+      'This database is missing the latest Tsa Bonno auth schema required to create staff accounts for a company.' :
+      'Could not create the staff account for this company.';
+      throw createAppError(code, `${prefix} ${message}`.trim(), { email: emailLower, lodge_id: state.lodgeId });
     }
     if (!result?.success || !result?.id) {
       throw createAppError(
@@ -493,6 +503,7 @@ export async function createUser(data) {
       const action = user.pwa_enabled ? 'enabled' : 'prepared';
       logActivity('pwa_access_updated', `${user.name || user.email} · manager mobile app ${action}`);
     }
+    logActivity('staff_account_created', `${user.name || user.email} · ${user.role} account added`);
     return result?.id;
   }
 
@@ -522,7 +533,19 @@ export async function createUser(data) {
     logActivity('pwa_access_updated', `${user.name || user.email} · manager mobile app ${action}`);
   }
 
+  logActivity('staff_account_created', `${user.name || user.email} · ${user.role} account added locally and queued for sync`);
+
   return id;
+}
+
+function currentUserIsLimitedStaffManager() {
+  return !state.currentUser?.isMasterAdmin && normalizeStaffRole(state.currentUser?.role) === 'manager';
+}
+
+function assertManagerCanManageRole(role) {
+  if (currentUserIsLimitedStaffManager() && !MANAGER_MANAGED_ROLES.has(normalizeStaffRole(role))) {
+    throw new Error('Managers can manage service-team accounts only. An administrator must assign finance, manager, or owner access.');
+  }
 }
 
 export async function updateUser(id, data) {
@@ -530,6 +553,15 @@ export async function updateUser(id, data) {
   const cachedUsers = readCache('users');
   const existingUser = cachedUsers.find((u) => u.id === id);
   if (!existingUser) throw new Error('Staff account not found.');
+  assertManagerCanManageRole(existingUser.role);
+  assertManagerCanManageRole(data?.role || existingUser.role);
+  if (currentUserIsLimitedStaffManager() && Object.prototype.hasOwnProperty.call(data || {}, 'capability_overrides')) {
+    const requestedOverrides = normalizeCapabilityOverrides(data.capability_overrides);
+    const currentOverrides = normalizeCapabilityOverrides(existingUser.capability_overrides);
+    if (JSON.stringify(requestedOverrides) !== JSON.stringify(currentOverrides)) {
+      throw new Error('Managers cannot set custom permission exceptions. Ask an administrator to make this access change.');
+    }
+  }
   const update = {};
   if (Object.prototype.hasOwnProperty.call(data, 'name')) update.name = data.name;
   if (Object.prototype.hasOwnProperty.call(data, 'email') && data.email) update.email = data.email.trim().toLowerCase();
@@ -659,6 +691,32 @@ export async function updateUser(id, data) {
   if (Object.prototype.hasOwnProperty.call(update, 'status')) {
     logActivity('staff_status_updated', `${update.name || existingUser?.name || existingUser?.email || 'Staff account'} · status set to ${update.status}`);
   }
+  const changedAccountFields = [
+    Object.prototype.hasOwnProperty.call(update, 'name') ? 'name' : null,
+    Object.prototype.hasOwnProperty.call(update, 'email') ? 'email' : null,
+    Object.prototype.hasOwnProperty.call(update, 'role') ? 'role' : null,
+    Object.prototype.hasOwnProperty.call(update, 'allowed_outlet_ids') ? 'outlet access' : null,
+    Object.prototype.hasOwnProperty.call(update, 'capability_overrides') ? 'permission exceptions' : null
+  ].filter(Boolean)
+  if (changedAccountFields.length > 0) {
+    logActivity('staff_account_updated', `${update.name || existingUser?.name || existingUser?.email || 'Staff account'} · ${changedAccountFields.join(', ')} updated`)
+  }
+}
+
+export async function getStaffAccessAudit(limit = 100) {
+  await requireStaffAdmin()
+  await checkOnline()
+  if (!state.isOnline || !state.supabase) {
+    throw new Error('Connect to the internet to view the server-backed staff access audit.')
+  }
+
+  const safeLimit = Math.min(250, Math.max(1, Number(limit) || 100))
+  const { data, error } = await state.supabase.rpc('get_staff_access_audit', {
+    p_lodge_id: state.lodgeId,
+    p_limit: safeLimit
+  })
+  if (error) throw new Error(error.message || 'Could not load the staff access audit.')
+  return Array.isArray(data) ? data : []
 }
 
 export async function resetUserPassword(id, password) {
@@ -666,6 +724,7 @@ export async function resetUserPassword(id, password) {
   const users = state.isOnline ? await getAllUsers() : readCache('users');
   const existingUser = users.find((u) => u.id === id);
   if (!existingUser) throw new Error('Staff account not found.');
+  assertManagerCanManageRole(existingUser.role);
   if (!password || password.length < 6) throw new Error('Password must be at least 6 characters.');
 
   const password_hash = bcrypt.hashSync(password, 10);
@@ -766,6 +825,7 @@ export async function deleteUser(id) {
   const users = state.isOnline ? await getAllUsers() : readCache('users').map(normalizeUserRecord).filter(Boolean);
   const existingUser = users.find((u) => u.id === id);
   if (!existingUser) throw new Error('Staff account not found.');
+  assertManagerCanManageRole(existingUser.role);
   if (state.currentUser?.id === id) throw new Error('You cannot delete the account you are currently signed in with.');
 
   if (isProtectedAdmin(existingUser) && countProtectedAdmins(users, id) === 0) {
@@ -788,4 +848,5 @@ export async function deleteUser(id) {
       p_lodge_id: state.lodgeId
     });
   }
+  logActivity('staff_account_deleted', `${existingUser.name || existingUser.email} · archived account permanently deleted`);
 }

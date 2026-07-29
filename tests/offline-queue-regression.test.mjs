@@ -166,7 +166,9 @@ async function run() {
   assert.match(offlineNotice, /Work saved on this computer will queue safely and sync when the internet returns/)
 
   // Bookings: create/update/status/payment must stay queue-aware and visible.
-  assert.match(database, /queueOperation\('rpc', 'create_booking', \{/)
+  assert.match(database, /queueOperation\('rpc', campsite \? 'create_campsite_booking' : 'create_booking', \{/)
+  assert.match(database, /p_tents: booking\.tents/)
+  assert.match(database, /p_vehicles: booking\.vehicles/)
   assert.match(database, /appendOperationJournalEntry\('queued'/)
   assert.match(database, /appendOperationJournalEntry\('replayed'/)
   assert.match(database, /appendOperationJournalEntry\('dead_lettered'/)
@@ -176,7 +178,8 @@ async function run() {
   assert.match(mainIndex, /sync:exportOfflineOperations/)
   assert.match(mainIndex, /dialog\.showSaveDialog/)
   assert.match(preload, /exportOfflineOperations/)
-  assert.match(health, /Lodge offline mode/)
+  assert.match(health, /: 'Lodge'/)
+  assert.match(health, /\{businessWordTitle\} offline mode/)
   assert.match(health, /Acknowledge Long Outage/)
   assert.match(health, /Save Bundle/)
   assert.match(database, /_queue_id:\s*`booking-\$\{id\}`/)

@@ -1,15 +1,20 @@
 {
   "appId": "com.boroko.hospitalitypos",
-  "productName": "Boroko Restaurant & Bar POS",
+  "productName": "Tsa Bonno Restaurant & Bar POS",
   "publish": { "provider": "github", "owner": "Rabafi", "repo": "boroko-hospitality-pos-releases" },
-  "artifactName": "Boroko-Restaurant-Bar-POS-${version}-${arch}.${ext}",
+  "artifactName": "Tsa-Bonno-Restaurant-Bar-POS-${version}-${arch}.${ext}",
+  "icon": "src/main/assets/tsa-bonno-restaurant-bar-os-icon.ico",
+  "win": {
+    "icon": "src/main/assets/tsa-bonno-restaurant-bar-os-icon.ico",
+    "target": [{ "target": "nsis", "arch": ["x64"] }]
+  },
   "directories": { "output": "dist/hospitality-pos" },
   "asar": true,
   "files": [
-    "out/**/*",
+    "out/hospitality-pos/**/*",
     "src/main/assets/**/*",
     "package.json",
-    "!out/**/*.map",
+    "!out/hospitality-pos/**/*.map",
     "!**/.claude/**",
     "!apps/**",
     "!packages/**",
@@ -26,6 +31,14 @@
     { "from": "src/main/assets", "to": "assets" },
     { "from": "apps/hospitality-pos/product.json", "to": "product.json" }
   ],
-  "extraMetadata": { "name": "boroko-hospitality-pos", "main": "out/main/index.js" },
-  "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": false, "deleteAppDataOnUninstall": false, "shortcutName": "Boroko Restaurant & Bar POS", "uninstallDisplayName": "Boroko Restaurant & Bar POS" }
+  "extraMetadata": { "name": "boroko-hospitality-pos", "main": "out/hospitality-pos/main/index.js", "description": "Tsa Bonno Restaurant & Bar POS" },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": false,
+    "deleteAppDataOnUninstall": false,
+    "shortcutName": "Tsa Bonno Restaurant & Bar POS",
+    "uninstallDisplayName": "Tsa Bonno Restaurant & Bar POS",
+    "installerIcon": "src/main/assets/tsa-bonno-restaurant-bar-os-icon.ico",
+    "uninstallerIcon": "src/main/assets/tsa-bonno-restaurant-bar-os-icon.ico"
+  }
 }

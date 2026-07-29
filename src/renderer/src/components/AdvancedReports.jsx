@@ -104,18 +104,30 @@ export default function AdvancedReports({ embedded = false }) {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [authority, setAuthority] = useState('')
 
   const runReport = useCallback(async () => {
     setLoading(true)
     setError('')
     setData(null)
+    setAuthority('')
     try {
       const fn = getReportFunction(reportType)
       if (!fn) { setError('Unknown report type'); return }
-      const result = fn.length >= 2 ? await fn(startDate, endDate) : await fn()
-      setData(result?.data || result)
+      const needsDates = !['debtorAging', 'depositLiability', 'folioExceptions'].includes(reportType)
+      const result = needsDates ? await fn(startDate, endDate) : await fn()
+      if (result?.error) {
+        setError(result.error)
+        setAuthority(result.authority || 'none')
+        return
+      }
+      const payload = result?.data != null ? result.data : result
+      // Never invent KPI rows client-side when the server returned nothing
+      setData(payload ?? null)
+      setAuthority(result?.authority || (payload ? 'ledger_derived' : 'none'))
     } catch (err) {
       setError(err?.message || 'Report failed')
+      setAuthority('none')
     } finally {
       setLoading(false)
     }
@@ -128,7 +140,7 @@ export default function AdvancedReports({ embedded = false }) {
 
     switch (reportType) {
       case 'occupancy': {
-        const daily = data.daily || []
+        const daily = data.daily || data.rows || []
         const summary = data.summary || {}
         return (
           <>
@@ -137,13 +149,24 @@ export default function AdvancedReports({ embedded = false }) {
               <div className="bb-card text-center py-3"><p className="text-[10px] font-semibold uppercase text-slate-400">Occupied Nights</p><p className="text-lg font-bold text-slate-800">{summary.occupied_room_nights || 0}</p></div>
               <div className="bb-card text-center py-3"><p className="text-[10px] font-semibold uppercase text-slate-400">Avg Occupancy</p><p className="text-lg font-bold text-slate-800">{summary.avg_occupancy || 0}%</p></div>
             </div>
+            {summary.adr != null && (
+              <div className="grid grid-cols-2 gap-3 mb-4">
+                <div className="bb-card text-center py-3"><p className="text-[10px] font-semibold uppercase text-slate-400">ADR</p><p className="text-lg font-bold text-slate-800">{formatCurrency(summary.adr, currency)}</p></div>
+                <div className="bb-card text-center py-3"><p className="text-[10px] font-semibold uppercase text-slate-400">RevPAR</p><p className="text-lg font-bold text-slate-800">{formatCurrency(summary.revpar, currency)}</p></div>
+              </div>
+            )}
             <ReportTable title="Daily Occupancy" currency={currency} loading={false} rows={daily}
               columns={[
-                { key: 'dt', label: 'Date', accessor: (r) => r.dt },
-                { key: 'roomType', label: 'Room Type', accessor: (r) => r.room_type_name },
+                { key: 'dt', label: 'Date', accessor: (r) => r.dt || r.date },
+                { key: 'roomType', label: 'Room Type', accessor: (r) => r.room_type_name || r.room_type || 'All' },
                 { key: 'total', label: 'Total Rooms', accessor: (r) => r.total_rooms },
                 { key: 'occupied', label: 'Occupied', accessor: (r) => r.occupied },
-                { key: 'rate', label: 'Occupancy %', accessor: (r) => `${r.occupancy_rate || Math.round((r.occupied / r.total_rooms) * 100)}%` }
+                { key: 'rate', label: 'Occupancy %', accessor: (r) => {
+                  if (r.occupancy_rate != null) return `${r.occupancy_rate}%`
+                  const total = Number(r.total_rooms) || 0
+                  const occ = Number(r.occupied) || 0
+                  return total > 0 ? `${Math.round((occ / total) * 100)}%` : '0%'
+                } }
               ]} />
           </>
         )
@@ -195,7 +218,7 @@ export default function AdvancedReports({ embedded = false }) {
         )
       }
       case 'debtorAging': {
-        const accounts = data.accounts || []
+        const accounts = data.accounts || data.rows || []
         return (
           <ReportTable title="Debtor Aging" currency={currency} loading={false} rows={accounts}
             columns={[
@@ -290,7 +313,7 @@ export default function AdvancedReports({ embedded = false }) {
         )
       }
       case 'ratePerformance': {
-        const daily = data.daily || []
+        const daily = data.daily || data.rows || []
         return (
           <ReportTable title="Rate Performance vs BAR" currency={currency} loading={false} rows={daily}
             columns={[
@@ -378,6 +401,12 @@ export default function AdvancedReports({ embedded = false }) {
 
       {error && <div className="flex items-center gap-2 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700 mb-4"><AlertTriangle size={14} />{error}</div>}
 
+      {authority === 'ledger_derived' && !error && (
+        <div className="mb-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
+          Figures below come from online Supabase report RPCs (ledger/booking derived). The UI does not inject fabricated sample values.
+        </div>
+      )}
+
       {loading ? (
         <div className="flex items-center justify-center py-20"><div className="h-9 w-9 animate-spin rounded-full border-2 border-[#174c3a] border-t-transparent" /></div>
       ) : data ? (
@@ -385,8 +414,12 @@ export default function AdvancedReports({ embedded = false }) {
       ) : (
         <div className="bb-card flex flex-col items-center justify-center py-16 text-center">
           <BarChart3 size={40} className="mb-3 text-slate-300" />
-          <p className="text-sm font-semibold text-slate-600">Select a report type and date range</p>
-          <p className="mt-1 text-xs text-slate-400">Click "Run Report" to generate enterprise reports.</p>
+          <p className="text-sm font-semibold text-slate-600">
+            {error ? 'Report unavailable' : 'Select a report type and date range'}
+          </p>
+          <p className="mt-1 text-xs text-slate-400">
+            Online RPC required. Empty results mean no matching ledger rows — the client does not invent numbers.
+          </p>
         </div>
       )}
     </div>

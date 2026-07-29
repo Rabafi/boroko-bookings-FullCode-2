@@ -114,7 +114,11 @@ async function _getIncidentDashboard() {
     writeCache(INCIDENT_DASHBOARD_CACHE, data)
     return data
   } catch (e) {
-    return readCache(INCIDENT_DASHBOARD_CACHE) || null
+    const cached = readCache(INCIDENT_DASHBOARD_CACHE)
+    if (cached != null) {
+      return { ...cached, fromCache: true, stale: true, warning: e?.message || 'Showing cached incident dashboard' }
+    }
+    throw e
   }
 }
 
@@ -132,7 +136,11 @@ async function _getVisitorDashboard() {
     writeCache(VISITOR_DASHBOARD_CACHE, data)
     return data
   } catch (e) {
-    return readCache(VISITOR_DASHBOARD_CACHE) || null
+    const cached = readCache(VISITOR_DASHBOARD_CACHE)
+    if (cached != null) {
+      return { ...cached, fromCache: true, stale: true, warning: e?.message || 'Showing cached visitor dashboard' }
+    }
+    throw e
   }
 }
 
@@ -164,7 +172,13 @@ async function _getEvacuationList() {
     return rows
   } catch (e) {
     const cached = readCache(EVACUATION_CACHE)
-    return Array.isArray(cached) ? cached : []
+    if (Array.isArray(cached) && cached.length > 0) {
+      const err = new Error(e?.message || 'Failed to load evacuation list; showing cached data')
+      err.code = 'STALE_CACHE'
+      err.cached = cached
+      throw err
+    }
+    throw e
   }
 }
 
@@ -198,7 +212,7 @@ async function _getShiftHandoverHistory() {
 
 export const getShiftHandoverHistory = (...args) => dedupePromise('getShiftHandoverHistory', () => _getShiftHandoverHistory(...args))
 
-export async function createShiftHandover(data, lodgeIdArg) {
+export async function createComplianceShiftHandover(data, lodgeIdArg) {
   const currentLodgeId = lodgeIdArg || state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
   const { data: result, error } = await state.supabase.rpc('create_shift_handover', {

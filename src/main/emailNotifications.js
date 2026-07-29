@@ -1,6 +1,6 @@
 /**
  * emailNotifications.js
- * Nodemailer-based email notification service for Boroko Command Central.
+ * Nodemailer-based email notification service for Tsa Bonno Command Central.
  * Config is persisted as email-config.json in the Electron userData directory.
  */
 
@@ -9,6 +9,10 @@ import { app, safeStorage } from 'electron'
 import fs from 'fs'
 import path from 'path'
 import { formatSubscriptionPlan, getSubscriptionPlan } from '../shared/subscriptionPlans.js'
+import { ECOSYSTEM_BRAND } from '../shared/brandIdentity.js'
+
+const EMAIL_BRAND_NAME = ECOSYSTEM_BRAND.name
+const EMAIL_LEGAL_OWNER = ECOSYSTEM_BRAND.legalOwner
 
 function escapeHtml(value) {
   return String(value ?? '')
@@ -98,7 +102,7 @@ function createTransporter(config) {
   })
 }
 
-async function sendStoredConfigEmail({ to, subject, html, text, from, replyTo }) {
+async function sendStoredConfigEmail({ to, subject, html, text, from, replyTo, attachments }) {
   const config = getEmailConfig()
   if (!config?.host || !config?.user || !config?.pass) {
     return { success: false, error: 'Email not configured.' }
@@ -108,17 +112,34 @@ async function sendStoredConfigEmail({ to, subject, html, text, from, replyTo })
   try {
     const transporter = createTransporter(config)
     await transporter.sendMail({
-      from: from || config.from || `"Boroko Bookings" <${config.user}>`,
+      from: from || config.from || `"${EMAIL_BRAND_NAME}" <${config.user}>`,
       to: to.trim(),
       replyTo: replyTo || config.reply_to || undefined,
       subject,
       html,
-      text
+      text,
+      attachments
     })
     return { success: true, subject }
   } catch (e) {
     return { success: false, error: e.message }
   }
+}
+
+export async function sendPurchaseOrderEmail({ to, purchaseOrder, businessName, currency = 'P', pdfBuffer, filename }) {
+  if (!pdfBuffer) return { success: false, error: 'Purchase order PDF could not be generated.' }
+  const supplierName = escapeHtml(purchaseOrder?.supplier?.name || 'Supplier')
+  const reference = escapeHtml(String(purchaseOrder?.id || '').slice(-6).toUpperCase() || 'PURCHASE ORDER')
+  const safeBusinessName = escapeHtml(businessName || EMAIL_BRAND_NAME)
+  const total = Number(purchaseOrder?.total || 0).toFixed(2)
+  const html = `<div style="font-family:Segoe UI,Arial,sans-serif;color:#24202a;max-width:620px;margin:auto"><div style="background:#35242c;color:white;padding:28px 32px;border-radius:14px 14px 0 0"><h1 style="margin:0;font-size:22px">Purchase order ${reference}</h1><p style="margin:7px 0 0;color:#f6d8ba">${safeBusinessName}</p></div><div style="padding:28px 32px;border:1px solid #eadedb;border-top:0;border-radius:0 0 14px 14px"><p>Hello ${supplierName},</p><p>Please find our approved purchase order attached. Please confirm availability and delivery timing.</p><p style="font-weight:700">Order total: ${escapeHtml(currency)} ${total}</p><p style="color:#6b5b62;font-size:13px">Reply to this email if you need clarification.</p></div></div>`
+  return sendStoredConfigEmail({
+    to,
+    subject: `Purchase Order ${reference} — ${businessName || EMAIL_BRAND_NAME}`,
+    html,
+    text: `Purchase Order ${reference}\nPlease find the purchase order attached.\nOrder total: ${currency} ${total}`,
+    attachments: [{ filename: filename || `purchase-order-${reference.toLowerCase()}.pdf`, content: pdfBuffer, contentType: 'application/pdf' }]
+  })
 }
 
 /**
@@ -137,7 +158,7 @@ export async function sendNotificationEmail(subject, html, text) {
   try {
     const transporter = createTransporter(config)
     await transporter.sendMail({
-      from: config.from || `"Boroko Command Central" <${config.user}>`,
+      from: config.from || `"Tsa Bonno Command Central" <${config.user}>`,
       to: config.to,
       subject,
       html,
@@ -161,13 +182,13 @@ export async function testEmailConfig(config) {
     const transporter = createTransporter(config)
     await transporter.verify()
     await transporter.sendMail({
-      from: config.from || `"Boroko Command Central" <${config.user}>`,
+      from: config.from || `"Tsa Bonno Command Central" <${config.user}>`,
       to: config.to,
-      subject: '✅ Boroko — Email Notifications Connected',
+      subject: '✅ Tsa Bonno — Email Notifications Connected',
       html: `
         <div style="font-family:sans-serif;max-width:480px;margin:auto;padding:32px;background:#f9fafb;border-radius:12px;">
           <h2 style="color:#166534;margin-bottom:8px;">Your lodge email is working</h2>
-          <p style="color:#374151;">Boroko can now send guest-facing emails from this computer, including:</p>
+          <p style="color:#374151;">Tsa Bonno can now send guest-facing emails from this computer, including:</p>
           <ul style="color:#374151;line-height:1.8;">
             <li>Booking confirmations</li>
             <li>Booking cancellation confirmations</li>
@@ -227,7 +248,7 @@ export async function sendLicenseEmail({ to, licenseKey, lodgeName, plan, expire
         <tr>
           <td style="background:#14532d;padding:36px 40px;text-align:center;">
             <div style="font-size:36px;margin-bottom:8px;">🏕️</div>
-            <h1 style="color:#ffffff;margin:0;font-size:24px;font-weight:700;letter-spacing:-0.5px;">Boroko Bookings</h1>
+            <h1 style="color:#ffffff;margin:0;font-size:24px;font-weight:700;letter-spacing:-0.5px;">${EMAIL_BRAND_NAME}</h1>
             <p style="color:#86efac;margin:6px 0 0;font-size:14px;">Your License is Ready to Activate</p>
           </td>
         </tr>
@@ -237,7 +258,7 @@ export async function sendLicenseEmail({ to, licenseKey, lodgeName, plan, expire
           <td style="padding:36px 40px 0;">
             <p style="margin:0;font-size:16px;color:#374151;">Dear <strong>${safeLodgeName}</strong>,</p>
             <p style="margin:16px 0 0;font-size:14px;color:#6b7280;line-height:1.7;">
-              Thank you for choosing Boroko Bookings. Your license has been generated and is ready to activate.
+              Thank you for choosing ${EMAIL_BRAND_NAME}. Your license has been generated and is ready to activate.
               Follow the steps below to unlock your full subscription.
             </p>
           </td>
@@ -314,7 +335,7 @@ export async function sendLicenseEmail({ to, licenseKey, lodgeName, plan, expire
             <div style="background:#f8faff;border-left:4px solid #14532d;border-radius:0 8px 8px 0;padding:20px 24px;">
               <p style="margin:0 0 12px;font-size:14px;font-weight:700;color:#14532d;">How to Activate</p>
               <ol style="margin:0;padding-left:20px;color:#374151;font-size:14px;line-height:2;">
-                <li>Open <strong>Boroko Bookings</strong> on your computer</li>
+                <li>Open the matching <strong>${EMAIL_BRAND_NAME}</strong> application on your computer</li>
                 <li>Go to <strong>Settings → License &amp; Billing</strong></li>
                 <li>Paste your activation key into the field and click <strong>Activate</strong></li>
                 <li>Your license is live immediately ✓</li>
@@ -336,7 +357,7 @@ export async function sendLicenseEmail({ to, licenseKey, lodgeName, plan, expire
         <!-- Footer -->
         <tr>
           <td style="background:#f9fafb;border-top:1px solid #e5e7eb;padding:18px 40px;text-align:center;">
-            <p style="margin:0;font-size:12px;color:#9ca3af;">© ${year} Boroko Bookings · Botswapelo Studios Pty Ltd</p>
+            <p style="margin:0;font-size:12px;color:#9ca3af;">© ${year} ${EMAIL_BRAND_NAME} · ${EMAIL_LEGAL_OWNER}</p>
           </td>
         </tr>
 
@@ -349,11 +370,11 @@ export async function sendLicenseEmail({ to, licenseKey, lodgeName, plan, expire
   try {
     const transporter = createTransporter(config)
     await transporter.sendMail({
-      from: config.from || `"Boroko Bookings" <${config.user}>`,
+      from: config.from || `"${EMAIL_BRAND_NAME}" <${config.user}>`,
       to: to.trim(),
-      subject: `🔑 Your Boroko Bookings Activation Key — ${lodgeName || licenseKey}`,
+      subject: `🔑 Your ${EMAIL_BRAND_NAME} Activation Key — ${lodgeName || licenseKey}`,
       html,
-      text: `Your Boroko Bookings activation key is: ${licenseKey}\nPlan: ${planLabel}\nExpiry: ${expiryText}\n\nTo activate: Open Boroko Bookings → Settings → License & Billing → paste the key → click Activate.`
+      text: `Your ${EMAIL_BRAND_NAME} activation key is: ${licenseKey}\nPlan: ${planLabel}\nExpiry: ${expiryText}\n\nTo activate: Open the matching Tsa Bonno application → Settings → License & Billing → paste the key → click Activate.`
     })
     return { success: true }
   } catch (e) {
@@ -397,7 +418,7 @@ export async function sendInvoiceEmail({ to, invoice, lodgeName }) {
         <tr>
           <td style="background:#14532d;padding:32px 40px;text-align:center;">
             <div style="font-size:32px;margin-bottom:6px;">🏕️</div>
-            <h1 style="color:#fff;margin:0;font-size:22px;font-weight:700;">Boroko Bookings</h1>
+            <h1 style="color:#fff;margin:0;font-size:22px;font-weight:700;">${EMAIL_BRAND_NAME}</h1>
             <p style="color:#86efac;margin:4px 0 0;font-size:13px;">Invoice</p>
           </td>
         </tr>
@@ -453,7 +474,7 @@ export async function sendInvoiceEmail({ to, invoice, lodgeName }) {
         </tr>
         <tr>
           <td style="background:#f9fafb;border-top:1px solid #e5e7eb;padding:18px 40px;text-align:center;">
-            <p style="margin:0;font-size:12px;color:#9ca3af;">© ${year} Boroko Bookings · Botswapelo Studios Pty Ltd</p>
+            <p style="margin:0;font-size:12px;color:#9ca3af;">© ${year} ${EMAIL_BRAND_NAME} · ${EMAIL_LEGAL_OWNER}</p>
           </td>
         </tr>
       </table>
@@ -464,7 +485,7 @@ export async function sendInvoiceEmail({ to, invoice, lodgeName }) {
 
   return sendStoredConfigEmail({
     to,
-    subject: `Invoice ${invoice.invoice_number} — ${lodgeName || invoice.lodge_name || ''} · Boroko Bookings`,
+    subject: `Invoice ${invoice.invoice_number} — ${lodgeName || invoice.lodge_name || ''} · ${EMAIL_BRAND_NAME}`,
     html,
     text: `Invoice ${invoice.invoice_number}\n${formatSubscriptionPlan(invoice.package_name)} — ${invoice.currency || 'USD'} ${Number(invoice.amount).toFixed(2)}\nStatus: ${invoice.status}\nIssued: ${fmtD(invoice.issued_date)}`
   })
@@ -482,7 +503,7 @@ export async function sendBookingInvoiceEmail({ to, invoice, lodgeName, currency
   const totalAmount = Number(invoice?.total_amount || 0)
   const amountPaid = Number(invoice?.amount_paid || 0)
   const balanceDue = Math.max(0, Number(invoice?.balance_due ?? (totalAmount - amountPaid)))
-  const safeLodgeName = escapeHtml(lodgeName || 'Boroko Bookings')
+  const safeLodgeName = escapeHtml(lodgeName || EMAIL_BRAND_NAME)
   const safeGuestName = escapeHtml(invoice?.customer_name || 'Guest')
   const safeRoomNumber = escapeHtml(invoice?.room_number || '—')
   const safeRoomType = escapeHtml(invoice?.room_type || 'Room')
@@ -576,8 +597,8 @@ export async function sendBookingInvoiceEmail({ to, invoice, lodgeName, currency
 
   return sendStoredConfigEmail({
     to,
-    from: config.from || `"${lodgeName || 'Boroko Bookings'}" <${config.user}>`,
-    subject: `Invoice ${invoice?.invoice_number || ''} — ${lodgeName || 'Boroko Bookings'}`.trim(),
+    from: config.from || `"${lodgeName || EMAIL_BRAND_NAME}" <${config.user}>`,
+    subject: `Invoice ${invoice?.invoice_number || ''} — ${lodgeName || EMAIL_BRAND_NAME}`.trim(),
     html,
     text: `Invoice ${invoice?.invoice_number || ''}\nGuest: ${invoice?.customer_name || 'Guest'}\nStay: ${fmtD(invoice?.check_in)} to ${fmtD(invoice?.check_out)}\nTotal: ${currency} ${totalAmount.toFixed(2)}\nPaid: ${currency} ${amountPaid.toFixed(2)}\nBalance: ${currency} ${balanceDue.toFixed(2)}`
   })
@@ -664,7 +685,7 @@ export async function sendQuotationEmail({ to, quotation, lodgeName, settings = 
 
   return sendStoredConfigEmail({
     to,
-    from: config.from || `"${lodgeName || settings?.lodge_name || 'Boroko Bookings'}" <${config.user}>`,
+    from: config.from || `"${lodgeName || settings?.lodge_name || EMAIL_BRAND_NAME}" <${config.user}>`,
     subject: `Quotation ${quotation?.quotation_number || ''} — ${lodgeName || settings?.lodge_name || 'Your lodge'}`.trim(),
     html,
     text: `Quotation ${quotation?.quotation_number || ''}\nGuest: ${quotation?.customer_name || 'Guest'}\n${isEventQuotation ? `Event: ${quotation?.event_name || 'Exclusive event'}\nReservation: Full Lodge\nDaily rate: ${safeCurrency} ${safeDailyRate}` : `Room: ${quotation?.room_name || 'To be confirmed'}`}\nCheck-in: ${safeCheckIn}\nCheck-out: ${safeCheckOut}\nValid until: ${safeValidUntil}\nQuoted total: ${safeCurrency} ${safeTotal}`

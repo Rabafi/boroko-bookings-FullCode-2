@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { Users, Moon, ChevronLeft, ChevronRight, X } from 'lucide-react'
 import { useSwipe, useFocusTrap } from '../lib/hooks.js'
+import { describeRateMode, normalizeRateMode } from '../../../src/shared/accommodation.js'
 
 function buildRoomHighlights(room) {
   const amenityTags = Array.isArray(room?.amenities)
@@ -230,11 +231,22 @@ function PhotoCarousel({ photos, roomName }) {
   )
 }
 
-export default function RoomCard({ room, currency, nights, onBook }) {
+export default function RoomCard({ room, currency, nights, onBook, variant }) {
   const photos = Array.isArray(room.photos) && room.photos.length > 0
     ? room.photos
     : (room.photo ? [room.photo] : [])
   const highlights = buildRoomHighlights(room)
+  const isCampsite = variant === 'campsite' || room.accommodation_kind === 'campsite'
+  const unitLabel = isCampsite ? 'Campsite' : 'Room'
+  const capacity = room.capacity_adults || room.max_occupancy
+  const rateMode = normalizeRateMode(room.rate_mode)
+  const rateValue = rateMode === 'person'
+    ? room.rate_per_person
+    : rateMode === 'tent'
+      ? room.rate_per_tent
+      : rateMode === 'vehicle'
+        ? room.rate_per_vehicle
+        : room.rate_per_night
 
   return (
     <article className="surface-card flex h-full flex-col overflow-hidden rounded-[28px]">
@@ -244,25 +256,37 @@ export default function RoomCard({ room, currency, nights, onBook }) {
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <span className="inline-flex rounded-full border border-[var(--line-strong)] bg-[var(--brand-soft)] px-2.5 py-1 text-[11px] font-bold uppercase tracking-[0.2em] text-[var(--brand)]">
-              {room.room_type}
+              {isCampsite ? (room.is_powered ? 'Powered campsite' : 'Campsite') : room.room_type}
             </span>
             <h3 className="font-display mt-3 break-words text-2xl text-[var(--text)]">
-              {room.room_number}
+              {unitLabel} {room.room_number}
             </h3>
           </div>
           <div className="rounded-2xl bg-[var(--surface-strong)] px-4 py-3 text-right">
             <div className="text-2xl font-extrabold text-[var(--text)]">
-              {currency}{Number(room.rate_per_night).toLocaleString()}
+              {currency}{Number(rateValue || room.total_price / Math.max(nights || 1, 1)).toLocaleString()}
             </div>
-            <div className="text-xs font-medium text-[var(--muted)]">per night</div>
+            <div className="text-xs font-medium text-[var(--muted)]">
+              {describeRateMode(room).replace(/^From /, 'from ')}
+            </div>
           </div>
         </div>
 
         <div className="mt-4 flex flex-wrap gap-2 text-sm text-[var(--muted)]">
           <span className="inline-flex items-center gap-1 rounded-full bg-white px-3 py-1.5">
             <Users size={14} aria-hidden="true" />
-            Up to {room.max_occupancy} guests
+            Up to {capacity} guests
           </span>
+          {isCampsite && Number(room.max_tents) > 0 && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-white px-3 py-1.5">
+              {room.max_tents} tent{room.max_tents !== 1 ? 's' : ''}
+            </span>
+          )}
+          {isCampsite && Number(room.max_vehicles) > 0 && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-white px-3 py-1.5">
+              {room.max_vehicles} vehicle{room.max_vehicles !== 1 ? 's' : ''}
+            </span>
+          )}
           {nights > 0 && (
             <span className="inline-flex items-center gap-1 rounded-full bg-white px-3 py-1.5">
               <Moon size={14} aria-hidden="true" />
@@ -280,6 +304,16 @@ export default function RoomCard({ room, currency, nights, onBook }) {
               {highlight}
             </span>
           ))}
+          {isCampsite && room.site_surface && (
+            <span className="inline-flex rounded-full border border-[var(--line)] bg-[var(--surface-soft)] px-3 py-1.5 text-xs font-semibold text-[var(--muted)]">
+              {room.site_surface}
+            </span>
+          )}
+          {isCampsite && room.shared_facilities && (
+            <span className="inline-flex rounded-full border border-[var(--line)] bg-[var(--surface-soft)] px-3 py-1.5 text-xs font-semibold text-[var(--muted)]">
+              {room.shared_facilities}
+            </span>
+          )}
         </div>
 
         {room.description ? (
@@ -288,7 +322,9 @@ export default function RoomCard({ room, currency, nights, onBook }) {
           </p>
         ) : (
           <p className="mt-4 flex-1 text-sm leading-7 text-[var(--muted)]">
-            Clean, comfortable accommodation prepared for guest reservations through the lodge.
+            {isCampsite
+              ? 'Campsite pitch available for tent or vehicle stays, subject to property confirmation.'
+              : 'Clean, comfortable accommodation prepared for guest reservations through the property.'}
           </p>
         )}
 
@@ -303,9 +339,9 @@ export default function RoomCard({ room, currency, nights, onBook }) {
           <button
             onClick={() => onBook(room)}
             className="brand-button rounded-2xl px-5 py-3 text-sm font-extrabold transition-transform hover:-translate-y-0.5"
-            aria-label={`Request ${room.room_number} for ${nights} night${nights !== 1 ? 's' : ''}`}
+            aria-label={`Request ${unitLabel} ${room.room_number} for ${nights} night${nights !== 1 ? 's' : ''}`}
           >
-            Request This Room
+            {isCampsite ? 'Request This Site' : 'Request This Room'}
           </button>
         </div>
       </div>

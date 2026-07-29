@@ -24,6 +24,7 @@ import {
 } from './finance.js';
 import { mergeRemoteBookingsWithLocalState } from './bookingMerge.js';
 import { patchCachedQuotationSyncState } from './syncCache.js';
+import { computeStayTotal, isCampsiteUnit, normalizeRateMode } from '../../shared/accommodation.js';
 
 // ─── BOOKINGS ─────────────────────────────────────────────────────────────────
 
@@ -857,14 +858,49 @@ export async function createBooking(data) {
     if (totalGuests > (room.max_occupancy || 2)) {
       throw new Error(`Number of guests (${totalGuests}) exceeds room maximum occupancy (${room.max_occupancy || 2})`);
     }
-    let effectiveRate = room.rate_per_night;
+    const campsite = isCampsiteUnit(room);
+    const adults = Math.max(0, Number(data.adults ?? 1));
+    const children = Math.max(0, Number(data.children ?? 0));
+    const tents = campsite ? Math.max(0, Number(data.tents ?? 0)) : 0;
+    const vehicles = campsite ? Math.max(0, Number(data.vehicles ?? 0)) : 0;
+    let baseTotal = campsite
+      ? computeStayTotal(room, { nights, adults, children, tents, vehicles })
+      : Number(room.rate_per_night || 0) * nights;
+    // Prefer server quote (rate plans + night overrides). Fall back to local override/base.
     try {
-      const override = await getApplicableRate(data.room_id, data.check_in, data.check_out);
-      if (override && Number.isFinite(Number(override.rate)) && Number(override.rate) > 0) {
-        effectiveRate = Number(override.rate);
+      if (state.isOnline && typeof state.supabase?.rpc === 'function') {
+        const { data: quote, error: quoteError } = await state.supabase.rpc(campsite ? 'accommodation_booking_expected_total' : 'quote_room_stay', campsite ? {
+          p_lodge_id: state.lodgeId,
+          p_room_id: data.room_id,
+          p_check_in: data.check_in,
+          p_check_out: data.check_out,
+          p_adults: adults,
+          p_children: children,
+          p_tents: tents,
+          p_vehicles: vehicles,
+          p_corporate_account_id: data.corporate_account_id || null
+        } : {
+          p_lodge_id: state.lodgeId,
+          p_room_id: data.room_id,
+          p_check_in: data.check_in,
+          p_check_out: data.check_out,
+          p_corporate_account_id: data.corporate_account_id || null
+        });
+        if (!quoteError && (campsite ? Number.isFinite(Number(quote)) : quote?.success && Number.isFinite(Number(quote.total))) && Number(campsite ? quote : quote.total) >= 0) {
+          baseTotal = Number(campsite ? quote : quote.total);
+        } else {
+          const override = await getApplicableRate(data.room_id, data.check_in, data.check_out);
+          if (override && Number.isFinite(Number(override.rate)) && Number(override.rate) > 0) {
+            baseTotal = Number(override.rate) * nights;
+          }
+        }
+      } else {
+        const override = await getApplicableRate(data.room_id, data.check_in, data.check_out);
+        if (override && Number.isFinite(Number(override.rate)) && Number(override.rate) > 0) {
+          baseTotal = Number(override.rate) * nights;
+        }
       }
     } catch { /* fall back to base rate */ }
-    const baseTotal = effectiveRate * nights;
     const requestedTotal = Number(data.total_amount);
     const allowTotalOverride = data.allow_total_override === true &&
     Number.isFinite(requestedTotal) &&
@@ -885,6 +921,10 @@ export async function createBooking(data) {
       check_out: data.check_out,
       adults: data.adults || 1,
       children: data.children || 0,
+      tents,
+      vehicles,
+      accommodation_kind: campsite ? 'campsite' : (room.accommodation_kind || 'room'),
+      rate_mode: campsite ? normalizeRateMode(room.rate_mode) : null,
       total_amount: total,
       status: 'confirmed',
       payment_status: 'unpaid',
@@ -903,7 +943,26 @@ export async function createBooking(data) {
         throw new Error('Customer ID is required for booking');
       }
 
-      const { data: result, error } = await state.supabase.rpc('create_booking', {
+      const rpcName = campsite ? 'create_campsite_booking' : 'create_booking';
+      const rpcPayload = campsite ? {
+        p_lodge_id: booking.lodge_id,
+        p_customer_id: booking.customer_id,
+        p_room_id: booking.room_id,
+        p_check_in: booking.check_in,
+        p_check_out: booking.check_out,
+        p_adults: booking.adults,
+        p_children: booking.children,
+        p_tents: booking.tents,
+        p_vehicles: booking.vehicles,
+        p_total_amount: booking.total_amount,
+        p_invoice_number: booking.invoice_number,
+        p_notes: booking.notes,
+        p_created_by: booking.created_by,
+        p_deposit_amount: deposit,
+        p_booking_id: booking.id,
+        p_idempotency_key: bookingCreateIdempotencyKey,
+        p_deposit_method: deposit > 0 ? paymentMethod : null
+      } : {
         p_lodge_id: booking.lodge_id,
         p_customer_id: booking.customer_id,
         p_room_id: booking.room_id,
@@ -920,10 +979,11 @@ export async function createBooking(data) {
         p_idempotency_key: bookingCreateIdempotencyKey,
         p_deposit_method: deposit > 0 ? paymentMethod : null,
         p_allow_total_override: allowTotalOverride
-      });
+      };
+      const { data: result, error } = await state.supabase.rpc(rpcName, rpcPayload);
 
       if (error) {
-        if (/function create_booking|p_booking_id|p_idempotency_key|create_idempotency_key|p_allow_total_override/i.test(error.message || '')) {
+        if (/function create_booking|function create_campsite_booking|p_booking_id|p_idempotency_key|create_idempotency_key|p_allow_total_override/i.test(error.message || '')) {
           throw new Error('The Supabase booking sync contract is outdated. Run the latest checked-in booking sync migration, then try again.');
         }
         if (error.message?.includes('no_overlapping_bookings')) {
@@ -968,7 +1028,7 @@ export async function createBooking(data) {
         created_at: new Date().toISOString()
       };
 
-      queueOperation('rpc', 'create_booking', {
+      queueOperation('rpc', campsite ? 'create_campsite_booking' : 'create_booking', {
         p_lodge_id: booking.lodge_id,
         p_customer_id: booking.customer_id,
         p_room_id: booking.room_id,
@@ -976,6 +1036,7 @@ export async function createBooking(data) {
         p_check_out: booking.check_out,
         p_adults: booking.adults,
         p_children: booking.children || 0,
+        ...(campsite ? { p_tents: booking.tents, p_vehicles: booking.vehicles } : {}),
         p_total_amount: booking.total_amount,
         p_invoice_number: booking.invoice_number,
         p_notes: booking.notes || '',

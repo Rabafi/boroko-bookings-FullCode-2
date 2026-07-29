@@ -84,14 +84,37 @@ export default function HotelKpis({ embedded = false }) {
       ) : (
         <>
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-            <Metric icon={DoorOpen} label="Occupancy" value={`${data?.occupancyPercent || 0}%`} note={`${data?.occupiedRoomNights || 0} of ${data?.roomNightsAvailable || 0} room nights`} />
-            <Metric icon={TrendingUp} label="ADR (est.)" value={formatCurrency(data?.adr, currency)} note="Based on current booking totals, not final accounting." />
-            <Metric icon={BarChart3} label="RevPAR (est.)" value={formatCurrency(data?.revPar, currency)} note="Estimated room revenue divided by available room nights." />
-            <Metric icon={Users} label="No-Shows" value={data?.noShows || 0} note={`${data?.arrivals || 0} arrivals and ${data?.departures || 0} departures in range`} />
+            <Metric
+              icon={DoorOpen}
+              label="Occupancy (est.)"
+              value={`${data?.occupancyPercent ?? 0}%`}
+              note={`${data?.occupiedRoomNights ?? 0} of ${data?.roomNightsAvailable ?? 0} room nights · ${data?.occupancySource || 'booking_cache_estimate'}`}
+            />
+            <Metric
+              icon={TrendingUp}
+              label="ADR (est.)"
+              value={formatCurrency(data?.adr, currency)}
+              note="From current booking totals (estimate), not ledger-closed revenue."
+            />
+            <Metric
+              icon={BarChart3}
+              label="RevPAR (est.)"
+              value={formatCurrency(data?.revPar, currency)}
+              note="Estimated room revenue ÷ available room nights."
+            />
+            <Metric
+              icon={Users}
+              label="No-Shows"
+              value={data?.noShows ?? 0}
+              note={`${data?.arrivals ?? 0} arrivals and ${data?.departures ?? 0} departures in range`}
+            />
           </div>
 
           <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-            KPI revenue values are estimates from current booking cache. Final revenue, payments, refunds, and liabilities remain database-authoritative through financial reports.
+            These KPIs are labelled estimates from the local booking/room cache
+            {data?.kpiSource ? ` (source: ${data.kpiSource})` : ''}. They are not hard-coded sample values.
+            For ledger-derived occupancy, ADR/RevPAR, and debtor aging, use Enterprise advanced reports (online RPC).
+            Final revenue, payments, refunds, and liabilities remain database-authoritative.
           </div>
 
           <div className="bb-card overflow-hidden">

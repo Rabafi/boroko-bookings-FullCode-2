@@ -1,3 +1,5 @@
+import { isCommercialFeatureIncluded } from './commercialAccess.js'
+
 export const APP_FEATURES = [
   'reports',
   'expenses',
@@ -10,7 +12,14 @@ export const APP_FEATURES = [
   'pos',
   'inventory',
   'supplies',
-  'online_booking'
+  'online_booking',
+  'restaurant_accounting',
+  'inventory_advanced',
+  'workforce_management',
+  'payroll',
+  'customer_accounts',
+  'multi_outlet_controls',
+  'advanced_reports'
 ]
 
 export const FEATURE_LABELS = {
@@ -40,7 +49,15 @@ export const FEATURE_LABELS = {
   checkin_workflow: 'Check-in / check-out workflow',
   early_late_checkout: 'Early check-in / late checkout',
   cancellation_policies: 'Cancellation policies',
-  advanced_booking_engine: 'Advanced booking engine'
+  advanced_booking_engine: 'Advanced booking engine',
+  workforce_management: 'Workforce management',
+  asset_management: 'Asset management',
+  venue_management: 'Venue management',
+  restaurant_accounting: 'Accounting',
+  inventory_advanced: 'Stock & Purchasing Pro',
+  payroll: 'Payroll',
+  customer_accounts: 'Customer accounts & loyalty',
+  multi_outlet_controls: 'Multi-outlet control'
 }
 
 export const CAPABILITY_LABELS = {
@@ -75,11 +92,13 @@ export const CAPABILITY_LABELS = {
   'pool.view': 'View day use entries',
   'pool.manage': 'Manage day use entries',
   'pos.view': 'View POS',
+  'pos.service': 'Run table service, reservations and waitlist',
   'pos.manage': 'Manage POS orders',
   'pos.void': 'Void POS orders',
   'pos.discount': 'Apply discounts',
   'pos.price_override': 'Override item prices',
   'pos.menu_manage': 'Manage POS menu items',
+  'pos.cashup': 'Open shifts and reconcile cash-up',
   'pos.reports': 'View outlet POS reports',
   'pos.combined_reports': 'View combined company P&L and cross-outlet reports',
   'inventory.view': 'View inventory',
@@ -176,8 +195,36 @@ export const CAPABILITY_LABELS = {
   'multi_property.manage': 'Manage property groups',
   'multi_property.switch': 'Switch between properties',
   'operations_compliance.view': 'View operations compliance',
-  'operations_compliance.manage': 'Manage operations compliance'
+  'operations_compliance.manage': 'Manage operations compliance',
+  'workforce_scheduling.view': 'View workforce scheduling',
+  'workforce_scheduling.manage': 'Manage workforce scheduling',
+  'asset_registry.view': 'View asset registry',
+  'asset_registry.manage': 'Manage asset registry',
+  'venue_management.view': 'View venue management',
+  'venue_management.manage': 'Manage venue management',
+  'restaurant_accounting.view': 'View restaurant accounting',
+  'restaurant_accounting.manage': 'Manage restaurant accounting',
+  'restaurant_payroll.view': 'View restaurant payroll',
+  'restaurant_payroll.manage': 'Manage restaurant payroll',
+  'accounting.read': 'View restaurant accounting',
+  'accounting.manage': 'Prepare restaurant accounting work',
+  'accounting.ap_pay': 'Pay approved restaurant supplier bills',
+  'accounting.bank_approve': 'Approve restaurant bank reconciliation',
+  'accounting.tax_file': 'Record restaurant tax filing evidence',
+  'accounting.payroll_view': 'View private restaurant payroll',
+  'accounting.payroll_manage': 'Prepare and approve restaurant payroll'
 }
+
+Object.assign(CAPABILITY_LABELS, {
+  'command_central.view': 'View Command Central',
+  'command_central.companies.manage': 'Manage Command Central companies',
+  'command_central.licensing.manage': 'Manage Command Central licensing',
+  'command_central.billing.manage': 'Manage Command Central commercial billing',
+  'command_central.releases.manage': 'Manage Command Central releases',
+  'command_central.support.manage': 'Manage Command Central support',
+  'command_central.security.manage': 'Manage Command Central security',
+  'command_central.destructive.manage': 'Perform Command Central destructive actions'
+})
 
 export const ALL_CAPABILITIES = Object.keys(CAPABILITY_LABELS)
 
@@ -234,7 +281,7 @@ export const ROLE_DEFINITIONS = {
   },
   super_admin: {
     label: 'Super Admin',
-    description: 'Boroko internal access across clients, licensing, billing, and support.',
+    description: 'Tsa Bonno internal access across clients, licensing, billing, and support.',
     accent: 'slate',
     highlights: ['Client portfolio', 'Licensing', 'Billing', 'Support']
   }
@@ -251,14 +298,17 @@ export const POS_OUTLET_SCOPED_ROLES = ['cashier', 'supervisor']
 const ROLE_CAPABILITIES = {
   cashier: [
     'pos.view',
+    'pos.service',
     'pos.manage'
   ],
   supervisor: [
     'pos.view',
+    'pos.service',
     'pos.manage',
     'pos.void',
     'pos.discount',
     'pos.price_override',
+    'pos.cashup',
     'pos.reports'
   ],
   receptionist: [
@@ -311,6 +361,11 @@ const ROLE_CAPABILITIES = {
     'audit.view',
     'settings.view',
     'settings.manage_subscription',
+    'accounting.read',
+    'accounting.manage',
+    'accounting.ap_pay',
+    'accounting.bank_approve',
+    'accounting.tax_file',
     'system.health'
   ],
   manager: [
@@ -349,14 +404,19 @@ const ROLE_CAPABILITIES = {
     'settings.view',
     'settings.manage_general',
     'system.health',
+    'accounting.read',
     'pos.view',
+    'pos.service',
     'pos.manage',
     'pos.void',
     'pos.discount',
     'pos.price_override',
     'pos.menu_manage',
+    'pos.cashup',
     'pos.reports',
     'pos.combined_reports',
+    'inventory.view',
+    'inventory.manage',
     'hotel_mode.view',
     'room_types.view',
     'room_types.manage',
@@ -382,7 +442,13 @@ const ROLE_CAPABILITIES = {
     'visitor_register.manage',
     'linen_laundry.view',
     'linen_laundry.manage',
-    'emergency_list.view'
+    'emergency_list.view',
+    'workforce_scheduling.view',
+    'workforce_scheduling.manage',
+    'asset_registry.view',
+    'asset_registry.manage',
+    'venue_management.view',
+    'venue_management.manage'
   ],
   admin: [
     ...ALL_CAPABILITIES.filter((capability) => capability.startsWith('admin.') === false)
@@ -404,11 +470,13 @@ const CAPABILITY_FEATURE_REQUIREMENTS = {
   'pool.manage': 'pool',
   'data.import': 'import',
   'pos.view': 'pos',
+  'pos.service': 'pos',
   'pos.manage': 'pos',
   'pos.void': 'pos',
   'pos.discount': 'pos',
   'pos.price_override': 'pos',
   'pos.menu_manage': 'pos',
+  'pos.cashup': 'pos',
   'pos.reports': 'pos',
   'pos.combined_reports': 'reports',
   'inventory.view': 'inventory',
@@ -462,10 +530,10 @@ const CAPABILITY_FEATURE_REQUIREMENTS = {
   'guest_messaging.manage': 'guest_messaging',
   'guest_messaging.send': 'guest_messaging',
   'guest_portal.configure': 'guest_portal',
-  'guest_crm.view': 'guest_crm',
-  'guest_crm.manage': 'guest_crm',
-  'guest_crm.vip': 'guest_crm',
-  'guest_crm.blacklist': 'guest_crm',
+  'guest_crm.view': 'customer_accounts',
+  'guest_crm.manage': 'customer_accounts',
+  'guest_crm.vip': 'customer_accounts',
+  'guest_crm.blacklist': 'customer_accounts',
   'channel_manager.view': 'channel_manager',
   'channel_manager.manage': 'channel_manager',
   'documents.view': 'documents',
@@ -487,7 +555,24 @@ const CAPABILITY_FEATURE_REQUIREMENTS = {
   'cancellation.approve': 'cancellation_policies',
   'group_operations.manage': 'group_operations',
   'operations_compliance.view': 'operations_compliance',
-  'operations_compliance.manage': 'operations_compliance'
+  'operations_compliance.manage': 'operations_compliance',
+  'workforce_scheduling.view': 'workforce_management',
+  'workforce_scheduling.manage': 'workforce_management',
+  'asset_registry.view': 'asset_management',
+  'asset_registry.manage': 'asset_management',
+  'venue_management.view': 'venue_management',
+  'venue_management.manage': 'venue_management',
+  'restaurant_accounting.view': 'restaurant_accounting',
+  'restaurant_accounting.manage': 'restaurant_accounting',
+  'restaurant_payroll.view': 'restaurant_accounting',
+  'restaurant_payroll.manage': 'restaurant_accounting',
+  'accounting.read': 'restaurant_accounting',
+  'accounting.manage': 'restaurant_accounting',
+  'accounting.ap_pay': 'restaurant_accounting',
+  'accounting.bank_approve': 'restaurant_accounting',
+  'accounting.tax_file': 'restaurant_accounting',
+  'accounting.payroll_view': 'restaurant_accounting',
+  'accounting.payroll_manage': 'restaurant_accounting'
 }
 
 export function normalizeAppRole(role) {
@@ -524,7 +609,15 @@ function normalizeCapabilityOverrides(overrides = null) {
   )
 }
 
-export function buildCapabilitySnapshot({ role, isMasterAdmin = false, features = {}, capabilityOverrides = {} } = {}) {
+export function buildCapabilitySnapshot({
+  role,
+  isMasterAdmin = false,
+  features = {},
+  capabilityOverrides = {},
+  productId = null,
+  commercialPackageKey = null,
+  commercialAddonKeys = []
+} = {}) {
   if (isMasterAdmin) {
     const allTrue = Object.fromEntries(ALL_CAPABILITIES.map((capability) => [capability, true]))
     return {
@@ -555,13 +648,21 @@ export function buildCapabilitySnapshot({ role, isMasterAdmin = false, features 
     const requiredFeature = CAPABILITY_FEATURE_REQUIREMENTS[capability]
     const roleAllows = allowedByRole[capability] === true
     const featureBlocked = Boolean(requiredFeature) && features?.[requiredFeature] === false
+    const commercialBlocked = Boolean(requiredFeature) && !isCommercialFeatureIncluded(
+      productId,
+      commercialPackageKey,
+      requiredFeature,
+      commercialAddonKeys
+    )
     const override = Object.prototype.hasOwnProperty.call(normalizedOverrides, capability)
       ? normalizedOverrides[capability]
       : null
 
-    if (featureBlocked) blockedByFeature[capability] = requiredFeature
-    capabilities[capability] = roleAllows && !featureBlocked
-    effectiveCapabilities[capability] = featureBlocked ? false : override ?? roleAllows
+    if (featureBlocked || commercialBlocked) {
+      blockedByFeature[capability] = commercialBlocked ? `commercial:${requiredFeature}` : requiredFeature
+    }
+    capabilities[capability] = roleAllows && !featureBlocked && !commercialBlocked
+    effectiveCapabilities[capability] = featureBlocked || commercialBlocked ? false : override ?? roleAllows
   })
 
   return {
@@ -572,6 +673,9 @@ export function buildCapabilitySnapshot({ role, isMasterAdmin = false, features 
     effectiveCapabilities,
     blockedByFeature,
     capabilityOverrides: normalizedOverrides,
+    productId,
+    commercialPackageKey,
+    commercialAddonKeys: [...new Set(Array.isArray(commercialAddonKeys) ? commercialAddonKeys : [])],
     features: { ...features },
     enabledCount: Object.values(effectiveCapabilities).filter(Boolean).length
   }

@@ -179,7 +179,7 @@ export function computeReconciliation(data) {
 // ─── Workbook Meta Rows ──────────────────────────────────────────────────────
 export function buildExportMetaRows({ lodgeName, companyName, periodLabel, currency, outletLabel, generatedAt, asOf, reconciliationStatus, exportVersion }) {
   const rows = []
-  rows.push(['Lodge', lodgeName || 'Boroko Lodge'])
+  rows.push(['Lodge', lodgeName || 'Tsa Bonno LodgingOS'])
   if (companyName && companyName !== lodgeName) rows.push(['Company', companyName])
   if (periodLabel) rows.push(['Period', periodLabel])
   if (outletLabel) rows.push(['Outlet', outletLabel])

@@ -159,18 +159,33 @@ test('getDesktopNavItems Enterprise hotel has Enterprise items unlocked', async 
   }
 })
 
-test('getAddonModules returns all addons for Enterprise', async () => {
+test('getAddonModules returns premium addons for Enterprise (Hotel Core modules excluded)', async () => {
+  // Phase 1 Hotel Core freeze moved rate_plans, corporate_accounts, documents,
+  // hotel_roles, and room_attributes into Core (isAddon: false).
   const addons = getAddonModules()
   const keys = addons.map(m => m.key)
-  const expectedKeys = [
-    'room_attributes', 'corporate_accounts', 'rate_plans', 'custom_website',
-    'payment_gateway', 'channel_manager', 'multi_property', 'advanced_rates',
-    'guest_messaging', 'guest_portal', 'guest_crm', 'multi_outlet_pos',
-    'linen_laundry', 'lost_found', 'incident_log', 'visitor_register',
-    'emergency_list', 'documents', 'hotel_roles'
+  const expectedAddonKeys = [
+    'custom_website',
+    'payment_gateway',
+    'channel_manager',
+    'multi_property',
+    'advanced_rates',
+    'guest_messaging',
+    'guest_portal',
+    'guest_crm',
+    'multi_outlet_pos',
+    'linen_laundry',
+    'lost_found',
+    'incident_log',
+    'visitor_register',
+    'emergency_list',
+    'group_operations'
   ]
-  for (const key of expectedKeys) {
+  for (const key of expectedAddonKeys) {
     assert.ok(keys.includes(key), `Expected addon module ${key} to be in getAddonModules()`)
+  }
+  for (const coreKey of ['room_attributes', 'corporate_accounts', 'rate_plans', 'documents', 'hotel_roles']) {
+    assert.ok(!keys.includes(coreKey), `${coreKey} is Hotel Core and must not appear as an add-on`)
   }
 })
 

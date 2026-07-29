@@ -1,56 +1,45 @@
 import { useState } from 'react'
 import { ChevronDown, HelpCircle } from 'lucide-react'
 
-const defaultFaqs = [
-  {
-    question: 'How do I make a reservation?',
-    answer: 'Choose your check-in and check-out dates, then click "Search rooms." Pick the room that suits you, fill in your details, and send your booking request. The lodge will review it and confirm within 24 hours.'
-  },
-  {
-    question: 'Is my booking confirmed immediately?',
-    answer: 'No — your request is sent to the lodge for review. You will receive a confirmation or follow-up message within 24 hours. Your booking reference is saved instantly, so the lodge can see it even before email delivery.'
-  },
-  {
-    question: 'What payment methods do you accept?',
-    answer: 'We accept bank transfer, cash on arrival, and mobile money. A 50% deposit is required to confirm your reservation. The remaining balance is due at check-in.'
-  },
-  {
-    question: 'What is your cancellation policy?',
-    answer: 'Cancellations made 7 or more days before check-in receive a full refund. Cancellations within 7 days of check-in forfeit the deposit. No-shows are charged the full stay amount.'
-  },
-  {
-    question: 'What are the check-in and check-out times?',
-    answer: 'Check-in is from 14:00 (2 PM) and check-out is by 11:00 (11 AM). Early check-in or late check-out may be available on request — please include it in your special requests when booking.'
-  },
-  {
-    question: 'Are children allowed?',
-    answer: 'Yes, children are welcome. Our Family Suite accommodates up to 4 guests. Please specify the number of adults and children when making your request so we can prepare accordingly.'
-  },
-  {
-    question: 'Is Wi-Fi available?',
-    answer: 'Yes, complimentary Wi-Fi is available in all rooms and common areas. Please note that speeds may vary depending on the local network.'
-  },
-  {
-    question: 'Can I bring my pet?',
-    answer: 'Pets are not allowed in the rooms to ensure comfort for all guests. Please contact us directly if you have a service animal.'
-  },
-  {
-    question: 'Is breakfast included?',
-    answer: 'Breakfast is available at the lodge restaurant for an additional charge. It is not included in the room rate unless stated otherwise in your confirmation.'
-  },
-  {
-    question: 'How do I contact the lodge?',
-    answer: 'You can call us, send a WhatsApp message, or email us directly using the buttons at the top of this page. We typically respond to messages within a few hours during business hours.'
-  },
-  {
-    question: 'Is parking available?',
-    answer: 'Yes, free on-site parking is available for all guests. No reservation is needed for parking.'
-  },
-  {
-    question: 'What should I do if I need to modify my dates?',
-    answer: 'Contact the lodge as soon as possible with your booking reference. We will do our best to accommodate changes based on room availability.'
-  }
-]
+function buildDefaultFaqs(lodge = {}) {
+  const checkIn = lodge.booking_check_in_from || '14:00'
+  const checkOut = lodge.booking_check_out_until || '10:00'
+  const paymentTerms = lodge.booking_payment_terms
+    || 'Payment methods and deposit requirements are confirmed by the property when they accept your booking request.'
+  const cancellation = lodge.booking_cancellation_policy
+    || 'Cancellation terms are confirmed by the property with your booking confirmation.'
+
+  return [
+    {
+      question: 'How do I make a reservation?',
+      answer: 'Choose your check-in and check-out dates, then click "Search rooms." Pick the room that suits you, fill in your details, and send your booking request. The property will review it and confirm within 24 hours.'
+    },
+    {
+      question: 'Is my booking confirmed immediately?',
+      answer: 'No — your request is sent to the property for review. You will receive a confirmation or follow-up message within 24 hours. Your booking reference is saved instantly, so the property can see it even before email delivery.'
+    },
+    {
+      question: 'What payment methods do you accept?',
+      answer: paymentTerms
+    },
+    {
+      question: 'What is your cancellation policy?',
+      answer: cancellation
+    },
+    {
+      question: 'What are the check-in and check-out times?',
+      answer: `Check-in is from ${checkIn} and check-out is by ${checkOut}. Early check-in or late check-out may be available on request — please include it in your special requests when booking.`
+    },
+    {
+      question: 'How do I contact the property?',
+      answer: 'You can call, send a WhatsApp message, or email using the buttons on this page. Response times depend on the property’s operating hours.'
+    },
+    {
+      question: 'What should I do if I need to modify my dates?',
+      answer: 'Contact the property as soon as possible with your booking reference. Changes depend on availability and the property’s policies.'
+    }
+  ]
+}
 
 function parseLodgeFaqs(lodge) {
   if (!lodge?.booking_faq) return null
@@ -92,7 +81,7 @@ function FaqItem({ question, answer }) {
 
 export default function FaqSection({ lodge }) {
   const lodgeFaqs = parseLodgeFaqs(lodge)
-  const faqs = lodgeFaqs || defaultFaqs
+  const faqs = lodgeFaqs || buildDefaultFaqs(lodge)
 
   return (
     <section className="surface-card mt-8 rounded-[32px] p-5 sm:p-8">

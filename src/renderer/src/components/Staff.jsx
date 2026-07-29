@@ -31,7 +31,7 @@ import UsageLimitIndicator from './shared/UsageLimitIndicator'
 import UsageUpgradePrompt from './shared/UpgradePromptModal'
 import UpgradeNudgeBanner from './shared/UpgradeNudgeBanner'
 import { useAccess, useAuth, useSettings, useFeatures } from '../app-context'
-import { isRestaurantOnly } from '../../../shared/propertyTypes'
+import { isBarOnlyMode, isRestaurantOnly } from '../../../shared/propertyTypes'
 import {
   CAPABILITY_LABELS,
   ROLE_DEFINITIONS,
@@ -66,6 +66,49 @@ const emptyResetForm = {
   confirmPassword: ''
 }
 
+const MANAGER_MANAGED_ROLES = new Set(['cashier', 'supervisor', 'receptionist', 'operations'])
+
+const RESTAURANT_CAPABILITY_KEYS = new Set([
+  'pos.view', 'pos.manage', 'pos.void', 'pos.discount', 'pos.price_override',
+  'pos.menu_manage', 'pos.cashup', 'pos.reports', 'pos.combined_reports',
+  'inventory.view', 'inventory.manage', 'staff.view', 'staff.manage',
+  'staff.permissions', 'reports.view', 'expenses.view', 'expenses.manage',
+  'settings.view', 'settings.manage_general', 'system.health', 'sync.manage',
+  'data.export'
+])
+
+function staffRoleLabel(role, restaurantMode = false) {
+  if (!restaurantMode) return ROLE_DEFINITIONS[role]?.label || role || 'Staff'
+  return {
+    cashier: 'Till operator / cashier',
+    supervisor: 'Service supervisor',
+    finance: 'Finance & reporting',
+    manager: 'Service manager',
+    admin: 'Business owner / admin'
+  }[role] || ROLE_DEFINITIONS[role]?.label || 'Restaurant staff'
+}
+
+function staffRoleHighlights(role, restaurantMode = false) {
+  if (!restaurantMode) return ROLE_DEFINITIONS[role]?.highlights || []
+  return {
+    cashier: ['Take orders', 'Take payment', 'Assigned outlets'],
+    supervisor: ['Service oversight', 'Voids & discounts', 'Cash close'],
+    finance: ['Payment review', 'Expenses', 'Sales reports'],
+    manager: ['Daily operations', 'Team access', 'Stock & cash control'],
+    admin: ['Business setup', 'Access control', 'Recovery & subscription']
+  }[role] || ROLE_DEFINITIONS[role]?.highlights || []
+}
+
+function visibleCapabilityEntries(snapshot, restaurantMode = false) {
+  return Object.entries(snapshot?.capabilities || {}).filter(([capability, allowed]) => (
+    allowed && (!restaurantMode || RESTAURANT_CAPABILITY_KEYS.has(capability))
+  ))
+}
+
+function isManagerManagedRole(role) {
+  return MANAGER_MANAGED_ROLES.has(normalizeAppRole(role))
+}
+
 function roleTone(role) {
   return {
     cashier: 'bg-orange-100 text-orange-700',
@@ -81,12 +124,12 @@ function roleTone(role) {
 function roleDescription(role, restaurantMode) {
   if (!restaurantMode) return ROLE_DEFINITIONS[role]?.description || ROLE_DEFINITIONS.receptionist.description
   return {
-    cashier: 'Takes orders, payments, and table tabs at assigned outlets.',
+    cashier: 'Takes orders, payments, and open tabs at assigned outlets.',
     supervisor: 'Supervises service, approves discounts and voids, and reviews outlet sales.',
-    finance: 'Reviews payments, refunds, expenses, settlements, and restaurant reports.',
-    manager: 'Runs daily restaurant operations, staff access, cash controls, and owner reporting.',
-    admin: 'Owns restaurant configuration, subscriptions, recovery tools, and high-risk controls.'
-  }[role] || ROLE_DEFINITIONS[role]?.description || 'Restaurant operational access.'
+    finance: 'Reviews payments, refunds, expenses, settlements, and sales reports.',
+    manager: 'Runs daily service operations, staff access, stock, cash controls, and owner reporting.',
+    admin: 'Owns business configuration, subscriptions, recovery tools, and high-risk controls.'
+  }[role] || ROLE_DEFINITIONS[role]?.description || 'Service operational access.'
 }
 
 function formatShortDate(value) {
@@ -169,10 +212,13 @@ function StaffMembers() {
   const { settings } = useSettings()
   const propertyType = settings?.property_type || settings?.business_type || 'lodge'
   const restaurantMode = isRestaurantOnly(propertyType)
-  const propertyLabel = restaurantMode ? 'restaurant' : 'lodge'
+  const barOnly = isBarOnlyMode(settings)
+  const propertyLabel = barOnly ? 'bar' : restaurantMode ? 'restaurant' : 'lodge'
+  const currentRole = normalizeAppRole(currentUser?.role)
   const canManageStaff = canAccessCapability(access, 'staff.manage')
   const usageLimits = getPlanUsageLimits(access?.entitlement?.plan || 'Starter')
-  const canSetRoles = canAccessCapability(access, 'staff.permissions')
+  const canSetRoles = canManageStaff && ['admin', 'super_admin'].includes(currentRole)
+  const isLimitedStaffManager = canManageStaff && currentRole === 'manager'
 
   const [users, setUsers] = useState([])
   const [usageSnapshot, setUsageSnapshot] = useState(null)
@@ -184,6 +230,7 @@ function StaffMembers() {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [outlets, setOutlets] = useState([])
+  const [outletsReady, setOutletsReady] = useState(false)
   const [resetTarget, setResetTarget] = useState(null)
   const [resetForm, setResetForm] = useState(emptyResetForm)
   const [resetError, setResetError] = useState('')
@@ -199,28 +246,46 @@ function StaffMembers() {
   const [showResetPassword, setShowResetPassword] = useState(false)
   const [showResetConfirm, setShowResetConfirm] = useState(false)
   const [sortBy, setSortBy] = useState('role_asc')
+  const [searchQuery, setSearchQuery] = useState('')
+  const [statusFilter, setStatusFilter] = useState('active')
+  const [loadingUsers, setLoadingUsers] = useState(true)
+  const [loadError, setLoadError] = useState('')
+  const [showPermissionOverrides, setShowPermissionOverrides] = useState(false)
   const currentPlan = normalizeSubscriptionPlan(usageSnapshot?.plan || access?.entitlement?.plan || 'Starter')
   const isProPlan = currentPlan === 'Pro'
 
   useEffect(() => {
-    window.api.outlets.getAll().then(d => setOutlets(d || [])).catch(() => {})
+    window.api.outlets.getAll()
+      .then(d => setOutlets(d || []))
+      .catch(() => setOutlets([]))
+      .finally(() => setOutletsReady(true))
   }, [])
 
   const availableRoles = useMemo(() => {
     return getRoleOptions().filter((role) => {
       if (role.value === 'super_admin') return false
       if (restaurantMode && ['receptionist', 'operations'].includes(role.value)) return false
+      if (isLimitedStaffManager && !isManagerManagedRole(role.value)) return false
       if (role.value === 'admin') return currentUser?.role === 'admin' || currentUser?.role === 'super_admin' || currentUser?.isMasterAdmin
       return true
     })
-  }, [currentUser?.isMasterAdmin, currentUser?.role, restaurantMode])
+  }, [currentUser?.isMasterAdmin, currentUser?.role, isLimitedStaffManager, restaurantMode])
 
   const load = useCallback(async () => {
-    const data = await window.api.users.getAll()
-    setUsers(Array.isArray(data) ? data : [])
-    window.api.usage.getSnapshot?.().then((snapshot) => {
-      if (!snapshot?.error) setUsageSnapshot(snapshot)
-    }).catch(() => {})
+    setLoadingUsers(true)
+    setLoadError('')
+    try {
+      const data = await window.api.users.getAll()
+      setUsers(Array.isArray(data) ? data : [])
+      window.api.usage.getSnapshot?.().then((snapshot) => {
+        if (!snapshot?.error) setUsageSnapshot(snapshot)
+      }).catch(() => {})
+    } catch (loadFailure) {
+      setUsers([])
+      setLoadError(loadFailure?.message || 'Could not load the service team. Check the connection, then try again.')
+    } finally {
+      setLoadingUsers(false)
+    }
   }, [])
 
   const adminCount = useMemo(
@@ -244,7 +309,7 @@ function StaffMembers() {
         features: access?.features || {}
       })
           const roleInfo = ROLE_DEFINITIONS[snapshot.role] || ROLE_DEFINITIONS[restaurantMode ? 'cashier' : 'receptionist']
-      return roleInfo.label || snapshot.role || ''
+      return staffRoleLabel(snapshot.role, restaurantMode) || roleInfo.label || snapshot.role || ''
     }
 
     return [...users].sort((a, b) => {
@@ -266,14 +331,30 @@ function StaffMembers() {
           return roleLabel(a).localeCompare(roleLabel(b)) || String(a.name || '').localeCompare(String(b.name || ''))
       }
     })
-  }, [access?.features, sortBy, users])
+  }, [access?.features, restaurantMode, sortBy, users])
+  const filteredUsers = useMemo(() => {
+    const needle = searchQuery.trim().toLowerCase()
+    return sortedUsers.filter((staffUser) => {
+      const statusMatches = statusFilter === 'all' || normalizeStaffStatus(staffUser.status) === statusFilter
+      if (!statusMatches) return false
+      if (!needle) return true
+      const snapshot = buildCapabilitySnapshot({
+        role: staffUser.role,
+        features: access?.features || {},
+        capabilityOverrides: staffUser.capability_overrides || {}
+      })
+      return [staffUser.name, staffUser.email, staffRoleLabel(snapshot.role, restaurantMode)]
+        .some((value) => String(value || '').toLowerCase().includes(needle))
+    })
+  }, [access?.features, restaurantMode, searchQuery, sortedUsers, statusFilter])
+  const hasStaffFilters = Boolean(searchQuery.trim()) || statusFilter !== 'active'
   const userLimitMessage = userLimitStatus.isAbovePlan
     ? `This ${propertyLabel} is above the ${usageSnapshot?.plan || access?.entitlement?.plan || 'Starter'} plan limits. Existing records remain available, but new records are restricted until usage is reduced or the plan is upgraded.`
     : userLimitStatus.isBlocked
       ? `Staff creation is restricted because this ${propertyLabel} has reached the ${usageSnapshot?.plan || access?.entitlement?.plan || 'Starter'} user limit.`
       : ''
   const rolePreview = useMemo(() => {
-    const previousRole = editingUser?.role || 'receptionist'
+    const previousRole = editingUser?.role || (restaurantMode ? 'cashier' : 'receptionist')
     const fromSnapshot = buildCapabilitySnapshot({
       role: previousRole,
       features: access?.features || {},
@@ -314,6 +395,7 @@ function StaffMembers() {
     setShowCreatePassword(false)
     setShowPin(false)
     setShowPwaPassword(false)
+    setShowPermissionOverrides(false)
     setError('')
     setShowModal(true)
   }
@@ -335,6 +417,7 @@ function StaffMembers() {
     })
     setShowPin(false)
     setShowPwaPassword(false)
+    setShowPermissionOverrides(Object.keys(user.capability_overrides || {}).length > 0)
     setError('')
     setShowModal(true)
   }
@@ -357,9 +440,9 @@ function StaffMembers() {
     setLoading(true)
     setError('')
 
-    if (!canSetRoles && form.role !== (restaurantMode ? 'cashier' : 'receptionist')) {
+    if (isLimitedStaffManager && !isManagerManagedRole(form.role)) {
       setLoading(false)
-      setError('Your role can add staff, but only managers and admins can assign advanced access templates.')
+      setError('Managers can create and maintain service-team accounts only. Ask an administrator to assign manager, finance, or owner access.')
       return
     }
 
@@ -384,6 +467,18 @@ function StaffMembers() {
     if (form.pwa_enabled && !form.pwa_password && !editingUser?.pwa_password_set_at) {
       setLoading(false)
       setError('Set a separate manager mobile app password before enabling access.')
+      return
+    }
+
+    if (isPosOutletScopedRole(form.role) && !outletsReady) {
+      setLoading(false)
+      setError('Outlet access is still loading. Wait a moment, then select at least one outlet.')
+      return
+    }
+
+    if (isPosOutletScopedRole(form.role) && outlets.length === 0) {
+      setLoading(false)
+      setError(`Set up a POS outlet before adding a ${barOnly ? 'cashier or bar supervisor' : 'till operator or service supervisor'}. They cannot sell without an assigned outlet.`)
       return
     }
 
@@ -525,11 +620,17 @@ function StaffMembers() {
   }
 
   return (
-    <div>
-      <div className="mb-5 flex items-center justify-between">
+    <div className={restaurantMode ? 'restaurant-staff-members' : ''}>
+      <div className="restaurant-staff-toolbar mb-5 flex items-center justify-between">
         <div>
-          <p className="text-sm text-slate-500">{users.length} staff member{users.length !== 1 ? 's' : ''}</p>
-          <p className="mt-1 text-xs text-slate-400">Role templates control what each team member can see, do, and access across Boroko.</p>
+          <p className="text-sm text-slate-500">
+            {loadingUsers
+              ? 'Loading service team…'
+              : hasStaffFilters
+                ? `${filteredUsers.length} of ${users.length} staff member${users.length !== 1 ? 's' : ''}`
+                : `${users.length} staff member${users.length !== 1 ? 's' : ''}`}
+          </p>
+          <p className="mt-1 text-xs text-slate-400">Role templates set who can serve, take payment, manage stock, close shifts, and approve exceptions.</p>
           <div className="mt-2">
             {isProPlan ? (
               <span className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700">
@@ -567,7 +668,27 @@ function StaffMembers() {
             </p>
           )}
         </div>
-        <div className="flex items-center gap-3">
+        <div className="restaurant-staff-controls flex items-center gap-3">
+          <label className="sr-only" htmlFor="staff-search">Find a staff member</label>
+          <input
+            id="staff-search"
+            className="input min-w-[190px]"
+            value={searchQuery}
+            onChange={(event) => setSearchQuery(event.target.value)}
+            placeholder="Find a staff member"
+          />
+          <label className="sr-only" htmlFor="staff-status-filter">Filter by account status</label>
+          <select
+            id="staff-status-filter"
+            className="input w-auto min-w-[126px]"
+            value={statusFilter}
+            onChange={(event) => setStatusFilter(event.target.value)}
+          >
+            <option value="active">Active staff</option>
+            <option value="all">All statuses</option>
+            <option value="suspended">Suspended</option>
+            <option value="archived">Archived</option>
+          </select>
           <select
             className="input w-auto min-w-[170px]"
             value={sortBy}
@@ -583,7 +704,7 @@ function StaffMembers() {
             <button
               onClick={openAdd}
               disabled={userLimitStatus.isBlocked}
-              className="btn-primary disabled:cursor-not-allowed disabled:opacity-60"
+              className="restaurant-staff-add btn-primary disabled:cursor-not-allowed disabled:opacity-60"
             >
               <Plus size={15} /> Add Staff
             </button>
@@ -591,8 +712,40 @@ function StaffMembers() {
         </div>
       </div>
 
+      {loadingUsers ? (
+        <div className="restaurant-staff-state">
+          <RotateCcw size={19} className="animate-spin" />
+          <p>Loading the service team…</p>
+        </div>
+      ) : loadError ? (
+        <div className="restaurant-staff-state restaurant-staff-state-error">
+          <XCircle size={20} />
+          <div>
+            <p className="font-semibold">The service team could not be loaded</p>
+            <p className="mt-1 text-sm">{loadError}</p>
+            <button type="button" onClick={load} className="restaurant-staff-retry">Try again</button>
+          </div>
+        </div>
+      ) : filteredUsers.length === 0 ? (
+        <div className="restaurant-staff-state">
+          <Users2 size={22} />
+          <div>
+            <p className="font-semibold">{hasStaffFilters ? 'No staff match these filters' : 'No staff accounts yet'}</p>
+            <p className="mt-1 text-sm">
+              {hasStaffFilters
+                ? 'Clear the search or status filter to see other accounts.'
+                : 'Add the people who need to take orders, accept payments, or supervise service.'}
+            </p>
+            {hasStaffFilters ? (
+              <button type="button" onClick={() => { setSearchQuery(''); setStatusFilter('active') }} className="restaurant-staff-retry">Clear filters</button>
+            ) : canManageStaff ? (
+              <button type="button" onClick={openAdd} className="restaurant-staff-retry">Add first staff member</button>
+            ) : null}
+          </div>
+        </div>
+      ) : (
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-        {sortedUsers.map((staffUser) => {
+        {filteredUsers.map((staffUser) => {
           const snapshot = buildCapabilitySnapshot({
             role: staffUser.role,
             features: access?.features || {},
@@ -602,6 +755,7 @@ function StaffMembers() {
           const pwaEligible = isPwaEligibleRole(staffUser.role)
           const pwaEnabled = pwaEligible && staffUser.pwa_enabled === true
           const isSelf = staffUser.id === currentUser?.id
+          const canManageThisStaff = canManageStaff && (!isLimitedStaffManager || isManagerManagedRole(snapshot.role))
           const isLastAdmin = normalizeAppRole(staffUser.role) === 'admin' && ['active', 'suspended'].includes(normalizeStaffStatus(staffUser.status)) && adminCount <= 1
           const activitySummary = summarizeActivity(staffUser)
           const hasOverrides = Object.keys(staffUser.capability_overrides || {}).length > 0
@@ -614,10 +768,10 @@ function StaffMembers() {
               : ''
 
           return (
-            <div key={staffUser.id} className="bb-card p-5">
+            <div key={staffUser.id} className={`bb-card p-5 ${restaurantMode ? 'restaurant-staff-card' : ''}`}>
               <div className="flex items-start justify-between gap-4">
                 <div className="flex items-start gap-3">
-                  <div className="w-11 h-11 bg-green-100 rounded-2xl flex items-center justify-center">
+                  <div className="restaurant-staff-avatar w-11 h-11 bg-green-100 rounded-2xl flex items-center justify-center">
                     {snapshot.role === 'manager' || snapshot.role === 'admin'
                       ? <ShieldCheck size={18} className="text-green-600" />
                       : <User size={18} className="text-green-500" />}
@@ -627,7 +781,7 @@ function StaffMembers() {
                     <p className="mt-0.5 text-xs text-slate-500">{staffUser.email}</p>
                     <div className="mt-2 flex items-center gap-2">
                       <span className={`text-xs px-2 py-0.5 rounded-full font-medium capitalize ${roleTone(snapshot.role)}`}>
-                        {roleInfo.label}
+                        {staffRoleLabel(snapshot.role, restaurantMode)}
                       </span>
                       <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${statusTone(staffUser.status)}`}>
                         {STAFF_STATUS_LABELS[normalizeStaffStatus(staffUser.status)]}
@@ -639,7 +793,7 @@ function StaffMembers() {
                   </div>
                 </div>
 
-                {canManageStaff && (
+                {canManageThisStaff && (
                   <div className="flex flex-wrap items-center justify-end gap-2">
                     <button
                       onClick={() => openEdit(staffUser)}
@@ -676,9 +830,9 @@ function StaffMembers() {
                 )}
               </div>
 
-              <p className="mt-4 text-sm text-slate-500">{roleInfo.description}</p>
+              <p className="mt-4 text-sm text-slate-500">{roleDescription(snapshot.role, restaurantMode)}</p>
               <div className="mt-3 flex flex-wrap gap-2">
-                {roleInfo.highlights.map((highlight) => (
+                {staffRoleHighlights(snapshot.role, restaurantMode).map((highlight) => (
                   <span key={highlight} className="rounded-full bg-slate-100 px-2 py-1 text-xs text-slate-600">
                     {highlight}
                   </span>
@@ -689,6 +843,11 @@ function StaffMembers() {
                 {hasOverrides && (
                   <span className="rounded-full bg-sky-100 px-2 py-1 text-xs text-sky-700">
                     Custom permission overrides
+                  </span>
+                )}
+                {isLimitedStaffManager && !isManagerManagedRole(snapshot.role) && (
+                  <span className="rounded-full bg-slate-100 px-2 py-1 text-xs text-slate-600">
+                    Administrator-controlled account
                   </span>
                 )}
                 {pwaEligible && (
@@ -717,7 +876,7 @@ function StaffMembers() {
                 </p>
               )}
 
-              {canManageStaff && (
+              {canManageThisStaff && (
                 <div className="mt-4 flex flex-wrap gap-2">
                   {normalizeStaffStatus(staffUser.status) === 'active' && !isSelf && (
                     <button
@@ -763,6 +922,7 @@ function StaffMembers() {
           )
         })}
       </div>
+      )}
 
       {showModal && (
         <Modal
@@ -771,9 +931,29 @@ function StaffMembers() {
             setShowModal(false)
             setResetForm(emptyResetForm)
           }}
-          size="sm"
+          size="lg"
+          footer={(
+            <div className="restaurant-staff-modal-footer">
+              <p>Role templates are the normal way to assign access. Changes are recorded in Access audit.</p>
+              <div className="flex gap-3">
+                <button type="button" onClick={() => setShowModal(false)} className="btn-secondary">Cancel</button>
+                <button type="submit" form="staff-member-form" disabled={loading} className="btn-primary min-w-[132px]">
+                  {loading ? 'Saving…' : editingId ? 'Save changes' : 'Add staff'}
+                </button>
+              </div>
+            </div>
+          )}
         >
-          <form onSubmit={handleSave} className="space-y-4">
+          <form id="staff-member-form" onSubmit={handleSave} className="space-y-4">
+            {restaurantMode && (
+              <div className="restaurant-staff-dialog-intro">
+                <User size={18} />
+                <div>
+                  <p className="font-semibold">Set up a service account</p>
+                  <p>Choose a role first, then assign an outlet for anyone who will use the till.</p>
+                </div>
+              </div>
+            )}
             <div>
               <label className="mb-1 block text-sm font-medium text-slate-700">Full Name *</label>
               <input className="input" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required />
@@ -784,7 +964,7 @@ function StaffMembers() {
             </div>
             {!editingId && (
               <div>
-                <label className="mb-1 block text-sm font-medium text-slate-700">Desktop Password *</label>
+                <label className="mb-1 block text-sm font-medium text-slate-700">{restaurantMode ? 'Staff sign-in password *' : 'Desktop Password *'}</label>
                 <div className="relative">
                   <input
                     type={showCreatePassword ? 'text' : 'password'}
@@ -803,17 +983,17 @@ function StaffMembers() {
                 </div>
               </div>
             )}
-            {['supervisor', 'manager', 'admin'].includes(form.role) && (
+            {(restaurantMode || ['supervisor', 'manager', 'admin'].includes(form.role)) && (
               <div>
                 <label className="mb-1 block text-sm font-medium text-slate-700">
-                  Approval PIN <span className="font-normal text-slate-400">(4–6 digits)</span>
+                  {restaurantMode ? 'Staff PIN' : 'Approval PIN'} <span className="font-normal text-slate-400">(4–6 digits)</span>
                 </label>
                 <div className="relative">
                   <input
                     type={showPin ? 'text' : 'password'}
                     inputMode="numeric"
                     className="input pr-10"
-                    placeholder={editingId ? 'Leave blank to keep existing PIN' : 'Set a numeric PIN (optional)'}
+                    placeholder={editingId ? 'Leave blank to keep existing PIN' : restaurantMode ? 'Set a private numeric staff PIN' : 'Set a numeric PIN (optional)'}
                     value={form.pin}
                     onChange={(e) => setForm({ ...form, pin: e.target.value.replace(/\D/g, '').slice(0, 6) })}
                     maxLength={6}
@@ -827,12 +1007,12 @@ function StaffMembers() {
                   </button>
                 </div>
                 <p className="mt-1 text-xs text-slate-400">
-                  Used to approve POS actions without a full login.
+                  {restaurantMode ? 'Used for private shared-terminal attendance. Supervisor and manager roles can also use it for approved POS actions.' : 'Used to approve POS actions without a full login.'}
                 </p>
               </div>
             )}
             <div>
-              <label className="mb-1 block text-sm font-medium text-slate-700">Role Template</label>
+              <label className="mb-1 block text-sm font-medium text-slate-700">{restaurantMode ? 'Service role' : 'Role Template'}</label>
               <select
                 className="input"
                 value={form.role}
@@ -850,7 +1030,7 @@ function StaffMembers() {
                 }}
               >
                 {availableRoles.map((role) => (
-                  <option key={role.value} value={role.value}>{role.label}</option>
+                  <option key={role.value} value={role.value}>{staffRoleLabel(role.value, restaurantMode)}</option>
                 ))}
               </select>
               <p className="mt-2 text-xs text-slate-500">
@@ -905,43 +1085,87 @@ function StaffMembers() {
             )}
 
             {canSetRoles && (
-              <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                <div>
-                  <p className="text-sm font-medium text-slate-800">Permission overrides</p>
-                  <p className="mt-1 text-xs text-slate-500">Leave actions on Default to follow the selected role. Use Allow or Block only for exceptions.</p>
-                </div>
-                <div className="space-y-2">
-                  {Object.entries(CAPABILITY_LABELS).map(([capability, label]) => {
-                    const overrideValue = Object.prototype.hasOwnProperty.call(form.capability_overrides || {}, capability)
-                      ? form.capability_overrides[capability]
-                      : null
-                    return (
-                      <div key={capability} className="flex items-center justify-between gap-3 rounded-xl bg-white px-3 py-2">
-                        <div className="min-w-0">
-                          <p className="text-sm font-medium text-slate-700">{label}</p>
-                          <p className="text-xs text-slate-400">
-                            Role default: {rolePreview.toSnapshot.allowedByRole?.[capability] ? 'allowed' : 'blocked'}
-                          </p>
-                        </div>
-                        <div className="flex shrink-0 items-center gap-1 rounded-lg border border-slate-200 p-1">
-                          <button type="button" onClick={() => setCapabilityOverride(capability, null)} className={`rounded-md px-2 py-1 text-xs ${overrideValue === null ? 'bg-slate-800 text-white' : 'text-slate-500'}`}>Default</button>
-                          <button type="button" onClick={() => setCapabilityOverride(capability, true)} className={`rounded-md px-2 py-1 text-xs ${overrideValue === true ? 'bg-emerald-600 text-white' : 'text-slate-500'}`}>Allow</button>
-                          <button type="button" onClick={() => setCapabilityOverride(capability, false)} className={`rounded-md px-2 py-1 text-xs ${overrideValue === false ? 'bg-rose-600 text-white' : 'text-slate-500'}`}>Block</button>
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
+              <div className="restaurant-staff-permissions rounded-2xl border border-slate-200 bg-slate-50">
+                <button
+                  type="button"
+                  className="restaurant-staff-permissions-toggle"
+                  onClick={() => setShowPermissionOverrides((current) => !current)}
+                  aria-expanded={showPermissionOverrides}
+                >
+                  <span>
+                    <span className="block text-sm font-semibold text-slate-800">Custom permission exceptions</span>
+                    <span className="mt-1 block text-xs text-slate-500">
+                      {Object.keys(form.capability_overrides || {}).length > 0
+                        ? `${Object.keys(form.capability_overrides || {}).length} custom ${Object.keys(form.capability_overrides || {}).length === 1 ? 'exception is' : 'exceptions are'} active.`
+                        : 'Optional. The selected role already provides the normal service access.'}
+                    </span>
+                  </span>
+                  {showPermissionOverrides ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+                </button>
+                {showPermissionOverrides && (
+                  <div className="border-t border-slate-200 px-4 pb-4 pt-3">
+                    <p className="mb-3 text-xs text-amber-700">Use Allow or Block only for an approved exception. Leave an action on Default to follow the role template.</p>
+                    <div className="space-y-2">
+                      {Object.entries(CAPABILITY_LABELS)
+                        .filter(([capability]) => !restaurantMode || RESTAURANT_CAPABILITY_KEYS.has(capability))
+                        .map(([capability, label]) => {
+                          const overrideValue = Object.prototype.hasOwnProperty.call(form.capability_overrides || {}, capability)
+                            ? form.capability_overrides[capability]
+                            : null
+                          return (
+                            <div key={capability} className="restaurant-staff-permission-row">
+                              <div className="min-w-0">
+                                <p className="text-sm font-medium text-slate-700">{label}</p>
+                                <p className="text-xs text-slate-400">
+                                  Role default: {rolePreview.toSnapshot.allowedByRole?.[capability] ? 'allowed' : 'blocked'}
+                                </p>
+                              </div>
+                              <div className="flex shrink-0 items-center gap-1 rounded-lg border border-slate-200 bg-white p-1">
+                                <button type="button" onClick={() => setCapabilityOverride(capability, null)} className={`rounded-md px-2 py-1 text-xs ${overrideValue === null ? 'bg-slate-800 text-white' : 'text-slate-500'}`}>Default</button>
+                                <button type="button" onClick={() => setCapabilityOverride(capability, true)} className={`rounded-md px-2 py-1 text-xs ${overrideValue === true ? 'bg-emerald-600 text-white' : 'text-slate-500'}`}>Allow</button>
+                                <button type="button" onClick={() => setCapabilityOverride(capability, false)} className={`rounded-md px-2 py-1 text-xs ${overrideValue === false ? 'bg-rose-600 text-white' : 'text-slate-500'}`}>Block</button>
+                              </div>
+                            </div>
+                          )
+                        })}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
             {/* POS Outlet Access — only shown for outlet-scoped roles (cashier / supervisor) */}
-            {isPosOutletScopedRole(form.role) && outlets.length > 0 && (
+            {isPosOutletScopedRole(form.role) && !outletsReady && (
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+                Loading POS outlets before this account can be assigned to service.
+              </div>
+            )}
+
+            {isPosOutletScopedRole(form.role) && outletsReady && outlets.length === 0 && (
+              <div className="space-y-3 rounded-2xl border border-amber-200 bg-amber-50 p-4">
+                <div>
+                  <p className="text-sm font-semibold text-amber-900">Set up an outlet before assigning service access</p>
+                  <p className="mt-1 text-xs text-amber-800">{barOnly ? 'Cashiers, bartenders and bar supervisors' : 'Waiters and service supervisors'} must belong to at least one POS outlet before they can use the till.</p>
+                </div>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() => {
+                    setShowModal(false)
+                    navigate('/multi-outlet-pos')
+                  }}
+                >
+                  Set up outlets
+                </button>
+              </div>
+            )}
+
+            {isPosOutletScopedRole(form.role) && outletsReady && outlets.length > 0 && (
               <div className="space-y-2 rounded-2xl border border-slate-200 bg-slate-50 p-4">
                 <div>
                   <p className="text-sm font-medium text-slate-800">POS Outlet Access</p>
                   <p className="mt-1 text-xs text-slate-500">
-                    Select which outlets this {ROLE_DEFINITIONS[form.role]?.label || form.role} can access.
+                    Select which outlets this {staffRoleLabel(form.role, restaurantMode)} can access.
                     At least one outlet is required.
                   </p>
                 </div>
@@ -1037,16 +1261,10 @@ function StaffMembers() {
             {!canSetRoles && (
               <div className="flex items-start gap-2 rounded-xl bg-amber-50 px-4 py-2 text-sm text-amber-700">
                 <Lock size={14} className="mt-0.5 flex-shrink-0" />
-                You can create staff accounts, but advanced role changes require Manager or Admin permission.
+                You can create and update service-team accounts. Administrator approval is required for finance, manager, owner, or custom-permission access.
               </div>
             )}
             {error && <div className="rounded-xl bg-red-50 px-4 py-2 text-sm text-red-600">{error}</div>}
-            <div className="flex gap-3 pt-2">
-              <button type="button" onClick={() => setShowModal(false)} className="btn-secondary flex-1">Cancel</button>
-              <button type="submit" disabled={loading} className="btn-primary flex-1">
-                {loading ? 'Saving...' : editingId ? 'Save Changes' : 'Add Staff'}
-              </button>
-            </div>
           </form>
         </Modal>
       )}
@@ -1170,6 +1388,20 @@ function StaffMembers() {
 }
 
 const ACTION_CONFIG = {
+  staff_account_created: { icon: Users2, color: 'text-emerald-700', bg: 'bg-emerald-50', label: 'Staff added' },
+  staff_account_updated: { icon: Pencil, color: 'text-sky-700', bg: 'bg-sky-50', label: 'Account updated' },
+  staff_role_changed: { icon: ShieldCheck, color: 'text-violet-700', bg: 'bg-violet-50', label: 'Role changed' },
+  staff_status_changed: { icon: User, color: 'text-amber-700', bg: 'bg-amber-50', label: 'Status changed' },
+  staff_outlet_access_changed: { icon: ClipboardList, color: 'text-sky-700', bg: 'bg-sky-50', label: 'Outlet access' },
+  staff_permissions_changed: { icon: ShieldCheck, color: 'text-violet-700', bg: 'bg-violet-50', label: 'Permissions' },
+  staff_mobile_access_changed: { icon: Mail, color: 'text-indigo-700', bg: 'bg-indigo-50', label: 'Mobile access' },
+  staff_approval_pin_changed: { icon: Lock, color: 'text-amber-700', bg: 'bg-amber-50', label: 'Approval PIN' },
+  staff_password_changed: { icon: Lock, color: 'text-rose-700', bg: 'bg-rose-50', label: 'Password changed' },
+  staff_auth_linked: { icon: CheckCircle2, color: 'text-emerald-700', bg: 'bg-emerald-50', label: 'Sign-in linked' },
+  staff_account_deleted: { icon: Trash2, color: 'text-rose-700', bg: 'bg-rose-50', label: 'Staff removed' },
+  staff_invite_sent: { icon: Mail, color: 'text-indigo-700', bg: 'bg-indigo-50', label: 'Invite sent' },
+  staff_password_reset_sent: { icon: Mail, color: 'text-indigo-700', bg: 'bg-indigo-50', label: 'Reset link sent' },
+  staff_password_reset: { icon: Lock, color: 'text-rose-700', bg: 'bg-rose-50', label: 'Password changed' },
   booking_created:   { icon: CalendarPlus,  color: 'text-green-600',  bg: 'bg-green-50',  label: 'New Booking' },
   check_in:          { icon: LogIn,          color: 'text-teal-600',   bg: 'bg-teal-50',   label: 'Check-in' },
   check_out:         { icon: LogOut,         color: 'text-blue-600',   bg: 'bg-blue-50',   label: 'Check-out' },
@@ -1191,6 +1423,53 @@ const FILTER_OPTIONS = [
   { value: 'housekeeping_updated', label: 'Housekeeping' },
   { value: 'booking_cancelled', label: 'Cancellations' }
 ]
+
+const RESTAURANT_AUDIT_FILTER_OPTIONS = [
+  { value: 'all', label: 'All changes' },
+  { value: 'account', label: 'Accounts & access' },
+  { value: 'security', label: 'Security' }
+]
+
+function isRestaurantSecurityAudit(action) {
+  return ['staff_password_changed', 'staff_approval_pin_changed', 'staff_mobile_access_changed', 'staff_auth_linked'].includes(action)
+}
+
+function formatRestaurantAuditEntry(row) {
+  const before = row?.before_snapshot || {}
+  const after = row?.after_snapshot || {}
+  const staffName = row?.staff_name || after.name || before.name || 'Staff account'
+  const role = after.role || before.role
+
+  switch (row?.action) {
+    case 'staff_account_created':
+      return `${staffName} was added as ${staffRoleLabel(role, true)}.`
+    case 'staff_account_deleted':
+      return `${staffName} was permanently removed after being archived.`
+    case 'staff_role_changed':
+      return `${staffName}'s role changed from ${staffRoleLabel(before.role, true)} to ${staffRoleLabel(after.role, true)}.`
+    case 'staff_status_changed':
+      return `${staffName}'s status changed from ${STAFF_STATUS_LABELS[normalizeStaffStatus(before.status)] || before.status || 'unknown'} to ${STAFF_STATUS_LABELS[normalizeStaffStatus(after.status)] || after.status || 'unknown'}.`
+    case 'staff_outlet_access_changed':
+      return `${staffName}'s assigned POS outlet access changed.`
+    case 'staff_permissions_changed':
+      return `${staffName}'s custom permission exceptions changed.`
+    case 'staff_mobile_access_changed':
+      return `${staffName}'s manager mobile app access changed.`
+    case 'staff_approval_pin_changed':
+      return `${staffName}'s approval PIN changed.`
+    case 'staff_password_changed':
+      return `${staffName}'s sign-in password changed.`
+    case 'staff_auth_linked':
+      return `${staffName}'s sign-in account was linked.`
+    default: {
+      const changes = []
+      if (before.name !== after.name && after.name) changes.push('name')
+      if (before.email !== after.email && after.email) changes.push('email')
+      if (changes.length) return `${staffName}'s ${changes.join(' and ')} changed.`
+      return `${staffName}'s account details changed.`
+    }
+  }
+}
 
 function fmt(iso) {
   return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
@@ -1214,26 +1493,43 @@ function fmtSize(bytes) {
 
 function ActivityLog({ restaurantMode = false }) {
   const access = useAccess()
-  const canClear = canAccessCapability(access, 'sync.manage')
+  const canClear = !restaurantMode && canAccessCapability(access, 'sync.manage')
   const [entries, setEntries] = useState([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState('all')
   const [backupInfo, setBackupInfo] = useState(null)
   const [showBackups, setShowBackups] = useState(false)
+  const [auditError, setAuditError] = useState('')
 
   const load = useCallback(async () => {
     setLoading(true)
+    setAuditError('')
     try {
+      if (restaurantMode) {
+        const result = await window.api.users.getAccessAudit()
+        if (result?.success === false) throw new Error(result.error || 'Could not load the staff access audit.')
+        setEntries((result?.entries || []).map((row) => ({
+          ...row,
+          timestamp: row.created_at,
+          description: formatRestaurantAuditEntry(row),
+          user_name: row.actor_name || 'System or offline sync'
+        })))
+        setBackupInfo(null)
+        return
+      }
       const [log, info] = await Promise.all([
         window.api.activity.getAll(),
         window.api.backup.getInfo()
       ])
       setEntries(Array.isArray(log) ? log : [])
       setBackupInfo(info)
+    } catch (error) {
+      setEntries([])
+      setAuditError(error?.message || 'Could not load this activity record.')
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [restaurantMode])
 
   useEffect(() => {
     load()
@@ -1245,11 +1541,13 @@ function ActivityLog({ restaurantMode = false }) {
     setEntries([])
   }
 
-  const restaurantEntries = restaurantMode
-    ? entries.filter((entry) => !['booking_created', 'booking_cancelled', 'booking_confirmed', 'booking_updated', 'check_in', 'check_out', 'housekeeping_updated', 'room_created', 'event_booking_created'].includes(entry.action))
-    : entries
-  const visibleFilters = restaurantMode ? FILTER_OPTIONS.filter((option) => !['booking_created', 'check_in', 'check_out', 'housekeeping_updated', 'booking_cancelled'].includes(option.value)) : FILTER_OPTIONS
-  const filtered = filter === 'all' ? restaurantEntries : restaurantEntries.filter((entry) => entry.action === filter)
+  const restaurantEntries = restaurantMode ? entries : entries
+  const visibleFilters = restaurantMode ? RESTAURANT_AUDIT_FILTER_OPTIONS : FILTER_OPTIONS
+  const filtered = filter === 'all'
+    ? restaurantEntries
+    : restaurantMode
+      ? restaurantEntries.filter((entry) => filter === 'security' ? isRestaurantSecurityAudit(entry.action) : !isRestaurantSecurityAudit(entry.action))
+      : restaurantEntries.filter((entry) => entry.action === filter)
   const grouped = filtered.reduce((accumulator, entry) => {
     const day = new Date(entry.timestamp).toDateString()
     if (!accumulator[day]) accumulator[day] = []
@@ -1260,7 +1558,13 @@ function ActivityLog({ restaurantMode = false }) {
   const lastBackup = backupInfo?.backups?.[0]
 
   return (
-    <div>
+    <div className={restaurantMode ? 'restaurant-staff-audit' : ''}>
+      {restaurantMode && (
+        <div className="restaurant-staff-audit-note">
+          <ShieldCheck size={17} />
+          <span><strong>Server-backed access audit.</strong> It records staff account and access changes. Sales, stock, tips, and cash actions remain in their own ledgers.</span>
+        </div>
+      )}
       <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
         <div className="flex gap-1.5 flex-wrap">
           {visibleFilters.map((option) => (
@@ -1296,12 +1600,17 @@ function ActivityLog({ restaurantMode = false }) {
       </div>
 
       {loading ? (
-        <div className="text-center py-12 text-gray-400 text-sm">Loading activity...</div>
+        <div className="text-center py-12 text-gray-400 text-sm">Loading {restaurantMode ? 'access audit' : 'activity'}...</div>
+      ) : auditError ? (
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4 text-sm text-amber-800">
+          <p className="font-semibold">{restaurantMode ? 'Access audit is unavailable' : 'Activity is unavailable'}</p>
+          <p className="mt-1">{auditError}</p>
+        </div>
       ) : filtered.length === 0 ? (
         <div className="text-center py-16 text-gray-400">
           <ClipboardList size={40} className="mx-auto mb-3 opacity-30" />
-          <p className="text-sm">No activity recorded yet</p>
-          <p className="text-xs mt-1">{restaurantMode ? 'POS, stock, payment, shift, and staff actions will appear here.' : 'Actions like check-ins, bookings and payments will appear here.'}</p>
+          <p className="text-sm">{restaurantMode ? 'No staff access changes recorded yet' : 'No activity recorded yet'}</p>
+          <p className="text-xs mt-1">{restaurantMode ? 'Adding, changing, suspending, or removing a staff account will appear here.' : 'Actions like check-ins, bookings and payments will appear here.'}</p>
         </div>
       ) : (
         <div className="space-y-6">
@@ -1345,7 +1654,7 @@ function ActivityLog({ restaurantMode = false }) {
         </div>
       )}
 
-      <div className="mt-6 border border-gray-200 rounded-xl overflow-hidden">
+      {!restaurantMode && <div className="mt-6 border border-gray-200 rounded-xl overflow-hidden">
         <button
           onClick={() => setShowBackups(!showBackups)}
           className="w-full flex items-center justify-between px-4 py-3 bg-gray-50 hover:bg-gray-100 transition-colors"
@@ -1392,7 +1701,7 @@ function ActivityLog({ restaurantMode = false }) {
             </button>
           </div>
         )}
-      </div>
+      </div>}
     </div>
   )
 }
@@ -1402,13 +1711,13 @@ function RolesAndPermissions({ restaurantMode = false }) {
   const roles = getRoleOptions().filter((role) => role.value !== 'super_admin' && (!restaurantMode || !['receptionist', 'operations'].includes(role.value)))
 
   return (
-    <div className="space-y-4">
-      <div className="bg-white rounded-2xl shadow-sm p-5">
+    <div className={`space-y-4 ${restaurantMode ? 'restaurant-staff-roles' : ''}`}>
+      <div className="restaurant-staff-roles-intro bg-white rounded-2xl shadow-sm p-5">
         <div className="flex items-center gap-3 mb-3">
           <Users2 size={18} className="text-green-600" />
           <div>
-            <h2 className="text-base font-semibold text-gray-800">Role Templates</h2>
-            <p className="text-sm text-gray-500 mt-1">Use these templates when assigning staff. Plan-limited modules are hidden automatically when the current subscription does not include them.</p>
+            <h2 className="text-base font-semibold text-gray-800">{restaurantMode ? 'Service role templates' : 'Role Templates'}</h2>
+            <p className="text-sm text-gray-500 mt-1">{restaurantMode ? 'Choose the least access needed for the job. Restaurant & Bar controls are shown here; the server enforces every assignment.' : 'Use these templates when assigning staff. Plan-limited modules are hidden automatically when the current subscription does not include them.'}</p>
           </div>
         </div>
       </div>
@@ -1420,11 +1729,12 @@ function RolesAndPermissions({ restaurantMode = false }) {
             features: access?.features || {}
           })
           const blocked = Object.keys(snapshot.blockedByFeature || {})
+          const visibleBlocked = blocked.filter((capability) => !restaurantMode || RESTAURANT_CAPABILITY_KEYS.has(capability))
           return (
-            <div key={role.value} className={`rounded-2xl border p-5 bg-white shadow-sm ${access?.role === role.value ? 'border-green-300' : 'border-gray-200'}`}>
+            <div key={role.value} className={`restaurant-staff-role-card rounded-2xl border p-5 bg-white shadow-sm ${access?.role === role.value ? 'border-green-300' : 'border-gray-200'}`}>
               <div className="flex items-start justify-between gap-4">
                 <div>
-                  <p className="font-semibold text-gray-800">{role.label}</p>
+                  <p className="font-semibold text-gray-800">{staffRoleLabel(role.value, restaurantMode)}</p>
                   <p className="text-sm text-gray-500 mt-1">{roleDescription(role.value, restaurantMode)}</p>
                 </div>
                 <span className={`text-xs px-2 py-1 rounded-full ${roleTone(role.value)}`}>
@@ -1433,7 +1743,7 @@ function RolesAndPermissions({ restaurantMode = false }) {
               </div>
 
               <div className="flex flex-wrap gap-2 mt-4">
-                {role.highlights.map((highlight) => (
+                {staffRoleHighlights(role.value, restaurantMode).map((highlight) => (
                   <span key={highlight} className="text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded-full">{highlight}</span>
                 ))}
               </div>
@@ -1441,8 +1751,7 @@ function RolesAndPermissions({ restaurantMode = false }) {
               <div className="mt-4">
                 <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Key access</p>
                 <div className="flex flex-wrap gap-2">
-                  {Object.entries(snapshot.capabilities)
-                    .filter(([, allowed]) => allowed)
+                  {visibleCapabilityEntries(snapshot, restaurantMode)
                     .slice(0, 10)
                     .map(([capability]) => (
                       <span key={capability} className="text-xs bg-green-50 text-green-700 px-2 py-1 rounded-full">
@@ -1452,11 +1761,11 @@ function RolesAndPermissions({ restaurantMode = false }) {
                 </div>
               </div>
 
-              {blocked.length > 0 && (
+              {visibleBlocked.length > 0 && (
                 <div className="mt-4 p-3 rounded-xl bg-amber-50 border border-amber-200">
                   <p className="text-xs font-semibold text-amber-800 uppercase tracking-wide">Unavailable on current plan</p>
                   <div className="flex flex-wrap gap-2 mt-2">
-                    {blocked.slice(0, 6).map((capability) => (
+                      {visibleBlocked.slice(0, 6).map((capability) => (
                       <span key={capability} className="text-xs bg-white text-amber-700 px-2 py-1 rounded-full border border-amber-200">
                         {CAPABILITY_LABELS[capability]}
                       </span>
@@ -1481,8 +1790,9 @@ export default function Staff() {
   const { settings } = useSettings()
   const propertyType = settings?.property_type || settings?.business_type || 'lodge'
   const restaurantMode = isRestaurantOnly(propertyType)
+  const barOnly = isBarOnlyMode(settings)
 
-  const propertyLabel = restaurantMode ? 'restaurant' : 'lodge'
+  const propertyLabel = barOnly ? 'bar' : restaurantMode ? 'restaurant' : 'lodge'
 
   useEffect(() => {
     const tabParam = searchParams.get('tab')
@@ -1491,35 +1801,37 @@ export default function Staff() {
 
   const tabs = [
     { key: 'staff', label: 'Staff Members', icon: User },
-    { key: 'roles', label: 'Roles & Permissions', icon: ShieldCheck },
-    ...(hasHotelRoles ? [{ key: 'hotel-roles', label: 'Hotel Roles', icon: Briefcase }] : []),
-    { key: 'activity', label: 'Activity Log', icon: ClipboardList }
+    { key: 'roles', label: restaurantMode ? 'Service roles & access' : 'Roles & Permissions', icon: ShieldCheck },
+    ...(hasHotelRoles && !restaurantMode ? [{ key: 'hotel-roles', label: 'Hotel Roles', icon: Briefcase }] : []),
+    { key: 'activity', label: restaurantMode ? 'Access audit' : 'Activity Log', icon: ClipboardList }
   ]
 
   return (
-    <div className="mx-auto flex max-w-7xl flex-col gap-6">
+    <div className={`mx-auto flex max-w-7xl flex-col gap-6 ${restaurantMode ? 'restaurant-staff-workspace' : ''}`}>
       <div className="bb-page-header">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-emerald-700/70">People & Access</p>
-          <h1 className="bb-page-header-title mt-2">Staff</h1>
+          <p className={`text-xs font-semibold uppercase tracking-[0.22em] ${restaurantMode ? 'restaurant-staff-kicker' : 'text-emerald-700/70'}`}>{barOnly ? 'Bar operations' : restaurantMode ? 'Restaurant operations' : 'People & Access'}</p>
+          <h1 className="bb-page-header-title mt-2">{barOnly ? 'Your bar team' : restaurantMode ? 'Your service team' : 'Staff'}</h1>
           <p className="bb-page-header-subtitle">
-            Manage your team, assign role templates, and review operational activity.
+            {barOnly ? 'Add cashiers, bartenders and managers, assign only the access they need, and keep every shift accountable.' : restaurantMode ? 'Add the people who run service, assign their access, and keep accountability clear.' : 'Manage your team, assign role templates, and review operational activity.'}
           </p>
         </div>
         <div className="hidden items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-2 text-xs md:flex">
           <ShieldCheck size={14} className="text-green-600" />
-          <span className="text-slate-600">Current role: {ROLE_DEFINITIONS[access?.role]?.label || 'User'}</span>
+          <span className="text-slate-600">Current role: {staffRoleLabel(access?.role, restaurantMode)}</span>
         </div>
       </div>
 
-      <div className="bb-card flex gap-1 p-2">
+      <div className={`bb-card flex gap-1 p-2 ${restaurantMode ? 'restaurant-staff-tabs' : ''}`}>
         {tabs.map(({ key, label, icon: Icon }) => (
           <button
             key={key}
             onClick={() => { setTab(key); setSearchParams({ tab: key }, { replace: true }) }}
             className={`flex items-center gap-2 rounded-2xl px-4 py-2.5 text-sm font-medium transition-colors ${
               tab === key
-                ? 'bg-gradient-to-r from-emerald-500 to-green-600 text-white shadow-[0_10px_24px_rgba(22,101,52,0.24)]'
+                ? restaurantMode
+                  ? 'restaurant-staff-tab-active text-white'
+                  : 'bg-gradient-to-r from-emerald-500 to-green-600 text-white shadow-[0_10px_24px_rgba(22,101,52,0.24)]'
                 : 'text-slate-500 hover:bg-slate-50 hover:text-slate-700'
             }`}
           >

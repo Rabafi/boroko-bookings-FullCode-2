@@ -1,8 +1,8 @@
 {
-  "name": "@boroko/hotel",
+  "name": "@tsa-bonno/hotel-os",
   "version": "0.1.0",
   "private": true,
-  "description": "Boroko Hotel product",
+  "description": "Tsa Bonno HotelOS product",
   "scripts": {
     "dev": "node ../../scripts/product-app.mjs hotel dev",
     "build": "node ../../scripts/product-app.mjs hotel build",

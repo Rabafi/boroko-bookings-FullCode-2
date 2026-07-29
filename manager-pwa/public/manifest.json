@@ -1,7 +1,7 @@
 {
-  "name": "Boroko Manager",
-  "short_name": "Boroko",
-  "description": "Lodge management dashboard for Boroko Bookings",
+  "name": "Tsa Bonno HospitalityOS Manager",
+  "short_name": "Tsa Bonno",
+  "description": "Product-aware management dashboard for Tsa Bonno HospitalityOS",
   "id": "/#/",
   "start_url": "/#/",
   "scope": "/",

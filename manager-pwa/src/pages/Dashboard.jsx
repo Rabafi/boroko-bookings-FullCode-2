@@ -4,12 +4,12 @@ import { AlertTriangle, BellRing, CalendarClock, CreditCard, FileText, MessageSq
 import { useAuth } from '../contexts/AuthContext'
 import { useFeatures } from '../contexts/FeaturesContext'
 import { useInbox } from '../contexts/InboxContext'
-import { getDashboardSnapshot, getFinancialActivityFeed, getSupportRequests, listBookings, getSettings } from '../lib/api'
+import { getDashboardSnapshot, getManagerPosSnapshot, listBookings, listInventory } from '../lib/api'
 import { money, shortDate } from '../lib/format'
 import { readCacheEntry } from '../lib/runtime'
 import DataFreshness from '../components/DataFreshness'
 import MobileBoundaryNotice from '../components/MobileBoundaryNotice'
-import { isRestaurantOnly } from '@shared/propertyTypes'
+import { isBarHospitalityMode, isRestaurantProductFamily } from '../lib/productShell'
 
 const TONE = {
   red: 'bg-red-950/50 text-red-300',
@@ -78,35 +78,54 @@ export default function Dashboard() {
   const [bookings, setBookings] = useState([])
   const [lastUpdated, setLastUpdated] = useState(null)
   const [loadError, setLoadError] = useState('')
-  const [requestFeed, setRequestFeed] = useState([])
-  const [restaurantMode, setRestaurantMode] = useState(false)
+  // Authority: server product_family on the session, not a client-inferred mode.
+  const restaurantMode = isRestaurantProductFamily(user?.product_family)
+  const barOnly = restaurantMode && isBarHospitalityMode(user?.hospitality_mode)
   const today = new Date().toISOString().slice(0, 10)
 
   const load = async () => {
     setLoading(true)
     setLoadError('')
     try {
-      const [snapshot, _feed, requests, bookingRows, settings] = await Promise.all([
-        getDashboardSnapshot(user.lodge_id),
-        getFinancialActivityFeed(user.lodge_id, 5).catch(() => []),
-        getSupportRequests(user.lodge_id, 6).catch(() => []),
-        listBookings(user.lodge_id).catch(() => []),
-        getSettings(user.lodge_id).catch(() => null)
-      ])
+      const [snapshot, bookingRows] = restaurantMode
+        ? await Promise.all([
+            Promise.all([
+              getManagerPosSnapshot(user.lodge_id).catch(() => null),
+              listInventory(user.lodge_id).catch(() => [])
+            ]).then(([pos, inventory]) => {
+              const lowStock = (Array.isArray(inventory) ? inventory : []).filter((item) => {
+                const reorder = Number(item.reorder_level || 0)
+                return reorder > 0 && Number(item.current_stock || 0) <= reorder
+              })
+              return {
+                posRevenue: Number(pos?.net_sales || 0),
+                todayOrderCount: Number(pos?.sale_count || 0),
+                openCheckCount: Number(pos?.open_count || 0),
+                lowStockCount: lowStock.length,
+                lowStock: lowStock.slice(0, 5),
+                asOf: pos?.as_of || new Date().toISOString()
+              }
+            }),
+            Promise.resolve([])
+          ])
+        : await Promise.all([
+            getDashboardSnapshot(user.lodge_id),
+            listBookings(user.lodge_id).catch(() => [])
+          ])
       setData(snapshot)
-      setRequestFeed(Array.isArray(requests) ? requests : [])
       setBookings(Array.isArray(bookingRows) ? bookingRows : [])
-      setLastUpdated(readCacheEntry(user.lodge_id, 'dashboard', null)?.updatedAt || null)
-      if (settings) {
-        setRestaurantMode(isRestaurantOnly(settings.property_type || settings.business_type || 'lodge'))
-      }
+      setLastUpdated(
+        restaurantMode
+          ? snapshot?.asOf || null
+          : readCacheEntry(user.lodge_id, 'dashboard', null)?.updatedAt || null
+      )
     } catch (error) {
       setLoadError(error?.message || 'Dashboard could not load.')
     }
     setLoading(false)
   }
 
-  useEffect(() => { load() }, [user.lodge_id])
+  useEffect(() => { load() }, [restaurantMode, user.lodge_id])
 
   useEffect(() => {
     const handleVisible = () => {
@@ -152,7 +171,7 @@ export default function Dashboard() {
       })
     }
 
-    if (Number(data?.urgentMaintenanceCount || 0) > 0) {
+    if (!restaurantMode && Number(data?.urgentMaintenanceCount || 0) > 0) {
       items.push({
         id: 'urgent-maintenance',
         icon: Wrench,
@@ -220,11 +239,11 @@ export default function Dashboard() {
   const openAlertCount = useMemo(() => {
     return (
       overdueCheckouts.length +
-      Number(data?.openMaintenanceCount || 0) +
-      Number(data?.unpaidCount || 0) +
+      (restaurantMode ? 0 : Number(data?.openMaintenanceCount || 0)) +
+      (restaurantMode ? 0 : Number(data?.unpaidCount || 0)) +
       Number(data?.lowStockCount || 0)
     )
-  }, [data, overdueCheckouts])
+  }, [data, overdueCheckouts, restaurantMode])
 
   return (
     <div className="flex flex-col min-h-screen bg-gray-950 pb-24">
@@ -272,15 +291,15 @@ export default function Dashboard() {
                 />
                 <KpiCard
                   label="Orders Today"
-                  value={todayArrivals.length || 0}
+                  value={data?.todayOrderCount || 0}
                   sub="Completed orders"
                   to="/pos"
                 />
                 <KpiCard
-                  label="Outstanding"
-                  value={money(data?.outstandingTotal)}
-                  accent={Number(data?.outstandingTotal || 0) > 0 ? 'text-yellow-300' : 'text-green-300'}
-                  to="/money?focus=outstanding"
+                  label="Open checks"
+                  value={data?.openCheckCount || 0}
+                  accent={Number(data?.openCheckCount || 0) > 0 ? 'text-yellow-300' : 'text-green-300'}
+                  to={barOnly ? '/restaurant/service' : '/restaurant/floor'}
                 />
                 <KpiCard
                   label="Low Stock"
@@ -322,10 +341,10 @@ export default function Dashboard() {
           <QuickLink to="/alerts?filter=all" icon={AlertTriangle} label="Alerts" sub={`${openAlertCount} open`} />
           <QuickLink to="/money?focus=outstanding" icon={TrendingUp} label="Money" sub="Balances and audit" />
           {can('pos.reports') && isEnabled('pos') && <QuickLink to="/pos" icon={ShoppingCart} label="POS Sales" sub="Live sales and history" />}
-          {restaurantMode && <QuickLink to="/restaurant-owner" icon={Utensils} label="Owner View" sub="Today's overview" />}
+          {restaurantMode && (!barOnly || isEnabled('owner_mobile_view')) && <QuickLink to="/restaurant-owner" icon={Utensils} label={barOnly ? 'Bar Owner' : 'Owner View'} sub="Today's overview" />}
           {pwaEnabled && <QuickLink to="/control" icon={MessageSquare} label="Inbox" sub={inboxUnreadCount > 0 ? `${inboxUnreadCount} unread` : restaurantMode ? 'Manager chat' : 'Front desk chat'} />}
           {restaurantMode ? (
-            <QuickLink to="/inventory" icon={Package} label="Inventory" sub="Stock and menu items" />
+            <QuickLink to="/inventory" icon={Package} label={barOnly ? 'Bar Stock' : 'Inventory'} sub={barOnly ? 'Drinks, packs and low stock' : 'Stock and menu items'} />
           ) : can('reports.view') ? (
             <QuickLink to="/reports" icon={FileText} label="Reports" sub="Full snapshot" />
           ) : (

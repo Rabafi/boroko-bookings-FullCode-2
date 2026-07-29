@@ -18,8 +18,6 @@ const REDIRECT_ROUTES = [
   { route: 'corporate-billing', target: '/corporate?tab=billing' },
   { route: 'documents', target: '/settings?tab=document-templates' },
   { route: 'hotel-roles', target: '/staff?tab=hotel-roles' },
-  { route: 'night-audit-enterprise', target: '/audit' },
-  { route: 'checkin-workflow', target: '/bookings?tab=checkin' },
   { route: 'early-late-checkout', target: '/bookings?tab=early-late' },
   { route: 'cancellation-policies', target: '/bookings?tab=cancellations' },
   { route: 'booking-engine', target: '/rate-plans?tab=booking-engine' },
@@ -54,7 +52,9 @@ for (const { route, target } of REDIRECT_ROUTES) {
 
 // Routes that remain as distinct modules with UpgradeWall
 const DISTINCT_ROUTES = [
-  { route: 'group-operations', feature: 'group_operations' }
+  { route: 'group-operations', feature: 'group_operations' },
+  { route: 'night-audit-enterprise', feature: 'night_audit_enterprise' },
+  { route: 'checkin-workflow', feature: 'checkin_workflow' }
 ]
 
 for (const { route, feature } of DISTINCT_ROUTES) {

@@ -9,6 +9,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const folioLedgerSource = readFileSync(resolve(__dirname, '../src/main/domains/folioLedger.js'), 'utf8')
 const rateCalendarSource = readFileSync(resolve(__dirname, '../src/main/domains/rateCalendar.js'), 'utf8')
 const offlineMatrix = readFileSync(resolve(__dirname, '../docs/OFFLINE_MATRIX.md'), 'utf8')
+const corporateBillingSource = readFileSync(resolve(__dirname, '../src/main/domains/corporateBilling.js'), 'utf8')
+const nightAuditSource = readFileSync(resolve(__dirname, '../src/main/domains/nightAudit.js'), 'utf8')
 
 const FOLIO_FUNCTIONS = [
   'addCharge',
@@ -22,7 +24,7 @@ const FOLIO_FUNCTIONS = [
 ]
 
 for (const fnName of FOLIO_FUNCTIONS) {
-  test(`folioLedger.js: ${fnName} handles offline state`, () => {
+  test(`folioLedger.js: ${fnName} is online_only (reject offline, never queue)`, () => {
     const fnMarker = `export async function ${fnName}(`
     const idx = folioLedgerSource.indexOf(fnMarker)
     assert.ok(idx >= 0, `Function ${fnName} should exist in folioLedger.js`)
@@ -31,18 +33,52 @@ for (const fnName of FOLIO_FUNCTIONS) {
     const closingBrace = findMatchingBrace(fnBody)
     const fnBlock = fnBody.slice(0, closingBrace + 1)
 
-    const hasOfflineCheck = fnBlock.includes('state.isOnline')
-    assert.ok(hasOfflineCheck, `${fnName} should check state.isOnline for offline handling`)
-
-    const handlesOffline = fnBlock.includes('queueOperation')
-    assert.ok(handlesOffline, `${fnName} should call queueOperation when offline`)
+    assert.ok(
+      fnBlock.includes('requireOnline(') || fnBlock.includes('state.isOnline'),
+      `${fnName} should enforce online_only via requireOnline / isOnline`
+    )
+    assert.ok(
+      !fnBlock.includes('queueOperation'),
+      `${fnName} must NOT call queueOperation (online_only financial mutation)`
+    )
   })
 }
 
-test('folioLedger.js: file does not contain online_only or "This operation requires" patterns', () => {
-  assert.ok(!folioLedgerSource.includes('online_only'), 'folioLedger should not use online_only label')
-  assert.ok(!folioLedgerSource.includes('This operation requires'),
-    'folioLedger should not use "This operation requires" error pattern')
+test('folioLedger.js: requireOnline sets onlineOnly and internet connection message', () => {
+  assert.ok(folioLedgerSource.includes('function requireOnline'), 'requireOnline helper required')
+  assert.ok(folioLedgerSource.includes('onlineOnly = true') || folioLedgerSource.includes('err.onlineOnly = true'))
+  assert.ok(
+    folioLedgerSource.includes('requires an internet connection'),
+    'folioLedger should use internet-connection error pattern for online_only ops'
+  )
+  assert.ok(
+    !folioLedgerSource.includes('queueOperation'),
+    'folioLedger must not import or call queueOperation for financial mutations'
+  )
+})
+
+test('corporateBilling.js: financial mutations online_only without queue', () => {
+  assert.ok(corporateBillingSource.includes('function requireOnline'))
+  assert.ok(!corporateBillingSource.includes('queueOperation'))
+  for (const label of [
+    'Charge to corporate account',
+    'Record corporate payment',
+    'Suspend corporate account',
+    'Reactivate corporate account'
+  ]) {
+    assert.ok(
+      corporateBillingSource.includes(label),
+      `corporate billing should guard: ${label}`
+    )
+  }
+})
+
+test('nightAudit.js: close/reopen/resolve online_only without queue', () => {
+  assert.ok(nightAuditSource.includes('function requireOnline'))
+  assert.ok(nightAuditSource.includes("requireOnline('Close night audit')"))
+  assert.ok(nightAuditSource.includes("requireOnline('Reopen night audit')"))
+  assert.ok(nightAuditSource.includes("requireOnline('Resolve night audit exception')"))
+  assert.ok(!nightAuditSource.includes('queueOperation'))
 })
 
 test('rateCalendar.js: getYieldRules handles offline', () => {
@@ -93,11 +129,16 @@ test('OFFLINE_MATRIX.md has at least 10 online_only operations', () => {
     `Should have at least 10 online_only operations, found ${onlineOnlyMatches.length}`)
 })
 
-test('OFFLINE_MATRIX.md has at least 5 queueable operations', () => {
-  const queueableMatches = offlineMatrix.match(/\|.*?queueable.*?\|/g)
-  assert.ok(queueableMatches, 'Should find queueable entries in the matrix')
-  assert.ok(queueableMatches.length >= 5,
-    `Should have at least 5 queueable operations, found ${queueableMatches.length}`)
+test('OFFLINE_MATRIX.md documents queueable operations where implemented', () => {
+  // Room moves and maintenance tickets remain the primary proved queueable hotel ops.
+  assert.ok(
+    offlineMatrix.includes('queueable'),
+    'Should document queueable operations'
+  )
+  assert.ok(
+    offlineMatrix.includes('roomMoves') || offlineMatrix.includes('Room moves') || offlineMatrix.includes('move_booking_room'),
+    'Should document room move queueability'
+  )
 })
 
 function findMatchingBrace(str) {

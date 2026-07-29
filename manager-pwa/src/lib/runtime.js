@@ -6,9 +6,9 @@ const ISSUE_LOG_LIMIT = 100
 const NOTIFICATION_LIMIT = 40
 const DISMISSED_NOTIFICATION_LIMIT = 120
 const SEEN_NOTIFICATION_VERSION_LIMIT = 250
-const TRUSTED_DEVICE_DAYS = 365
+const TRUSTED_DEVICE_DAYS = 14
 const DEFAULT_ONLINE_CACHE_MAX_AGE_MS = 60_000
-const PWA_HEALTH_PUBLISH_MIN_MS = 10 * 60_000
+const PWA_HEALTH_PUBLISH_MIN_MS = 20 * 60_000
 const inFlightQueries = new Map()
 
 function normalizeNotificationPart(value) {
@@ -413,7 +413,7 @@ export function upsertPwaNotification(lodgeId, notification) {
   const nextItem = {
     id: previous?.id || notification?.id || crypto.randomUUID(),
     sourceKey,
-    title: notification?.title || 'Boroko update',
+    title: notification?.title || 'Tsa Bonno update',
     message: notification?.message || '',
     tone: notification?.tone || 'info',
     category: notification?.category || 'general',

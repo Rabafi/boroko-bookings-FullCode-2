@@ -23,13 +23,20 @@ const STATUS_CONFIG = {
     icon: Clock,
     badge: 'bg-yellow-100 text-yellow-700',
     row: 'bg-yellow-50/40'
+  },
+  inspected: {
+    label: 'Inspected',
+    icon: Sparkles,
+    badge: 'bg-purple-100 text-purple-700',
+    row: 'bg-purple-50/40'
   }
 }
 
 const HOUSEKEEPING_STATES = [
   { key: 'dirty', label: 'Dirty', icon: ShowerHead, tone: 'bg-amber-100 text-amber-700 border-amber-200' },
   { key: 'in_progress', label: 'In Progress', icon: Clock, tone: 'bg-blue-100 text-blue-700 border-blue-200' },
-  { key: 'clean', label: 'Clean', icon: CheckCircle, tone: 'bg-emerald-100 text-emerald-700 border-emerald-200' }
+  { key: 'clean', label: 'Clean', icon: CheckCircle, tone: 'bg-emerald-100 text-emerald-700 border-emerald-200' },
+  { key: 'inspected', label: 'Inspected', icon: Sparkles, tone: 'bg-purple-100 text-purple-700 border-purple-200' }
 ]
 
 function statusLabel(value) {
@@ -117,15 +124,38 @@ function BoardTab() {
   const loadRooms = async () => {
     setLoading(true)
     setError('')
+    const warnings = []
     try {
+      const settle = async (label, promise) => {
+        try {
+          return await promise
+        } catch (e) {
+          warnings.push(`${label}: ${e?.message || 'failed'}`)
+          return null
+        }
+      }
+      if (!window.api?.rooms?.getAll) throw new Error('Rooms API is not available')
       const [roomData, bookingData] = await Promise.all([
-        window.api.rooms.getAll().catch(() => []),
-        window.api.bookings.getByDateRange(today, tomorrow).catch(() => [])
+        settle('Rooms', window.api.rooms.getAll()),
+        window.api?.bookings?.getByDateRange
+          ? settle('Bookings', window.api.bookings.getByDateRange(today, tomorrow))
+          : Promise.resolve([])
       ])
-      setRooms(roomData || [])
-      setTodayBookings(bookingData || [])
+      if (roomData == null) {
+        setError(warnings.join(' · ') || 'Could not load rooms for housekeeping.')
+        setRooms([])
+        setTodayBookings([])
+        return
+      }
+      setRooms(Array.isArray(roomData) ? roomData : [])
+      setTodayBookings(Array.isArray(bookingData) ? bookingData : [])
+      if (warnings.length) {
+        setError(`Partial load: ${warnings.join(' · ')}`)
+      }
     } catch (e) {
       setError(e.message || 'Could not load housekeeping overview.')
+      setRooms([])
+      setTodayBookings([])
     } finally {
       setLoading(false)
     }
@@ -176,7 +206,8 @@ function BoardTab() {
   const counts = {
     clean:       rooms.filter((r) => (r.housekeeping_status || 'clean') === 'clean').length,
     dirty:       rooms.filter((r) => r.housekeeping_status === 'dirty').length,
-    in_progress: rooms.filter((r) => r.housekeeping_status === 'in_progress').length
+    in_progress: rooms.filter((r) => r.housekeeping_status === 'in_progress').length,
+    inspected:   rooms.filter((r) => r.housekeeping_status === 'inspected').length
   }
 
   const notesNeedingAttention = rooms.filter((room) => String(room.housekeeping_notes || '').trim()).length
@@ -196,7 +227,7 @@ function BoardTab() {
     <>
       <div className="flex items-center justify-between">
         <p className="bb-page-header-subtitle">
-          {counts.clean} clean · {counts.in_progress} in progress · {counts.dirty} dirty
+          {counts.clean} clean · {counts.inspected} inspected · {counts.in_progress} in progress · {counts.dirty} dirty
         </p>
         <button onClick={loadRooms} className="btn-secondary">
           <RefreshCw size={14} /> Refresh
@@ -311,7 +342,7 @@ function BoardTab() {
             <div
               key={room.id}
               className={`bb-card overflow-hidden border-l-4 ${
-                status === 'clean' ? 'border-green-400' :
+                status === 'clean' || status === 'inspected' ? 'border-green-400' :
                 status === 'dirty' ? 'border-red-400' : 'border-yellow-400'
               }`}
             >
@@ -338,13 +369,13 @@ function BoardTab() {
                   onChange={(e) => setNoteEdits((prev) => ({ ...prev, [room.id]: e.target.value }))}
                 />
 
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
                   {Object.entries(STATUS_CONFIG).map(([key, c]) => (
                     <button
                       key={key}
                       disabled={isSaving || status === key}
                       onClick={() => updateStatus(room, key)}
-                      className={`flex-1 text-xs py-1.5 rounded-lg font-medium transition-colors ${
+                      className={`min-w-[4.5rem] flex-1 text-xs py-1.5 rounded-lg font-medium transition-colors ${
                         status === key
                           ? `${c.badge} cursor-default`
                           : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
@@ -353,6 +384,16 @@ function BoardTab() {
                       {isSaving && status !== key ? '...' : c.label}
                     </button>
                   ))}
+                </div>
+
+                <div className="mt-2 flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => navigate(`/maintenance?room_id=${encodeURIComponent(room.id)}`)}
+                    className="flex-1 rounded-lg border border-slate-200 bg-white py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
+                  >
+                    Escalate to maintenance
+                  </button>
                 </div>
 
                 {isDirty && (
@@ -616,13 +657,28 @@ function AssignmentsTab() {
     }
   }
 
-  const handleUpdateStatus = async (id, status) => {
+  const handleUpdateStatus = async (id, status, refuseNote = null) => {
     try {
-      await window.api.housekeepingCommandCenter.updateAssignmentStatus(id, status, notes)
+      const payloadNotes = refuseNote != null ? refuseNote : notes
+      await window.api.housekeepingCommandCenter.updateAssignmentStatus(id, status, payloadNotes || null)
       await loadData()
     } catch (err) {
       setError(err?.message)
     }
+  }
+
+  const handleRefuseService = async (assignment) => {
+    const refuseReason = window.prompt(
+      `Refuse service for room ${assignment.room_number || assignment.room_id}? Enter reason (stored on assignment via skipped status).`,
+      notes || 'Guest refused service / DND'
+    )
+    if (refuseReason == null) return
+    const reason = String(refuseReason).trim()
+    if (!reason) {
+      setError('Refuse service requires a reason')
+      return
+    }
+    await handleUpdateStatus(assignment.id, 'skipped', `REFUSE_SERVICE: ${reason}`)
   }
 
   if (loading && !dashboard) {
@@ -704,7 +760,7 @@ function AssignmentsTab() {
                       <td className="px-5 py-3"><StatusBadge status={a.shift} size="sm" /></td>
                       <td className="px-5 py-3"><StatusBadge status={a.status} size="sm" /></td>
                       <td className="px-5 py-3">
-                        <div className="flex gap-1">
+                        <div className="flex flex-wrap gap-1">
                           {ASSIGNMENT_STATUS_OPTIONS.map((s) => (
                             <button
                               key={s}
@@ -714,6 +770,14 @@ function AssignmentsTab() {
                               {s.replace('_', ' ')}
                             </button>
                           ))}
+                          <button
+                            type="button"
+                            onClick={() => handleRefuseService(a)}
+                            className="px-2 py-1 text-[10px] rounded-md font-medium bg-red-50 text-red-700 hover:bg-red-100"
+                            title="Mark assignment skipped with refuse-service reason (RPC update_housekeeping_assignment_status)"
+                          >
+                            Refuse service
+                          </button>
                         </div>
                       </td>
                     </tr>
@@ -769,14 +833,22 @@ function InspectionTab() {
     setLoading(true)
     setError(null)
     try {
-      const [dash, items] = await Promise.all([
-        window.api.housekeepingCommandCenter.getDashboard(selectedDate),
-        window.api.housekeepingCommandCenter.getChecklistItems().catch(() => [])
-      ])
+      if (!window.api?.housekeepingCommandCenter?.getDashboard) {
+        throw new Error('Housekeeping command center API is not available')
+      }
+      const dash = await window.api.housekeepingCommandCenter.getDashboard(selectedDate)
       setDashboard(dash)
+      let items = []
+      try {
+        items = await window.api.housekeepingCommandCenter.getChecklistItems()
+      } catch (itemsErr) {
+        setError(`Dashboard loaded; checklist items failed: ${itemsErr?.message || 'unknown error'}`)
+      }
       setChecklistItems(Array.isArray(items) ? items : [])
     } catch (err) {
       setError(err?.message || 'Failed to load inspection data')
+      setDashboard(null)
+      setChecklistItems([])
     } finally {
       setLoading(false)
     }
@@ -935,6 +1007,7 @@ function SuppliesTab() {
   const [supplyItems, setSupplyItems] = useState([])
   const [weekAllocations, setWeekAllocations] = useState([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
 
   const thisMonday = () => {
     const d = new Date()
@@ -949,18 +1022,44 @@ function SuppliesTab() {
 
   const loadData = async () => {
     setLoading(true)
+    setError('')
     try {
       const suppliesEnabled = Object.keys(features).length > 0 && features.supplies
+      const warn = []
+      const settle = async (label, promise) => {
+        try {
+          return await promise
+        } catch (e) {
+          warn.push(`${label}: ${e?.message || 'failed'}`)
+          return null
+        }
+      }
+      if (!window.api?.rooms?.getAll) throw new Error('Rooms API is not available')
       const [roomData, itemData, allocationData] = await Promise.all([
-        window.api.rooms.getAll().catch(() => []),
-        suppliesEnabled ? window.api.supplies?.getItems?.().catch(() => []) : Promise.resolve([]),
-        suppliesEnabled ? window.api.supplies?.getWeekAllocations?.(weekStart).catch(() => []) : Promise.resolve([])
+        settle('Rooms', window.api.rooms.getAll()),
+        suppliesEnabled && window.api.supplies?.getItems
+          ? settle('Supply items', window.api.supplies.getItems())
+          : Promise.resolve([]),
+        suppliesEnabled && window.api.supplies?.getWeekAllocations
+          ? settle('Allocations', window.api.supplies.getWeekAllocations(weekStart))
+          : Promise.resolve([])
       ])
-      setRooms(roomData || [])
-      setSupplyItems(itemData || [])
-      setWeekAllocations(allocationData || [])
+      if (roomData == null) {
+        setError(warn.join(' · ') || 'Could not load supplies board.')
+        setRooms([])
+        setSupplyItems([])
+        setWeekAllocations([])
+        return
+      }
+      setRooms(Array.isArray(roomData) ? roomData : [])
+      setSupplyItems(Array.isArray(itemData) ? itemData : [])
+      setWeekAllocations(Array.isArray(allocationData) ? allocationData : [])
+      if (warn.length) setError(`Partial load: ${warn.join(' · ')}`)
     } catch (e) {
-      // ignore
+      setError(e?.message || 'Could not load supplies board.')
+      setRooms([])
+      setSupplyItems([])
+      setWeekAllocations([])
     } finally {
       setLoading(false)
     }
@@ -1025,8 +1124,22 @@ function SuppliesTab() {
     )
   }
 
+  if (error && rooms.length === 0) {
+    return (
+      <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-6 text-center text-sm text-red-700">
+        {error}
+        <button type="button" onClick={loadData} className="mt-3 block w-full text-emerald-700 font-semibold hover:underline">
+          Retry
+        </button>
+      </div>
+    )
+  }
+
   return (
     <div className="space-y-4">
+      {error ? (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">{error}</div>
+      ) : null}
       <div className="flex items-center justify-between">
         <p className="text-sm text-slate-500">Weekly housekeeping report based on room-supply capture for the week starting {weekStart}.</p>
         <button onClick={() => navigate('/supplies')} className="btn-secondary text-xs">

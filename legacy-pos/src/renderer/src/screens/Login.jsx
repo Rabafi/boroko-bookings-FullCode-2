@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Eye, EyeOff } from 'lucide-react';
+import tsaBonnoRestaurantLogo from '../assets/tsa-bonno-restaurant-bar-os-logo-color.png';
 
 const LEGACY_POS_REMEMBERED_EMAILS_KEY = 'boroko.legacyPos.rememberedEmails';
 const MAX_REMEMBERED_EMAILS = 8;
@@ -150,10 +151,8 @@ export default function Login({ onLogin, onOfflineUnlock }) {
       <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-slate-50 to-slate-100 p-4">
         <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-8 shadow-lg">
           <div className="text-center">
-            <div className="mx-auto mb-4 h-10 w-10 rounded-xl bg-emerald-600 flex items-center justify-center">
-              <span className="text-lg font-black text-white">B</span>
-            </div>
-            <h1 className="text-xl font-bold text-slate-800">Boroko POS</h1>
+            <img src={tsaBonnoRestaurantLogo} alt="Tsa Bonno Restaurant & Bar OS" className="mx-auto mb-4 h-24 w-72 max-w-full object-contain" draggable="false" />
+            <h1 className="text-xl font-bold text-slate-800">Tsa Bonno POS Legacy</h1>
             <p className="mt-4 text-sm text-slate-600">
               This POS terminal is not configured. Contact the system administrator.
             </p>
@@ -167,10 +166,8 @@ export default function Login({ onLogin, onOfflineUnlock }) {
     <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-slate-50 to-slate-100 p-4">
       <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-8 shadow-lg">
         <div className="text-center">
-          <div className="mx-auto mb-4 h-10 w-10 rounded-xl bg-emerald-600 flex items-center justify-center">
-            <span className="text-lg font-black text-white">B</span>
-          </div>
-          <h1 className="text-xl font-bold text-slate-800">Boroko POS</h1>
+          <img src={tsaBonnoRestaurantLogo} alt="Tsa Bonno Restaurant & Bar OS" className="mx-auto mb-4 h-24 w-72 max-w-full object-contain" draggable="false" />
+          <h1 className="text-xl font-bold text-slate-800">Tsa Bonno POS Legacy</h1>
           <p className="mt-1.5 text-sm text-slate-400">Sign in to your terminal</p>
         </div>
 

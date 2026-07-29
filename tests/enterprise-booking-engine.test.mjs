@@ -90,7 +90,7 @@ test('Advanced Booking Engine module key exists in module catalog', async () => 
   assert.ok(mod.capabilities.includes('advanced_booking_engine.manage'))
   assert.ok(mod.routes.includes('/booking-engine'))
   assert.equal(mod.visibility, 'hotel_only')
-  assert.equal(mod.rolloutStatus, 'planned')
+  assert.equal(mod.rolloutStatus, 'active')
 })
 
 test('Advanced Booking Engine module visibility resolves correctly', async () => {

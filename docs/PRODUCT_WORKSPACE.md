@@ -1,14 +1,14 @@
-# Boroko Product Workspace
+# Tsa Bonno HospitalityOS Product Workspace
 
-This repository is the single Boroko platform workspace. It owns one shared Supabase migration history and several customer-facing product boundaries.
+This repository is the single Tsa Bonno HospitalityOS workspace. It owns one shared Supabase migration history and several customer-facing product boundaries.
 
 ## Products
 
 | Folder | Product | Customer experience | Current implementation state |
 |---|---|---|---|
-| `apps/lodge-camp` | Boroko Lodge & Camp | Accommodation-first desktop application | Existing product, staged for physical extraction from the shared desktop foundation |
-| `apps/hotel` | Boroko Hotel | Hotel-grade PMS application | Enterprise hotel capability, staged for physical extraction |
-| `apps/hospitality-pos` | Boroko Restaurant & Bar POS | Restaurant + Bar or Bar Only configuration | Restaurant-only capability, staged for physical extraction |
+| `apps/lodge-camp` | Tsa Bonno LodgingOS | Accommodation-first desktop application | Existing product, staged for physical extraction from the shared desktop foundation |
+| `apps/hotel` | Tsa Bonno HotelOS | Separate hotel-grade PMS application | Hotel product package; legacy Enterprise entitlement key retained internally |
+| `apps/hospitality-pos` | Tsa Bonno Restaurant & Bar POS | Restaurant + Bar or Bar Only configuration | Restaurant-only capability, staged for physical extraction |
 
 Each product folder is a runnable npm workspace with its own Electron packaging identity. The runtime source is intentionally shared rather than copied: physical installer separation must not fork the financial, inventory, offline, or Supabase contract.
 
@@ -17,29 +17,31 @@ Each product folder is a runnable npm workspace with its own Electron packaging 
 Run one product in development:
 
 ```powershell
-npm run dev --workspace=@boroko/lodge-camp
-npm run dev --workspace=@boroko/hotel
-npm run dev --workspace=@boroko/hospitality-pos
+npm run dev:lodging
+npm run dev:hotel
+npm run dev:restaurant-bar
 ```
+
+These explicit launch commands are preferred because each one passes a fixed product identity into the fail-closed Electron launcher. A missing or invalid product identity stops with an error; it cannot silently fall back to LodgingOS.
 
 Build or create an installer for one product:
 
 ```powershell
-npm run build --workspace=@boroko/hotel
-npm run dist --workspace=@boroko/hospitality-pos
+npm run build --workspace=@tsa-bonno/hotel-os
+npm run dist --workspace=@tsa-bonno/restaurant-bar-pos
 ```
 
-Lodge & Camp deliberately retains the original Boroko Bookings Windows application ID, updater feed, installer name, and user-data directory. It updates existing customer installations in place. Hotel and Restaurant & Bar POS have distinct identities, which prevents either from overwriting a Lodge & Camp installation.
+LodgingOS deliberately retains the former application's Windows application ID, updater feed, and user-data directory as compatibility identities. Its customer-facing installer name is Tsa Bonno LodgingOS, and upgrades update existing customer installations in place. HotelOS and Restaurant & Bar POS have distinct identities, which prevents either from overwriting a LodgingOS installation.
 
 Each product has its own public GitHub Releases update feed. This is required because the Windows updater reads a single `latest.yml` feed and must never receive another product's installer:
 
 | Product | Update feed |
 |---|---|
-| Boroko Bookings Lodge & Camp (existing customers) | `Rabafi/boroko-bookings-releases` |
-| Boroko Hotel | `Rabafi/boroko-hotel-releases` |
-| Boroko Restaurant & Bar POS | `Rabafi/boroko-hospitality-pos-releases` |
+| Tsa Bonno LodgingOS (existing customers) | `Rabafi/boroko-bookings-releases` |
+| Tsa Bonno HotelOS | `Rabafi/boroko-hotel-releases` |
+| Tsa Bonno Restaurant & Bar POS | `Rabafi/boroko-hospitality-pos-releases` |
 
-Use `npm run dist:publish --workspace=@boroko/lodge-camp` to update live Lodge & Camp customers. Hotel and Hospitality POS publish only through their own workspace commands. The root `release:*` scripts remain an equivalent legacy-compatible Lodge & Camp release path.
+Use `npm run dist:publish --workspace=@tsa-bonno/lodging-os` to update live LodgingOS customers. HotelOS and Restaurant & Bar POS publish only through their own workspace commands. The root `release:*` scripts remain an equivalent legacy-compatible LodgingOS release path. Public updater repositories retain their compatibility slugs, but the private workspace package scope is `@tsa-bonno/*`.
 
 ## Shared backend rule
 
@@ -52,4 +54,4 @@ Use `npm run dist:publish --workspace=@boroko/lodge-camp` to update live Lodge &
 3. Complete product-specific onboarding copy and feature constraints.
 4. Move reusable UI, offline, POS, and configuration code into `packages/` only after two products actually consume it.
 
-The local-only `bar-pos/` prototype was removed. Boroko Restaurant & Bar POS is built only from the shared, authoritative POS, stock, refund, cash-up, audit, and offline-replay contracts.
+The local-only `bar-pos/` prototype was removed. Tsa Bonno Restaurant & Bar POS is built only from the shared, authoritative POS, stock, refund, cash-up, audit, and offline-replay contracts.

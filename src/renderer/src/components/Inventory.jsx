@@ -1420,7 +1420,7 @@ export default function Inventory() {
               </div>
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Outlet</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Home outlet</label>
               <select
                 className="input"
                 value={itemForm.outlet_id}
@@ -1432,7 +1432,7 @@ export default function Inventory() {
                 ))}
               </select>
               <p className="mt-1 text-xs text-slate-500">
-                Leave this under Others if the item is not owned by Kitchen or Bar. Bar and Kitchen items sync into POS automatically. Others items stay inventory-only.
+                New opening stock and future purchases are allocated here. Move quantities later with an audited outlet transfer; do not use this field to relabel stock already on hand.
               </p>
             </div>
             <div>

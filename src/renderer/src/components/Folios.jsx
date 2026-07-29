@@ -44,9 +44,11 @@ export default function Folios() {
   const [showSplitModal, setShowSplitModal] = useState(false)
   const [showTransferModal, setShowTransferModal] = useState(false)
   const [showLedgerChargeModal, setShowLedgerChargeModal] = useState(false)
+  const [showLedgerPaymentModal, setShowLedgerPaymentModal] = useState(false)
   const [splitForm, setSplitForm] = useState({ amount: '', label: '', folioType: 'guest' })
   const [transferForm, setTransferForm] = useState({ targetFolioId: '', amount: '', description: '' })
   const [ledgerChargeForm, setLedgerChargeForm] = useState({ amount: '', description: '' })
+  const [ledgerPaymentForm, setLedgerPaymentForm] = useState({ amount: '', description: '' })
 
   const selectedFolio = useMemo(
     () => folios.find((folio) => folio.booking_id === selectedId) || folios[0] || null,
@@ -178,12 +180,14 @@ export default function Folios() {
     event.preventDefault()
     if (!selectedLedgerFolio) return
     try {
+      const intentId = crypto.randomUUID()
       const result = await window.api.folioLedger.splitFolio(
         selectedLedgerFolio.id,
         splitForm.folioType,
         splitForm.label,
         Number(splitForm.amount),
-        splitForm.label
+        splitForm.label,
+        intentId
       )
       if (result?.success === false) {
         setError(result.error || 'Split failed')
@@ -202,11 +206,13 @@ export default function Folios() {
     event.preventDefault()
     if (!selectedLedgerFolio || !transferForm.targetFolioId) return
     try {
+      const intentId = crypto.randomUUID()
       const result = await window.api.folioLedger.transferCharge(
         selectedLedgerFolio.id,
-        Number(transferForm.targetFolioId),
+        transferForm.targetFolioId,
         Number(transferForm.amount),
-        transferForm.description
+        transferForm.description,
+        intentId
       )
       if (result?.success === false) {
         setError(result.error || 'Transfer failed')
@@ -230,10 +236,14 @@ export default function Folios() {
       return
     }
     try {
+      const intentId = crypto.randomUUID()
       const result = await window.api.folioLedger.addCharge(
         selectedLedgerFolio.id,
         Number(ledgerChargeForm.amount),
-        ledgerChargeForm.description.trim()
+        ledgerChargeForm.description.trim(),
+        null,
+        null,
+        intentId
       )
       if (result?.success === false) {
         setError(result.error || 'Add charge failed')
@@ -249,12 +259,42 @@ export default function Folios() {
     }
   }
 
+  const handleLedgerPayment = async (event) => {
+    event.preventDefault()
+    if (!selectedLedgerFolio) return
+    if (Number(ledgerPaymentForm.amount) <= 0) {
+      setError('Payment amount must be greater than zero')
+      return
+    }
+    try {
+      const intentId = crypto.randomUUID()
+      const result = await window.api.folioLedger.addPayment(
+        selectedLedgerFolio.id,
+        Number(ledgerPaymentForm.amount),
+        ledgerPaymentForm.description.trim() || 'Payment',
+        intentId
+      )
+      if (result?.success === false) {
+        setError(result.error || 'Add payment failed')
+      } else {
+        setShowLedgerPaymentModal(false)
+        setLedgerPaymentForm({ amount: '', description: '' })
+        await loadLedgerFolios()
+        await loadLedgerLineItems(selectedLedgerFolio?.id)
+        setSuccess('Payment posted to ledger folio')
+      }
+    } catch (err) {
+      setError(err?.message || 'Failed to add payment')
+    }
+  }
+
   const handleLedgerAction = async (action, folioId) => {
     try {
+      const intentId = crypto.randomUUID()
       const actions = {
-        close: () => window.api.folioLedger.closeFolio(folioId),
-        reopen: () => window.api.folioLedger.reopenFolio(folioId),
-        lock: () => window.api.folioLedger.lockFolio(folioId)
+        close: () => window.api.folioLedger.closeFolio(folioId, intentId),
+        reopen: () => window.api.folioLedger.reopenFolio(folioId, intentId),
+        lock: () => window.api.folioLedger.lockFolio(folioId, intentId)
       }
       const result = await actions[action]()
       if (result?.success === false) {
@@ -513,6 +553,9 @@ export default function Folios() {
                     <button onClick={() => setShowLedgerChargeModal(true)} className="inline-flex items-center gap-2 rounded-xl bg-[#174c3a] px-4 py-2 text-sm font-semibold text-white hover:bg-[#1e5c47]">
                       <Plus size={16} /> Add Charge
                     </button>
+                    <button onClick={() => setShowLedgerPaymentModal(true)} className="inline-flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-800 hover:bg-emerald-100">
+                      <DollarSign size={16} /> Add Payment
+                    </button>
                     <button onClick={() => setShowSplitModal(true)} className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-50">
                       <Split size={16} /> Split
                     </button>
@@ -603,12 +646,15 @@ export default function Folios() {
                               {item.line_type !== 'void' && (
                                 <button
                                   onClick={() => {
-                                    if (window.confirm('Void this line item?')) {
-                                      window.api.folioLedger.voidLineItem(item.id, 'User requested void').then(() => {
+                                    if (!window.confirm('Void this line item?')) return
+                                    const intentId = crypto.randomUUID()
+                                    window.api.folioLedger.voidLineItem(item.id, 'User requested void', intentId)
+                                      .then(() => {
+                                        setSuccess('Line item voided')
                                         loadLedgerFolios()
                                         loadLedgerLineItems(selectedLedgerFolio?.id)
                                       })
-                                    }
+                                      .catch((err) => setError(err?.message || 'Failed to void line item'))
                                   }}
                                   className="inline-flex items-center gap-1 text-xs text-red-600 hover:text-red-800"
                                 >
@@ -697,6 +743,26 @@ export default function Folios() {
                 <div className="flex gap-3 pt-2">
                   <button type="button" onClick={() => setShowLedgerChargeModal(false)} className="flex-1 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-600 hover:bg-slate-50">Cancel</button>
                   <button type="submit" className="flex-1 rounded-xl bg-[#174c3a] px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-[#1e5c47]">Add Charge</button>
+                </div>
+              </form>
+            </Modal>
+          )}
+
+          {showLedgerPaymentModal && (
+            <Modal title="Add Ledger Payment" onClose={() => setShowLedgerPaymentModal(false)}>
+              <form onSubmit={handleLedgerPayment} className="space-y-4">
+                <div>
+                  <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-500">Description</label>
+                  <input className="input" value={ledgerPaymentForm.description} onChange={(e) => setLedgerPaymentForm({ ...ledgerPaymentForm, description: e.target.value })} placeholder="Payment reference (optional)" />
+                </div>
+                <div>
+                  <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-500">Amount</label>
+                  <input className="input" type="number" min="0.01" step="0.01" value={ledgerPaymentForm.amount} onChange={(e) => setLedgerPaymentForm({ ...ledgerPaymentForm, amount: e.target.value })} required />
+                </div>
+                <p className="text-xs text-slate-500">Ledger payments post through the add_folio_payment RPC. Booking payment_status is never set from this screen.</p>
+                <div className="flex gap-3 pt-2">
+                  <button type="button" onClick={() => setShowLedgerPaymentModal(false)} className="flex-1 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-600 hover:bg-slate-50">Cancel</button>
+                  <button type="submit" className="flex-1 rounded-xl bg-[#174c3a] px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-[#1e5c47]">Add Payment</button>
                 </div>
               </form>
             </Modal>

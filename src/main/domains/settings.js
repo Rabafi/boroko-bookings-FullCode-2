@@ -1,5 +1,10 @@
 import { randomUUID } from 'crypto';
 import fs from 'fs';
+import {
+  mergeOperatingProfileWithLockedHospitalityMode,
+  propertyTypeToBusinessType,
+  resolveLockedPropertyType
+} from '../../shared/propertyTypes.js';
 import { state } from '../state.js';
 import { readAuthCache, upsertCachedUser, writeAuthCache } from './authCache.js';
 import {
@@ -123,7 +128,53 @@ function refreshSettingsCacheInBackground() {
   })();
 }
 
-async function saveRemoteSettingsRecord(settings) {
+function isRowLevelSecurityError(message = '') {
+  return /row-level security|violates row-level security|permission denied for table settings/i.test(String(message || ''));
+}
+
+/**
+ * First-time company setup cannot use direct settings INSERT under RLS because
+ * app_lodge_access requires an existing lodge session/user. Prefer service-role
+ * admin client when available, otherwise the security-definer bootstrap RPC.
+ */
+async function bootstrapRemoteSettingsRecord(settings) {
+  if (state.adminDb) {
+    const result = await state.adminDb.from('settings').upsert(settings, { onConflict: 'lodge_id' }).select().maybeSingle();
+    if (!result.error) {
+      return { data: { ...settings, ...(result.data || {}) }, mode: 'service_role_bootstrap' };
+    }
+    if (!isRowLevelSecurityError(result.error.message || '')) {
+      // Fall through to RPC for schema/RLS-independent bootstrap.
+      console.warn('[SETUP] adminDb settings upsert failed, trying bootstrap RPC:', result.error.message);
+    }
+  }
+
+  const { data, error } = await state.supabase.rpc('bootstrap_company_settings', {
+    p_payload: settings
+  });
+  if (error) {
+    const message = error.message || 'Could not bootstrap company settings.';
+    if (/function .*bootstrap_company_settings|could not find the function/i.test(message)) {
+      const err = new Error(
+        'This database is missing the company setup bootstrap function. Apply migration 20260712120000_bootstrap_company_settings.sql, then retry setup.'
+      );
+      err.code = 'backend_auth_schema_outdated';
+      throw err;
+    }
+    throw new Error(message);
+  }
+  if (!data?.success) {
+    const err = new Error(data?.error || 'Could not bootstrap company settings.');
+    err.code = data?.code || 'settings_bootstrap_failed';
+    throw err;
+  }
+  return {
+    data: { ...settings, ...(data.settings || {}), lodge_id: settings.lodge_id },
+    mode: 'rpc_bootstrap'
+  };
+}
+
+async function saveRemoteSettingsRecord(settings, { allowBootstrap = false } = {}) {
   const optionalRemoteColumns = new Set([
     'assistant_enabled',
     'slug',
@@ -147,6 +198,7 @@ async function saveRemoteSettingsRecord(settings) {
   ]);
   const remoteSettings = { ...settings };
   const skippedColumns = [];
+  let lastErrorMessage = '';
 
   for (let attempt = 0; attempt <= optionalRemoteColumns.size; attempt += 1) {
     const result = await state.supabase.from('settings').upsert(remoteSettings, { onConflict: 'lodge_id' }).select().maybeSingle();
@@ -155,6 +207,7 @@ async function saveRemoteSettingsRecord(settings) {
     }
 
     const message = result.error.message || '';
+    lastErrorMessage = message;
     const missingColumn = [...optionalRemoteColumns].find((column) => new RegExp(`'${column}'|\\b${column}\\b`, 'i').test(message));
     if (missingColumn) {
       delete remoteSettings[missingColumn];
@@ -163,12 +216,21 @@ async function saveRemoteSettingsRecord(settings) {
       continue;
     }
 
+    // New company setup has no lodge session yet — RLS blocks direct insert/update.
+    if (allowBootstrap && isRowLevelSecurityError(message)) {
+      return bootstrapRemoteSettingsRecord(remoteSettings);
+    }
+
     if (!/column .*lodge_id|constraint|on conflict/i.test(message)) {
       throw new Error(message);
     }
     const err = new Error('The Supabase settings table is missing the required lodge_id UUID contract. Apply the current settings migration, then try again.');
     err.code = 'backend_auth_schema_outdated';
     throw err;
+  }
+
+  if (allowBootstrap && isRowLevelSecurityError(lastErrorMessage)) {
+    return bootstrapRemoteSettingsRecord(remoteSettings);
   }
 
   throw new Error('Settings could not be saved because the remote settings table is missing too many expected columns.');
@@ -350,8 +412,19 @@ export function resetToNewLodge() {
   return draftProfile.lodge_id;
 }
 
-export async function saveSettings(data) {
+export async function saveSettings(data, options = {}) {
   if (!state.lodgeId) throw new Error('Choose a lodge profile on this computer before saving settings.');
+  const allowBootstrap = options?.allowBootstrap === true;
+  // hospitality_mode is a commercial product choice (restaurant vs bar pricing).
+  // Once set, never let client Settings patches switch it.
+  const existingSettings = getCachedSettings() || getDefaultSettings() || {};
+  const lockedOperatingProfile = mergeOperatingProfileWithLockedHospitalityMode(
+    data.operating_profile || {},
+    existingSettings.operating_profile || {}
+  );
+  // Property type is chosen at setup / by product app. After setup_complete,
+  // Settings must not reclassify lodge ↔ hotel ↔ restaurant.
+  const lockedPropertyType = resolveLockedPropertyType(data, existingSettings);
 
   const settings = {
     lodge_name: data.lodge_name || '',
@@ -367,8 +440,8 @@ export async function saveSettings(data) {
     vat_rate: Number(data.vat_rate || 0),
     currency: data.currency || 'P',
     logo: data.logo || '',
-    business_type: data.business_type || 'lodge',
-    property_type: data.property_type || data.business_type || 'lodge',
+    business_type: propertyTypeToBusinessType(lockedPropertyType),
+    property_type: lockedPropertyType,
     assistant_enabled: data.assistant_enabled === true,
     slug: data.slug ? data.slug.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') : null,
     booking_tagline: data.booking_tagline || '',
@@ -386,19 +459,29 @@ export async function saveSettings(data) {
     public_offer_full_lodge: data.public_offer_full_lodge === true,
     public_offer_day_use: data.public_offer_day_use === true,
     public_offer_events: data.public_offer_events === true,
-    operating_profile: data.operating_profile || {},
+    operating_profile: lockedOperatingProfile,
     setup_complete: true,
     updated_at: new Date().toISOString(),
     lodge_id: state.lodgeId
   };
 
   if (state.isOnline) {
-    const { data: savedRemote } = await saveRemoteSettingsRecord(settings);
-    const { error } = await state.supabase.from('settings').
-    update({ trial_started_at: new Date().toISOString() }).
-    eq('lodge_id', state.lodgeId).
-    is('trial_started_at', null);
-    if (error && !/column .*trial_started_at/i.test(error.message || '')) throw new Error(error.message);
+    const saved = await saveRemoteSettingsRecord(settings, { allowBootstrap });
+    const savedRemote = saved?.data || null;
+    const usedBootstrap = saved?.mode === 'rpc_bootstrap' || saved?.mode === 'service_role_bootstrap';
+
+    // Bootstrap path already stamps trial_started_at. Direct updates still need
+    // lodge access and will RLS-fail before the first admin user exists.
+    if (!usedBootstrap) {
+      const { error } = await state.supabase.from('settings').
+      update({ trial_started_at: new Date().toISOString() }).
+      eq('lodge_id', state.lodgeId).
+      is('trial_started_at', null);
+      if (error && !/column .*trial_started_at/i.test(error.message || '') && !isRowLevelSecurityError(error.message || '')) {
+        throw new Error(error.message);
+      }
+    }
+
     const normalized = savedRemote ? { ...settings, ...savedRemote, lodge_id: state.lodgeId } : settings;
     writeCache('settings', [normalized]);
     const activeProfile = getActiveProfile();
@@ -419,14 +502,19 @@ export async function updateOperatingProfile(profile) {
   if (!state.lodgeId) throw new Error('Choose a lodge profile on this computer before saving operating profile.');
 
   const current = getCachedSettings() || getDefaultSettings();
-  const updated = { ...current, operating_profile: profile, updated_at: new Date().toISOString() };
+  // First-time setup may set hospitality_mode; later patches cannot switch priced products.
+  const lockedProfile = mergeOperatingProfileWithLockedHospitalityMode(
+    profile || {},
+    current.operating_profile || {}
+  );
+  const updated = { ...current, operating_profile: lockedProfile, updated_at: new Date().toISOString() };
 
   writeCache('settings', [updated]);
 
   if (state.isOnline) {
     try {
       await state.supabase.from('settings').upsert(
-        { lodge_id: state.lodgeId, operating_profile: profile, updated_at: new Date().toISOString() },
+        { lodge_id: state.lodgeId, operating_profile: lockedProfile, updated_at: new Date().toISOString() },
         { onConflict: 'lodge_id' }
       );
     } catch (e) {
@@ -483,11 +571,18 @@ export async function initializeCompanySetup({ settings, admin }) {
 
   let savedSettings;
   try {
-    savedSettings = await saveSettings(settings);
+    // Draft company setup has no lodge session yet. Allow security-definer /
+    // service-role bootstrap so the first settings row can be created before
+    // the first admin user exists (required for multi-product same-email setup).
+    savedSettings = await saveSettings(settings, { allowBootstrap: true });
   } catch (error) {
     if (error?.code) throw error;
     const message = error?.message || 'Could not save lodge settings.';
-    const code = isBackendAuthSchemaError(message) ? 'backend_auth_schema_outdated' : 'settings_save_failed';
+    const code = isBackendAuthSchemaError(message)
+      ? 'backend_auth_schema_outdated'
+      : isRowLevelSecurityError(message)
+        ? 'settings_rls_blocked'
+        : 'settings_save_failed';
     throw createAppError(code, message, { lodge_id: state.lodgeId, email: emailLower });
   }
 

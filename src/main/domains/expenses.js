@@ -33,7 +33,7 @@ async function _getExpenses(startDate, endDate, outletId = 'all') {
   if (state.isOnline) {
     let query = state.supabase.
     from('expenses').
-    select('id, date, category, description, amount, outlet_id, created_at, updated_at, outlets(name)').
+    select('id, date, category, description, amount, notes, outlet_id, created_at, updated_at, outlets(name)').
     eq('lodge_id', state.lodgeId);
     if (startDate) query = query.gte('date', startDate);
     if (endDate) query = query.lte('date', endDate);

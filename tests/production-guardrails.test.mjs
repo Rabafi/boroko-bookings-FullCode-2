@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { readFile, readdir } from 'node:fs/promises'
+import { existsSync, statSync } from 'node:fs'
 import { isFinancialSyncItem, pickNextReadySyncItemIndex } from '../src/shared/syncQueue.js'
 
 async function read(path) {
@@ -43,6 +44,17 @@ async function readSqlTree(path) {
 }
 
 async function run() {
+  // ── Migration version uniqueness ───────────────────────────────────────────
+  const migrationFiles = await readdir(new URL('../supabase/migrations/', import.meta.url))
+  const versions = migrationFiles
+    .filter(f => f.endsWith('.sql'))
+    .map(f => f.match(/^(\d{14})/)?.[1])
+    .filter(Boolean)
+  const dupeVersions = versions.filter((v, i, a) => a.indexOf(v) !== i)
+  assert.equal(dupeVersions.length, 0,
+    `Duplicate migration version prefixes: ${dupeVersions.join(', ')}. ` +
+    'Each migration must have a unique 14-digit UTC-timestamp prefix.')
+
   const preload = await read('src/preload/index.js')
   assert.match(preload, /snapshot:\s*\(today\)\s*=>\s*ipcRenderer\.invoke\('reports:snapshot', today\)/)
   assert.match(preload, /financialValidationAlerts:\s*\(limit\)\s*=>\s*ipcRenderer\.invoke\('reports:financialValidationAlerts', limit\)/)
@@ -133,9 +145,8 @@ async function run() {
   assert.match(panel, /Server Mismatch Detected During Replay/)
   assert.match(panel, /Run Sync Now/)
   assert.match(panel, /integrity alert\(s\) were recorded because remote persistence is still unconfirmed/)
-  const sanitizeMatch = panel.match(/function sanitizeForOperator\(raw\) \{[\s\S]*?\n\}/)
-  assert.ok(sanitizeMatch, 'sanitizeForOperator helper missing')
-  const sanitizeForOperator = new Function(`${sanitizeMatch[0]}; return sanitizeForOperator;`)()
+  assert.match(panel, /operatorSyncText/)
+  const { sanitizeForOperator } = await import('../src/shared/operatorSyncText.js')
   assert.equal(
     sanitizeForOperator('Monthly booking creation limit reached for Starter plan'),
     'Booking could not sync because the monthly booking creation limit has been reached.'
@@ -146,11 +157,11 @@ async function run() {
   )
   assert.equal(
     sanitizeForOperator('Room creation could not sync because this lodge is above the current plan room limit after a downgrade.'),
-    'Room creation could not sync because this lodge is above the current plan room limit after a downgrade. Upgrade or reduce rooms, then retry.'
+    'Room creation could not sync because this property is above the current plan room limit after a downgrade. Upgrade or reduce rooms, then retry.'
   )
   assert.equal(
     sanitizeForOperator('Staff user creation could not sync because this lodge is above the current plan user limit after a downgrade.'),
-    'Staff user creation could not sync because this lodge is above the current plan user limit after a downgrade. Upgrade or reduce staff users, then retry.'
+    'Staff user creation could not sync because this property is above the current plan user limit after a downgrade. Upgrade or reduce staff users, then retry.'
   )
 
   assert.match(database, /'pos-orders':\s*\(\)\s*=>\s*(state\.)?supabase[\s\S]*?from\('pos_orders'\)/)
@@ -441,7 +452,7 @@ async function run() {
   assert.match(licensingWorkbench, /duration: dur,[\s\S]{0,80}next_due_date: nextVal \|\| f\.next_due_date/)
   assert.doesNotMatch(licensingWorkbench, /duration: dur,[\s\S]{0,80}expires_at: nextVal/)
   assert.match(licensingWorkbench, /Clear expiry/)
-  assert.match(licensingWorkbench, /activeLicenses\.get\(lodgeKey\(company\.lodge_id\)\)/)
+  assert.match(licensingWorkbench, /activeLicenses\.get\(assignmentKey\(company\.lodge_id, getCompanyProductId\(company\)\)\)/)
   assert.match(licensingWorkbench, /result\?\.license\?\.license_key \|\| result\?\.license_key/)
   assert.match(licensingWorkbench, /This lodge already has an active assignment/)
 
@@ -899,7 +910,8 @@ async function run() {
   assert.match(adminCentral, /<BulkActions/)
   assert.match(adminCentral, /<Releases/)
   assert.match(adminCentral, /<SystemHealth/)
-  assert.match(adminCentral, /Math\.min\(3, targets\.length\)/)
+  assert.doesNotMatch(adminCentral, /const targets = visibleCompaniesBase\.filter\(\(company\) => !usageStatsByLodge/)
+  assert.match(adminCentral, /Usage signals load when a company is opened/)
   assert.match(adminCentral, /return changed \? next : current/)
   assert.match(database, /CACHE_REFRESH_CONCURRENCY = 3/)
 
@@ -937,7 +949,7 @@ async function run() {
 
   // ── Legacy POS update checks and health reports participate in Command Central ──
   assert.match(legacyPosMain, /function gatePosUpdateCheck\(/)
-  assert.match(legacyPosMain, /app_check_update_availability/)
+  assert.match(legacyPosMain, /app_check_product_update_availability/)
   assert.match(legacyPosMain, /function publishLegacyPosDeviceHealth\(/)
   assert.match(legacyPosMain, /p_client_type:\s*'legacy_pos'/)
   assert.match(legacyPosMain, /HEALTH_REPORT_INTERVAL_MS/)
@@ -1030,6 +1042,15 @@ async function run() {
   assert.match(maintenanceFlowDomain, /queueOperation\('rpc', 'create_maintenance_ticket'/)
   assert.match(desktopRooms, /Maintenance Issue/)
   assert.match(pwaRooms, /room\.status === 'maintenance'/)
+
+  // ── Build script verification ──────────────────────────────────────────────
+  const lodgeCampPkg = JSON.parse(await read('apps/lodge-camp/package.json'))
+  const hotelPkg = JSON.parse(await read('apps/hotel/package.json'))
+  const hospPosPkg = JSON.parse(await read('apps/hospitality-pos/package.json'))
+  assert.ok(lodgeCampPkg.scripts?.build, 'apps/lodge-camp/package.json must have a build script')
+  assert.ok(hotelPkg.scripts?.build, 'apps/hotel/package.json must have a build script')
+  assert.ok(hospPosPkg.scripts?.build, 'apps/hospitality-pos/package.json must have a build script')
+  assert.ok(existsSync(new URL('../scripts/product-app.mjs', import.meta.url)), 'scripts/product-app.mjs must exist')
 
   console.log('production-guardrails: ok')
 }

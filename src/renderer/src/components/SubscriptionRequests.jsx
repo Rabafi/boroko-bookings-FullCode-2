@@ -128,9 +128,12 @@ export default function SubscriptionRequests({ licenses = [] }) {
         throw new Error('Select the client license to activate before continuing.')
       }
       const result = await window.api.subscriptionRequests.activate(requestId, 'admin', {
+        operation_id: crypto.randomUUID(),
         license_id: selectedLicenseId,
         lodge_id: lodgeId,
         plan: selected?.requested_plan,
+        product_id: selected?.product_id || null,
+        commercial_package_key: selected?.commercial_package_key || null,
         enterprise_addons: selected?.requested_addons || [],
         activation_reason: 'Manual Command Central activation after payment approval'
       })

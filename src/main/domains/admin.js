@@ -27,8 +27,12 @@ import {
   MONTHLY_USAGE_RESET_COPY
 } from '../../shared/subscriptionPlans.js'
 import { normalizeSupportTickets } from '../../shared/supportThreads.js'
+import { createLoginFailureLimiter } from '../commandCentralAuthorization.js'
+import { inferLicenseProductId } from './licenseAssignmentCompatibility.js'
 
 // ─── ADMIN: MASTER ADMIN ──────────────────────────────────────────────────────
+
+const masterAdminLoginLimiter = createLoginFailureLimiter()
 
 export async function checkMasterAdmin(email, password) {
   await checkOnline();
@@ -57,10 +61,22 @@ export async function checkMasterAdmin(email, password) {
   }
   if (error) console.error('[MASTER] DB error during admin lookup:', error.message);
   const admin = data?.[0];
+  if (admin) {
+    const limit = masterAdminLoginLimiter.get(admin.email)
+    if (limit.blocked) {
+      const locked = new Error(`Master administrator sign-in is temporarily locked. Try again in ${Math.max(1, Math.ceil(limit.retryAfterMs / 60000))} minute(s).`)
+      locked.code = 'MASTER_ADMIN_LOCKED'
+      throw locked
+    }
+  }
   const passwordMatch = admin ? bcrypt.compareSync(password, admin.password_hash) : false;
   if (error) return null;
   if (!admin) return null;
-  if (!passwordMatch) return null;
+  if (!passwordMatch) {
+    masterAdminLoginLimiter.recordFailure(admin.email)
+    return null
+  }
+  masterAdminLoginLimiter.clear(admin.email)
   return {
     id: admin.id,
     name: admin.name || 'Master Admin',
@@ -164,7 +180,7 @@ async function loadCompanySettingsRows(db) {
 }
 
 export async function getAllCompanies() {
-  if (!state.isOnline) return [];
+  if (!state.isOnline) throw new Error('Command Central companies require an online connection');
   const db = requireAdmin();
   const data = await loadCompanySettingsRows(db);
   return sortCompaniesByUpdatedAt((data || [])
@@ -172,19 +188,34 @@ export async function getAllCompanies() {
     .filter((company) => company.lodge_id));
 }
 
-export async function updateCompany(lodgeId, updates) {
+async function updateCompanyRow(lodgeId, updates) {
   if (!state.isOnline) throw new Error('Requires internet connection');
-  const { error } = await requireAdmin().
-  from('settings').
-  update(updates).
-  eq('lodge_id', lodgeId);
+  const { error } = await requireAdmin().from('settings').update(updates).eq('lodge_id', lodgeId);
   if (error) throw error;
+}
+
+export async function updateCompany(lodgeId, updates = {}) {
+  if (!state.isOnline) throw new Error('Requires internet connection');
+  if (String(updates?.reason || '').trim().length < 8) {
+    throw new Error('A reason of at least 8 characters is required for company settings changes');
+  }
+  const payload = {
+    ...(updates || {}),
+    updates: updates?.updates || Object.fromEntries(Object.entries(updates || {}).filter(([key]) => !['lodge_id', 'actor_id', 'actor_email', 'operation_id', 'reason', 'expected_updated_at', 'updates'].includes(key))),
+    lodge_id: lodgeId,
+    actor_id: state.currentUser?.id || null,
+    actor_email: state.currentUser?.email || null
+  };
+  const { data, error } = await requireAdmin().rpc('admin_update_company_settings', { p_payload: payload });
+  if (error) throw new Error(error.message);
+  if (!data?.success) throw new Error(data?.error || 'Company settings update failed');
+  return data;
 }
 
 export async function archiveCompany(targetLodgeId) {
   if (!targetLodgeId) throw new Error('Company lodge_id is required');
-  await updateCompany(targetLodgeId, { deleted: true, updated_at: new Date().toISOString() });
-  await logAdminActivity(targetLodgeId, null, 'company_archived', {
+  await updateCompanyRow(targetLodgeId, { deleted: true, updated_at: new Date().toISOString() });
+  const audit = await logAdminActivity(targetLodgeId, null, 'company_archived', {
     entity_type: 'company',
     entity_id: targetLodgeId
   });
@@ -193,12 +224,46 @@ export async function archiveCompany(targetLodgeId) {
 
 export async function restoreCompany(targetLodgeId) {
   if (!targetLodgeId) throw new Error('Company lodge_id is required');
-  await updateCompany(targetLodgeId, { deleted: false, updated_at: new Date().toISOString() });
-  await logAdminActivity(targetLodgeId, null, 'company_restored', {
+  await updateCompanyRow(targetLodgeId, { deleted: false, updated_at: new Date().toISOString() });
+  const audit = await logAdminActivity(targetLodgeId, null, 'company_restored', {
     entity_type: 'company',
     entity_id: targetLodgeId
   });
-  return { success: true };
+  return { success: true, audit };
+}
+
+export async function recordCommandCentralHealthRun(payload = {}) {
+  const { data, error } = await requireAdmin().rpc('admin_record_command_central_health_run', {
+    p_actor_id: payload.actor_id,
+    p_actor_email: payload.actor_email || null,
+    p_started_at: payload.started_at,
+    p_completed_at: payload.completed_at,
+    p_status: payload.status,
+    p_results: Array.isArray(payload.results) ? payload.results : []
+  })
+  if (error) throw new Error(error.message)
+  if (data?.ok === false) throw new Error(data.error || 'Could not record diagnostic run')
+  return data
+}
+
+export async function listCommandCentralHealthRuns(limit = 20) {
+  const { data, error } = await requireAdmin().rpc('admin_list_command_central_health_runs', { p_limit: limit })
+  if (error) throw new Error(error.message)
+  return Array.isArray(data) ? data : []
+}
+
+export async function applyCompanyLifecycle(payload = {}) {
+  if (!state.isOnline) throw new Error('Requires internet connection');
+  if (!payload || typeof payload !== 'object' || !String(payload.operation_id || '').trim()) {
+    throw new Error('A stable operation ID is required for company lifecycle changes');
+  }
+  if (String(payload.reason || '').trim().length < 8) {
+    throw new Error('Provide a lifecycle reason of at least 8 characters');
+  }
+  const { data, error } = await requireAdmin().rpc('admin_apply_company_lifecycle', { p_payload: payload });
+  if (error) throw new Error(error.message);
+  if (!data?.success) throw new Error(data?.error || 'Company lifecycle operation failed');
+  return data;
 }
 
 const COMPANY_PURGE_TABLES = [
@@ -345,13 +410,13 @@ export async function resetCompanyUserPassword(targetLodgeId, userId, password) 
       lodgeId: targetLodgeId
     });
   }
-  await logAdminActivity(targetLodgeId, null, 'company_user_password_reset', {
+  const audit = await logAdminActivity(targetLodgeId, null, 'company_user_password_reset', {
     entity_type: 'user',
     entity_id: userId,
     user_email: user?.email || null,
     user_role: user?.role || null
   });
-  return { success: true };
+  return { success: true, audit };
 }
 
 export async function updateCompanyUserPwaAccess(targetLodgeId, userId, payload = {}) {
@@ -376,7 +441,7 @@ export async function updateCompanyUserPwaAccess(targetLodgeId, userId, payload 
   if (error) throw new Error(error.message);
   if (!result?.success) throw new Error(result?.error || 'Could not update manager mobile app access');
 
-  await logAdminActivity(targetLodgeId, null, 'company_user_pwa_access_updated', {
+  const audit = await logAdminActivity(targetLodgeId, null, 'company_user_pwa_access_updated', {
     entity_type: 'user',
     entity_id: userId,
     user_email: user.email || null,
@@ -385,16 +450,16 @@ export async function updateCompanyUserPwaAccess(targetLodgeId, userId, payload 
     pwa_disabled_reason: pwaAccess.disabled_reason,
     password_reset: Boolean(pwaAccess.password_hash)
   });
-  return { success: true };
+  return { success: true, audit };
 }
 
 // ─── ADMIN: ACTIVITY LOGS ──────────────────────────────────────────────────────
 
 export async function logAdminActivity(targetLodgeId, targetLodgeName, action, details = {}) {
-  if (!state.isOnline || !state.adminDb) return;
+  if (!state.isOnline || !state.adminDb) return { recorded: false, reason: 'audit_service_unavailable' };
   const actor = state.currentUser || {};
   const { entity_type, entity_id, ...rest } = details;
-  state.adminDb.rpc('log_admin_audit', {
+  const { error } = await state.adminDb.rpc('log_admin_audit', {
     p_lodge_id: targetLodgeId,
     p_lodge_name: targetLodgeName || null,
     p_action: action,
@@ -403,13 +468,15 @@ export async function logAdminActivity(targetLodgeId, targetLodgeName, action, d
     p_entity_type: entity_type || null,
     p_entity_id: entity_id || null,
     p_details: rest
-  }).then(() => {}).catch(() => {});
+  });
+  if (error) return { recorded: false, reason: 'audit_write_failed', error: error.message };
+  return { recorded: true };
 }
 
 export async function getActivityLogs(filters = {}) {
-  if (!state.isOnline) return [];
+  if (!state.isOnline) throw new Error('Command Central audit history requires an online connection');
   const db = requireAdmin();
-  const { data, error } = await db.rpc('get_admin_audit_log', {
+  const { data, error } = await db.rpc('get_command_central_audit_log', {
     p_lodge_id: filters.lodge_id || null,
     p_actor_id: filters.actor_id || null,
     p_action: filters.action || null,
@@ -418,28 +485,25 @@ export async function getActivityLogs(filters = {}) {
     p_limit: filters.limit || 200,
     p_offset: filters.offset || 0
   });
-  if (error) {
-    const { data: fallback } = await db.from('activity_logs').select('*').order('created_at', { ascending: false }).limit(filters.limit || 200);
-    return fallback || [];
-  }
+  if (error) throw new Error(error.message);
   return data || [];
 }
 
 export async function getAuditSummary(filters = {}) {
-  if (!state.isOnline) return [];
+  if (!state.isOnline) throw new Error('Command Central audit summary requires an online connection');
   const db = requireAdmin();
-  const { data, error } = await db.rpc('get_admin_audit_summary', {
+  const { data, error } = await db.rpc('get_command_central_audit_summary', {
     p_start: filters.start || null,
     p_end: filters.end || null
   });
-  if (error) return [];
+  if (error) throw new Error(error.message);
   return data || [];
 }
 
 // ─── ADMIN: COMPANY STATS ──────────────────────────────────────────────────────
 
 export async function getCompanyStats(targetLodgeId) {
-  if (!state.isOnline) return null;
+  if (!state.isOnline) throw new Error('Company statistics require an online connection');
   const db = requireAdmin();
   const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
   const currentMonthWindow = getMonthWindowIso();
@@ -479,6 +543,17 @@ export async function getCompanyStats(targetLodgeId) {
   db.from('expenses').select('amount').eq('lodge_id', targetLodgeId).gte('date', thirtyDaysAgo),
   db.from('maintenance_tickets').select('id', { count: 'exact', head: true }).eq('lodge_id', targetLodgeId).eq('status', 'open')]
   );
+  const queryFailures = [
+    ['rooms', rooms], ['users', users], ['bookings', bookings],
+    ['monthly confirmed bookings', monthlyConfirmedBookings],
+    ['monthly created bookings', monthlyCreatedBookings],
+    ['latest booking activity', latestCreatedBooking],
+    ['latest stay activity', latestCheckInBooking],
+    ['expenses', expenses], ['maintenance', maintenance]
+  ].filter(([, result]) => result?.error);
+  if (queryFailures.length > 0) {
+    throw new Error(`Company statistics are unavailable: ${queryFailures.map(([label, result]) => `${label}: ${result.error.message}`).join('; ')}`);
+  }
   const expenseTotal = (expenses.data || []).reduce((sum, e) => sum + Number(e.amount || 0), 0);
   const latestBookingCreatedAt = latestCreatedBooking?.data?.[0]?.created_at || null;
   const latestBookingCheckIn = latestCheckInBooking?.data?.[0]?.check_in || null;
@@ -519,7 +594,8 @@ export async function getCompanyStats(targetLodgeId) {
 
 // ─── ADMIN: Licenses ───────────────────────────────────────────────────────────
 
-const LICENSE_SELECT = 'id, lodge_id, lodge_name, business_type, subscription_plan, subscription_state, payment_status, license_key, monthly_fee, currency, issued_at, expires_at, next_due_date, last_payment_date, notes, is_active, created_at, updated_at';
+const LICENSE_SELECT = 'id, lodge_id, lodge_name, business_type, subscription_plan, subscription_state, payment_status, license_key, monthly_fee, currency, issued_at, expires_at, next_due_date, last_payment_date, notes, is_active, created_at, updated_at, product_id, commercial_package_key, commercial_catalog_version, commercial_pricing_snapshot';
+const LICENSE_PRODUCT_COMPAT_SELECT = 'id, lodge_id, lodge_name, business_type, subscription_plan, subscription_state, payment_status, license_key, monthly_fee, currency, issued_at, expires_at, next_due_date, last_payment_date, notes, is_active, created_at, product_id, commercial_package_key, commercial_catalog_version, commercial_pricing_snapshot';
 const LICENSE_LEGACY_SELECT = 'id, lodge_id, lodge_name, business_type, subscription_plan, payment_status, monthly_fee, currency, issued_at, expires_at, next_due_date, last_payment_date, notes, is_active';
 
 function isLicenseSchemaCompatibilityError(error) {
@@ -604,29 +680,47 @@ function licenseFromEntitlement(entitlement, company) {
     is_active: true,
     created_at: entitlement.created_at || null,
     updated_at: entitlement.updated_at || null,
+    product_id: inferLicenseProductId(company, entitlement),
+    commercial_package_key: entitlement.commercial_package_key || null,
+    commercial_catalog_version: entitlement.commercial_catalog_version || null,
+    commercial_pricing_snapshot: entitlement.commercial_pricing_snapshot || null,
+    _product_inferred: !entitlement.product_id,
     _source: 'entitlement'
   });
 }
 
 async function fillMissingLicensesFromEntitlements(db, licenses) {
-  const activeByLodge = new Set((licenses || []).
-    filter((license) => license?.lodge_id && license.is_active !== false).
-    map((license) => normalizeLicenseLodgeId(license.lodge_id)).
-    filter(Boolean));
   const companies = await getAllCompanies().catch(async () => {
     const { data, error } = await db.
       from('settings').
       select(COMPANY_SETTINGS_MINIMAL_SELECT).
       limit(500);
-    if (error) return [];
+    if (error) throw new Error(error.message);
     return (data || []).map(normalizeCompanySettingsRow).filter((company) => company.lodge_id);
   });
 
+  const companyByLodge = new Map((companies || []).map((company) => [normalizeLicenseLodgeId(company.lodge_id), company]));
+  const merged = (licenses || []).map((license) => {
+    if (!license?.lodge_id || license?.product_id || license.is_active === false) return license;
+    const company = companyByLodge.get(normalizeLicenseLodgeId(license.lodge_id));
+    if (!company) return license;
+    return {
+      ...license,
+      product_id: inferLicenseProductId(company, license),
+      _product_inferred: true,
+      _source: 'legacy-license'
+    };
+  });
+  const activeByAssignment = new Set(merged.
+    filter((license) => license?.lodge_id && license?.product_id && license.is_active !== false).
+    map((license) => `${normalizeLicenseLodgeId(license.lodge_id)}::${String(license.product_id).toLowerCase()}`));
+
   const targets = (companies || []).filter((company) => {
     const lodgeId = normalizeLicenseLodgeId(company?.lodge_id);
-    return lodgeId && !activeByLodge.has(lodgeId);
+    const productId = inferLicenseProductId(company);
+    return lodgeId && !activeByAssignment.has(`${lodgeId}::${productId}`);
   });
-  if (targets.length === 0) return licenses;
+  if (targets.length === 0) return merged;
 
   const entitlementRows = await Promise.allSettled(targets.map(async (company) => {
     const entitlement = await getAdminEntitlement(db, normalizeLicenseLodgeId(company.lodge_id));
@@ -635,11 +729,13 @@ async function fillMissingLicensesFromEntitlements(db, licenses) {
   const synthesized = entitlementRows.
     filter((result) => result.status === 'fulfilled' && result.value).
     map((result) => result.value);
-  const merged = [...licenses];
   synthesized.forEach((license) => {
     const lodgeId = normalizeLicenseLodgeId(license.lodge_id);
-    if (lodgeId && !activeByLodge.has(lodgeId)) {
-      activeByLodge.add(lodgeId);
+    const company = companyByLodge.get(lodgeId);
+    const productId = inferLicenseProductId(company, license);
+    const key = `${lodgeId}::${productId}`;
+    if (lodgeId && !activeByAssignment.has(key)) {
+      activeByAssignment.add(key);
       merged.push(license);
     }
   });
@@ -647,13 +743,22 @@ async function fillMissingLicensesFromEntitlements(db, licenses) {
 }
 
 export async function getLicenses() {
-  if (!state.isOnline) return [];
+  if (!state.isOnline) throw new Error('Command Central licenses require an online connection');
   const db = requireAdmin();
   let { data, error } = await db.
     from('licenses').
     select(LICENSE_SELECT).
     order('issued_at', { ascending: false }).
     limit(500);
+  if (error && isLicenseSchemaCompatibilityError(error)) {
+    const productCompat = await db.
+      from('licenses').
+      select(LICENSE_PRODUCT_COMPAT_SELECT).
+      order('issued_at', { ascending: false }).
+      limit(500);
+    data = (productCompat.data || []).map((row) => ({ ...row, updated_at: null }));
+    error = productCompat.error;
+  }
   if (error && isLicenseSchemaCompatibilityError(error)) {
     const fallback = await db.
       from('licenses').
@@ -674,7 +779,7 @@ export async function getLicenses() {
   return fillMissingLicensesFromEntitlements(db, normalized);
 }
 
-export async function createLicense({ lodge_id, lodge_name, business_type, expires_at, notes, subscription_plan, payment_status, monthly_fee, currency, next_due_date, last_payment_date }) {
+export async function createLicense({ lodge_id, lodge_name, business_type, expires_at, notes, subscription_plan, payment_status, monthly_fee, currency, next_due_date, last_payment_date, product_id, commercial_package_key, commercial_catalog_version, commercial_pricing_snapshot }) {
   if (!state.isOnline) throw new Error('Requires internet connection');
   if (!lodge_id) throw new Error('createLicense requires a valid lodge_id');
   const normalizedPlan = normalizePlanName(subscription_plan);
@@ -694,7 +799,11 @@ export async function createLicense({ lodge_id, lodge_name, business_type, expir
       currency: currency || 'BWP',
       next_due_date: next_due_date || null,
       last_payment_date: last_payment_date || null,
-      is_active: true
+      is_active: true,
+      product_id: product_id || null,
+      commercial_package_key: commercial_package_key || null,
+      commercial_catalog_version: commercial_catalog_version || null,
+      commercial_pricing_snapshot: commercial_pricing_snapshot || null
     }).select().single();
     if (!error) return data;
     if (String(error.message || '').toLowerCase().includes('license_key')) continue;
@@ -702,6 +811,27 @@ export async function createLicense({ lodge_id, lodge_name, business_type, expir
   }
 
   throw new Error('Could not generate a unique license key. Please try again.');
+}
+
+async function persistCommercialIdentity(db, licenseId, source = {}) {
+  if (!licenseId || !source.product_id || !source.commercial_package_key) return;
+  const { error } = await db.from('licenses').update({
+    product_id: source.product_id,
+    commercial_package_key: source.commercial_package_key
+  }).eq('id', licenseId);
+  if (error) throw new Error(error.message);
+}
+
+export async function assignCommercialSubscription(payload = {}) {
+  if (!state.isOnline) throw new Error('Requires internet connection')
+  if (!String(payload.operation_id || '').trim()) throw new Error('A stable operation ID is required for subscription assignment')
+  const { data, error } = await requireAdmin().rpc('admin_governed_assign_commercial_subscription', {
+    p_payload: payload
+  })
+  if (error) throw new Error(error.message)
+  if (data?.success === false) throw new Error(data.error || 'Could not save commercial subscription assignment')
+  if (!data?.license_id) throw new Error('Commercial subscription assignment returned no license identifier')
+  return data
 }
 
 export async function issueSubscriptionContract({ license = {}, invoice = null } = {}) {
@@ -721,6 +851,8 @@ export async function issueSubscriptionContract({ license = {}, invoice = null }
     last_payment_date: license.last_payment_date || null,
     grace_period_days: license.grace_period_days || DEFAULT_SUBSCRIPTION_GRACE_DAYS,
     offline_lease_days: license.offline_lease_days || DEFAULT_OFFLINE_LEASE_DAYS,
+    product_id: license.product_id || null,
+    commercial_package_key: license.commercial_package_key || null,
     create_invoice: !!invoice,
     invoice: invoice ?
     {
@@ -736,6 +868,7 @@ export async function issueSubscriptionContract({ license = {}, invoice = null }
     });
     if (error) throw error;
     if (data?.success === false) throw new Error(data.error || 'Could not create subscription');
+    await persistCommercialIdentity(requireAdmin(), data?.license_id || data?.license?.id, license);
     return data;
   } catch (error) {
     if (!isMissingEntitlementRpcError(error)) throw new Error(error.message);
@@ -779,7 +912,9 @@ export async function updateLicense(id, updates) {
     'expires_at',
     'next_due_date',
     'last_payment_date',
-    'notes'
+    'notes',
+    'product_id',
+    'commercial_package_key'
   ]);
   const shouldUseSubscriptionRpc = Object.keys(update).some((key) => contractFields.has(key));
   if (shouldUseSubscriptionRpc) {
@@ -790,6 +925,7 @@ export async function updateLicense(id, updates) {
       });
       if (error) throw error;
       if (data?.success === false) throw new Error(data.error || 'Could not update subscription');
+      await persistCommercialIdentity(db, id, update);
       return { success: true };
     } catch (error) {
       if (!isMissingEntitlementRpcError(error)) throw new Error(error.message);
@@ -834,15 +970,16 @@ export async function updateLicenseBilling(id, data) {
 }
 
 export async function getOverdueLicenses() {
-  if (!state.isOnline) return [];
+  if (!state.isOnline) throw new Error('Overdue license data requires an online connection');
   const today = new Date().toISOString().split('T')[0];
-  const { data } = await requireAdmin().
+  const { data, error } = await requireAdmin().
   from('licenses').
   select('id, lodge_id, lodge_name, subscription_plan, payment_status, next_due_date, is_active, monthly_fee, currency').
   lt('next_due_date', today).
   neq('payment_status', 'free').
   eq('is_active', true).
   limit(200);
+  if (error) throw new Error(error.message);
   return data || [];
 }
 
@@ -881,18 +1018,19 @@ async function attachSupportMessages(tickets = []) {
       ...ticket,
       messages: byTicket.get(ticket.id) || ticket.messages || []
     })));
-  } catch {
-    return normalizeSupportTickets(tickets);
+  } catch (error) {
+    throw new Error(error?.message || 'Support ticket messages are unavailable');
   }
 }
 
 export async function getSupportTickets(filters = {}) {
-  if (!state.isOnline) return [];
-  let q = requireAdmin().from('support_tickets').select('id, lodge_id, lodge_name, title, description, status, priority, category, created_at, updated_at, messages');
+  if (!state.isOnline) throw new Error('Support tickets require an online connection');
+  let q = requireAdmin().from('support_tickets').select('id, lodge_id, lodge_name, title, description, status, priority, category, created_at, updated_at');
   if (filters.status) q = q.eq('status', filters.status);
   if (filters.priority) q = q.eq('priority', filters.priority);
   if (filters.lodge_id) q = q.eq('lodge_id', filters.lodge_id);
-  const { data } = await q.order('created_at', { ascending: false }).limit(200);
+  const { data, error } = await q.order('created_at', { ascending: false }).limit(200);
+  if (error) throw new Error(error.message);
   return attachSupportMessages(data || []);
 }
 
@@ -1126,8 +1264,9 @@ export async function deleteSupportTicket(id) {
 // ─── ADMIN: BROADCASTS ────────────────────────────────────────────────────────
 
 export async function getBroadcasts() {
-  if (!state.isOnline) return [];
-  const { data } = await requireAdmin().from('broadcasts').select('id, title, message, is_active, expires_at, created_at, updated_at').order('created_at', { ascending: false }).limit(100);
+  if (!state.isOnline) throw new Error('Command Central broadcasts require an online connection');
+  const { data, error } = await requireAdmin().from('broadcasts').select('id, title, message, is_active, expires_at, created_at, updated_at').order('created_at', { ascending: false }).limit(100);
+  if (error) throw new Error(error.message);
   return data || [];
 }
 
@@ -1183,7 +1322,7 @@ export async function deleteBroadcast(id) {
 // ─── ADMIN: FEATURE FLAGS ──────────────────────────────────────────────────────
 
 export async function getLodgeFeatures(targetLodgeId) {
-  if (!state.isOnline) return [];
+  if (!state.isOnline) throw new Error('Lodge feature overrides require an online connection');
   const { data, error } = await requireAdmin().
   from('lodge_features').
   select('feature_name, enabled, reason, expires_at, review_at, granted_at, granted_by, updated_at').
@@ -1193,10 +1332,10 @@ export async function getLodgeFeatures(targetLodgeId) {
 }
 
 export async function getScheduledReleases() {
-  if (!state.isOnline) return []
+  if (!state.isOnline) throw new Error('Requires internet connection')
   const db = requireAdmin()
   const { data, error } = await db.rpc('get_scheduled_releases')
-  if (error) return []
+  if (error) throw new Error(error.message)
   return data || []
 }
 
@@ -1223,26 +1362,12 @@ export async function setLodgeFeature(targetLodgeId, featureName, enabled, metad
     if (error) throw error;
     if (data?.success === false) throw new Error(data.error || 'Could not save feature override');
   } catch (error) {
-    if (!isMissingEntitlementRpcError(error)) throw new Error(error.message);
-    const { error: fallbackError } = await requireAdmin().
-    from('lodge_features').
-    upsert(
-      {
-        lodge_id: targetLodgeId,
-        feature_name: featureName,
-        enabled,
-        updated_at: new Date().toISOString(),
-        reason: metadata?.reason || null,
-        expires_at: metadata?.expires_at || null,
-        review_at: metadata?.review_at || null,
-        granted_by: state.currentUser?.id || null,
-        granted_at: new Date().toISOString()
-      },
-      { onConflict: 'lodge_id,feature_name' }
-    );
-    if (fallbackError) throw new Error(fallbackError.message);
+    if (isMissingEntitlementRpcError(error)) {
+      throw new Error('The authoritative feature-override contract is unavailable. No feature change was made. Deploy the required migration before retrying.');
+    }
+    throw new Error(error.message);
   }
-  await logAdminActivity(targetLodgeId, null, 'feature_override_set', {
+  const audit = await logAdminActivity(targetLodgeId, null, 'feature_override_set', {
     entity_type: 'feature',
     entity_id: featureName,
     feature_name: featureName,
@@ -1251,7 +1376,7 @@ export async function setLodgeFeature(targetLodgeId, featureName, enabled, metad
     expires_at: metadata?.expires_at || null,
     review_at: metadata?.review_at || null
   });
-  return { success: true };
+  return { success: true, audit };
 }
 
 export async function clearLodgeFeature(targetLodgeId, featureName) {
@@ -1264,28 +1389,26 @@ export async function clearLodgeFeature(targetLodgeId, featureName) {
     if (error) throw error;
     if (data?.success === false) throw new Error(data.error || 'Could not clear feature override');
   } catch (error) {
-    if (!isMissingEntitlementRpcError(error)) throw new Error(error.message);
-    const { error: fallbackError } = await requireAdmin().
-    from('lodge_features').
-    delete().
-    eq('lodge_id', targetLodgeId).
-    eq('feature_name', featureName);
-    if (fallbackError) throw new Error(fallbackError.message);
+    if (isMissingEntitlementRpcError(error)) {
+      throw new Error('The authoritative feature-override contract is unavailable. No feature change was made. Deploy the required migration before retrying.');
+    }
+    throw new Error(error.message);
   }
-  await logAdminActivity(targetLodgeId, null, 'feature_override_cleared', {
+  const audit = await logAdminActivity(targetLodgeId, null, 'feature_override_cleared', {
     entity_type: 'feature',
     entity_id: featureName,
     feature_name: featureName
   });
-  return { success: true };
+  return { success: true, audit };
 }
 
 export async function getAllLodgeFeatures() {
-  if (!state.isOnline) return [];
-  const { data } = await requireAdmin().  from('lodge_features').
+  if (!state.isOnline) throw new Error('Lodge feature overrides require an online connection');
+  const { data, error } = await requireAdmin().from('lodge_features').
   select('id, lodge_id, feature_key, enabled, created_at, updated_at').
   order('lodge_id').
   limit(500);
+  if (error) throw new Error(error.message);
   return data || [];
 }
 
@@ -1315,7 +1438,7 @@ export async function runTestDataReset(targetLodgeId, payload = {}) {
   });
   if (error) throw new Error(error.message);
   if (data?.success === false) throw new Error(data.error || 'Could not reset test data');
-  await logAdminActivity(targetLodgeId, payload?.lodge_name || null, 'test_data_reset', {
+  const audit = await logAdminActivity(targetLodgeId, payload?.lodge_name || null, 'test_data_reset', {
     entity_type: 'lodge',
     entity_id: targetLodgeId,
     mode: payload?.mode || 'full_demo_reset',
@@ -1343,7 +1466,7 @@ export async function runTestDataReset(targetLodgeId, payload = {}) {
 
       // Non-fatal: the reset already completed remotely, and stale cache will self-heal on next refresh.
     }}
-  return data;
+  return { ...data, audit };
 }
 
 export async function getTestDataResetAudit(targetLodgeId, limit = 20) {

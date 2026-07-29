@@ -89,11 +89,9 @@ export async function getNextInvoiceNumber() {
   const db = requireAdmin();
   const { data, error } = await db.rpc('get_next_invoice_number', { p_lodge_id: state.lodgeId });
   if (error) {
-    if (!isMissingInvoiceNumberRpcError(error)) {
-      throw new Error('Failed to generate invoice number: ' + error.message);
-    }
-    console.warn('[Invoices] get_next_invoice_number RPC unavailable for admin flow, falling back to lookup:', error.message);
-    return await getNextInvoiceNumberByLookup(db);
+    throw new Error(isMissingInvoiceNumberRpcError(error)
+      ? 'The atomic invoice-number service is unavailable. No invoice was created; deploy the invoice sequence RPC and retry.'
+      : 'Failed to generate invoice number: ' + error.message);
   }
   return data;
 }
@@ -110,7 +108,8 @@ export async function getInvoices(filters = {}) {
   let q = requireAdmin().from('invoices').select('id, booking_id, lodge_id, invoice_number, issued_at, due_date, notes, status, amount, currency, package_name, created_at').order('created_at', { ascending: false }).limit(500);
   if (filters.lodge_id) q = q.eq('lodge_id', filters.lodge_id);
   if (filters.status) q = q.eq('status', filters.status);
-  const { data } = await q;
+  const { data, error } = await q;
+  if (error) throw new Error('Failed to load invoices: ' + error.message);
   return data || [];
 }
 
@@ -179,9 +178,10 @@ export async function deleteInvoice(id) {
 
 export async function getInvoiceSummary() {
   if (!state.isOnline) return { total: 0, byPlan: {}, byMonth: [], allRows: [] };
-  const { data } = await requireAdmin().
+  const { data, error } = await requireAdmin().
   from('invoices').
   select('amount, currency, package_name, issued_date, status');
+  if (error) throw new Error('Failed to load invoice summary: ' + error.message);
   const allRows = data || [];
   const paid = allRows.filter((r) => r.status === 'paid');
   const total = paid.reduce((s, r) => s + Number(r.amount), 0);
@@ -198,7 +198,8 @@ export async function getInvoiceSummary() {
   const byMonth = Object.entries(byMonthMap).
   sort(([a], [b]) => a.localeCompare(b)).
   map(([month, amount]) => ({ month, amount }));
-  const currency = paid[0]?.currency || 'USD';
+  const currencies = [...new Set(paid.map((row) => String(row.currency || '').trim().toUpperCase()).filter(Boolean))];
+  const currency = currencies.length === 1 ? currencies[0] : currencies.length > 1 ? 'MIXED' : null;
   return { total, byPlan, byMonth, currency, allRows };
 }
 

@@ -1,19 +1,60 @@
 ;(function () {
   const SUPABASE_URL = 'https://oicgpknsmtvcsjacymum.supabase.co'
   const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9pY2dwa25zbXR2Y3NqYWN5bXVtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM2OTM1MTEsImV4cCI6MjA4OTI2OTUxMX0.WbC5C1QaVeNaTbTG0_xdcsUlK3BoA8onWC607B_uGlY'
-  const GITHUB_LATEST_API = 'https://api.github.com/repos/Rabafi/boroko-bookings-releases/releases/latest'
-  const CACHE_KEY = 'bb_release_info'
   const CACHE_TTL = 3600000
 
-  let RELEASE_VERSION = '1.3.16'
-  let DOWNLOAD_URL = 'https://github.com/Rabafi/boroko-bookings-releases/releases/download/v1.3.16/Boroko-Bookings-1.3.16-x64.exe'
+  // Product installers are isolated. Restaurant/Hotel pages must never silently
+  // serve the LodgingOS installer.
+  const PRODUCT_RELEASES = {
+    'lodge-camp': {
+      label: 'Tsa Bonno HospitalityOS',
+      repo: 'boroko-bookings-releases',
+      cacheKey: 'bb_release_info_lodge_camp',
+      fallbackVersion: '1.5.5',
+      fallbackUrl: 'https://github.com/Rabafi/boroko-bookings-releases/releases/latest'
+    },
+    hotel: {
+      label: 'Tsa Bonno HotelOS',
+      repo: 'boroko-hotel-releases',
+      cacheKey: 'bb_release_info_hotel',
+      fallbackVersion: '',
+      fallbackUrl: 'https://github.com/Rabafi/boroko-hotel-releases/releases/latest'
+    },
+    'hospitality-pos': {
+      label: 'Tsa Bonno Restaurant & Bar POS',
+      repo: 'boroko-hospitality-pos-releases',
+      cacheKey: 'bb_release_info_hospitality_pos',
+      fallbackVersion: '',
+      fallbackUrl: 'https://github.com/Rabafi/boroko-hospitality-pos-releases/releases/latest'
+    }
+  }
+
+  function detectProductId() {
+    var bodyProduct = (document.body && document.body.dataset.product) || ''
+    if (PRODUCT_RELEASES[bodyProduct]) return bodyProduct
+    var page = (document.body && document.body.dataset.page) || ''
+    if (page === 'restaurant-pos' || page === 'bar-pos') return 'hospitality-pos'
+    if (page === 'hotel' || page === 'enterprise') return 'hotel'
+    return 'lodge-camp'
+  }
+
+  var ACTIVE_PRODUCT_ID = detectProductId()
+  var ACTIVE_PRODUCT = PRODUCT_RELEASES[ACTIVE_PRODUCT_ID] || PRODUCT_RELEASES['lodge-camp']
+  var BUSINESS_FIELD_LABEL = ACTIVE_PRODUCT_ID === 'hotel' ? 'Hotel name' : ACTIVE_PRODUCT_ID === 'hospitality-pos' ? 'Restaurant or bar name' : 'Lodge name'
+  var BUSINESS_FIELD_PLACEHOLDER = ACTIVE_PRODUCT_ID === 'hotel' ? 'Your hotel name' : ACTIVE_PRODUCT_ID === 'hospitality-pos' ? 'Your business name' : 'Your lodge name'
+  var GITHUB_LATEST_API = 'https://api.github.com/repos/Rabafi/' + ACTIVE_PRODUCT.repo + '/releases/latest'
+
+  let RELEASE_VERSION = ACTIVE_PRODUCT.fallbackVersion || ''
+  let DOWNLOAD_URL = ACTIVE_PRODUCT.fallbackUrl
+  let DOWNLOAD_AVAILABLE = ACTIVE_PRODUCT_ID === 'lodge-camp'
 
   async function fetchLatestRelease() {
     var cached
-    try { cached = JSON.parse(localStorage.getItem(CACHE_KEY)) } catch (_) {}
-    if (cached && Date.now() - cached.ts < CACHE_TTL) {
+    try { cached = JSON.parse(localStorage.getItem(ACTIVE_PRODUCT.cacheKey)) } catch (_) {}
+    if (cached && Date.now() - cached.ts < CACHE_TTL && cached.url) {
       DOWNLOAD_URL = cached.url
-      RELEASE_VERSION = cached.version
+      RELEASE_VERSION = cached.version || ''
+      DOWNLOAD_AVAILABLE = true
     } else {
       try {
         var res = await fetch(GITHUB_LATEST_API)
@@ -21,19 +62,31 @@
           var data = await res.json()
           var tag = data.tag_name || ''
           var version = tag.replace(/^v/, '')
-          var asset = data.assets && data.assets.find(function (a) { return a.name.endsWith('-x64.exe') })
+          var asset = data.assets && data.assets.find(function (a) { return a.name.endsWith('-x64.exe') || a.name.endsWith('.exe') })
           if (asset && asset.browser_download_url) {
             DOWNLOAD_URL = asset.browser_download_url
             RELEASE_VERSION = version
-            localStorage.setItem(CACHE_KEY, JSON.stringify({ url: DOWNLOAD_URL, version: RELEASE_VERSION, ts: Date.now() }))
+            DOWNLOAD_AVAILABLE = true
+            localStorage.setItem(ACTIVE_PRODUCT.cacheKey, JSON.stringify({ url: DOWNLOAD_URL, version: RELEASE_VERSION, ts: Date.now() }))
           }
         }
       } catch (_) {}
     }
     var fb = document.getElementById('fallback-download')
-    if (fb) fb.href = DOWNLOAD_URL
+    if (fb) {
+      fb.href = DOWNLOAD_URL
+      if (!DOWNLOAD_AVAILABLE) fb.setAttribute('data-unavailable', '1')
+    }
     var ve = document.getElementById('download-version')
-    if (ve) ve.textContent = 'Version v' + RELEASE_VERSION + ' \u2014 Windows 10+ (64-bit)'
+    if (ve) {
+      if (DOWNLOAD_AVAILABLE && RELEASE_VERSION) {
+        ve.textContent = ACTIVE_PRODUCT.label + ' v' + RELEASE_VERSION + ' \u2014 Windows 10+ (64-bit)'
+      } else if (DOWNLOAD_AVAILABLE) {
+        ve.textContent = ACTIVE_PRODUCT.label + ' — Windows 10+ (64-bit)'
+      } else {
+        ve.textContent = ACTIVE_PRODUCT.label + ' installer is preparing for release. Contact us for early access.'
+      }
+    }
   }
 
   var releasePromise = fetchLatestRelease()
@@ -192,7 +245,7 @@
       }
 
       function showSuccess(formEl, noteEl) {
-        formEl.innerHTML = '<div class="demo-success"><div class="demo-success-icon">&#10003;</div><h3 style="margin:16px 0 8px;">Your free trial is ready</h3><p style="color:var(--ink-soft);">Download the Boroko Bookings desktop app below and start your free 1-month trial. Install it, create your lodge, and start operating right away.</p><a class="btn btn-primary" href="' + DOWNLOAD_URL + '" target="_blank" rel="noreferrer" style="margin-bottom:10px;">Download for Windows</a><p style="font-size:0.85rem;color:var(--ink-soft);margin-top:8px;">Version v' + RELEASE_VERSION + ' — Windows 10+ (64-bit). Need help? <a href="https://wa.me/26772789415" target="_blank" rel="noreferrer" style="color:var(--brand);font-weight:700;">Chat on WhatsApp</a></p></div>'
+        formEl.innerHTML = '<div class="demo-success"><div class="demo-success-icon">&#10003;</div><h3 style="margin:16px 0 8px;">Your free trial is ready</h3><p style="color:var(--ink-soft);">Download the Tsa Bonno HospitalityOS desktop app below and start your free 1-month trial. Install it, create your lodge, and start operating right away.</p><a class="btn btn-primary" href="' + DOWNLOAD_URL + '" target="_blank" rel="noreferrer" style="margin-bottom:10px;">Download for Windows</a><p style="font-size:0.85rem;color:var(--ink-soft);margin-top:8px;">Version v' + RELEASE_VERSION + ' — Windows 10+ (64-bit). Need help? <a href="https://wa.me/26772789415" target="_blank" rel="noreferrer" style="color:var(--brand);font-weight:700;">Chat on WhatsApp</a></p></div>'
         if (noteEl) noteEl.textContent = ''
       }
 
@@ -229,9 +282,9 @@
 
   function buildMailto(lodgeName, contactName, email, phone, interest, notesValue) {
     const body = [
-      'Hello Boroko Bookings,',
+      'Hello Tsa Bonno HospitalityOS,',
       '',
-      'I would like to request a free 1-month trial of Boroko Bookings.',
+      'I would like to request a free 1-month trial of Tsa Bonno HospitalityOS.',
       '',
       'Lodge name: ' + lodgeName,
       'Contact name: ' + contactName,
@@ -242,7 +295,7 @@
       'Notes:',
       (notesValue || 'No extra notes provided.')
     ].join('\n')
-    const subject = encodeURIComponent('Boroko Bookings free 1-month trial request from ' + String(lodgeName || contactName || 'website visitor'))
+    const subject = encodeURIComponent('Tsa Bonno HospitalityOS free 1-month trial request from ' + String(lodgeName || contactName || 'website visitor'))
     return 'mailto:hello@borokobookings.com?subject=' + subject + '&body=' + encodeURIComponent(body)
   }
 
@@ -251,7 +304,7 @@
     let currentLang = 'en'
     const tnStrings = {
       'hero-title': 'Sistimi e le nngwe go tsamaisa dipeelo, diphapoši, go ntsha makoloto, badiri, thepa, le dipeeletso tsa inthanete.',
-      'hero-desc': 'Boroko Bookings e thusa malodžana a mannye le a golang go nna le sistimi e e bonalang le e e bontleglang. Dira tsa ga reception di tsamaisa ka bonako, beng ba nna le taolo, mme lotšha la gago le ka amogela dipeeletso tsa inthanete ka tsebe ya gago ya boroko.',
+      'hero-desc': 'Tsa Bonno HospitalityOS e thusa malodžana a mannye le a golang go nna le sistimi e e bonalang le e e bontleglang. Dira tsa ga reception di tsamaisa ka bonako, beng ba nna le taolo, mme lotšha la gago le ka amogela dipeeletso tsa inthanete ka tsebe ya gago ya boroko.',
       'hero-cta': 'Phutholla trial ya mahala',
       'hero-cta-2': 'Lebelela dipakete',
       'hero-cta-3': 'Bua ka WhatsApp',
@@ -263,7 +316,7 @@
       'chat-wa': 'Bua ka WhatsApp',
       'email-us': 'Re romele imeile',
       'start-conversation': 'Simolola puisano',
-      'ready-text': 'A o itekanetše go bona fa Boroko Bookings e tshwanela lotšha la gago?',
+      'ready-text': 'A o itekanetše go bona fa Tsa Bonno HospitalityOS e tshwanela lotšha la gago?',
       'demo-desc': 'Tšhomo foromo ya kopo mme re tla baakanyetsa puisano ya pakete e e tshwanelang lotšha la gago.',
       'lodge-name': 'Leina la lotsha',
       'your-name': 'Leina la gago',
@@ -389,7 +442,7 @@
     const el = document.createElement('div')
     el.innerHTML =
       '<div class="wa-tooltip" id="wa-tooltip"><strong>Need help?</strong>Chat with us on WhatsApp</div>' +
-      '<a class="wa-float" href="' + WHATSAPP_LINK + '?text=Hello%20Boroko%20Bookings%2C%20I%20have%20a%20question." target="_blank" rel="noreferrer" aria-label="Chat on WhatsApp">&#128172;</a>'
+      '<a class="wa-float" href="' + WHATSAPP_LINK + '?text=Hello%20Tsa%20Bonno%20HospitalityOS%2C%20I%20have%20a%20question." target="_blank" rel="noreferrer" aria-label="Chat on WhatsApp">&#128172;</a>'
     document.body.appendChild(el)
 
     const tooltip = document.getElementById('wa-tooltip')
@@ -410,7 +463,7 @@
           '<h3 style="margin:0 0 4px;">Start your free trial</h3>' +
           '<p style="color:var(--ink-soft);margin:0 0 20px;font-size:0.92rem;">Fill in your details and the download will start automatically.</p>' +
           '<form id="download-form">' +
-            '<label>Lodge name <input type="text" name="lodgeName" placeholder="Your lodge name" required /></label>' +
+            '<label>' + BUSINESS_FIELD_LABEL + ' <input type="text" name="lodgeName" placeholder="' + BUSINESS_FIELD_PLACEHOLDER + '" required /></label>' +
             '<label>Your name <input type="text" name="contactName" placeholder="Your full name" required /></label>' +
             '<label>Email <input type="email" name="email" placeholder="name@example.com" required /></label>' +
             '<label>Phone or WhatsApp <input type="text" name="phone" placeholder="+267..." /></label>' +
@@ -439,7 +492,7 @@
         '<h3 style="margin:0 0 4px;">Start your free trial</h3>' +
         '<p style="color:var(--ink-soft);margin:0 0 20px;font-size:0.92rem;">Fill in your details and the download will start automatically.</p>' +
         '<form id="download-form">' +
-          '<label>Lodge name <input type="text" name="lodgeName" placeholder="Your lodge name" required /></label>' +
+          '<label>' + BUSINESS_FIELD_LABEL + ' <input type="text" name="lodgeName" placeholder="' + BUSINESS_FIELD_PLACEHOLDER + '" required /></label>' +
           '<label>Your name <input type="text" name="contactName" placeholder="Your full name" required /></label>' +
           '<label>Email <input type="email" name="email" placeholder="name@example.com" required /></label>' +
           '<label>Phone or WhatsApp <input type="text" name="phone" placeholder="+267..." /></label>' +
@@ -471,9 +524,9 @@
           contact_name: contactName,
           email: email,
           phone: phone || null,
-          interest: 'Trial download',
-          notes: 'Self-service trial download from website',
-          source: 'website-download'
+          interest: ACTIVE_PRODUCT.label + ' trial',
+          notes: 'Self-service trial registration for ' + ACTIVE_PRODUCT.label,
+          source: 'website-download-' + ACTIVE_PRODUCT_ID
         }
 
         trackEvent('lead_created', 'download')
@@ -515,6 +568,18 @@
     document.querySelectorAll('[data-action="download"]').forEach(function (btn) {
       btn.addEventListener('click', function (e) {
         e.preventDefault()
+        var productOverride = btn.getAttribute('data-product')
+        if (productOverride && PRODUCT_RELEASES[productOverride] && productOverride !== ACTIVE_PRODUCT_ID) {
+          // Product-specific CTA: open the matching feed page or contact if no installer yet.
+          if (productOverride === 'hospitality-pos') {
+            window.location.href = './restaurant-pos.html'
+            return
+          }
+          if (productOverride === 'hotel') {
+            window.location.href = './hotel.html'
+            return
+          }
+        }
         showModal()
       })
     })
@@ -900,6 +965,28 @@
     })
   }, { passive: true })
   document.documentElement.style.setProperty('--noise-opacity', '0.025')
+
+  // Hotel package planning calculator. Final quotations remain server-authoritative.
+  var addonBuilder = document.querySelector('[data-hotel-addon-builder]')
+  if (addonBuilder) {
+    var money = new Intl.NumberFormat('en-BW', { maximumFractionDigits: 0 })
+    var addonInputs = addonBuilder.querySelectorAll('input[type="checkbox"]')
+    var setupOutput = addonBuilder.querySelector('[data-addon-setup-total]')
+    var annualOutput = addonBuilder.querySelector('[data-addon-annual-total]')
+    var updateAddonEstimate = function () {
+      var setup = 37998
+      var annual = 0
+      addonInputs.forEach(function (input) {
+        if (!input.checked) return
+        setup += Number(input.dataset.setup || 0)
+        annual += Number(input.dataset.annual || 0)
+      })
+      setupOutput.textContent = 'P' + money.format(setup)
+      annualOutput.textContent = 'P' + money.format(annual)
+    }
+    addonInputs.forEach(function (input) { input.addEventListener('change', updateAddonEstimate) })
+    updateAddonEstimate()
+  }
 
   // ===== FEATURES TABS SCROLL SPY =====
   var featuresTabs = document.querySelectorAll('.features-tab')

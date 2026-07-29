@@ -191,7 +191,11 @@ function DevicesTab({ onOpenDevice }) {
   const load = useCallback(async () => {
     setLoading(true)
     setError(null)
-    try { const s = await window.api.admin.getSyncQueueStatus(); setSyncStatus(s) }
+    try {
+      const s = await window.api.admin.getSyncQueueStatus()
+      if (s?.ok === false) throw new Error(s.error || 'Sync queue status is unavailable')
+      setSyncStatus(s)
+    }
     catch (e) { setError(e?.message || 'Failed to load') }
     setLoading(false)
   }, [])

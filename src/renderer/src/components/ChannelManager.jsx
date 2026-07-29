@@ -57,7 +57,13 @@ export default function ChannelManager() {
     setError('')
     try {
       const result = await window.api.channelManager.processSyncQueue()
-      setSuccess(`Processed ${result?.processed || 0} sync items`)
+      if (result?.provider_connected === false && (result?.manual_exported || 0) === 0) {
+        setSuccess(result?.message || 'Live OTA not connected — items kept for manual review')
+      } else if ((result?.manual_exported || 0) > 0) {
+        setSuccess(result?.message || `Manual export wrote ${result.manual_exported} artifact(s); not sent to OTA`)
+      } else {
+        setSuccess(result?.message || `Processed ${result?.processed || 0} sync items`)
+      }
       load()
     } catch (err) {
       setError(err?.message || 'Failed to process sync queue')

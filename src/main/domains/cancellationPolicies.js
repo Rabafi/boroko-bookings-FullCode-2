@@ -4,6 +4,20 @@ import { readCache, writeCache, dedupePromise } from './infrastructure.js'
 const POLICY_CACHE = 'cancellation-policies'
 const REQUEST_CACHE = 'cancellation-requests'
 
+/**
+ * Cancellation fee calculation / approval / processing affects refunds — ONLINE-ONLY
+ * (docs/OFFLINE_MATRIX.md).
+ */
+function requireOnlineFinancial(operation) {
+  if (state.isOnline === false) {
+    const err = new Error(
+      `${operation} requires an internet connection. Cancellation financial mutations cannot be queued offline.`
+    )
+    err.onlineOnly = true
+    throw err
+  }
+}
+
 async function _getAllCancellationPolicies() {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return { policies: [] }
@@ -62,6 +76,7 @@ async function _deleteCancellationPolicy(id) {
 async function _calculateCancellationFee(bookingId, reasonCategory) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
+  requireOnlineFinancial('Calculate cancellation fee')
   const { data, error } = await state.supabase.rpc('calculate_cancellation_fee', {
     p_booking_id: bookingId, p_reason_category: reasonCategory || null, p_lodge_id: currentLodgeId
   })
@@ -72,6 +87,7 @@ async function _calculateCancellationFee(bookingId, reasonCategory) {
 async function _processCancellation(requestId, approvedBy) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
+  requireOnlineFinancial('Process cancellation')
   const { data, error } = await state.supabase.rpc('create_cancellation_request', {
     p_lodge_id: currentLodgeId, p_booking_id: requestId, p_policy_id: null,
     p_reason_category: null, p_reason_detail: null
@@ -98,6 +114,7 @@ async function _getAllCancellationRequests() {
 async function _approveCancellation(requestId, approvedBy) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
+  requireOnlineFinancial('Approve cancellation')
   const { data, error } = await state.supabase.rpc('approve_cancellation', {
     p_request_id: requestId, p_lodge_id: currentLodgeId, p_approved_by: approvedBy
   })

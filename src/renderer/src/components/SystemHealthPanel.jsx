@@ -1,10 +1,13 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   AlertTriangle, CheckCircle2, Database, Download, HardDrive,
   RefreshCw, RotateCcw, ShieldCheck, Trash2, Wifi, Play,
   Clock, XCircle, AlertCircle, Info
 } from 'lucide-react'
+import { useSettings } from '../app-context'
+import { isBarOnlyMode, isHotelPropertyType, isRestaurantOnly } from '../../../shared/propertyTypes'
+import { sanitizeForOperator } from '../../../shared/operatorSyncText'
 
 // ─── Pill helpers ──────────────────────────────────────────────────────────────
 
@@ -47,7 +50,7 @@ function withTimeout(promise, ms, fallback) {
   ])
 }
 
-function HumanContext({ details, rooms, customers }) {
+function HumanContext({ details, rooms, customers, restaurantMode = false }) {
   if (!details || typeof details !== 'object') return null
 
   // Flatten common payload structures
@@ -67,6 +70,8 @@ function HumanContext({ details, rooms, customers }) {
         'payload', 'data', 'lodge_id', 'created_at', 'updated_at', 
         '_queue_id', 'type', 'at', 'id', 'p_id', 'p_lodge_id', 'operation', 'scope'
       ]
+      // Restaurant/bar ops rarely need room fields in queue context.
+      if (restaurantMode && /room/i.test(key) && !/order|pos|table/i.test(key)) return false
       if (val === null || val === undefined || val === '') return false
       if (typeof val === 'object' && !Array.isArray(val)) return false
       if (skipKeys.includes(key.toLowerCase())) return false
@@ -74,12 +79,22 @@ function HumanContext({ details, rooms, customers }) {
     })
     .map(([key, val]) => {
       let label = key.replace(/_/g, ' ').replace(/^p /, '')
+      if (restaurantMode) {
+        label = label
+          .replace(/\bguest\b/gi, 'customer')
+          .replace(/\broom\b/gi, 'table')
+          .replace(/\bbooking\b/gi, 'order')
+      }
       label = label.charAt(0).toUpperCase() + label.slice(1)
       
       let displayVal = val
       if (key.toLowerCase().includes('room_id')) {
         const r = findRoom(val)
-        if (r) displayVal = `Room ${r.room_number}`
+        if (r) displayVal = restaurantMode
+          ? (r.name || r.table_number || r.room_number || `Table ${String(val).slice(0, 6)}`)
+          : `Room ${r.room_number}`
+      } else if (key.toLowerCase().includes('table_name') || key.toLowerCase().includes('tab_name')) {
+        displayVal = String(val)
       } else if (key.toLowerCase().includes('customer_id')) {
         const c = findCustomer(val)
         if (c) displayVal = c.name
@@ -102,34 +117,6 @@ function HumanContext({ details, rooms, customers }) {
       ))}
     </div>
   )
-}
-
-// Sanitize a raw sync error string for display to front-desk operators.
-// Strips UUIDs and maps known technical patterns to plain English.
-function sanitizeForOperator(raw) {
-  if (!raw) return 'Unknown sync failure'
-  const msg = String(raw)
-  if (/room.*conflict|no_overlapping_bookings/i.test(msg)) return 'Room already booked for those dates.'
-  if (/idempotency.*required/i.test(msg)) return 'This change needs another try.'
-  if (/authenticated.*required|authentication.*required|session.*required/i.test(msg)) return 'Sign in again, then try once more.'
-  if (/lodge.*role|permission denied|insufficient.*privilege/i.test(msg)) return 'Permission needed. Check the account role.'
-  if (/unique.*violation|duplicate key/i.test(msg)) return 'This item may already exist.'
-  if (/not found/i.test(msg)) return 'This item was not found online.'
-  if (/monthly booking creation limit/i.test(msg)) return 'Booking could not sync because the monthly booking creation limit has been reached.'
-  if (/selected check-in month/i.test(msg)) return 'Booking could not sync because the selected check-in month has reached the plan limit.'
-  if (/above the current plan booking limit|booking limit.*after a downgrade|above.*plan booking limit/i.test(msg)) return 'Booking could not sync because this lodge is above the current plan limit after downgrade.'
-  if (/monthly booking limit reached/i.test(msg)) return 'Booking could not sync because the monthly booking creation limit has been reached.'
-  if (/room limit reached/i.test(msg)) return 'Room creation could not sync because this lodge has reached the plan room limit. Upgrade, then retry or clear the failed item.'
-  if (/user limit reached/i.test(msg)) return 'Staff user creation could not sync because this lodge has reached the plan user limit. Upgrade, then retry or clear the failed item.'
-  if (/above the current plan room limit|room limit.*after a downgrade|above.*plan room limit/i.test(msg)) return 'Room creation could not sync because this lodge is above the current plan room limit after a downgrade. Upgrade or reduce rooms, then retry.'
-  if (/above the current plan user limit|user limit.*after a downgrade|above.*plan user limit/i.test(msg)) return 'Staff user creation could not sync because this lodge is above the current plan user limit after a downgrade. Upgrade or reduce staff users, then retry.'
-  if (/overpay/i.test(msg)) return 'Payment would exceed the booking total — adjust and retry.'
-  if (/below zero/i.test(msg)) return 'Adjustment would reduce paid balance below zero.'
-  const cleaned = msg
-    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, '…')
-    .replace(/\s+/g, ' ')
-    .trim()
-  return cleaned.length > 140 ? `${cleaned.slice(0, 137)}…` : cleaned
 }
 
 // Human-readable labels for sync queue operation names shown to operators.
@@ -156,11 +143,34 @@ const SYNC_OP_LABEL = {
   delete_user:              'Remove staff account',
   add_booking_charge:       'Add charge',
   void_pos_order:           'Remove sale',
+  create_pos_order:         'POS sale',
   create_inventory_item:    'New inventory product',
+  update_inventory_item:    'Update stock item',
+  create_expense:           'New expense',
 }
 
-function syncOpLabel(table) {
-  return SYNC_OP_LABEL[table] || table || 'Unknown operation'
+const SYNC_OP_LABEL_RESTAURANT = {
+  ...SYNC_OP_LABEL,
+  create_customer:          'New customer',
+  update_customer:          'Update customer',
+  update_customer_blacklist:'Customer flag update',
+  create_room:              'New table / station',
+  update_room:              'Update table / station',
+  update_room_housekeeping: 'Station status update',
+  create_booking:           'New order / reservation',
+  create_booking_record:    'New order / reservation',
+  update_booking:           'Update order',
+  update_booking_status:    'Order status change',
+  update_booking_payment:   'Order payment',
+  convert_quotation_to_booking: 'Quote to order',
+  add_booking_charge:       'Add order charge',
+  void_pos_order:           'Void sale',
+  create_pos_order:         'POS sale',
+}
+
+function syncOpLabel(table, restaurantMode = false) {
+  const map = restaurantMode ? SYNC_OP_LABEL_RESTAURANT : SYNC_OP_LABEL
+  return map[table] || table || 'Unknown operation'
 }
 
 const PLAIN_LABEL_OVERRIDES = {
@@ -178,13 +188,20 @@ const PLAIN_LABEL_OVERRIDES = {
   inventory_item: 'Inventory',
 }
 
-function plainLabel(value) {
+function plainLabel(value, { restaurantMode = false } = {}) {
   if (value == null) return 'Item'
   const raw = String(value).trim()
   if (!raw) return 'Item'
-  const override = PLAIN_LABEL_OVERRIDES[raw.toLowerCase()]
+  const restaurantOverrides = restaurantMode
+    ? {
+        bookings_rpc: 'Orders',
+        customers_rpc: 'Customers',
+        rooms_rpc: 'Tables / stations',
+      }
+    : {}
+  const override = restaurantOverrides[raw.toLowerCase()] || PLAIN_LABEL_OVERRIDES[raw.toLowerCase()]
   if (override) return override
-  return raw
+  let label = raw
     .replace(/_/g, ' ')
     .replace(/\brpc\b/gi, '')
     .replace(/\bpos\b/gi, 'sale')
@@ -192,7 +209,13 @@ function plainLabel(value) {
     .replace(/\bauth\b/gi, 'sign-in')
     .replace(/\s+/g, ' ')
     .trim()
-    .replace(/\b\w/g, (ch) => ch.toUpperCase())
+  if (restaurantMode) {
+    label = label
+      .replace(/\bguests?\b/gi, 'customers')
+      .replace(/\brooms?\b/gi, 'tables')
+      .replace(/\bbookings?\b/gi, 'orders')
+  }
+  return label.replace(/\b\w/g, (ch) => ch.toUpperCase())
 }
 
 function plainStatusLabel(value) {
@@ -253,6 +276,7 @@ function isImportantIssueCritical(entry) {
 
 export default function SystemHealthPanel() {
   const navigate = useNavigate()
+  const { settings: contextSettings } = useSettings()
   const [health, setHealth]               = useState(null)
   const [globalSettings, setGlobalSettings] = useState(null)
   const [sessionUser, setSessionUser]     = useState(null)
@@ -274,6 +298,19 @@ export default function SystemHealthPanel() {
   // Track current pending count so post-sync polling can detect when items drain
   const pendingCountRef = useRef(0)
 
+  const effectiveSettings = globalSettings || contextSettings
+  const propertyType = effectiveSettings?.property_type || effectiveSettings?.business_type || 'lodge'
+  const restaurantMode = isRestaurantOnly(propertyType)
+  const barOnlyMode = restaurantMode && isBarOnlyMode(effectiveSettings)
+  const businessWord = barOnlyMode ? 'bar' : restaurantMode ? 'restaurant' : 'property'
+  const businessWordTitle = barOnlyMode
+    ? 'Bar'
+    : restaurantMode
+      ? 'Restaurant'
+      : isHotelPropertyType(propertyType)
+        ? 'Hotel'
+        : 'Lodge'
+
   const load = async () => {
     setLoading(true)
     try {
@@ -281,7 +318,7 @@ export default function SystemHealthPanel() {
         systemHealth, settingsSnapshot, validatedUser, details,
         reconciliationSummary, validationSummary, validationHistory,
         nextRendererErrors, nextValidationAlerts, nextCriticalErrors,
-        nextDeviceHealthRollup, nextRooms, nextCustomers, nextSyncStatus
+        nextDeviceHealthRollup, nextCustomers, nextSyncStatus
       ] = await Promise.all([
         withTimeout(window.api.settings.getSystemHealth().catch((e) => ({ error: e.message })), 8000, { error: 'System health is taking too long to load.' }),
         withTimeout(window.api.settings.get().catch(() => null), 8000, null),
@@ -294,12 +331,21 @@ export default function SystemHealthPanel() {
         withTimeout(window.api.reports.financialValidationAlerts?.(8).catch(() => []) || Promise.resolve([]), 8000, []),
         withTimeout(window.api.reports.criticalErrors?.(8).catch(() => []) || Promise.resolve([]), 8000, []),
         withTimeout(window.api.sync.getDeviceHealthRollup().catch(() => ({ available: false, devices: [] })), 8000, { available: false, devices: [] }),
-        withTimeout(window.api.rooms.getAll().catch(() => []), 8000, []),
         withTimeout(window.api.customers.getAll().catch(() => []), 8000, []),
         withTimeout(window.api.sync.getStatus().catch(() => null), 8000, null)
       ])
       setHealth(systemHealth || null)
       setGlobalSettings(settingsSnapshot || null)
+      // Rooms only help accommodation queue humanization; skip for restaurant/bar.
+      const snapshotRestaurant = isRestaurantOnly(
+        settingsSnapshot?.property_type || settingsSnapshot?.business_type || propertyType
+      )
+      if (!snapshotRestaurant) {
+        const nextRooms = await withTimeout(window.api.rooms.getAll().catch(() => []), 8000, [])
+        setRooms(Array.isArray(nextRooms) ? nextRooms : [])
+      } else {
+        setRooms([])
+      }
       setSessionUser(validatedUser || null)
       const nextPending = Array.isArray(details?.pending) ? details.pending : []
       pendingCountRef.current = nextPending.length
@@ -327,7 +373,6 @@ export default function SystemHealthPanel() {
       setValidationAlerts(Array.isArray(nextValidationAlerts) ? nextValidationAlerts : [])
       setCriticalErrors(Array.isArray(nextCriticalErrors) ? nextCriticalErrors : [])
       setDeviceHealthRollup(nextDeviceHealthRollup || { available: false, devices: [] })
-      setRooms(Array.isArray(nextRooms) ? nextRooms : [])
       setCustomers(Array.isArray(nextCustomers) ? nextCustomers : [])
       setMeshStatus(nextSyncStatus?.mesh || { enabled: false, running: false, peerCount: 0, activeLocks: [] })
     } catch (error) {
@@ -506,7 +551,7 @@ export default function SystemHealthPanel() {
   const connectManualMeshPeer = async () => {
     const address = manualMeshIp.trim()
     if (!address) {
-      pushFlash('error', 'Enter the other Boroko computer’s local IP address.')
+      pushFlash('error', 'Enter the other Tsa Bonno computer’s local IP address.')
       return
     }
     setActionBusy('mesh-connect')
@@ -514,11 +559,11 @@ export default function SystemHealthPanel() {
       const result = await window.api.mesh.connectManualPeer(address).catch((e) => ({ success: false, error: e.message }))
       if (result?.mesh) setMeshStatus(result.mesh)
       if (result?.success === false) {
-        pushFlash('error', result.error || 'Could not reach that Boroko device.')
+        pushFlash('error', result.error || 'Could not reach that Tsa Bonno device.')
         return
       }
       setManualMeshIp('')
-      pushFlash('success', `Connected to Boroko device at ${address}.`)
+      pushFlash('success', `Connected to Tsa Bonno device at ${address}.`)
     } finally {
       setActionBusy('')
     }
@@ -532,14 +577,14 @@ export default function SystemHealthPanel() {
         enabled: !enabled,
         acknowledged: !enabled,
         reason: !enabled
-          ? 'Manager enabled lodge offline mode from System Health.'
-          : 'Manager ended lodge offline mode from System Health.'
+          ? 'Manager enabled offline mode from System Health.'
+          : 'Manager ended offline mode from System Health.'
       }).catch((e) => ({ success: false, error: e.message }))
       if (result?.success === false) {
-        pushFlash('error', result.error || 'Could not update lodge offline mode.')
+        pushFlash('error', result.error || 'Could not update offline mode.')
         return
       }
-      pushFlash('success', result?.offlineMode?.enabled ? 'Lodge offline mode is on.' : 'Lodge offline mode is off.')
+      pushFlash('success', result?.offlineMode?.enabled ? 'Offline mode is on.' : 'Offline mode is off.')
       await load()
     } finally {
       setActionBusy('')
@@ -589,7 +634,7 @@ export default function SystemHealthPanel() {
       const bundleJson = bundleResult?.bundle ? JSON.stringify(bundleResult.bundle, null, 2) : null
 
       const description = [
-        'A staff member asked for a review of this lodge health report.',
+        'A staff member asked for a review of this property health report.',
         '',
         'Plain-language summary:',
         plainLanguageSummary,
@@ -606,8 +651,8 @@ export default function SystemHealthPanel() {
         `- Screen issues: ${rendererErrors.length}`,
         '',
         `Reporter: ${sessionUser?.name || sessionUser?.email || 'Unknown user'}`,
-        `Lodge: ${globalSettings?.lodge_name || health?.lodge_name || 'Unknown'}`,
-        `Lodge reference: ${globalSettings?.lodge_id || health?.lodge_id || 'Unknown'}`,
+        `${businessWordTitle}: ${globalSettings?.lodge_name || health?.lodge_name || 'Unknown'}`,
+        `${businessWordTitle} reference: ${globalSettings?.lodge_id || health?.lodge_id || 'Unknown'}`,
         bundleJson ? ['', '```json', bundleJson, '```'].join('\n') : ''
       ].filter(Boolean).join('\n')
 
@@ -630,7 +675,7 @@ export default function SystemHealthPanel() {
   // ─── Derived state ───────────────────────────────────────────────────────────
 
   const financeRpcOk       = health?.finance?.payments_rpc?.ok
-  const contractAllOk      = health?.finance?.contract?.allOk !== false && health?.finance?.contract?.ok !== false
+  const contractAllOk      = health?.finance?.contract?.allOk === true && health?.finance?.contract?.ok === true
   const contractProbes     = health?.finance?.contract?.probes || {}
   const diagnosticsOk      = !health?.diagnostics?.error
   const cacheStale         = syncDetails?.cacheStale?.active === true
@@ -695,29 +740,32 @@ export default function SystemHealthPanel() {
 
   /**
    * Returns domain-aware action metadata (label, route, state) for a sync queue item or fault.
-   * This ensures POS failures lead to POS, and Booking failures lead to Bookings.
+   * POS failures lead to POS/sell; accommodation booking failures lead to Bookings.
    */
   const getSyncItemAction = (item) => {
     // POS Orders
-    if (item.table === 'create_pos_order' || item.scope === 'pos' || item.type?.startsWith('pos_')) {
+    if (item.table === 'create_pos_order' || item.table === 'void_pos_order' || item.scope === 'pos' || item.type?.startsWith('pos_')) {
       return {
-        label: 'Review POS Order',
-        route: '/pos',
-        state: { tab: 'history' }
+        label: restaurantMode ? 'Review sale' : 'Review POS Order',
+        route: restaurantMode ? '/hpos/pos' : '/pos',
+        state: restaurantMode ? {} : { tab: 'history' }
       }
     }
 
     // Inventory items
-    if (item.table === 'create_inventory_item') {
+    if (item.table === 'create_inventory_item' || item.table === 'update_inventory_item') {
       return {
         label: 'Review Inventory',
-        route: '/inventory',
+        route: restaurantMode ? '/hpos/stock' : '/inventory',
         state: {}
       }
     }
 
-    // Booking Payments
+    // Booking Payments (accommodation)
     if (item.table === 'update_booking_payment') {
+      if (restaurantMode) {
+        return { label: 'Open reports', route: '/reports', state: {} }
+      }
       const bid = getFailedItemBookingId(item)
       return bid ? {
         label: 'Collect Payment',
@@ -729,6 +777,9 @@ export default function SystemHealthPanel() {
     // Generic Bookings
     const bookingId = getFailedItemBookingId(item) || (item.context && item.context.booking_id) || (typeof item.scope === 'string' && item.scope.startsWith('booking:') ? item.scope.slice(8) : null)
     if (bookingId) {
+      if (restaurantMode) {
+        return { label: 'Open sell terminal', route: '/hpos/pos', state: {} }
+      }
       return {
         label: 'Review Booking',
         route: '/bookings',
@@ -756,7 +807,9 @@ export default function SystemHealthPanel() {
         <div>
           <h2 className="text-lg font-bold text-gray-900">Health Check</h2>
           <p className="mt-1 text-sm text-gray-500">
-            Recent activity, money checks, backups, and account status.
+            {restaurantMode
+              ? `Sales sync, stock queue, money checks, backups, and account status for this ${businessWord}.`
+              : 'Recent activity, money checks, backups, and account status.'}
             <span className="ml-2 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-500">
               This device only — does not reflect PWA/browser queue state
             </span>
@@ -967,16 +1020,22 @@ export default function SystemHealthPanel() {
               {unresolvedLocal.total > 0 && (
                 <div className="mt-2 space-y-1">
                   {[
-                    { key: 'bookings', label: 'Bookings' },
-                    { key: 'customers', label: 'Customers' },
-                    { key: 'rooms', label: 'Rooms' },
-                    { key: 'users', label: 'Users' },
+                    { key: 'bookings', label: restaurantMode ? 'Orders / reservations' : 'Bookings' },
+                    { key: 'customers', label: restaurantMode ? 'Customers' : 'Customers' },
+                    { key: 'rooms', label: restaurantMode ? 'Tables / stations' : 'Rooms' },
+                    { key: 'users', label: 'Staff' },
                     { key: 'quotations', label: 'Quotations' },
-                    { key: 'posOrders', label: 'POS Orders' },
+                    { key: 'posOrders', label: 'POS sales' },
                     { key: 'conferenceBookings', label: 'Conference Bookings' },
                     { key: 'poolDayUse', label: 'Day Use Entries' },
                     { key: 'inventoryItems', label: 'Inventory' }
-                  ].filter(({ key }) => (unresolvedLocal[key]?.count ?? 0) > 0).map(({ key, label }) => (
+                  ].filter(({ key }) => {
+                    if (restaurantMode && ['conferenceBookings', 'poolDayUse', 'rooms'].includes(key) && (unresolvedLocal[key]?.count ?? 0) === 0) return false
+                    if (restaurantMode && key === 'rooms') return false
+                    if (restaurantMode && key === 'conferenceBookings') return false
+                    if (restaurantMode && key === 'poolDayUse') return false
+                    return (unresolvedLocal[key]?.count ?? 0) > 0
+                  }).map(({ key, label }) => (
                     <div key={key} className="text-xs text-amber-800">
                       <span className="font-medium">{label}:</span> {unresolvedLocal[key].count} still open
                       {unresolvedLocal[key].ids?.length > 0 && (
@@ -1193,7 +1252,11 @@ export default function SystemHealthPanel() {
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h3 className="text-sm font-semibold text-gray-900">Local Mesh</h3>
-            <p className="mt-1 text-xs text-gray-500">Nearby front-desk computers on this lodge network.</p>
+            <p className="mt-1 text-xs text-gray-500">
+              {restaurantMode
+                ? `Nearby ${businessWord} computers on this local network.`
+                : 'Nearby front-desk computers on this property network.'}
+            </p>
           </div>
           <StatusPill
             ok={meshStatus?.running && !meshLastError}
@@ -1231,7 +1294,7 @@ export default function SystemHealthPanel() {
         {meshLastError && (
           <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
             {meshAutoStandby
-              ? 'Local Mesh will start automatically when this lodge has mesh credentials available.'
+              ? 'Local Mesh will start automatically when this property has mesh credentials available.'
               : meshLastError}
           </div>
         )}
@@ -1282,7 +1345,7 @@ export default function SystemHealthPanel() {
           </div>
         </div>
         <p className="mt-2 text-xs text-gray-500">
-          Wi-Fi names may differ. Devices can still connect when the extender uses Bridge/AP mode and Windows Firewall allows Boroko on Private networks.
+          Wi-Fi names may differ. Devices can still connect when the extender uses Bridge/AP mode and Windows Firewall allows Tsa Bonno on Private networks.
         </p>
         {meshWarnings.length > 0 && (
           <div className="mt-3 space-y-2">
@@ -1300,7 +1363,7 @@ export default function SystemHealthPanel() {
           <div>
             <div className="flex items-center gap-2">
               <HardDrive size={16} className="text-gray-500" />
-              <h3 className="text-sm font-semibold text-gray-900">Lodge offline mode</h3>
+              <h3 className="text-sm font-semibold text-gray-900">{businessWordTitle} offline mode</h3>
               <StatusPill ok={!offlineModeEnabled} warn={offlineModeEnabled && !failedCount} label={offlineModeEnabled ? 'Local pending truth' : 'Off'} />
             </div>
             <p className="mt-1 text-xs text-gray-500">
@@ -1423,14 +1486,14 @@ export default function SystemHealthPanel() {
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="flex items-center gap-2">
                           <StatusPill ok={false} label={plainLabel(item.type || 'change')} />
-                          <span className="text-sm font-semibold text-gray-900">{syncOpLabel(item.table)}</span>
+                          <span className="text-sm font-semibold text-gray-900">{syncOpLabel(item.table, restaurantMode)}</span>
                           {isFinancial && <span className="rounded-full bg-red-100 px-2 py-0.5 text-[11px] font-semibold text-red-700">Money</span>}
                         </div>
                         <span className="text-xs text-gray-400">
                           {item.lastAttemptedAt ? formatTs(item.lastAttemptedAt) : 'Not tried recently'}
                         </span>
                       </div>
-                      <p className="mt-2 text-sm text-red-700">{sanitizeForOperator(item.displayError || item.lastError)}</p>
+                      <p className="mt-2 text-sm text-red-700">{sanitizeForOperator(item.displayError || item.lastError, { restaurantMode })}</p>
                       {item.dependencyLabel && item.dependencyCategory !== 'none' && (
                         <p className={`mt-1 text-xs font-medium ${item.dependencyCategory === 'missing_parent' ? 'text-red-700' : 'text-amber-700'}`}>
                           {item.dependencyLabel}
@@ -1488,7 +1551,7 @@ export default function SystemHealthPanel() {
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="flex items-center gap-2">
                         <StatusPill ok={false} label={plainLabel(item.type || 'change')} warn />
-                        <span className="text-sm font-semibold text-gray-900">{syncOpLabel(item.table)}</span>
+                        <span className="text-sm font-semibold text-gray-900">{syncOpLabel(item.table, restaurantMode)}</span>
                       </div>
                       <span className="text-xs text-gray-400">
                         {item.createdAt ? formatTs(item.createdAt) : 'Saved on this computer'}
@@ -1884,7 +1947,7 @@ export default function SystemHealthPanel() {
                       {entry.details && Object.keys(entry.details).length > 0 && (
                         <details className={`mt-2 text-xs text-${tone}-800/80`}>
                           <summary className={`cursor-pointer font-medium text-${tone}-900`}>Show more</summary>
-                          <HumanContext details={entry.details} rooms={rooms} customers={customers} />
+                          <HumanContext details={entry.details} rooms={rooms} customers={customers} restaurantMode={restaurantMode} />
                         </details>
                       )}
                     </div>
@@ -1934,7 +1997,7 @@ export default function SystemHealthPanel() {
               <div className="rounded-xl bg-emerald-50 p-2 text-emerald-600"><CheckCircle2 size={18} /></div>
               <div>
                 <h3 className="text-sm font-semibold text-gray-900">Account check</h3>
-                <p className="mt-1 text-xs text-gray-500">Checks that this lodge account is linked correctly.</p>
+                <p className="mt-1 text-xs text-gray-500">Checks that this property account is linked correctly.</p>
               </div>
             </div>
             <div className="mt-4 space-y-3 text-sm text-gray-600">
@@ -1943,7 +2006,7 @@ export default function SystemHealthPanel() {
                 <StatusPill ok={diagnosticsOk} label={diagnosticsOk ? 'Healthy' : 'Review'} />
               </div>
               <div className="flex items-center justify-between gap-3">
-                <span>Lodge reference</span>
+                <span>{businessWordTitle} reference</span>
                 <span className="font-mono text-xs text-gray-500">{health?.lodge_id || '—'}</span>
               </div>
               <p className="rounded-xl bg-gray-50 px-3 py-3 text-xs leading-5 text-gray-600">
@@ -1995,7 +2058,7 @@ export default function SystemHealthPanel() {
           <div className="rounded-xl bg-blue-50 p-2 text-blue-600"><Wifi size={18} /></div>
           <div>
             <h3 className="text-sm font-bold text-gray-900">Other devices</h3>
-            <p className="text-xs text-gray-500">Status reports from each device for this lodge</p>
+            <p className="text-xs text-gray-500">Status reports from each device for this property</p>
           </div>
         </div>
         {!deviceHealthRollup?.available ? (

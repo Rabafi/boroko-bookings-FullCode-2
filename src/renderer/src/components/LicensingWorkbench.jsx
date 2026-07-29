@@ -19,6 +19,9 @@ import {
   normalizeSubscriptionPlan
 } from '../../../shared/subscriptionPlans'
 import { formatLocalDate } from '../utils/localDate'
+import { getCommercialAddonOffers, getCommercialOffers } from '../../../shared/commercialEntitlements'
+import { formatCommercialMoney } from '../../../shared/commercialPackages'
+import { getProductFamilyLabel, resolveProductFamily } from '../../../shared/productIdentity'
 
 const PLAN_FLAGS = {
   Starter: {
@@ -77,6 +80,16 @@ function normalizePlanName(plan) {
   return normalizeSubscriptionPlan(plan)
 }
 
+function getCompanyProductId(company, license = null) {
+  return license?.product_id || resolveProductFamily(company?.property_type || company?.business_type || license?.business_type)
+}
+
+function getCompanyOffer(company, license = null) {
+  const offers = getCommercialOffers(getCompanyProductId(company, license))
+  return offers.find((offer) => offer.commercialPackageKey === license?.commercial_package_key)
+    || offers.find((offer) => offer.internalPlan === normalizePlanName(license?.subscription_plan))
+    || offers[0]
+}
 function fmtDate(value) {
   if (!value) return '—'
   return new Date(value).toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' })
@@ -97,8 +110,26 @@ function getLicenseStatusLabel(license) {
   return String(license?.subscription_state || license?.payment_status || 'active').replace(/_/g, ' ')
 }
 
+function getAssignmentLabel(company, license) {
+  const state = String(license?.subscription_state || license?.payment_status || '').toLowerCase()
+  if (state === 'trial' || String(license?.payment_status || '').toLowerCase() === 'trial') return 'Trial'
+  if (!license?.commercial_package_key) return `${normalizePlanName(license?.subscription_plan)} (legacy)`
+  return getCompanyOffer(company, license)?.displayName || normalizePlanName(license?.subscription_plan)
+}
+
 function lodgeKey(value) {
   return String(value || '').trim().toLowerCase()
+}
+
+function assignmentKey(lodgeId, productId) {
+  return `${lodgeKey(lodgeId)}::${String(productId || '').trim().toLowerCase()}`
+}
+
+function selectedAddonKeys(license) {
+  const snapshot = license?.commercial_pricing_snapshot?.selection?.selected_addon_keys
+  if (Array.isArray(snapshot)) return [...new Set(snapshot.map((key) => String(key).trim()).filter(Boolean))]
+  if (Array.isArray(license?.selected_addon_keys)) return [...new Set(license.selected_addon_keys.map((key) => String(key).trim()).filter(Boolean))]
+  return []
 }
 
 const UNASSIGNED_LICENSE_STATES = new Set(['cancelled', 'expired', 'superseded', 'deleted', 'inactive'])
@@ -127,7 +158,7 @@ function buildAssignedLicenseMap(licenses = []) {
   const map = new Map()
   ;(licenses || []).forEach((license) => {
     if (!isAssignedLicense(license)) return
-    const key = lodgeKey(license.lodge_id)
+    const key = assignmentKey(license.lodge_id, license.product_id || resolveProductFamily(license.business_type))
     map.set(key, pickPreferredLicense(map.get(key), license))
   })
   return map
@@ -196,8 +227,8 @@ function PlanCatalog({ licenses }) {
               {FEATURE_ORDER.map((feature) => (
                 <div key={feature} className="flex items-center justify-between text-sm">
                   <span className="text-gray-300">{FEATURE_LABELS[feature]}</span>
-                  <span className={PLAN_FLAGS[plan.name][feature] ? 'text-green-300' : 'text-gray-600'}>
-                    {PLAN_FLAGS[plan.name][feature] ? 'Included' : 'Locked'}
+                  <span className={PLAN_FLAGS[plan.name]?.[feature] ? 'text-green-300' : 'text-gray-600'}>
+                    {PLAN_FLAGS[plan.name]?.[feature] ? 'Included' : 'Locked'}
                   </span>
                 </div>
               ))}
@@ -216,16 +247,20 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
     lodge_id: '',
     lodge_name: '',
     business_type: 'lodge',
+    product_id: 'lodge-camp',
+    commercial_package_key: 'starter',
     subscription_plan: 'Starter',
     payment_status: 'active',
     monthly_fee: '',
     currency: 'BWP',
+    selected_addon_keys: [],
     expires_at: '',
     next_due_date: '',
     notes: '',
     duration: ''
   })
   const [saving, setSaving] = useState(false)
+  const [assignmentOperationId, setAssignmentOperationId] = useState('')
   const [filter, setFilter] = useState('')
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -237,6 +272,7 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
         ...prefill
       }))
       setFilter(prefill.lodge_name || '')
+      setAssignmentOperationId(crypto.randomUUID())
       clearPrefill()
     }
   }, [prefill, clearPrefill])
@@ -250,7 +286,7 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
 
     return (companies || []).map((company) => ({
       company,
-      license: activeLicenses.get(lodgeKey(company.lodge_id)) || null
+      license: activeLicenses.get(assignmentKey(company.lodge_id, getCompanyProductId(company))) || null
     })).filter(({ company, license }) => {
       const needle = filter.trim().toLowerCase()
       if (!needle) return true
@@ -260,17 +296,23 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
   }, [companies, filter, licenses])
 
   const startCreate = (company) => {
+    const productId = getCompanyProductId(company)
+    const offer = getCompanyOffer(company)
     setEditingLicense(null)
     setError('')
     setNotice('')
+    setAssignmentOperationId(crypto.randomUUID())
     setForm({
       lodge_id: company?.lodge_id || '',
       lodge_name: company?.lodge_name || '',
       business_type: company?.business_type || 'lodge',
-      subscription_plan: 'Starter',
+      product_id: productId,
+      commercial_package_key: offer?.commercialPackageKey || '',
+      subscription_plan: offer?.internalPlan || 'Starter',
       payment_status: 'active',
       monthly_fee: '',
       currency: 'BWP',
+      selected_addon_keys: [],
       expires_at: '',
       next_due_date: '',
       notes: '',
@@ -280,18 +322,24 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
 
   const startEdit = (license) => {
     const company = companyById.get(lodgeKey(license.lodge_id))
+    const productId = getCompanyProductId(company, license)
+    const offer = getCompanyOffer(company, license)
     const clearStaleExpiry = shouldClearStaleExpiry(license)
     setEditingLicense(license)
     setError('')
     setNotice(clearStaleExpiry ? 'This active assignment had an expired hard expiry date. Saving will clear that stale expiry and keep billing on the next due date.' : '')
+    setAssignmentOperationId(crypto.randomUUID())
     setForm({
       lodge_id: license.lodge_id || '',
       lodge_name: license.lodge_name || company?.lodge_name || '',
       business_type: company?.business_type || license.business_type || 'lodge',
-      subscription_plan: normalizePlanName(license.subscription_plan),
+      product_id: productId,
+      commercial_package_key: offer?.commercialPackageKey || '',
+      subscription_plan: offer?.internalPlan || normalizePlanName(license.subscription_plan),
       payment_status: license.payment_status || 'active',
       monthly_fee: license.monthly_fee ?? '',
       currency: license.currency || 'BWP',
+      selected_addon_keys: selectedAddonKeys(license),
       expires_at: clearStaleExpiry ? '' : license.expires_at ? String(license.expires_at).slice(0, 10) : '',
       next_due_date: license.next_due_date ? String(license.next_due_date).slice(0, 10) : '',
       notes: license.notes || '',
@@ -309,38 +357,47 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
         if (String(editingLicense.id || '').startsWith('entitlement:')) {
           throw new Error('This assignment was recovered from entitlement data but no editable license row was returned. Refresh licenses, then open Supabase if this still appears.')
         }
-        const result = await window.api.admin.updateLicense(editingLicense.id, {
+        const result = await window.api.admin.assignCommercialSubscription({
+          operation_id: assignmentOperationId,
+          license_id: editingLicense.id,
           lodge_id: form.lodge_id,
           lodge_name: form.lodge_name,
+          product_id: form.product_id,
+          commercial_package_key: form.commercial_package_key,
           subscription_plan: form.subscription_plan,
           payment_status: form.payment_status,
           monthly_fee: Number(form.monthly_fee || 0),
           currency: form.currency,
+          selected_addon_keys: form.selected_addon_keys,
           expires_at: form.expires_at || null,
           next_due_date: form.next_due_date || null,
-          notes: form.notes || null
+          notes: form.notes || null,
+          activation_reason: form.notes
         })
         if (!result?.success) throw new Error(result?.error || 'Could not update license assignment')
         setNotice('License assignment updated.')
       } else {
-        const existing = buildAssignedLicenseMap(licenses).get(lodgeKey(form.lodge_id))
-        if (existing) {
+        const existing = buildAssignedLicenseMap(licenses).get(assignmentKey(form.lodge_id, form.product_id))
+        if (existing && !existing._product_inferred) {
           startEdit(existing)
           throw new Error('This lodge already has an active assignment. I opened the existing license for editing instead.')
         }
-        const result = await window.api.admin.issueSubscriptionContract({
-          license: {
+        const result = await window.api.admin.assignCommercialSubscription({
+            operation_id: assignmentOperationId,
             lodge_id: form.lodge_id,
             lodge_name: form.lodge_name,
             business_type: form.business_type,
+            product_id: form.product_id,
+            commercial_package_key: form.commercial_package_key,
             subscription_plan: form.subscription_plan,
             payment_status: form.payment_status,
             monthly_fee: Number(form.monthly_fee || 0),
             currency: form.currency,
+            selected_addon_keys: form.selected_addon_keys,
             expires_at: form.expires_at || null,
             next_due_date: form.next_due_date || null,
-            notes: form.notes || null
-          }
+            notes: form.notes || null,
+            activation_reason: form.notes
         })
         if (!result?.success) throw new Error(result?.error || 'Could not generate license')
         const issuedKey = result?.license?.license_key || result?.license_key
@@ -381,7 +438,7 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
                 <div className="flex flex-wrap gap-2 mt-3">
                   {license ? (
                     <>
-                      <span className="text-xs bg-gray-900 text-gray-300 px-2 py-1 rounded-full">{normalizePlanName(license.subscription_plan)}</span>
+                      <span className="text-xs bg-gray-900 text-gray-300 px-2 py-1 rounded-full">{getProductFamilyLabel(getCompanyProductId(company, license))} · {getAssignmentLabel(company, license)}</span>
                       <span className={`text-xs px-2 py-1 rounded-full ${statusTone(license.subscription_state || license.payment_status)}`}>{getLicenseStatusLabel(license)}</span>
                       <span className="text-xs bg-gray-900 text-gray-400 px-2 py-1 rounded-full">Due {fmtDate(license.next_due_date)}</span>
                     </>
@@ -391,10 +448,10 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
                 </div>
               </div>
               <button
-                onClick={() => (license ? startEdit(license) : startCreate(company))}
+                onClick={() => (license?._product_inferred ? startCreate(company) : license ? startEdit(license) : startCreate(company))}
                 className="text-sm bg-purple-600 hover:bg-purple-500 text-white px-3 py-2 rounded-xl"
               >
-                {license ? 'Edit assignment' : 'Assign license'}
+                {license?._product_inferred ? 'Migrate assignment' : license ? 'Edit assignment' : 'Assign license'}
               </button>
             </div>
           ))}
@@ -430,7 +487,11 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
                 ...current,
                 lodge_id: company?.lodge_id || '',
                 lodge_name: company?.lodge_name || '',
-                business_type: company?.business_type || 'lodge'
+                business_type: company?.business_type || 'lodge',
+                product_id: getCompanyProductId(company),
+                commercial_package_key: getCompanyOffer(company)?.commercialPackageKey || '',
+                subscription_plan: getCompanyOffer(company)?.internalPlan || 'Starter',
+                selected_addon_keys: []
               }))
             }}
             required
@@ -444,12 +505,17 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
 
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="text-xs text-gray-400 block mb-1">Plan</label>
-            <select className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-sm text-white" value={form.subscription_plan} onChange={(event) => setForm((current) => ({ ...current, subscription_plan: event.target.value }))}>
-              {SUBSCRIPTION_PLAN_ORDER.map((planName) => (
-                <option key={planName} value={planName}>
-                  {planName} - {getSubscriptionPlan(planName).headline}
-                </option>
+            <label className="text-xs text-gray-400 block mb-1">App family</label>
+            <div className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-sm text-white">{getProductFamilyLabel(form.product_id)}</div>
+          </div>
+          <div>
+            <label className="text-xs text-gray-400 block mb-1">Entitlement package</label>
+            <select className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-sm text-white" value={form.commercial_package_key} onChange={(event) => {
+              const offer = getCommercialOffers(form.product_id).find((item) => item.commercialPackageKey === event.target.value)
+              setForm((current) => ({ ...current, commercial_package_key: event.target.value, subscription_plan: offer?.internalPlan || current.subscription_plan }))
+            }}>
+              {getCommercialOffers(form.product_id).map((offer) => (
+                <option key={offer.commercialPackageKey} value={offer.commercialPackageKey}>{offer.displayName} — {formatCommercialMoney(offer.priceBwp)}</option>
               ))}
             </select>
           </div>
@@ -459,6 +525,34 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
               {['active', 'free', 'trial', 'overdue', 'suspended', 'cancelled'].map((status) => <option key={status} value={status}>{status}</option>)}
             </select>
           </div>
+          {getCommercialAddonOffers(form.product_id, form.business_type).length > 0 && (
+            <div className="col-span-2 rounded-xl border border-gray-700 bg-gray-900/70 p-3">
+              <p className="text-xs text-gray-400 mb-2">Commercial add-ons</p>
+              <div className="grid md:grid-cols-2 gap-2">
+                {getCommercialAddonOffers(form.product_id, form.business_type).map((addon) => {
+                  const checked = form.selected_addon_keys.includes(addon.addonKey)
+                  return (
+                    <label key={addon.addonKey} className="flex items-start gap-2 rounded-lg border border-gray-700 px-3 py-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={(event) => setForm((current) => ({
+                          ...current,
+                          selected_addon_keys: event.target.checked
+                            ? [...new Set([...current.selected_addon_keys, addon.addonKey])]
+                            : current.selected_addon_keys.filter((key) => key !== addon.addonKey)
+                        }))}
+                      />
+                      <span>
+                        <span className="block text-sm text-white">{addon.displayName}</span>
+                        <span className="block text-[11px] text-gray-500">{addon.description}</span>
+                      </span>
+                    </label>
+                  )
+                })}
+              </div>
+            </div>
+          )}
           <div>
             <label className="text-xs text-gray-400 block mb-1">Monthly fee</label>
             <input className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-sm text-white" value={form.monthly_fee} onChange={(event) => setForm((current) => ({ ...current, monthly_fee: event.target.value }))} />
@@ -517,8 +611,8 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
         </div>
 
         <div>
-          <label className="text-xs text-gray-400 block mb-1">Notes</label>
-          <textarea className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-sm text-white h-24 resize-none" value={form.notes} onChange={(event) => setForm((current) => ({ ...current, notes: event.target.value }))} />
+          <label className="text-xs text-gray-400 block mb-1">Assignment reason and notes (minimum 8 characters)</label>
+          <textarea required minLength="8" className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-sm text-white h-24 resize-none" value={form.notes} onChange={(event) => setForm((current) => ({ ...current, notes: event.target.value }))} />
         </div>
 
         <div className="flex gap-3">
@@ -546,11 +640,14 @@ function OverrideDesk({ companies, licenses }) {
   const [overrideExpiresAt, setOverrideExpiresAt] = useState('')
   const [overrideReviewAt, setOverrideReviewAt] = useState('')
 
-  const activeLicenseByLodge = useMemo(() => {
+  const activeLicenseByAssignment = useMemo(() => {
     return buildAssignedLicenseMap(licenses)
   }, [licenses])
 
-  const selectedPlan = useMemo(() => normalizePlanName(activeLicenseByLodge.get(lodgeKey(selectedLodge))?.subscription_plan), [activeLicenseByLodge, selectedLodge])
+  const selectedPlan = useMemo(() => {
+    const company = (companies || []).find((entry) => lodgeKey(entry.lodge_id) === lodgeKey(selectedLodge))
+    return normalizePlanName(activeLicenseByAssignment.get(assignmentKey(selectedLodge, getCompanyProductId(company)))?.subscription_plan)
+  }, [activeLicenseByAssignment, companies, selectedLodge])
 
   useEffect(() => {
     if (!selectedLodge) return

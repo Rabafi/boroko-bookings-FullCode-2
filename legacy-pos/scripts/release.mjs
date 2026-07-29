@@ -95,7 +95,7 @@ function buildGeneratedReleaseNotes({ version, title }) {
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
-  const heading = title || `Boroko POS Legacy ${version}`;
+  const heading = title || `Tsa Bonno POS Legacy ${version}`;
   const lines = [
     `## ${heading}`,
     '',

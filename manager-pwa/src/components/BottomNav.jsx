@@ -1,18 +1,13 @@
 import { NavLink, useLocation } from 'react-router-dom'
-import { BedDouble, BookOpen, CreditCard, Home, Menu, MessageCircle } from 'lucide-react'
-
-const NAV = [
-  { to: '/', label: 'Home', icon: Home, end: true },
-  { to: '/bookings', label: 'Bookings', icon: BookOpen },
-  { to: '/rooms', label: 'Rooms', icon: BedDouble },
-  { to: '/money', label: 'Money', icon: CreditCard },
-  { to: '/control', label: 'Inbox', icon: MessageCircle },
-  { to: '/more', label: 'Menu', icon: Menu }
-]
+import { useAuth } from '../contexts/AuthContext'
+import { getPwaNavItems, getPwaShellConfig } from '../lib/productShell'
 
 export default function BottomNav({ alertCount = 0, inboxUnreadCount = 0, inboxEnabled = true }) {
+  const { user } = useAuth()
   const location = useLocation()
-  const navItems = NAV.filter((item) => item.to !== '/control' || inboxEnabled)
+  const shell = getPwaShellConfig(user?.product_family)
+  const navItems = getPwaNavItems(user?.product_family, { inboxEnabled })
+
   const secondaryRoutes = new Set([
     '/more',
     '/alerts',
@@ -26,8 +21,15 @@ export default function BottomNav({ alertCount = 0, inboxUnreadCount = 0, inboxE
     '/conference',
     '/day-use',
     '/inventory',
-    '/pos'
+    '/pos',
+    '/restaurant-owner',
+    '/rooms',
+    '/bookings'
   ])
+
+  // Primary destinations for the active product should not force Menu active state.
+  const primarySet = new Set(shell.primaryRoutes || [])
+  const menuSecondary = [...secondaryRoutes].filter((route) => !primarySet.has(route) || route === '/more')
 
   return (
     <nav
@@ -38,7 +40,7 @@ export default function BottomNav({ alertCount = 0, inboxUnreadCount = 0, inboxE
       aria-label="Manager navigation"
     >
       {navItems.map(({ to, label, icon: Icon, end }) => {
-        const menuActive = to === '/more' && secondaryRoutes.has(location.pathname)
+        const menuActive = to === '/more' && menuSecondary.includes(location.pathname)
         return (
           <NavLink
             key={to}
@@ -48,7 +50,9 @@ export default function BottomNav({ alertCount = 0, inboxUnreadCount = 0, inboxE
             className={({ isActive }) => {
               const active = isActive || menuActive
               return `relative flex min-w-0 flex-col items-center gap-1 rounded-2xl px-1 py-2 transition-all ${
-                active ? 'bg-green-500/14 text-green-200 ring-1 ring-green-400/25 shadow-[0_10px_30px_rgba(34,197,94,0.14)]' : 'text-gray-500 hover:bg-white/5 hover:text-gray-300'
+                active
+                  ? `${shell.accentBg} ${shell.accentText} ring-1 ${shell.accentRing} shadow-[0_10px_30px_rgba(34,197,94,0.08)]`
+                  : 'text-gray-500 hover:bg-white/5 hover:text-gray-300'
               }`
             }}
           >

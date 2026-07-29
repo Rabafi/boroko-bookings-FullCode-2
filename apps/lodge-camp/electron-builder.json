@@ -1,15 +1,20 @@
 {
   "appId": "com.boroko.bookings",
-  "productName": "Boroko Bookings",
+  "productName": "Tsa Bonno LodgingOS",
   "publish": { "provider": "github", "owner": "Rabafi", "repo": "boroko-bookings-releases" },
-  "artifactName": "Boroko-Bookings-${version}-${arch}.${ext}",
+  "artifactName": "Tsa-Bonno-LodgingOS-${version}-${arch}.${ext}",
+  "icon": "src/main/assets/tsa-bonno-lodgingos-icon.ico",
+  "win": {
+    "icon": "src/main/assets/tsa-bonno-lodgingos-icon.ico",
+    "target": [{ "target": "nsis", "arch": ["x64"] }]
+  },
   "directories": { "output": "dist/lodge-camp" },
   "asar": true,
   "files": [
-    "out/**/*",
+    "out/lodge-camp/**/*",
     "src/main/assets/**/*",
     "package.json",
-    "!out/**/*.map",
+    "!out/lodge-camp/**/*.map",
     "!**/.claude/**",
     "!apps/**",
     "!packages/**",
@@ -26,6 +31,14 @@
     { "from": "src/main/assets", "to": "assets" },
     { "from": "apps/lodge-camp/product.json", "to": "product.json" }
   ],
-  "extraMetadata": { "name": "boroko-bookings", "main": "out/main/index.js" },
-  "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": false, "deleteAppDataOnUninstall": false, "shortcutName": "Boroko Bookings", "uninstallDisplayName": "Boroko Bookings" }
+  "extraMetadata": { "name": "boroko-bookings", "main": "out/lodge-camp/main/index.js", "description": "Tsa Bonno LodgingOS" },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": false,
+    "deleteAppDataOnUninstall": false,
+    "shortcutName": "Tsa Bonno LodgingOS",
+    "uninstallDisplayName": "Tsa Bonno LodgingOS",
+    "installerIcon": "src/main/assets/tsa-bonno-lodgingos-icon.ico",
+    "uninstallerIcon": "src/main/assets/tsa-bonno-lodgingos-icon.ico"
+  }
 }

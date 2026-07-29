@@ -3,6 +3,7 @@
  * Schema-corrected: settings=lodge/company, bookings=financial truth, real device_health_reports columns
  */
 import { state } from '../state.js'
+import { getRuntimeProductId } from '../../shared/productIdentity.js'
 
 function adminRpc(name, params = {}) {
   return state.adminDb.rpc(name, params)
@@ -112,7 +113,8 @@ export async function pushUpdateNotification(version, message = '', force = fals
 
 export async function createRelease(release) {
   try {
-    const { data, error } = await adminRpc('app_create_release', {
+    const { data, error } = await adminRpc('app_create_product_release', {
+      p_product_id: release.product_id || getRuntimeProductId(),
       p_version: release.version,
       p_release_notes: release.release_notes || '',
       p_channel: release.channel || 'stable',
@@ -129,7 +131,8 @@ export async function createRelease(release) {
 
 export async function updateRelease(version, updates = {}) {
   try {
-    const { data, error } = await adminRpc('app_update_release', {
+    const { data, error } = await adminRpc('app_update_product_release', {
+      p_product_id: updates.product_id || getRuntimeProductId(),
       p_version: version,
       ...(updates.rollout_pct !== undefined ? { p_rollout_pct: updates.rollout_pct } : {}),
       ...(updates.status ? { p_status: updates.status } : {}),
@@ -148,7 +151,8 @@ export async function checkUpdateAvailability(currentVersion, deviceId = null) {
     if (!state.supabase) {
       throw new Error('The client update service is not initialized')
     }
-    const { data, error } = await state.supabase.rpc('app_check_update_availability', {
+    const { data, error } = await state.supabase.rpc('app_check_product_update_availability', {
+      p_product_id: getRuntimeProductId(),
       p_current_version: currentVersion,
       ...(deviceId ? { p_device_id: deviceId } : {})
     })
@@ -160,15 +164,10 @@ export async function checkUpdateAvailability(currentVersion, deviceId = null) {
   }
 }
 
-export async function getReleases() {
-  try {
-    const { data, error } = await adminRpc('app_get_releases')
-    if (error) throw error
-    return data || []
-  } catch (err) {
-    console.error('[TaskCenter] getReleases error:', err)
-    return []
-  }
+export async function getReleases(productId = getRuntimeProductId()) {
+  const { data, error } = await adminRpc('app_get_product_releases', { p_product_id: productId })
+  if (error) throw new Error(error.message)
+  return data || []
 }
 
 // ── Cross-Surface Intelligence ──

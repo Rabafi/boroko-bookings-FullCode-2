@@ -3,6 +3,7 @@ import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { Maximize2, Minimize2 } from 'lucide-react';
 import Login from './screens/Login';
 import POSTerminal from './screens/POSTerminal';
+import tsaBonnoRestaurantLogo from './assets/tsa-bonno-restaurant-bar-os-logo-color.png';
 
 const Orders = lazy(() => import('./screens/Orders'));
 const CashUp = lazy(() => import('./screens/CashUp'));
@@ -139,7 +140,8 @@ export default function App() {
     <div className="flex h-screen flex-col overflow-hidden bg-slate-50">
       <header className="sticky top-0 z-50 flex min-h-[52px] items-center justify-between border-b border-slate-200 bg-white px-4 py-2 shadow-sm">
         <div className="flex items-center gap-3">
-          <h1 className="text-base font-bold text-slate-800">{displayLodgeName || 'Boroko POS'}</h1>
+          <img src={tsaBonnoRestaurantLogo} alt="Tsa Bonno Restaurant & Bar OS" className="h-10 w-28 object-contain" draggable="false" />
+          <h1 className="text-base font-bold text-slate-800">{displayLodgeName || 'Tsa Bonno POS Legacy'}</h1>
           <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold ${isOnline ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
             {isOnline ? 'Online' : 'Offline'}
           </span>

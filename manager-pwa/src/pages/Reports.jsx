@@ -1,13 +1,13 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { useFeatures } from '../contexts/FeaturesContext'
-import { getReportsSnapshot, getDashboardSnapshot, listBookings, listRooms, listStaff, getSettings } from '../lib/api'
+import { getReportsSnapshot, getDashboardSnapshot, listBookings, listRooms, listStaff } from '../lib/api'
 import { RefreshCw, Lock } from 'lucide-react'
 import { format } from 'date-fns'
 import { readCacheEntry } from '../lib/runtime'
 import { shortDateTime } from '../lib/format'
 import { MONTHLY_USAGE_RESET_COPY, countMonthlyUsageBookings, getPlanRecommendation, getPlanUsageLimits, getUsageLimitStatus } from '@shared/subscriptionPlans'
-import { isRestaurantOnly } from '@shared/propertyTypes'
+import { isRestaurantProductFamily } from '../lib/productShell'
 
 function StatRow({ label, value, sub, color = 'text-white' }) {
   return (
@@ -116,7 +116,8 @@ export default function Reports() {
   const [lastUpdated, setLastUpdated] = useState(null)
   const [loadError, setLoadError] = useState('')
   const [usage, setUsage] = useState({ monthlyBookings: 0, rooms: 0, users: 0, plan: 'Starter' })
-  const [restaurantMode, setRestaurantMode] = useState(false)
+  // Server product_family on the session is authoritative.
+  const restaurantMode = isRestaurantProductFamily(user?.product_family)
   const now = new Date()
 
   const load = useCallback(async () => {
@@ -124,7 +125,7 @@ export default function Reports() {
     setLoadError('')
     try {
       const today = new Date()
-      const [snapshot, dashboard, bookings, rooms, staff, settings] = await Promise.all([
+      const [snapshot, dashboard, bookings, rooms, staff] = await Promise.all([
         getReportsSnapshot(user.lodge_id, {
           today: format(today, 'yyyy-MM-dd'),
           forceFresh: true
@@ -132,11 +133,10 @@ export default function Reports() {
         getDashboardSnapshot(user.lodge_id).catch(() => null),
         listBookings(user.lodge_id).catch(() => []),
         listRooms(user.lodge_id).catch(() => []),
-        listStaff(user.lodge_id).catch(() => []),
-        getSettings(user.lodge_id).catch(() => null)
+        listStaff(user.lodge_id).catch(() => [])
       ])
       setData(snapshot)
-      const plan = dashboard?.entitlement?.plan || 'Starter'
+      const plan = dashboard?.entitlement?.plan || user?.plan || 'Starter'
       setUsage({
         monthlyBookings: countMonthlyUsageBookings(bookings || [], new Date()),
         rooms: Array.isArray(rooms) ? rooms.length : 0,
@@ -144,16 +144,13 @@ export default function Reports() {
         plan
       })
       setLastUpdated(readCacheEntry(user.lodge_id, 'reports_snapshot', null)?.updatedAt || null)
-      if (settings) {
-        setRestaurantMode(isRestaurantOnly(settings.property_type || settings.business_type || 'lodge'))
-      }
     } catch (e) {
       console.error('Reports load error:', e)
       setLoadError(e?.message || 'Reports could not load.')
     } finally {
       setLoading(false)
     }
-  }, [user.lodge_id])
+  }, [user.lodge_id, user?.plan, user?.product_family])
 
   useEffect(() => { load() }, [load])
 

@@ -7,7 +7,7 @@ const SUPABASE_URL      = Deno.env.get('SUPABASE_URL')!
 const SUPABASE_KEY      = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
 const FUNCTION_SECRET   = Deno.env.get('PUSH_FUNCTION_SECRET') || ''
 
-webpush.setVapidDetails('mailto:admin@boroko.com', VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY)
+webpush.setVapidDetails('mailto:hello@borokobookings.com', VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY)
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',

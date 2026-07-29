@@ -1,15 +1,20 @@
 {
   "appId": "com.boroko.hotel",
-  "productName": "Boroko Hotel",
+  "productName": "Tsa Bonno HotelOS",
   "publish": { "provider": "github", "owner": "Rabafi", "repo": "boroko-hotel-releases" },
-  "artifactName": "Boroko-Hotel-${version}-${arch}.${ext}",
+  "artifactName": "Tsa-Bonno-HotelOS-${version}-${arch}.${ext}",
+  "icon": "src/main/assets/tsa-bonno-hotelos-icon.ico",
+  "win": {
+    "icon": "src/main/assets/tsa-bonno-hotelos-icon.ico",
+    "target": [{ "target": "nsis", "arch": ["x64"] }]
+  },
   "directories": { "output": "dist/hotel" },
   "asar": true,
   "files": [
-    "out/**/*",
+    "out/hotel/**/*",
     "src/main/assets/**/*",
     "package.json",
-    "!out/**/*.map",
+    "!out/hotel/**/*.map",
     "!**/.claude/**",
     "!apps/**",
     "!packages/**",
@@ -26,6 +31,14 @@
     { "from": "src/main/assets", "to": "assets" },
     { "from": "apps/hotel/product.json", "to": "product.json" }
   ],
-  "extraMetadata": { "name": "boroko-hotel", "main": "out/main/index.js" },
-  "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": false, "deleteAppDataOnUninstall": false, "shortcutName": "Boroko Hotel", "uninstallDisplayName": "Boroko Hotel" }
+  "extraMetadata": { "name": "boroko-hotel", "main": "out/hotel/main/index.js", "description": "Tsa Bonno HotelOS" },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": false,
+    "deleteAppDataOnUninstall": false,
+    "shortcutName": "Tsa Bonno HotelOS",
+    "uninstallDisplayName": "Tsa Bonno HotelOS",
+    "installerIcon": "src/main/assets/tsa-bonno-hotelos-icon.ico",
+    "uninstallerIcon": "src/main/assets/tsa-bonno-hotelos-icon.ico"
+  }
 }

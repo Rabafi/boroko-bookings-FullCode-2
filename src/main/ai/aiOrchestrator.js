@@ -482,7 +482,7 @@ function isOfflineOrNetworkError(err) {
  */
 function normalizeProviderError(err, statusCode) {
   if (isOfflineOrNetworkError(err)) {
-    return 'The cloud AI provider needs an internet connection. Boroko Assistant can still answer local app-help questions offline.'
+    return 'The cloud AI provider needs an internet connection. Tsa Bonno Assistant can still answer local app-help questions offline.'
   }
 
   if (statusCode) {
@@ -493,7 +493,7 @@ function normalizeProviderError(err, statusCode) {
       return 'AI provider rate limit reached. Please wait a moment and try again.'
     }
     if (statusCode >= 500 && statusCode < 600) {
-      return `The AI provider is temporarily unavailable (status ${statusCode}). Boroko continues to work normally — please try again later.`
+      return `The AI provider is temporarily unavailable (status ${statusCode}). Tsa Bonno continues to work normally — please try again later.`
     }
   }
 
@@ -530,7 +530,7 @@ async function aiGenerate({ db, model, system, user, context, signal }) {
 
   if (provider === 'local') {
     const local = resolveLocalAssistantTurn({ message: user, route: context?.route || null })
-    return local?.assistantText || 'Boroko Assistant is running locally. Ask for a workflow, screen, or live operations summary.'
+    return local?.assistantText || 'Tsa Bonno Assistant is running locally. Ask for a workflow, screen, or live operations summary.'
   }
 
   const apiKey = readAiApiKey(db)
@@ -723,7 +723,7 @@ export function writeAiAuditLog({ user, lodgeId, event, payload }, { userDataPat
 function buildSystemPrompt() {
   const tools = TOOL_SPECS
   return `
-You are Boroko Ops AI — a hotel operations manager inside Boroko Bookings.
+You are Tsa Bonno Ops AI — a hospitality operations manager inside Tsa Bonno HospitalityOS.
 
 CRITICAL RULES — VIOLATING ANY OF THESE IS A SEVERE ERROR:
 

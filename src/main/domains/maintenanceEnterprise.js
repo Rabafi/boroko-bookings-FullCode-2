@@ -15,7 +15,9 @@ async function _getAllPreventiveSchedules() {
     return rows
   } catch (e) {
     const cached = readCache(PREVENTIVE_CACHE)
-    return Array.isArray(cached) ? cached : []
+    if (Array.isArray(cached) && (cached.length > 0 || !state.isOnline)) return cached
+    if (!state.isOnline) return []
+    throw new Error(e?.message || 'Could not load preventive schedules')
   }
 }
 
@@ -82,9 +84,21 @@ export async function completePreventiveMaintenance(id, completedBy, notes, lodg
 }
 
 // ── Room OOO/OOS ────────────────────────────────────────────────────────────
+// Availability mutations are ONLINE-ONLY (docs/OFFLINE_MATRIX.md) — never queue silently.
+function requireOnlineAvailability(operation) {
+  if (state.isOnline === false) {
+    const err = new Error(
+      `${operation} requires an internet connection. Room OOO/OOS availability changes cannot be queued offline.`
+    )
+    err.onlineOnly = true
+    throw err
+  }
+}
+
 export async function setRoomOutOfOrder(roomId, startDate, reason, endDate, ticketId, lodgeIdArg) {
   const currentLodgeId = lodgeIdArg || state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
+  requireOnlineAvailability('Set room out of order')
   const { data, error } = await state.supabase.rpc('set_room_out_of_order', {
     p_room_id: roomId,
     p_lodge_id: currentLodgeId,
@@ -101,6 +115,7 @@ export async function setRoomOutOfOrder(roomId, startDate, reason, endDate, tick
 export async function setRoomOutOfService(roomId, startDate, reason, endDate, ticketId, lodgeIdArg) {
   const currentLodgeId = lodgeIdArg || state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
+  requireOnlineAvailability('Set room out of service')
   const { data, error } = await state.supabase.rpc('set_room_out_of_service', {
     p_room_id: roomId,
     p_lodge_id: currentLodgeId,
@@ -117,6 +132,7 @@ export async function setRoomOutOfService(roomId, startDate, reason, endDate, ti
 export async function returnRoomToService(downtimeId, lodgeIdArg) {
   const currentLodgeId = lodgeIdArg || state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
+  requireOnlineAvailability('Return room to service')
   const { data, error } = await state.supabase.rpc('return_room_to_service', {
     p_downtime_id: downtimeId,
     p_lodge_id: currentLodgeId

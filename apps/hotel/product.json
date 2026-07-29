@@ -1,9 +1,9 @@
 {
   "id": "hotel",
-  "name": "Boroko Hotel",
+  "name": "Tsa Bonno HotelOS",
   "customer": "Hotels and resorts requiring hotel-grade PMS operations",
   "database_product": "hotel",
-  "current_implementation": "shared Electron runtime compiled with a Hotel product identity and Enterprise hotel capability",
-  "release_status": "runnable workspace with a distinct installer identity; readiness-gated add-ons remain non-operational",
+  "current_implementation": "shared Electron runtime compiled as the separate Tsa Bonno HotelOS product; legacy Enterprise entitlement keys remain an internal compatibility detail",
+  "release_status": "uuid hotel folio ledger + check-in/out workflow rebuilt; front desk, corporate, rate plans, night audit, multi-property surfaces wired to shared runtime — operator smoke still required before sales claims",
   "shared_backend": "../../supabase"
 }

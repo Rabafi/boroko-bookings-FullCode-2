@@ -9,6 +9,11 @@ import {
   isUnlimited,
   trackUpgradeIntent
 } from '../../../../shared/subscriptionPlans'
+import { getCommercialPackageLabel } from '../../../../shared/commercialPackages'
+import { getProductDefinition, getRuntimeProductId } from '../../../../shared/productIdentity'
+
+const BUILD_PRODUCT = getProductDefinition(getRuntimeProductId())
+const IS_CAPACITYLESS_PRODUCT = BUILD_PRODUCT.id === 'hotel' || BUILD_PRODUCT.id === 'hospitality-pos'
 
 export default function UsageUpgradePrompt({
   open = false,
@@ -30,15 +35,16 @@ export default function UsageUpgradePrompt({
 } = {}) {
   if (!open) return null
 
-  const nextPlan = getNextSubscriptionPlan(currentPlan)
-  const nextPlanMeta = getSubscriptionPlan(nextPlan)
-  const upsell = getPlanUpsell(currentPlan)
-  const currentLimits = formatPlanLimits(currentPlan)
-  const nextLimits = formatPlanLimits(nextPlan)
+  const internalNextPlan = getNextSubscriptionPlan(currentPlan)
+  const nextPlan = !IS_CAPACITYLESS_PRODUCT && internalNextPlan !== 'Enterprise' ? internalNextPlan : null
+  const nextPlanMeta = getSubscriptionPlan(nextPlan || currentPlan)
+  const upsell = nextPlan ? getPlanUpsell(currentPlan) : null
+  const currentLimits = IS_CAPACITYLESS_PRODUCT ? null : formatPlanLimits(currentPlan)
+  const nextLimits = IS_CAPACITYLESS_PRODUCT || !nextPlan ? null : formatPlanLimits(nextPlan)
   const requestContext = buildUpgradeRequestMessage(
     { lodgeName, currentPlan },
     usage || { bookings: used, rooms: 0, users: 0 },
-    recommendation || { recommendedPlan: nextPlan },
+    recommendation || { recommendedPlan: nextPlan || currentPlan },
     { channel: 'whatsapp' }
   )
   const usageText = isUnlimited(limit)
@@ -62,7 +68,7 @@ export default function UsageUpgradePrompt({
       lodgeName,
       plan: currentPlan,
       usage: usage || { bookings: used, rooms: 0, users: 0 },
-      recommendation: recommendation || { recommendedPlan: nextPlan },
+       recommendation: recommendation || { recommendedPlan: nextPlan || currentPlan },
       trigger
     })
   }
@@ -98,52 +104,81 @@ export default function UsageUpgradePrompt({
   }
 
   return (
-    <Modal title="Upgrade to keep creating records" onClose={onClose}>
+    <Modal title={IS_CAPACITYLESS_PRODUCT ? 'Request package access' : 'Upgrade to keep creating records'} onClose={onClose}>
       <div className="space-y-4">
         <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3">
           <p className="flex items-center gap-2 text-sm font-semibold text-amber-900">
             <Lock size={15} /> {resourceLabel}
           </p>
           <p className="mt-1 text-sm text-amber-800">
-            {message || `Current plan: ${currentPlan}. Upgrade to unlock more capacity.`}
+            {message || (IS_CAPACITYLESS_PRODUCT
+              ? `${resourceLabel} is controlled by your ${BUILD_PRODUCT.id === 'hotel' ? 'Hotel Core quotation' : 'commercial POS package'} and is not a LodgingOS capacity limit.`
+              : `Current package: ${getCommercialPackageLabel(currentPlan, BUILD_PRODUCT.id)}. Upgrade to unlock more capacity.`)}
           </p>
-          <p className="mt-2 text-xs text-amber-700">
-            Current plan: {currentPlan} · Usage: {usageText}
-            {status?.isInGrace ? ` · Grace remaining: ${status.remainingGrace}` : ''}
-          </p>
-          {statusNote && <p className="mt-2 text-xs font-semibold text-amber-900">{statusNote}</p>}
-          <p className="mt-1 text-xs text-amber-700">
-            {currentLimits.bookings} · {currentLimits.rooms} · {currentLimits.users}
-          </p>
+          {IS_CAPACITYLESS_PRODUCT ? (
+            <p className="mt-2 text-xs text-amber-700">
+              {BUILD_PRODUCT.id === 'hotel'
+                ? 'Hotel Core access is configured through the Hotel quotation and optional services.'
+                : 'POS access is feature-bundle based: Service, Control, and Growth unlock different workflows.'}
+            </p>
+          ) : (
+            <>
+              <p className="mt-2 text-xs text-amber-700">
+                Current package: {getCommercialPackageLabel(currentPlan, BUILD_PRODUCT.id)} · Usage: {usageText}
+                {status?.isInGrace ? ` · Grace remaining: ${status.remainingGrace}` : ''}
+              </p>
+              {statusNote && <p className="mt-2 text-xs font-semibold text-amber-900">{statusNote}</p>}
+              <p className="mt-1 text-xs text-amber-700">
+                {currentLimits.bookings} · {currentLimits.rooms} · {currentLimits.users}
+              </p>
+            </>
+          )}
         </div>
 
         <div className="rounded-2xl border border-slate-200 bg-white px-4 py-4">
-          <p className="flex items-center gap-2 text-sm font-semibold text-slate-900">
-            <TrendingUp size={15} /> Upgrade to {nextPlan}
-          </p>
-          <p className="mt-1 text-sm text-slate-600">{nextPlanMeta.headline}</p>
-          <div className="mt-3 flex flex-wrap gap-2">
-            {upsell.capacities.map((item) => (
-              <span key={item} className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-800">
-                {item}
-              </span>
-            ))}
-          </div>
-          <div className="mt-3 flex flex-wrap gap-2">
-            {upsell.features.map((item) => (
-              <span key={item} className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs text-slate-700">
-                {item}
-              </span>
-            ))}
-          </div>
-          <p className="mt-3 text-xs text-slate-600">
-            Next plan limits: {nextLimits.bookings} · {nextLimits.rooms} · {nextLimits.users}
-          </p>
-          <p className="mt-3 text-xs text-slate-500">
-            {status?.isInGrace
-              ? 'A small grace allowance is active right now, but new record creation will stop once it is used up.'
-              : 'Open subscription access to request the next plan for this lodge.'}
-          </p>
+          {nextPlan ? (
+            <>
+              <p className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+                <TrendingUp size={15} /> Upgrade to {getCommercialPackageLabel(nextPlan, BUILD_PRODUCT.id)}
+              </p>
+              <p className="mt-1 text-sm text-slate-600">{nextPlanMeta.headline}</p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {upsell.capacities.map((item) => (
+                  <span key={item} className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-800">
+                    {item}
+                  </span>
+                ))}
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {upsell.features.map((item) => (
+                  <span key={item} className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs text-slate-700">
+                    {item}
+                  </span>
+                ))}
+              </div>
+              <p className="mt-3 text-xs text-slate-600">
+                Next package limits: {nextLimits.bookings} · {nextLimits.rooms} · {nextLimits.users}
+              </p>
+              <p className="mt-3 text-xs text-slate-500">
+                {status?.isInGrace
+                  ? 'A small grace allowance is active right now, but new record creation will stop once it is used up.'
+                  : 'Open subscription access to request the next package for this property.'}
+              </p>
+            </>
+          ) : (
+            <>
+              <p className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+                <TrendingUp size={15} /> Contact Tsa Bonno about the next fit
+              </p>
+              <p className="mt-1 text-sm text-slate-600">
+                {BUILD_PRODUCT.id === 'hotel'
+                  ? 'Hotel Core is quoted as a separate product with optional services activated by quotation.'
+                  : BUILD_PRODUCT.id === 'hospitality-pos'
+                    ? 'Commercial POS packages are selected by feature bundle. Request Restaurant Service, Control, or Growth when you need more workflows.'
+                    : `Pro is the highest ${BUILD_PRODUCT.shortName} package. If you need hotel-native operations, Tsa Bonno HotelOS is a separate product with quotation-based access.`}
+              </p>
+            </>
+          )}
         </div>
 
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
@@ -166,7 +201,7 @@ export default function UsageUpgradePrompt({
             }}
             className="btn-primary w-full"
           >
-            <Sparkles size={15} /> Upgrade Plan
+            <Sparkles size={15} /> {IS_CAPACITYLESS_PRODUCT ? 'Request Package' : 'Upgrade Plan'}
           </button>
         </div>
       </div>

@@ -32,6 +32,7 @@ import { DESKTOP_PAYMENT_METHODS, PAYMENT_METHOD_LABELS } from '../constants/pay
 import { useAccess, useAuth, useSettings, useFeatures } from '../app-context'
 import { MONTHLY_USAGE_RESET_COPY, canCreateBooking, countMonthlyUsageBookings, getEarlyUpgradePromptState, getPlanUsageLimits, normalizeSubscriptionPlan } from '../../../shared/subscriptionPlans'
 import { formatLocalDate, localToday } from '../utils/localDate'
+import { getBusinessDisplayName, getUiVocabulary } from '../../../shared/uiVocabulary'
 
 const CheckinWorkflow = lazy(() => import('./CheckinWorkflow'))
 const EarlyLateCheckout = lazy(() => import('./EarlyLateCheckout'))
@@ -85,7 +86,8 @@ function formatWhatsAppPhone(phone) {
 }
 
 function buildWhatsAppMessage(b, settings) {
-  const lodge = settings?.lodge_name || 'the Lodge'
+  const vocab = getUiVocabulary({ settings })
+  const lodge = getBusinessDisplayName(settings, vocab)
   const currency = settings?.currency || 'P'
   const nights = Math.max(0, Math.ceil((new Date(b.check_out) - new Date(b.check_in)) / 86400000))
   return [
@@ -1338,7 +1340,7 @@ export default function Bookings() {
       )}
       {bookingCreateBlocked && (
         <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800 shadow-sm">
-          {bookingLimitMessage || 'Booking creation is currently restricted for this lodge.'}
+          {bookingLimitMessage || `Booking creation is currently restricted for ${getUiVocabulary({}).thisNoun}.`}
         </div>
       )}
       {pendingOnlineCount > 0 && (
@@ -2711,7 +2713,7 @@ export default function Bookings() {
         limit={usageLimits.monthlyBookings}
         grace={usageLimits.monthlyBookingsGrace}
         status={bookingLimitStatus}
-        message={usageSnapshot?.warning || 'Monthly booking creation is restricted for this lodge right now.'}
+        message={usageSnapshot?.warning || `Monthly booking creation is restricted for ${getUiVocabulary({}).thisNoun} right now.`}
         usage={usageSnapshot?.usage}
         recommendation={usageSnapshot?.recommendation}
         lodgeName={settings?.lodge_name || settings?.company_name || ''}
@@ -2867,7 +2869,7 @@ function BookingMenu({ b, isOpen, onToggle, onClose, onCheckIn, onCheckOut, onCa
   return (
     <>
       <style>{`
-        @keyframes borokoFadeScale {
+        @keyframes tsaBonnoFadeScale {
           from { opacity: 0; transform: scale(0.95); }
           to   { opacity: 1; transform: scale(1); }
         }
@@ -2884,7 +2886,7 @@ function BookingMenu({ b, isOpen, onToggle, onClose, onCheckIn, onCheckOut, onCa
         {isOpen && (
           <div
             className="bb-action-menu absolute right-0 z-50 mt-1 origin-top-right py-1.5"
-            style={{ animation: 'borokoFadeScale 120ms ease-out' }}
+            style={{ animation: 'tsaBonnoFadeScale 120ms ease-out' }}
           >
 
           {/* Booking actions */}
@@ -2965,7 +2967,7 @@ function BookingMenu({ b, isOpen, onToggle, onClose, onCheckIn, onCheckOut, onCa
               icon={Mail}
               color="blue"
               onClick={() => {
-                const lodge = settings?.lodge_name || 'the Lodge'
+                const lodge = getBusinessDisplayName(settings)
                 const subject = `Booking Confirmation — ${lodge}`
                 window.api.shell.openExternal(
                   `mailto:${b.customer_email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(msg)}`

@@ -11,6 +11,9 @@ const STATIC = [
 ]
 const DEFAULT_NOTIFICATION_URL = '/#/alerts'
 const PUSH_DEDUPE_CACHE = 'boroko-manager-push-dedupe-v1'
+// Keep accepting the pre-rename default tag so queued push payloads dedupe safely.
+const LEGACY_PUSH_TAG = 'boroko'
+const DEFAULT_PUSH_TAG = 'tsa-bonno'
 const PERSISTENT_CACHES = new Set([CACHE, PUSH_DEDUPE_CACHE])
 
 function stablePart(value) {
@@ -29,7 +32,7 @@ function hashText(value) {
 function pushDedupeKey(data = {}) {
   const explicitKey = stablePart(data.dedupeKey || data.tag)
   const version = stablePart(data.version || data.updatedAt || data.createdAt)
-  if (explicitKey && explicitKey !== 'boroko') {
+  if (explicitKey && ![LEGACY_PUSH_TAG, DEFAULT_PUSH_TAG].includes(explicitKey)) {
     return `${explicitKey}:${version || hashText(`${data.title}|${data.body}|${data.url}`)}`
   }
   if (!data.dedupeKey && !data.version) return ''
@@ -105,14 +108,14 @@ self.addEventListener('fetch', (event) => {
 })
 
 self.addEventListener('push', (event) => {
-  const data = event.data?.json() || { title: 'Boroko Manager', body: 'You have a new notification' }
+  const data = event.data?.json() || { title: 'Tsa Bonno Manager', body: 'You have a new notification' }
   event.waitUntil((async () => {
     if (await hasSeenPush(data)) return
     await self.registration.showNotification(data.title, {
       body: data.body,
       icon: '/icons/icon-192.png',
       badge: '/icons/icon-192.png',
-      tag: data.tag || data.dedupeKey || 'boroko',
+      tag: data.tag || data.dedupeKey || DEFAULT_PUSH_TAG,
       renotify: false,
       data: { url: sanitizeNotificationUrl(data.url) }
     })

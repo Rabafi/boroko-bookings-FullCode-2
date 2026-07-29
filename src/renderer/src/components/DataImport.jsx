@@ -1306,16 +1306,16 @@ export default function DataImport() {
   }
 
   return (
-    <div className="p-6 max-w-5xl mx-auto">
+    <div className={restaurantMode ? 'hpos-import-workspace' : 'p-6 max-w-5xl mx-auto'}>
       <div className="mb-6 flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
-            <Download size={24} className="text-green-600" />
+            <Download size={24} className={restaurantMode ? 'hpos-import-mark' : 'text-green-600'} />
             {restaurantMode ? 'Restaurant Data Import' : 'Data Import'}
           </h1>
           <p className="text-gray-500 text-sm mt-1">
             {restaurantMode
-              ? 'Import menu items, ingredients, recipes, customers, suppliers, staff, and expenses from an Excel spreadsheet. Online only.'
+              ? 'Use product-specific templates for menu items, ingredients, recipes, customers, suppliers, staff, inventory, and expenses. Every file is validated before anything is saved.'
               : 'Import historical guest and booking records from an Excel spreadsheet. Online only.'}
           </p>
         </div>

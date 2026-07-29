@@ -1,5 +1,21 @@
 const ANALYTICS_ENDPOINT = import.meta.env.VITE_ANALYTICS_ENDPOINT || ''
 
+export function telemetryUrl() {
+  if (typeof window === 'undefined') return ''
+  const url = new URL(window.location.href)
+  for (const key of ['token', 'session', 'code']) url.searchParams.delete(key)
+  return `${url.origin}${url.pathname}`
+}
+
+function safeProperties(properties = {}) {
+  const blocked = new Set(['token', 'session', 'code', 'guest_name', 'guest_email', 'guest_phone', 'notes', 'booking_id', 'full_url'])
+  return Object.fromEntries(Object.entries(properties).filter(([key, value]) => {
+    if (blocked.has(key)) return false
+    if (typeof value === 'string' && value.length > 160) return false
+    return ['string', 'number', 'boolean'].includes(typeof value) || value == null
+  }))
+}
+
 /**
  * Lightweight, privacy-first analytics for the booking site.
  * If VITE_ANALYTICS_ENDPOINT is set, events are POSTed there.
@@ -8,8 +24,8 @@ const ANALYTICS_ENDPOINT = import.meta.env.VITE_ANALYTICS_ENDPOINT || ''
 export function trackEvent(eventName, properties = {}) {
   const payload = {
     event: eventName,
-    properties,
-    url: typeof window !== 'undefined' ? window.location.href : '',
+    properties: safeProperties(properties),
+    url: telemetryUrl(),
     timestamp: new Date().toISOString()
   }
 
@@ -59,7 +75,6 @@ export function trackBookingRequest(lodgeSlug, roomId, bookingId, totalPrice) {
   trackEvent('booking_request', {
     lodge_slug: lodgeSlug,
     room_id: roomId,
-    booking_id: bookingId,
     total_price: totalPrice
   })
 }

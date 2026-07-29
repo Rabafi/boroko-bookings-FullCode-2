@@ -44,6 +44,10 @@ import { getAllRooms } from './rooms.js';
 import { getAllCustomers } from './customers.js';
 import { getInventoryItems } from './inventory.js';
 
+const DEVICE_HEALTH_MAX_HEARTBEAT_MS = 20 * 60_000;
+let lastDeviceHealthLocalFingerprint = '';
+let lastDeviceHealthPublishedAt = 0;
+
 function normalizeRpcProbeEnvelope(data) {
   if (Array.isArray(data)) return data[0] || null;
   return data && typeof data === 'object' ? data : null;
@@ -62,11 +66,11 @@ async function probeRpc(name, args = {}, options = {}) {
       if (isReplayContractProbeFailure(message) || error.code === 'PGRST202') {
         return { ok: false, message: `${name} contract mismatch — ${message}` };
       }
-      return { ok: true, message: `${name} is callable (probe reached runtime validation).`, responseShapeVerified: false };
+      return { ok: false, indeterminate: true, message: `${name} reached runtime validation, but its successful response was not verified.`, responseShapeVerified: false };
     }
 
     if (!expectSuccessEnvelope) {
-      return { ok: true, message: `${name} is available.`, responseShapeVerified: false };
+      return { ok: false, indeterminate: true, message: `${name} responded, but its result was not verified.`, responseShapeVerified: false };
     }
 
     const envelope = normalizeRpcProbeEnvelope(data);
@@ -90,7 +94,7 @@ export async function getSystemHealth(options = {}) {
   const faults = readHealthFaults();
   const finance = {
     payments_rpc: { ok: false, message: 'Offline or not checked yet.' },
-    contract: { ok: true, probes: {}, allOk: true, skipped: true, message: 'Deep mutation probes skipped by default.' }
+    contract: { ok: false, probes: {}, allOk: false, skipped: true, message: 'Replay-critical mutation contracts were not verified in this health check.' }
   };
 
   await checkOnline();
@@ -114,11 +118,11 @@ export async function getSystemHealth(options = {}) {
 
     if (!includeMutationProbes) {
       finance.contract = {
-        ok: true,
+        ok: false,
         probes: {},
-        allOk: true,
+        allOk: false,
         skipped: true,
-        message: 'Deep mutation probes skipped by default to avoid load and accidental writes.'
+        message: 'Replay-critical mutation contracts were not verified. Run an explicitly authorized deep health check before treating them as ready.'
       };
       return {
         checked_at: new Date().toISOString(),
@@ -418,12 +422,26 @@ function getDesktopDeviceId() {
   }
 }
 
-export async function publishDeviceHealth() {
+export async function publishDeviceHealth(options = {}) {
   if (!state.isOnline || !state.lodgeId) return { success: false, skipped: true, error: 'Offline or lodge not selected.' };
   const details = getSyncDetails();
   const faults = readHealthFaults();
-  const reconciliation = await getFinancialReconciliation().catch(() => ({ state: 'unknown' }));
   const topFaultTypes = [...new Set(faults.map((fault) => fault?.type).filter(Boolean))].slice(0, 10);
+  const localFingerprint = JSON.stringify({
+    lodgeId: state.lodgeId,
+    pendingCount: details.pendingCount || 0,
+    failedCount: details.failedCount || 0,
+    unresolvedLocalCount: details.unresolvedLocal?.length || 0,
+    replayAuthReady: !!state.replayAuthReady,
+    lastSuccessfulSyncAt: details.lastSuccessfulSyncAt || null,
+    topFaultTypes
+  });
+  const heartbeatDue = Date.now() - lastDeviceHealthPublishedAt >= DEVICE_HEALTH_MAX_HEARTBEAT_MS;
+  if (options.force !== true && !heartbeatDue && localFingerprint === lastDeviceHealthLocalFingerprint) {
+    return { success: true, skipped: true, reason: 'unchanged' };
+  }
+
+  const reconciliation = await getFinancialReconciliation().catch(() => ({ state: 'unknown' }));
   const { data, error } = await state.supabase.rpc('upsert_device_health', {
     p_lodge_id: state.lodgeId,
     p_device_id: getDesktopDeviceId(),
@@ -444,12 +462,14 @@ export async function publishDeviceHealth() {
   });
   if (error) throw new Error(error.message);
   if (data?.success === false) throw new Error(data.error || 'Could not publish device health');
+  lastDeviceHealthLocalFingerprint = localFingerprint;
+  lastDeviceHealthPublishedAt = Date.now();
   return { success: true };
 }
 
 export async function getDeviceHealthRollup() {
   if (!state.isOnline || !state.lodgeId) return { available: false, devices: [] };
-  await publishDeviceHealth().catch(() => {});
+  await publishDeviceHealth({ force: true }).catch(() => {});
   const { data, error } = await state.supabase.rpc('get_device_health_rollup', { p_lodge_id: state.lodgeId });
   if (error) throw new Error(error.message);
   return { available: true, devices: Array.isArray(data) ? data : [] };

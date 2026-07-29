@@ -209,7 +209,7 @@ export default function Sync({ user, isOnline, setIsOnline }) {
                 <h2 className="font-bold text-slate-800">Local Lodge Mesh</h2>
                 <p className="mt-1 text-sm text-slate-600">
                   {meshStatus?.running
-                    ? `${meshStatus.peerCount || 0} nearby Boroko device${Number(meshStatus.peerCount || 0) === 1 ? '' : 's'} connected`
+                    ? `${meshStatus.peerCount || 0} nearby Tsa Bonno device${Number(meshStatus.peerCount || 0) === 1 ? '' : 's'} connected`
                     : (meshStatus?.lastError || 'Waiting for local mesh setup')}
                 </p>
                 {meshStatus?.lastMergeAt && (
@@ -251,10 +251,10 @@ export default function Sync({ user, isOnline, setIsOnline }) {
                       setMeshStatus(result.status);
                       setManualMeshIp('');
                     } else {
-                      alert(result?.error || 'Could not reach that Boroko device.');
+                      alert(result?.error || 'Could not reach that Tsa Bonno device.');
                     }
                   } catch (error) {
-                    alert(error?.message || 'Could not reach that Boroko device.');
+                    alert(error?.message || 'Could not reach that Tsa Bonno device.');
                   } finally {
                     setMeshBusy(false);
                   }
@@ -284,7 +284,7 @@ export default function Sync({ user, isOnline, setIsOnline }) {
               </p>
             )}
             <p className="mt-2 text-xs text-slate-500">
-              Different Wi-Fi names are okay when the extender uses Bridge/AP mode and Windows Firewall allows Boroko on Private networks.
+              Different Wi-Fi names are okay when the extender uses Bridge/AP mode and Windows Firewall allows Tsa Bonno on Private networks.
             </p>
             {Array.isArray(meshStatus?.warnings) && meshStatus.warnings.map((warning) => (
               <div key={warning} className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">

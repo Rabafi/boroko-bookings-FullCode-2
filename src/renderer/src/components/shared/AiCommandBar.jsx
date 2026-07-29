@@ -125,7 +125,7 @@ export default function AiCommandBar({ currency = 'R', stats }) {
     <div className="relative w-full max-w-lg z-50">
       <div onClick={() => { setIsOpen(true); setTimeout(() => inputRef.current?.focus(), 100) }} className="flex items-center w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 cursor-pointer shadow-sm hover:shadow-md transition-all">
          <TrendingUp size={16} className="text-emerald-500 mr-3" />
-         <div className="flex-1 text-[10px] text-slate-400 font-bold uppercase tracking-widest">Consult Boroko AI...</div>
+         <div className="flex-1 text-[10px] text-slate-400 font-bold uppercase tracking-widest">Consult Tsa Bonno AI...</div>
          <div className={`w-1.5 h-1.5 rounded-full ${apiStatus === 'active' ? 'bg-emerald-500' : 'bg-amber-500'} animate-pulse`} />
       </div>
 
@@ -134,7 +134,7 @@ export default function AiCommandBar({ currency = 'R', stats }) {
           <div className="fixed inset-0 z-40 bg-black/5" onClick={() => setIsOpen(false)} />
           <div className={`transition-all z-50 flex flex-col bg-white dark:bg-slate-950 shadow-2xl border border-slate-200 dark:border-slate-800 ${isExpanded ? 'fixed top-6 left-6 right-6 bottom-6 rounded-3xl' : 'absolute top-full right-0 w-[500px] h-[600px] mt-3 rounded-2xl overflow-hidden'}`}>
             <div className="px-6 py-5 border-b dark:border-slate-800 flex items-center justify-between bg-white dark:bg-slate-900">
-               <div className="flex items-center gap-3"><div className="w-10 h-10 rounded-xl bg-emerald-600 flex items-center justify-center text-white shadow-lg shadow-emerald-500/20"><Users size={20} /></div><div><p className="text-xs font-black dark:text-white uppercase tracking-tighter">Boroko Ops AI</p><p className="text-[9px] text-slate-400 font-bold uppercase tracking-widest">Tool-Safe Agent</p></div></div>
+               <div className="flex items-center gap-3"><div className="w-10 h-10 rounded-xl bg-emerald-600 flex items-center justify-center text-white shadow-lg shadow-emerald-500/20"><Users size={20} /></div><div><p className="text-xs font-black dark:text-white uppercase tracking-tighter">Tsa Bonno Ops AI</p><p className="text-[9px] text-slate-400 font-bold uppercase tracking-widest">Tool-Safe Agent</p></div></div>
                <div className="flex items-center gap-1">
                   <button onClick={() => setIsExpanded(!isExpanded)} className="p-2.5 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition-all"><TrendingUp size={18} /></button>
                   <button onClick={() => setIsOpen(false)} className="p-2.5 text-slate-400 hover:bg-rose-50 rounded-xl ml-1"><XCircle size={18} /></button>

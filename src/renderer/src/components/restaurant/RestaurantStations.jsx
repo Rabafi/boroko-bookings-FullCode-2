@@ -102,7 +102,7 @@ export default function RestaurantStations() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="restaurant-native-page space-y-6">
       {isOffline && (
         <div className="flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
           <WifiOff size={16} />
@@ -110,7 +110,7 @@ export default function RestaurantStations() {
         </div>
       )}
 
-      <div className="flex items-center justify-between">
+      <div className="restaurant-native-hero">
         <div>
           <h2 className="text-lg font-bold text-slate-900">Kitchen Stations</h2>
           <p className="text-sm text-slate-500">Configure kitchen, bar, and prep stations for ticket routing.</p>
@@ -119,7 +119,7 @@ export default function RestaurantStations() {
           {lastSavedAt && (
             <span className="text-xs text-slate-400">Last saved {lastSavedAt.toLocaleTimeString()}</span>
           )}
-          <button onClick={openNew} disabled={isOffline} className="rounded-xl bg-[#174c3a] px-4 py-2 text-sm font-semibold text-white hover:bg-[#143f31] disabled:opacity-50 disabled:cursor-not-allowed">+ New Station</button>
+          <button onClick={openNew} disabled={isOffline} className="restaurant-primary-action px-4 py-2 text-sm">+ New Station</button>
         </div>
       </div>
 
@@ -130,7 +130,7 @@ export default function RestaurantStations() {
       )}
 
       {stationEditorOpen && (
-        <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="restaurant-native-panel p-5">
           <h3 className="mb-3 text-sm font-semibold text-slate-700">{editStation ? 'Edit Station' : 'New Station'}</h3>
           <div className="flex flex-wrap items-end gap-3">
             <div className="flex-1 min-w-[180px]">
@@ -146,22 +146,22 @@ export default function RestaurantStations() {
                 <option value="other">Other</option>
               </select>
             </div>
-            <button onClick={saveStation} disabled={saving || !formName.trim() || isOffline} className="rounded-xl bg-[#174c3a] px-4 py-2 text-sm font-semibold text-white hover:bg-[#143f31] disabled:opacity-50">
+            <button onClick={saveStation} disabled={saving || !formName.trim() || isOffline} className="restaurant-primary-action px-4 py-2 text-sm">
               {saving ? 'Saving...' : 'Save'}
             </button>
-            <button onClick={() => { setEditStation(null); setFormName(''); setSaveError(''); setStationEditorOpen(false) }} className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-50">Cancel</button>
+            <button onClick={() => { setEditStation(null); setFormName(''); setSaveError(''); setStationEditorOpen(false) }} className="restaurant-secondary-action px-4 py-2 text-sm">Cancel</button>
           </div>
         </div>
       )}
 
       {loading ? (
-        <div className="py-12 text-center text-sm text-slate-400">Loading stations...</div>
+        <div className="restaurant-native-loading text-sm">Loading stations...</div>
       ) : stations.length === 0 ? (
-        <div className="py-12 text-center text-sm text-slate-400">No stations configured. Kitchen and bar are used by default.</div>
+        <div className="restaurant-native-empty text-sm">No stations configured. Kitchen and bar are used by default.</div>
       ) : (
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {stations.map((station) => (
-            <div key={station.id} className={`rounded-xl border p-4 ${station.enabled ? 'border-slate-200 bg-white' : 'border-dashed border-slate-300 bg-slate-50 opacity-60'}`}>
+            <div key={station.id} className={`restaurant-native-panel p-4 ${station.enabled ? '' : 'border-dashed opacity-60'}`}>
               <div className="flex items-start justify-between">
                 <div>
                   <p className="font-semibold text-slate-900">{station.name}</p>

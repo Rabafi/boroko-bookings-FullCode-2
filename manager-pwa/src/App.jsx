@@ -16,8 +16,8 @@ import { playNotificationSound, vibratePulse } from './lib/notificationSound'
 
 import Login from './pages/Login'
 import ResetPassword from './pages/ResetPassword'
-import borokoLogoDark from './assets/boroko-bookings-logo-dark.png'
-import borokoLogoLight from './assets/boroko-bookings-logo-light.png'
+import { getPwaShellConfig, isPwaRouteAllowed, isRestaurantProductFamily } from './lib/productShell'
+import { getPwaProductLogo } from './lib/productLogos'
 
 const Dashboard = lazy(() => import('./pages/Dashboard'))
 const Rooms = lazy(() => import('./pages/Rooms'))
@@ -38,6 +38,17 @@ const Inventory = lazy(() => import('./pages/Inventory'))
 const Control = lazy(() => import('./pages/Control'))
 const PosSales = lazy(() => import('./pages/PosSales'))
 const RestaurantOwner = lazy(() => import('./pages/RestaurantOwner'))
+const HotelFrontDesk = lazy(() => import('./pages/HotelFrontDesk'))
+const HotelFolios = lazy(() => import('./pages/HotelFolios'))
+const PropertyOperations = lazy(() => import('./pages/PropertyOperations'))
+const RestaurantOperations = lazy(() => import('./pages/RestaurantOperations'))
+const HotelStayWorkflow = lazy(() => import('./pages/HotelStayWorkflow'))
+const HotelNightAudit = lazy(() => import('./pages/HotelNightAudit'))
+const RestaurantFloorKitchen = lazy(() => import('./pages/RestaurantFloorKitchen'))
+const RestaurantMenu = lazy(() => import('./pages/RestaurantMenu'))
+const Prepayments = lazy(() => import('./pages/Prepayments'))
+const HotelRevenue = lazy(() => import('./pages/HotelRevenue'))
+const RoomSupplies = lazy(() => import('./pages/RoomSupplies'))
 
 const ToastContext = createContext({ showToast: () => {} })
 
@@ -252,7 +263,7 @@ function PwaLifecyclePrompts() {
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
               <p className="font-semibold">New version ready</p>
-              <p className="mt-1 text-xs text-emerald-200/80">Refresh Boroko Manager to use the latest mobile build.</p>
+              <p className="mt-1 text-xs text-emerald-200/80">Refresh Tsa Bonno Manager to use the latest mobile build.</p>
             </div>
             <button
               type="button"
@@ -269,7 +280,7 @@ function PwaLifecyclePrompts() {
         <div className="rounded-2xl border border-blue-900 bg-blue-950/40 px-4 py-3 text-sm text-blue-100">
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
-              <p className="font-semibold">Install Boroko Manager</p>
+              <p className="font-semibold">Install Tsa Bonno Manager</p>
               <p className="mt-1 text-xs text-blue-200/80">Add it to this device for faster opening and offline access.</p>
             </div>
             <div className="flex shrink-0 items-center gap-2">
@@ -634,7 +645,7 @@ function NotificationCenter({ notificationCount, setNotificationCount }) {
           duration: 4200
         })
         if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
-          new Notification(latest.title, { body: latest.message || 'Open Boroko Manager for details.' })
+          new Notification(latest.title, { body: latest.message || 'Open Tsa Bonno Manager for details.' })
         }
       }
     }
@@ -899,6 +910,7 @@ function AuthenticatedShell({ alertCount, dark, setAlertCount, notificationCount
 
     let cancelled = false
     const inventoryEnabled = Object.keys(features || {}).length === 0 || features?.inventory !== false
+    const restaurantMode = isRestaurantProductFamily(user?.product_family)
 
     const safeRows = async (query) => {
       try {
@@ -924,6 +936,18 @@ function AuthenticatedShell({ alertCount, dark, setAlertCount, notificationCount
       const today = new Date().toISOString().slice(0, 10)
       const blockedSince = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
       const lodgeId = user.lodge_id
+
+      if (restaurantMode) {
+        const stock = inventoryEnabled
+          ? await safeRows(supabase.from('inventory_items').select('id, current_stock, reorder_level').eq('lodge_id', lodgeId).limit(500))
+          : []
+        if (cancelled) return
+        setAlertCount(stock.filter((item) => {
+          const reorder = Number(item.reorder_level ?? 0)
+          return reorder > 0 && Number(item.current_stock ?? 0) <= reorder
+        }).length)
+        return
+      }
 
       const [overdue, unpaid, maintenance, stock, blockedDemand] = await Promise.all([
         safeCount(supabase.from('bookings').select('id', { count: 'exact', head: true }).eq('lodge_id', lodgeId).eq('status', 'checked_in').lt('check_out', today)),
@@ -967,7 +991,7 @@ function AuthenticatedShell({ alertCount, dark, setAlertCount, notificationCount
       window.clearInterval(interval)
       document.removeEventListener('visibilitychange', handleVisible)
     }
-  }, [features, setAlertCount, user?.lodge_id])
+  }, [features, setAlertCount, user?.lodge_id, user?.product_family])
 
   if (entitlementLoading) {
     return (
@@ -988,17 +1012,34 @@ function AuthenticatedApp({ alertCount, dark, setAlertCount, notificationCount, 
   const { user } = useAuth()
   const { features } = useFeatures()
   const { unreadCount: inboxUnreadCount } = useInbox()
-  const logoSrc = dark ? borokoLogoDark : borokoLogoLight
+  const shell = getPwaShellConfig(user?.product_family)
+  const logoSrc = getPwaProductLogo(shell.productFamily, { light: dark })
+
+  useEffect(() => {
+    document.documentElement.classList.remove('pwa-product-lodge', 'pwa-product-hotel', 'pwa-product-pos')
+    document.documentElement.classList.add(shell.rootClass)
+    document.querySelector('meta[name="theme-color"]')?.setAttribute(
+      'content',
+      dark ? shell.themeColor : '#f8f4ed'
+    )
+    return () => {
+      document.documentElement.classList.remove(shell.rootClass)
+    }
+  }, [shell.rootClass, shell.themeColor, dark])
 
   return (
-    <div className="flex flex-col min-h-screen bg-gray-950 app-bg">
+    <div className={`flex flex-col min-h-screen bg-gray-950 app-bg ${shell.rootClass}`}>
       <div className="flex items-center justify-between gap-3 px-3 pt-2 pb-1">
-        <div className="flex items-center gap-2.5">
-          <div className="flex h-10 w-36 items-center">
-            <img src={logoSrc} alt="Boroko Manager" className="max-h-full max-w-full object-contain" draggable="false" />
+        <div className="flex items-center gap-2.5 min-w-0">
+          <div className="flex h-10 w-36 items-center shrink-0">
+            <img src={logoSrc} alt={shell.brandTitle} className="max-h-full max-w-full object-contain" draggable="false" />
           </div>
           <div className="min-w-0">
             <p className="truncate text-xs font-semibold text-white">{user.lodge_display_name || 'Manager'}</p>
+            <p className="truncate text-[10px] text-gray-400">
+              {shell.productFamilyLabel || user.product_family_label}
+              {user.package_label ? ` · ${user.package_label}` : ''}
+            </p>
           </div>
         </div>
         <NotificationCenter notificationCount={notificationCount} setNotificationCount={setNotificationCount} />
@@ -1011,23 +1052,39 @@ function AuthenticatedApp({ alertCount, dark, setAlertCount, notificationCount, 
       <div className="flex-1 pwa-page-shell">
         <Routes>
           <Route path="/" element={<Suspense fallback={<PageLoader />}><Dashboard /></Suspense>} />
-          <Route path="/rooms" element={<Suspense fallback={<PageLoader />}><Rooms /></Suspense>} />
-          <Route path="/bookings" element={<Suspense fallback={<PageLoader />}><Bookings /></Suspense>} />
+          <Route path="/rooms" element={<ProductRouteGuard path="/rooms" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><Rooms /></Suspense></ProductRouteGuard>} />
+          <Route path="/bookings" element={<ProductRouteGuard path="/bookings" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><Bookings /></Suspense></ProductRouteGuard>} />
           <Route path="/reports" element={<Suspense fallback={<PageLoader />}><Guard capability="reports.view"><Reports /></Guard></Suspense>} />
           <Route path="/alerts" element={<Suspense fallback={<PageLoader />}><Alerts onCountChange={setAlertCount} /></Suspense>} />
           <Route path="/money" element={<Suspense fallback={<PageLoader />}><Money /></Suspense>} />
           <Route path="/more" element={<Suspense fallback={<PageLoader />}><More /></Suspense>} />
-          <Route path="/quotations" element={<Suspense fallback={<PageLoader />}><Guard capability="quotations.view"><Quotations /></Guard></Suspense>} />
-          <Route path="/invoices" element={<Suspense fallback={<PageLoader />}><Guard capability="invoices.view"><Invoices /></Guard></Suspense>} />
+          <Route path="/quotations" element={<ProductRouteGuard path="/quotations" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><Guard capability="quotations.view"><Quotations /></Guard></Suspense></ProductRouteGuard>} />
+          <Route path="/invoices" element={<ProductRouteGuard path="/invoices" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><Guard capability="invoices.view"><Invoices /></Guard></Suspense></ProductRouteGuard>} />
           <Route path="/expenses" element={<Suspense fallback={<PageLoader />}><Guard capability="expenses.view"><Expenses /></Guard></Suspense>} />
           <Route path="/audit" element={<Suspense fallback={<PageLoader />}><Guard capability="audit.view"><Audit /></Guard></Suspense>} />
-          <Route path="/guests" element={<Suspense fallback={<PageLoader />}><Guard capability="guests.view"><Guests /></Guard></Suspense>} />
+          <Route path="/guests" element={<ProductRouteGuard path="/guests" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><Guard capability="guests.view"><Guests /></Guard></Suspense></ProductRouteGuard>} />
           <Route path="/staff" element={<Suspense fallback={<PageLoader />}><Guard capability="staff.view"><Staff /></Guard></Suspense>} />
-          <Route path="/conference" element={<Suspense fallback={<PageLoader />}><Guard capability="conference.view"><Conference /></Guard></Suspense>} />
-          <Route path="/day-use" element={<Suspense fallback={<PageLoader />}><Guard capability="pool.view"><DayUse /></Guard></Suspense>} />
+          <Route path="/conference" element={<ProductRouteGuard path="/conference" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><Guard capability="conference.view"><Conference /></Guard></Suspense></ProductRouteGuard>} />
+          <Route path="/day-use" element={<ProductRouteGuard path="/day-use" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><Guard capability="pool.view"><DayUse /></Guard></Suspense></ProductRouteGuard>} />
           <Route path="/inventory" element={<Suspense fallback={<PageLoader />}><Guard capability="inventory.view"><Inventory /></Guard></Suspense>} />
           <Route path="/pos" element={<Suspense fallback={<PageLoader />}><Guard capability="pos.reports"><PosSales /></Guard></Suspense>} />
-          <Route path="/restaurant-owner" element={<Suspense fallback={<PageLoader />}><RestaurantOwner /></Suspense>} />
+          <Route path="/restaurant-owner" element={<ProductRouteGuard path="/restaurant-owner" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><RestaurantOwner /></Suspense></ProductRouteGuard>} />
+          <Route path="/hotel-dashboard" element={<ProductRouteGuard path="/hotel-dashboard" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><HotelFrontDesk /></Suspense></ProductRouteGuard>} />
+          <Route path="/folios" element={<ProductRouteGuard path="/folios" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><Guard capability="folios.view"><HotelFolios /></Guard></Suspense></ProductRouteGuard>} />
+          <Route path="/calendar" element={<ProductRouteGuard path="/calendar" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><PropertyOperations mode="calendar" /></Suspense></ProductRouteGuard>} />
+          <Route path="/roomgrid" element={<ProductRouteGuard path="/roomgrid" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><PropertyOperations mode="roomgrid" /></Suspense></ProductRouteGuard>} />
+          <Route path="/housekeeping" element={<ProductRouteGuard path="/housekeeping" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><PropertyOperations mode="housekeeping" /></Suspense></ProductRouteGuard>} />
+          <Route path="/maintenance" element={<ProductRouteGuard path="/maintenance" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><PropertyOperations mode="maintenance" /></Suspense></ProductRouteGuard>} />
+          <Route path="/restaurant/service" element={<ProductRouteGuard path="/restaurant/service" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><RestaurantOperations mode="service" /></Suspense></ProductRouteGuard>} />
+          <Route path="/restaurant/cash-close" element={<ProductRouteGuard path="/restaurant/cash-close" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><RestaurantOperations mode="cash-close" /></Suspense></ProductRouteGuard>} />
+          <Route path="/checkin-workflow" element={<ProductRouteGuard path="/checkin-workflow" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><Guard capability="checkin.manage"><HotelStayWorkflow /></Guard></Suspense></ProductRouteGuard>} />
+          <Route path="/night-audit-enterprise" element={<ProductRouteGuard path="/night-audit-enterprise" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><Guard capability="night_audit.checks"><HotelNightAudit /></Guard></Suspense></ProductRouteGuard>} />
+          <Route path="/restaurant/floor" element={<ProductRouteGuard path="/restaurant/floor" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><RestaurantFloorKitchen mode="floor" /></Suspense></ProductRouteGuard>} />
+          <Route path="/restaurant/kitchen-workspace" element={<ProductRouteGuard path="/restaurant/kitchen-workspace" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><RestaurantFloorKitchen mode="kitchen" /></Suspense></ProductRouteGuard>} />
+          <Route path="/restaurant/menu-production" element={<ProductRouteGuard path="/restaurant/menu-production" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><RestaurantMenu /></Suspense></ProductRouteGuard>} />
+          <Route path="/prepayments" element={<ProductRouteGuard path="/prepayments" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><Guard capability="invoices.view"><Prepayments /></Guard></Suspense></ProductRouteGuard>} />
+          <Route path="/hotel-revenue" element={<ProductRouteGuard path="/hotel-revenue" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><HotelRevenue /></Suspense></ProductRouteGuard>} />
+          <Route path="/supplies" element={<ProductRouteGuard path="/supplies" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><Guard capability="supplies.view"><RoomSupplies /></Guard></Suspense></ProductRouteGuard>} />
           <Route path="/control" element={<Suspense fallback={<PageLoader />}><Control /></Suspense>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
@@ -1036,6 +1093,16 @@ function AuthenticatedApp({ alertCount, dark, setAlertCount, notificationCount, 
       <BottomNav alertCount={alertCount} inboxUnreadCount={inboxUnreadCount} inboxEnabled={Object.keys(features).length > 0 && features.pwa === true} />
     </div>
   )
+}
+
+function ProductRouteGuard({ path, productFamily, children }) {
+  const { user } = useAuth()
+  const { features, loading } = useFeatures()
+  if (loading) return <PageLoader />
+  if (!isPwaRouteAllowed(path, productFamily, user?.hospitality_mode, features)) {
+    return <Navigate to="/" replace />
+  }
+  return children
 }
 
 function AppShell() {

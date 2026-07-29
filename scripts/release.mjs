@@ -8,7 +8,17 @@ const __dirname = path.dirname(__filename)
 const projectRoot = path.resolve(__dirname, '..')
 
 const args = process.argv.slice(2)
-const mode = ['patch', 'minor', 'major', 'publish'].includes(args[0]) ? args[0] : 'patch'
+const validModes = ['patch', 'minor', 'major', 'publish']
+const usage = 'Usage: node scripts/release.mjs <patch|minor|major|publish> [--notes-file <path>] [--notes <text>] [--notes-title <title>] [--remind-pwa]'
+if (args.includes('--help') || args.includes('-h')) {
+  console.log(usage)
+  process.exit(0)
+}
+if (!validModes.includes(args[0])) {
+  console.error(usage)
+  process.exit(1)
+}
+const mode = args[0]
 const remindPwa = args.includes('--remind-pwa')
 
 function getArgValue(flagName) {
@@ -110,7 +120,7 @@ function getRecentCommitSubjects(limit = 8) {
 
 function buildGeneratedReleaseNotes({ version, title }) {
   const commits = getRecentCommitSubjects()
-  const heading = title || `Boroko Bookings ${version}`
+  const heading = title || `Tsa Bonno LodgingOS ${version}`
   const lines = [
     `## ${heading}`,
     '',

@@ -50,7 +50,7 @@ export default function KitchenDisplay() {
       <div className="flex min-h-screen flex-col">
         <header className="flex shrink-0 items-center justify-between border-b border-white/10 bg-slate-900 px-8 py-5">
           <div>
-            <p className="text-sm font-bold uppercase tracking-[0.22em] text-emerald-300">Boroko POS</p>
+            <p className="text-sm font-bold uppercase tracking-[0.22em] text-emerald-300">Tsa Bonno POS Legacy</p>
             <h1 className="mt-1 text-4xl font-bold">Kitchen Display</h1>
             <p className="mt-1 text-base text-slate-300">{tickets.length} active ticket(s)</p>
           </div>

@@ -116,8 +116,8 @@ function formatStay(invoice) {
     return `${invoice.room_count || invoice._room_lines?.length || 0} rooms · ${checkIn} - ${checkOut} · ${nights}N`
   }
   // Consolidated lodge/event booking — show 'Full Lodge (N rooms)' instead of a single room number
-  if (invoice._event_group || invoice.room_type === 'Full Lodge') {
-    const roomLabel = invoice.room_count ? `Full Lodge (${invoice.room_count} rooms)` : 'Full Lodge'
+  if (invoice._event_group || invoice.room_type === 'Full Lodge' || invoice.room_type === 'Full property') {
+    const roomLabel = invoice.room_count ? `Full property (${invoice.room_count} rooms)` : 'Full property'
     const checkIn = fmtDate(invoice.check_in)
     const checkOut = fmtDate(invoice.check_out)
     const nights = Number(invoice.nights || 0)
@@ -510,11 +510,11 @@ function RefundModal({ invoice, currency, isOffline = false, onClose, onSaved })
         <div className="rounded-2xl bg-amber-50 p-4 text-sm text-amber-900">
           <p className="font-semibold">Refund basis</p>
           <p className="mt-1">Paid amount on this booking: {fmtMoney(currency, paidAmount)}</p>
-          <p className="mt-1">Set the percentage the lodge is retaining. The rest can leave the lodge as a refund or stay on the guest account as customer credit.</p>
+          <p className="mt-1">Set the percentage the property is retaining. The rest can leave as a refund or stay on the guest account as customer credit.</p>
         </div>
 
         <label className="block">
-          <span className="mb-1.5 block text-sm font-medium text-gray-700">Percentage retained by lodge</span>
+          <span className="mb-1.5 block text-sm font-medium text-gray-700">Percentage retained by property</span>
           <input
             type="number"
             min="0"
@@ -562,7 +562,7 @@ function RefundModal({ invoice, currency, isOffline = false, onClose, onSaved })
           </select>
           <p className="mt-1.5 text-xs text-gray-500">
             {transferToCredit
-              ? 'No cash leaves the lodge. The refundable amount becomes customer credit for future bookings.'
+              ? 'No cash leaves the property. The refundable amount becomes customer credit for future bookings.'
               : 'Use the actual refund path used for the guest. Bank transfer refunds should only be confirmed once POP is available.'}
           </p>
         </label>
@@ -618,7 +618,7 @@ function RefundModal({ invoice, currency, isOffline = false, onClose, onSaved })
 
         <div className="grid gap-3 rounded-2xl border border-gray-200 bg-gray-50 p-4 md:grid-cols-2">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-gray-500">Lodge Retains</p>
+            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-gray-500">Property retains</p>
             <p className="mt-1 text-lg font-bold text-gray-900">{fmtMoney(currency, retainedAmount)}</p>
           </div>
           <div>
@@ -726,7 +726,7 @@ function CreditTransferReceipt({ receipt, currency, settings, onClose }) {
       balance: Number(receipt.balance || 0),
       createdAt: receipt.created_at,
       provisional: false,
-      lodgeName: settings?.lodge_name || settings?.company_name || 'Lodge',
+      lodgeName: settings?.lodge_name || settings?.company_name || 'Property',
       companyName: settings?.company_name || '',
       address: settings?.address || '',
       phone: settings?.phone || '',
@@ -740,7 +740,7 @@ function CreditTransferReceipt({ receipt, currency, settings, onClose }) {
     <Modal title="Customer Credit Memo" onClose={onClose} size="lg">
       <div id="printable-receipt" className="mx-auto min-h-[297mm] w-full max-w-[210mm] space-y-8 bg-white p-8 sm:p-12 print:min-h-0 print:w-[210mm] print:max-w-none print:p-[16mm]">
         <div className="text-center">
-          <h2 className="text-2xl font-bold">{settings?.lodge_name || settings?.company_name || 'Lodge'}</h2>
+          <h2 className="text-2xl font-bold">{settings?.lodge_name || settings?.company_name || 'Property'}</h2>
           <p className="text-sm text-slate-500">{settings?.address || ''}</p>
           <h3 className="mt-8 text-xl font-semibold">Customer Credit Memo</h3>
           <p className="mt-1 text-sm text-slate-500">{receiptNumber}</p>
@@ -757,7 +757,7 @@ function CreditTransferReceipt({ receipt, currency, settings, onClose }) {
           <p className="mt-2 text-sm text-emerald-700">Remaining customer credit: {fmtMoney(currency, receipt.balance)}</p>
         </div>
         {receipt.notes && <div className="rounded-xl border border-slate-200 p-4 text-sm"><span className="text-slate-500">Notes</span><p className="mt-1 text-slate-800">{receipt.notes}</p></div>}
-        <p className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-center text-sm font-semibold text-amber-900">This credit came from a cancelled booking settlement. No cash left the lodge in this transaction.</p>
+        <p className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-center text-sm font-semibold text-amber-900">This credit came from a cancelled booking settlement. No cash left the property in this transaction.</p>
         <div className="flex justify-end gap-2 print:hidden">
           <button onClick={save} className="btn-secondary flex items-center gap-2"><Download size={15} /> Save PDF</button>
           <button onClick={print} className="btn-primary flex items-center gap-2"><Printer size={15} /> Print</button>

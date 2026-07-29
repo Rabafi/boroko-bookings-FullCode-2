@@ -1,4 +1,4 @@
-# Boroko Bookings Agent Guide
+# Tsa Bonno HospitalityOS Agent Guide
 
 Last reviewed: 2026-07-03
 
@@ -16,7 +16,7 @@ If an external audit claims severe offline/sync issues, first verify the current
 
 ## Product standard
 
-Boroko Bookings is a financial-grade hospitality operations system. It manages bookings, customers, payments, customer credit, POS, inventory, maintenance, reporting, quotations, events, and operational administration.
+Tsa Bonno HospitalityOS is a financial-grade hospitality operations ecosystem. It manages bookings, customers, payments, customer credit, POS, inventory, maintenance, reporting, quotations, events, and operational administration.
 
 Correctness means preserving financial and operational truth under concurrency, retries, offline operation, and partial failure.
 
@@ -80,6 +80,10 @@ It is not globally read-only: it supports selected RPC-backed operational action
 6. Run the real scripts from `package.json`; do not invent test names.
 7. Update [PROJECT_STATE.md](PROJECT_STATE.md) when a change materially alters architecture, active risks, release state, or deployment assumptions.
 
+## Guardrails are mandatory
+
+Every new or changed operator workflow must include guardrails proportionate to its risk; a polished happy path is not sufficient. At minimum, decide and implement the applicable authorization, tenancy/outlet scope, input and state-transition validation, duplicate/retry protection, authoritative audit or ledger trail, actionable error/recovery guidance, and regression coverage. Financial, stock, availability, and irreversible actions must fail closed and use server-authoritative atomic contracts. Guardrails must be visible where an operator needs guidance, but enforcement must never rely on a visible UI control alone.
+
 ## Definition of done
 
 A critical change is not done until:
@@ -90,5 +94,6 @@ A critical change is not done until:
 - desktop and every other applicable surface use the same authoritative contract;
 - offline replay preserves that contract;
 - reports and audit history remain financially consistent;
+- relevant guardrails prevent invalid, duplicated, unauthorized, or unrecoverable operational actions and give the operator a safe recovery path;
 - focused tests and affected builds pass;
 - deployment status is stated accurately rather than inferred.

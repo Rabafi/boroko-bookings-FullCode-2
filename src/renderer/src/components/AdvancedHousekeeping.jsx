@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { AlertTriangle, CheckCircle2, Clock, RefreshCw, Search, ShowerHead, Sparkles } from 'lucide-react'
 
 const HOUSEKEEPING_STATES = [
   { key: 'dirty', label: 'Dirty', icon: ShowerHead, tone: 'bg-amber-100 text-amber-700 border-amber-200' },
   { key: 'in_progress', label: 'In Progress', icon: Clock, tone: 'bg-blue-100 text-blue-700 border-blue-200' },
-  { key: 'clean', label: 'Clean', icon: CheckCircle2, tone: 'bg-emerald-100 text-emerald-700 border-emerald-200' }
+  { key: 'clean', label: 'Clean', icon: CheckCircle2, tone: 'bg-emerald-100 text-emerald-700 border-emerald-200' },
+  { key: 'inspected', label: 'Inspected', icon: Sparkles, tone: 'bg-purple-100 text-purple-700 border-purple-200' }
 ]
 
 function statusLabel(value) {
@@ -12,28 +14,52 @@ function statusLabel(value) {
 }
 
 export default function AdvancedHousekeeping() {
+  const navigate = useNavigate()
   const [rooms, setRooms] = useState([])
   const [arrivals, setArrivals] = useState([])
   const [departures, setDepartures] = useState([])
   const [savingRoomId, setSavingRoomId] = useState(null)
   const [query, setQuery] = useState('')
   const [error, setError] = useState('')
+  const [warnings, setWarnings] = useState([])
   const [loading, setLoading] = useState(true)
 
   const loadData = async () => {
     setLoading(true)
     setError('')
+    setWarnings([])
     try {
+      const warn = []
+      const settle = async (label, promise) => {
+        try {
+          return await promise
+        } catch (e) {
+          warn.push(`${label}: ${e?.message || 'failed'}`)
+          return null
+        }
+      }
+      if (!window.api?.rooms?.getAll) throw new Error('Rooms API is not available')
       const [roomRows, arrivalRows, departureRows] = await Promise.all([
-        window.api.rooms.getAll(),
-        window.api.hotel.getArrivals(),
-        window.api.hotel.getDepartures()
+        settle('Rooms', window.api.rooms.getAll()),
+        settle('Arrivals', window.api?.hotel?.getArrivals?.()),
+        settle('Departures', window.api?.hotel?.getDepartures?.())
       ])
+      if (roomRows == null) {
+        setError(warn.join(' · ') || 'Could not load advanced housekeeping board.')
+        setRooms([])
+        setArrivals([])
+        setDepartures([])
+        return
+      }
       setRooms(Array.isArray(roomRows) ? roomRows : [])
       setArrivals(Array.isArray(arrivalRows) ? arrivalRows : [])
       setDepartures(Array.isArray(departureRows) ? departureRows : [])
+      if (warn.length) setWarnings(warn)
     } catch (err) {
       setError(err?.message || 'Could not load advanced housekeeping board.')
+      setRooms([])
+      setArrivals([])
+      setDepartures([])
     } finally {
       setLoading(false)
     }
@@ -116,8 +142,13 @@ export default function AdvancedHousekeeping() {
           {error}
         </div>
       )}
+      {warnings.length > 0 && !error && (
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+          Partial load: {warnings.join(' · ')}
+        </div>
+      )}
 
-      <div className="grid gap-3 md:grid-cols-4">
+      <div className="grid gap-3 md:grid-cols-5">
         {HOUSEKEEPING_STATES.map(({ key, label, icon: Icon, tone }) => (
           <div key={key} className="bb-card flex items-center gap-3 p-4">
             <div className={`flex h-10 w-10 items-center justify-center rounded-2xl border ${tone}`}>
@@ -195,6 +226,13 @@ export default function AdvancedHousekeeping() {
                         {savingRoomId === room.id && currentStatus !== state.key ? 'Saving...' : state.label}
                       </button>
                     ))}
+                    <button
+                      type="button"
+                      onClick={() => navigate(`/maintenance?room_id=${encodeURIComponent(room.id)}`)}
+                      className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+                    >
+                      Maintenance
+                    </button>
                   </div>
                 </div>
               )

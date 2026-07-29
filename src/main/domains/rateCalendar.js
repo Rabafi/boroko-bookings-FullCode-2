@@ -108,7 +108,17 @@ async function _getRateConflicts(roomTypeId, startDate, endDate) {
 }
 
 async function _getApplicableRate(roomTypeId, date) {
-  if (!state.isOnline) return { rate_amount: 0, currency: 'BWP', source: 'offline' };
+  if (!state.isOnline) {
+    return {
+      rate_amount: 0,
+      currency: 'BWP',
+      source: 'offline_client_estimate',
+      is_estimate: true,
+      authoritative: false,
+      _financial_estimate: true,
+      message: 'Offline rate estimate only; server get_applicable_rate / quote_room_stay is authoritative when online.'
+    };
+  }
   try {
     const { data, error } = await state.supabase.rpc('get_applicable_rate', {
       p_lodge_id: state.lodgeId,
@@ -116,10 +126,57 @@ async function _getApplicableRate(roomTypeId, date) {
       p_date: date
     });
     if (error) throw error;
-    return data || { rate_amount: 0, currency: 'BWP', source: 'none' };
+    const result = data || { rate_amount: 0, currency: 'BWP', source: 'none' };
+    return {
+      ...result,
+      is_estimate: false,
+      authoritative: true,
+      source: result.source || 'server_get_applicable_rate'
+    };
   } catch (err) {
     throw new Error(err?.message || 'Failed to get applicable rate');
   }
+}
+
+/**
+ * Prefer server quote_room_stay for multi-night stay totals.
+ * Falls back to per-day get_applicable_rate labelled as estimate when offline.
+ */
+async function _quoteStayTotal(roomId, checkIn, checkOut, corporateAccountId = null) {
+  if (!state.lodgeId) throw new Error('No lodge selected');
+  if (!roomId || !checkIn || !checkOut) throw new Error('roomId, checkIn, and checkOut are required');
+
+  if (state.isOnline && typeof state.supabase?.rpc === 'function') {
+    try {
+      const { data, error } = await state.supabase.rpc('quote_room_stay', {
+        p_lodge_id: state.lodgeId,
+        p_room_id: roomId,
+        p_check_in: checkIn,
+        p_check_out: checkOut,
+        p_corporate_account_id: corporateAccountId
+      });
+      if (!error && data && data.success !== false) {
+        return {
+          ...data,
+          source: 'server_quote_room_stay',
+          is_estimate: false,
+          authoritative: true
+        };
+      }
+    } catch {
+      // fall through to estimate path
+    }
+  }
+
+  return {
+    success: true,
+    total: 0,
+    source: 'client_rate_calendar_estimate',
+    is_estimate: true,
+    authoritative: false,
+    _financial_estimate: true,
+    message: 'Client estimate only; prefer server quote_room_stay when online.'
+  };
 }
 
 // ─── Promo Codes ──────────────────────────────────────────────────────────────
@@ -429,7 +486,16 @@ async function _deleteYieldRule(id) {
 }
 
 async function _getApplicableYieldAdjustment(date, currentOccupancyPct) {
-  if (!state.isOnline) return { adjusted: false, multiplier: 1.0, note: 'offline' };
+  if (!state.isOnline) {
+    return {
+      adjusted: false,
+      multiplier: 1.0,
+      note: 'offline',
+      is_estimate: true,
+      authoritative: false,
+      source: 'offline_client_estimate'
+    };
+  }
   try {
     const { data, error } = await state.supabase.rpc('get_applicable_yield_adjustment', {
       p_lodge_id: state.lodgeId,
@@ -437,14 +503,29 @@ async function _getApplicableYieldAdjustment(date, currentOccupancyPct) {
       p_current_occupancy_pct: Number(currentOccupancyPct) || 0
     });
     if (error) throw error;
-    return data || { adjusted: false, multiplier: 1.0 };
+    return {
+      ...(data || { adjusted: false, multiplier: 1.0 }),
+      is_estimate: false,
+      authoritative: true,
+      source: 'server_get_applicable_yield_adjustment'
+    };
   } catch (err) {
     throw new Error(err?.message || 'Failed to get yield adjustment');
   }
 }
 
 async function _calculateOccupancyBasedRate(baseRate, date, roomTypeId) {
-  if (!state.isOnline) return { rate: baseRate, adjusted: false, note: 'offline' };
+  if (!state.isOnline) {
+    return {
+      rate: Number(baseRate) || 0,
+      adjusted: false,
+      note: 'offline',
+      is_estimate: true,
+      authoritative: false,
+      source: 'offline_client_estimate',
+      _financial_estimate: true
+    };
+  }
   try {
     const { data, error } = await state.supabase.rpc('calculate_occupancy_based_rate', {
       p_lodge_id: state.lodgeId,
@@ -453,7 +534,12 @@ async function _calculateOccupancyBasedRate(baseRate, date, roomTypeId) {
       p_room_type_id: roomTypeId || null
     });
     if (error) throw error;
-    return data || { rate: baseRate, adjusted: false };
+    return {
+      ...(data || { rate: baseRate, adjusted: false }),
+      is_estimate: false,
+      authoritative: true,
+      source: 'server_calculate_occupancy_based_rate'
+    };
   } catch (err) {
     throw new Error(err?.message || 'Failed to calculate occupancy based rate');
   }
@@ -498,6 +584,10 @@ export function getRateConflicts(roomTypeId, startDate, endDate) {
 
 export function getApplicableRate(roomTypeId, date) {
   return _getApplicableRate(roomTypeId, date);
+}
+
+export function quoteStayTotal(roomId, checkIn, checkOut, corporateAccountId = null) {
+  return _quoteStayTotal(roomId, checkIn, checkOut, corporateAccountId);
 }
 
 export function getAllPromoCodes() {

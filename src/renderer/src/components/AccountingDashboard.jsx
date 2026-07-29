@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { DollarSign, TrendingUp, AlertTriangle, RefreshCw, Users, CreditCard } from 'lucide-react'
 import { safeLoadAll, hasPartialFailures, getFailureSummary } from '../utils/safeLoad'
 import { callAdminApi } from '../utils/adminApi'
+import { formatMoney } from '../utils/timeAgo'
 
 const LOAD_LABELS = ['MRR/ARR', 'Revenue', 'Lodge Finances', 'Collections', 'Revenue by Method']
 
@@ -36,7 +37,7 @@ export default function AccountingDashboard() {
       setCollections(cq)
       setRevenueByMethod(rbm)
       const unavailable = data
-        .map((item, i) => item?.unavailable ? LOAD_LABELS[i] : null)
+        .map((item, i) => item?.unavailable || item?.ok === false ? LOAD_LABELS[i] : null)
         .filter(Boolean)
       if (hasPartialFailures(errors) || unavailable.length > 0) {
         const failureSummary = getFailureSummary(errors, LOAD_LABELS)
@@ -49,7 +50,7 @@ export default function AccountingDashboard() {
 
   useEffect(() => { load() }, [load])
 
-  const fmt = (n) => `$${Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
+  const fmt = (n, currency = 'BWP') => formatMoney(currency, n)
 
   const totalOutstanding = lodgeFin?.lodges?.reduce((sum, l) => sum + (Number(l.total_outstanding) || 0), 0) || 0
   const collectionsTotal = collections?.queue?.reduce((sum, l) => sum + (Number(l.total_outstanding) || 0), 0) || 0
@@ -59,7 +60,10 @@ export default function AccountingDashboard() {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <DollarSign className="text-purple-400" size={20} />
-          <h2 className="text-white font-semibold text-lg">Accounting Overview</h2>
+          <div>
+            <h2 className="text-white font-semibold text-lg">Accounting Overview</h2>
+            <p className="text-[10px] text-gray-500">Commercial subscription metrics and customer booking finance are shown separately. Amounts are reporting-only.</p>
+          </div>
         </div>
         <button onClick={load} className="text-xs px-3 py-1.5 rounded-lg bg-gray-700 text-gray-300 hover:bg-gray-600 hover:text-white transition-colors flex items-center gap-1">
           <RefreshCw size={12} /> Refresh
@@ -86,11 +90,11 @@ export default function AccountingDashboard() {
       {mrr && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <div className="bg-gray-800 rounded-xl p-3">
-            <p className="text-[10px] uppercase text-gray-400 font-semibold">MRR</p>
+            <p className="text-[10px] uppercase text-gray-400 font-semibold">Commercial MRR</p>
             <p className="text-2xl font-bold text-green-400">{fmt(mrr.mrr)}</p>
           </div>
           <div className="bg-gray-800 rounded-xl p-3">
-            <p className="text-[10px] uppercase text-gray-400 font-semibold">ARR</p>
+            <p className="text-[10px] uppercase text-gray-400 font-semibold">Commercial ARR</p>
             <p className="text-2xl font-bold text-green-400">{fmt(mrr.arr)}</p>
           </div>
           <div className="bg-gray-800 rounded-xl p-3">
@@ -107,7 +111,7 @@ export default function AccountingDashboard() {
       {/* MRR by plan */}
       {mrr?.by_plan && Object.keys(mrr.by_plan).length > 0 && (
         <div className="bg-gray-800 rounded-xl p-4">
-          <p className="text-xs font-semibold text-gray-400 mb-3">MRR by Plan</p>
+          <p className="text-xs font-semibold text-gray-400 mb-3">Commercial MRR by Plan</p>
           <div className="flex flex-wrap gap-3">
             {Object.entries(mrr.by_plan).map(([plan, val]) => (
               <div key={plan} className="bg-gray-750 border border-gray-700 rounded-lg px-3 py-2">

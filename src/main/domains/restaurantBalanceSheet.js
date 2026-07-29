@@ -17,6 +17,23 @@ export function getBalanceSheet(asOfDate = null) {
   });
 }
 
+function _getIncomeStatement(startDate, endDate) {
+  return state.supabase.rpc('get_restaurant_income_statement', {
+    p_lodge_id: state.lodgeId,
+    p_start_date: startDate,
+    p_end_date: endDate,
+  });
+}
+
+export function getIncomeStatement(startDate, endDate) {
+  return dedupePromise(`getIncomeStatement:${startDate}:${endDate}`, async () => {
+    if (!state.isOnline) throw new Error('Income Statement requires online connection');
+    const { data, error } = await _getIncomeStatement(startDate, endDate);
+    if (error) throw new Error(error.message);
+    return data || {};
+  });
+}
+
 function _getCashFlowStatement(startDate, endDate) {
   return state.supabase.rpc('get_restaurant_cash_flow_statement', {
     p_lodge_id: state.lodgeId,

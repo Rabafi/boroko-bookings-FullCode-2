@@ -6,6 +6,19 @@ const LATE_POLICY_CACHE = 'late-checkout-policies'
 const EARLY_REQ_CACHE = 'early-checkin-requests'
 const LATE_REQ_CACHE = 'late-checkout-requests'
 
+/**
+ * Approval affects billing fees — ONLINE-ONLY (docs/OFFLINE_MATRIX.md).
+ */
+function requireOnlineApproval(operation) {
+  if (state.isOnline === false) {
+    const err = new Error(
+      `${operation} requires an internet connection. Early/late approval cannot be queued offline.`
+    )
+    err.onlineOnly = true
+    throw err
+  }
+}
+
 async function _getEarlyPolicies() {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return { policies: [] }
@@ -133,6 +146,7 @@ async function _createEarlyRequest(bookingId, policyId, time, notes) {
 async function _approveEarlyRequest(id) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
+  requireOnlineApproval('Approve early check-in request')
   const { data, error } = await state.supabase.rpc('approve_early_checkin_request', { p_request_id: id, p_lodge_id: currentLodgeId, p_approved_by: state.currentUser?.id || null })
   if (error) throw error
   return data
@@ -175,6 +189,7 @@ async function _createLateRequest(bookingId, policyId, time, notes) {
 async function _approveLateRequest(id) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
+  requireOnlineApproval('Approve late check-out request')
   const { data, error } = await state.supabase.rpc('approve_late_checkout_request', { p_request_id: id, p_lodge_id: currentLodgeId, p_approved_by: state.currentUser?.id || null })
   if (error) throw error
   return data

@@ -119,7 +119,7 @@ export default function OpsAiLayer() {
           navigate('/ai', { state: { from: routeKey } })
         }}
         className="pointer-events-auto relative inline-flex items-center gap-3 rounded-full bg-slate-900 px-4 py-3 text-white shadow-[0_24px_60px_rgba(15,23,42,0.25)] transition hover:bg-slate-800"
-        title="Open Boroko Assistant"
+        title="Open Tsa Bonno Assistant"
       >
         <div className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-white/10">
           <Sparkles size={16} />

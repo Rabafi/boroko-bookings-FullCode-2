@@ -1131,7 +1131,7 @@ export default function OpsAi() {
       const formatRoomLines = (rows) => rows.map((row) => `- Room ${row.room_number || '-'}${row.label ? ` · ${row.label}` : ''}`).join('\n') || '- None'
       const formatMaintenanceLines = (rows) => rows.map((row) => `- ${row.title || 'Maintenance ticket'}${row.room_number ? ` · Room ${row.room_number}` : ''}${row.priority ? ` · ${row.priority}` : ''}`).join('\n') || '- None'
       const whatsappText = [
-        'Boroko shift handover',
+        'Tsa Bonno shift handover',
         `Arrivals today: ${arrivalsToday.length}`,
         formatGuestLines(arrivalsToday),
         `Departures today: ${departuresToday.length}`,
@@ -1148,7 +1148,7 @@ export default function OpsAi() {
         `Sync failed: ${result.sync_health?.failed || 0}`
       ].join('\n')
       const markdownText = [
-        '# Boroko Shift Handover',
+        '# Tsa Bonno Shift Handover',
         `- Arrivals today: ${arrivalsToday.length}`,
         `- Departures today: ${departuresToday.length}`,
         `- Tomorrow arrivals: ${arrivalsTomorrow.length}`,
@@ -1307,7 +1307,7 @@ export default function OpsAi() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="min-w-0">
             <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-emerald-700/70">Local App Assistant</p>
-            <h1 className="mt-0.5 text-xl font-black leading-tight text-slate-950">Boroko Assistant</h1>
+            <h1 className="mt-0.5 text-xl font-black leading-tight text-slate-950">Tsa Bonno Assistant</h1>
             <p className="mt-0.5 max-w-3xl truncate text-xs text-slate-500">Find any feature, get app instructions, and read live summaries. It will not change records.</p>
           </div>
           <div className="inline-flex shrink-0 items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700">

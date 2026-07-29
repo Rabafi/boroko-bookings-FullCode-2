@@ -1,8 +1,8 @@
 {
-  "name": "boroko-pos-legacy",
+  "name": "@tsa-bonno/pos-legacy",
   "version": "1.1.0",
   "type": "module",
-  "description": "Boroko POS Legacy for Windows Embedded POSReady 7",
+  "description": "Tsa Bonno POS Legacy for Windows Embedded POSReady 7",
   "author": {
     "name": "Botswapelo Studios Pty Ltd"
   },
@@ -12,9 +12,9 @@
     "dev": "npm run prepare:config && electron-vite dev",
     "build": "npm run prepare:config && electron-vite build",
     "preview": "electron-vite preview",
-    "dist": "npm run build && electron-builder --win nsis --publish never",
-    "dist:dir": "npm run build && electron-builder --win dir --publish never",
-    "dist:publish": "npm run build && electron-builder --win nsis --publish always",
+    "dist": "npm run build && electron-builder --win nsis --ia32 --publish never",
+    "dist:dir": "npm run build && electron-builder --win dir --ia32 --publish never",
+    "dist:publish": "npm run build && electron-builder --win nsis --ia32 --publish always",
     "version:patch": "npm version patch --no-git-tag-version",
     "version:minor": "npm version minor --no-git-tag-version",
     "version:major": "npm version major --no-git-tag-version",
@@ -49,9 +49,9 @@
   },
   "build": {
     "appId": "com.boroko.poslegacy",
-    "productName": "Boroko POS Legacy",
+    "productName": "Tsa Bonno POS Legacy",
     "asar": true,
-    "artifactName": "Boroko-POS-Legacy-${version}-${arch}.${ext}",
+    "artifactName": "Tsa-Bonno-POS-Legacy-${version}-${arch}.${ext}",
     "icon": "src/main/assets/icon.ico",
     "publish": {
       "provider": "github",
@@ -59,6 +59,7 @@
       "repo": "boroko-pos-legacy-releases"
     },
     "win": {
+      "icon": "src/main/assets/icon.ico",
       "target": [
         {
           "target": "nsis",
@@ -71,7 +72,11 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "deleteAppDataOnUninstall": false
+      "deleteAppDataOnUninstall": false,
+      "shortcutName": "Tsa Bonno POS Legacy",
+      "uninstallDisplayName": "Tsa Bonno POS Legacy",
+      "installerIcon": "src/main/assets/icon.ico",
+      "uninstallerIcon": "src/main/assets/icon.ico"
     },
     "files": [
       "out/**/*",

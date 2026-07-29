@@ -1,9 +1,9 @@
-# Boroko Bookings Promo Copy
+# Tsa Bonno HospitalityOS Promo Copy
 
 ## Short Facebook Post 1
 Still managing bookings, rooms, and invoices in different places?
 
-Boroko Bookings helps lodges run front desk work, room control, reports, stock, and online reservations from one system.
+Tsa Bonno HospitalityOS helps lodges run front desk work, room control, reports, stock, and online reservations from one system.
 
 Built by Batswana for Batswana hospitality businesses.
 
@@ -13,7 +13,7 @@ Start with a free 7-day demo.
 Your lodge may not need complicated software.
 It may just need a system that makes daily work clearer.
 
-Boroko Bookings helps with:
+Tsa Bonno HospitalityOS helps with:
 - bookings and guest records
 - invoices and payment follow-up
 - reports and expenses
@@ -23,16 +23,16 @@ Boroko Bookings helps with:
 Free 7-day demo available.
 
 ## WhatsApp Status 1
-Boroko Bookings helps lodges manage bookings, rooms, invoices, reports, stock, and online reservations.
+Tsa Bonno HospitalityOS helps lodges manage bookings, rooms, invoices, reports, stock, and online reservations.
 Built by Batswana for Batswana.
 Free 7-day demo available.
 
 ## WhatsApp Status 2
-If your lodge is still juggling notebooks, spreadsheets, and WhatsApp chats, Boroko Bookings can help.
+If your lodge is still juggling notebooks, spreadsheets, and WhatsApp chats, Tsa Bonno HospitalityOS can help.
 Free 7-day demo.
 
 ## Simple Sales Message
-Hello, I’d like to introduce Boroko Bookings.
+Hello, I’d like to introduce Tsa Bonno HospitalityOS.
 
 It is lodge software built by Batswana for Batswana hospitality businesses.
 
@@ -47,4 +47,4 @@ Manual systems usually make it hard to see:
 - where stock is running out
 - what the business actually made today
 
-Boroko Bookings brings those things into one place.
+Tsa Bonno HospitalityOS brings those things into one place.

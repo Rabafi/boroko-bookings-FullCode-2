@@ -15,7 +15,9 @@ async function _getAllAssignments() {
     return rows
   } catch (e) {
     const cached = readCache(ASSIGNMENT_CACHE)
-    return Array.isArray(cached) ? cached : []
+    if (Array.isArray(cached) && (cached.length > 0 || !state.isOnline)) return cached
+    if (!state.isOnline) return []
+    throw new Error(e?.message || 'Could not load housekeeping assignments')
   }
 }
 
@@ -130,6 +132,7 @@ export async function getHousekeepingDashboard(date, lodgeIdArg) {
     p_date: date || new Date().toISOString().slice(0, 10)
   })
   if (error) throw error
+  // Never invent a silent empty dashboard — callers surface the throw
   return data
 }
 

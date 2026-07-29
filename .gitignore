@@ -26,4 +26,7 @@ run-pw-tests.bat
 .netlify
 
 .vercel
+.codex-temp/
+.tmp/
 .env*.local
+.env*

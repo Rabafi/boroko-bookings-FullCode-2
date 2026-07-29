@@ -23,8 +23,8 @@ function assertWorkflow(workflowKey) {
   return key
 }
 
-function cacheKey(workflowKey) {
-  return `${CACHE_KEY}:${workflowKey}`
+function cacheKey(workflowKey, lodgeId) {
+  return `${CACHE_KEY}:${lodgeId}:${workflowKey}`
 }
 
 async function callEnterpriseRpc(fn, args) {
@@ -34,9 +34,9 @@ async function callEnterpriseRpc(fn, args) {
   return data
 }
 
-async function _getEnterpriseWorkflowRecords(workflowKey) {
+async function _getEnterpriseWorkflowRecords(workflowKey, lodgeIdArg = null) {
   const key = assertWorkflow(workflowKey)
-  const currentLodgeId = state.lodgeId
+  const currentLodgeId = lodgeIdArg || state.lodgeId
   if (!currentLodgeId) return []
 
   try {
@@ -45,21 +45,23 @@ async function _getEnterpriseWorkflowRecords(workflowKey) {
       p_workflow_key: key
     })
     const rows = Array.isArray(data) ? data : []
-    writeCache(cacheKey(key), rows)
+    writeCache(cacheKey(key, currentLodgeId), rows)
     return rows
   } catch (error) {
-    const cached = readCache(cacheKey(key))
+    if (lodgeIdArg) throw error
+    const cached = readCache(cacheKey(key, currentLodgeId))
     return Array.isArray(cached) ? cached : []
   }
 }
 
-export function getEnterpriseWorkflowRecords(workflowKey) {
-  return dedupePromise(`enterpriseWorkflow:${workflowKey}`, () => _getEnterpriseWorkflowRecords(workflowKey))
+export function getEnterpriseWorkflowRecords(workflowKey, lodgeIdArg = null) {
+  const currentLodgeId = lodgeIdArg || state.lodgeId
+  return dedupePromise(`enterpriseWorkflow:${currentLodgeId}:${workflowKey}`, () => _getEnterpriseWorkflowRecords(workflowKey, lodgeIdArg))
 }
 
-export async function upsertEnterpriseWorkflowRecord(workflowKey, record = {}) {
+export async function upsertEnterpriseWorkflowRecord(workflowKey, record = {}, lodgeIdArg = null) {
   const key = assertWorkflow(workflowKey)
-  const currentLodgeId = state.lodgeId
+  const currentLodgeId = lodgeIdArg || state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
 
   return callEnterpriseRpc('upsert_enterprise_workflow_record', {
@@ -70,9 +72,9 @@ export async function upsertEnterpriseWorkflowRecord(workflowKey, record = {}) {
   })
 }
 
-export async function appendEnterpriseWorkflowEvent(workflowKey, event = {}) {
+export async function appendEnterpriseWorkflowEvent(workflowKey, event = {}, lodgeIdArg = null) {
   const key = assertWorkflow(workflowKey)
-  const currentLodgeId = state.lodgeId
+  const currentLodgeId = lodgeIdArg || state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
 
   return callEnterpriseRpc('append_enterprise_workflow_event', {

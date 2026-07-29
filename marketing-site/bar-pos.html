@@ -3,21 +3,21 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Boroko Bar POS | Point of Sale for Bars, Pubs &amp; Shebeens</title>
+    <title>Tsa Bonno Bar POS | Point of Sale for Bars, Pubs &amp; Shebeens</title>
     <meta name="description" content="A simple, offline-ready point of sale for bars, shebeens, and pubs in Botswana. Ring up drinks, track stock, close your till — no internet needed." />
-    <meta property="og:title" content="Boroko Bar POS" />
+    <meta property="og:title" content="Tsa Bonno Bar POS" />
     <meta property="og:description" content="A simple POS for bars, shebeens, and pubs. No internet needed. No monthly fees." />
     <meta property="og:type" content="website" />
     <meta property="og:image" content="https://borokobookings.com/assets/og-image.png" />
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:site" content="@borokobookings" />
-    <meta name="twitter:title" content="Boroko Bar POS" />
+    <meta name="twitter:title" content="Tsa Bonno Bar POS" />
     <meta name="twitter:description" content="A simple POS for bars, shebeens, and pubs. No internet needed." />
     <meta name="twitter:image" content="https://borokobookings.com/assets/og-image.png" />
     <meta name="theme-color" content="#0c0a09" />
     <link rel="canonical" href="https://borokobookings.com/bar-pos" />
-    <link rel="icon" type="image/svg+xml" href="./assets/boroko-bookings-logo.svg" />
-    <link rel="alternate icon" type="image/png" href="./assets/boroko-bookings-logo-light.png" />
+    <link rel="icon" type="image/svg+xml" href="./assets/tsa-bonno-restaurant-bar-os-logo.svg" />
+    <link rel="alternate icon" type="image/png" href="./assets/tsa-bonno-restaurant-bar-os-logo-color.png" />
     <link rel="stylesheet" href="./styles.css" />
     <style>
       .bar-hero { background: linear-gradient(135deg, #0c0a09 0%, #1c1917 50%, #0c0a09 100%); }
@@ -51,22 +51,24 @@
       .bar-cta { background: linear-gradient(135deg, #064e3b 0%, #065f46 100%); border-radius: 16px; padding: 48px 32px; text-align: center; }
       .bar-cta h2 { font-size: 1.5rem; font-weight: 800; color: #d6d3d1; margin-bottom: 12px; }
       .bar-cta p { font-size: 0.9rem; color: #a8a29e; margin-bottom: 24px; max-width: 500px; margin-left: auto; margin-right: auto; }
+      @media (max-width: 700px) {
+        .bar-hero-grid { grid-template-columns: minmax(0, 1fr) !important; }
+        .bar-display-mockup { width: 100%; max-width: 100%; }
+        .bar-why-grid { grid-template-columns: minmax(0, 1fr); }
+        .bar-hero-grid + * { min-width: 0; }
+        section .container > div[style*="grid-template-columns:1fr 1fr"] { grid-template-columns: minmax(0, 1fr) !important; }
+      }
     </style>
   </head>
-  <body class="page page-dark">
+  <body class="page page-dark" data-page="bar-pos" data-product="hospitality-pos">
     <div id="app">
       <header class="site-header">
         <div class="container header-inner">
           <a href="./index.html" class="brand">
-            <span class="brand-mark"><img src="./assets/boroko-bookings-logo-light.png" alt="" aria-hidden="true" width="120" height="43" /></span>
-            <span class="brand-copy"><strong>Boroko</strong><span>Bar POS</span></span>
+            <span class="brand-mark"><img src="./assets/tsa-bonno-restaurant-bar-os-logo-light.png" alt="" aria-hidden="true" width="120" height="43" /></span>
+            <span class="brand-copy"><strong>Tsa Bonno</strong><span>Bar POS</span></span>
           </a>
-          <nav class="header-nav" aria-label="Main">
-            <a href="./bar-pos.html" class="active">Bar POS</a>
-            <a href="./packages.html">Packages</a>
-            <a href="./download.html">Download</a>
-            <a href="./contact.html">Contact</a>
-          </nav>
+          <nav class="header-nav" aria-label="Main"><a href="./lodge-app.html" data-nav="lodge-app">Lodge</a><a href="./hotel.html" data-nav="hotel">Hotel</a><a href="./restaurant-pos.html" data-nav="restaurant-pos">Restaurant POS</a><a href="./bar-pos.html" data-nav="bar-pos">Bar POS</a><a href="./packages.html" data-nav="packages">Packages</a><a href="./contact.html" data-nav="contact">Contact</a></nav>
         </div>
       </header>
 
@@ -85,10 +87,11 @@
                 <span style="color:#10b981;">Close your till.</span>
               </h1>
               <p style="font-size:1rem;color:#a8a29e;line-height:1.6;margin-bottom:24px;max-width:480px;">
-                A simple, offline POS for bars, pubs, and shebeens in Botswana. No internet. No monthly fees. No training manual. Just a screen that sells drinks.
+                A simple, offline POS for bars, pubs, and shebeens in Botswana. P4,500 for a one-year licence. No monthly subscription. No training manual. Just a screen that sells drinks.
               </p>
               <div style="display:flex;gap:12px;flex-wrap:wrap;">
                 <a class="btn btn-primary btn-lg" href="#" data-action="download">Download Free Trial</a>
+                <a class="btn btn-secondary btn-lg" id="fallback-download" href="https://github.com/Rabafi/boroko-hospitality-pos-releases/releases/latest" target="_blank" rel="noreferrer">Direct Windows download</a>
                 <a class="btn btn-secondary btn-lg" href="https://wa.me/26772789415" target="_blank" rel="noreferrer">Chat on WhatsApp</a>
               </div>
             </div>
@@ -149,7 +152,7 @@
         <section style="padding:40px 0;background:#0c0a09;border-top:1px solid #292524;border-bottom:1px solid #292524;">
           <div class="container">
             <div class="bar-kpi-strip">
-              <div class="bar-kpi-card"><div class="num">POS</div><div class="label">Ring up drinks in 2 taps</div></div>
+              <div class="bar-kpi-card"><div class="num">P4,500</div><div class="label">One-year Bar POS licence</div></div>
               <div class="bar-kpi-card"><div class="num">Stock</div><div class="label">Track bottles &amp; kegs</div></div>
               <div class="bar-kpi-card"><div class="num">Staff</div><div class="label">Clock in / clock out</div></div>
               <div class="bar-kpi-card"><div class="num">Cash</div><div class="label">Till close with variance</div></div>
@@ -164,7 +167,7 @@
             <div style="text-align:center;margin-bottom:40px;">
               <div class="section-tag" style="background:rgba(16,185,129,0.1);color:#10b981;">Everything you need</div>
               <h2 style="font-size:1.8rem;font-weight:800;color:#d6d3d1;margin-top:12px;">No fluff. Just the tools that sell drinks.</h2>
-              <p style="color:#a8a29e;margin-top:8px;max-width:500px;margin-left:auto;margin-right:auto;">Boroko Bar POS does one thing: help you sell drinks, track your money, and close without stress.</p>
+              <p style="color:#a8a29e;margin-top:8px;max-width:500px;margin-left:auto;margin-right:auto;">Tsa Bonno Bar POS does one thing: help you sell drinks, track your money, and close without stress.</p>
             </div>
 
             <div class="bar-feature-grid">
@@ -274,7 +277,7 @@
           <div class="container">
             <div class="bar-cta">
               <h2>Your bar deserves better than a notebook.</h2>
-              <p>Download Boroko Bar POS. Set it up in 5 minutes. Start tracking your sales, stock, and cash — no internet needed.</p>
+              <p>Download Tsa Bonno Bar POS. Set it up in 5 minutes. Start tracking your sales, stock, and cash — no internet needed.</p>
               <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;">
                 <a class="btn btn-primary btn-lg" href="#" data-action="download">Download Free Trial</a>
                 <a class="btn btn-secondary btn-lg" href="https://wa.me/26772789415" target="_blank" rel="noreferrer">Chat on WhatsApp</a>
@@ -282,16 +285,17 @@
             </div>
           </div>
         </section>
+        <section class="section product-pricing" id="pricing" style="background:#0c0a09;"><div class="container"><div class="single-price-card bar-single-price"><div><span class="section-tag">Bar-only pricing</span><h2>One focused licence. P4,500 for one year.</h2><p>Counter sales, drink products, pack stock, low-stock alerts, cash control, shifts, reports, customer display, and bar board.</p></div><strong>P4,500 <small>one-year licence</small></strong><a class="btn btn-primary" href="./packages.html#bar-package">See package details</a></div></div></section>
       </main>
 
       <footer class="site-footer" style="background:#1c1917;border-top:1px solid #292524;">
         <div class="container footer-grid">
           <div>
             <div class="brand footer-brand">
-              <span class="brand-mark"><img src="./assets/boroko-bookings-logo-light.png" alt="" aria-hidden="true" width="150" height="54" /></span>
-              <span class="brand-copy"><strong>Boroko Bar POS</strong><span>Built by Batswana for Botswana bars</span></span>
+              <span class="brand-mark"><img src="./assets/tsa-bonno-restaurant-bar-os-logo-light.png" alt="" aria-hidden="true" width="150" height="54" /></span>
+              <span class="brand-copy"><strong>Tsa Bonno Bar POS</strong><span>Built by Batswana for Botswana bars</span></span>
             </div>
-            <p class="footer-copy" style="color:#78716c;">A simple, offline POS for bars, pubs, and shebeens. Part of the Boroko Bookings family.</p>
+            <p class="footer-copy" style="color:#78716c;">A simple, offline POS for bars, pubs, and shebeens. Part of the Tsa Bonno HospitalityOS family.</p>
           </div>
           <div class="footer-links">
             <a href="./index.html">Home</a>

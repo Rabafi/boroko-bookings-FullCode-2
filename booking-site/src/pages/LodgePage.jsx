@@ -25,6 +25,7 @@ import SeoMeta, { setLodgeSchema } from '../components/SeoMeta.jsx'
 import LodgeHeader from '../components/LodgeHeader.jsx'
 import RoomCard from '../components/RoomCard.jsx'
 import FaqSection from '../components/FaqSection.jsx'
+import tsaBonnoLodgingLogo from '../assets/tsa-bonno-lodgingos-logo-color.png'
 
 function SkeletonCard() {
   return (
@@ -90,6 +91,7 @@ export default function LodgePage() {
   const [checkIn, setCheckIn] = useState(today)
   const [checkOut, setCheckOut] = useState(tomorrow)
   const [rooms, setRooms] = useState(null)
+  const [campsites, setCampsites] = useState(null)
   const [loadingRooms, setLoadingRooms] = useState(false)
   const [roomError, setRoomError] = useState(null)
   const [searched, setSearched] = useState(false)
@@ -255,11 +257,15 @@ export default function LodgePage() {
     const hasCachedRooms = Array.isArray(cachedRooms)
 
     if (hasCachedRooms) {
-      setRooms(cachedRooms)
+      const cachedRoomsList = Array.isArray(cachedRooms?.rooms) ? cachedRooms.rooms : (Array.isArray(cachedRooms) ? cachedRooms : [])
+      const cachedCampsitesList = Array.isArray(cachedRooms?.campsites) ? cachedRooms.campsites : []
+      setRooms(cachedRoomsList)
+      setCampsites(cachedCampsitesList)
       setSelectedRoomIds([])
       setLoadingRooms(false)
     } else {
       setRooms(null)
+      setCampsites(null)
       setLoadingRooms(true)
     }
 
@@ -282,18 +288,20 @@ export default function LodgePage() {
     if (error || !data?.success) {
       setLoadingRooms(false)
       if (!hasCachedRooms) {
-        setRoomError(data?.error || error?.message || 'Could not load available rooms. Please try again.')
+        setRoomError(data?.error || error?.message || 'Could not load available rooms or campsites. Please try again.')
       }
       captureException(error || new Error('Room search failed'), { slug, checkIn, checkOut })
       return
     }
 
     const roomList = Array.isArray(data.rooms) ? data.rooms : []
-    writeSessionCache(roomCacheKey, roomList)
+    const campsiteList = Array.isArray(data.campsites) ? data.campsites : []
+    writeSessionCache(roomCacheKey, { rooms: roomList, campsites: campsiteList })
     setRooms(roomList)
+    setCampsites(campsiteList)
     setSelectedRoomIds([])
     setLoadingRooms(false)
-    trackSearch(slug, checkIn, checkOut, roomList.length)
+    trackSearch(slug, checkIn, checkOut, roomList.length + campsiteList.length)
   }
 
   function handleBook(room) {
@@ -575,11 +583,11 @@ export default function LodgePage() {
             </div>
           )}
 
-          {!loadingRooms && searched && rooms && rooms.length === 0 && (
+          {!loadingRooms && searched && rooms && campsites && rooms.length === 0 && campsites.length === 0 && (
             <div className="surface-card mt-8 rounded-[32px] p-6 text-center sm:p-8">
-              <h3 className="font-display text-3xl text-[var(--text)]">No rooms for those dates</h3>
+              <h3 className="font-display text-3xl text-[var(--text)]">No stays for those dates</h3>
               <p className="mt-3 text-sm leading-7 text-[var(--muted)]">
-                Try different dates, or contact the lodge directly to ask about alternatives.
+                Try different dates, or contact the property directly to ask about rooms or campsites.
               </p>
               <div className="mt-6 flex flex-wrap justify-center gap-3">
                 {lodge?.phone && (
@@ -596,19 +604,50 @@ export default function LodgePage() {
             </div>
           )}
 
-          {!loadingRooms && rooms && rooms.length > 0 && (
-            <section className="mt-8" aria-label="Available rooms">
+          {!loadingRooms && ((rooms && rooms.length > 0) || (campsites && campsites.length > 0)) && (
+            <section className="mt-8" aria-label="Available accommodation">
             <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
               <div>
-                <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-[var(--muted)]">Available Rooms</p>
+                <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-[var(--muted)]">Available stays</p>
                 <h3 className="font-display mt-2 text-3xl text-[var(--text)]">
-                  {rooms.length} room{rooms.length !== 1 ? 's' : ''} ready for your dates
+                  {(rooms?.length || 0) + (campsites?.length || 0)} option{((rooms?.length || 0) + (campsites?.length || 0)) !== 1 ? 's' : ''} ready for your dates
                 </h3>
               </div>
               <p className="text-sm text-[var(--muted)]">
                 Rates shown below are estimated for {nights} night{nights !== 1 ? 's' : ''}.
               </p>
             </div>
+
+            {(campsites?.length || 0) > 0 && (
+              <div className="mb-8">
+                <div className="mb-4 flex items-center gap-2">
+                  <TentTree size={18} className="text-[var(--brand)]" />
+                  <h4 className="font-display text-2xl text-[var(--text)]">
+                    {campsites.length} campsite{campsites.length !== 1 ? 's' : ''}
+                  </h4>
+                </div>
+                <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+                  {campsites.map((site) => (
+                    <RoomCard
+                      key={site.id}
+                      room={site}
+                      currency={lodge.currency}
+                      nights={nights}
+                      onBook={handleBook}
+                      variant="campsite"
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {(rooms?.length || 0) > 0 && (
+              <div className="mb-4">
+                <h4 className="font-display text-2xl text-[var(--text)]">
+                  {rooms.length} room{rooms.length !== 1 ? 's' : ''} & units
+                </h4>
+              </div>
+            )}
 
             {rooms.length > 1 && (
               <>
@@ -661,6 +700,7 @@ export default function LodgePage() {
               </>
             )}
 
+            {(rooms?.length || 0) > 0 && (
             <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
               {[...rooms]
                 .sort((a, b) => {
@@ -691,6 +731,7 @@ export default function LodgePage() {
                 </div>
               ))}
             </div>
+            )}
             </section>
           )}
         </div>
@@ -816,7 +857,8 @@ export default function LodgePage() {
       )}
 
       <footer className={`px-4 py-10 text-center text-xs font-semibold uppercase tracking-[0.18em] text-[var(--muted)] ${hasContact ? 'pb-24 md:pb-10' : ''}`}>
-        Online reservations
+        <img src={tsaBonnoLodgingLogo} alt="Powered by Tsa Bonno LodgingOS" className="mx-auto h-16 w-52 object-contain opacity-80" loading="lazy" decoding="async" />
+        <span className="mt-2 block">Secure online reservations</span>
       </footer>
     </div>
   )

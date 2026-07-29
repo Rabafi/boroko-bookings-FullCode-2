@@ -124,7 +124,6 @@ test('Domain imports from state.js', () => {
 test('Domain imports infrastructure helpers', () => {
   assert.ok(domainContent.includes("from './infrastructure.js'"), 'infrastructure.js import not found')
   assert.ok(domainContent.includes('logActivity'), 'logActivity not imported')
-  assert.ok(domainContent.includes('queueOperation'), 'queueOperation not imported')
   assert.ok(domainContent.includes('dedupePromise'), 'dedupePromise not imported')
 })
 
@@ -157,8 +156,10 @@ test('Domain checks state.isOnline', () => {
   assert.ok(domainContent.includes('state.isOnline'), 'state.isOnline not checked')
 })
 
-test('Domain uses queueOperation for offline', () => {
-  assert.ok(domainContent.includes('queueOperation('), 'queueOperation not used for offline')
+test('Domain rejects offline financial mutations (online-only per OFFLINE_MATRIX)', () => {
+  assert.ok(domainContent.includes('requireOnline') || domainContent.includes('onlineOnly'), 'must enforce online-only')
+  assert.ok(!domainContent.includes('queueOperation('), 'must not queue folio financial mutations offline')
+  assert.ok(domainContent.includes('cannot be queued offline') || domainContent.includes('requires an internet connection'))
 })
 
 // ── database.js exports ───────────────────────────────────────────────────────

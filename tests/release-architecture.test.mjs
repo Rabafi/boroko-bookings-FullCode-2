@@ -14,7 +14,7 @@ const products = Object.freeze([
   ['hospitality-pos', 'com.boroko.hospitalitypos', 'boroko-hospitality-pos-releases']
 ])
 
-test('Lodge and Camp retains the live Boroko Bookings identity and update feed', () => {
+test('LodgingOS retains its pre-rename compatibility identity and update feed', () => {
   const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
   const lodgeBuilder = JSON.parse(fs.readFileSync(path.join(root, 'apps', 'lodge-camp', 'electron-builder.json'), 'utf8'))
   assert.equal(packageJson.build.appId, lodgeCampRelease.appId)
@@ -27,7 +27,7 @@ test('Lodge and Camp retains the live Boroko Bookings identity and update feed',
   assert.equal(PRODUCT_DEFINITIONS['lodge-camp'].appDataName, 'boroko-bookings')
 })
 
-test('Hotel and Hospitality POS have isolated installer identities and GitHub update feeds', () => {
+test('HotelOS and Restaurant & Bar POS have isolated installer identities and GitHub update feeds', () => {
   const appIds = new Set([lodgeCampRelease.appId])
   const releaseRepos = new Set([lodgeCampRelease.repo])
 

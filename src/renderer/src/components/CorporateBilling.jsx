@@ -61,18 +61,26 @@ export default function CorporateBilling({ accountId, accountName, onClose }) {
 
   const handleCharge = async (e) => {
     e.preventDefault()
-    if (!chargeForm.amount || Number(chargeForm.amount) <= 0) { setError('Amount must be positive'); return }
+    const bookingId = String(chargeForm.bookingId || '').trim()
+    if (!bookingId) { setError('Booking ID is required to charge a guest folio/balance to corporate'); return }
+    const amountRaw = String(chargeForm.amount ?? '').trim()
+    // 0 / blank => server settles remaining booking balance
+    const amount = amountRaw === '' ? 0 : Number(amountRaw)
+    if (!Number.isFinite(amount) || amount < 0) { setError('Amount must be zero (full balance) or a positive number'); return }
     setSaving(true)
     setError('')
     try {
-      const check = await window.api.corporateBilling.checkCreditLimit(accountId, Number(chargeForm.amount))
-      if (check && check.within_limit === false) {
-        setError(`Credit limit exceeded. Available: ${formatCurrency(check.available_credit || 0)}`)
-        setSaving(false)
-        return
+      if (amount > 0) {
+        const check = await window.api.corporateBilling.checkCreditLimit(accountId, amount)
+        if (check && check.within_limit === false) {
+          setError(`Credit limit exceeded. Available: ${formatCurrency(check.available_credit || 0)}`)
+          setSaving(false)
+          return
+        }
       }
-      await window.api.corporateBilling.charge(accountId, chargeForm.bookingId || null, Number(chargeForm.amount), chargeForm.description)
-      setSuccess('Charge recorded')
+      const intentId = crypto.randomUUID()
+      await window.api.corporateBilling.charge(accountId, bookingId, amount, chargeForm.description, intentId)
+      setSuccess(amount > 0 ? 'Corporate charge recorded and booking settled' : 'Corporate charge recorded for remaining booking balance')
       setShowCharge(false)
       load()
     } catch (err) {
@@ -90,7 +98,8 @@ export default function CorporateBilling({ accountId, accountName, onClose }) {
     try {
       const selected = invoices.filter(i => i.status !== 'paid' && i.status !== 'cancelled').map(i => i.id)
       if (selected.length === 0) { setError('No unpaid invoices'); setSaving(false); return }
-      await window.api.corporateBilling.recordPayment(accountId, selected, Number(paymentForm.amount), paymentForm.method, paymentForm.reference)
+      const intentId = crypto.randomUUID()
+      await window.api.corporateBilling.recordPayment(accountId, selected, Number(paymentForm.amount), paymentForm.method, paymentForm.reference, intentId)
       setSuccess('Payment recorded')
       setShowPayment(false)
       load()
@@ -189,8 +198,15 @@ export default function CorporateBilling({ accountId, accountName, onClose }) {
       {showCharge && (
         <Modal title="Charge to Corporate Account" onClose={() => setShowCharge(false)}>
           <form onSubmit={handleCharge} className="space-y-3 p-4">
-            <div><label className="block text-sm font-medium mb-1">Booking ID (optional)</label><input type="text" value={chargeForm.bookingId} onChange={e => setChargeForm(f => ({ ...f, bookingId: e.target.value }))} className="w-full border rounded px-3 py-2 text-sm" /></div>
-            <div><label className="block text-sm font-medium mb-1">Amount *</label><input type="number" step="0.01" min="0" value={chargeForm.amount} onChange={e => setChargeForm(f => ({ ...f, amount: e.target.value }))} className="w-full border rounded px-3 py-2 text-sm" required /></div>
+            <div>
+              <label className="block text-sm font-medium mb-1">Booking ID *</label>
+              <input type="text" value={chargeForm.bookingId} onChange={e => setChargeForm(f => ({ ...f, bookingId: e.target.value }))} className="w-full border rounded px-3 py-2 text-sm font-mono" required placeholder="uuid of the guest booking" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1">Amount (blank/0 = remaining balance)</label>
+              <input type="number" step="0.01" min="0" value={chargeForm.amount} onChange={e => setChargeForm(f => ({ ...f, amount: e.target.value }))} className="w-full border rounded px-3 py-2 text-sm" placeholder="0" />
+              <p className="mt-1 text-xs text-gray-500">Creates a corporate invoice and settles the guest bill via method corporate (and open hotel folio if present).</p>
+            </div>
             <div><label className="block text-sm font-medium mb-1">Description</label><input type="text" value={chargeForm.description} onChange={e => setChargeForm(f => ({ ...f, description: e.target.value }))} className="w-full border rounded px-3 py-2 text-sm" /></div>
             {creditCheck && !creditCheck.within_limit && <div className="text-red-600 text-sm">Credit limit of {formatCurrency(creditCheck.credit_limit)} would be exceeded</div>}
             <div className="flex justify-end gap-2 pt-2">

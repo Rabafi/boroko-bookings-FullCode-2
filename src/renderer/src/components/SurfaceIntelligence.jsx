@@ -22,8 +22,9 @@ function fmtNumber(value) {
   return Number(value || 0).toLocaleString()
 }
 
-function fmtMoney(value) {
-  return `$${Number(value || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+function fmtMoney(value, currency = 'BWP') {
+  const code = String(currency || 'BWP').toUpperCase()
+  return `${code} ${Number(value || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}`
 }
 
 function fmtTime(value) {
@@ -31,7 +32,7 @@ function fmtTime(value) {
   try { return new Date(value).toLocaleString() } catch { return 'No signal yet' }
 }
 
-function DetailList({ title, data, money = false }) {
+function DetailList({ title, data, money = false, currency = 'BWP' }) {
   const entries = Object.entries(data || {}).filter(([, value]) => Number(value || 0) !== 0).slice(0, 5)
   if (entries.length === 0) return null
   return (
@@ -41,7 +42,7 @@ function DetailList({ title, data, money = false }) {
         {entries.map(([key, value]) => (
           <div key={key} className="flex items-center justify-between gap-3 text-xs">
             <span className="truncate text-gray-400">{String(key || 'unknown').replace(/_/g, ' ')}</span>
-            <span className="font-semibold text-white">{money ? fmtMoney(value) : fmtNumber(value)}</span>
+            <span className="font-semibold text-white">{money ? fmtMoney(value, currency) : fmtNumber(value)}</span>
           </div>
         ))}
       </div>
@@ -92,7 +93,7 @@ function SurfaceRow({ surface }) {
       <div className="mt-4 grid gap-3 md:grid-cols-3">
         <DetailList title="Status" data={details.order_status || details.by_status || details.reconciliation || details.lead_stages} />
         <DetailList title="Source / Role" data={details.booking_sources || details.lead_sources || details.users_by_role || details.sessions_by_role} />
-        <DetailList title={details.sales_total !== undefined ? 'Sales' : 'Priority / Method'} data={details.sales_total !== undefined ? { total: details.sales_total } : (details.by_priority || details.payment_methods)} money={details.sales_total !== undefined} />
+        <DetailList title={details.sales_total !== undefined ? 'Sales' : 'Priority / Method'} data={details.sales_total !== undefined ? { total: details.sales_total } : (details.by_priority || details.payment_methods)} money={details.sales_total !== undefined} currency={surface.currency || details.currency || 'BWP'} />
       </div>
     </div>
   )

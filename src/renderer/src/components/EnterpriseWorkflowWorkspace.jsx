@@ -2,29 +2,29 @@ import { useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, CheckCircle2, ClipboardList, Save, ShieldCheck } from 'lucide-react'
 import { getEnterpriseWorkflow } from '../../../shared/enterpriseWorkflows'
 
-function storageKey(workflowKey) {
-  return `bb:enterprise-workflow:${workflowKey}`
+function storageKey(workflowKey, lodgeId = 'active-lodge') {
+  return `bb:enterprise-workflow:${lodgeId}:${workflowKey}`
 }
 
-function readDraft(workflowKey, fallback) {
+function readDraft(workflowKey, lodgeId, fallback) {
   try {
-    const raw = window.localStorage.getItem(storageKey(workflowKey))
+    const raw = window.localStorage.getItem(storageKey(workflowKey, lodgeId))
     return raw ? { ...fallback, ...JSON.parse(raw) } : fallback
   } catch {
     return fallback
   }
 }
 
-function writeDraft(workflowKey, value) {
+function writeDraft(workflowKey, lodgeId, value) {
   try {
-    window.localStorage.setItem(storageKey(workflowKey), JSON.stringify(value))
+    window.localStorage.setItem(storageKey(workflowKey, lodgeId), JSON.stringify(value))
     return true
   } catch {
     return false
   }
 }
 
-export default function EnterpriseWorkflowWorkspace({ workflowKey }) {
+export default function EnterpriseWorkflowWorkspace({ workflowKey, lodgeId = null }) {
   const workflow = getEnterpriseWorkflow(workflowKey)
   const initial = useMemo(() => ({
     owner: '',
@@ -44,13 +44,13 @@ export default function EnterpriseWorkflowWorkspace({ workflowKey }) {
     async function load() {
       setSaved(false)
       setError('')
-      const localDraft = readDraft(workflowKey, initial)
+      const localDraft = readDraft(workflowKey, lodgeId, initial)
       setDraft(localDraft)
       setSource('local')
 
       try {
         if (!window.api?.enterpriseOperations?.getRecords) return
-        const records = await window.api.enterpriseOperations.getRecords(workflowKey)
+        const records = await window.api.enterpriseOperations.getRecords(workflowKey, lodgeId)
         if (cancelled) return
         const setupRecord = Array.isArray(records)
           ? records.find((record) => record.record_key === 'setup-readiness')
@@ -68,7 +68,7 @@ export default function EnterpriseWorkflowWorkspace({ workflowKey }) {
     return () => {
       cancelled = true
     }
-  }, [workflowKey, initial])
+  }, [workflowKey, lodgeId, initial])
 
   if (!workflow) {
     return (
@@ -100,7 +100,7 @@ export default function EnterpriseWorkflowWorkspace({ workflowKey }) {
   const save = async () => {
     const next = { ...draft, updatedAt: new Date().toISOString() }
     setError('')
-    writeDraft(workflow.key, next)
+    writeDraft(workflow.key, lodgeId, next)
 
     try {
       if (window.api?.enterpriseOperations?.upsertRecord) {
@@ -108,13 +108,13 @@ export default function EnterpriseWorkflowWorkspace({ workflowKey }) {
           record_key: 'setup-readiness',
           status: completion >= 100 ? 'ready_for_activation' : 'in_progress',
           ...next
-        })
+        }, lodgeId)
         await window.api.enterpriseOperations.appendEvent(workflow.key, {
           event_type: 'setup_readiness_saved',
           completion,
           owner: next.owner,
           targetDate: next.targetDate
-        })
+        }, lodgeId)
         setSource('server')
       } else {
         setSource('local')

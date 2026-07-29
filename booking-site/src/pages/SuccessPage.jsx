@@ -212,7 +212,7 @@ export default function SuccessPage() {
               <div className="rounded-[24px] border border-[var(--line)] bg-[var(--brand-soft)] p-5 text-sm text-[var(--muted)]">
                 <div className="flex items-start gap-3">
                   <ShieldCheck size={18} className="mt-0.5 text-[var(--success)]" aria-hidden="true" />
-                  <p>Your request has already been saved. Even if email delivery is delayed, the lodge can still see your booking reference in Boroko.</p>
+                  <p>Your request has already been saved. Even if email delivery is delayed, the property can still see your booking reference in Tsa Bonno LodgingOS.</p>
                 </div>
               </div>
 

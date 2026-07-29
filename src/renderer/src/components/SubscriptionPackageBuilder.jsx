@@ -4,12 +4,21 @@ import { useSettings } from '../app-context'
 import { computeEffectiveFeatures } from '../../../shared/entitlementMerge'
 import { buildSubscriptionRequest, generateQuoteNumber, SUBSCRIPTION_REQUEST_TYPES, SUBSCRIPTION_REQUEST_STATUS } from '../../../shared/subscriptionRequest'
 import { ENTERPRISE_ADDON_CATALOG } from '../../../shared/enterpriseAddons'
-import { buildCommercialPricingSnapshot, buildSubscriptionCommercialDocument, formatCommercialMoney, getAdvertisedEnterpriseAddons, TRIAL_POLICY } from '../../../shared/commercialPackages'
-import { SUBSCRIPTION_PLAN_ORDER, getSubscriptionPlan } from '../../../shared/subscriptionPlans'
+import { buildCommercialPricingSnapshot, buildSubscriptionCommercialDocument, formatCommercialMoney, getAdvertisedEnterpriseAddons, getCommercialPackageCatalog, getCommercialPackageLabel, getCommercialPackageDisplayName, TRIAL_POLICY } from '../../../shared/commercialPackages'
+import { getCommercialAddonOffers } from '../../../shared/commercialEntitlements'
+import { getCommercialFeatureSet } from '../../../shared/commercialAccess'
+import { getProductDefinition, getRuntimeProductId } from '../../../shared/productIdentity'
+import { getHospitalityMode, isBarOnlyMode } from '../../../shared/propertyTypes'
+
+const BUILD_PRODUCT = getProductDefinition(getRuntimeProductId())
+const IS_HOTEL_PRODUCT = BUILD_PRODUCT.id === 'hotel'
 
 export default function SubscriptionPackageBuilder() {
   const { settings } = useSettings()
-  const [selectedPlan, setSelectedPlan] = useState('Enterprise')
+  const barOnly = isBarOnlyMode(settings)
+  const [selectedPackageKey, setSelectedPackageKey] = useState(
+    IS_HOTEL_PRODUCT ? 'hotel_core' : BUILD_PRODUCT.id === 'hospitality-pos' ? (barOnly ? 'bar_pos' : 'restaurant_growth') : 'pro'
+  )
   const [selectedAddons, setSelectedAddons] = useState([])
   const [roomCount, setRoomCount] = useState('')
   const [userCount, setUserCount] = useState('')
@@ -21,9 +30,18 @@ export default function SubscriptionPackageBuilder() {
   const [submittedQuote, setSubmittedQuote] = useState(null)
   const [error, setError] = useState('')
 
-  const eligibleAddons = getAdvertisedEnterpriseAddons(settings?.property_type || settings?.business_type || 'lodge')
+  const commercialPackages = getCommercialPackageCatalog(BUILD_PRODUCT.id)
+  const selectedPackage = commercialPackages.find((entry) => entry.commercialPackageKey === selectedPackageKey) || commercialPackages[0]
+  const selectedPlan = selectedPackage?.internalPlan || 'Starter'
+  const eligibleAddons = IS_HOTEL_PRODUCT
+    ? getAdvertisedEnterpriseAddons(settings?.property_type || settings?.business_type || 'hotel', BUILD_PRODUCT.id)
+    : selectedPackageKey === 'bar_pos'
+      ? getCommercialAddonOffers(BUILD_PRODUCT.id, settings?.property_type || settings?.business_type || 'restaurant')
+      : []
 
-  const effectiveFeatures = computeEffectiveFeatures(settings?.subscription_plan || 'Starter', selectedAddons)
+  const effectiveFeatures = selectedPackageKey === 'bar_pos'
+    ? Object.fromEntries([...getCommercialFeatureSet(BUILD_PRODUCT.id, selectedPackageKey, selectedAddons)].map((feature) => [feature, true]))
+    : computeEffectiveFeatures(settings?.subscription_plan || 'Starter', selectedAddons)
 
   const toggleAddon = (key) => {
     setSelectedAddons((prev) => prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key])
@@ -31,14 +49,12 @@ export default function SubscriptionPackageBuilder() {
 
   const buildRequest = useCallback((status = SUBSCRIPTION_REQUEST_STATUS.draft) => {
     const quoteNumber = generateQuoteNumber()
-    const trialEligible = TRIAL_POLICY.appliesToPlans.includes(selectedPlan) && trialAlreadyUsed !== true
     const pricing = buildCommercialPricingSnapshot({
-      plan: selectedPlan,
+      commercialPackageKey: selectedPackageKey,
       addons: selectedAddons,
-      roomCount: Number(roomCount) || 0,
-      userCount: Number(userCount) || 0,
-      trialEligible,
-      trialAlreadyUsed
+      productId: BUILD_PRODUCT.id,
+      operatingProfile: BUILD_PRODUCT.id === 'hospitality-pos' ? getHospitalityMode(settings) : null,
+      propertyType: settings?.property_type || settings?.business_type || null
     })
     const request = buildSubscriptionRequest({
       source: 'desktop_app',
@@ -51,6 +67,9 @@ export default function SubscriptionPackageBuilder() {
       contact_phone: settings?.contact_phone || '',
       country: settings?.country || '',
       property_type: settings?.property_type || settings?.business_type || 'lodge',
+      operating_profile: BUILD_PRODUCT.id === 'hospitality-pos' ? getHospitalityMode(settings) : null,
+      product_id: BUILD_PRODUCT.id,
+      commercial_package_key: selectedPackageKey,
       current_plan: settings?.subscription_plan || 'Starter',
       requested_plan: selectedPlan,
       requested_addons: selectedAddons,
@@ -66,7 +85,7 @@ export default function SubscriptionPackageBuilder() {
     request.quote_number = quoteNumber
     request.status = status
     return request
-  }, [selectedPlan, selectedAddons, roomCount, userCount, expectedBookings, notes, settings, trialAlreadyUsed])
+  }, [selectedPackageKey, selectedAddons, roomCount, userCount, expectedBookings, notes, settings, trialAlreadyUsed, selectedPlan])
 
   const generateQuote = useCallback(async () => {
     const request = buildRequest(SUBSCRIPTION_REQUEST_STATUS.draft)
@@ -83,8 +102,8 @@ export default function SubscriptionPackageBuilder() {
       `Date: ${new Date().toLocaleDateString()}`,
       ``,
       `Property: ${request.property_name}`,
-      `Current Plan: ${request.current_plan}`,
-      `Requested Plan: ${request.requested_plan}`,
+      `Current Package: ${getCommercialPackageLabel(request.current_plan || 'Starter', BUILD_PRODUCT.id)}`,
+      `Package: ${request.pricing_snapshot?.package_label || getCommercialPackageDisplayName({ productId: BUILD_PRODUCT.id, commercialPackageKey: request.commercial_package_key, plan: request.requested_plan })}`,
       ``,
       `Room Count: ${request.room_count || 'TBD'}`,
       `User Count: ${request.user_count || 'TBD'}`,
@@ -95,15 +114,16 @@ export default function SubscriptionPackageBuilder() {
     if (selectedAddons.length > 0) {
       lines.push(`ADD-ONS:`)
       for (const addonKey of selectedAddons) {
-        const addon = ENTERPRISE_ADDON_CATALOG.find((a) => a.key === addonKey)
-        lines.push(`  - ${addon?.label || addonKey}`)
+        const addon = eligibleAddons.find((a) => (a.key || a.addonKey) === addonKey)
+          || ENTERPRISE_ADDON_CATALOG.find((a) => a.key === addonKey)
+        lines.push(`  - ${addon?.label || addon?.displayName || addonKey}`)
       }
       lines.push(``)
     }
 
       lines.push(`PRICING:`)
-      lines.push(`  Annual package: ${formatCommercialMoney(request.pricing_snapshot?.annual_subtotal)}`)
-      lines.push(`  Due now: ${formatCommercialMoney(request.pricing_snapshot?.total_due_now)}`)
+      lines.push(`  Annual / recurring: ${formatCommercialMoney(request.pricing_snapshot?.totals?.recurring_annual ?? request.pricing_snapshot?.annual_subtotal)}`)
+      lines.push(`  Due now: ${formatCommercialMoney(request.pricing_snapshot?.totals?.total_due_now ?? request.pricing_snapshot?.total_due_now)}`)
       lines.push(`  Trial: ${request.pricing_snapshot?.trial?.eligible ? `${TRIAL_POLICY.trialDays} days included once` : 'Not included / already used'}`)
       lines.push(``)
       lines.push(`FEATURES INCLUDED:`)
@@ -128,11 +148,11 @@ export default function SubscriptionPackageBuilder() {
     setError('')
     try {
       const request = buildRequest(SUBSCRIPTION_REQUEST_STATUS.submitted)
-      const documentPayload = buildSubscriptionCommercialDocument(request, 'quote', {
-        document_number: request.quote_number
-      })
-
       const result = await window.api.subscriptionRequests.submit(request)
+      const documentPayload = buildSubscriptionCommercialDocument(request, 'quote', {
+        document_number: result?.quote_number || request.quote_number,
+        pricing_snapshot: result?.quote_payload || request.pricing_snapshot
+      })
       await window.api.subscriptionRequests.exportDocumentPdf(documentPayload).catch(() => null)
       setSubmittedQuote(result?.quote_number || request.quote_number)
       setSubmitted(true)
@@ -158,7 +178,7 @@ export default function SubscriptionPackageBuilder() {
             </p>
           )}
           <p className="mt-3 max-w-md text-xs text-slate-400">
-            The quotation has been generated for your records and the same request has been sent to Boroko for review.
+            The quotation has been generated for your records and the same request has been sent to Tsa Bonno for review.
             Activation only happens after manual payment approval.
           </p>
           <button onClick={() => { setSubmitted(false); setSubmittedQuote(null) }} className="mt-6 btn-primary">
@@ -173,36 +193,35 @@ export default function SubscriptionPackageBuilder() {
     <div className="bb-page">
       <div className="bb-page-header">
         <div>
-          <p className="bb-section-kicker">SUBSCRIPTION</p>
-          <h1 className="bb-page-header-title">Upgrade Plan</h1>
-          <p className="bb-page-header-subtitle">Select your target plan and any add-ons to request a quotation.</p>
+           <p className="bb-section-kicker">{IS_HOTEL_PRODUCT ? 'HOTEL PACKAGE' : barOnly ? 'BAR PACKAGE' : 'SUBSCRIPTION'}</p>
+          <h1 className="bb-page-header-title">{IS_HOTEL_PRODUCT ? 'Hotel quotation' : barOnly ? 'Build your bar package' : 'Choose a package'}</h1>
+          <p className="bb-page-header-subtitle">{IS_HOTEL_PRODUCT ? 'HotelOS is a separate Tsa Bonno product. Request a property-specific quotation for the hotel workspace and any optional services.' : barOnly ? 'Start with Bar POS, then add only the stock, workforce, accounting, growth or multi-outlet depth your bar needs.' : 'Choose your HospitalityOS package and request a quotation.'}</p>
         </div>
       </div>
 
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-[1fr_340px]">
         <div className="space-y-5">
           <section className="bb-card p-5">
-            <h2 className="mb-3 text-sm font-bold text-slate-800">Target Plan</h2>
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-              {SUBSCRIPTION_PLAN_ORDER.map((plan) => (
+            <h2 className="mb-3 text-sm font-bold text-slate-800">{IS_HOTEL_PRODUCT ? 'Product package' : 'Target package'}</h2>
+            <div className={`grid grid-cols-2 gap-2 ${IS_HOTEL_PRODUCT ? 'sm:grid-cols-1' : 'sm:grid-cols-3'}`}>
+              {commercialPackages.map((plan) => (
                 <button
-                  key={plan}
-                  onClick={() => setSelectedPlan(plan)}
+                  key={plan.commercialPackageKey}
+                  onClick={() => setSelectedPackageKey(plan.commercialPackageKey)}
                   className={`rounded-xl border p-3 text-left text-sm transition-colors ${
-                    selectedPlan === plan ? 'border-[#174c3a] bg-emerald-50 ring-1 ring-[#174c3a]' : 'border-slate-200 hover:border-slate-300'
+                    selectedPackageKey === plan.commercialPackageKey ? 'border-[#174c3a] bg-emerald-50 ring-1 ring-[#174c3a]' : 'border-slate-200 hover:border-slate-300'
                   }`}
                 >
-                  <p className="font-bold text-slate-800">{getSubscriptionPlan(plan).name || plan}</p>
-                  {plan === 'Enterprise' && <p className="mt-0.5 text-[10px] text-slate-500">Hotel-grade PMS</p>}
-                  {plan === 'Pro' && <p className="mt-0.5 text-[10px] text-slate-500">Commercial suite</p>}
+                  <p className="font-bold text-slate-800">{plan.displayName || plan.name}</p>
+                  <p className="mt-0.5 text-[10px] text-slate-500">{plan.priceLabel}</p>
                 </button>
               ))}
             </div>
           </section>
 
-          {selectedPlan === 'Enterprise' && (
+          {IS_HOTEL_PRODUCT && selectedPackageKey === 'hotel_core' && (
             <section className="bb-card p-5">
-              <h2 className="mb-3 text-sm font-bold text-slate-800">Enterprise Add-Ons</h2>
+              <h2 className="mb-3 text-sm font-bold text-slate-800">Optional hotel services</h2>
               <div className="space-y-2">
                 {eligibleAddons.map((addon) => (
                   <label key={addon.key} className={`flex cursor-pointer items-start gap-3 rounded-xl border p-3 transition-colors ${selectedAddons.includes(addon.key) ? 'border-[#174c3a] bg-emerald-50' : 'border-slate-200 hover:border-slate-300'}`}>
@@ -218,21 +237,39 @@ export default function SubscriptionPackageBuilder() {
             </section>
           )}
 
+          {barOnly && selectedPackageKey === 'bar_pos' && (
+            <section className="bb-card p-5">
+              <h2 className="mb-1 text-sm font-bold text-slate-800">Optional bar bundles</h2>
+              <p className="mb-3 text-xs text-slate-500">Each bundle is annual and unlocks a complete operating area without adding restaurant floor or kitchen screens.</p>
+              <div className="space-y-2">
+                {eligibleAddons.map((addon) => (
+                  <label key={addon.addonKey} className={`flex cursor-pointer items-start gap-3 rounded-xl border p-3 transition-colors ${selectedAddons.includes(addon.addonKey) ? 'border-[#174c3a] bg-emerald-50' : 'border-slate-200 hover:border-slate-300'}`}>
+                    <input type="checkbox" checked={selectedAddons.includes(addon.addonKey)} onChange={() => toggleAddon(addon.addonKey)} className="mt-0.5" />
+                    <div className="min-w-0 flex-1"><div className="flex flex-wrap items-center justify-between gap-2"><p className="text-sm font-semibold text-slate-800">{addon.displayName}</p><span className="text-xs font-bold text-emerald-800">{formatCommercialMoney(addon.annualPriceBwp)}/year</span></div><p className="mt-1 text-xs text-slate-500">{addon.description}</p></div>
+                  </label>
+                ))}
+              </div>
+            </section>
+          )}
+
           <section className="bb-card p-5">
-            <h2 className="mb-3 text-sm font-bold text-slate-800">Property Details</h2>
-            <div className="grid grid-cols-3 gap-3">
+            <h2 className="mb-3 text-sm font-bold text-slate-800">{barOnly ? 'Bar details' : 'Property Details'}</h2>
+            <div className={`grid gap-3 ${barOnly ? 'grid-cols-1' : 'grid-cols-3'}`}>
+              {!barOnly && <>
               <div>
                 <label className="block text-xs font-semibold uppercase text-slate-500 mb-1">Room Count</label>
                 <input className="input" type="number" min="0" value={roomCount} onChange={(e) => setRoomCount(e.target.value)} placeholder="e.g. 50" />
               </div>
+              </>}
               <div>
-                <label className="block text-xs font-semibold uppercase text-slate-500 mb-1">Users</label>
-                <input className="input" type="number" min="0" value={userCount} onChange={(e) => setUserCount(e.target.value)} placeholder="e.g. 10" />
+                <label className="block text-xs font-semibold uppercase text-slate-500 mb-1">{barOnly ? 'Cashiers, bartenders and managers' : 'Users'}</label>
+                <input className="input" type="number" min="0" value={userCount} onChange={(e) => setUserCount(e.target.value)} placeholder={barOnly ? 'e.g. 2' : 'e.g. 10'} />
               </div>
+              {!barOnly &&
               <div>
                 <label className="block text-xs font-semibold uppercase text-slate-500 mb-1">Monthly Bookings</label>
                 <input className="input" type="number" min="0" value={expectedBookings} onChange={(e) => setExpectedBookings(e.target.value)} placeholder="e.g. 500" />
-              </div>
+              </div>}
             </div>
             <div className="mt-3">
               <label className="block text-xs font-semibold uppercase text-slate-500 mb-1">Notes</label>
@@ -240,7 +277,7 @@ export default function SubscriptionPackageBuilder() {
             </div>
             <label className="mt-3 flex items-start gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
               <input type="checkbox" checked={!trialAlreadyUsed} onChange={(e) => setTrialAlreadyUsed(!e.target.checked)} className="mt-0.5" />
-              <span>This property has not used its one-month free trial yet. The trial is available once per property for Starter, Standard, and Pro.</span>
+               <span>This property has not used its one-month free trial yet. The trial is available once per property for the selected product package.</span>
             </label>
           </section>
         </div>
@@ -249,21 +286,22 @@ export default function SubscriptionPackageBuilder() {
           <section className="bb-card p-5">
             <h2 className="mb-3 text-sm font-bold text-slate-800">Quote Summary</h2>
             <div className="space-y-2 text-sm">
-              <div className="flex justify-between"><span className="text-slate-500">Plan</span><span className="font-semibold text-slate-800">{getSubscriptionPlan(selectedPlan).name || selectedPlan}</span></div>
+              <div className="flex justify-between"><span className="text-slate-500">Package</span><span className="font-semibold text-slate-800">{selectedPackage?.displayName || getCommercialPackageLabel(selectedPlan, BUILD_PRODUCT.id)}</span></div>
               {selectedAddons.length > 0 && (
                 <div>
                   <span className="text-slate-500">Add-ons:</span>
                   <ul className="mt-1 space-y-0.5">
                     {selectedAddons.map((key) => {
-                      const addon = ENTERPRISE_ADDON_CATALOG.find((a) => a.key === key)
-                      return <li key={key} className="text-xs text-slate-600">• {addon?.label || key}</li>
+                      const addon = eligibleAddons.find((a) => (a.key || a.addonKey) === key)
+                        || ENTERPRISE_ADDON_CATALOG.find((a) => a.key === key)
+                      return <li key={key} className="text-xs text-slate-600">• {addon?.label || addon?.displayName || key}</li>
                     })}
                   </ul>
                 </div>
               )}
               <div className="border-t border-slate-100 pt-2">
-                <p className="text-xs text-slate-500">Annual: {formatCommercialMoney(buildRequest().pricing_snapshot?.annual_subtotal)}</p>
-                <p className="text-xs text-slate-400">Trial: {buildRequest().pricing_snapshot?.trial?.eligible ? '30 days included once' : 'Not included / already used'}</p>
+                <p className="text-xs text-slate-500">Due now: {formatCommercialMoney(buildRequest().pricing_snapshot?.totals?.total_due_now ?? buildRequest().pricing_snapshot?.total_due_now)}</p>
+                <p className="text-xs text-slate-400">Recurring add-ons: {formatCommercialMoney(buildRequest().pricing_snapshot?.totals?.recurring_annual, 'None')}</p>
               </div>
             </div>
           </section>

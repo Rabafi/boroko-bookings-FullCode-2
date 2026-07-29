@@ -404,7 +404,7 @@ export default function Prepayments() {
 
       {refundOpen && <Modal title="Refund Customer Credit" onClose={() => setRefundOpen(false)} size="sm">
         <form onSubmit={refundCredit} className="space-y-4">
-          <p className="rounded-xl bg-rose-50 p-3 text-xs text-rose-700">This records money leaving the lodge. Confirm the external refund before posting it.</p>
+          <p className="rounded-xl bg-rose-50 p-3 text-xs text-rose-700">This records money leaving the property. Confirm the external refund before posting it.</p>
           <Field label={`Amount (${currency})`}><input required className="input w-full" type="number" min="0.01" step="0.01" max={balance} value={refundForm.amount} onChange={(e) => setRefundForm({ ...refundForm, amount: e.target.value })} /></Field>
           <MethodSelect value={refundForm.method} onChange={(method) => setRefundForm({ ...refundForm, method })} />
           <Field label="Refund reference"><input required className="input w-full" value={refundForm.reference} onChange={(e) => setRefundForm({ ...refundForm, reference: e.target.value })} /></Field>

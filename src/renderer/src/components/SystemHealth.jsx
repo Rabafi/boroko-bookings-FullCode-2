@@ -40,13 +40,20 @@ async function executeCheck(check) {
       check.label
     )
     const ms = Date.now() - start
-    if (result?.unavailable) return { id: check.id, status: 'unavailable', error: result.error, ms }
+    if (result?.unavailable) return { id: check.id, status: 'unavailable', error: result.error, ms, checkedAt: new Date().toISOString(), source: check.method }
     if (result?.ok === false || result?.success === false || result?.error) {
-      return { id: check.id, status: 'failed', error: result.error || 'Service returned a failure', ms }
+      return { id: check.id, status: result?.unavailable ? 'unavailable' : 'failed', error: result.error || 'Service returned a failure', ms, checkedAt: new Date().toISOString(), source: check.method }
     }
-    return { id: check.id, status: ms >= SLOW_MS ? 'slow' : 'healthy', ms }
+    const rowCount = Array.isArray(result)
+      ? result.length
+      : Array.isArray(result?.data)
+        ? result.data.length
+        : Array.isArray(result?.rows)
+          ? result.rows.length
+          : null
+    return { id: check.id, status: ms >= SLOW_MS ? 'slow' : 'healthy', ms, checkedAt: new Date().toISOString(), source: check.method, rowCount }
   } catch (error) {
-    return { id: check.id, status: 'failed', error: error?.message || 'Check failed', ms: Date.now() - start }
+    return { id: check.id, status: 'failed', error: error?.message || 'Check failed', ms: Date.now() - start, checkedAt: new Date().toISOString(), source: check.method }
   }
 }
 
@@ -54,6 +61,19 @@ export default function SystemHealth() {
   const [results, setResults] = useState({})
   const [loading, setLoading] = useState(false)
   const [runningAt, setRunningAt] = useState(null)
+  const [historyState, setHistoryState] = useState(null)
+  const [historyRows, setHistoryRows] = useState([])
+  const [historyLoadState, setHistoryLoadState] = useState(null)
+
+  const loadHistory = useCallback(async () => {
+    const result = await callAdminApi('listCommandCentralHealthRuns', [20], {})
+    if (result?.unavailable || result?.ok === false || result?.error) {
+      setHistoryLoadState({ ok: false, error: result.error || 'Diagnostic history is unavailable.' })
+      return
+    }
+    setHistoryRows(Array.isArray(result) ? result : [])
+    setHistoryLoadState({ ok: true })
+  }, [])
 
   const runOne = useCallback(async (check) => {
     setResults(current => ({ ...current, [check.id]: { id: check.id, status: 'running' } }))
@@ -63,25 +83,56 @@ export default function SystemHealth() {
 
   const runChecks = useCallback(async () => {
     setLoading(true)
+    setHistoryState(null)
     setResults(Object.fromEntries(CHECKS.map(check => [check.id, { id: check.id, status: 'pending' }])))
-    setRunningAt(new Date())
+    const startedAt = new Date()
+    setRunningAt(startedAt)
 
     let nextIndex = 0
+    const finalResults = {}
     const worker = async () => {
       while (nextIndex < CHECKS.length) {
         const check = CHECKS[nextIndex]
         nextIndex += 1
         setResults(current => ({ ...current, [check.id]: { id: check.id, status: 'running' } }))
         const result = await executeCheck(check)
+        finalResults[check.id] = result
         setResults(current => ({ ...current, [check.id]: result }))
       }
     }
 
     await Promise.all(Array.from({ length: CONCURRENCY }, worker))
+    const completedResults = Object.values(finalResults)
+    const runStatus = completedResults.some(result => ['failed', 'unavailable'].includes(result.status))
+      ? 'failed'
+      : completedResults.some(result => result.status === 'slow')
+        ? 'degraded'
+        : 'healthy'
+    const historyResult = await callAdminApi('recordCommandCentralHealthRun', [{
+      started_at: startedAt.toISOString(),
+      completed_at: new Date().toISOString(),
+      status: runStatus,
+      results: completedResults.map(result => ({
+        id: result.id,
+        status: result.status,
+        source: result.source,
+        checked_at: result.checkedAt,
+        latency_ms: result.ms,
+        row_count: result.rowCount,
+        error_message: result.error
+      }))
+    }], {})
+    setHistoryState(historyResult?.ok
+      ? { ok: true, runId: historyResult.run_id }
+      : { ok: false, error: historyResult?.error || 'Diagnostic history could not be recorded.' })
+    if (historyResult?.ok) await loadHistory()
     setLoading(false)
-  }, [])
+  }, [loadHistory])
 
-  useEffect(() => { runChecks() }, [runChecks])
+  useEffect(() => {
+    runChecks()
+    loadHistory()
+  }, [loadHistory, runChecks])
 
   const completed = Object.values(results).filter(result => !['pending', 'running'].includes(result.status))
   const healthy = completed.filter(result => result.status === 'healthy').length
@@ -106,6 +157,32 @@ export default function SystemHealth() {
       </div>
 
       {runningAt && <p className="text-[10px] text-gray-500">Last started: {runningAt.toLocaleString()}</p>}
+      {historyState && <p className={`text-[10px] ${historyState.ok ? 'text-emerald-500' : 'text-amber-400'}`}>{historyState.ok ? `Diagnostic history recorded · ${historyState.runId}` : `History unavailable · ${historyState.error}`}</p>}
+
+      <div className="bg-gray-800 rounded-xl p-4">
+        <div className="flex items-center justify-between gap-3 mb-3">
+          <div>
+            <p className="text-sm text-white font-medium">Recent diagnostic runs</p>
+            <p className="text-[10px] text-gray-500">Server-recorded summaries only; individual evidence is bounded and sanitized.</p>
+          </div>
+          {historyLoadState?.ok && <span className="text-[10px] text-gray-500">{historyRows.length} recorded</span>}
+        </div>
+        {historyLoadState?.error && <p className="text-xs text-amber-400">History unavailable · {historyLoadState.error}</p>}
+        {!historyLoadState?.error && historyRows.length === 0 && <p className="text-xs text-gray-500">No recorded runs are available yet.</p>}
+        {historyRows.length > 0 && (
+          <div className="space-y-2">
+            {historyRows.slice(0, 5).map((run) => (
+              <div key={run.id} className="flex items-center justify-between gap-3 text-xs">
+                <div className="min-w-0">
+                  <p className="text-gray-300 truncate">{run.created_at ? new Date(run.created_at).toLocaleString() : 'Unknown time'}</p>
+                  <p className="text-[10px] text-gray-500">{run.actor_email || 'Master administrator'} · {run.id}</p>
+                </div>
+                <span className={run.status === 'healthy' ? 'text-emerald-400' : run.status === 'degraded' ? 'text-amber-400' : 'text-red-400'}>{run.status || 'unknown'}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <Summary label="Completed" value={`${completed.length}/${CHECKS.length}`} color="text-white" />
@@ -148,6 +225,7 @@ export default function SystemHealth() {
                   <p className="text-sm text-white">{check.label}</p>
                   <p className="text-[10px] text-gray-500">{check.detail}</p>
                   {result?.error && <p className="text-[10px] text-red-400 mt-1">{result.error}</p>}
+                  {result && !result.error && result.rowCount != null && <p className="text-[10px] text-gray-500 mt-1">{result.rowCount} record{result.rowCount === 1 ? '' : 's'} returned</p>}
                 </div>
                 <Status result={result} />
                 {result && !['pending', 'running'].includes(result.status) && (

@@ -1,0 +1,516 @@
+/* Restaurant & Bar management workspaces
+ * Scoped deliberately so the Lodge and Hotel products keep their own visual language.
+ */
+html[data-product="hospitality-pos"] .restaurant-native-page {
+  --restaurant-ink: #2c2229;
+  --restaurant-muted: #786d73;
+  --restaurant-plum: #4e3042;
+  --restaurant-plum-deep: #2c1d28;
+  --restaurant-coral: #c95635;
+  --restaurant-amber: #e79a51;
+  --restaurant-line: rgba(78, 48, 66, .13);
+  --restaurant-card: rgba(255, 253, 249, .96);
+  width: 100%;
+  max-width: 1480px;
+  margin: 0 auto;
+  padding: 4px 0 34px;
+  color: var(--restaurant-ink);
+}
+
+html[data-product="hospitality-pos"] .restaurant-native-hero {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+  overflow: hidden;
+  margin: 0 0 18px;
+  padding: 21px 23px;
+  border: 1px solid rgba(78, 48, 66, .12);
+  border-radius: 20px;
+  background:
+    radial-gradient(circle at 88% -30%, rgba(231, 154, 81, .22), transparent 42%),
+    linear-gradient(135deg, #fffaf3 0%, #f8eee9 55%, #f3e8ed 100%);
+  box-shadow: 0 13px 34px rgba(52, 34, 47, .07);
+}
+
+html[data-product="hospitality-pos"] .restaurant-native-hero::before {
+  content: "RESTAURANT & BAR";
+  display: block;
+  position: absolute;
+  top: 16px;
+  right: 22px;
+  color: rgba(78, 48, 66, .33);
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: .16em;
+}
+
+html[data-product="hospitality-pos"] .restaurant-native-hero h1,
+html[data-product="hospitality-pos"] .restaurant-native-hero h2 {
+  margin: 0;
+  color: var(--restaurant-ink) !important;
+  font-size: clamp(22px, 2vw, 29px) !important;
+  font-weight: 880 !important;
+  letter-spacing: -.035em;
+}
+
+html[data-product="hospitality-pos"] .restaurant-native-hero p {
+  max-width: 720px;
+  margin: 6px 0 0 !important;
+  color: var(--restaurant-muted) !important;
+  font-size: 13px !important;
+  line-height: 1.55;
+}
+
+html[data-product="hospitality-pos"] .restaurant-native-page .bb-card,
+html[data-product="hospitality-pos"] .restaurant-native-panel {
+  border: 1px solid var(--restaurant-line) !important;
+  border-radius: 18px !important;
+  background: var(--restaurant-card) !important;
+  box-shadow: 0 8px 24px rgba(48, 31, 43, .055) !important;
+}
+
+html[data-product="hospitality-pos"] .restaurant-native-page .bb-card:hover {
+  border-color: rgba(201, 86, 53, .23) !important;
+}
+
+html[data-product="hospitality-pos"] .restaurant-native-page .bb-btn-primary,
+html[data-product="hospitality-pos"] .restaurant-native-page button.restaurant-primary-action {
+  min-height: 40px;
+  border: 0 !important;
+  border-radius: 11px !important;
+  background: linear-gradient(135deg, var(--restaurant-coral), #a6402d) !important;
+  color: #fff !important;
+  font-weight: 820 !important;
+  box-shadow: 0 8px 18px rgba(201, 86, 53, .21) !important;
+}
+
+html[data-product="hospitality-pos"] .restaurant-native-page .bb-btn-primary:hover:not(:disabled),
+html[data-product="hospitality-pos"] .restaurant-native-page button.restaurant-primary-action:hover:not(:disabled) {
+  transform: translateY(-1px);
+  filter: saturate(1.08);
+}
+
+html[data-product="hospitality-pos"] .restaurant-native-page .bb-btn-outline,
+html[data-product="hospitality-pos"] .restaurant-native-page button.restaurant-secondary-action {
+  min-height: 39px;
+  border: 1px solid rgba(78, 48, 66, .17) !important;
+  border-radius: 11px !important;
+  background: #fffdf9 !important;
+  color: #58434f !important;
+  font-weight: 760 !important;
+}
+
+html[data-product="hospitality-pos"] .restaurant-native-page .restaurant-checklists-refresh {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 0 14px;
+  border: 1px solid rgba(78, 48, 66, .2);
+  border-radius: 11px;
+  background: rgba(255, 255, 255, .76);
+  color: #4e3042;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 760;
+  box-shadow: 0 4px 12px rgba(52, 34, 47, .05);
+}
+
+html[data-product="hospitality-pos"] .restaurant-native-page .restaurant-checklists-refresh:hover:not(:disabled) {
+  border-color: rgba(201, 86, 53, .45);
+  background: #fff7f2;
+  color: #9a4b38;
+}
+
+html[data-product="hospitality-pos"] .restaurant-native-page button:disabled {
+  cursor: not-allowed;
+  opacity: .52;
+  box-shadow: none !important;
+}
+
+html[data-product="hospitality-pos"] .restaurant-native-page :is(.bb-input, .input, input:not([type="checkbox"]):not([type="radio"]), select, textarea) {
+  border: 1px solid #ddd2d7 !important;
+  border-radius: 10px !important;
+  background: #fffefd !important;
+  color: #33292f !important;
+}
+
+html[data-product="hospitality-pos"] .restaurant-native-page :is(.bb-input, .input, input:not([type="checkbox"]):not([type="radio"]), select):not([type="date"]):not([type="time"]) {
+  min-height: 41px;
+}
+
+html[data-product="hospitality-pos"] .restaurant-native-page textarea {
+  min-height: 76px;
+  padding: 10px 12px;
+}
+
+html[data-product="hospitality-pos"] .restaurant-native-page :is(input, select, textarea):focus {
+  border-color: rgba(201, 86, 53, .62) !important;
+  box-shadow: 0 0 0 3px rgba(201, 86, 53, .1) !important;
+  outline: 0;
+}
+
+html[data-product="hospitality-pos"] .restaurant-native-page label {
+  color: #675a62 !important;
+  font-weight: 720;
+}
+
+html[data-product="hospitality-pos"] .restaurant-native-page table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+html[data-product="hospitality-pos"] .restaurant-native-page thead {
+  background: #f0e9ec !important;
+}
+
+html[data-product="hospitality-pos"] .restaurant-native-page th {
+  color: #73656d !important;
+  font-size: 10px !important;
+  font-weight: 880 !important;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+}
+
+html[data-product="hospitality-pos"] .restaurant-native-page tbody tr {
+  transition: background .15s ease;
+}
+
+html[data-product="hospitality-pos"] .restaurant-native-page tbody tr:hover {
+  background: #fff8f1;
+}
+
+html[data-product="hospitality-pos"] .restaurant-native-page .restaurant-native-toolbar,
+html[data-product="hospitality-pos"] .restaurant-native-page .restaurant-native-segmented {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  padding: 6px;
+  border: 1px solid rgba(78, 48, 66, .1);
+  border-radius: 13px;
+  background: rgba(238, 231, 235, .82) !important;
+}
+
+html[data-product="hospitality-pos"] .restaurant-native-page .restaurant-native-segmented button {
+  min-height: 35px;
+  border: 0;
+  border-radius: 9px !important;
+  padding: 0 12px;
+}
+
+html[data-product="hospitality-pos"] .restaurant-native-page .restaurant-native-empty {
+  display: grid;
+  min-height: 230px;
+  place-items: center;
+  padding: 32px;
+  border: 1px dashed rgba(78, 48, 66, .22) !important;
+  border-radius: 18px !important;
+  background: rgba(255, 252, 247, .64) !important;
+  color: #897c83 !important;
+  text-align: center;
+}
+
+html[data-product="hospitality-pos"] .restaurant-native-page .restaurant-native-loading {
+  display: grid;
+  min-height: 230px;
+  place-items: center;
+  color: #867981;
+}
+
+html[data-product="hospitality-pos"] .restaurant-native-page .restaurant-native-loading > div {
+  border-color: rgba(201, 86, 53, .22) !important;
+  border-top-color: var(--restaurant-coral) !important;
+}
+
+html[data-product="hospitality-pos"] .restaurant-native-page .restaurant-native-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+  gap: 11px;
+}
+
+html[data-product="hospitality-pos"] .restaurant-native-page .restaurant-native-kpis > div {
+  min-height: 86px;
+  padding: 15px 16px !important;
+  border: 1px solid var(--restaurant-line) !important;
+  border-radius: 15px !important;
+  background: #fffdf9 !important;
+  text-align: left !important;
+  box-shadow: 0 6px 17px rgba(48, 31, 43, .04);
+}
+
+html[data-product="hospitality-pos"] .restaurant-native-page .restaurant-native-kpis > div > :first-child {
+  font-size: 24px !important;
+  font-weight: 880 !important;
+}
+
+html[data-product="hospitality-pos"] .restaurant-native-page .fixed.inset-0 {
+  background: rgba(31, 20, 29, .58) !important;
+  /* Windows/Electron can lose hit testing inside a blurred fixed backdrop
+     until the window is resized. Keep operational dialogs reliably clickable. */
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  isolation: isolate;
+  pointer-events: auto;
+}
+
+html[data-product="hospitality-pos"] .restaurant-native-page .fixed.inset-0 > .bg-white {
+  position: relative;
+  z-index: 1;
+  pointer-events: auto;
+  border: 1px solid rgba(255, 255, 255, .38);
+  border-radius: 22px !important;
+  background: #fffdf9 !important;
+  box-shadow: 0 30px 85px rgba(28, 17, 26, .35) !important;
+}
+
+html[data-product="hospitality-pos"] .restaurant-native-page .text-\[\#174c3a\],
+html[data-product="hospitality-pos"] .restaurant-native-page .text-blue-600,
+html[data-product="hospitality-pos"] .restaurant-native-page .text-blue-700 {
+  color: var(--restaurant-coral) !important;
+}
+
+html[data-product="hospitality-pos"] .restaurant-native-page .bg-\[\#174c3a\],
+html[data-product="hospitality-pos"] .restaurant-native-page .bg-slate-900 {
+  background: var(--restaurant-plum-deep) !important;
+}
+
+html[data-product="hospitality-pos"] .restaurant-native-page .restaurant-native-financial-warning {
+  border: 1px solid #edc79e;
+  border-radius: 13px;
+  background: #fff5e9;
+  color: #86501f;
+  padding: 12px 14px;
+  font-size: 12px;
+}
+
+html[data-product="hospitality-pos"] .restaurant-native-page .restaurant-native-icon-button {
+  display: inline-grid;
+  width: 35px;
+  height: 35px;
+  place-items: center;
+  border: 1px solid rgba(78, 48, 66, .13);
+  border-radius: 9px;
+  background: #fff;
+}
+
+/* Reservations: quick operational actions must look tappable, not like links. */
+html[data-product="hospitality-pos"] .restaurant-reservation-hero-actions { display:flex; flex-wrap:wrap; align-items:center; gap:9px; }
+html[data-product="hospitality-pos"] .restaurant-reservation-date-control { display:flex; align-items:center; gap:8px; min-height:42px; padding:0 12px; border:1px solid rgba(255,255,255,.24); border-radius:12px; background:rgba(255,255,255,.11); color:rgba(255,255,255,.82); font-size:11px; font-weight:800; }
+html[data-product="hospitality-pos"] .restaurant-reservation-date-control span { opacity:.7; text-transform:uppercase; letter-spacing:.06em; font-size:9px; }
+html[data-product="hospitality-pos"] .restaurant-reservation-date-control input { width:114px; color:#fff; color-scheme:dark; font-weight:800; }
+html[data-product="hospitality-pos"] .restaurant-reservation-hero-button { display:inline-flex; align-items:center; justify-content:center; gap:7px; min-height:42px; padding:0 14px; border-radius:12px; font-size:11px; font-weight:900; transition:transform .15s ease,box-shadow .15s ease,background .15s ease; }
+html[data-product="hospitality-pos"] .restaurant-reservation-hero-button:hover { transform:translateY(-1px); }
+html[data-product="hospitality-pos"] .restaurant-reservation-hero-button.is-waitlist { border:1px solid #f0c16e; background:#fff0ce; color:#7a4b13; box-shadow:0 7px 16px rgba(32,18,15,.16); }
+html[data-product="hospitality-pos"] .restaurant-reservation-hero-button.is-create { border:1px solid #ffc39c; background:#fff4ed; color:#8c3f2d; box-shadow:0 8px 18px rgba(23,12,20,.18); }
+html[data-product="hospitality-pos"] .restaurant-reservation-card { display:flex; align-items:center; justify-content:space-between; gap:18px; padding:16px; }
+html[data-product="hospitality-pos"] .restaurant-reservation-actions { display:flex; flex-wrap:wrap; align-items:center; justify-content:flex-end; gap:7px; }
+html[data-product="hospitality-pos"] .restaurant-reservation-action { display:inline-flex; align-items:center; justify-content:center; gap:5px; min-height:32px; padding:0 10px; border:1px solid #ded3d8; border-radius:9px; background:#fff; color:#675b62; font-size:10px; font-weight:850; white-space:nowrap; }
+html[data-product="hospitality-pos"] .restaurant-reservation-action.is-confirm { border-color:#b9dcc9; background:#edf8f1; color:#2f7258; }
+html[data-product="hospitality-pos"] .restaurant-reservation-action.is-seat { border-color:#d9c7ec; background:#f6effc; color:#75499b; }
+html[data-product="hospitality-pos"] .restaurant-reservation-action.is-whatsapp { border-color:#b9ddc8; background:#effaf3; color:#287a4c; }
+html[data-product="hospitality-pos"] .restaurant-reservation-action.is-no-show { border-color:#efd6a4; background:#fff8e9; color:#9a6721; }
+html[data-product="hospitality-pos"] .restaurant-reservation-action.is-cancel { border-color:#ecc5c0; background:#fff2f0; color:#a34135; }
+html[data-product="hospitality-pos"] .restaurant-reservation-action:hover:not(:disabled) { filter:brightness(.97); box-shadow:0 4px 10px rgba(54,35,45,.08); }
+html[data-product="hospitality-pos"] .restaurant-reservation-table-picker { min-width:190px; margin:0; padding:7px 9px; border:1px solid #ddd1d7; border-radius:10px; background:#fbf8f9; }
+html[data-product="hospitality-pos"] .restaurant-reservation-table-picker legend { padding:0 3px; color:#766971; font-size:9px; font-weight:900; text-transform:uppercase; letter-spacing:.06em; }
+html[data-product="hospitality-pos"] .restaurant-reservation-table-picker > div { display:flex; flex-wrap:wrap; gap:5px; }
+html[data-product="hospitality-pos"] .restaurant-reservation-table-picker label { display:inline-flex; align-items:center; gap:3px; min-height:24px; padding:0 6px; border:1px solid #ded3d8; border-radius:7px; background:#fff; color:#51454d; font-size:10px; font-weight:800; }
+html[data-product="hospitality-pos"] .restaurant-reservation-table-picker input { accent-color:#9a5e3f; }
+html[data-product="hospitality-pos"] .restaurant-reservation-table-picker label small { color:#91838a; font-size:9px; font-weight:700; }
+html[data-product="hospitality-pos"] .restaurant-reservation-table-picker > small { display:block; margin-top:5px; color:#81747c; font-size:9px; line-height:1.35; }
+
+@media (max-width: 760px) {
+  html[data-product="hospitality-pos"] .restaurant-native-page { padding-bottom: 22px; }
+  html[data-product="hospitality-pos"] .restaurant-native-hero { align-items: flex-start; flex-direction: column; padding: 19px; }
+  html[data-product="hospitality-pos"] .restaurant-native-hero::before { display: none; }
+  html[data-product="hospitality-pos"] .restaurant-native-hero > :last-child { width: 100%; }
+  html[data-product="hospitality-pos"] .restaurant-native-hero > :last-child > button { flex: 1; }
+  html[data-product="hospitality-pos"] .restaurant-reservation-date-control { flex:1 1 100%; justify-content:space-between; }
+  html[data-product="hospitality-pos"] .restaurant-reservation-card { align-items:flex-start; flex-direction:column; }
+  html[data-product="hospitality-pos"] .restaurant-reservation-actions { justify-content:flex-start; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-product="hospitality-pos"] .restaurant-native-page * { transition: none !important; }
+}
+/* Make operational form submissions unmistakable on Restaurant & Bar cards. */
+.bb-card > button.bb-btn-primary {
+  display: inline-flex;
+  width: 100%;
+  min-height: 46px;
+  align-items: center;
+  justify-content: center;
+  border: 0 !important;
+  border-radius: 12px !important;
+  background: linear-gradient(135deg, #e17845, #b94d3d) !important;
+  color: #fff !important;
+  font-weight: 800 !important;
+  box-shadow: 0 8px 18px rgba(185, 77, 61, .24) !important;
+}
+
+.bb-card > button.bb-btn-primary:disabled {
+  background: #cbd5e1;
+  color: #64748b;
+  box-shadow: none;
+}
+
+/* Staff accounts are shared infrastructure, but this route is presented as a
+   restaurant service-team desk when opened from Restaurant & Bar. */
+.restaurant-staff-workspace .bb-page-header {
+  border-color: rgba(157, 59, 43, .18);
+  background: radial-gradient(circle at 92% 8%, rgba(230, 133, 68, .22), transparent 30%), linear-gradient(135deg, #351d22 0%, #612b29 58%, #8e4134 100%);
+}
+.restaurant-staff-workspace .bb-page-header-title { color: #fff; }
+.restaurant-staff-workspace .bb-page-header-subtitle { color: rgba(255,255,255,.78); }
+.restaurant-staff-kicker { color: #f6c49d; }
+.restaurant-staff-workspace .bb-page-header > div:last-child { border-color: rgba(255,255,255,.2); background: rgba(255,255,255,.1); }
+.restaurant-staff-workspace .bb-page-header > div:last-child span { color: rgba(255,255,255,.85); }
+.restaurant-staff-tabs { border-color: #efd8cc; background: #fffaf7; }
+.restaurant-staff-tab-active { background: linear-gradient(135deg, #d96a3b, #a93c31); box-shadow: 0 10px 24px rgba(165, 58, 43, .25); }
+.restaurant-staff-toolbar { padding: 1rem; border: 1px solid #f0ddd2; border-radius: 1rem; background: linear-gradient(90deg, #fffaf7, #fff); }
+.restaurant-staff-add { min-height: 42px; border: 0 !important; border-radius: .75rem !important; background: linear-gradient(135deg, #e17845, #b94d3d) !important; box-shadow: 0 8px 18px rgba(185, 77, 61, .2); }
+.restaurant-staff-card { position: relative; overflow: hidden; border-color: #efddd4; background: linear-gradient(145deg, #fff 0%, #fffaf8 100%); }
+.restaurant-staff-card::before { content: ''; position: absolute; inset: 0 auto 0 0; width: 4px; background: linear-gradient(#e17845, #b94d3d); }
+.restaurant-staff-avatar { background: #f9e2d6 !important; }
+.restaurant-staff-avatar svg { color: #b94d3d !important; }
+.restaurant-staff-card button:hover { background-color: #fff0e9; }
+.restaurant-staff-roles-intro {
+  border: 1px solid #efddd4;
+  background: linear-gradient(100deg, #fffaf7, #fff);
+}
+.restaurant-staff-roles-intro svg { color: #c45738 !important; }
+.restaurant-staff-role-card {
+  border-color: #efddd4;
+  background: linear-gradient(145deg, #fff, #fffaf8);
+  box-shadow: 0 8px 22px rgba(66, 33, 39, .05);
+}
+.restaurant-staff-roles .bg-green-50,
+.restaurant-staff-roles .text-green-700 { color: #a94232 !important; }
+.restaurant-staff-roles .bg-green-50 { background: #fff0e9 !important; }
+.restaurant-staff-audit-note {
+  display: flex;
+  align-items: flex-start;
+  gap: .7rem;
+  padding: .9rem 1rem;
+  border: 1px solid #ead5c8;
+  border-radius: 1rem;
+  background: linear-gradient(100deg, #fff7f2, #fff);
+  color: #663b33;
+  font-size: .82rem;
+}
+.restaurant-staff-audit-note svg { flex: 0 0 auto; color: #b94d3d; }
+.restaurant-staff-audit button[class*="bg-green"] { background: #b94d3d !important; }
+.restaurant-staff-audit button[class*="hover:text-green"]:hover { color: #b94d3d !important; }
+.restaurant-staff-controls { flex-wrap: wrap; justify-content: flex-end; }
+.restaurant-staff-controls .input { border-color: #e5d5ce; background: #fffdfb; }
+.restaurant-staff-state {
+  display: flex;
+  min-height: 220px;
+  align-items: center;
+  justify-content: center;
+  gap: .85rem;
+  padding: 2rem;
+  border: 1px dashed #e3cfc4;
+  border-radius: 1.15rem;
+  background: linear-gradient(135deg, #fffaf7, #fff);
+  color: #725c57;
+  text-align: left;
+}
+.restaurant-staff-state > svg { flex: 0 0 auto; color: #bd5238; }
+.restaurant-staff-state-error { border-style: solid; border-color: #efc5b1; background: #fff5ef; color: #8b4434; }
+.restaurant-staff-retry {
+  display: inline-flex;
+  margin-top: .85rem;
+  min-height: 34px;
+  align-items: center;
+  border: 1px solid #dfc1b3;
+  border-radius: .65rem;
+  background: #fff;
+  color: #9e4130;
+  padding: 0 .75rem;
+  font-size: .78rem;
+  font-weight: 760;
+}
+.restaurant-staff-retry:hover { background: #fff0e9; }
+.restaurant-staff-dialog-intro {
+  display: flex;
+  gap: .75rem;
+  align-items: flex-start;
+  padding: .85rem 1rem;
+  border: 1px solid #efd8cd;
+  border-radius: .9rem;
+  background: linear-gradient(100deg, #fff6f0, #fffdfb);
+  color: #704139;
+  font-size: .78rem;
+}
+.restaurant-staff-dialog-intro svg { flex: 0 0 auto; color: #bc5038; }
+.restaurant-staff-dialog-intro p:last-child { margin-top: .15rem; color: #8a6e67; }
+.restaurant-staff-modal-footer { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 1rem; }
+.restaurant-staff-modal-footer > p { max-width: 360px; color: #7e6e71; font-size: .72rem; line-height: 1.4; }
+.restaurant-staff-modal-footer .btn-primary { border: 0 !important; background: linear-gradient(135deg, #e17845, #b94d3d) !important; }
+.restaurant-staff-permissions { overflow: hidden; }
+.restaurant-staff-permissions-toggle {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem;
+  color: #9d4533;
+  text-align: left;
+}
+.restaurant-staff-permissions-toggle:hover { background: #fffaf7; }
+.restaurant-staff-permission-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .75rem;
+  border: 1px solid #ede4e1;
+  border-radius: .8rem;
+  background: #fff;
+  padding: .65rem .75rem;
+}
+.restaurant-staff-audit .space-y-1 > div { border-color: #eeded6; background: linear-gradient(100deg, #fff, #fffaf8); }
+.restaurant-staff-audit .space-y-1 > div:hover { border-color: #e4c6b9; }
+.restaurant-staff-roles .bg-green-50 { border: 1px solid #f1d9cb; }
+
+/* Outlet configuration: compact, clear controls for a financial scope change. */
+.hpos-outlet-editor { display: grid; gap: .85rem; }
+.hpos-outlet-editor__intro { margin: 0 0 .2rem; border: 1px solid #dbe8e1; border-radius: .85rem; background: #f4faf7; padding: .8rem .9rem; color: #486159; font-size: .78rem; line-height: 1.5; }
+.hpos-outlet-editor__field { display: grid; gap: .28rem; color: #263d35; font-size: .82rem; font-weight: 760; }
+.hpos-outlet-editor__field > span { color: #75857f; font-size: .71rem; font-weight: 560; }
+.hpos-outlet-editor__field :is(input, select) { width: 100%; min-height: 44px; border: 1px solid #cddbd5; border-radius: .7rem; background: #fff; padding: 0 .8rem; color: #1c3129; font: inherit; font-weight: 600; outline: none; transition: border-color .16s ease, box-shadow .16s ease, background .16s ease; }
+.hpos-outlet-editor__field :is(input, select)::placeholder { color: #9aa8a2; font-weight: 500; }
+.hpos-outlet-editor__field :is(input, select):hover { border-color: #abc6ba; }
+.hpos-outlet-editor__field :is(input, select):focus { border-color: #24735a; background: #fcfffd; box-shadow: 0 0 0 3px rgba(36, 115, 90, .13); }
+.hpos-outlet-editor__field--order { max-width: 11rem; }
+.hpos-outlet-editor__toggle { display: flex; align-items: center; gap: .7rem; border: 1px solid #d9e4df; border-radius: .8rem; background: #fbfdfc; padding: .72rem .8rem; color: #304a40; cursor: pointer; }
+.hpos-outlet-editor__toggle input { width: 1rem; height: 1rem; accent-color: #24735a; }
+.hpos-outlet-editor__toggle span { display: grid; gap: .08rem; }
+.hpos-outlet-editor__toggle strong { font-size: .8rem; }
+.hpos-outlet-editor__toggle small { color: #73857d; font-size: .72rem; }
+.hpos-outlet-editor__actions { display: flex; justify-content: flex-end; gap: .55rem; border-top: 1px solid #e4ece8; margin-top: .15rem; padding-top: 1rem; }
+.hpos-outlet-editor__actions button { display: inline-flex; min-height: 40px; align-items: center; justify-content: center; border-radius: .68rem; padding: 0 .95rem; font-size: .8rem; font-weight: 780; line-height: 1; transition: transform .15s ease, box-shadow .15s ease, background .15s ease, border-color .15s ease; }
+.hpos-outlet-editor__actions .bb-btn-outline { border: 1px solid #c9d8d1 !important; background: #fff !important; color: #395449 !important; box-shadow: 0 1px 2px rgba(28, 49, 41, .04); }
+.hpos-outlet-editor__actions .bb-btn-outline:hover { border-color: #8eafa2 !important; background: #f4faf7 !important; }
+.hpos-outlet-editor__actions .bb-btn-primary { border: 1px solid #1e654f !important; background: linear-gradient(135deg, #287c60, #1c604b) !important; color: #fff !important; box-shadow: 0 5px 12px rgba(28, 96, 75, .2); }
+.hpos-outlet-editor__actions .bb-btn-primary:hover:not(:disabled) { transform: translateY(-1px); background: linear-gradient(135deg, #31906d, #216d54) !important; box-shadow: 0 7px 16px rgba(28, 96, 75, .25); }
+.hpos-outlet-editor__actions button:disabled { cursor: not-allowed; opacity: .58; }
+@media (max-width: 640px) {
+  .restaurant-staff-toolbar { align-items: stretch; flex-direction: column; }
+  .restaurant-staff-toolbar > div:last-child { width: 100%; }
+  .restaurant-staff-controls { justify-content: stretch; }
+  .restaurant-staff-controls .input,
+  .restaurant-staff-toolbar select, .restaurant-staff-add { flex: 1; min-width: 0; }
+  .restaurant-staff-modal-footer { align-items: stretch; flex-direction: column; }
+  .restaurant-staff-modal-footer > p { max-width: none; }
+  .restaurant-staff-modal-footer > div { width: 100%; }
+  .restaurant-staff-modal-footer > div > button { flex: 1; }
+  .restaurant-staff-permission-row { align-items: stretch; flex-direction: column; }
+  .restaurant-staff-permission-row > div:last-child { justify-content: space-between; }
+}

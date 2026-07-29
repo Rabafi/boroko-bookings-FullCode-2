@@ -22,8 +22,8 @@ ALTER TABLE corporate_accounts ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY corporate_accounts_lodge_policy ON corporate_accounts
   FOR ALL
-  USING (lodge_id = (current_setting('request.jwt.claims', true)::jsonb ->> 'lodge_id')::uuid)
-  WITH CHECK (lodge_id = (current_setting('request.jwt.claims', true)::jsonb ->> 'lodge_id')::uuid);
+  USING (public.app_lodge_access(lodge_id))
+  WITH CHECK (public.app_lodge_access(lodge_id));
 
 CREATE INDEX IF NOT EXISTS idx_corporate_accounts_lodge ON corporate_accounts(lodge_id);
 
@@ -31,6 +31,7 @@ CREATE OR REPLACE FUNCTION create_corporate_account(payload jsonb)
 RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
+SET search_path = 'public'
 AS $$
 DECLARE
   v_lodge_id uuid;
@@ -42,7 +43,7 @@ BEGIN
     RETURN jsonb_build_object('success', false, 'error', 'Lodge ID is required');
   END IF;
 
-  PERFORM app_require_lodge_role(v_lodge_id, ARRAY['manager', 'admin']);
+  PERFORM public.app_require_feature(v_lodge_id, 'corporate_accounts', ARRAY['manager', 'admin']);
 
   v_id := gen_random_uuid();
   INSERT INTO corporate_accounts (id, lodge_id, company_name, contact_name, contact_email, contact_phone, billing_address, credit_limit, payment_terms_days, tax_number, notes, status)
@@ -70,9 +71,10 @@ CREATE OR REPLACE FUNCTION update_corporate_account(p_id uuid, p_lodge_id uuid, 
 RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
+SET search_path = 'public'
 AS $$
 BEGIN
-  PERFORM app_require_lodge_role(p_lodge_id, ARRAY['manager', 'admin']);
+  PERFORM public.app_require_feature(p_lodge_id, 'corporate_accounts', ARRAY['manager', 'admin']);
 
   UPDATE corporate_accounts SET
     company_name = COALESCE(payload ->> 'company_name', company_name),
@@ -100,9 +102,10 @@ CREATE OR REPLACE FUNCTION delete_corporate_account(p_id uuid, p_lodge_id uuid)
 RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
+SET search_path = 'public'
 AS $$
 BEGIN
-  PERFORM app_require_lodge_role(p_lodge_id, ARRAY['manager', 'admin']);
+  PERFORM public.app_require_feature(p_lodge_id, 'corporate_accounts', ARRAY['manager', 'admin']);
 
   DELETE FROM corporate_accounts WHERE id = p_id AND lodge_id = p_lodge_id;
 
@@ -114,6 +117,6 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION create_corporate_account(jsonb) TO anon, authenticated, service_role;
-GRANT EXECUTE ON FUNCTION update_corporate_account(uuid, uuid, jsonb) TO anon, authenticated, service_role;
-GRANT EXECUTE ON FUNCTION delete_corporate_account(uuid, uuid) TO anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION create_corporate_account(jsonb) TO authenticated, service_role;
+GRANT EXECUTE ON FUNCTION update_corporate_account(uuid, uuid, jsonb) TO authenticated, service_role;
+GRANT EXECUTE ON FUNCTION delete_corporate_account(uuid, uuid) TO authenticated, service_role;

@@ -112,3 +112,65 @@ export async function deleteRatePlan(id) {
     }, null, pending ? { _depends_on: `rate-${id}` } : {});
   }
 }
+
+/**
+ * Authoritative stay quote via server `quote_room_stay`.
+ * Client-side plan math must be labelled as estimates only.
+ */
+export async function quoteRoomStayFromPlans(roomId, checkIn, checkOut, corporateAccountId = null) {
+  if (!state.lodgeId) throw new Error('No lodge selected');
+  if (!roomId || !checkIn || !checkOut) throw new Error('roomId, checkIn, and checkOut are required');
+
+  if (state.isOnline && typeof state.supabase?.rpc === 'function') {
+    const { data, error } = await state.supabase.rpc('quote_room_stay', {
+      p_lodge_id: state.lodgeId,
+      p_room_id: roomId,
+      p_check_in: checkIn,
+      p_check_out: checkOut,
+      p_corporate_account_id: corporateAccountId
+    });
+    if (error) throw new Error(error.message);
+    if (data?.success === false) throw new Error(data.error || 'Could not quote stay');
+    return {
+      ...data,
+      source: 'server_quote_room_stay',
+      is_estimate: false,
+      authoritative: true
+    };
+  }
+
+  // Offline: best-effort local estimate from cached rate plans — not financial truth.
+  const plans = readCache('rate-plans') || [];
+  const active = plans.filter((p) => (p.status || 'active') === 'active');
+  const amount = Number(active[0]?.rate_amount || 0);
+  const nights = Math.max(1, Math.round((new Date(checkOut) - new Date(checkIn)) / 86400000));
+  return {
+    success: true,
+    total: amount * nights,
+    nights,
+    rate_amount: amount,
+    source: 'client_rate_plan_estimate',
+    is_estimate: true,
+    authoritative: false,
+    _financial_estimate: true,
+    message: 'Offline client estimate from cached rate plans; server quote_room_stay is authoritative when online.'
+  };
+}
+
+/**
+ * Client-side estimate of a plan amount for display only.
+ * Prefer quoteRoomStayFromPlans / server RPCs for booking totals.
+ */
+export function estimatePlanTotal(plan, nights) {
+  const n = Math.max(1, Number(nights) || 1);
+  const rate = Number(plan?.rate_amount || 0);
+  return {
+    total: rate * n,
+    nights: n,
+    rate_amount: rate,
+    source: 'client_rate_plan_estimate',
+    is_estimate: true,
+    authoritative: false,
+    _financial_estimate: true
+  };
+}

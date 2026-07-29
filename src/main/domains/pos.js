@@ -17,6 +17,41 @@ import {
   dedupePromise
 } from './infrastructure.js'
 
+const POS_REMOTE_READ_TTL_MS = 2_500;
+const POS_TICKET_SELECT = 'id, lodge_id, order_id, outlet_id, station, status, table_name, tab_name, waiter_name, room_id, notes, items, created_at, updated_at';
+const POS_TAB_SELECT = 'id, lodge_id, outlet_id, table_name, tab_name, customer_name, waiter_name, room_id, booking_id, items, notes, status, opened_by, opened_by_name, created_at, updated_at, closed_at';
+const ACTIVE_PREP_TICKET_STATUSES = Object.freeze(['new', 'pending', 'preparing', 'ready']);
+const posRemoteReadCache = new Map();
+
+function invalidatePosRemoteReads(scope = '') {
+  for (const key of posRemoteReadCache.keys()) {
+    if (!scope || key.startsWith(`${scope}:`)) posRemoteReadCache.delete(key);
+  }
+}
+
+async function readPosRemoteCached(key, fetcher) {
+  const cached = posRemoteReadCache.get(key);
+  if (cached?.request) return cached.request;
+  if (cached?.expiresAt > Date.now()) return cached.value;
+
+  const request = Promise.resolve()
+    .then(fetcher)
+    .then((value) => {
+      posRemoteReadCache.set(key, {
+        value,
+        expiresAt: Date.now() + POS_REMOTE_READ_TTL_MS,
+        request: null
+      });
+      return value;
+    })
+    .catch((error) => {
+      if (posRemoteReadCache.get(key)?.request === request) posRemoteReadCache.delete(key);
+      throw error;
+    });
+  posRemoteReadCache.set(key, { value: null, expiresAt: 0, request });
+  return request;
+}
+
 function getDesktopPosDeviceId() {
   const source = state.cacheDir || state.lodgeId || 'boroko-desktop-pos';
   return `desktop-${createHash('sha256').update(String(source)).digest('hex').slice(0, 24)}`;
@@ -47,12 +82,11 @@ function applyPosMenuOutletFilter(rows = [], outletFilter = null) {
 
 function applyPosOrderFilters(rows = [], startDate, endDate, outletFilter = null) {
   let filtered = rows || [];
-  const inclusiveEndDate = normalizeInclusiveDateEnd(endDate);
   if (startDate) {
-    filtered = filtered.filter((order) => String(order.created_at || '') >= startDate);
+    filtered = filtered.filter((order) => String(order.business_date || '').slice(0, 10) >= startDate);
   }
-  if (inclusiveEndDate) {
-    filtered = filtered.filter((order) => String(order.created_at || '') <= inclusiveEndDate);
+  if (endDate) {
+    filtered = filtered.filter((order) => String(order.business_date || '').slice(0, 10) <= endDate);
   }
   if (outletFilter !== null && outletFilter.length === 0) return [];
   if (outletFilter !== null) {
@@ -64,7 +98,7 @@ function applyPosOrderFilters(rows = [], startDate, endDate, outletFilter = null
 function normalizeInclusiveDateEnd(value) {
   if (!value) return null;
   const raw = String(value);
-  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return `${raw}T23:59:59.999Z`;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return new Date(`${raw}T23:59:59.999`).toISOString();
   return raw;
 }
 
@@ -280,7 +314,7 @@ async function _getPosMenuItems(outletFilter = null) {
   if (state.isOnline) {
     let query = state.supabase.
     from('pos_menu_items').
-    select('id, name, category, price, is_available, barcode, inventory_item_id, depletion_qty, outlet_id, template_kind, lodge_id, created_at, updated_at, dietary_flags, prep_time_minutes, is_popular, kitchen_station_id').
+    select('id, name, category, price, is_available, archived_at, barcode, inventory_item_id, depletion_qty, outlet_id, template_kind, lodge_id, created_at, updated_at, dietary_flags, prep_time_minutes, is_popular, kitchen_station_id').
     eq('lodge_id', state.lodgeId).
     order('category').
     order('name').
@@ -383,6 +417,7 @@ export async function createPosMenuItem(data) {
     price: Number(data.price) || 0,
     is_available: data.is_available !== false,
     barcode: data.barcode || null,
+    stock_method: data.stock_method || (data.inventory_item_id ? 'direct' : 'recipe'),
     inventory_item_id: data.inventory_item_id || null,
     depletion_qty: data.inventory_item_id ? Number(data.depletion_qty) || 1 : null,
     outlet_id: data.outlet_id || null,
@@ -411,6 +446,7 @@ export async function updatePosMenuItem(id, data) {
     price: Number(data.price),
     is_available: data.is_available,
     barcode: data.barcode || null,
+    stock_method: data.stock_method || existing?.stock_method || (data.inventory_item_id ? 'direct' : 'recipe'),
     inventory_item_id: data.inventory_item_id || null,
     depletion_qty: data.inventory_item_id ? Number(data.depletion_qty) || 1 : null,
     ...(data.outlet_id !== undefined ? { outlet_id: data.outlet_id || null } : {}),
@@ -473,10 +509,10 @@ async function _getPosOrders(startDate, endDate, outletFilter = null) {
     const cachedOrders = readCache('pos-orders');
     let query = state.supabase.
     from('pos_orders').
-    select('id, room_id, booking_id, walk_in_name, total, gross_total, discount_total, tax_rate, tax_total, tip_total, notes, payment_method, payment_breakdown, outlet_id, service_mode, table_name, tab_name, waiter_name, cashier_id, cashier_name, shift_id, ticket_status, status, created_at, pos_order_items(*), outlets(name)').
+    select('id, room_id, booking_id, walk_in_name, total, gross_total, discount_total, tax_rate, tax_total, tip_total, notes, payment_method, payment_breakdown, receipt_number, order_number, daily_order_number, business_date, transaction_type, original_order_id, outlet_id, service_mode, table_name, tab_name, waiter_name, cashier_id, cashier_name, shift_id, ticket_status, status, created_at, pos_order_items(*), outlets(name)').
     eq('lodge_id', state.lodgeId);
-    if (startDate) query = query.gte('created_at', startDate);
-    if (endDate) query = query.lte('created_at', normalizeInclusiveDateEnd(endDate));
+    if (startDate) query = query.gte('business_date', startDate);
+    if (endDate) query = query.lte('business_date', endDate);
     let data = null;
     let error = null;
     ({ data, error } = await query.order('created_at', { ascending: false }).limit(500));
@@ -493,10 +529,10 @@ async function _getPosOrders(startDate, endDate, outletFilter = null) {
 
       let fallbackQuery = state.supabase.
       from('pos_orders').
-      select('id, room_id, booking_id, walk_in_name, total, gross_total, discount_total, tax_rate, tax_total, tip_total, notes, payment_method, payment_breakdown, outlet_id, service_mode, table_name, tab_name, waiter_name, cashier_id, cashier_name, shift_id, ticket_status, status, created_at, pos_order_items(*)').
+      select('id, room_id, booking_id, walk_in_name, total, gross_total, discount_total, tax_rate, tax_total, tip_total, notes, payment_method, payment_breakdown, receipt_number, order_number, daily_order_number, business_date, transaction_type, original_order_id, outlet_id, service_mode, table_name, tab_name, waiter_name, cashier_id, cashier_name, shift_id, ticket_status, status, created_at, pos_order_items(*)').
       eq('lodge_id', state.lodgeId);
-      if (startDate) fallbackQuery = fallbackQuery.gte('created_at', startDate);
-      if (endDate) fallbackQuery = fallbackQuery.lte('created_at', normalizeInclusiveDateEnd(endDate));
+      if (startDate) fallbackQuery = fallbackQuery.gte('business_date', startDate);
+      if (endDate) fallbackQuery = fallbackQuery.lte('business_date', endDate);
       const fallback = await fallbackQuery.order('created_at', { ascending: false }).limit(500);
       data = fallback.data || [];
       error = fallback.error || null;
@@ -527,6 +563,17 @@ async function _getPosOrders(startDate, endDate, outletFilter = null) {
 
 export function getPosOrders(startDate, endDate, outletFilter = null) {
   return dedupePromise(`getPosOrders:${startDate}:${endDate}:${JSON.stringify(outletFilter)}`, () => _getPosOrders(startDate, endDate, outletFilter));
+}
+
+// A shared Till keeps a device session open for speed, but history must remain
+// scoped to the PIN-verified operator.  The local POS cache gives the screen an
+// immediate result; the caller can then request the server refresh.
+export async function getSharedTillOperatorOrders(startDate, endDate, outletFilter, operatorId, { refresh = false } = {}) {
+  const belongsToOperator = (order) => order?.cashier_id === operatorId;
+  const cached = applyPosOrderFilters(readCache('pos-orders'), startDate, endDate, outletFilter).filter(belongsToOperator);
+  if (!refresh || !state.isOnline) return { orders: cached, source: 'local_cache', refreshed: false };
+  const live = await getPosOrders(startDate, endDate, outletFilter);
+  return { orders: (live || []).filter(belongsToOperator), source: 'server', refreshed: true };
 }
 
 export async function getPosVoidHistory(startDate, endDate, outletFilter = null) {
@@ -998,7 +1045,7 @@ export async function createPosOrder(data) {
       appendPosAudit('order_completed', { entity_type: 'pos_order', entity_id: result.id || orderId, details: { total: serverTotal, outlet_id: data.outlet_id || null, table_name: data.table_name || null, catalog_snapshot_id: catalogSnapshotId, v3: true, ticket_count: serverTickets.length } });
       if (data.tab_id) closePosTab(data.tab_id).catch(() => {});
       // Synchronous recipe depletion - must complete with order
-      await recordRecipeStockDepletion(result.id || orderId, items);
+      await recordRecipeStockDepletion(result.id || orderId, items, data.outlet_id || null);
     }
     return result;
   } catch (error) {
@@ -1045,6 +1092,7 @@ export async function approvePosVoidWithPin(payload) {
     pin: String(pin).trim(),
     device_id: getDesktopPosDeviceId(),
     reason: String(reason).trim(),
+    direct_stock_disposition: payload?.direct_stock_disposition || 'return_to_stock',
     outlet_id: outlet_id || cachedOrder?.outlet_id || null,
     override_log_id: logId,
     created_at: createdAt
@@ -1078,6 +1126,7 @@ export async function approvePosVoidWithPin(payload) {
       approved_by: null,
       approver_name: 'Pending server validation',
       reason: String(reason).trim(),
+      direct_stock_disposition: rpcPayload.direct_stock_disposition,
       outlet_id: outlet_id || cachedOrder?.outlet_id || null,
       created_at: createdAt,
       _pending_sync: true,
@@ -1111,6 +1160,7 @@ export async function approvePosVoidWithPin(payload) {
       approved_by: result.approved_by || null,
       approver_name: result.approver_name || null,
       reason: String(reason).trim(),
+      direct_stock_disposition: rpcPayload.direct_stock_disposition,
       outlet_id: outlet_id || cachedOrder?.outlet_id || null,
       created_at: createdAt,
       _pending_sync: false,
@@ -1588,7 +1638,11 @@ function readPosTabs() {
   return Array.isArray(rows) ? rows : [];
 }
 
-function writePosTabs(rows = []) {
+function writePosTabs(rows = [], { invalidate = true } = {}) {
+  if (invalidate) {
+    invalidatePosRemoteReads('tabs');
+    invalidatePosRemoteReads('floor');
+  }
   writeCache('pos-tabs', rows.slice(0, 500));
 }
 
@@ -1631,27 +1685,47 @@ function upsertLocalPosTab(row = {}) {
   return row;
 }
 
-async function fetchRemotePosTabs() {
+async function fetchRemotePosTabs(filters = {}) {
   if (!state.isOnline || !state.supabase || !state.lodgeId) return null;
-  const { data, error } = await state.supabase
-    .from('pos_tabs')
-    .select('*')
-    .eq('lodge_id', state.lodgeId)
-    .order('updated_at', { ascending: false })
-    .limit(500);
-  if (error) throw new Error(error.message);
-  return Array.isArray(data) ? data : [];
+  const status = String(filters.status || '').trim().toLowerCase();
+  const outletId = filters.outletId || filters.outlet_id || null;
+  const key = `tabs:${state.lodgeId}:${outletId || 'all'}:${status || 'all'}`;
+  return readPosRemoteCached(key, async () => {
+    let query = state.supabase
+      .from('pos_tabs')
+      .select(POS_TAB_SELECT)
+      .eq('lodge_id', state.lodgeId)
+      .order('updated_at', { ascending: false })
+      .limit(500);
+    if (outletId) query = query.eq('outlet_id', outletId);
+    if (status === 'active') query = query.in('status', [...ACTIVE_TABLE_TAB_STATUSES]);
+    else if (status) query = query.eq('status', status);
+    const { data, error } = await query;
+    if (error) throw new Error(error.message);
+    return Array.isArray(data) ? data : [];
+  });
 }
 
-export async function getPosTabs() {
+export async function getPosTabs(filters = {}) {
   try {
-    const remote = await fetchRemotePosTabs();
+    const remote = await fetchRemotePosTabs(filters);
     if (remote) {
+      if (String(filters.status || '').trim().toLowerCase() === 'active') {
+        const pendingLocal = readPosTabs().filter((row) => row?._pending_sync === true && isActiveTableTab(row));
+        const remoteIds = new Set(remote.map((row) => row.id));
+        const activeRows = [
+          ...remote,
+          ...pendingLocal.filter((row) => !remoteIds.has(row.id))
+        ].sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')));
+        const retainedHistory = readPosTabs().filter((row) => !isActiveTableTab(row) && !remoteIds.has(row.id));
+        writePosTabs([...activeRows, ...retainedHistory], { invalidate: false });
+        return activeRows;
+      }
       const merged = [
         ...remote,
         ...readPosTabs().filter((local) => !remote.some((row) => row.id === local.id))
       ].sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')));
-      writePosTabs(merged);
+      writePosTabs(merged, { invalidate: false });
       return merged;
     }
   } catch (error) {
@@ -1661,8 +1735,9 @@ export async function getPosTabs() {
 }
 
 export async function savePosTab(data = {}) {
-  if (normalizeTableName(data.table_name) && !normalizeTableName(data.waiter_name)) {
-    return { success: false, error: 'Served-by staff is required before opening a table.' };
+  const status = normalizeTabStatus(data.status, normalizeTableName(data.table_name) ? 'running' : 'open');
+  if (ACTIVE_TABLE_TAB_STATUSES.has(status) && (!data.waiter_id || !normalizeTableName(data.waiter_name) || !data.shift_id)) {
+    return { success: false, error: 'Unlock Till with the serving staff PIN and start their shift before holding an open check.' };
   }
   const id = data.id || randomUUID();
   const now = new Date().toISOString();
@@ -1689,7 +1764,9 @@ export async function savePosTab(data = {}) {
     booking_id: data.booking_id || null,
     items: Array.isArray(data.items) ? data.items : [],
     notes: data.notes || null,
-    status: normalizeTabStatus(data.status, tableName ? 'running' : 'open'),
+    status,
+    waiter_id: data.waiter_id || null,
+    shift_id: data.shift_id || null,
     opened_by: data.opened_by || state.currentUser?.id || null,
     opened_by_name: data.opened_by_name || state.currentUser?.name || state.currentUser?.email || null,
     created_at: data.created_at || now,
@@ -1701,6 +1778,10 @@ export async function savePosTab(data = {}) {
     try {
       const { data: rpcData, error } = await state.supabase.rpc('upsert_pos_tab', { payload: row });
       if (error) throw new Error(error.message);
+      if (!rpcData?.success) {
+        writePosTabs(readPosTabs().filter((entry) => entry.id !== row.id));
+        return { success: false, error: rpcData?.error || 'Could not hold this open check.' };
+      }
       const remoteRow = rpcData?.tab || rpcData?.row || null;
       if (remoteRow?.id) upsertLocalPosTab(remoteRow);
       if (rpcData?.already_open) {
@@ -1714,7 +1795,10 @@ export async function savePosTab(data = {}) {
       }
       return { success: true, tab: remoteRow || row };
     } catch (error) {
-      console.warn('[POS TABS] Remote tab save unavailable; kept local table session:', error?.message || error);
+      // While the terminal reports online, never present an unconfirmed tab as
+      // valid. The server owns staff/shift attribution and has the audit trail.
+      writePosTabs(readPosTabs().filter((entry) => entry.id !== row.id));
+      return { success: false, error: error?.message || 'Could not confirm the open check. Check the Till unlock and shift, then try again.' };
     }
   } else {
     queueOperation('rpc', 'upsert_pos_tab', { payload: row }, null, {
@@ -1959,6 +2043,49 @@ export async function splitBillEvenly(data = {}) {
   return { success: false, error: 'Could not split the bill.' };
 }
 
+export async function submitPosCashup(payload = {}) {
+  if (!state.isOnline || !state.supabase) {
+    return { success: false, error: 'Cash-up submission needs an internet connection so it can be reviewed safely.' };
+  }
+  const { data, error } = await state.supabase.rpc('submit_pos_shift_cashup', {
+    payload: { ...payload, lodge_id: state.lodgeId }
+  });
+  if (error) throw new Error(error.message);
+  return data || { success: false, error: 'Could not submit cash-up.' };
+}
+
+export async function submitPosCashupWithAttendancePin(payload = {}) {
+  if (!state.isOnline || !state.supabase) return { success: false, error: 'Shared-terminal cash-up needs an internet connection.' };
+  const { data, error } = await state.supabase.rpc('submit_pos_shift_cashup_with_attendance_pin', { payload: { ...payload, lodge_id: state.lodgeId, device_id: getDesktopPosDeviceId() } });
+  if (error) throw new Error(error.message);
+  return data || { success: false, error: 'Could not submit the shared-terminal cash-up.' };
+}
+
+export async function getMyPosCashupSubmission(shiftId) {
+  if (!shiftId || !state.isOnline || !state.supabase) return { success: true, submission: null };
+  const { data, error } = await state.supabase.rpc('get_my_pos_cashup_submission', {
+    p_lodge_id: state.lodgeId, p_shift_id: shiftId
+  });
+  if (error) throw new Error(error.message);
+  return data || { success: true, submission: null };
+}
+
+export async function getPendingPosCashupSubmissions() {
+  if (!state.isOnline || !state.supabase) return { success: false, error: 'Cash-up review needs an internet connection.' };
+  const { data, error } = await state.supabase.rpc('get_pending_pos_cashup_submissions', { p_lodge_id: state.lodgeId });
+  if (error) throw new Error(error.message);
+  return data || { success: true, submissions: [] };
+}
+
+export async function reviewPosCashupSubmission(payload = {}) {
+  if (!state.isOnline || !state.supabase) return { success: false, error: 'Cash-up review needs an internet connection.' };
+  const { data, error } = await state.supabase.rpc('review_pos_cashup_submission', {
+    payload: { ...payload, lodge_id: state.lodgeId, device_id: getDesktopPosDeviceId() }
+  });
+  if (error) throw new Error(error.message);
+  return data || { success: false, error: 'Could not review cash-up.' };
+}
+
 function updateTableTabStatusByTicket(ticket = {}, status = 'running') {
   if (!ticket.table_name) return;
   const mappedStatus = status === 'served' ? 'delivered' : status === 'ready' ? 'ready' : status === 'cancelled' ? 'closed' : 'running';
@@ -1969,25 +2096,69 @@ function updateTableTabStatusByTicket(ticket = {}, status = 'running') {
   }
 }
 
-export function getPosTableStatuses(outletId = null) {
+export function getPosTableStatuses(outletId = null, reservationOccupancy = []) {
   const rows = readPosTabs();
+  const occupiedByReservation = new Map(
+    (Array.isArray(reservationOccupancy) ? reservationOccupancy : [])
+      .filter((row) => row?.table_id)
+      .map((row) => [String(row.table_id), row]),
+  );
   const tables = readPosTables().filter((table) =>
     table.active !== false && (!outletId || !table.outlet_id || table.outlet_id === outletId)
   );
   return tables.map((table) => {
     const activeTab = findActiveTableTab(rows, table.name, table.outlet_id || outletId || null, null);
+    const reservation = occupiedByReservation.get(String(table.id)) || null;
     return {
       ...table,
       tab: activeTab || null,
-      status: activeTab ? normalizeTabStatus(activeTab.status, 'running') : 'available'
+      reservation,
+      status: activeTab ? normalizeTabStatus(activeTab.status, 'running') : reservation ? 'occupied' : 'available'
     };
   });
 }
 
 export async function getPosTablesWithStatus(outletId = null) {
-  await getPosTabs().catch(() => []);
-  await getPosTables().catch(() => []);
-  return getPosTableStatuses(outletId);
+  if (state.isOnline && state.supabase && state.lodgeId) {
+    try {
+      const key = `floor:${state.lodgeId}:${outletId || 'all'}`;
+      const snapshot = await readPosRemoteCached(key, async () => {
+        const { data, error } = await state.supabase.rpc('get_pos_floor_snapshot', {
+          p_lodge_id: state.lodgeId,
+          p_outlet_id: outletId || null
+        });
+        if (error) throw new Error(error.message);
+        return data && typeof data === 'object' ? data : null;
+      });
+      if (snapshot) {
+        const tabs = Array.isArray(snapshot.tabs) ? snapshot.tabs : [];
+        const tables = Array.isArray(snapshot.tables) ? snapshot.tables : [];
+        const occupancy = Array.isArray(snapshot.occupancy) ? snapshot.occupancy : [];
+        const activeIds = new Set(tabs.map((row) => row.id));
+        writePosTabs([
+          ...tabs,
+          ...readPosTabs().filter((row) => !isActiveTableTab(row) && !activeIds.has(row.id))
+        ], { invalidate: false });
+        writePosTables(tables, { invalidate: false });
+        return getPosTableStatuses(outletId, occupancy);
+      }
+    } catch (error) {
+      if (!/get_pos_floor_snapshot|schema cache|PGRST202|does not exist/i.test(String(error?.message || ''))) {
+        console.warn('[POS FLOOR] Combined floor snapshot unavailable:', error?.message || error);
+      }
+    }
+  }
+  const [, , occupancyResult] = await Promise.allSettled([
+    getPosTabs({ status: 'active', outletId }),
+    getPosTables(),
+    state.isOnline && state.supabase && state.lodgeId
+      ? state.supabase.rpc('get_restaurant_floor_occupancy', { p_lodge_id: state.lodgeId })
+      : Promise.resolve({ data: [] }),
+  ]);
+  const occupancy = occupancyResult.status === 'fulfilled' && !occupancyResult.value?.error
+    ? occupancyResult.value?.data
+    : [];
+  return getPosTableStatuses(outletId, occupancy);
 }
 
 export async function getActivePosTableTab(tableName, outletId = null) {
@@ -2015,7 +2186,8 @@ function readPosTables() {
   return Array.isArray(rows) ? rows : [];
 }
 
-function writePosTables(rows = []) {
+function writePosTables(rows = [], { invalidate = true } = {}) {
+  if (invalidate) invalidatePosRemoteReads('floor');
   writeCache('pos-tables', rows.slice(0, 500));
 }
 
@@ -2034,7 +2206,7 @@ export async function getPosTables() {
           ...data,
           ...readPosTables().filter((local) => !data.some((row) => row.id === local.id))
         ];
-        writePosTables(merged);
+        writePosTables(merged, { invalidate: false });
         return merged.sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
       }
     } catch (error) {
@@ -2098,8 +2270,9 @@ export async function savePosTable(data = {}) {
 }
 
 export async function deletePosTable(id) {
-  writePosTables(readPosTables().filter((row) => row.id !== id));
-  return { success: true };
+  const existing = readPosTables().find((row) => row.id === id);
+  if (!existing) return { success: false, error: 'Table not found.' };
+  return savePosTable({ ...existing, active: false });
 }
 
 function readPosStations() {
@@ -2195,7 +2368,8 @@ function readPosTickets() {
   return Array.isArray(rows) ? rows : [];
 }
 
-function writePosTickets(rows = []) {
+function writePosTickets(rows = [], { invalidate = true } = {}) {
+  if (invalidate) invalidatePosRemoteReads('tickets');
   writeCache('pos-tickets', rows.slice(0, 1000));
 }
 
@@ -2242,20 +2416,31 @@ function appendPrepTickets(order = {}, items = []) {
 
 export async function getPosTickets(filters = {}) {
   const station = filters.station || 'all';
+  const status = String(filters.status || '').trim().toLowerCase();
+  const createdFrom = filters.createdFrom || filters.created_from || null;
+  const createdTo = filters.createdTo || filters.created_to || null;
   if (state.isOnline && state.supabase && state.lodgeId) {
     try {
-      let query = state.supabase
-        .from('pos_prep_tickets')
-        .select('*')
-        .eq('lodge_id', state.lodgeId)
-        .order('created_at', { ascending: false })
-        .limit(1000);
-      if (station !== 'all') query = query.eq('station', station);
-      const { data, error } = await query;
-      if (error) throw new Error(error.message);
+      const key = `tickets:${state.lodgeId}:${station}:${status || 'all'}:${createdFrom || ''}:${createdTo || ''}`;
+      const data = await readPosRemoteCached(key, async () => {
+        let query = state.supabase
+          .from('pos_prep_tickets')
+          .select(POS_TICKET_SELECT)
+          .eq('lodge_id', state.lodgeId)
+          .order('created_at', { ascending: false })
+          .limit(1000);
+        if (station !== 'all') query = query.eq('station', station);
+        if (status === 'active') query = query.in('status', ACTIVE_PREP_TICKET_STATUSES);
+        else if (status) query = query.eq('status', status);
+        if (createdFrom) query = query.gte('created_at', createdFrom);
+        if (createdTo) query = query.lt('created_at', createdTo);
+        const result = await query;
+        if (result.error) throw new Error(result.error.message);
+        return Array.isArray(result.data) ? result.data : [];
+      });
       if (Array.isArray(data)) {
         const remoteIds = new Set(data.map((ticket) => ticket.id));
-        writePosTickets([...data, ...readPosTickets().filter((ticket) => !remoteIds.has(ticket.id))]);
+        writePosTickets([...data, ...readPosTickets().filter((ticket) => !remoteIds.has(ticket.id))], { invalidate: false });
         return data;
       }
     } catch (error) {
@@ -2263,7 +2448,15 @@ export async function getPosTickets(filters = {}) {
     }
   }
   return readPosTickets()
-    .filter((ticket) => station === 'all' || ticket.station === station)
+    .filter((ticket) => {
+      if (station !== 'all' && ticket.station !== station) return false;
+      if (status === 'active' && !ACTIVE_PREP_TICKET_STATUSES.includes(String(ticket.status || '').toLowerCase())) return false;
+      if (status && status !== 'active' && String(ticket.status || '').toLowerCase() !== status) return false;
+      const createdAt = String(ticket.created_at || '');
+      if (createdFrom && createdAt < createdFrom) return false;
+      if (createdTo && createdAt >= createdTo) return false;
+      return true;
+    })
     .sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
 }
 
@@ -2318,6 +2511,41 @@ function writePosShifts(rows = []) {
 
 export async function getCurrentPosShift(outletId = null, cashierId = null) {
   const operatorId = cashierId || state.currentUser?.id || null;
+  // An open cash shift is server truth. The local cache is still useful when
+  // offline, but it must not hide a real server-backed shift (including an
+  // imported/demo shift) from the service terminal.
+  if (state.isOnline && state.supabase && state.lodgeId) {
+    try {
+      let query = state.supabase
+        .from('pos_shifts')
+        .select('*')
+        .eq('lodge_id', state.lodgeId)
+        .eq('status', 'open')
+        .order('opened_at', { ascending: false })
+        .limit(10);
+      if (outletId) query = query.eq('outlet_id', outletId);
+      if (operatorId) query = query.eq('cashier_id', operatorId);
+      const { data, error } = await query;
+      if (error) throw error;
+      const active = Array.isArray(data) ? data[0] : null;
+      if (active) {
+        const cached = readPosShifts().filter((row) => row.id !== active.id);
+        writePosShifts([active, ...cached]);
+        return active;
+      }
+      // A successful server read with no matching open shift is authoritative.
+      // Do not fall through to a stale local "open" shift after cash-up has
+      // closed it, otherwise the staff member is blocked from clocking out.
+      writePosShifts(readPosShifts().filter((row) => !(
+        row.status === 'open' &&
+        (!outletId || row.outlet_id === outletId) &&
+        (!operatorId || row.cashier_id === operatorId)
+      )));
+      return null;
+    } catch (error) {
+      console.warn('[POS SHIFT] Server lookup failed; using local shift cache:', error?.message || error);
+    }
+  }
   return readPosShifts().find((row) =>
     row.status === 'open' &&
     (!outletId || row.outlet_id === outletId) &&
@@ -2343,8 +2571,65 @@ export async function openPosShift(data = {}) {
     closed_at: null,
     notes: data.notes || null
   };
+
+  if (state.isOnline && state.supabase && state.lodgeId) {
+    const { data: result, error } = await state.supabase.rpc('open_pos_shift_with_id', {
+      payload: {
+        shift_id: row.id,
+        lodge_id: state.lodgeId,
+        outlet_id: row.outlet_id,
+        cashier_id: row.cashier_id,
+        cashier_name: row.cashier_name,
+        opening_float: row.opening_float,
+        notes: row.notes,
+        create_idempotency_key: data.create_idempotency_key || data.idempotency_key || row.id
+      }
+    });
+    if (error) throw new Error(error.message || 'Could not open this shift.');
+    if (result?.success === false) return result;
+    const confirmed = result?.shift || row;
+    writePosShifts([confirmed, ...readPosShifts().filter((shift) => shift.id !== confirmed.id)]);
+    return { success: true, shift: confirmed, already_open: result?.already_open === true };
+  }
+
   writePosShifts([row, ...readPosShifts()]);
   return { success: true, shift: row };
+}
+
+export async function getStaffOpenPosShift(staffId) {
+  if (!staffId || !state.isOnline || !state.supabase) return null;
+  const { data, error } = await state.supabase.rpc('get_staff_open_pos_shift', { p_lodge_id: state.lodgeId, p_staff_id: staffId });
+  if (error) throw new Error(error.message);
+  if (data?.success === false) throw new Error(data.error || 'Could not load the staff Till shift.');
+  return data?.shift || null;
+}
+
+export async function getStaffPosCashupSubmission(shiftId) {
+  if (!shiftId || !state.isOnline || !state.supabase) return { success: true, submission: null };
+  const { data, error } = await state.supabase.rpc('get_staff_pos_cashup_submission', { p_lodge_id: state.lodgeId, p_shift_id: shiftId });
+  if (error) throw new Error(error.message);
+  return data || { success: true, submission: null };
+}
+
+export async function activateSharedTillOperator({ staff_id, staffId, outlet_id, outletId, pin, idempotency_key, idempotencyKey } = {}) {
+  if (!state.isOnline || !state.supabase) throw new Error('Unlocking Till needs an internet connection so attendance can be confirmed.');
+  const { data: result, error } = await state.supabase.rpc('activate_shared_till_operator', {
+    payload: {
+      lodge_id: state.lodgeId,
+      staff_user_id: staff_id || staffId || null,
+      outlet_id: outlet_id || outletId || null,
+      pin: String(pin || ''),
+      idempotency_key: idempotency_key || idempotencyKey || randomUUID(),
+      device_id: getDesktopPosDeviceId()
+    }
+  });
+  if (error) throw new Error(error.message);
+  return result || { success: false, error: 'Could not unlock Till.' };
+}
+
+export async function linkMyPosShiftToAttendance({ pos_shift_id, attendance_shift_id } = {}) {
+  const { data, error } = await state.supabase.rpc('link_my_pos_shift_to_attendance', { payload: { lodge_id: state.lodgeId, pos_shift_id, attendance_shift_id } });
+  if (error) throw new Error(error.message); return data || { success: false };
 }
 
 export async function closePosShift(data = {}) {
@@ -2490,7 +2775,7 @@ export async function getPosPromotions() {
   if (state.isOnline && state.supabase) {
     const { data, error } = await state.supabase
       .from('pos_promotions')
-      .select('id, lodge_id, name, discount_type, discount_value, applies_to_category, active, updated_at')
+      .select('id, lodge_id, name, discount_type, discount_value, applies_to_category, active, starts_at, ends_at, minimum_spend, customer_segment, updated_at')
       .eq('lodge_id', state.lodgeId)
       .order('name');
     if (error) throw new Error(error.message);
@@ -2509,6 +2794,10 @@ export async function savePosPromotion(data = {}) {
     discount_value: normalizeMoney(data.discount_value || 0),
     applies_to_category: String(data.applies_to_category || '').trim() || 'All',
     active: data.active !== false,
+    starts_at: data.starts_at || null,
+    ends_at: data.ends_at || null,
+    minimum_spend: normalizeMoney(data.minimum_spend || 0),
+    customer_segment: String(data.customer_segment || '').trim() || null,
     updated_at: new Date().toISOString()
   };
   if (!row.name) return { success: false, error: 'Promotion name is required.' };
@@ -2913,7 +3202,7 @@ export async function deletePosRecipe(recipeId) {
   }
 }
 
-export async function recordRecipeStockDepletion(orderId, items = []) {
+export async function recordRecipeStockDepletion(orderId, items = [], outletId = null) {
   if (!orderId || !Array.isArray(items) || items.length === 0) return { success: true, movements_created: 0 };
 
   if (!state.isOnline || !state.supabase) {
@@ -2927,6 +3216,7 @@ export async function recordRecipeStockDepletion(orderId, items = []) {
       payload: {
         lodge_id: state.lodgeId,
         order_id: orderId,
+        outlet_id: outletId,
         items: items.map((item) => ({
           menu_item_id: item.menu_item_id || null,
           order_item_id: item.id || null,
@@ -3105,16 +3395,18 @@ export async function recordDelivery(deliveryData) {
 
 // ── Phase 5: Restaurant Operating System ─────────────────────
 
-export async function clockInStaff({ staffName, role, expectedHours }) {
+export async function clockInStaff({ staff_user_id, staffUserId, role, expected_hours, expectedHours, idempotency_key, idempotencyKey } = {}) {
   if (!state.isOnline || !state.supabase) throw new Error('Cannot clock in offline');
 
   try {
     const { data: result, error } = await state.supabase.rpc('clock_in_staff', {
       payload: {
+        id: transferData.id || null,
         lodge_id: state.lodgeId,
-        staff_name: staffName,
+        staff_user_id: staff_user_id || staffUserId || null,
         role: role || 'cashier',
-        expected_hours: expectedHours || null
+        expected_hours: expected_hours ?? expectedHours ?? null,
+        idempotency_key: idempotency_key || idempotencyKey || randomUUID()
       }
     });
     if (error) throw new Error(error.message);
@@ -3125,7 +3417,25 @@ export async function clockInStaff({ staffName, role, expectedHours }) {
   }
 }
 
-export async function clockOutStaff({ shiftId, notes }) {
+export async function clockInStaffWithAttendancePin({ staff_user_id, staffUserId, pin, role, expected_hours, expectedHours, idempotency_key, idempotencyKey } = {}) {
+  if (!state.isOnline || !state.supabase) throw new Error('Attendance PIN clock-in needs an internet connection.');
+  const { data: result, error } = await state.supabase.rpc('clock_in_staff_with_attendance_pin', {
+    payload: { lodge_id: state.lodgeId, staff_user_id: staff_user_id || staffUserId || null, pin: String(pin || ''), role, expected_hours: expected_hours ?? expectedHours ?? null, idempotency_key: idempotency_key || idempotencyKey || randomUUID(), device_id: getDesktopPosDeviceId() }
+  });
+  if (error) throw new Error(error.message);
+  return result || { success: false, error: 'Clock-in failed.' };
+}
+
+export async function clockInSelfForPos({ role, idempotency_key, idempotencyKey } = {}) {
+  if (!state.isOnline || !state.supabase) throw new Error('Starting a service shift needs an internet connection.');
+  const { data: result, error } = await state.supabase.rpc('clock_in_self_for_pos', {
+    payload: { lodge_id: state.lodgeId, role: role || 'waiter', idempotency_key: idempotency_key || idempotencyKey || randomUUID() }
+  });
+  if (error) throw new Error(error.message);
+  return result || { success: false, error: 'Could not start attendance.' };
+}
+
+export async function clockOutStaff({ shiftId, notes } = {}) {
   if (!state.isOnline || !state.supabase) throw new Error('Cannot clock out offline');
 
   try {
@@ -3263,6 +3573,39 @@ export async function createPosSupplier(supplierData) {
   }
 }
 
+export async function updatePosSupplier(supplierId, supplierData) {
+  if (!state.isOnline || !state.supabase) throw new Error('Cannot update supplier offline');
+
+  try {
+    const { data: result, error } = await state.supabase.rpc('update_restaurant_supplier', {
+      payload: {
+        lodge_id: state.lodgeId,
+        supplier_id: supplierId,
+        name: supplierData.name,
+        contact_person: supplierData.contact_person || null,
+        email: supplierData.email || null,
+        phone: supplierData.phone || null,
+        address: supplierData.address || null,
+        payment_terms: supplierData.payment_terms || null
+      }
+    });
+    if (error) throw new Error(error.message);
+    return result || { success: false, error: 'Unknown error' };
+  } catch (error) {
+    console.error('[POS SUPPLIERS] Update failed:', error?.message || error);
+    throw error;
+  }
+}
+
+export async function clockOutStaffWithAttendancePin({ shiftId, pin, notes } = {}) {
+  if (!state.isOnline || !state.supabase) throw new Error('Attendance PIN clock-out needs an internet connection.');
+  const { data: result, error } = await state.supabase.rpc('clock_out_staff_with_attendance_pin', {
+    payload: { lodge_id: state.lodgeId, shift_id: shiftId, pin: String(pin || ''), notes: notes || null, device_id: getDesktopPosDeviceId() }
+  });
+  if (error) throw new Error(error.message);
+  return result || { success: false, error: 'Clock-out failed.' };
+}
+
 export async function createPurchaseOrder(orderData) {
   if (!state.isOnline || !state.supabase) throw new Error('Cannot create purchase order offline');
 
@@ -3271,6 +3614,7 @@ export async function createPurchaseOrder(orderData) {
       payload: {
         lodge_id: state.lodgeId,
         supplier_id: orderData.supplier_id || null,
+        stock_location_id: orderData.stock_location_id || null,
         expected_delivery: orderData.expected_delivery || null,
         notes: orderData.notes || null,
         items: orderData.items || []
@@ -3302,14 +3646,15 @@ export async function approvePurchaseOrder(orderId) {
   }
 }
 
-export async function receivePurchaseOrder(orderId) {
+export async function receivePurchaseOrder(orderId, stockLocationId = null) {
   if (!state.isOnline || !state.supabase) throw new Error('Cannot receive purchase order offline');
 
   try {
     const { data: result, error } = await state.supabase.rpc('receive_purchase_order', {
       payload: {
         lodge_id: state.lodgeId,
-        order_id: orderId
+        order_id: orderId,
+        stock_location_id: stockLocationId || null
       }
     });
     if (error) throw new Error(error.message);
@@ -3327,6 +3672,9 @@ export async function createStockTransfer(transferData) {
     const { data: result, error } = await state.supabase.rpc('create_stock_transfer', {
       payload: {
         lodge_id: state.lodgeId,
+        id: transferData.id || null,
+        from_stock_location_id: transferData.from_stock_location_id || null,
+        to_stock_location_id: transferData.to_stock_location_id || null,
         from_outlet_id: transferData.from_outlet_id || null,
         to_outlet_id: transferData.to_outlet_id || null,
         inventory_item_id: transferData.inventory_item_id || null,
@@ -3441,14 +3789,40 @@ export async function getPosPurchaseOrders(startDate, endDate) {
   try {
     let query = state.supabase
       .from('restaurant_purchase_orders')
-      .select('*, supplier:restaurant_suppliers(name, contact_person, phone)')
+      .select('id, order_date, expected_delivery, status, total, notes, created_at, updated_at, stock_location_id, stock_location:restaurant_stock_locations(name), supplier:restaurant_suppliers(name, contact_person, phone, email), items:restaurant_purchase_order_items(id, inventory_item_id, description, quantity, unit_cost, total)')
       .eq('lodge_id', state.lodgeId)
       .order('created_at', { ascending: false });
     if (startDate) query = query.gte('created_at', startDate);
     if (endDate) query = query.lte('created_at', endDate);
     const { data, error } = await query;
     if (error) throw new Error(error.message);
-    return Array.isArray(data) ? data : [];
+    // Return an explicitly plain payload across the Electron IPC boundary.
+    return Array.isArray(data) ? data.map((order) => ({
+      id: order.id,
+      order_date: order.order_date || null,
+      expected_delivery: order.expected_delivery || null,
+      status: order.status || 'draft',
+      total: Number(order.total || 0),
+      notes: order.notes || null,
+      created_at: order.created_at || null,
+      updated_at: order.updated_at || null,
+      stock_location_id: order.stock_location_id || null,
+      stock_location_name: order.stock_location?.name || 'Shared business stock',
+      supplier: order.supplier ? {
+        name: order.supplier.name || null,
+        contact_person: order.supplier.contact_person || null,
+        phone: order.supplier.phone || null
+      } : null,
+      items: Array.isArray(order.items) ? order.items.map((item) => ({
+        id: item.id,
+        inventory_item_id: item.inventory_item_id || null,
+        description: item.description || item.inventory?.name || 'Stock item',
+        quantity: Number(item.quantity || 0),
+        unit_cost: Number(item.unit_cost || 0),
+        total: Number(item.total || 0),
+        unit: item.inventory?.unit || null
+      })) : []
+    })) : [];
   } catch (error) {
     console.error('[POS PURCHASE] List failed:', error?.message || error);
     return [];
@@ -3610,11 +3984,13 @@ export async function cancelRestaurantReservation(id, reason) {
   }
 }
 
-export async function seatRestaurantReservation(id, tableId) {
+export async function seatRestaurantReservation(id, tableIds) {
   if (!state.isOnline || !state.supabase) throw new Error('Cannot seat reservation offline');
   try {
+    const normalizedTableIds = (Array.isArray(tableIds) ? tableIds : [tableIds])
+      .filter(Boolean);
     const { data: result, error } = await state.supabase.rpc('seat_restaurant_reservation', {
-      p_id: id, p_lodge_id: state.lodgeId, p_table_id: tableId
+      payload: { id, lodge_id: state.lodgeId, table_ids: normalizedTableIds }
     });
     if (error) throw new Error(error.message);
     return result;
@@ -3639,7 +4015,7 @@ export async function markRestaurantReservationNoShow(id, reason) {
 }
 
 // Waitlist
-export async function getRestaurantWaitlist(outletId) {
+export async function getRestaurantWaitlist(outletId, includeReservationWaitlist = false) {
   if (!state.isOnline || !state.supabase) return [];
   try {
     const { data, error } = await state.supabase.rpc('get_restaurant_waitlist', {
@@ -3871,6 +4247,89 @@ export async function getLowStockPurchaseSuggestions(outletId) {
   }
 }
 
+export async function updateRestaurantWaitlistEntry(id, data) {
+  if (!state.isOnline || !state.supabase) throw new Error('Waitlist edits require an online connection');
+  const { data: result, error } = await state.supabase.rpc('update_restaurant_waitlist_entry', { payload: { ...data, id, lodge_id: state.lodgeId } });
+  if (error) throw new Error(error.message);
+  return result;
+}
+
+export async function removeRestaurantWaitlistEntry(id, reason) {
+  if (!state.isOnline || !state.supabase) throw new Error('Removing a waitlist entry requires an online connection');
+  const { data: result, error } = await state.supabase.rpc('remove_restaurant_waitlist_entry', { p_id: id, p_lodge_id: state.lodgeId, p_reason: reason });
+  if (error) throw new Error(error.message);
+  return result;
+}
+
+export async function serviceRestaurantReservationAction(id, action, tableIds = []) {
+  if (!state.isOnline || !state.supabase) throw new Error('Reservation service actions require an online connection');
+  const { data: result, error } = await state.supabase.rpc('service_restaurant_reservation_action', { payload: { id, action, table_ids: tableIds, lodge_id: state.lodgeId } });
+  if (error) throw new Error(error.message);
+  return result;
+}
+
+// Prepared recipe items remain consumed after a financial void.  This is an
+// operational loss report, sourced from the immutable void audit and frozen
+// recipe movement cost rather than a current recipe estimate.
+export async function getRecipePreparationLosses(startDate, endDate, outletId) {
+  if (!state.isOnline || !state.supabase) return [];
+  try {
+    const { data, error } = await state.supabase.rpc('get_recipe_preparation_losses', {
+      p_lodge_id: state.lodgeId,
+      p_start_date: startDate,
+      p_end_date: endDate,
+      p_outlet_id: outletId || null,
+      p_include_reservation_waitlist: includeReservationWaitlist
+    });
+    if (error) throw new Error(error.message);
+    return Array.isArray(data) ? data : [];
+  } catch (error) {
+    console.error('[POS PREPARATION LOSS] Get failed:', error?.message || error);
+    return [];
+  }
+}
+
+export async function getRecipePreparationLossIngredientSummary(startDate, endDate, outletId) {
+  if (!state.isOnline || !state.supabase) return [];
+  try {
+    const { data, error } = await state.supabase.rpc('get_recipe_preparation_loss_ingredient_summary', {
+      p_lodge_id: state.lodgeId,
+      p_start_date: startDate,
+      p_end_date: endDate,
+      p_outlet_id: outletId || null
+    });
+    if (error) throw new Error(error.message);
+    return Array.isArray(data) ? data : [];
+  } catch (error) {
+    console.error('[POS PREPARATION LOSS] Ingredient summary failed:', error?.message || error);
+    return [];
+  }
+}
+
+export async function updatePurchaseOrderDraft(orderId, orderData) {
+  if (!state.isOnline || !state.supabase) throw new Error('Cannot edit a purchase order offline');
+  const { data: result, error } = await state.supabase.rpc('update_purchase_order_draft', {
+    payload: { lodge_id: state.lodgeId, order_id: orderId, ...orderData }
+  });
+  if (error) throw new Error(error.message);
+  return result || { success: false, error: 'Unknown error' };
+}
+
+export async function setPreferredSupplierForInventoryItem(inventoryItemId, supplierId, lastUnitCost = null) {
+  if (!state.isOnline || !state.supabase) throw new Error('Assigning a preferred supplier requires an online connection');
+  const { data: result, error } = await state.supabase.rpc('set_restaurant_preferred_supplier_item', {
+    payload: {
+      lodge_id: state.lodgeId,
+      inventory_item_id: inventoryItemId,
+      supplier_id: supplierId,
+      last_unit_cost: lastUnitCost
+    }
+  });
+  if (error) throw new Error(error.message);
+  if (!result?.success) throw new Error(result?.error || 'Could not set the preferred supplier');
+  return result;
+}
+
 export async function convertPurchaseSuggestionsToPo(supplierId, suggestions, notes) {
   if (!state.isOnline || !state.supabase) throw new Error('Cannot convert suggestions offline');
   try {
@@ -3896,6 +4355,37 @@ export async function convertPurchaseSuggestionsToPo(supplierId, suggestions, no
   }
 }
 
+export async function getRestaurantShiftPlans(startDate, endDate) {
+  if (!state.isOnline || !state.supabase) return [];
+  const { data, error } = await state.supabase.rpc('get_restaurant_shift_plans', {
+    p_lodge_id: state.lodgeId,
+    p_start_date: startDate || new Date().toISOString().slice(0, 10),
+    p_end_date: endDate || new Date(Date.now() + 14 * 86400000).toISOString().slice(0, 10)
+  });
+  if (error) throw new Error(error.message);
+  return Array.isArray(data) ? data : [];
+}
+
+export async function saveRestaurantShiftPlan(data = {}) {
+  if (!state.isOnline || !state.supabase) throw new Error('Shift planning requires an online connection');
+  const { data: result, error } = await state.supabase.rpc('upsert_restaurant_shift_plan', {
+    payload: { ...data, lodge_id: state.lodgeId }
+  });
+  if (error) throw new Error(error.message);
+  if (!result?.success) throw new Error(result?.error || 'Could not save shift plan');
+  appendPosAudit('shift_plan_saved', { entity_type: 'restaurant_shift_plan', entity_id: result.plan?.id || data.id || null, details: { staff_name: data.staff_name, shift_date: data.shift_date } });
+  return result;
+}
+
+export async function deleteRestaurantShiftPlan(id) {
+  if (!state.isOnline || !state.supabase) throw new Error('Shift planning requires an online connection');
+  const { data: result, error } = await state.supabase.rpc('delete_restaurant_shift_plan', { p_lodge_id: state.lodgeId, p_id: id });
+  if (error) throw new Error(error.message);
+  if (!result?.success) throw new Error(result?.error || 'Could not delete shift plan');
+  appendPosAudit('shift_plan_deleted', { entity_type: 'restaurant_shift_plan', entity_id: id });
+  return result;
+}
+
 // Phase 7: sellability controls. These are deliberately online-only because a
 // settlement or reservation deposit must never be represented as final cash by
 // a device-local queue.
@@ -3916,6 +4406,15 @@ export async function getRestaurantSettlements(businessDate) {
   return Array.isArray(data) ? data : [];
 }
 
+export async function getRestaurantSettlementExpectedTotal(startDate, endDate, channel) {
+  if (!state.isOnline || !state.supabase) throw new Error('Settlement reconciliation requires an online connection');
+  const { data, error } = await state.supabase.rpc('get_restaurant_settlement_expected_total', {
+    p_lodge_id: state.lodgeId, p_start_date: startDate, p_end_date: endDate, p_channel: channel,
+  });
+  if (error) throw new Error(error.message);
+  return data || { success: false, error: 'Could not calculate the expected POS total.' };
+}
+
 export async function recordRestaurantReservationDeposit(data) {
   if (!state.isOnline || !state.supabase) throw new Error('Reservation deposits require an online connection');
   const { data: result, error } = await state.supabase.rpc('record_restaurant_reservation_deposit', {
@@ -3923,6 +4422,90 @@ export async function recordRestaurantReservationDeposit(data) {
   });
   if (error) throw new Error(error.message);
   appendPosAudit('reservation_deposit_held', { entity_type: 'restaurant_reservation', entity_id: data.reservation_id });
+  return result;
+}
+
+export async function getRestaurantReservationDeposits(days = 90) {
+  if (!state.isOnline || !state.supabase) return [];
+  const { data, error } = await state.supabase.rpc('get_restaurant_reservation_deposits', {
+    p_lodge_id: state.lodgeId,
+    p_days: days,
+  });
+  if (error) throw new Error(error.message);
+  return Array.isArray(data) ? data : [];
+}
+
+export async function getRestaurantOutletControls() {
+  if (!state.isOnline || !state.supabase) throw new Error('Outlet control requires an online connection');
+  const { data, error } = await state.supabase.rpc('get_restaurant_outlet_controls', { p_lodge_id: state.lodgeId });
+  if (error) throw new Error(error.message);
+  return Array.isArray(data) ? data : [];
+}
+
+export async function getRestaurantStockLocations() {
+  if (!state.isOnline || !state.supabase) throw new Error('Stock location setup requires an online connection');
+  const { data, error } = await state.supabase.rpc('get_restaurant_stock_locations', { p_lodge_id: state.lodgeId });
+  if (error) throw new Error(error.message);
+  return Array.isArray(data) ? data : [];
+}
+
+export async function getRestaurantStockLocationBalances() {
+  if (!state.isOnline || !state.supabase) throw new Error('Stock balances require an online connection');
+  const { data, error } = await state.supabase.rpc('get_restaurant_stock_location_balances', { p_lodge_id: state.lodgeId });
+  if (error) throw new Error(error.message);
+  return Array.isArray(data) ? data : [];
+}
+
+export async function createRestaurantStockLocation(data = {}) {
+  if (!state.isOnline || !state.supabase) throw new Error('Stock location setup requires an online connection');
+  const { data: result, error } = await state.supabase.rpc('create_restaurant_stock_location', { p_lodge_id: state.lodgeId, p_payload: data });
+  if (error) throw new Error(error.message);
+  return result || { success: false, error: 'Could not create stock location.' };
+}
+
+export async function updateRestaurantStockLocation(locationId, data = {}) {
+  if (!state.isOnline || !state.supabase) throw new Error('Stock location setup requires an online connection');
+  const { data: result, error } = await state.supabase.rpc('update_restaurant_stock_location', { p_lodge_id: state.lodgeId, p_location_id: locationId, p_payload: data });
+  if (error) throw new Error(error.message);
+  return result || { success: false, error: 'Could not update stock location.' };
+}
+
+export async function deleteRestaurantStockLocation(locationId) {
+  if (!state.isOnline || !state.supabase) throw new Error('Stock location setup requires an online connection');
+  const { data: result, error } = await state.supabase.rpc('delete_restaurant_stock_location', { p_lodge_id: state.lodgeId, p_location_id: locationId });
+  if (error) throw new Error(error.message);
+  return result || { success: false, error: 'Could not delete stock location.' };
+}
+
+export async function setRestaurantOutletStockLocation(outletId, stockLocationId) {
+  if (!state.isOnline || !state.supabase) throw new Error('Stock location setup requires an online connection');
+  const { data: result, error } = await state.supabase.rpc('set_restaurant_outlet_stock_location', { p_lodge_id: state.lodgeId, p_outlet_id: outletId, p_stock_location_id: stockLocationId });
+  if (error) throw new Error(error.message);
+  return result || { success: false, error: 'Could not update the outlet stock source.' };
+}
+
+export async function createRestaurantOutlet(data = {}) {
+  if (!state.isOnline || !state.supabase) throw new Error('Outlet setup requires an online connection');
+  const { data: result, error } = await state.supabase.rpc('create_restaurant_outlet', {
+    p_lodge_id: state.lodgeId,
+    p_payload: data,
+  });
+  if (error) throw new Error(error.message);
+  if (!result?.success) throw new Error(result?.error || 'Could not create outlet');
+  appendPosAudit('restaurant_outlet_created', { entity_type: 'outlet', entity_id: result?.outlet?.id, details: { name: data.name, type: data.type } });
+  return result;
+}
+
+export async function updateRestaurantOutlet(outletId, data = {}) {
+  if (!state.isOnline || !state.supabase) throw new Error('Outlet setup requires an online connection');
+  const { data: result, error } = await state.supabase.rpc('update_restaurant_outlet', {
+    p_lodge_id: state.lodgeId,
+    p_outlet_id: outletId,
+    p_payload: data,
+  });
+  if (error) throw new Error(error.message);
+  if (!result?.success) throw new Error(result?.error || 'Could not update outlet');
+  appendPosAudit('restaurant_outlet_updated', { entity_type: 'outlet', entity_id: outletId, details: { name: data.name, active: data.is_active } });
   return result;
 }
 
@@ -3934,8 +4517,44 @@ export async function recordRestaurantFeedback(data) {
   return result;
 }
 
+export async function getRestaurantFeedback(days = 30) {
+  if (!state.isOnline || !state.supabase) return [];
+  const { data, error } = await state.supabase.rpc('get_restaurant_feedback', { p_lodge_id: state.lodgeId, p_days: days });
+  if (error) throw new Error(error.message);
+  return Array.isArray(data) ? data : [];
+}
+
+export async function getRestaurantSetupProgress() {
+  if (!state.isOnline || !state.supabase) return [];
+  const { data, error } = await state.supabase.rpc('get_restaurant_setup_progress', { p_lodge_id: state.lodgeId });
+  if (error) throw new Error(error.message);
+  return Array.isArray(data) ? data : [];
+}
+
+export async function setRestaurantSetupStage(data = {}) {
+  if (!state.isOnline || !state.supabase) throw new Error('Setup progress requires an online connection');
+  const { data: result, error } = await state.supabase.rpc('set_restaurant_setup_stage', {
+    p_payload: { ...data, lodge_id: state.lodgeId }
+  });
+  if (error) throw new Error(error.message);
+  return result || { success: false, error: 'Could not update setup progress.' };
+}
+
+export async function recordRestaurantSetupEvidence(data = {}) {
+  if (!state.isOnline || !state.supabase) return { success: false, error: 'Setup evidence requires an online connection' };
+  const { data: result, error } = await state.supabase.rpc('record_restaurant_setup_evidence', {
+    p_payload: { ...data, lodge_id: state.lodgeId }
+  });
+  if (error) throw new Error(error.message);
+  return result || { success: false, error: 'Could not record setup evidence.' };
+}
+
 export async function createRestaurantGiftCard(data) { if (!state.isOnline || !state.supabase) throw new Error('Gift cards require an online connection'); const { data: result, error } = await state.supabase.rpc('create_restaurant_gift_card', { p_payload: { ...data, lodge_id: state.lodgeId } }); if (error) throw new Error(error.message); return result }
 export async function recordRestaurantTipPayout(data) { if (!state.isOnline || !state.supabase) throw new Error('Tip payouts require an online connection'); const { data: result, error } = await state.supabase.rpc('record_restaurant_tip_payout', { p_payload: { ...data, lodge_id: state.lodgeId, idempotency_key: data.idempotency_key || randomUUID() } }); if (error) throw new Error(error.message); return result }
+export async function getRestaurantTipPayouts(days = 30) { if (!state.isOnline || !state.supabase) return []; const { data, error } = await state.supabase.rpc('get_restaurant_tip_payouts', { p_lodge_id: state.lodgeId, p_days: days }); if (error) throw new Error(error.message); return Array.isArray(data) ? data : [] }
+export async function getRestaurantTipBalances(days = 30) { if (!state.isOnline || !state.supabase) return []; const { data, error } = await state.supabase.rpc('get_restaurant_tip_balances', { p_lodge_id: state.lodgeId, p_days: days }); if (error) throw new Error(error.message); return Array.isArray(data) ? data : [] }
 export async function saveRestaurantReservationPolicy(data) { if (!state.isOnline || !state.supabase) throw new Error('Reservation policy requires an online connection'); const { data: result, error } = await state.supabase.rpc('upsert_restaurant_reservation_policy', { p_payload: { ...data, lodge_id: state.lodgeId } }); if (error) throw new Error(error.message); return result }
 export async function recordRestaurantInventoryLot(data) { if (!state.isOnline || !state.supabase) throw new Error('Inventory lots require an online connection'); const { data: result, error } = await state.supabase.rpc('record_restaurant_inventory_lot', { p_payload: { ...data, lodge_id: state.lodgeId } }); if (error) throw new Error(error.message); return result }
+export async function updateRestaurantInventoryLotExpiry(lotId, data) { if (!state.isOnline || !state.supabase) throw new Error('Inventory lots require an online connection'); const { data: result, error } = await state.supabase.rpc('update_restaurant_inventory_lot_expiry', { p_payload: { ...data, lot_id: lotId, lodge_id: state.lodgeId } }); if (error) throw new Error(error.message); return result }
+export async function writeOffExpiredRestaurantInventoryLot(lotId, data) { if (!state.isOnline || !state.supabase) throw new Error('Expired-lot write-offs require an online connection'); const { data: result, error } = await state.supabase.rpc('write_off_expired_restaurant_inventory_lot', { p_payload: { ...data, lot_id: lotId, lodge_id: state.lodgeId, idempotency_key: data.idempotency_key || randomUUID() } }); if (error) throw new Error(error.message); return result }
 export async function getRestaurantExpiryLots(days = 14) { if (!state.isOnline || !state.supabase) return []; const { data, error } = await state.supabase.rpc('get_restaurant_expiry_lots', { p_lodge_id: state.lodgeId, p_days: days }); if (error) throw new Error(error.message); return Array.isArray(data) ? data : [] }

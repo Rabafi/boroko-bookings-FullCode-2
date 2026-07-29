@@ -1,30 +1,45 @@
 import { useState, useEffect } from 'react'
+import { RefreshCw } from 'lucide-react'
 
 export default function RestaurantAlerts() {
   const [alerts, setAlerts] = useState([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState('active')
+  const [error, setError] = useState('')
+  const [resolvingId, setResolvingId] = useState(null)
 
   useEffect(() => { loadAlerts() }, [])
 
   async function loadAlerts() {
     try {
       setLoading(true)
-      const data = await window.api.pos.getActiveAlerts()
+      setError('')
+      // The Active/Resolved/All filters need the complete, authorised history.
+      // getActiveAlerts deliberately omits resolved rows and would make the
+      // latter two filters appear broken after an operator resolves an alert.
+      const data = await window.api.pos.getExceptionAlerts()
       setAlerts(Array.isArray(data) ? data : [])
     } catch (err) {
       console.error('Failed to load alerts:', err)
+      setError(err.message || 'Could not load restaurant alerts.')
     } finally {
       setLoading(false)
     }
   }
 
   async function resolveAlert(alertId) {
+    if (!window.confirm('Mark this alert resolved? Confirm that the underlying issue has already been handled.')) return
     try {
-      await window.api.pos.resolveAlert(alertId)
+      setResolvingId(alertId)
+      setError('')
+      const result = await window.api.pos.resolveAlert(alertId)
+      if (result?.success === false) throw new Error(result.error || 'Could not resolve alert.')
       await loadAlerts()
     } catch (err) {
       console.error('Failed to resolve alert:', err)
+      setError(err.message || 'Could not resolve alert.')
+    } finally {
+      setResolvingId(null)
     }
   }
 
@@ -45,13 +60,13 @@ export default function RestaurantAlerts() {
   }
 
   return (
-    <div className="p-6 max-w-5xl mx-auto">
-      <div className="flex items-center justify-between mb-6">
+    <div className="restaurant-native-page max-w-5xl">
+      <div className="restaurant-native-hero">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Alerts</h1>
           <p className="text-sm text-gray-500 mt-1">Stock, cash, and operational alerts</p>
         </div>
-        <div className="flex gap-2">
+        <div className="restaurant-native-segmented">
           {['active', 'resolved', 'all'].map(f => (
             <button
               key={f}
@@ -63,15 +78,20 @@ export default function RestaurantAlerts() {
               {f.charAt(0).toUpperCase() + f.slice(1)}
             </button>
           ))}
+          <button onClick={loadAlerts} className="restaurant-secondary-action px-3" title="Refresh alerts" aria-label="Refresh alerts">
+            <RefreshCw size={14} />
+          </button>
         </div>
       </div>
 
+      {error && <div className="mb-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>}
+
       {loading ? (
-        <div className="flex items-center justify-center h-64">
+        <div className="restaurant-native-loading">
           <div className="h-8 w-8 animate-spin rounded-full border-2 border-[#174c3a] border-t-transparent" />
         </div>
       ) : filtered.length === 0 ? (
-        <div className="bb-card p-12 text-center">
+          <div className="restaurant-native-empty">
           <p className="text-gray-500 text-lg mb-2">{filter === 'active' ? 'No active alerts' : 'No alerts'}</p>
           <p className="text-gray-400 text-sm">All clear</p>
         </div>
@@ -99,8 +119,8 @@ export default function RestaurantAlerts() {
                   </span>
                 </div>
                 {!alert.is_resolved && (
-                  <button onClick={() => resolveAlert(alert.id)} className="bb-btn-outline text-xs ml-4">
-                    Resolve
+                  <button onClick={() => resolveAlert(alert.id)} disabled={resolvingId === alert.id} className="bb-btn-outline text-xs ml-4">
+                    {resolvingId === alert.id ? 'Resolving…' : 'Resolve'}
                   </button>
                 )}
               </div>

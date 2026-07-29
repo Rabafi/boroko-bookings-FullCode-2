@@ -3,9 +3,9 @@ import { Link } from 'react-router-dom'
 import { AlertTriangle, BarChart3, Clock, Package, RefreshCw, ShoppingCart, Users, Utensils } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { useFeatures } from '../contexts/FeaturesContext'
-import { getDashboardSnapshot, getManagerPosSnapshot, getManagerPosTransactions, listInventory, getSettings } from '../lib/api'
+import { getManagerPosSnapshot, getManagerPosTransactions, listInventory } from '../lib/api'
+import { isBarHospitalityMode, isRestaurantProductFamily } from '../lib/productShell'
 import { money } from '../lib/format'
-import { readCacheEntry } from '../lib/runtime'
 import DataFreshness from '../components/DataFreshness'
 import MobileBoundaryNotice from '../components/MobileBoundaryNotice'
 
@@ -28,29 +28,25 @@ export default function RestaurantOwner() {
   const { can, isEnabled } = useFeatures()
   const [loading, setLoading] = useState(true)
   const [lastUpdated, setLastUpdated] = useState(null)
-  const [settings, setSettings] = useState(null)
   const [posSnapshot, setPosSnapshot] = useState(null)
   const [posTransactions, setPosTransactions] = useState([])
   const [lowStockCount, setLowStockCount] = useState(0)
   const [activeAlerts, setActiveAlerts] = useState([])
 
-  const restaurantMode = useMemo(() => {
-    const pt = settings?.property_type || settings?.business_type || 'lodge'
-    return pt === 'restaurant' || pt === 'pos_only'
-  }, [settings])
+  // Server product_family on the session is authoritative — not client settings inference.
+  const restaurantMode = isRestaurantProductFamily(user?.product_family)
+  const barOnly = restaurantMode && isBarHospitalityMode(user?.hospitality_mode)
 
   const loadData = async () => {
     if (!user?.lodge_id) return
     setLoading(true)
     try {
-      const [settingsData, posSnap, transactions, inventory] = await Promise.all([
-        getSettings(user.lodge_id).catch(() => null),
+      const [posSnap, transactions, inventory] = await Promise.all([
         getManagerPosSnapshot(user.lodge_id).catch(() => null),
         getManagerPosTransactions(user.lodge_id, { limit: 20 }).catch(() => []),
         listInventory(user.lodge_id).catch(() => [])
       ])
 
-      setSettings(settingsData)
       setPosSnapshot(posSnap)
       setPosTransactions(Array.isArray(transactions) ? transactions : [])
       setLowStockCount(
@@ -104,8 +100,8 @@ export default function RestaurantOwner() {
     <div className="space-y-4 p-4">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-lg font-bold text-slate-900">Restaurant Owner</h1>
-          <p className="text-xs text-slate-500">Today's overview</p>
+          <h1 className="text-lg font-bold text-slate-900">{barOnly ? 'Bar Owner' : 'Restaurant Owner'}</h1>
+          <p className="text-xs text-slate-500">Today's {barOnly ? 'bar' : 'restaurant'} overview</p>
         </div>
         <div className="flex items-center gap-2">
           <DataFreshness lastUpdated={lastUpdated} />

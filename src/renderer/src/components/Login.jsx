@@ -1,8 +1,16 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { AlertTriangle, Eye, EyeOff, Loader2, Mail, RefreshCw, X } from 'lucide-react'
-import { useAuth, useProfiles } from '../app-context'
-import borokoLogoLight from '../assets/boroko-bookings-logo-light.png'
+import { useAuth, useProfiles, useSettings } from '../app-context'
+import { productLogoColor } from '../assets/productLogos'
+import { getProductDefinition, getRuntimeProductId } from '../../../shared/productIdentity'
+import { isBarOnlyMode } from '../../../shared/propertyTypes'
+import { getUiVocabulary } from '../../../shared/uiVocabulary'
+import { HOTEL_CHROME } from './hotel/hotelChrome'
+
+const BUILD_PRODUCT = getProductDefinition(getRuntimeProductId())
+const IS_HOSPITALITY_POS = BUILD_PRODUCT.id === 'hospitality-pos'
+const IS_HOTEL = BUILD_PRODUCT.id === 'hotel'
 
 const EMAILS_KEY_PREFIX = 'bb_saved_emails'
 const MAX_SAVED = 5
@@ -32,7 +40,40 @@ function initials(email) {
 export default function Login() {
   const { login } = useAuth()
   const { activeProfile, profiles, createDraftProfile } = useProfiles()
+  const { settings } = useSettings()
   const navigate = useNavigate()
+
+  const barOnly = IS_HOSPITALITY_POS && isBarOnlyMode(settings)
+  const vocab = useMemo(
+    () => getUiVocabulary({
+      productId: BUILD_PRODUCT.id,
+      propertyType: settings?.property_type || settings?.business_type || (IS_HOSPITALITY_POS ? 'restaurant' : null),
+      settings
+    }),
+    [settings]
+  )
+  const BUSINESS_NOUN = vocab.noun || BUILD_PRODUCT.businessNoun
+  const BUSINESS_NOUN_TITLE = vocab.nounTitle || BUILD_PRODUCT.businessNounTitle
+  const productLineLabel = IS_HOSPITALITY_POS ? BUILD_PRODUCT.name : BUILD_PRODUCT.shortName
+  const opsLineLabel = barOnly
+    ? 'Bar operations'
+    : IS_HOSPITALITY_POS
+      ? 'Restaurant operations'
+      : IS_HOTEL
+        ? HOTEL_CHROME.opsLine
+        : 'Desktop operations'
+  const loginTagline = barOnly
+    ? 'Sign in to sell drinks, manage stock, shifts and cash-up.'
+    : IS_HOSPITALITY_POS
+      ? 'Sign in to run service, kitchen, floor and back-office operations.'
+      : BUILD_PRODUCT.loginTagline
+
+  useEffect(() => {
+    document.title = BUILD_PRODUCT.name
+    const root = document.documentElement
+    if (IS_HOTEL) root.dataset.product = 'hotel'
+    else if (IS_HOSPITALITY_POS) root.dataset.product = 'hospitality-pos'
+  }, [barOnly])
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
@@ -56,6 +97,7 @@ export default function Login() {
   const [recoverySuccess, setRecoverySuccess] = useState('')
   const [updateStatus, setUpdateStatus] = useState({ checking: false, available: false, version: '', error: '' })
   const [creatingLodge, setCreatingLodge] = useState(false)
+  const [companyChoices, setCompanyChoices] = useState([])
   const passwordRef = useRef(null)
   const loginInFlightRef = useRef(false)
 
@@ -72,7 +114,7 @@ export default function Login() {
       setDiagnostics(data)
       return data
     } catch (e) {
-      setRecoveryError(e.message || 'Could not load lodge diagnostics.')
+      setRecoveryError(e.message || `Could not load ${BUSINESS_NOUN} diagnostics.`)
       return null
     } finally {
       setRecoveryLoading(false)
@@ -126,8 +168,7 @@ export default function Login() {
     if (email === saved) setEmail('')
   }
 
-  const handleSubmit = async (event) => {
-    event.preventDefault()
+  const attemptLogin = async (selectedLodgeId = null) => {
     if (loading || loginInFlightRef.current) return
     loginInFlightRef.current = true
     setError('')
@@ -149,15 +190,15 @@ export default function Login() {
 
     setLoading(true)
     try {
-      const res = await window.api.auth.login(email, password)
+      const res = await window.api.auth.login(email, password, selectedLodgeId)
       if (res?.ok && res.user) {
         saveEmail(emailStorageKey, email.trim().toLowerCase())
         setSavedEmails(getSavedEmails(emailStorageKey))
         if (res.warning) setWarning(res.warning)
         await login(res.user)
-      } else if (res?.code === 'backend_auth_schema_outdated') {
-        const nextError = res?.error || 'Sign-in failed.'
-        setError(nextError)
+      } else if (res?.code === 'company_selection_required') {
+        setCompanyChoices(Array.isArray(res.memberships) ? res.memberships : [])
+        setError('')
       } else {
         const nextError = res?.error || 'Sign-in failed.'
         setError(nextError)
@@ -169,6 +210,17 @@ export default function Login() {
       loginInFlightRef.current = false
       setLoading(false)
     }
+  }
+
+  const handleSubmit = async (event) => {
+    event.preventDefault()
+    setCompanyChoices([])
+    await attemptLogin()
+  }
+
+  const handleSelectCompany = async (lodgeId) => {
+    setCompanyChoices([])
+    await attemptLogin(lodgeId)
   }
 
   const handleForgotPassword = async () => {
@@ -231,7 +283,7 @@ export default function Login() {
       await createDraftProfile()
       navigate('/setup')
     } catch (e) {
-      setError(e.message || 'Could not create a new lodge profile on this computer.')
+      setError(e.message || `Could not create a new ${BUSINESS_NOUN} profile on this computer.`)
     } finally {
       setCreatingLodge(false)
     }
@@ -266,50 +318,71 @@ export default function Login() {
   }
 
 
+  const shellBg = IS_HOSPITALITY_POS
+    ? 'bg-[radial-gradient(circle_at_top_left,rgba(242,181,170,0.34),transparent_28%),radial-gradient(circle_at_top_right,rgba(205,218,183,0.34),transparent_24%),linear-gradient(135deg,#f1dfc6_0%,#d08a64_52%,#6f8061_100%)]'
+    : IS_HOTEL
+      ? HOTEL_CHROME.shell
+      : 'bg-[radial-gradient(circle_at_top_left,rgba(187,247,208,0.28),transparent_24%),radial-gradient(circle_at_top_right,rgba(167,243,208,0.22),transparent_18%),linear-gradient(135deg,#0f3d2c_0%,#166534_55%,#22c55e_100%)]'
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-[radial-gradient(circle_at_top_left,rgba(187,247,208,0.28),transparent_24%),radial-gradient(circle_at_top_right,rgba(167,243,208,0.22),transparent_18%),linear-gradient(135deg,#0f3d2c_0%,#166534_55%,#22c55e_100%)] p-4">
-      <div className="w-full max-w-md rounded-[28px] border border-white/60 bg-white/95 p-8 shadow-[0_30px_90px_rgba(15,23,42,0.28)] backdrop-blur">
-        <div className="mb-8 text-center">
-          <div className="mx-auto mb-4 flex h-20 w-64 items-center justify-center">
-            <img src={borokoLogoLight} alt="Boroko Bookings" className="max-h-full max-w-full object-contain" draggable="false" />
+    <div className={`flex min-h-screen items-center justify-center p-4 ${shellBg}`}>
+      <div className={IS_HOTEL
+        ? `${HOTEL_CHROME.card} p-8`
+        : 'w-full max-w-md rounded-[28px] border border-white/60 bg-white/95 p-8 shadow-[0_30px_90px_rgba(15,23,42,0.28)] backdrop-blur'
+      }>
+        <div className={IS_HOTEL ? HOTEL_CHROME.headerCenter : 'mb-8 text-center'}>
+          <div className="mx-auto mb-4 flex h-24 w-72 max-w-full items-center justify-center">
+            <img src={productLogoColor} alt={BUILD_PRODUCT.brandName} className="max-h-full max-w-full object-contain" draggable="false" />
           </div>
-          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-emerald-700/70">Desktop Operations</p>
-          <h1 className="mt-2 text-2xl font-bold tracking-[-0.03em] text-slate-900">Boroko Bookings</h1>
-          <p className="mt-1 text-sm text-slate-500">Sign in to continue front-desk and back-office work with this lodge.</p>
+          <p className={`text-xs font-semibold uppercase tracking-[0.16em] ${IS_HOSPITALITY_POS ? 'text-[#a83c26]' : IS_HOTEL ? HOTEL_CHROME.copperDeep : 'text-emerald-700/70'}`}>
+            {opsLineLabel}
+          </p>
+          <h1 className={`mt-2 text-2xl font-bold tracking-[-0.02em] ${IS_HOTEL ? HOTEL_CHROME.ink : 'text-slate-900'}`}>
+            {BUILD_PRODUCT.name}
+          </h1>
+          <p className={`mt-1 text-sm ${IS_HOTEL ? HOTEL_CHROME.mute : 'text-slate-500'}`}>{loginTagline}</p>
         </div>
 
         {activeProfile ? (
           <div
-            className={`mb-4 rounded-2xl border px-4 py-3 ${
-            hasDraftProfile ? 'border-amber-200 bg-amber-50' : 'border-green-200 bg-green-50'
+            className={`mb-4 rounded-xl border px-4 py-3 ${
+            hasDraftProfile
+              ? 'border-amber-200 bg-amber-50'
+              : IS_HOTEL
+                ? `${HOTEL_CHROME.softPanelBorder} ${HOTEL_CHROME.softPanelBg}`
+                : 'border-green-200 bg-green-50'
           }`}
             data-testid="selected-lodge-panel"
           >
             <div className="flex items-start justify-between gap-3">
               <div>
-                <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Selected Lodge</p>
-                <p className="mt-1 text-sm font-semibold text-slate-800">{activeProfile.label || 'Untitled Lodge'}</p>
+                <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Selected {BUSINESS_NOUN_TITLE}</p>
+                <p className="mt-1 text-sm font-semibold text-slate-800">{activeProfile.label || `Untitled ${BUSINESS_NOUN_TITLE}`}</p>
                 <p className="mt-1 break-all text-[11px] text-slate-500">{activeProfile.lodge_id}</p>
               </div>
               {hasProfiles && (
                 <button
                   type="button"
                   onClick={() => navigate('/choose-lodge')}
-                  className="rounded-full border border-transparent px-2 py-1 text-xs font-semibold text-emerald-700 transition-colors hover:border-emerald-200 hover:bg-white/80 hover:text-emerald-800"
+                  className={`rounded-[10px] border border-transparent px-2 py-1 text-xs font-semibold transition-colors hover:bg-white/80 ${
+                    IS_HOTEL
+                      ? HOTEL_CHROME.link
+                      : 'text-emerald-700 hover:border-emerald-200 hover:text-emerald-800'
+                  }`}
                 >
-                  Switch Lodge
+                  Switch {BUSINESS_NOUN_TITLE}
                 </button>
               )}
             </div>
             {hasDraftProfile && (
               <div className="mt-3 rounded-lg border border-amber-200 bg-white/70 px-3 py-2 text-xs text-amber-800">
-                This lodge is still being set up. Finish setup before staff sign-in. Command Central sign-in still works below.
+                This {BUSINESS_NOUN} is still being set up. Finish setup before staff sign-in. Command Central sign-in still works below.
               </div>
             )}
           </div>
         ) : (
           <div className="mb-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
-            No lodge is selected on this computer yet. Staff sign-in needs a selected lodge profile. Command Central sign-in still works.
+            No {BUSINESS_NOUN} is selected on this computer yet. Staff sign-in needs a selected {BUSINESS_NOUN} profile. Command Central sign-in still works.
           </div>
         )}
 
@@ -393,7 +466,7 @@ export default function Login() {
             </div>
           </div>
 
-          {error && (
+        {error && (
             <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-600">
               {error}
             </div>
@@ -438,11 +511,46 @@ export default function Login() {
           </button>
         )}
 
+        {companyChoices.length > 0 && (
+          <div className={`mb-5 rounded-xl border p-4 ${
+            IS_HOTEL ? `${HOTEL_CHROME.softPanelBorder} ${HOTEL_CHROME.softPanelBg}` : 'border-emerald-200 bg-emerald-50'
+          }`}>
+            <p className={`text-sm font-semibold ${IS_HOTEL ? HOTEL_CHROME.ink : IS_HOSPITALITY_POS ? 'text-[#7a2e1c]' : 'text-emerald-950'}`}>Which company are you working in?</p>
+            <p className={`mt-1 text-xs ${IS_HOTEL ? HOTEL_CHROME.copperDeep : IS_HOSPITALITY_POS ? 'text-[#a83c26]' : 'text-emerald-800'}`}>
+              {IS_HOSPITALITY_POS
+                ? (barOnly
+                  ? 'This email is linked to more than one bar/restaurant company in this app. Choose one to continue.'
+                  : 'This email is linked to more than one restaurant/bar company in this app. Choose one to continue.')
+                : 'Only companies available in this Tsa Bonno app are shown.'}
+            </p>
+            <div className="mt-3 space-y-2">
+              {companyChoices.map((company) => (
+                <button
+                  key={company.lodge_id}
+                  type="button"
+                  disabled={loading}
+                  onClick={() => handleSelectCompany(company.lodge_id)}
+                  className={`w-full rounded-[10px] border bg-white px-3 py-2.5 text-left transition-colors disabled:opacity-60 ${
+                    IS_HOTEL
+                      ? 'border-[rgba(184,115,74,0.28)] hover:border-[#b8734a] hover:bg-[rgba(184,115,74,0.05)]'
+                      : 'border-emerald-200 hover:border-emerald-500 hover:bg-emerald-100'
+                  }`}
+                >
+                  <span className="block text-sm font-semibold text-slate-900">{company.lodge_display_name || 'Unnamed company'}</span>
+                  <span className="mt-0.5 block text-xs text-slate-600">{company.property_type} · {company.role}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         <button
           type="button"
           onClick={handleForgotPassword}
           disabled={resetLoading}
-          className="mt-3 flex w-full items-center justify-center gap-2 text-sm font-semibold text-emerald-700 transition-colors hover:text-emerald-800 disabled:opacity-60"
+          className={`mt-3 flex w-full items-center justify-center gap-2 text-sm font-semibold transition-colors disabled:opacity-60 ${
+            IS_HOTEL ? HOTEL_CHROME.link : 'text-emerald-700 hover:text-emerald-800'
+          }`}
         >
           {resetLoading ? <Loader2 size={14} className="animate-spin" /> : <Mail size={14} />}
           {resetLoading ? 'Sending reset email...' : 'Forgot password?'}
@@ -450,12 +558,14 @@ export default function Login() {
 
         <div className="mt-6 text-center">
           <p className="text-sm text-slate-500">
-            {hasProfiles ? 'Need another lodge on this computer?' : 'New to Boroko?'}{' '}
+            {hasProfiles ? `Need another ${BUSINESS_NOUN} on this computer?` : 'New to Tsa Bonno?'}{' '}
             <button
               type="button"
               onClick={handleCreateBusiness}
               disabled={creatingLodge}
-              className="font-semibold text-emerald-600 hover:text-emerald-700 hover:underline disabled:opacity-60"
+              className={`font-semibold hover:underline disabled:opacity-60 ${
+                IS_HOTEL ? HOTEL_CHROME.link : 'text-emerald-600 hover:text-emerald-700'
+              }`}
             >
               {creatingLodge ? (
                 <span className="inline-flex items-center gap-1">
@@ -463,14 +573,14 @@ export default function Login() {
                   Preparing…
                 </span>
               ) : (
-                hasProfiles ? 'Add New Lodge →' : 'Get Started →'
+                hasProfiles ? `Add New ${BUSINESS_NOUN_TITLE} →` : 'Get Started →'
               )}
             </button>
           </p>
         </div>
 
         <p className="mt-3 text-center text-xs text-slate-400">
-          Use the email and password created for the selected lodge. If a staff member still cannot sign in, a manager can reset access from Staff.
+          Use the email and password created for the selected {BUSINESS_NOUN}. If a staff member still cannot sign in, a manager can reset access from Team.
         </p>
 
         <div className="mt-5 border-t border-slate-100 pt-4">
@@ -525,7 +635,7 @@ export default function Login() {
             onClick={() => navigate(hasProfiles ? '/choose-lodge' : '/welcome')}
             className="text-xs text-slate-400 underline hover:text-slate-600"
           >
-            {hasProfiles ? '← Back to Lodge Chooser' : '← Back to Welcome'}
+            {hasProfiles ? `← Back to ${BUSINESS_NOUN_TITLE} Chooser` : '← Back to Welcome'}
           </button>
         </div>
       </div>

@@ -4,7 +4,7 @@ import { generateMeshSignature } from './meshSecurity.js';
 
 /**
  * Sends an authenticated, signed HTTP request to a peer node in the local mesh.
- * Automatically injects required Boroko mesh protocol headers and computes HMAC.
+ * Automatically injects required legacy mesh protocol headers and computes HMAC.
  */
 export async function sendSignedMeshRequest(peerAddress, peerPort, method, pathname, queryObj = null, body = null) {
   if (!meshState.lodgeMeshSecret) {

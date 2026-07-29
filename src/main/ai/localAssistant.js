@@ -259,8 +259,8 @@ const FINANCIAL_FAQ = [
     match: (text) => /\b(deposits?|amount paid|amount_paid|paid totals?|type over paid|payment status|balance due|outstanding)\b/.test(text),
     assistantText: [
       'Deposits and payments should be recorded through the payment flow, not by typing over paid totals.',
-      'Never edit `amount_paid` directly. Use Record payment so Boroko applies the normal payment flow safely.',
-      'Boroko calculates balance from total amount plus extra charges minus payments already recorded.',
+      'Never edit `amount_paid` directly. Use Record payment so Tsa Bonno applies the normal payment flow safely.',
+      'Tsa Bonno calculates balance from total amount plus extra charges minus payments already recorded.',
       'If you need to collect more money, open the booking or invoice and use the payment action so the balance stays correct.'
     ].join('\n'),
     suggestions: ['Where do I record a payment?', 'Show unpaid bookings.', 'How do I send an invoice?']
@@ -280,7 +280,7 @@ const FINANCIAL_FAQ = [
     title: 'Offline sync and financial safety',
     match: (text) => /\b(offline sync|internet down|no internet|failed sync|sync warning|sync financial|queue|pending sync)\b/.test(text),
     assistantText: [
-      'When the internet is down, Boroko can still capture local work, but remote reporting may lag behind until sync catches up.',
+      'When the internet is down, Tsa Bonno can still capture local work, but remote reporting may lag behind until sync catches up.',
       'If sync warnings involve financial records, treat totals carefully until System Health shows the queue is healthy again.',
       'Use System Health to review pending or failed items before trusting cloud-side figures.'
     ].join('\n'),
@@ -315,7 +315,7 @@ const APP_WORKFLOWS = [
     category: 'Help',
     screen: 'Assistant',
     route: '/ai',
-    summary: 'Ask Boroko Assistant for steps, feature locations, live summaries, and safe next actions without using a cloud AI service.',
+    summary: 'Ask Tsa Bonno Assistant for steps, feature locations, live summaries, and safe next actions without using a cloud AI service.',
     steps: [
       'Open Assistant from the sidebar or the top Ask button.',
       'Type the task in your own words, even with spelling mistakes.',
@@ -425,7 +425,7 @@ const APP_WORKFLOWS = [
       'Send or print the final invoice if required.'
     ],
     tips: [
-      'Boroko blocks unsafe checkout if a balance remains.',
+      'Tsa Bonno blocks unsafe checkout if a balance remains.',
       'Ask the assistant for overdue checkouts to find rooms that should have left already.'
     ],
     keywords: ['check out', 'checkout', 'departure', 'guest leaving', 'complete stay', 'mark checked out', 'overdue checkout']
@@ -905,7 +905,7 @@ const APP_WORKFLOWS = [
     summary: 'Use upgrade prompts or Settings to request access to modules that are locked by subscription plan.',
     steps: [
       'Open the locked module or Settings.',
-      'Review the plan requirement shown by Boroko.',
+      'Review the plan requirement shown by Tsa Bonno.',
       'Use Request Upgrade.',
       'Confirm lodge details and requested plan.',
       'Submit the request and wait for account follow-up.'

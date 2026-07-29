@@ -20,6 +20,11 @@ describe('buildWhatsAppUrl', () => {
   it('strips non-digit characters', () => {
     expect(buildWhatsAppUrl('(267) 71-234-567')).toBe('https://wa.me/26771234567')
   })
+
+  it('prefixes Botswana country code for local mobile numbers', () => {
+    expect(buildWhatsAppUrl('75890350')).toBe('https://wa.me/26775890350')
+    expect(buildWhatsAppUrl('71 234 567')).toBe('https://wa.me/26771234567')
+  })
 })
 
 describe('sanitizeWebsiteUrl', () => {

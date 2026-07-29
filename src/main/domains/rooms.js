@@ -18,7 +18,7 @@ async function _getAllRooms() {
   try {
     const { data, error } = await state.supabase.
     from('rooms').
-    select('id, room_number, room_type, room_type_id, floor_section_id, rate_per_night, max_occupancy, status, amenities, description, photo, photos, lodge_id, created_at, updated_at, housekeeping_status, housekeeping_notes').
+    select('id, room_number, room_type, room_type_id, floor_section_id, rate_per_night, max_occupancy, status, amenities, description, photo, photos, lodge_id, created_at, updated_at, housekeeping_status, housekeeping_notes, accommodation_kind, capacity_adults, capacity_children, max_tents, max_vehicles, is_powered, site_surface, shared_facilities, rate_mode, rate_per_person, rate_per_tent, rate_per_vehicle').
     eq('lodge_id', state.lodgeId).
     order('room_number').
     limit(200);
@@ -71,7 +71,7 @@ export async function createRoom(data) {
     room_type_id: data.room_type_id || null,
     floor_section_id: data.floor_section_id || null,
     rate_per_night: data.rate_per_night,
-    max_occupancy: data.max_occupancy || 2,
+    max_occupancy: data.max_occupancy || data.capacity_adults || 2,
     status: data.status || 'available',
     description: data.description || '',
     photos: Array.isArray(data.photos) ? data.photos : data.photo ? [data.photo] : [],
@@ -80,7 +80,19 @@ export async function createRoom(data) {
     maintenance_ticket_id: maintenanceTicketId,
     maintenance_issue: data.maintenance_issue || '',
     maintenance_description: data.maintenance_description || '',
-    maintenance_priority: data.maintenance_priority || 'medium'
+    maintenance_priority: data.maintenance_priority || 'medium',
+    accommodation_kind: data.accommodation_kind || 'room',
+    capacity_adults: data.capacity_adults || data.max_occupancy || 2,
+    capacity_children: data.capacity_children ?? 0,
+    max_tents: data.max_tents ?? null,
+    max_vehicles: data.max_vehicles ?? null,
+    is_powered: data.is_powered === true,
+    site_surface: data.site_surface || null,
+    shared_facilities: data.shared_facilities === true,
+    rate_mode: data.rate_mode || 'site',
+    rate_per_person: data.rate_per_person ?? 0,
+    rate_per_tent: data.rate_per_tent ?? 0,
+    rate_per_vehicle: data.rate_per_vehicle ?? 0
   };
 
   if (state.isOnline) {
@@ -132,7 +144,19 @@ export async function updateRoom(id, data) {
     maintenance_ticket_id: data.status === 'maintenance' ? randomUUID() : null,
     maintenance_issue: data.maintenance_issue || '',
     maintenance_description: data.maintenance_description || '',
-    maintenance_priority: data.maintenance_priority || 'medium'
+    maintenance_priority: data.maintenance_priority || 'medium',
+    accommodation_kind: data.accommodation_kind || 'room',
+    capacity_adults: data.capacity_adults || data.max_occupancy || 2,
+    capacity_children: data.capacity_children ?? 0,
+    max_tents: data.max_tents ?? null,
+    max_vehicles: data.max_vehicles ?? null,
+    is_powered: data.is_powered === true,
+    site_surface: data.site_surface || null,
+    shared_facilities: data.shared_facilities === true,
+    rate_mode: data.rate_mode || 'site',
+    rate_per_person: data.rate_per_person ?? 0,
+    rate_per_tent: data.rate_per_tent ?? 0,
+    rate_per_vehicle: data.rate_per_vehicle ?? 0
   };
 
   if (state.isOnline) {

@@ -1,7 +1,11 @@
 import { useState, useEffect } from 'react'
-import { CheckCircle2, XCircle, AlertTriangle, ClipboardCheck, Wallet, TrendingUp, Users } from 'lucide-react'
+import { CheckCircle2, XCircle, AlertTriangle, ClipboardCheck, Wallet, TrendingUp, Users, RefreshCw } from 'lucide-react'
+import { useSettings } from '../../app-context'
+import { isBarOnlyMode } from '../../../../shared/propertyTypes'
 
 export default function RestaurantDailyClose() {
+  const { settings } = useSettings()
+  const barOnly = isBarOnlyMode(settings)
   const [loading, setLoading] = useState(true)
   const [checks, setChecks] = useState({
     openTables: 0,
@@ -18,21 +22,26 @@ export default function RestaurantDailyClose() {
   const [digest, setDigest] = useState(null)
   const [generating, setGenerating] = useState(false)
   const [error, setError] = useState('')
+  const [checksVerified, setChecksVerified] = useState(false)
 
-  useEffect(() => { loadStatus() }, [])
+  useEffect(() => { loadStatus() }, [barOnly])
 
   async function loadStatus() {
     try {
       setLoading(true)
-      const [tables, tickets, drawer, shifts, alerts, lowStock, todayOrders] = await Promise.allSettled([
-        window.api.pos.getTables(),
-        window.api.pos.getTickets(),
+      setError('')
+      setChecksVerified(false)
+      const results = await Promise.allSettled([
+        barOnly ? Promise.resolve([]) : window.api.pos.getTables(),
+        barOnly ? Promise.resolve([]) : window.api.pos.getTickets(),
         window.api.pos.getOpenCashDrawer(),
         window.api.pos.getActiveShifts(),
         window.api.pos.getActiveAlerts(),
         window.api.inventory.getLowStock(),
         window.api.pos.getOrders(new Date().toISOString().slice(0, 10), new Date().toISOString().slice(0, 10))
       ])
+      const [tables, tickets, drawer, shifts, alerts, lowStock, todayOrders] = results
+      const failedChecks = results.filter(result => result.status === 'rejected').length
       const openTables = Array.isArray(tables.value) ? tables.value.filter(t => t.status === 'occupied' || t.status === 'running').length : 0
       const pendingTickets = Array.isArray(tickets.value) ? tickets.value.filter(t => t.status === 'pending' || t.status === 'preparing').length : 0
       const drawerOpen = !!drawer.value?.id
@@ -46,6 +55,8 @@ export default function RestaurantDailyClose() {
         activeShifts, unresolvedAlerts, lowStock: lowStockCount,
         todaySales, todayOrders: orders.length, checklistsComplete: true
       })
+      setChecksVerified(failedChecks === 0)
+      if (failedChecks > 0) setError(`${failedChecks} end-of-day check(s) could not be verified. Refresh before treating the day as ready.`)
     } catch (err) {
       console.error('Failed to load daily close status:', err)
       setError(err.message || 'Could not load end-of-day checks.')
@@ -68,24 +79,28 @@ export default function RestaurantDailyClose() {
   }
 
   const blockers = []
-  if (checks.openTables > 0) blockers.push(`${checks.openTables} open table(s)`)
-  if (checks.pendingTickets > 0) blockers.push(`${checks.pendingTickets} pending kitchen ticket(s)`)
+  if (!checksVerified) blockers.push('One or more close checks are not verified')
+  if (!barOnly && checks.openTables > 0) blockers.push(`${checks.openTables} open table(s)`)
+  if (!barOnly && checks.pendingTickets > 0) blockers.push(`${checks.pendingTickets} pending kitchen ticket(s)`)
   if (checks.drawerOpen) blockers.push('Cash drawer still open')
   if (checks.activeShifts > 0) blockers.push(`${checks.activeShifts} active shift(s)`)
   if (checks.unresolvedAlerts > 0) blockers.push(`${checks.unresolvedAlerts} unresolved alert(s)`)
 
-  const ready = !loading && blockers.length === 0
+  const ready = !loading && checksVerified && blockers.length === 0
 
   return (
-    <div className="p-6 max-w-5xl mx-auto">
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">Daily Close</h1>
-        <p className="text-sm text-gray-500 mt-1">End-of-day readiness check, sales summary, and owner digest</p>
+    <div className="restaurant-native-page max-w-5xl">
+      <div className="restaurant-native-hero">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Daily Close</h1>
+          <p className="text-sm text-gray-500 mt-1">End-of-day readiness check, sales summary, and owner digest</p>
+        </div>
+        <button onClick={loadStatus} className="bb-btn-outline flex items-center gap-2 px-4 text-sm"><RefreshCw size={14} /> Recheck</button>
       </div>
       {error && <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>}
 
       {loading ? (
-        <div className="flex items-center justify-center h-64">
+        <div className="restaurant-native-loading">
           <div className="h-8 w-8 animate-spin rounded-full border-2 border-[#174c3a] border-t-transparent" />
         </div>
       ) : (
@@ -117,10 +132,10 @@ export default function RestaurantDailyClose() {
           {/* Today's sales summary */}
           <div className="bb-card p-5">
             <h3 className="font-semibold text-sm text-gray-700 mb-3">Today&apos;s Sales Summary</h3>
-            <div className="grid grid-cols-3 gap-4">
+            <div className="restaurant-native-kpis">
               <div className="bg-emerald-50 rounded-lg p-4 text-center">
                 <TrendingUp size={18} className="mx-auto mb-1 text-emerald-500" />
-                <div className="text-xl font-bold text-emerald-700">${Number(checks.todaySales).toFixed(2)}</div>
+                <div className="text-xl font-bold text-emerald-700">P {Number(checks.todaySales).toFixed(2)}</div>
                 <div className="text-xs text-gray-500">Total Revenue</div>
               </div>
               <div className="bg-blue-50 rounded-lg p-4 text-center">
@@ -130,7 +145,7 @@ export default function RestaurantDailyClose() {
               </div>
               <div className="bg-purple-50 rounded-lg p-4 text-center">
                 <Users size={18} className="mx-auto mb-1 text-purple-500" />
-                <div className="text-xl font-bold text-purple-700">${checks.todayOrders > 0 ? (checks.todaySales / checks.todayOrders).toFixed(2) : '0.00'}</div>
+                <div className="text-xl font-bold text-purple-700">P {checks.todayOrders > 0 ? (checks.todaySales / checks.todayOrders).toFixed(2) : '0.00'}</div>
                 <div className="text-xs text-gray-500">Avg Order</div>
               </div>
             </div>
@@ -143,7 +158,7 @@ export default function RestaurantDailyClose() {
               <div className="grid grid-cols-3 gap-4">
                 <div>
                   <div className="text-xs text-gray-500">Opening Float</div>
-                  <div className="font-semibold">${Number(checks.drawer.opening_float || 0).toFixed(2)}</div>
+                  <div className="font-semibold">P {Number(checks.drawer.opening_float || 0).toFixed(2)}</div>
                 </div>
                 <div>
                   <div className="text-xs text-gray-500">Opened At</div>
@@ -158,10 +173,12 @@ export default function RestaurantDailyClose() {
           )}
 
           {/* Status grid */}
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+          <div className="restaurant-native-kpis">
             {[
-              { label: 'Open Tables', value: checks.openTables, ok: checks.openTables === 0 },
-              { label: 'Kitchen Pending', value: checks.pendingTickets, ok: checks.pendingTickets === 0 },
+              ...(!barOnly ? [
+                { label: 'Open Tables', value: checks.openTables, ok: checks.openTables === 0 },
+                { label: 'Kitchen Pending', value: checks.pendingTickets, ok: checks.pendingTickets === 0 }
+              ] : []),
               { label: 'Cash Drawer', value: checks.drawerOpen ? 'Open' : 'Closed', ok: !checks.drawerOpen },
               { label: 'Active Shifts', value: checks.activeShifts, ok: checks.activeShifts === 0 },
               { label: 'Unresolved Alerts', value: checks.unresolvedAlerts, ok: checks.unresolvedAlerts === 0 },
@@ -191,7 +208,7 @@ export default function RestaurantDailyClose() {
             {digest?.summary && (
               <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-3">
                 <div className="bg-gray-50 rounded-lg p-3 text-center">
-                  <div className="text-lg font-bold">${Number(digest.summary.total_revenue || 0).toFixed(2)}</div>
+                  <div className="text-lg font-bold">P {Number(digest.summary.total_revenue || 0).toFixed(2)}</div>
                   <div className="text-[10px] text-gray-500">Revenue</div>
                 </div>
                 <div className="bg-gray-50 rounded-lg p-3 text-center">
@@ -209,6 +226,7 @@ export default function RestaurantDailyClose() {
               </div>
             )}
           </div>
+          <p className="restaurant-native-financial-warning">This page verifies operational readiness and generates a digest. It does not silently post a financial period close; drawer and shift actions remain explicit and audited in their own tabs.</p>
         </div>
       )}
     </div>

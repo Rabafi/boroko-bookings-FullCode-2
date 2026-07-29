@@ -23,8 +23,8 @@ export default function RestaurantOwnerDigest() {
   const s = digest?.summary || digest || {}
 
   return (
-    <div className="p-6 max-w-3xl mx-auto">
-      <div className="flex items-center justify-between mb-6">
+    <div className="restaurant-native-page max-w-5xl">
+      <div className="restaurant-native-hero">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Owner Digest</h1>
           <p className="text-sm text-gray-500 mt-1">Daily performance snapshot for the restaurant owner</p>
@@ -40,7 +40,7 @@ export default function RestaurantOwnerDigest() {
       )}
 
       {!digest && !loading && (
-        <div className="bb-card p-12 text-center">
+        <div className="restaurant-native-empty">
           <div className="text-gray-300 mb-3">
             <TrendingUp size={48} className="mx-auto" />
           </div>
@@ -50,7 +50,7 @@ export default function RestaurantOwnerDigest() {
       )}
 
       {loading && (
-        <div className="bb-card p-12 text-center">
+        <div className="restaurant-native-loading restaurant-native-panel p-12 text-center">
           <div className="h-10 w-10 animate-spin rounded-full border-2 border-[#174c3a] border-t-transparent mx-auto mb-4" />
           <p className="text-gray-500">Compiling daily performance data...</p>
         </div>
@@ -67,15 +67,15 @@ export default function RestaurantOwnerDigest() {
           )}
 
           {/* Revenue metrics */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <MetricCard icon={Wallet} label="Revenue" value={`$${Number(s.total_revenue || 0).toFixed(2)}`} color="emerald" />
+          <div className="restaurant-native-kpis">
+            <MetricCard icon={Wallet} label="Revenue" value={`P ${Number(s.total_revenue || 0).toFixed(2)}`} color="emerald" />
             <MetricCard icon={ShoppingCart} label="Orders" value={s.total_orders || 0} color="blue" />
-            <MetricCard icon={TrendingUp} label="Avg Order" value={`$${Number(s.avg_order || 0).toFixed(2)}`} color="purple" />
+            <MetricCard icon={TrendingUp} label="Avg Order" value={`P ${Number(s.avg_order || 0).toFixed(2)}`} color="purple" />
             <MetricCard icon={Users} label="Customers" value={s.total_customers || 0} color="indigo" />
           </div>
 
           {/* Operational status */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="restaurant-native-kpis">
             <StatusCard icon={AlertTriangle} label="Active Alerts" value={s.active_alerts || 0} warn={s.active_alerts > 0} />
             <StatusCard icon={Package} label="Low Stock" value={s.low_stock_items || 0} warn={s.low_stock_items > 0} />
             <StatusCard icon={ClipboardCheck} label="Open Checklists" value={s.open_checklists || 0} warn={s.open_checklists > 0} />
@@ -88,13 +88,13 @@ export default function RestaurantOwnerDigest() {
               <h3 className="font-semibold text-sm text-gray-700 mb-3">Expenses</h3>
               <div className="flex items-center justify-between">
                 <span className="text-sm text-gray-500">Total Expenses</span>
-                <span className="text-lg font-bold text-red-600">${Number(s.total_expenses || 0).toFixed(2)}</span>
+                <span className="text-lg font-bold text-red-600">P {Number(s.total_expenses || 0).toFixed(2)}</span>
               </div>
               {s.total_revenue > 0 && (
                 <div className="flex items-center justify-between mt-2 pt-2 border-t">
                   <span className="text-sm text-gray-500">Net (Revenue - Expenses)</span>
                   <span className={`text-lg font-bold ${(Number(s.total_revenue || 0) - Number(s.total_expenses || 0)) >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
-                    ${(Number(s.total_revenue || 0) - Number(s.total_expenses || 0)).toFixed(2)}
+                    P {(Number(s.total_revenue || 0) - Number(s.total_expenses || 0)).toFixed(2)}
                   </span>
                 </div>
               )}

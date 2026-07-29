@@ -1,6 +1,8 @@
-# Boroko Bookings
+# Tsa Bonno HospitalityOS
 
-Boroko Bookings is a financial-grade hospitality operations platform built around Supabase.
+Tsa Bonno HospitalityOS is a financial-grade hospitality operations ecosystem built around Supabase. It ships Tsa Bonno LodgingOS, Tsa Bonno HotelOS, and Tsa Bonno Restaurant & Bar POS from one shared, product-isolated workspace.
+
+The repository folder, npm workspace scopes, database product keys, installed application IDs, app-data paths, protocol headers, and established updater repositories may still contain `boroko` or `lodge-camp`. Those values are compatibility contracts, not customer-facing branding; see [the rename runbook](docs/TSA_BONNO_RENAME_RUNBOOK.md).
 
 ## Applications
 

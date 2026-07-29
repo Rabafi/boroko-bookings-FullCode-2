@@ -1,8 +1,33 @@
+import { randomUUID } from 'crypto';
 import { state } from '../state.js';
-import { dedupePromise } from './infrastructure.js';
+import { dedupePromise, logActivity, readCache, writeCache } from './infrastructure.js';
+
+const APPROVAL_CACHE = 'revenue-recommendation-approvals';
+
+function labelRecommendations(payload) {
+  const recommendations = Array.isArray(payload?.recommendations)
+    ? payload.recommendations.map((rec, index) => ({
+      ...rec,
+      id: rec.id || rec.recommendation_id || `rec-${index}-${String(rec.action || 'action').slice(0, 24)}`,
+      status: rec.status || 'pending_approval',
+      requires_approval: true,
+      auto_applied: false,
+      applied: false
+    }))
+    : [];
+
+  return {
+    ...payload,
+    recommendations,
+    requires_approval: true,
+    auto_applied: false,
+    silent_apply: false,
+    message: payload?.message || 'Recommendations require explicit manager approval and are never applied silently.'
+  };
+}
 
 async function _getRevenueForecast(startDate, endDate) {
-  if (!state.isOnline) return { entries: [] };
+  if (!state.isOnline) return { entries: [], is_estimate: true, source: 'offline' };
   try {
     const { data, error } = await state.supabase.rpc('get_revenue_forecast', {
       p_lodge_id: state.lodgeId,
@@ -87,16 +112,174 @@ async function _createDemandEvent(eventName, eventDate, expectedImpact, notes) {
 }
 
 async function _getRevenueRecommendations() {
-  if (!state.isOnline) return { recommendations: [], current_occupancy: 0 };
+  if (!state.isOnline) {
+    return labelRecommendations({ recommendations: [], current_occupancy: 0, offline: true });
+  }
   try {
     const { data, error } = await state.supabase.rpc('get_revenue_recommendations', {
       p_lodge_id: state.lodgeId
     });
     if (error) throw error;
-    return data || { recommendations: [], current_occupancy: 0 };
+    return labelRecommendations(data || { recommendations: [], current_occupancy: 0 });
   } catch (err) {
     throw new Error(err?.message || 'Failed to get revenue recommendations');
   }
+}
+
+function recordApprovalLocally(entry) {
+  const cached = readCache(APPROVAL_CACHE) || [];
+  const list = Array.isArray(cached) ? cached : [];
+  list.unshift(entry);
+  writeCache(APPROVAL_CACHE, list.slice(0, 200));
+  return entry;
+}
+
+/**
+ * Approve a revenue recommendation for operator action.
+ * Does NOT apply rates, yield rules, or calendar changes.
+ */
+export async function approveRevenueRecommendation(recommendation, notes = null) {
+  if (!state.lodgeId) throw new Error('No lodge selected');
+  if (!recommendation || typeof recommendation !== 'object') {
+    throw new Error('Recommendation payload is required');
+  }
+
+  const approvalId = randomUUID();
+  const approvedAt = new Date().toISOString();
+  const payload = {
+    approval_id: approvalId,
+    lodge_id: state.lodgeId,
+    recommendation_id: recommendation.id || recommendation.recommendation_id || null,
+    action: recommendation.action || null,
+    reason: recommendation.reason || null,
+    status: 'approved',
+    applied: false,
+    auto_applied: false,
+    notes: notes || null,
+    approved_by: state.currentUser?.id || null,
+    approved_at: approvedAt,
+    payload: recommendation
+  };
+
+  // Prefer durable table write when the enterprise recommendations table is reachable.
+  if (state.isOnline && state.supabase) {
+    try {
+      const { data, error } = await state.supabase
+        .from('enterprise_revenue_recommendations')
+        .insert({
+          id: approvalId,
+          lodge_id: state.lodgeId,
+          room_type_id: recommendation.room_type_id || null,
+          rate_plan_id: recommendation.rate_plan_id || null,
+          recommendation_date: recommendation.recommendation_date || new Date().toISOString().slice(0, 10),
+          status: 'approved',
+          payload: {
+            ...recommendation,
+            notes,
+            applied: false,
+            auto_applied: false
+          },
+          approved_by: state.currentUser?.id || null,
+          approved_at: approvedAt
+        })
+        .select('id')
+        .maybeSingle();
+      if (error) throw error;
+      logActivity('revenue_recommendation_approved', `Recommendation approved · ${recommendation.action || approvalId}`);
+      return {
+        success: true,
+        approval_id: data?.id || approvalId,
+        status: 'approved',
+        applied: false,
+        auto_applied: false,
+        message: 'Recommendation approved for operator action. Rates were not applied automatically.'
+      };
+    } catch {
+      // Fall through to local audit record — still must not apply rates.
+    }
+  }
+
+  recordApprovalLocally(payload);
+  logActivity('revenue_recommendation_approved', `Recommendation approved (local) · ${recommendation.action || approvalId}`);
+  return {
+    success: true,
+    approval_id: approvalId,
+    status: 'approved',
+    applied: false,
+    auto_applied: false,
+    _local: true,
+    message: 'Recommendation approved for operator action. Rates were not applied automatically.'
+  };
+}
+
+/**
+ * Reject a revenue recommendation. No rate changes.
+ */
+export async function rejectRevenueRecommendation(recommendation, reason = null) {
+  if (!state.lodgeId) throw new Error('No lodge selected');
+  if (!recommendation || typeof recommendation !== 'object') {
+    throw new Error('Recommendation payload is required');
+  }
+
+  const rejectionId = randomUUID();
+  const rejectedAt = new Date().toISOString();
+  const entry = {
+    approval_id: rejectionId,
+    lodge_id: state.lodgeId,
+    recommendation_id: recommendation.id || recommendation.recommendation_id || null,
+    action: recommendation.action || null,
+    status: 'rejected',
+    applied: false,
+    auto_applied: false,
+    notes: reason || null,
+    approved_by: state.currentUser?.id || null,
+    approved_at: rejectedAt,
+    payload: recommendation
+  };
+
+  if (state.isOnline && state.supabase) {
+    try {
+      await state.supabase.from('enterprise_revenue_recommendations').insert({
+        id: rejectionId,
+        lodge_id: state.lodgeId,
+        room_type_id: recommendation.room_type_id || null,
+        rate_plan_id: recommendation.rate_plan_id || null,
+        recommendation_date: recommendation.recommendation_date || new Date().toISOString().slice(0, 10),
+        status: 'rejected',
+        payload: { ...recommendation, reject_reason: reason, applied: false },
+        approved_by: state.currentUser?.id || null,
+        approved_at: rejectedAt
+      });
+    } catch {
+      recordApprovalLocally(entry);
+    }
+  } else {
+    recordApprovalLocally(entry);
+  }
+
+  logActivity('revenue_recommendation_rejected', `Recommendation rejected · ${recommendation.action || rejectionId}`);
+  return {
+    success: true,
+    approval_id: rejectionId,
+    status: 'rejected',
+    applied: false,
+    auto_applied: false,
+    message: 'Recommendation rejected. No rate changes were applied.'
+  };
+}
+
+/**
+ * Explicit no-op guard: applying rates from a recommendation is never silent.
+ * Callers must use rate calendar / rate plan mutations after separate approval.
+ */
+export async function applyRevenueRecommendation() {
+  return {
+    success: false,
+    applied: false,
+    auto_applied: false,
+    requires_approval: true,
+    error: 'Revenue recommendations cannot be applied silently. Approve the recommendation, then change rates through the rate calendar or rate plans APIs.'
+  };
 }
 
 export function getRevenueForecast(startDate, endDate) {

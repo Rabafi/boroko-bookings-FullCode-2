@@ -154,7 +154,8 @@ function AppVersionsTab() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [showCreate, setShowCreate] = useState(false)
-  const [newRelease, setNewRelease] = useState({ version: '', release_notes: '', channel: 'stable', force_update: false, min_version: '' })
+  const [productId, setProductId] = useState('lodge-camp')
+  const [newRelease, setNewRelease] = useState({ version: '', release_notes: '', channel: 'stable', force_update: false, min_version: '', product_id: 'lodge-camp' })
   const [creating, setCreating] = useState(false)
   const [editingVersion, setEditingVersion] = useState(null)
   const [rolloutPct, setRolloutPct] = useState(0)
@@ -162,32 +163,37 @@ function AppVersionsTab() {
   const load = useCallback(async () => {
     setLoading(true)
     setError(null)
-    try { const r = await window.api.admin.getReleases(); setReleases(Array.isArray(r) ? r : []) }
+    try { const r = await window.api.admin.getReleases(productId); setReleases(Array.isArray(r) ? r : []) }
     catch (e) { setError(e?.message || 'Failed to load') }
     setLoading(false)
-  }, [])
+  }, [productId])
 
   useEffect(() => { load() }, [load])
 
   const create = async () => {
     if (!newRelease.version.trim()) return
     setCreating(true)
-    try { await window.api.admin.createRelease(newRelease); setShowCreate(false); setNewRelease({ version: '', release_notes: '', channel: 'stable', force_update: false, min_version: '' }); await load() }
+    try { await window.api.admin.createRelease({ ...newRelease, product_id: productId }); setShowCreate(false); setNewRelease({ version: '', release_notes: '', channel: 'stable', force_update: false, min_version: '', product_id: productId }); await load() }
     finally { setCreating(false) }
   }
 
   const updateRollout = async (version) => {
-    await window.api.admin.updateRelease(version, { rollout_pct: rolloutPct })
+    await window.api.admin.updateRelease(version, { product_id: productId, rollout_pct: rolloutPct })
     setEditingVersion(null)
     await load()
   }
 
-  const setStatus = async (version, status) => { await window.api.admin.updateRelease(version, { status }); await load() }
+  const setStatus = async (version, status) => { await window.api.admin.updateRelease(version, { product_id: productId, status }); await load() }
 
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
-        <p className="text-xs text-gray-400">{releases.length} app versions</p>
+        <div className="flex items-center gap-2">
+          <select value={productId} onChange={e => setProductId(e.target.value)} className="text-xs bg-gray-800 border border-gray-700 text-white rounded-lg px-3 py-1.5">
+            <option value="lodge-camp">LodgingOS</option><option value="hotel">HotelOS</option><option value="hospitality-pos">Hospitality POS</option>
+          </select>
+          <p className="text-xs text-gray-400">{releases.length} app versions</p>
+        </div>
         <div className="flex gap-2">
           <button onClick={() => setShowCreate(!showCreate)}
             className="text-xs px-3 py-1.5 rounded-lg bg-purple-600 text-white hover:bg-purple-500 transition-colors flex items-center gap-1">
@@ -241,6 +247,7 @@ function AppVersionsTab() {
               <div key={rel.id} className="px-4 py-4 hover:bg-gray-750">
                 <div className="flex items-center gap-3 mb-2">
                   <span className="text-sm font-mono font-bold text-white">v{rel.version}</span>
+                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300">{rel.product_id}</span>
                   <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${RELEASE_STATUS_COLORS[rel.status]}`}>{rel.status}</span>
                   <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${CHANNEL_COLORS[rel.channel]}`}>{rel.channel}</span>
                   {rel.force_update && <span className="text-[10px] px-2 py-0.5 rounded-full bg-red-500/20 text-red-300">forced</span>}

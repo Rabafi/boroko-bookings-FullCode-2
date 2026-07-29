@@ -228,7 +228,7 @@ export default function NightAudit() {
       <div className="hidden print:block mb-4 pb-3 border-b border-gray-200">
         <div className="flex justify-between items-start">
           <div>
-            <h1 className="text-xl font-bold">{settings?.lodge_name || 'Boroko Lodge'} — Night Audit</h1>
+            <h1 className="text-xl font-bold">{settings?.lodge_name || 'Tsa Bonno LodgingOS'} — Night Audit</h1>
             {settings?.company_name && settings.company_name !== settings?.lodge_name && (
               <p className="text-sm text-gray-500">{settings.company_name}</p>
             )}

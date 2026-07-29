@@ -45,7 +45,7 @@ function formatWaPhone(phone) {
 }
 
 function buildQuotationWhatsAppMessage(q, settings) {
-  const lodge    = settings?.lodge_name || 'the Lodge'
+  const lodge    = settings?.lodge_name || settings?.company_name || 'the property'
   const currency = q.currency || settings?.currency || 'BWP'
   const isEvent  = q.quotation_type === 'exclusive_event'
   const roomLines = quotationRoomLines(q)

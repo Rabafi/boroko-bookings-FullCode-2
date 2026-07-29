@@ -1,6 +1,7 @@
 const supabaseUrl = String(import.meta.env.VITE_SUPABASE_URL || '').replace(/\/+$/, '')
 const anonKey = String(import.meta.env.VITE_SUPABASE_ANON_KEY || '')
 const rpcBaseUrl = supabaseUrl ? `${supabaseUrl}/rest/v1/rpc` : ''
+// Keep released browser storage keys stable across the Tsa Bonno rebrand.
 const cachePrefix = 'boroko-booking-public:'
 const EMAIL_FUNCTION_URL = import.meta.env.VITE_CONFIRMATION_EMAIL_FUNCTION_URL
 

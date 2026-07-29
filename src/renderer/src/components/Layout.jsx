@@ -24,24 +24,29 @@ import {
   AlertCircle,
   Sparkles
 } from 'lucide-react'
-import borokoLogo from '../assets/boroko-bookings-logo.svg'
-import borokoLogoDark from '../assets/boroko-bookings-logo-dark.png'
+import { productLogoColor, productLogoLight } from '../assets/productLogos'
 import CommandPalette from './CommandPalette'
 import OfflineNotice from './shared/OfflineNotice'
 import OpsAiLayer from './shared/OpsAiLayer'
 import { ALL_NAV, NAV_GROUPS, getDesktopNavItems } from '../navigation/desktopNav'
 import {
-  SUBSCRIPTION_PLAN_ORDER,
   getSubscriptionPlan,
   buildUpgradeRequestDescription,
   formatPlanLimits,
   normalizeSubscriptionPlan,
   trackUpgradeIntent
 } from '../../../shared/subscriptionPlans'
+import { isHotelPropertyType } from '../../../shared/propertyTypes'
+import { getProductDefinition, getRuntimeProductId } from '../../../shared/productIdentity'
+import { getCommercialPackageLabel, getCommercialPackagePlanNames } from '../../../shared/commercialPackages'
+import { getUiVocabulary } from '../../../shared/uiVocabulary'
 import { normalizeSupportMessages, supportMessageSide, supportSenderName } from '../../../shared/supportThreads'
 
+const BUILD_PRODUCT = getProductDefinition(getRuntimeProductId())
+const IS_LODGE_PRODUCT = BUILD_PRODUCT.id === 'lodge-camp'
+
 // ── Tier definitions (mirrors AdminCentral) ───────────────────────────────────
-const TIERS = SUBSCRIPTION_PLAN_ORDER
+const TIERS = getCommercialPackagePlanNames(BUILD_PRODUCT.id)
 const ADDON_FEATURE_KEYS = [
   'custom_website',
   'payment_gateway',
@@ -206,7 +211,7 @@ function UpgradeModal({ lockedItem, onClose, settings, currentPlan: currentPlanP
     await window.api.admin.createSupportTicket({
       lodge_id: settings?.lodge_id,
       lodge_name,
-      title: `Upgrade Request — ${selectedTier} Plan`,
+       title: `Package Request — ${getCommercialPackageLabel(selectedTier, BUILD_PRODUCT.id)}`,
       description: buildUpgradeRequestDescription({
         lodgeName: lodge_name,
         requestedPlan: selectedTier,
@@ -238,12 +243,12 @@ function UpgradeModal({ lockedItem, onClose, settings, currentPlan: currentPlanP
         <button onClick={onClose} className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-transparent text-slate-400 transition-all hover:border-slate-200 hover:bg-slate-100 hover:text-slate-700"><X size={18} /></button>
       </div>
       <p className="text-slate-500 text-xs mb-4">
-        {lockedItem?.label} is locked on {currentPlan}. Upgrade to {selectedPlan} to unlock it for this lodge.
+         {lockedItem?.label} is locked on {getCommercialPackageLabel(currentPlan, BUILD_PRODUCT.id)}. Upgrade to {getCommercialPackageLabel(selectedPlan, BUILD_PRODUCT.id)} to unlock it for this {BUILD_PRODUCT.businessNoun}.
       </p>
       <div className="mb-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs text-slate-600">
-        <p className="font-semibold text-slate-700">Current plan: {currentPlan}</p>
+         <p className="font-semibold text-slate-700">Current package: {getCommercialPackageLabel(currentPlan, BUILD_PRODUCT.id)}</p>
         <p className="mt-1">{currentLimits.bookings} · {currentLimits.grace} · {currentLimits.rooms} · {currentLimits.users}</p>
-        <p className="mt-2 font-semibold text-slate-700">Required plan: {selectedPlan}</p>
+         <p className="mt-2 font-semibold text-slate-700">Required package: {getCommercialPackageLabel(selectedPlan, BUILD_PRODUCT.id)}</p>
         <p className="mt-1">{selectedLimits.bookings} · {selectedLimits.grace} · {selectedLimits.rooms} · {selectedLimits.users}</p>
       </div>
 
@@ -281,7 +286,7 @@ function UpgradeModal({ lockedItem, onClose, settings, currentPlan: currentPlanP
                 >
                   <div className="flex items-center justify-between mb-1.5">
                     <div className="flex flex-wrap items-center gap-1">
-                      <span className={`text-[10px] sm:text-xs font-bold px-1.5 sm:px-2 py-0.5 rounded-full ${tierBadge[tier]}`}>{tier}</span>
+                       <span className={`text-[10px] sm:text-xs font-bold px-1.5 sm:px-2 py-0.5 rounded-full ${tierBadge[tier]}`}>{getCommercialPackageLabel(tier, BUILD_PRODUCT.id)}</span>
                       {spotlight && (
                         <span className={`text-[9px] sm:text-[10px] font-bold px-1.5 py-0.5 rounded-full ${
                           isRecommended ? 'bg-emerald-600 text-white' : 'bg-purple-600 text-purple-50'
@@ -662,7 +667,12 @@ export default function Layout() {
   }, [isBrowserPreview, settings?.id, settings?.lodge_id, user?.email, user?.id])
 
   const propertyType = settings?.property_type || settings?.business_type || 'lodge'
-  const bizType = propertyType === 'restaurant' ? 'restaurant' : 'lodge'
+  // Lodge product shell never switches into hotel bizType (motel is hotel-class
+  // by property type but must stay lodge navigation without locked hotel rails).
+  const bizType = propertyType === 'restaurant'
+    ? 'restaurant'
+    : (IS_LODGE_PRODUCT ? 'lodge' : (isHotelPropertyType(propertyType) ? 'hotel' : 'lodge'))
+  const vocab = getUiVocabulary({ settings, propertyType, productId: BUILD_PRODUCT.id })
   const assistantEnabled = settings?.assistant_enabled === true
 
   useEffect(() => {
@@ -684,7 +694,15 @@ export default function Layout() {
   const effectiveUiAddons = getEffectiveAddonsFromEntitlement(access?.entitlement || {})
   const effectiveUiAccess = access
   const navItems = useMemo(() => (
-    getDesktopNavItems(effectiveUiBizType, effectiveUiAccess, effectiveUiPropertyType, effectiveUiPlan, effectiveUiAddons, settings?.operating_profile).filter((item) => assistantEnabled || item.to !== '/ai')
+    getDesktopNavItems(
+      effectiveUiBizType,
+      effectiveUiAccess,
+      effectiveUiPropertyType,
+      effectiveUiPlan,
+      effectiveUiAddons,
+      settings?.operating_profile,
+      BUILD_PRODUCT.id
+    ).filter((item) => assistantEnabled || item.to !== '/ai')
   ), [effectiveUiBizType, effectiveUiAccess, assistantEnabled, effectiveUiPlan, effectiveUiPropertyType, effectiveUiAddons, settings?.operating_profile])
   const standaloneTop = useMemo(
     () => navItems.filter((item) => !item.group && item.to !== '/settings'),
@@ -699,10 +717,18 @@ export default function Layout() {
       name: groupName,
       items: navItems
         .filter((item) => item.group === groupName)
-        .map((item) => ({
-          ...item,
-          isLocked: item.isLocked === true || Boolean(item.capability && access?.blockedByFeature?.[item.capability])
-        }))
+        .map((item) => {
+          const blocked = Boolean(item.capability && access?.blockedByFeature?.[item.capability])
+          // Lodge product: never paint Hotel-group capabilities as locked upsells.
+          if (IS_LODGE_PRODUCT && item.group === 'Hotel' && (item.isLocked || blocked)) {
+            return null
+          }
+          return {
+            ...item,
+            isLocked: item.isLocked === true || blocked
+          }
+        })
+        .filter(Boolean)
     })).filter((group) => group.items.length > 0)
   ), [access, navItems])
 
@@ -726,7 +752,9 @@ export default function Layout() {
   }
 
   const BIZ_EMOJI = { lodge: '🏕️', restaurant: '🍽️' }
-  const BIZ_LABEL = { lodge: 'Lodge Manager', restaurant: 'Restaurant Manager' }
+  const bizManagerLabel = bizType === 'restaurant'
+    ? `${vocab.nounTitle} Manager`
+    : `${vocab.nounTitle} Manager`
   const PAGE_PURPOSE = {
     Dashboard: 'See today’s sales, service, stock, and exceptions at a glance.',
     POS: 'Create orders, take payment, and send work to the right station.',
@@ -743,9 +771,9 @@ export default function Layout() {
     'Cash & Close': 'Reconcile cash, close the day, and review owner controls.',
     Control: 'Handle checklists, alerts, deposits, feedback, and operating policies.'
   }
-  const workspaceName = settings?.lodge_name || settings?.company_name || 'Boroko Workspace'
-  const logoSrc = borokoLogo
-  const darkLogoSrc = borokoLogoDark
+  const workspaceName = settings?.lodge_name || settings?.company_name || 'Tsa Bonno LodgingOS'
+  const logoSrc = productLogoColor
+  const darkLogoSrc = productLogoLight
   const pendingCount = Number(syncStatus.pending || 0)
   const failedCount = Number(syncStatus.failed || 0)
   const syncInProgress = syncStatus?.syncInProgress === true
@@ -986,7 +1014,7 @@ export default function Layout() {
                   <div className="flex h-16 w-full items-center">
                     <img
                       src={darkLogoSrc}
-                      alt="Boroko Bookings"
+                      alt={BUILD_PRODUCT.brandName}
                       className="h-full w-full object-contain object-left"
                       draggable="false"
                     />
@@ -998,7 +1026,7 @@ export default function Layout() {
               <div className="flex h-11 w-11 items-center justify-center overflow-hidden rounded-2xl border border-white/12 bg-white/95 p-1.5 shadow-[0_10px_30px_rgba(0,0,0,0.18)]">
                 <img
                   src={logoSrc}
-                  alt="Boroko Bookings"
+                  alt={BUILD_PRODUCT.brandName}
                   className="h-full w-full object-contain"
                   draggable="false"
                 />
@@ -1015,7 +1043,7 @@ export default function Layout() {
             <div className="mt-3 rounded-2xl border border-white/10 bg-white/6 px-3 py-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]">
               <p className="text-[11px] font-medium uppercase tracking-[0.2em] text-emerald-100/55">Workspace</p>
               <p className="mt-1 truncate text-sm font-semibold text-white">{workspaceName}</p>
-              <p className="mt-1 text-xs text-emerald-100/65">{bizType === 'restaurant' ? 'Restaurant operations' : 'Hospitality operations'}</p>
+              <p className="mt-1 text-xs text-emerald-100/65">{vocab.nounTitle} operations</p>
             </div>
           )}
           {/* Sidebar spacer */}
@@ -1135,7 +1163,7 @@ export default function Layout() {
             <div className="flex items-center justify-between gap-3">
               <div className="min-w-0">
                 <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.2em] text-slate-500">
-                  <span>{BIZ_LABEL[bizType] || 'Business Manager'}</span>
+                  <span>{bizManagerLabel}</span>
                   <ChevronsRight size={12} className="text-slate-300" />
                   <span className="truncate text-slate-700">{workspaceName}</span>
                 </div>
@@ -1158,7 +1186,7 @@ export default function Layout() {
                     type="button"
                     onClick={() => navigateWithGuard('/ai', { state: { initialPrompt: `What can I do on ${activeNavItem?.label || 'this screen'}?`, sourceRoute: location.pathname, sourceLabel: activeNavItem?.label || 'this screen' } })}
                     className="group inline-flex h-10 items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-600 px-3 text-left text-white shadow-sm transition-all hover:bg-emerald-700 hover:shadow-md"
-                    title="Ask Boroko Assistant"
+                    title="Ask Tsa Bonno Assistant"
                   >
                     <Sparkles size={16} className="text-emerald-50" />
                     <span className="hidden text-sm font-semibold lg:inline">Ask</span>

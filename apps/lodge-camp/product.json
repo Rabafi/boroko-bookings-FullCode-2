@@ -1,9 +1,9 @@
 {
   "id": "lodge-camp",
-  "name": "Boroko Lodge & Camp",
+  "name": "Tsa Bonno LodgingOS",
   "customer": "Lodges, camps, guest houses and small accommodation properties",
   "database_product": "lodge_camp",
-  "current_implementation": "shared Electron runtime compiled with a Lodge & Camp product identity",
-  "release_status": "runnable workspace retaining the established Boroko Bookings installer identity and updater feed",
+  "current_implementation": "shared Electron runtime compiled with a Tsa Bonno LodgingOS public identity",
+  "release_status": "runnable workspace with Tsa Bonno LodgingOS installer presentation while retaining the established app ID, app-data identity, and updater feed during the bridge release",
   "shared_backend": "../../supabase"
 }

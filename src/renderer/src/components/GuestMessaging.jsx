@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Plus, Pencil, Trash2, Send, Eye, RefreshCw, Mail, MessageSquare, Smartphone, Variable } from 'lucide-react'
+import { Plus, Pencil, Trash2, Eye, RefreshCw, AlertTriangle } from 'lucide-react'
 import { Modal } from './shared/Modal'
 import { ConfirmDialog } from './shared/ConfirmDialog'
 
@@ -15,8 +15,24 @@ const CATEGORIES = ['pre_arrival', 'checkin', 'balance', 'cancellation', 'no_sho
 const emptyTemplate = { template_key: '', name: '', subject_template: '', body_template: '', channel: 'email', variables: [], category: 'custom' }
 const emptyTrigger = { trigger_event: 'booking_confirmed', template_id: '', delay_minutes: 0, channel: 'email' }
 
-function formatCurrency(amount, currency = 'BWP') {
-  return `${currency} ${Number(amount || 0).toLocaleString('en', { minimumFractionDigits: 2 })}`
+function statusBadgeClass(status) {
+  const s = String(status || '').toLowerCase()
+  if (s === 'delivered') return 'bg-emerald-100 text-emerald-700'
+  if (s === 'sent') return 'bg-blue-100 text-blue-700'
+  if (s === 'failed') return 'bg-red-100 text-red-700'
+  if (s === 'not_configured' || s === 'not configured') return 'bg-amber-100 text-amber-800'
+  if (s === 'queued' || s === 'draft' || s === 'pending') return 'bg-slate-100 text-slate-600'
+  return 'bg-slate-100 text-slate-500'
+}
+
+function displayDeliveryStatus(m) {
+  // Never show "sent" unless channel was ready / provider confirmed.
+  const raw = String(m.display_status || m.status || '').toLowerCase()
+  if (m.channel_ready === false && (raw === 'sent' || raw === 'delivered')) {
+    return 'not_configured'
+  }
+  if (raw === 'sent' && m.channel_ready === false) return 'not_configured'
+  return m.display_status || m.status || 'unknown'
 }
 
 export default function GuestMessaging() {
@@ -25,6 +41,7 @@ export default function GuestMessaging() {
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState('templates')
   const [error, setError] = useState('')
+  const [warning, setWarning] = useState('')
   const [success, setSuccess] = useState('')
   const [saving, setSaving] = useState(false)
 
@@ -44,19 +61,35 @@ export default function GuestMessaging() {
 
   const [deliveryStatus, setDeliveryStatus] = useState([])
   const [deliveryFilter, setDeliveryFilter] = useState('')
+  const [deliveryError, setDeliveryError] = useState('')
+  const [channelReadiness, setChannelReadiness] = useState(null)
 
   const load = useCallback(async () => {
     setLoading(true)
     setError('')
+    setWarning('')
     try {
-      const [tpls, trgs] = await Promise.all([
+      const readinessPromise = window.api.guestMessaging.getChannelReadiness?.()
+        ?.catch((err) => {
+          setWarning(err?.message || 'Could not load channel readiness')
+          return null
+        })
+
+      const [tpls, trgs, readiness] = await Promise.all([
         window.api.guestMessaging.getTemplates(),
-        window.api.guestMessaging.getTriggers()
+        window.api.guestMessaging.getTriggers(),
+        readinessPromise
       ])
-      setTemplates(Array.isArray(tpls) ? tpls : [])
-      setTriggers(Array.isArray(trgs) ? trgs : [])
+      setTemplates(Array.isArray(tpls) ? tpls : (tpls?.cached || []))
+      setTriggers(Array.isArray(trgs) ? trgs : (trgs?.cached || []))
+      if (readiness) setChannelReadiness(readiness)
     } catch (err) {
-      setError(err?.message || 'Failed to load messaging data')
+      if (err?.cached) {
+        setTemplates(Array.isArray(err.cached) ? err.cached : [])
+        setWarning(err.message || 'Showing cached messaging data')
+      } else {
+        setError(err?.message || 'Failed to load messaging data')
+      }
     } finally {
       setLoading(false)
     }
@@ -70,12 +103,18 @@ export default function GuestMessaging() {
     return () => clearTimeout(timer)
   }, [success])
 
+  useEffect(() => {
+    if (tab === 'delivery') loadDeliveryStatus(deliveryFilter)
+  }, [tab])
+
   const loadDeliveryStatus = async (status) => {
+    setDeliveryError('')
     try {
       const data = await window.api.guestMessaging.getDeliveryStatus(status || '')
       setDeliveryStatus(Array.isArray(data) ? data : [])
-    } catch {
+    } catch (err) {
       setDeliveryStatus([])
+      setDeliveryError(err?.message || 'Failed to load delivery status')
     }
   }
 
@@ -224,7 +263,36 @@ export default function GuestMessaging() {
       </div>
 
       {error && <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error}</div>}
+      {warning && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 flex items-start gap-2">
+          <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+          <span>{warning}</span>
+        </div>
+      )}
       {success && <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-700">{success}</div>}
+
+      {channelReadiness && (
+        <section className="bb-card p-4">
+          <h2 className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">Channel readiness</h2>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+            {['email', 'sms', 'whatsapp'].map((ch) => {
+              const info = channelReadiness[ch] || { ready: false, status: 'not_configured', message: 'not configured' }
+              return (
+                <div key={ch} className={`rounded-xl border p-3 text-sm ${info.ready ? 'border-emerald-200 bg-emerald-50' : 'border-amber-200 bg-amber-50'}`}>
+                  <div className="font-semibold capitalize text-slate-900">{ch}</div>
+                  <div className={`mt-1 text-xs font-semibold ${info.ready ? 'text-emerald-700' : 'text-amber-800'}`}>
+                    {info.ready ? 'Ready' : 'not configured'}
+                  </div>
+                  <p className="mt-1 text-xs text-slate-600">{info.message || info.label}</p>
+                </div>
+              )
+            })}
+          </div>
+          <p className="mt-3 text-xs text-slate-500">
+            Messages are never shown as &quot;sent&quot; until the delivery provider confirms. SMS and WhatsApp stay &quot;not configured&quot; until a provider is connected.
+          </p>
+        </section>
+      )}
 
       <div className="flex gap-2 border-b border-slate-200 pb-2">
         {['templates', 'triggers', 'delivery', 'render'].map((t) => (
@@ -247,6 +315,9 @@ export default function GuestMessaging() {
                     <span className="text-sm font-semibold text-slate-900">{t.name || t.template_key}</span>
                     <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${t.active ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>{t.active ? 'Active' : 'Inactive'}</span>
                     <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600">{t.channel}</span>
+                    {(t.channel === 'sms' || t.channel === 'whatsapp') && (
+                      <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">not configured</span>
+                    )}
                     <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600">{t.category}</span>
                   </div>
                   <p className="mt-1 text-xs text-slate-500 line-clamp-1">{t.subject_template ? `Subject: ${t.subject_template}` : 'No subject'}</p>
@@ -305,26 +376,34 @@ export default function GuestMessaging() {
                 <option value="sent">Sent</option>
                 <option value="delivered">Delivered</option>
                 <option value="failed">Failed</option>
+                <option value="not_configured">Not configured</option>
               </select>
               <button onClick={() => loadDeliveryStatus(deliveryFilter)} className="btn-ghost p-2"><RefreshCw size={15} /></button>
             </div>
           </div>
+          {deliveryError && (
+            <div className="mt-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{deliveryError}</div>
+          )}
           <div className="mt-4 space-y-2">
-            {deliveryStatus.length === 0 && <p className="text-sm text-slate-500">No messages found.</p>}
-            {deliveryStatus.map((m) => (
-              <div key={m.id} className="flex items-center justify-between rounded-xl border border-slate-200 p-4">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-semibold text-slate-900">{m.template_key || 'Manual'}</span>
-                    <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
-                      m.status === 'delivered' ? 'bg-emerald-100 text-emerald-700' : m.status === 'sent' ? 'bg-blue-100 text-blue-700' : m.status === 'failed' ? 'bg-red-100 text-red-700' : 'bg-slate-100 text-slate-500'
-                    }`}>{m.status}</span>
-                    <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600">{m.channel}</span>
+            {deliveryStatus.length === 0 && !deliveryError && <p className="text-sm text-slate-500">No messages found.</p>}
+            {deliveryStatus.map((m) => {
+              const shown = displayDeliveryStatus(m)
+              return (
+                <div key={m.id} className="flex items-center justify-between rounded-xl border border-slate-200 p-4">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-sm font-semibold text-slate-900">{m.template_key || 'Manual'}</span>
+                      <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${statusBadgeClass(shown)}`}>{shown}</span>
+                      <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600">{m.channel}</span>
+                    </div>
+                    {m.readiness_note && (
+                      <p className="mt-1 text-xs text-amber-700">{m.readiness_note}</p>
+                    )}
+                    <p className="mt-1 text-xs text-slate-500">{m.created_at ? new Date(m.created_at).toLocaleString() : ''}</p>
                   </div>
-                  <p className="mt-1 text-xs text-slate-500">{new Date(m.created_at).toLocaleString()}</p>
                 </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
         </section>
       )}
@@ -379,6 +458,9 @@ export default function GuestMessaging() {
               <select value={templateForm.channel} onChange={(e) => setTemplateForm((f) => ({ ...f, channel: e.target.value }))} className="input w-full">
                 {CHANNELS.map((c) => <option key={c} value={c}>{c}</option>)}
               </select>
+              {(templateForm.channel === 'sms' || templateForm.channel === 'whatsapp') && (
+                <p className="mt-1 text-xs text-amber-700">This channel is not configured. Messages will not be marked sent.</p>
+              )}
             </div>
             <div>
               <label className="text-xs font-semibold text-slate-600">Category</label>
@@ -405,7 +487,7 @@ export default function GuestMessaging() {
             <div>
               <label className="text-xs font-semibold text-slate-600">Allowed Variables (JSON array)</label>
               <input className="input w-full font-mono text-xs" value={JSON.stringify(templateForm.variables)} onChange={(e) => {
-                try { setTemplateForm((f) => ({ ...f, variables: JSON.parse(e.target.value) })) } catch {}
+                try { setTemplateForm((f) => ({ ...f, variables: JSON.parse(e.target.value) })) } catch { /* keep prior valid JSON while typing */ }
               }} placeholder='["guest_name", "check_in"]' />
             </div>
             {error && <p className="text-sm text-red-600">{error}</p>}

@@ -44,6 +44,7 @@ import HorizontalScrollArea from './shared/HorizontalScrollArea'
 import UpgradeNudgeBanner from './shared/UpgradeNudgeBanner'
 import { useSettings, useFeatures, useOnlineRequests } from '../app-context'
 import { localToday } from '../utils/localDate'
+import { getBusinessDisplayName, getUiVocabulary } from '../../../shared/uiVocabulary'
 import {
   MONTHLY_USAGE_RESET_COPY,
   countMonthlyUsageBookings,
@@ -56,8 +57,12 @@ import {
   normalizeSubscriptionPlan
 } from '../../../shared/subscriptionPlans'
 import { normalizeSupportMessages, supportMessageSide, supportSenderMeta, supportSenderName } from '../../../shared/supportThreads'
-import { isRestaurantOnly, isHotelPropertyType } from '../../../shared/propertyTypes'
+import { isBarOnlyMode, isRestaurantOnly, isHotelPropertyType } from '../../../shared/propertyTypes'
+import { getProductDefinition, getRuntimeProductId } from '../../../shared/productIdentity'
+import { getRestaurantDashboardShortcuts } from '../../../shared/barModeProfile'
 
+const BUILD_PRODUCT = getProductDefinition(getRuntimeProductId())
+const IS_LODGE_PRODUCT = BUILD_PRODUCT.id === 'lodge-camp'
 const HotelDashboard = lazy(() => import('./HotelDashboard'))
 
 const SHORTCUTS = [
@@ -73,21 +78,31 @@ const SHORTCUTS = [
   { label: 'Room Supplies', to: '/supplies',   icon: Boxes,         feature: 'supplies',   tier: 'Pro' },
 ]
 
-const RESTAURANT_SHORTCUTS = [
-  { label: 'POS',             to: '/pos',                   icon: ShoppingCart,    feature: 'pos',        tier: 'Pro' },
-  { label: 'Floor & Service', to: '/restaurant/floor',      icon: LayoutGrid,      feature: 'pos',        tier: 'Pro' },
-  { label: 'Kitchen',         to: '/restaurant/kitchen-workspace', icon: ChefHat,   feature: 'pos',        tier: 'Pro' },
-  { label: 'Menu & Production', to: '/restaurant/menu-production', icon: UtensilsCrossed, feature: 'pos', tier: 'Pro' },
-  { label: 'Stock & Purchasing', to: '/restaurant/stock-purchasing', icon: Package, feature: 'inventory', tier: 'Pro' },
-  { label: 'Team',            to: '/restaurant/team',       icon: Users,           feature: 'staff',      tier: 'Standard' },
-  { label: 'Cash & Close',    to: '/restaurant/cash-close', icon: Wallet,          feature: 'pos',        tier: 'Pro' },
-  { label: 'Expenses',        to: '/expenses',              icon: Receipt,         feature: 'expenses',   tier: 'Standard' },
-  { label: 'Reports',         to: '/reports',               icon: BarChart3,       feature: 'reports',    tier: 'Standard' },
-  { label: 'Customers',       to: '/restaurant/customers',  icon: UserCheck,       feature: 'staff',      tier: 'Standard' },
-  { label: 'Control',         to: '/restaurant/control',    icon: AlertTriangle,   feature: 'staff',      tier: 'Standard' },
-  { label: 'Data',            to: '/data-management',       icon: HardDrive,       feature: null,         tier: null },
-  { label: 'Settings',        to: '/settings',              icon: Settings,        feature: null,         tier: null },
-]
+const SHORTCUT_ICONS = {
+  '/pos': ShoppingCart,
+  '/hpos/pos': ShoppingCart,
+  '/hpos/menu': UtensilsCrossed,
+  '/restaurant/floor': LayoutGrid,
+  '/restaurant/kitchen-workspace': ChefHat,
+  '/restaurant/menu-production': UtensilsCrossed,
+  '/restaurant/stock-purchasing': Package,
+  '/restaurant/team': Users,
+  '/restaurant/cash-close': Wallet,
+  '/pos/bar-display': Coffee,
+  '/expenses': Receipt,
+  '/reports': BarChart3,
+  '/restaurant/customers': UserCheck,
+  '/restaurant/control': AlertTriangle,
+  '/data-management': HardDrive,
+  '/settings': Settings
+}
+
+function resolveRestaurantShortcuts(settings) {
+  return getRestaurantDashboardShortcuts(settings).map((item) => ({
+    ...item,
+    icon: SHORTCUT_ICONS[item.to] || ShoppingCart
+  }))
+}
 
 function getRequestAgeMeta(createdAt) {
   const time = createdAt ? new Date(createdAt).getTime() : NaN
@@ -161,6 +176,12 @@ export default function Dashboard() {
   const currency = settings?.currency || 'P'
   const propertyType = settings?.property_type || settings?.business_type || 'lodge'
   const restaurantMode = isRestaurantOnly(propertyType)
+  const barOnlyMode = restaurantMode && isBarOnlyMode(settings)
+  const vocab = getUiVocabulary({ settings, propertyType, productId: BUILD_PRODUCT.id })
+  const restaurantShortcuts = useMemo(
+    () => (restaurantMode ? resolveRestaurantShortcuts(settings) : []),
+    [restaurantMode, settings]
+  )
   const { requests: onlineRequests, refresh: refreshOnlineRequests } = useOnlineRequests()
   const [actioningId, setActioningId] = useState(null)
 
@@ -506,14 +527,14 @@ export default function Dashboard() {
   const todayQueue = restaurantMode ? [
     {
       key: 'pos-sales',
-      label: 'POS Sales',
+      label: barOnlyMode ? 'Bar Sales' : 'POS Sales',
       value: `${currency} ${Number(paymentMixToday.total_collected || 0).toFixed(2)}`,
       detail: `${paymentMixToday.payment_count || 0} payment${paymentMixToday.payment_count === 1 ? '' : 's'} today`,
       icon: ShoppingCart,
       tone: 'emerald',
-      to: '/pos'
+      to: barOnlyMode ? '/hpos/pos' : '/pos'
     },
-    {
+    !barOnlyMode && {
       key: 'kitchen',
       label: 'Kitchen Pending',
       value: pendingTicketCount,
@@ -522,7 +543,7 @@ export default function Dashboard() {
       tone: pendingTicketCount > 0 ? 'amber' : 'emerald',
       to: '/restaurant/kitchen-workspace'
     },
-    {
+    !barOnlyMode && {
       key: 'tables',
       label: 'Open Tables',
       value: `${openTableCount}/${totalTableCount}`,
@@ -530,6 +551,15 @@ export default function Dashboard() {
       icon: LayoutGrid,
       tone: 'sky',
       to: '/restaurant/floor'
+    },
+    barOnlyMode && {
+      key: 'sell',
+      label: 'Counter sell',
+      value: 'Open',
+      detail: 'Counter & open tabs',
+      icon: ShoppingCart,
+      tone: 'sky',
+      to: '/hpos/pos'
     },
     {
       key: 'stock',
@@ -558,7 +588,7 @@ export default function Dashboard() {
       tone: activeAlerts.length > 0 ? 'rose' : 'emerald',
       to: '/restaurant/control'
     }
-  ] : [
+  ].filter(Boolean) : [
     {
       key: 'arrivals',
       label: 'Arrivals',
@@ -606,7 +636,7 @@ export default function Dashboard() {
     }
   ]
   const attentionSummary = restaurantMode ? [
-    pendingTicketCount > 0 && `${pendingTicketCount} pending kitchen ticket${pendingTicketCount === 1 ? '' : 's'}`,
+    !barOnlyMode && pendingTicketCount > 0 && `${pendingTicketCount} pending kitchen ticket${pendingTicketCount === 1 ? '' : 's'}`,
     lowStock.length > 0 && `${lowStock.length} low-stock item${lowStock.length === 1 ? '' : 's'}`,
     activeAlerts.length > 0 && `${activeAlerts.length} active alert${activeAlerts.length === 1 ? '' : 's'}`
   ].filter(Boolean) : [
@@ -620,19 +650,31 @@ export default function Dashboard() {
       label: 'Today Sales',
       value: `${currency} ${Number(paymentMixToday.total_collected || 0).toFixed(2)}`,
       detail: `${paymentMixToday.payment_count || 0} payment${paymentMixToday.payment_count === 1 ? '' : 's'} recorded`,
-      to: '/pos'
+      to: barOnlyMode ? '/hpos/pos' : '/pos'
     },
-    {
+    !barOnlyMode && {
       label: 'Open Tables',
       value: `${openTableCount}/${totalTableCount}`,
       detail: `${totalTableCount - openTableCount} available`,
       to: '/restaurant/tables'
     },
-    {
+    !barOnlyMode && {
       label: 'Kitchen Pending',
       value: pendingTicketCount,
       detail: `${kitchenTickets.length} total ticket${kitchenTickets.length === 1 ? '' : 's'} today`,
       to: '/restaurant/kitchen'
+    },
+    barOnlyMode && {
+      label: 'Sell',
+      value: 'Counter',
+      detail: 'Counter sales & open tabs',
+      to: '/hpos/pos'
+    },
+    barOnlyMode && {
+      label: 'Products',
+      value: 'Drinks',
+      detail: 'Singles, packs & barcodes',
+      to: '/hpos/menu'
     },
     {
       label: 'Cash Drawer',
@@ -659,12 +701,12 @@ export default function Dashboard() {
       to: '/restaurant/control'
     },
     {
-      label: 'Daily Close',
+      label: barOnlyMode ? 'Night Close' : 'Daily Close',
       value: drawerOpen ? 'Ready' : 'Not started',
       detail: drawerOpen ? 'Close the day when ready' : 'Open a drawer to start',
       to: '/restaurant/cash-close'
     }
-  ] : [
+  ].filter(Boolean) : [
     {
       label: 'Cash Today',
       value: `${currency} ${Number(paymentMixToday.total_collected || 0).toFixed(2)}`,
@@ -706,7 +748,7 @@ export default function Dashboard() {
     'Backup reminder'
   const backupReminderCopy =
     backupPolicy.compliance_state === 'disabled'
-      ? 'Turn on managed weekly exports so the lodge has an off-device Excel backup.'
+      ? `Turn on managed weekly exports so ${vocab.theNoun} has an off-device Excel backup.`
       : backupPolicy.compliance_state === 'setup_required'
         ? 'Managed exports are enabled, but they need a OneDrive, Google Drive, Dropbox, or other synced folder.'
         : backupPolicy.compliance_state === 'pending_first_run'
@@ -811,7 +853,7 @@ export default function Dashboard() {
       <section className="bb-ops-brief">
         <div className="bb-ops-brief__intro">
           <p className="bb-section-kicker">Today Queue</p>
-          <h2 className="bb-section-title mt-1">{restaurantMode ? 'The key numbers that keep the restaurant running.' : 'The next actions that keep the lodge moving.'}</h2>
+          <h2 className="bb-section-title mt-1">{restaurantMode ? `The key numbers that keep ${vocab.theNoun} running.` : `The next actions that keep ${vocab.theNoun} moving.`}</h2>
           <p className="mt-1 text-sm text-slate-500">
             {attentionSummary.length > 0
               ? `Focus first on ${attentionSummary.join(', ')}.`
@@ -936,11 +978,11 @@ export default function Dashboard() {
         <div className="mb-3 flex items-center justify-between gap-4">
           <div>
             <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-500">Quick Access</h2>
-            <p className="mt-1 text-sm text-slate-500">{restaurantMode ? 'Jump into the most-used modules.' : 'Jump into the most-used desk and back-office modules.'}</p>
+            <p className="mt-1 text-sm text-slate-500">{restaurantMode ? (barOnlyMode ? 'Jump into sell, stock, cash-up, and bar control.' : 'Jump into the most-used modules.') : 'Jump into the most-used desk and back-office modules.'}</p>
           </div>
         </div>
         <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-10">
-          {(restaurantMode ? RESTAURANT_SHORTCUTS : SHORTCUTS).map(({ label, to, icon: Icon, feature, tier }) => {
+          {(restaurantMode ? restaurantShortcuts : SHORTCUTS).map(({ label, to, icon: Icon, feature, tier }) => {
             const isLocked = feature && Object.keys(features).length > 0 && features[feature] === false
             const tierColor = tier === 'Pro' ? 'text-purple-500' : 'text-blue-500'
             return (
@@ -1686,7 +1728,7 @@ export default function Dashboard() {
                     <button
                       onClick={() => {
                         const phone = formatWhatsAppPhone(b.customer_phone)
-                        const lodge = settings?.lodge_name || 'the Lodge'
+                        const lodge = getBusinessDisplayName(settings, vocab)
                         const msg = [
                           `Dear ${b.customer_name},`,
                           '',
@@ -1709,7 +1751,7 @@ export default function Dashboard() {
                   {b.customer_email && (
                     <button
                       onClick={() => {
-                        const lodge = settings?.lodge_name || 'the Lodge'
+                        const lodge = getBusinessDisplayName(settings, vocab)
                         const subject = `Check-in Reminder — ${lodge}`
                         const msg = [
                           `Dear ${b.customer_name},`,
@@ -1741,7 +1783,8 @@ export default function Dashboard() {
       </div>
       )}
 
-      {isHotelPropertyType(propertyType) && (
+      {/* Hotel enterprise dashboard belongs to the Hotel product shell, not Lodge. */}
+      {!IS_LODGE_PRODUCT && isHotelPropertyType(propertyType) && (
         <section className="mt-6">
           <Suspense fallback={<div className="p-8 text-center text-slate-500">Loading hotel dashboard...</div>}>
             <HotelDashboard />

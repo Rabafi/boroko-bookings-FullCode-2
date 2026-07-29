@@ -56,7 +56,7 @@ const FEATURE_UPGRADE_CONTEXT = {
   expenses: 'The lodge needs better control over expenses and money leakage.',
   staff: 'The lodge needs stronger staff accountability and role-based control.',
   audit: 'The lodge needs a proper end-of-day close and tighter operational discipline.',
-  conference: 'The lodge wants to manage conference or event revenue inside Boroko.',
+  conference: 'The lodge wants to manage conference or event revenue inside Tsa Bonno.',
   pool: 'The lodge wants to manage day-use or pool revenue more cleanly.',
   import: 'The lodge needs easier setup, migration, or bulk data handling.',
   pwa: 'The lodge wants mobile owner or manager oversight away from the front desk.',
@@ -546,7 +546,7 @@ export function trackUpgradeIntent({
   writeStoredJson(UPGRADE_INTENT_LOG_KEY, nextLog)
 
   try {
-    console.info?.('[Boroko] upgrade intent', event)
+    console.info?.('[Tsa Bonno] upgrade intent', event)
   } catch {
     // Best-effort only.
   }
@@ -820,7 +820,7 @@ export function buildUpgradeRequestMessage(lodge = {}, usage = {}, recommendatio
 
   const whatsappLines = channel === 'whatsapp'
     ? [
-        'Hi, I’d like to upgrade our Boroko Bookings plan.',
+        'Hi, I’d like to upgrade our Tsa Bonno HospitalityOS plan.',
         '',
         `Lodge: ${lodgeName}`,
         `Plan: ${currentPlan}`,

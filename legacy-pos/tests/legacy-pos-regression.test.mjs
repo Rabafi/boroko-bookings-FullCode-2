@@ -840,11 +840,11 @@ test('Database contract includes POS staff auth resolver RPC', () => {
   assert.ok(migration.includes('create or replace function public.resolve_legacy_pos_staff_profile'), 'Must define POS staff resolver RPC');
   assert.ok(migration.includes('security definer'), 'Resolver must be database-enforced');
   assert.ok(migration.includes('app_authenticated_user_id()'), 'Resolver must use current Supabase auth user');
-  assert.ok(migration.includes('More than one Boroko staff profile'), 'Resolver must reject ambiguous email matches');
+  assert.ok(migration.includes('More than one Boroko staff profile'), 'Resolver must preserve the historical ambiguity error contract');
   assert.ok(migration.includes('grant execute on function public.resolve_legacy_pos_staff_profile(uuid) to authenticated'), 'Authenticated users must be able to call resolver');
 });
 
-test('Legacy POS issues Boroko app session after Supabase Auth login', () => {
+test('Legacy POS issues the compatibility app session after Supabase Auth login', () => {
   const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
   assert.ok(content.includes('issueLegacyBorokoSession'), 'Must issue Boroko app session');
   assert.ok(content.includes("rpc('authenticate_user_from_supabase'"), 'Must fall back to desktop app-session RPC');
@@ -857,8 +857,8 @@ test('Renderer-facing user profile strips session secrets', () => {
   const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
   const normalizer = content.match(/function normalizeUserProfile\(user, authUser = null\) \{[\s\S]*?\n\}/);
   assert.ok(normalizer, 'Must have normalizeUserProfile helper');
-  assert.ok(normalizer[0].includes('session_token: _sessionToken'), 'Must strip Boroko session token');
-  assert.ok(normalizer[0].includes('session_expires_at: _sessionExpiresAt'), 'Must strip Boroko session expiry');
+  assert.ok(normalizer[0].includes('session_token: _sessionToken'), 'Must strip the compatibility session token');
+  assert.ok(normalizer[0].includes('session_expires_at: _sessionExpiresAt'), 'Must strip the compatibility session expiry');
   assert.ok(normalizer[0].includes('...safeUser'), 'Must spread sanitized user fields only');
 });
 
@@ -866,7 +866,7 @@ test('Legacy POS app-session bridge migration returns lodge name and session tok
   const migration = fs.readFileSync(path.join(__dirname, '..', '..', 'supabase', 'migrations', '20260613130000_legacy_pos_app_session_bridge.sql'), 'utf-8');
   assert.ok(migration.includes('drop function if exists public.resolve_legacy_pos_staff_profile(uuid)'), 'Must replace previous return contract');
   assert.ok(migration.includes('lodge_name text'), 'Resolver must return lodge display name');
-  assert.ok(migration.includes('session_token text'), 'Resolver must return Boroko session token');
+  assert.ok(migration.includes('session_token text'), 'Resolver must return the compatibility app-session token');
   assert.ok(migration.includes('public.issue_app_session'), 'Resolver must issue app session');
   assert.ok(migration.includes("'app', 'legacy-pos'"), 'Issued session metadata must identify legacy POS');
 });
@@ -878,7 +878,7 @@ test('Main process normalizes and requires lodge context before live lodge queri
   assert.ok(!content.includes(".eq('lodge_id', state.lodgeId)"), 'Live queries must not send null/string-null lodge IDs');
 });
 
-test('Rooms and bookings reads match current Boroko schema', () => {
+test('Rooms and bookings reads match the current production schema', () => {
   const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
   assert.ok(content.includes('room_number, room_type'), 'Rooms must select room_number/room_type');
   assert.ok(content.includes('customers(name)'), 'Bookings must get guest name through customers relation');
@@ -1592,8 +1592,18 @@ test('Legacy package config supports GitHub release publishing', () => {
   assert.equal(pkg.build.publish.provider, 'github');
   assert.equal(pkg.build.publish.owner, 'Rabafi');
   assert.equal(pkg.build.publish.repo, 'boroko-pos-legacy-releases');
+  assert.equal(pkg.build.productName, 'Tsa Bonno POS Legacy');
+  assert.ok(pkg.build.artifactName.startsWith('Tsa-Bonno-POS-Legacy-'));
+  assert.equal(pkg.build.win.icon, 'src/main/assets/icon.ico');
+  assert.equal(pkg.build.nsis.shortcutName, 'Tsa Bonno POS Legacy');
+  assert.equal(pkg.build.nsis.uninstallDisplayName, 'Tsa Bonno POS Legacy');
+  assert.equal(pkg.build.nsis.installerIcon, 'src/main/assets/icon.ico');
+  assert.equal(pkg.build.nsis.uninstallerIcon, 'src/main/assets/icon.ico');
   assert.ok(pkg.scripts['release:publish'], 'release:publish script must exist');
   assert.ok(pkg.scripts['dist:publish'], 'dist:publish script must exist');
+  assert.match(pkg.scripts.dist, /--ia32/, 'Legacy POS dist must explicitly build IA-32 for POSReady 7');
+  assert.match(pkg.scripts['dist:dir'], /--ia32/, 'Legacy POS unpacked build must explicitly build IA-32');
+  assert.match(pkg.scripts['dist:publish'], /--ia32/, 'Legacy POS publish must explicitly build IA-32');
 });
 
 test('Legacy release script requires GH_TOKEN and publishes with electron-builder', () => {
@@ -1747,7 +1757,7 @@ test('Legacy POS explains unconfirmed Supabase Auth accounts clearly', () => {
   const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
   assert.ok(content.includes('formatAuthLoginError'), 'Auth login errors must be normalized');
   assert.ok(content.includes('email not confirmed'), 'Must detect Supabase email confirmation failures');
-  assert.ok(content.includes('Reset this staff member password in Boroko Desktop or Command Central'), 'Must tell managers how to repair unconfirmed staff Auth users');
+  assert.ok(content.includes('Reset this staff member password in Tsa Bonno desktop or Command Central'), 'Must tell managers how to repair unconfirmed staff Auth users');
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════

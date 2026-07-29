@@ -85,7 +85,7 @@ function ExportTab({ restaurantMode, EXPORT_PRESETS, EXPORT_SECTIONS }) {
   }
 
   return (
-    <div className="p-6 max-w-3xl">
+    <div className={restaurantMode ? 'hpos-data-panel' : 'p-6 max-w-3xl'}>
       <p className="text-gray-500 text-sm mb-6">
         Export {restaurantMode ? 'restaurant' : 'lodge'} data into a multi-sheet Excel workbook. Choose a focused export when you do
         not need the full backup snapshot.
@@ -96,7 +96,7 @@ function ExportTab({ restaurantMode, EXPORT_PRESETS, EXPORT_SECTIONS }) {
           <label
             key={option.key}
             className={`rounded-xl border px-4 py-3 transition ${
-              preset === option.key ? 'border-green-300 bg-green-50' : 'border-gray-200 bg-white hover:bg-gray-50'
+                preset === option.key ? (restaurantMode ? 'hpos-export-option is-selected' : 'border-green-300 bg-green-50') : (restaurantMode ? 'hpos-export-option' : 'border-gray-200 bg-white hover:bg-gray-50')
             }`}
           >
             <div className="flex items-start gap-3">
@@ -192,7 +192,7 @@ function ExportTab({ restaurantMode, EXPORT_PRESETS, EXPORT_SECTIONS }) {
       <button
         onClick={handleExport}
         disabled={loading}
-        className="flex items-center gap-2 bg-green-600 hover:bg-green-700 disabled:opacity-60 text-white px-6 py-2.5 rounded-lg text-sm font-medium transition-colors"
+        className={restaurantMode ? 'hpos-primary-action' : 'flex items-center gap-2 bg-green-600 hover:bg-green-700 disabled:opacity-60 text-white px-6 py-2.5 rounded-lg text-sm font-medium transition-colors'}
       >
         {loading
           ? <><Loader2 size={16} className="animate-spin" /> Exporting…</>
@@ -305,7 +305,7 @@ function BackupsTab({ restaurantMode }) {
     'Needs attention'
 
   return (
-    <div className="p-6 max-w-3xl space-y-6">
+    <div className={restaurantMode ? 'hpos-data-panel space-y-6' : 'p-6 max-w-3xl space-y-6'}>
       <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-gray-200">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
@@ -370,7 +370,7 @@ function BackupsTab({ restaurantMode }) {
             {policy.target_dir || 'No synced folder selected yet.'}
           </p>
           <p className="mt-2 text-xs text-gray-500">
-            Choose a folder inside OneDrive, Google Drive, Dropbox, or another synced location so weekly Boroko exports are copied off the device automatically.
+            Choose a folder inside OneDrive, Google Drive, Dropbox, or another synced location so weekly Tsa Bonno exports are copied off the device automatically.
           </p>
           <div className="mt-3 flex flex-wrap gap-2">
             <button
@@ -465,20 +465,21 @@ export default function DataManagement() {
   }, [location.state?.activeTab])
 
   return (
-    <div className="p-6 max-w-5xl">
+    <div className={restaurantMode ? 'hpos-data-workspace' : 'p-6 max-w-5xl'}>
       {/* Header */}
-      <div className="flex items-center gap-3 mb-6">
-        <div className="w-10 h-10 rounded-xl bg-indigo-50 flex items-center justify-center">
-          <Database size={20} className="text-indigo-600" />
+      <div className={restaurantMode ? 'hpos-data-hero' : 'flex items-center gap-3 mb-6'}>
+        <div className={restaurantMode ? 'hpos-data-hero-icon' : 'w-10 h-10 rounded-xl bg-indigo-50 flex items-center justify-center'}>
+          <Database size={20} />
         </div>
         <div>
-          <h1 className="text-2xl font-bold text-gray-800">Data Management</h1>
-          <p className="text-gray-500 text-sm mt-0.5">Import or export {restaurantMode ? 'restaurant' : 'lodge'} data</p>
+          <p className={restaurantMode ? 'hpos-eyebrow' : 'hidden'}>{restaurantMode ? 'Business continuity' : ''}</p>
+          <h1 className="text-2xl font-bold text-gray-800">{restaurantMode ? 'Data & backups' : 'Data Management'}</h1>
+          <p className="text-gray-500 text-sm mt-0.5">{restaurantMode ? 'Move restaurant or bar data safely, create professional workbooks, and protect the business.' : 'Import or export lodge data'}</p>
         </div>
       </div>
 
       {/* Tab bar */}
-      <div className="flex gap-1 bg-gray-100 rounded-lg p-1 w-fit mb-6">
+      <div className={restaurantMode ? 'hpos-data-tabs' : 'flex gap-1 bg-gray-100 rounded-lg p-1 w-fit mb-6'}>
         {TABS.map((t, i) => (
           <button
             key={t}

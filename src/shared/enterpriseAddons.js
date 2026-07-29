@@ -45,15 +45,15 @@ export const ENTERPRISE_ADDON_CATALOG = [
   },
   {
     key: 'rate_plans',
-    label: 'Rate Plans',
+    label: 'Rate Plans (included in Hotel Core)',
     category: ENTERPRISE_ADDON_CATEGORIES.revenue,
-    description: 'Seasonal, corporate, package, weekday, weekend, and restriction-based rates.',
+    description: 'Basic seasonal, corporate, package, weekday/weekend, and restriction rates are included in Hotel Core. Purchase Advanced Rate Engine for yield automation and recommendations.',
     eligiblePropertyTypes: ['motel', 'hotel', 'resort'],
     requiresEnterprise: true,
     moduleKeys: ['rate_plans'],
-    status: ENTERPRISE_ADDON_STATUS.requestable,
-    advertise: true,
-    price: { annual: 9000, setup: 0, pricingModel: 'published' }
+    // Included in Hotel Core — retained for legacy entitlement keys only; not sold separately.
+    status: ENTERPRISE_ADDON_STATUS.active,
+    advertise: false
   },
   {
     key: 'channel_manager',
@@ -68,27 +68,26 @@ export const ENTERPRISE_ADDON_CATALOG = [
   },
   {
     key: 'corporate_accounts',
-    label: 'Corporate Accounts',
+    label: 'Corporate Accounts (included in Hotel Core)',
     category: ENTERPRISE_ADDON_CATEGORIES.corporate,
-    description: 'Company billing, corporate profiles, credit limits, and group account workflows.',
+    description: 'Basic company profiles, billing contacts, charge allocation, invoices/statements, and settlement are included in Hotel Core. Centralised credit limits, multi-property debtors, and aging workflows remain premium reporting/ops depth.',
     eligiblePropertyTypes: ['lodge', 'motel', 'hotel', 'resort'],
     requiresEnterprise: true,
     moduleKeys: ['corporate_accounts'],
-    status: ENTERPRISE_ADDON_STATUS.requestable,
-    advertise: true,
-    price: { annual: 9000, setup: 3000, pricingModel: 'published' }
+    status: ENTERPRISE_ADDON_STATUS.active,
+    advertise: false
   },
   {
     key: 'advanced_housekeeping_mobile',
-    label: 'Advanced Housekeeping Mobile',
+    label: 'Housekeeping Mobile & Productivity',
     category: ENTERPRISE_ADDON_CATEGORIES.operations,
-    description: 'Mobile housekeeping assignments, supervisor inspections, and turnaround tracking.',
+    description: 'Mobile-first housekeeping assignments and productivity analytics. Basic dirty/clean/inspect/assign readiness is included in Hotel Core.',
     eligiblePropertyTypes: ['motel', 'hotel', 'resort'],
     requiresEnterprise: true,
     moduleKeys: ['advanced_housekeeping'],
-    status: ENTERPRISE_ADDON_STATUS.requestable,
-    advertise: true,
-    price: { annual: 7000, setup: 2500, pricingModel: 'published' }
+    // Do not re-sell core readiness; keep planned until a distinct mobile/analytics runtime ships.
+    status: ENTERPRISE_ADDON_STATUS.planned,
+    advertise: false
   },
   {
     key: 'staff_operations_workforce',
@@ -262,24 +261,24 @@ export const ENTERPRISE_ADDON_CATALOG = [
   },
   {
     key: 'documents',
-    label: 'Document System',
+    label: 'Document System (included in Hotel Core)',
     category: ENTERPRISE_ADDON_CATEGORIES.operations,
-    description: 'Folio, invoice, registration card, and statement templates with rendering.',
+    description: 'Operational templates for quotations, invoices, folios, receipts, and registration cards are included in Hotel Core.',
     eligiblePropertyTypes: ['motel', 'hotel', 'resort', 'lodge'],
     requiresEnterprise: true,
     moduleKeys: ['documents'],
-    status: ENTERPRISE_ADDON_STATUS.planned,
+    status: ENTERPRISE_ADDON_STATUS.active,
     advertise: false
   },
   {
     key: 'hotel_roles',
-    label: 'Hotel Role Templates',
+    label: 'Hotel Role Templates (included in Hotel Core)',
     category: ENTERPRISE_ADDON_CATEGORIES.security,
-    description: 'Predefined role templates for hotel-specific staff positions.',
+    description: 'Predefined front-desk, housekeeping, and maintenance role templates are included in Hotel Core. Workforce scheduling remains a premium module.',
     eligiblePropertyTypes: ['motel', 'hotel', 'resort', 'lodge'],
     requiresEnterprise: true,
     moduleKeys: ['hotel_roles'],
-    status: ENTERPRISE_ADDON_STATUS.planned,
+    status: ENTERPRISE_ADDON_STATUS.active,
     advertise: false
   },
   {
@@ -295,13 +294,13 @@ export const ENTERPRISE_ADDON_CATALOG = [
   },
   {
     key: 'room_attributes',
-    label: 'Room Attributes',
+    label: 'Room Attributes (included in Hotel Core)',
     category: ENTERPRISE_ADDON_CATEGORIES.operations,
-    description: 'Manage room attributes (view type, bed type, amenities, accessibility).',
+    description: 'Essential room attributes (view, bed type, accessibility) are included in Hotel Core. Attribute-driven selling and merchandising remain premium revenue depth.',
     eligiblePropertyTypes: ['motel', 'hotel', 'resort', 'lodge'],
     requiresEnterprise: true,
     moduleKeys: ['room_attributes'],
-    status: ENTERPRISE_ADDON_STATUS.planned,
+    status: ENTERPRISE_ADDON_STATUS.active,
     advertise: false
   },
   {

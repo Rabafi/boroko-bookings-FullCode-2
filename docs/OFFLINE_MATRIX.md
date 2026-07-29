@@ -1,81 +1,104 @@
 # Enterprise Offline Mutation Matrix
 
-Last updated: 2026-07-04
+Last updated: 2026-07-14
+Verified against: live domain sources under `src/main/domains/*` (Phase 9–13 reconciliation).
 
 ## Classification
 
 Each mutation is classified as:
-- **online_only**: blocked when offline; requires server round-trip
+- **online_only**: blocked when offline; requires server round-trip; must **not** enter the offline queue
 - **queueable**: stored locally and replayed when online; must use stable operation_id/idempotency_key
 - **read_online**: reads that prefer live data but degrade gracefully to cache
 
+## Code vs matrix truth (2026-07-14)
+
+| Domain | Matrix intent | Domain enforcement evidence |
+|---|---|---|
+| `folioLedger.js` | online_only financial mutations | `requireOnline` + `err.onlineOnly`; **no** `queueOperation` on charge/payment/transfer/split/void/close/reopen/lock |
+| `nightAudit.js` | online_only close/reopen/resolve | `requireOnline` on close/reopen/resolveException; checks may use cache only for read |
+| `corporateBilling.js` | online_only charge/payment/suspend/reactivate | `requireOnline`; **no** offline queue (fixed 2026-07-14 — previously queued unsafely) |
+| `checkinWorkflow.js` | steps were matrix-labelled queueable | **Code is online_only** for complete/reset step and hotel check-in/out (throws when offline). Matrix updated to match code — safer than inventing queue without stable op IDs |
+| `earlyLateCheckout.js` | approve online_only | `requireOnlineApproval` on early/late approve |
+| `cancellationPolicies.js` | approve/process online_only | `requireOnlineFinancial` on calculate/process/approve |
+| `maintenanceEnterprise.js` | OOO online_only | `requireOnlineAvailability` on set OOO/OOS/return to service |
+| `payments.js` | confirm/webhook online_only | explicit offline reject on confirm/record webhook |
+| `abandonedPaymentRecovery.js` | recover online_only | explicit offline reject on recoverSession |
+| `roomMoves.js` | queueable | queues `move_booking_room` with stable idempotency key when offline |
+| `maintenance.js` (tickets) | queueable create/update/resolve | queues ticket RPCs when offline |
+| `channelProviderAdapter.js` | online_only / provider | fail-closed stub — never reports live OTA success |
+| Housekeeping command center | matrix queueable | **No** local queue yet — mutations call RPC only (de-facto online-required) |
+| Guest messaging send | matrix queueable | Templates/triggers RPC; **no** device-local send queue; no live SMS/WhatsApp transport |
+
 ## Financial Mutations
 
-| Feature | Operation | Class | Idempotency | Notes |
+| Feature | Operation | Class | Idempotency | Domain evidence |
 |---|---|---|---|---|
-| Folio Ledger | addCharge | online_only | RPC-level | Financial atomicity requires server lock |
-| Folio Ledger | addPayment | online_only | RPC-level | Payment must be authorized server-side |
-| Folio Ledger | transferCharge | online_only | RPC-level | Double-entry must be atomic |
-| Folio Ledger | splitFolio | online_only | RPC-level | Atomic split requires server |
-| Folio Ledger | voidLineItem | online_only | RPC-level | Audit trail must be server-created |
-| Folio Ledger | closeFolio | online_only | RPC-level | Balance check requires live data |
-| Folio Ledger | reopenFolio | online_only | RPC-level | Status must be server-authoritative |
-| Folio Ledger | lockFolio | online_only | RPC-level | Lock must be server-enforced |
-| Night Audit | close | online_only | RPC-level | Cannot close without live data |
-| Night Audit | reopen | online_only | RPC-level | Requires server authorization |
-| Night Audit | resolveException | online_only | RPC-level | Exception state is server-side |
-| Corporate Billing | charge | online_only | RPC-level | Financial mutation |
-| Corporate Billing | recordPayment | online_only | RPC-level | Payment recording |
-| Corporate Billing | suspendAccount | online_only | RPC-level | Status change |
-| Corporate Billing | reactivateAccount | online_only | RPC-level | Status change |
-| Payments | confirmPayment | online_only | RPC-level | Payment confirmation |
-| Payments | recordWebhookPayment | online_only | Event ID | Server-side webhook only |
+| Folio Ledger | addCharge | online_only | RPC-level | `folioLedger.js` `requireOnline` |
+| Folio Ledger | addPayment | online_only | RPC-level | same |
+| Folio Ledger | transferCharge | online_only | RPC-level | same |
+| Folio Ledger | splitFolio | online_only | RPC-level | same |
+| Folio Ledger | voidLineItem | online_only | RPC-level | same |
+| Folio Ledger | closeFolio | online_only | RPC-level | same |
+| Folio Ledger | reopenFolio | online_only | RPC-level | same |
+| Folio Ledger | lockFolio | online_only | RPC-level | same |
+| Night Audit | close | online_only | RPC-level | `nightAudit.js` |
+| Night Audit | reopen | online_only | RPC-level | same |
+| Night Audit | resolveException | online_only | RPC-level | same |
+| Corporate Billing | charge | online_only | RPC-level | `corporateBilling.js` |
+| Corporate Billing | recordPayment | online_only | RPC-level | same |
+| Corporate Billing | suspendAccount | online_only | RPC-level | same |
+| Corporate Billing | reactivateAccount | online_only | RPC-level | same |
+| Payments | confirmPayment | online_only | RPC-level | `payments.js` |
+| Payments | recordWebhookPayment | online_only | Event ID | same + server webhook path |
 
 ## Operational Mutations
 
-| Feature | Operation | Class | Idempotency | Notes |
+| Feature | Operation | Class | Idempotency | Domain evidence |
 |---|---|---|---|---|
-| Check-in Workflow | completeStep | queueable | operation_id | Step completion can be deferred |
-| Check-in Workflow | resetStep | queueable | operation_id | |
-| Early/Late Checkout | create | queueable | operation_id | Request can be queued |
-| Early/Late Checkout | approve | online_only | operation_id | Approval affects billing |
-| Early/Late Checkout | reject | queueable | operation_id | |
-| Cancellation Policies | approve | online_only | operation_id | Affects financials/refunds |
-| Cancellation Policies | process | online_only | operation_id | Refund processing |
-| Housekeeping | assignRoom | queueable | operation_id | Assignment can be deferred |
-| Housekeeping | completeInspection | queueable | operation_id | |
-| Maintenance | setRoomOOO | online_only | operation_id | Affects availability |
-| Maintenance | clearRoomOOO | online_only | operation_id | Affects availability |
-| Document System | publishDocument | online_only | operation_id | Publishing requires server |
-| Channel Manager | syncAvailability | online_only | operation_id | Must push to OTA when online |
-| Channel Manager | importReservations | online_only | operation_id | Must fetch from OTA |
-| Abandoned Payments | recoverSession | online_only | operation_id | Payment recovery is financial |
-| Guest Messaging | sendMessage | queueable | operation_id | Can be queued and sent later |
-| Guest CRM | updateProfile | queueable | operation_id | Profile changes can merge |
-| Guest Portal | createRequest | queueable | operation_id | Guest request can be queued |
-| Booking Engine | createIntent | queueable | operation_id | Analytics intent can be deferred |
+| Check-in Workflow | completeStep / resetStep | **online_only** | n/a | `checkinWorkflow.js` throws when offline |
+| Check-in Workflow | completeHotelCheckin / Checkout | **online_only** | n/a | same |
+| Early/Late Checkout | create request | online_required (no queue yet) | n/a | RPC only — not queued |
+| Early/Late Checkout | approve | online_only | operation_id | `requireOnlineApproval` — affects billing |
+| Early/Late Checkout | reject | online_required (no queue yet) | n/a | RPC only |
+| Cancellation Policies | approve / process / fee calc | online_only | operation_id | `requireOnlineFinancial` |
+| Housekeeping | assign / inspect | online_required (no queue yet) | n/a | `housekeepingCommandCenter.js` RPC only |
+| Maintenance | ticket create/update/resolve | queueable | operation_id | `maintenance.js` `queueOperation` |
+| Maintenance | setRoomOOO / clear / return | online_only | operation_id | `maintenanceEnterprise.js` |
+| Document System | publishDocument | online_only / online_required | operation_id | RPC publish path; no offline queue |
+| Channel Manager | syncAvailability / import | online_only | operation_id | internal queue + fail-closed provider |
+| Abandoned Payments | recoverSession | online_only | operation_id | `abandonedPaymentRecovery.js` |
+| Guest Messaging | template/trigger CRUD | online_required | n/a | no device send queue |
+| Guest CRM | profile notes | mixed | n/a | verify per mutation before claiming queueable |
+| Guest Portal | createRequest / session | online_required | n/a | RPC session/request paths |
+| Booking Engine | createIntent | online_only | n/a | returns offline error |
+| Room moves | moveBookingRoom | queueable | stable idempotency key | `roomMoves.js` |
 
 ## Queue Contract
 
-For queueable operations, the offline queue must store:
-- RPC name (e.g., 'checkinWorkflow:completeStep')
+For **queueable** operations, the offline queue must store:
+- RPC name (e.g., `move_booking_room`)
 - Payload (serialized JSON)
-- Stable operation_id (UUID, generated client-side)
+- Stable operation_id / `_queue_id` (client-generated, stable on retry)
 - Idempotency key (can be same as operation_id)
 - Dependency list (operation_ids that must complete first)
 - Created timestamp
 - Retry count
 - Last error
 
+Main desktop queue storage remains JSON/JSONL under app user-data (`sync-queue.json`, failed queue, operation journal) — not SQLite.
+
 ## Online-Only Handling
 
 For online_only operations when offline:
-- The domain function returns { success: false, error: 'This operation requires an internet connection', onlineOnly: true }
-- Any calling UI should show a clear "Operation requires internet" message
-- The operation must NOT be added to the offline queue
+- Domain throws `Error` with message containing `requires an internet connection` and `err.onlineOnly = true`, **or** returns `{ success: false, onlineOnly: true, error: '...' }` where the call site is result-shaped
+- UI must show a clear "Operation requires internet" message
+- The operation must **NOT** be added to the offline queue
+- Never replace a timeout with a new idempotency key
 
 ## Verification
 
-Each mutation in this matrix must have a test in an enterprise test file that:
-- For online_only: proves the domain function rejects the operation when state.isOnline = false
-- For queueable: proves the function calls queueOperation with correct RPC name and payload structure
+Each mutation in this matrix must have coverage that:
+- For online_only: proves the domain source rejects when offline / does not call `queueOperation` for that mutation
+- For queueable: proves the function calls `queueOperation` with correct RPC name and stable key structure
+
+Focused suite: `tests/hotel-offline-entitlement-safety.test.mjs` + `tests/enterprise-offline-contract.test.mjs`.

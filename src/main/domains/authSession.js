@@ -29,6 +29,10 @@ import {
   removeSecureJson,
   writeSecureJson
 } from './secureLocalStore.js';
+import {
+  getRuntimeProductId,
+  isProductCompatiblePropertyType
+} from '../../shared/productIdentity.js';
 
 function authTrace(label, payload = {}) {
   if (process.env.BOROKO_AUTH_TRACE !== '1') return;
@@ -37,6 +41,32 @@ function authTrace(label, payload = {}) {
   } catch {
     // Best-effort debug logging only.
   }
+}
+
+/**
+ * Fail closed when the active profile's cached property type does not match
+ * the running product binary (restaurant.exe must not operate hotel data).
+ * Missing settings are allowed so first-run / draft setup is not blocked.
+ */
+function assertCachedSettingsMatchCurrentProduct() {
+  const settings = readCache('settings')?.[0] || null;
+  if (!settings) return true;
+  const propertyType = settings.property_type || settings.business_type;
+  if (!propertyType) return true;
+  const productId = getRuntimeProductId();
+  if (isProductCompatiblePropertyType(productId, propertyType)) return true;
+  console.warn('[AUTH] product_profile_mismatch on session restore', {
+    productId,
+    propertyType
+  });
+  return false;
+}
+
+function clearSessionForProductMismatch() {
+  state.replayAuthReady = false;
+  state.currentUser = null;
+  clearBackendSession();
+  clearSessionNonce();
 }
 
 function isPosFullAccessRole(role) {
@@ -53,6 +83,12 @@ function ensureActiveSessionUser(user) {
 
 const CURRENT_SESSION_NONCE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const TRUSTED_SESSION_MAX_AGE_MS = 60 * 24 * 60 * 60 * 1000; // password-unlocked offline sessions
+const MASTER_ADMIN_SESSION_MAX_AGE_MS = 4 * 60 * 60 * 1000;
+
+function getStoredSessionMaxAgeMs(record, { trustedUnlock = false } = {}) {
+  if (record?.isMasterAdmin) return MASTER_ADMIN_SESSION_MAX_AGE_MS;
+  return trustedUnlock ? TRUSTED_SESSION_MAX_AGE_MS : CURRENT_SESSION_NONCE_MAX_AGE_MS;
+}
 
 function getSessionNoncePath() {
   return path.join(state.cacheDir, 'session-nonce.json');
@@ -78,6 +114,7 @@ function writeTrustedSessions(sessions) {
 export function pruneExpiredTrustedSessions(sessions = readTrustedSessions()) {
   const now = Date.now();
   const active = sessions.filter((session) => {
+    if (session?.isMasterAdmin) return false;
     const createdAt = new Date(session?.createdAt || 0).getTime();
     return Number.isFinite(createdAt) && now - createdAt <= TRUSTED_SESSION_MAX_AGE_MS;
   });
@@ -132,7 +169,7 @@ function buildTrustedSessionRecord(user, nonce, password = '') {
     ...record,
     nonce,
     createdAt: new Date().toISOString(),
-    offline_password_hash: password ? bcrypt.hashSync(password, 10) : null
+    offline_password_hash: password && !record.isMasterAdmin ? bcrypt.hashSync(password, 10) : null
   };
 }
 
@@ -143,6 +180,7 @@ export function writeSessionNonce(user, nonce, password = '') {
   const sessions = pruneExpiredTrustedSessions();
   const normalizedRecord = normalizeTrustedSessionRecord(record);
   if (!normalizedRecord?.id && !normalizedRecord?.email) return;
+  if (normalizedRecord.isMasterAdmin) return;
   const existing = sessions.find((session) => {
     const normalized = normalizeTrustedSessionRecord(session);
     return normalized && (
@@ -195,10 +233,11 @@ export function getCurrentUser() {
 }
 
 export function logoutCurrentUser({ forgetTrustedSession = false } = {}) {
+  const wasMasterAdmin = Boolean(state.currentUser?.isMasterAdmin);
   state.currentUser = null;
   state.replayAuthReady = false;
   clearBackendSession();
-  if (forgetTrustedSession) clearSessionNonce();
+  if (forgetTrustedSession || wasMasterAdmin) clearSessionNonce();
 
   // Shut down local P2P Mesh operations
   import('./mesh/meshLifecycle.js').then((module) => {
@@ -214,9 +253,6 @@ export function restoreCurrentTrustedSession() {
 }
 
 export function restoreUserSession(nonce, options = {}) {
-  const maxAgeMs = options?.trustedUnlock === true
-    ? TRUSTED_SESSION_MAX_AGE_MS
-    : CURRENT_SESSION_NONCE_MAX_AGE_MS;
   authTrace('restoreSession start', { hasNonce: !!nonce, nonceLength: typeof nonce === 'string' ? nonce.length : null });
   console.log('[AUTH] restoreSession requested');
   if (!nonce) {
@@ -235,6 +271,8 @@ export function restoreUserSession(nonce, options = {}) {
     filter(Boolean).
     find((session) => session.nonce === nonce && (!session.lodge_id || session.lodge_id === normalizeLodgeId(state.lodgeId)));
   }
+
+  const maxAgeMs = getStoredSessionMaxAgeMs(stored, options);
   if (!stored || stored.nonce !== nonce) {
     console.warn('[AUTH] restoreSession REJECTED: invalid or missing session nonce');
     state.currentUser = null;
@@ -270,6 +308,12 @@ export function restoreUserSession(nonce, options = {}) {
     });
     authTrace('restoreSession result', { restored: true, userId: safeUser.id, role: safeUser.role, isMasterAdmin: true });
     return safeUser;
+  }
+
+  if (!assertCachedSettingsMatchCurrentProduct()) {
+    clearSessionForProductMismatch();
+    authTrace('restoreSession result', { restored: false, reason: 'product_profile_mismatch' });
+    return null;
   }
 
   if (stored.email && stored.role) {
@@ -421,6 +465,13 @@ export async function validateCurrentSession() {
     console.warn('[AUTH] Session validation failed: missing user');
     return null;
   }
+
+  if (!assertCachedSettingsMatchCurrentProduct()) {
+    clearSessionForProductMismatch();
+    authTrace('validateCurrentSession result', { valid: false, reason: 'product_profile_mismatch' });
+    return null;
+  }
+
   if (!session?.token) {
     authTrace('validateCurrentSession skipped', {
       reason: 'missing_backend_token',

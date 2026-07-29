@@ -42,7 +42,7 @@ export async function signOutSupabaseAuth() {
   try {
     await supabase.auth.signOut()
   } catch {
-    // Local Boroko app-session cleanup still handles the logout.
+    // Local Tsa Bonno app-session cleanup still handles the logout.
   }
 }
 

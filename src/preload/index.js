@@ -10,7 +10,7 @@ const onIpc = (channel, cb) => {
 
 const api = {
   auth: {
-    login:          (email, password) => ipcRenderer.invoke('auth:login', email, password),
+    login:          (email, password, selectedLodgeId = null) => ipcRenderer.invoke('auth:login', email, password, selectedLodgeId),
     getStatus:      (email)           => ipcRenderer.invoke('auth:status', email),
     healthCheck:    (email)           => ipcRenderer.invoke('auth:healthCheck', email),
     sendPasswordReset: (email)         => ipcRenderer.invoke('auth:sendPasswordReset', email),
@@ -34,9 +34,49 @@ const api = {
     getAll: () => ipcRenderer.invoke('users:getAll'),
     create: (data) => ipcRenderer.invoke('users:create', data),
     update: (id, data) => ipcRenderer.invoke('users:update', id, data),
+    getAccessAudit: () => ipcRenderer.invoke('users:getAccessAudit'),
     resetPassword: (id, password) => ipcRenderer.invoke('users:resetPassword', id, password),
     sendInvite: (id) => ipcRenderer.invoke('users:sendInvite', id),
     delete: (id) => ipcRenderer.invoke('users:delete', id)
+  },
+  staffScheduling: {
+    getSchedule: (date) => ipcRenderer.invoke('staffScheduling:getSchedule', date),
+    getScheduleRange: (startDate, endDate) => ipcRenderer.invoke('staffScheduling:getScheduleRange', startDate, endDate),
+    upsertSchedule: (staffId, scheduleDate, shiftLabel, startTime, endTime, roleAtShift, notes) => ipcRenderer.invoke('staffScheduling:upsertSchedule', staffId, scheduleDate, shiftLabel, startTime, endTime, roleAtShift, notes),
+    deleteEntry: (id) => ipcRenderer.invoke('staffScheduling:deleteEntry', id),
+    getAttendanceToday: () => ipcRenderer.invoke('staffScheduling:getAttendanceToday'),
+    getAttendanceRange: (startDate, endDate, staffId) => ipcRenderer.invoke('staffScheduling:getAttendanceRange', startDate, endDate, staffId),
+    getAttendanceDashboard: () => ipcRenderer.invoke('staffScheduling:getAttendanceDashboard'),
+    clockIn: (staffId, shiftLabel, notes) => ipcRenderer.invoke('staffScheduling:clockIn', staffId, shiftLabel, notes),
+    clockOut: (attendanceId, notes) => ipcRenderer.invoke('staffScheduling:clockOut', attendanceId, notes),
+    getLeaveRequests: (status, staffId) => ipcRenderer.invoke('staffScheduling:getLeaveRequests', status, staffId),
+    requestLeave: (staffId, leaveType, startDate, endDate, reason) => ipcRenderer.invoke('staffScheduling:requestLeave', staffId, leaveType, startDate, endDate, reason),
+    approveLeave: (id, status, rejectionReason) => ipcRenderer.invoke('staffScheduling:approveLeave', id, status, rejectionReason)
+  },
+  staffOperations: {
+    getStaffDepartments:        ()                                    => ipcRenderer.invoke('staffOperations:getStaffDepartments'),
+    createStaffDepartment:      (name, description, color)            => ipcRenderer.invoke('staffOperations:createStaffDepartment', name, description, color),
+    updateStaffDepartment:      (id, payload)                        => ipcRenderer.invoke('staffOperations:updateStaffDepartment', id, payload),
+    deleteStaffDepartment:      (id)                                 => ipcRenderer.invoke('staffOperations:deleteStaffDepartment', id),
+    getShiftTemplates:          (departmentId)                        => ipcRenderer.invoke('staffOperations:getShiftTemplates', departmentId),
+    createShiftTemplate:        (payload)                            => ipcRenderer.invoke('staffOperations:createShiftTemplate', payload),
+    updateShiftTemplate:        (id, payload)                        => ipcRenderer.invoke('staffOperations:updateShiftTemplate', id, payload),
+    deleteShiftTemplate:        (id)                                 => ipcRenderer.invoke('staffOperations:deleteShiftTemplate', id),
+    getTaskCategories:          ()                                    => ipcRenderer.invoke('staffOperations:getTaskCategories'),
+    createTaskCategory:         (name, color)                        => ipcRenderer.invoke('staffOperations:createTaskCategory', name, color),
+    getTaskAssignments:         (staffId, status, date)               => ipcRenderer.invoke('staffOperations:getTaskAssignments', staffId, status, date),
+    createTaskAssignment:       (payload)                            => ipcRenderer.invoke('staffOperations:createTaskAssignment', payload),
+    updateTaskAssignment:       (id, payload)                        => ipcRenderer.invoke('staffOperations:updateTaskAssignment', id, payload),
+    completeTaskAssignment:     (id, notes)                          => ipcRenderer.invoke('staffOperations:completeTaskAssignment', id, notes),
+    getTrainingChecklists:      (departmentId)                        => ipcRenderer.invoke('staffOperations:getTrainingChecklists', departmentId),
+    createTrainingChecklist:    (payload)                            => ipcRenderer.invoke('staffOperations:createTrainingChecklist', payload),
+    recordTrainingCompletion:   (staffId, checklistId, notes)        => ipcRenderer.invoke('staffOperations:recordTrainingCompletion', staffId, checklistId, notes),
+    getTrainingRecords:         (staffId)                             => ipcRenderer.invoke('staffOperations:getTrainingRecords', staffId),
+    createShiftHandover:        (payload)                            => ipcRenderer.invoke('staffOperations:createShiftHandover', payload),
+    getShiftHandovers:          (date)                                => ipcRenderer.invoke('staffOperations:getShiftHandovers', date),
+    getStaffProductivityDashboard: (startDate, endDate)              => ipcRenderer.invoke('staffOperations:getStaffProductivityDashboard', startDate, endDate),
+    publishWeeklySchedule:      (weekStart)                          => ipcRenderer.invoke('staffOperations:publishWeeklySchedule', weekStart),
+    getScheduleConflicts:       (weekStart)                           => ipcRenderer.invoke('staffOperations:getScheduleConflicts', weekStart)
   },
   rooms: {
     getAll: () => ipcRenderer.invoke('rooms:getAll'),
@@ -283,6 +323,7 @@ const api = {
     deleteMenuItem: (id) => ipcRenderer.invoke('pos:deleteMenuItem', id),
     setBarPackTemplate: (data) => ipcRenderer.invoke('pos:setBarPackTemplate', data),
     getOrders: (start, end) => ipcRenderer.invoke('pos:getOrders', start, end),
+    getMyOrders: (start, end) => ipcRenderer.invoke('pos:getMyOrders', start, end),
     getVoidHistory: (start, end) => ipcRenderer.invoke('pos:getVoidHistory', start, end),
     exportHistoryExcel: (filters) => ipcRenderer.invoke('pos:exportHistoryExcel', filters),
     exportHistoryPdf: (filters) => ipcRenderer.invoke('pos:exportHistoryPdf', filters),
@@ -294,7 +335,12 @@ const api = {
     getCashupSummary: (filters) => ipcRenderer.invoke('pos:getCashupSummary', filters),
     getCashups: (limit, filters) => ipcRenderer.invoke('pos:getCashups', limit, filters),
     createCashup: (data) => ipcRenderer.invoke('pos:createCashup', data),
-    getTabs: () => ipcRenderer.invoke('pos:getTabs'),
+    submitCashup: (data) => ipcRenderer.invoke('pos:submitCashup', data),
+    submitCashupWithAttendancePin: (data) => ipcRenderer.invoke('pos:submitCashupWithAttendancePin', data),
+    getMyCashupSubmission: (shiftId) => ipcRenderer.invoke('pos:getMyCashupSubmission', shiftId),
+    getPendingCashupSubmissions: () => ipcRenderer.invoke('pos:getPendingCashupSubmissions'),
+    reviewCashupSubmission: (data) => ipcRenderer.invoke('pos:reviewCashupSubmission', data),
+    getTabs: (filters) => ipcRenderer.invoke('pos:getTabs', filters),
     saveTab: (data) => ipcRenderer.invoke('pos:saveTab', data),
     closeTab: (id) => ipcRenderer.invoke('pos:closeTab', id),
     updateTabStatus: (id, status) => ipcRenderer.invoke('pos:updateTabStatus', id, status),
@@ -313,6 +359,12 @@ const api = {
     getTickets: (filters) => ipcRenderer.invoke('pos:getTickets', filters),
     updateTicketStatus: (id, status) => ipcRenderer.invoke('pos:updateTicketStatus', id, status),
     getCurrentShift: (outletId, cashierId) => ipcRenderer.invoke('pos:getCurrentShift', outletId, cashierId),
+    getStaffOpenShift: (staffId) => ipcRenderer.invoke('pos:getStaffOpenShift', staffId),
+    getStaffCashupSubmission: (shiftId) => ipcRenderer.invoke('pos:getStaffCashupSubmission', shiftId),
+    activateSharedTillOperator: (data) => ipcRenderer.invoke('pos:activateSharedTillOperator', data),
+    getSharedTillHistory: (start, end, options) => ipcRenderer.invoke('pos:getSharedTillHistory', start, end, options),
+    lockSharedTillOperator: () => ipcRenderer.invoke('pos:lockSharedTillOperator'),
+    linkMyShiftAttendance: (data) => ipcRenderer.invoke('pos:linkMyShiftAttendance', data),
     openShift: (data) => ipcRenderer.invoke('pos:openShift', data),
     closeShift: (data) => ipcRenderer.invoke('pos:closeShift', data),
     getHardwareSettings: () => ipcRenderer.invoke('pos:getHardwareSettings'),
@@ -346,16 +398,26 @@ const api = {
     redeemVoucher: (code, amount) => ipcRenderer.invoke('pos:redeemVoucher', code, amount),
     recordDelivery: (data) => ipcRenderer.invoke('pos:recordDelivery', data),
     clockInStaff: (data) => ipcRenderer.invoke('pos:clockInStaff', data),
+    clockInSelfForPos: (data) => ipcRenderer.invoke('pos:clockInSelfForPos', data),
+    clockInStaffWithAttendancePin: (data) => ipcRenderer.invoke('pos:clockInStaffWithAttendancePin', data),
     clockOutStaff: (data) => ipcRenderer.invoke('pos:clockOutStaff', data),
+    clockOutStaffWithAttendancePin: (data) => ipcRenderer.invoke('pos:clockOutStaffWithAttendancePin', data),
     getActiveShifts: () => ipcRenderer.invoke('pos:getActiveShifts'),
+    getRestaurantShiftPlans: (startDate, endDate) => ipcRenderer.invoke('pos:getRestaurantShiftPlans', startDate, endDate),
+    saveRestaurantShiftPlan: (data) => ipcRenderer.invoke('pos:saveRestaurantShiftPlan', data),
+    deleteRestaurantShiftPlan: (id) => ipcRenderer.invoke('pos:deleteRestaurantShiftPlan', id),
     openCashDrawerSession: (data) => ipcRenderer.invoke('pos:openCashDrawerSession', data),
     closeCashDrawerSession: (data) => ipcRenderer.invoke('pos:closeCashDrawerSession', data),
     getOpenCashDrawer: () => ipcRenderer.invoke('pos:getOpenCashDrawer'),
     getSuppliers: () => ipcRenderer.invoke('pos:getSuppliers'),
     createSupplier: (data) => ipcRenderer.invoke('pos:createSupplier', data),
+    updateSupplier: (supplierId, data) => ipcRenderer.invoke('pos:updateSupplier', supplierId, data),
     createPurchaseOrder: (data) => ipcRenderer.invoke('pos:createPurchaseOrder', data),
+    updatePurchaseOrderDraft: (orderId, data) => ipcRenderer.invoke('pos:updatePurchaseOrderDraft', orderId, data),
+    savePurchaseOrderPdf: (orderId) => ipcRenderer.invoke('pos:savePurchaseOrderPdf', orderId),
+    sendPurchaseOrderEmail: (orderId) => ipcRenderer.invoke('pos:sendPurchaseOrderEmail', orderId),
     approvePurchaseOrder: (orderId) => ipcRenderer.invoke('pos:approvePurchaseOrder', orderId),
-    receivePurchaseOrder: (orderId) => ipcRenderer.invoke('pos:receivePurchaseOrder', orderId),
+    receivePurchaseOrder: (orderId, stockLocationId) => ipcRenderer.invoke('pos:receivePurchaseOrder', orderId, stockLocationId),
     createStockTransfer: (data) => ipcRenderer.invoke('pos:createStockTransfer', data),
     createChecklist: (data) => ipcRenderer.invoke('pos:createChecklist', data),
     completeChecklistItem: (data) => ipcRenderer.invoke('pos:completeChecklistItem', data),
@@ -363,6 +425,7 @@ const api = {
     recordAlert: (data) => ipcRenderer.invoke('pos:recordAlert', data),
     resolveAlert: (alertId) => ipcRenderer.invoke('pos:resolveAlert', alertId),
     getPurchaseOrders: (startDate, endDate) => ipcRenderer.invoke('pos:getPurchaseOrders', startDate, endDate),
+    getPurchasingSnapshot: () => ipcRenderer.invoke('pos:getPurchasingSnapshot').then((payload) => JSON.parse(payload)),
     getShiftHistory: (startDate, endDate) => ipcRenderer.invoke('pos:getShiftHistory', startDate, endDate),
     getCashDrawerSessions: (startDate, endDate) => ipcRenderer.invoke('pos:getCashDrawerSessions', startDate, endDate),
     getChecklists: () => ipcRenderer.invoke('pos:getChecklists'),
@@ -375,15 +438,20 @@ const api = {
     cancelRestaurantReservation: (id, reason) => ipcRenderer.invoke('pos:cancelRestaurantReservation', id, reason),
     seatRestaurantReservation: (id, tableId) => ipcRenderer.invoke('pos:seatRestaurantReservation', id, tableId),
     markRestaurantReservationNoShow: (id, reason) => ipcRenderer.invoke('pos:markRestaurantReservationNoShow', id, reason),
-    getRestaurantWaitlist: (outletId) => ipcRenderer.invoke('pos:getRestaurantWaitlist', outletId),
+    getRestaurantWaitlist: (outletId, includeReservationWaitlist) => ipcRenderer.invoke('pos:getRestaurantWaitlist', outletId, includeReservationWaitlist),
     createRestaurantWaitlistEntry: (data) => ipcRenderer.invoke('pos:createRestaurantWaitlistEntry', data),
+    updateRestaurantWaitlistEntry: (id, data) => ipcRenderer.invoke('pos:updateRestaurantWaitlistEntry', id, data),
+    removeRestaurantWaitlistEntry: (id, reason) => ipcRenderer.invoke('pos:removeRestaurantWaitlistEntry', id, reason),
     seatRestaurantWaitlistEntry: (id, tableId) => ipcRenderer.invoke('pos:seatRestaurantWaitlistEntry', id, tableId),
+    serviceRestaurantReservationAction: (id, action, tableIds) => ipcRenderer.invoke('pos:serviceRestaurantReservationAction', id, action, tableIds),
     // Phase 6.2 Combos
     getRestaurantCombos: (outletId) => ipcRenderer.invoke('pos:getRestaurantCombos', outletId),
     saveRestaurantCombo: (data) => ipcRenderer.invoke('pos:saveRestaurantCombo', data),
     deleteRestaurantCombo: (comboId) => ipcRenderer.invoke('pos:deleteRestaurantCombo', comboId),
     // Phase 6.3 Recipe Variance
     getRecipeVarianceReport: (startDate, endDate, outletId) => ipcRenderer.invoke('pos:getRecipeVarianceReport', startDate, endDate, outletId),
+    getRecipePreparationLosses: (startDate, endDate, outletId) => ipcRenderer.invoke('pos:getRecipePreparationLosses', startDate, endDate, outletId),
+    getRecipePreparationLossIngredientSummary: (startDate, endDate, outletId) => ipcRenderer.invoke('pos:getRecipePreparationLossIngredientSummary', startDate, endDate, outletId),
     // Phase 6.5 Prep Batches
     getRestaurantPrepItems: () => ipcRenderer.invoke('pos:getRestaurantPrepItems'),
     saveRestaurantPrepItem: (data) => ipcRenderer.invoke('pos:saveRestaurantPrepItem', data),
@@ -395,15 +463,35 @@ const api = {
     getKitchenTimingReport: (startDate, endDate, outletId, station) => ipcRenderer.invoke('pos:getKitchenTimingReport', startDate, endDate, outletId, station),
     // Phase 6.7 Purchase Suggestions
     getLowStockPurchaseSuggestions: (outletId) => ipcRenderer.invoke('pos:getLowStockPurchaseSuggestions', outletId),
+    setPreferredSupplierForInventoryItem: (inventoryItemId, supplierId, lastUnitCost) => ipcRenderer.invoke('pos:setPreferredSupplierForInventoryItem', inventoryItemId, supplierId, lastUnitCost),
     convertPurchaseSuggestionsToPo: (supplierId, suggestions, notes) => ipcRenderer.invoke('pos:convertPurchaseSuggestionsToPo', supplierId, suggestions, notes),
     recordSettlement: (data) => ipcRenderer.invoke('pos:recordSettlement', data),
     getSettlements: (businessDate) => ipcRenderer.invoke('pos:getSettlements', businessDate),
+    getSettlementExpectedTotal: (startDate, endDate, channel) => ipcRenderer.invoke('pos:getSettlementExpectedTotal', startDate, endDate, channel),
     recordReservationDeposit: (data) => ipcRenderer.invoke('pos:recordReservationDeposit', data),
-    recordFeedback: (data) => ipcRenderer.invoke('pos:recordFeedback', data)
+    getReservationDeposits: (days) => ipcRenderer.invoke('pos:getReservationDeposits', days),
+    getRestaurantOutletControls: () => ipcRenderer.invoke('pos:getRestaurantOutletControls'),
+    getRestaurantStockLocations: () => ipcRenderer.invoke('pos:getRestaurantStockLocations'),
+    getRestaurantStockLocationBalances: () => ipcRenderer.invoke('pos:getRestaurantStockLocationBalances'),
+    createRestaurantStockLocation: (data) => ipcRenderer.invoke('pos:createRestaurantStockLocation', data),
+    updateRestaurantStockLocation: (locationId, data) => ipcRenderer.invoke('pos:updateRestaurantStockLocation', locationId, data),
+    deleteRestaurantStockLocation: (locationId) => ipcRenderer.invoke('pos:deleteRestaurantStockLocation', locationId),
+    setRestaurantOutletStockLocation: (outletId, stockLocationId) => ipcRenderer.invoke('pos:setRestaurantOutletStockLocation', outletId, stockLocationId),
+    createRestaurantOutlet: (data) => ipcRenderer.invoke('pos:createRestaurantOutlet', data),
+    updateRestaurantOutlet: (outletId, data) => ipcRenderer.invoke('pos:updateRestaurantOutlet', outletId, data),
+    recordFeedback: (data) => ipcRenderer.invoke('pos:recordFeedback', data),
+    submitStaffFeedback: (data) => ipcRenderer.invoke('pos:submitStaffFeedback', data),
+    getFeedback: (days) => ipcRenderer.invoke('pos:getFeedback', days),
+    getSetupProgress: () => ipcRenderer.invoke('pos:getSetupProgress'),
+    setSetupStage: (data) => ipcRenderer.invoke('pos:setSetupStage', data)
     ,createGiftCard: (data) => ipcRenderer.invoke('pos:createGiftCard', data)
     ,recordTipPayout: (data) => ipcRenderer.invoke('pos:recordTipPayout', data)
+    ,getTipPayouts: (days) => ipcRenderer.invoke('pos:getTipPayouts', days)
+    ,getTipBalances: (days) => ipcRenderer.invoke('pos:getTipBalances', days)
     ,saveReservationPolicy: (data) => ipcRenderer.invoke('pos:saveReservationPolicy', data)
     ,recordInventoryLot: (data) => ipcRenderer.invoke('pos:recordInventoryLot', data)
+    ,updateInventoryLotExpiry: (lotId, data) => ipcRenderer.invoke('pos:updateInventoryLotExpiry', lotId, data)
+    ,writeOffExpiredInventoryLot: (lotId, data) => ipcRenderer.invoke('pos:writeOffExpiredInventoryLot', lotId, data)
     ,getExpiryLots: (days) => ipcRenderer.invoke('pos:getExpiryLots', days)
   },
   inventory: {
@@ -417,6 +505,7 @@ const api = {
     getMovements: (filters) => ipcRenderer.invoke('inventory:getMovements', filters),
     getLowStock: () => ipcRenderer.invoke('inventory:getLowStock'),
     getStocktakes: (limit) => ipcRenderer.invoke('inventory:getStocktakes', limit),
+    getRestaurantStockSnapshot: (movementDate) => ipcRenderer.invoke('inventory:getRestaurantStockSnapshot', movementDate).then((payload) => JSON.parse(payload)),
     createStocktake: (data) => ipcRenderer.invoke('inventory:createStocktake', data),
     getStocktake: (stocktakeId) => ipcRenderer.invoke('inventory:getStocktake', stocktakeId),
     saveStocktakeCounts: (stocktakeId, lines) => ipcRenderer.invoke('inventory:saveStocktakeCounts', stocktakeId, lines),
@@ -455,12 +544,15 @@ const api = {
     addRoomStocktakeLine: (stocktakeId, data) => ipcRenderer.invoke('supplies:addRoomStocktakeLine', stocktakeId, data)
   },
   admin: {
+    getCommandCentralReauthStatus: () => ipcRenderer.invoke('admin:getCommandCentralReauthStatus'),
+    reauthenticateCommandCentral: (password) => ipcRenderer.invoke('admin:reauthenticateCommandCentral', password),
     exists: () => ipcRenderer.invoke('admin:exists'),
     setup: (name, email, password) => ipcRenderer.invoke('admin:setup', name, email, password),
     getCompanies: () => ipcRenderer.invoke('admin:getCompanies'),
     getLicenses: () => ipcRenderer.invoke('admin:getLicenses'),
     createLicense: (data) => ipcRenderer.invoke('admin:createLicense', data),
     issueSubscriptionContract: (payload) => ipcRenderer.invoke('admin:issueSubscriptionContract', payload),
+    assignCommercialSubscription: (payload) => ipcRenderer.invoke('admin:assignCommercialSubscription', payload),
     updateLicense: (id, updates) => ipcRenderer.invoke('admin:updateLicense', id, updates),
     deleteLicense: (id) => ipcRenderer.invoke('admin:deleteLicense', id),
     // Broadcasts
@@ -508,6 +600,7 @@ const api = {
     // Lifecycle
     archiveCompany: (lodgeId) => ipcRenderer.invoke('admin:archiveCompany', lodgeId),
     restoreCompany: (lodgeId) => ipcRenderer.invoke('admin:restoreCompany', lodgeId),
+    applyCompanyLifecycle: (payload) => ipcRenderer.invoke('admin:applyCompanyLifecycle', payload),
     permanentlyDeleteCompany: (lodgeId) => ipcRenderer.invoke('admin:permanentlyDeleteCompany', lodgeId),
     repairDuplicateEventBookings: (lodgeId) => ipcRenderer.invoke('admin:repairDuplicateEventBookings', lodgeId),
     // Expenses
@@ -528,6 +621,8 @@ const api = {
     cleanupNotifications: (days) => ipcRenderer.invoke('admin:cleanupNotifications', days),
     getFleetHealthRollup: () => ipcRenderer.invoke('admin:getFleetHealthRollup'),
     getFleetHealthSummary: () => ipcRenderer.invoke('admin:getFleetHealthSummary'),
+    recordCommandCentralHealthRun: (payload) => ipcRenderer.invoke('admin:recordCommandCentralHealthRun', payload),
+    listCommandCentralHealthRuns: (limit) => ipcRenderer.invoke('admin:listCommandCentralHealthRuns', limit),
     getScheduledReleases: () => ipcRenderer.invoke('admin:getScheduledReleases'),
     expireOverdueFeatures: () => ipcRenderer.invoke('admin:expireOverdueFeatures'),
     // Notification Automation
@@ -544,6 +639,10 @@ const api = {
     getLodgeFinancialSummary: () => ipcRenderer.invoke('admin:getLodgeFinancialSummary'),
     getCollectionsQueue: () => ipcRenderer.invoke('admin:getCollectionsQueue'),
     getRevenueByMethod: (days) => ipcRenderer.invoke('admin:getRevenueByMethod', days),
+    generateCommercialInvoice: (payload) => ipcRenderer.invoke('admin:generateCommercialInvoice', payload),
+    recordCommercialPayment: (payload) => ipcRenderer.invoke('admin:recordCommercialPayment', payload),
+    getCommercialInvoices: (filters) => ipcRenderer.invoke('admin:getCommercialInvoices', filters),
+    getCommercialBillingSummary: () => ipcRenderer.invoke('admin:getCommercialBillingSummary'),
     // Task Center
     getAdminToday: () => ipcRenderer.invoke('admin:getAdminToday'),
     // Global Search
@@ -559,7 +658,7 @@ const api = {
     createRelease: (release) => ipcRenderer.invoke('admin:createRelease', release),
     updateRelease: (version, updates) => ipcRenderer.invoke('admin:updateRelease', version, updates),
     checkUpdateAvailability: (currentVersion, deviceId) => ipcRenderer.invoke('admin:checkUpdateAvailability', currentVersion, deviceId),
-    getReleases: () => ipcRenderer.invoke('admin:getReleases'),
+    getReleases: (productId) => ipcRenderer.invoke('admin:getReleases', productId),
     getSurfaceIntelligence: () => ipcRenderer.invoke('admin:getSurfaceIntelligence')
   },
   conference: {
@@ -579,7 +678,37 @@ const api = {
     addLineItem: (data) => ipcRenderer.invoke('events:addLineItem', data),
     voidLineItem: (lineItemId, reason) => ipcRenderer.invoke('events:voidLineItem', lineItemId, reason),
     updatePayment: (id, amount, method, type, intentKey) => ipcRenderer.invoke('events:updatePayment', id, amount, method, type, intentKey),
-    checkAvailability: (resourceKey, startAt, endAt, excludeEventId) => ipcRenderer.invoke('events:checkAvailability', resourceKey, startAt, endAt, excludeEventId)
+    checkAvailability: (resourceKey, startAt, endAt, excludeEventId) => ipcRenderer.invoke('events:checkAvailability', resourceKey, startAt, endAt, excludeEventId),
+    getVenuePackages: (category, activeOnly) => ipcRenderer.invoke('events:getVenuePackages', category, activeOnly),
+    createVenuePackage: (data) => ipcRenderer.invoke('events:createVenuePackage', data),
+    updateVenuePackage: (id, data) => ipcRenderer.invoke('events:updateVenuePackage', id, data),
+    deleteVenuePackage: (id) => ipcRenderer.invoke('events:deleteVenuePackage', id),
+    applyPackage: (packageId, eventBookingId, quantity, intentKey) => ipcRenderer.invoke('events:applyPackage', packageId, eventBookingId, quantity, intentKey)
+  },
+  venueManagement: {
+    getEventLeads:                 (status)                                           => ipcRenderer.invoke('venueManagement:getEventLeads', status),
+    createEventLead:               (data)                                             => ipcRenderer.invoke('venueManagement:createEventLead', data),
+    updateEventLead:               (id, data)                                         => ipcRenderer.invoke('venueManagement:updateEventLead', id, data),
+    convertLeadToBooking:          (leadId)                                           => ipcRenderer.invoke('venueManagement:convertLeadToBooking', leadId),
+    getVenueAvailabilityRules:     (resourceKey)                                      => ipcRenderer.invoke('venueManagement:getVenueAvailabilityRules', resourceKey),
+    upsertVenueAvailabilityRule:    (data)                                             => ipcRenderer.invoke('venueManagement:upsertVenueAvailabilityRule', data),
+    getVenueAvailabilityCalendar:   (resourceKey, startDate, endDate)                  => ipcRenderer.invoke('venueManagement:getVenueAvailabilityCalendar', resourceKey, startDate, endDate),
+    getRunSheet:                   (eventBookingId)                                   => ipcRenderer.invoke('venueManagement:getRunSheet', eventBookingId),
+    createRunSheet:                (data)                                             => ipcRenderer.invoke('venueManagement:createRunSheet', data),
+    updateRunSheet:                (id, data)                                         => ipcRenderer.invoke('venueManagement:updateRunSheet', id, data),
+    finalizeRunSheet:              (id)                                               => ipcRenderer.invoke('venueManagement:finalizeRunSheet', id),
+    executeRunSheet:               (id)                                               => ipcRenderer.invoke('venueManagement:executeRunSheet', id),
+    getEventSuppliers:             (eventBookingId)                                   => ipcRenderer.invoke('venueManagement:getEventSuppliers', eventBookingId),
+    createSupplierEntry:           (data)                                             => ipcRenderer.invoke('venueManagement:createSupplierEntry', data),
+    updateSupplierEntry:           (id, data)                                         => ipcRenderer.invoke('venueManagement:updateSupplierEntry', id, data),
+    updateSupplierStatus:          (id, status, actualAmount)                         => ipcRenderer.invoke('venueManagement:updateSupplierStatus', id, status, actualAmount),
+    getDepositMilestones:          (eventBookingId)                                   => ipcRenderer.invoke('venueManagement:getDepositMilestones', eventBookingId),
+    createDepositMilestone:        (data)                                             => ipcRenderer.invoke('venueManagement:createDepositMilestone', data),
+    markMilestonePaid:             (id, paidDate, method, reference)                  => ipcRenderer.invoke('venueManagement:markMilestonePaid', id, paidDate, method, reference),
+    waiveMilestone:                (id, reason)                                       => ipcRenderer.invoke('venueManagement:waiveMilestone', id, reason),
+    settleEvent:                   (eventBookingId, idempotencyKey, adjustmentAmount, adjustmentType, adjustmentReason, notes) => ipcRenderer.invoke('venueManagement:settleEvent', eventBookingId, idempotencyKey, adjustmentAmount, adjustmentType, adjustmentReason, notes),
+    getEventProfitability:         (eventBookingId)                                   => ipcRenderer.invoke('venueManagement:getEventProfitability', eventBookingId),
+    getVenueProfitabilityReport:   (startDate, endDate)                               => ipcRenderer.invoke('venueManagement:getVenueProfitabilityReport', startDate, endDate)
   },
   ai: {
     turn: (payload) => ipcRenderer.invoke('ai:turn', payload),
@@ -657,7 +786,11 @@ const api = {
     getDepartures:    () => ipcRenderer.invoke('hotel:getDepartures'),
     getInHouse:       () => ipcRenderer.invoke('hotel:getInHouse'),
     getNoShows:       () => ipcRenderer.invoke('hotel:getNoShows'),
-    getKpis:          (days) => ipcRenderer.invoke('hotel:getKpis', days)
+    getKpis:          (days) => ipcRenderer.invoke('hotel:getKpis', days),
+    getApplicableRoomRate: (roomId, date, corporateAccountId) =>
+      ipcRenderer.invoke('hotel:getApplicableRoomRate', roomId, date, corporateAccountId),
+    quoteRoomStay: (roomId, checkIn, checkOut, corporateAccountId) =>
+      ipcRenderer.invoke('hotel:quoteRoomStay', roomId, checkIn, checkOut, corporateAccountId)
   },
   roomTypes: {
     getAll:  ()                    => ipcRenderer.invoke('roomTypes:getAll'),
@@ -685,15 +818,15 @@ const api = {
   folioLedger: {
     getFolios:      (bookingId)                    => ipcRenderer.invoke('folioLedger:getFolios', bookingId),
     getLineItems:   (folioId)                      => ipcRenderer.invoke('folioLedger:getLineItems', folioId),
-    createFolio:    (bookingId, guestId, type, label) => ipcRenderer.invoke('folioLedger:createFolio', bookingId, guestId, type, label),
-    addCharge:      (folioId, amount, description, refType, refId) => ipcRenderer.invoke('folioLedger:addCharge', folioId, amount, description, refType, refId),
-    addPayment:     (folioId, amount, description) => ipcRenderer.invoke('folioLedger:addPayment', folioId, amount, description),
-    transferCharge: (srcFolioId, tgtFolioId, amount, description) => ipcRenderer.invoke('folioLedger:transferCharge', srcFolioId, tgtFolioId, amount, description),
-    splitFolio:     (srcFolioId, tgtType, tgtLabel, amount, description) => ipcRenderer.invoke('folioLedger:splitFolio', srcFolioId, tgtType, tgtLabel, amount, description),
-    voidLineItem:   (lineItemId, reason)            => ipcRenderer.invoke('folioLedger:voidLineItem', lineItemId, reason),
-    closeFolio:     (folioId)                       => ipcRenderer.invoke('folioLedger:closeFolio', folioId),
-    reopenFolio:    (folioId)                       => ipcRenderer.invoke('folioLedger:reopenFolio', folioId),
-    lockFolio:      (folioId)                       => ipcRenderer.invoke('folioLedger:lockFolio', folioId),
+    createFolio:    (bookingId, guestId, type, label, intentId) => ipcRenderer.invoke('folioLedger:createFolio', bookingId, guestId, type, label, intentId),
+    addCharge:      (folioId, amount, description, refType, refId, intentId) => ipcRenderer.invoke('folioLedger:addCharge', folioId, amount, description, refType, refId, intentId),
+    addPayment:     (folioId, amount, description, intentId) => ipcRenderer.invoke('folioLedger:addPayment', folioId, amount, description, intentId),
+    transferCharge: (srcFolioId, tgtFolioId, amount, description, intentId) => ipcRenderer.invoke('folioLedger:transferCharge', srcFolioId, tgtFolioId, amount, description, intentId),
+    splitFolio:     (srcFolioId, tgtType, tgtLabel, amount, description, intentId) => ipcRenderer.invoke('folioLedger:splitFolio', srcFolioId, tgtType, tgtLabel, amount, description, intentId),
+    voidLineItem:   (lineItemId, reason, intentId)            => ipcRenderer.invoke('folioLedger:voidLineItem', lineItemId, reason, intentId),
+    closeFolio:     (folioId, intentId)                       => ipcRenderer.invoke('folioLedger:closeFolio', folioId, intentId),
+    reopenFolio:    (folioId, intentId)                       => ipcRenderer.invoke('folioLedger:reopenFolio', folioId, intentId),
+    lockFolio:      (folioId, intentId)                       => ipcRenderer.invoke('folioLedger:lockFolio', folioId, intentId),
     getBalance:     (folioId)                       => ipcRenderer.invoke('folioLedger:getBalance', folioId)
   },
   roomMoves: {
@@ -707,9 +840,9 @@ const api = {
     delete:  (id)      => ipcRenderer.invoke('corporateAccounts:delete', id)
   },
   corporateBilling: {
-    charge:          (accountId, bookingId, amount, description) => ipcRenderer.invoke('corporateBilling:charge', accountId, bookingId, amount, description),
+    charge:          (accountId, bookingId, amount, description, intentId) => ipcRenderer.invoke('corporateBilling:charge', accountId, bookingId, amount, description, intentId),
     getOutstanding:  (accountId)                                  => ipcRenderer.invoke('corporateBilling:getOutstanding', accountId),
-    recordPayment:   (accountId, invoiceIds, amount, method, reference) => ipcRenderer.invoke('corporateBilling:recordPayment', accountId, invoiceIds, amount, method, reference),
+    recordPayment:   (accountId, invoiceIds, amount, method, reference, intentId) => ipcRenderer.invoke('corporateBilling:recordPayment', accountId, invoiceIds, amount, method, reference, intentId),
     getStatement:    (accountId, start, end)                      => ipcRenderer.invoke('corporateBilling:getStatement', accountId, start, end),
     checkCreditLimit:(accountId, pendingAmount)                    => ipcRenderer.invoke('corporateBilling:checkCreditLimit', accountId, pendingAmount),
     suspend:         (accountId, reason)                           => ipcRenderer.invoke('corporateBilling:suspend', accountId, reason),
@@ -719,7 +852,9 @@ const api = {
     getAll:  ()        => ipcRenderer.invoke('ratePlans:getAll'),
     create:  (data)    => ipcRenderer.invoke('ratePlans:create', data),
     update:  (id, data) => ipcRenderer.invoke('ratePlans:update', id, data),
-    delete:  (id)      => ipcRenderer.invoke('ratePlans:delete', id)
+    delete:  (id)      => ipcRenderer.invoke('ratePlans:delete', id),
+    quoteRoomStay: (roomId, checkIn, checkOut, corporateAccountId) =>
+      ipcRenderer.invoke('ratePlans:quoteRoomStay', roomId, checkIn, checkOut, corporateAccountId)
   },
   rateCalendar: {
     get: (roomTypeId, startDate, endDate) => ipcRenderer.invoke('rateCalendar:get', roomTypeId, startDate, endDate),
@@ -728,6 +863,8 @@ const api = {
     setRestriction: (roomTypeId, date, restrictions) => ipcRenderer.invoke('rateCalendar:setRestriction', roomTypeId, date, restrictions),
     getConflicts: (roomTypeId, startDate, endDate) => ipcRenderer.invoke('rateCalendar:getConflicts', roomTypeId, startDate, endDate),
     getApplicableRate: (roomTypeId, date) => ipcRenderer.invoke('rateCalendar:getApplicableRate', roomTypeId, date),
+    quoteStayTotal: (roomId, checkIn, checkOut, corporateAccountId) =>
+      ipcRenderer.invoke('rateCalendar:quoteStayTotal', roomId, checkIn, checkOut, corporateAccountId),
     getYieldRules: () => ipcRenderer.invoke('rateCalendar:getYieldRules'),
     createYieldRule: (data) => ipcRenderer.invoke('rateCalendar:createYieldRule', data),
     updateYieldRule: (id, data) => ipcRenderer.invoke('rateCalendar:updateYieldRule', id, data),
@@ -756,7 +893,10 @@ const api = {
     createCompetitorNote: (competitorName, roomTypeId, notedRate, notes) => ipcRenderer.invoke('revenueManager:createCompetitorNote', competitorName, roomTypeId, notedRate, notes),
     getDemandEvents: (startDate, endDate) => ipcRenderer.invoke('revenueManager:getDemandEvents', startDate, endDate),
     createDemandEvent: (eventName, eventDate, expectedImpact, notes) => ipcRenderer.invoke('revenueManager:createDemandEvent', eventName, eventDate, expectedImpact, notes),
-    getRecommendations: () => ipcRenderer.invoke('revenueManager:getRecommendations')
+    getRecommendations: () => ipcRenderer.invoke('revenueManager:getRecommendations'),
+    approveRecommendation: (recommendation, notes) => ipcRenderer.invoke('revenueManager:approveRecommendation', recommendation, notes),
+    rejectRecommendation: (recommendation, reason) => ipcRenderer.invoke('revenueManager:rejectRecommendation', recommendation, reason),
+    applyRecommendation: (recommendation) => ipcRenderer.invoke('revenueManager:applyRecommendation', recommendation)
   },
   advancedReports: {
     getOccupancy: (start, end) => ipcRenderer.invoke('advancedReports:getOccupancy', start, end),
@@ -774,8 +914,8 @@ const api = {
     getFolioExceptions: () => ipcRenderer.invoke('advancedReports:getFolioExceptions')
   },
   payments: {
-    getProviderConfig:  (provider)       => ipcRenderer.invoke('payments:getProviderConfig', provider),
-    saveProviderConfig: (payload)        => ipcRenderer.invoke('payments:saveProviderConfig', payload)
+    getProviderConfig:  (provider, lodgeId)       => ipcRenderer.invoke('payments:getProviderConfig', provider, lodgeId),
+    saveProviderConfig: (payload, lodgeId)        => ipcRenderer.invoke('payments:saveProviderConfig', payload, lodgeId)
   },
   subscriptionRequests: {
     submit: (request) => ipcRenderer.invoke('subscriptionRequests:submit', request),
@@ -805,6 +945,7 @@ const api = {
     parseCSV:  (csvText)                           => ipcRenderer.invoke('roomingLists:parseCSV', csvText)
   },
   groupOperations: {
+    getAll:               ()                        => ipcRenderer.invoke('groupOperations:getAll'),
     checkinBlock:         (blockId)                 => ipcRenderer.invoke('groupOperations:checkinBlock', blockId),
     checkoutBlock:        (blockId)                 => ipcRenderer.invoke('groupOperations:checkoutBlock', blockId),
     getPickup:            (blockId)                 => ipcRenderer.invoke('groupOperations:getPickup', blockId),
@@ -837,9 +978,9 @@ const api = {
     getGroupMemberLodges:      (groupId)                    => ipcRenderer.invoke('multiProperty:getGroupMemberLodges', groupId)
   },
   enterpriseOperations: {
-    getRecords:      (workflowKey)         => ipcRenderer.invoke('enterpriseOperations:getRecords', workflowKey),
-    upsertRecord:    (workflowKey, record) => ipcRenderer.invoke('enterpriseOperations:upsertRecord', workflowKey, record),
-    appendEvent:     (workflowKey, event)  => ipcRenderer.invoke('enterpriseOperations:appendEvent', workflowKey, event),
+    getRecords:      (workflowKey, lodgeId)         => ipcRenderer.invoke('enterpriseOperations:getRecords', workflowKey, lodgeId),
+    upsertRecord:    (workflowKey, record, lodgeId) => ipcRenderer.invoke('enterpriseOperations:upsertRecord', workflowKey, record, lodgeId),
+    appendEvent:     (workflowKey, event, lodgeId)  => ipcRenderer.invoke('enterpriseOperations:appendEvent', workflowKey, event, lodgeId),
     createPaymentLinkRequest: (payload)    => ipcRenderer.invoke('enterpriseOperations:createPaymentLinkRequest', payload),
     createChannelSyncItem:    (payload)    => ipcRenderer.invoke('enterpriseOperations:createChannelSyncItem', payload),
     createDocument:           (payload)    => ipcRenderer.invoke('enterpriseOperations:createDocument', payload)
@@ -877,6 +1018,48 @@ const api = {
     getRoomDowntimeHistory: (roomId) => ipcRenderer.invoke('maintenanceEnterprise:getRoomDowntimeHistory', roomId),
     getMaintenanceDashboard: () => ipcRenderer.invoke('maintenanceEnterprise:getMaintenanceDashboard'),
     getDowntimeReport: (startDate, endDate) => ipcRenderer.invoke('maintenanceEnterprise:getDowntimeReport', startDate, endDate)
+  },
+  assetRegistry: {
+    getAssets: (assetType, status) => ipcRenderer.invoke('assetRegistry:getAssets', assetType, status),
+    createAsset: (data) => ipcRenderer.invoke('assetRegistry:createAsset', data),
+    updateAsset: (id, data) => ipcRenderer.invoke('assetRegistry:updateAsset', id, data),
+    deleteAsset: (id) => ipcRenderer.invoke('assetRegistry:deleteAsset', id),
+    getMaintenanceHistory: (assetId) => ipcRenderer.invoke('assetRegistry:getMaintenanceHistory', assetId),
+    logMaintenance: (assetId, ticketId, description, cost, vendorId) => ipcRenderer.invoke('assetRegistry:logMaintenance', assetId, ticketId, description, cost, vendorId),
+    getVendors: (specialisation) => ipcRenderer.invoke('assetRegistry:getVendors', specialisation),
+    createVendor: (data) => ipcRenderer.invoke('assetRegistry:createVendor', data),
+    updateVendor: (id, data) => ipcRenderer.invoke('assetRegistry:updateVendor', id, data),
+    deleteVendor: (id) => ipcRenderer.invoke('assetRegistry:deleteVendor', id)
+  },
+  assetManagement: {
+    getAssetCategories:            ()                                      => ipcRenderer.invoke('assetManagement:getAssetCategories'),
+    createAssetCategory:           (data)                                  => ipcRenderer.invoke('assetManagement:createAssetCategory', data),
+    updateAssetCategory:           (id, data)                              => ipcRenderer.invoke('assetManagement:updateAssetCategory', id, data),
+    deleteAssetCategory:           (id)                                    => ipcRenderer.invoke('assetManagement:deleteAssetCategory', id),
+    getAssetWarranties:            (assetId)                               => ipcRenderer.invoke('assetManagement:getAssetWarranties', assetId),
+    createAssetWarranty:           (data)                                  => ipcRenderer.invoke('assetManagement:createAssetWarranty', data),
+    updateAssetWarranty:           (id, data)                              => ipcRenderer.invoke('assetManagement:updateAssetWarranty', id, data),
+    deleteAssetWarranty:           (id)                                    => ipcRenderer.invoke('assetManagement:deleteAssetWarranty', id),
+    getAssetInspections:           (assetId)                               => ipcRenderer.invoke('assetManagement:getAssetInspections', assetId),
+    createAssetInspection:         (data)                                  => ipcRenderer.invoke('assetManagement:createAssetInspection', data),
+    deleteAssetInspection:         (id)                                    => ipcRenderer.invoke('assetManagement:deleteAssetInspection', id),
+    getAssetAttachments:           (assetId)                               => ipcRenderer.invoke('assetManagement:getAssetAttachments', assetId),
+    createAssetAttachment:         (data)                                  => ipcRenderer.invoke('assetManagement:createAssetAttachment', data),
+    deleteAssetAttachment:         (id)                                    => ipcRenderer.invoke('assetManagement:deleteAssetAttachment', id),
+    getAssetCosts:                 (assetId)                               => ipcRenderer.invoke('assetManagement:getAssetCosts', assetId),
+    recordAssetCost:               (data)                                  => ipcRenderer.invoke('assetManagement:recordAssetCost', data),
+    getAssetCostSummary:           (startDate, endDate)                    => ipcRenderer.invoke('assetManagement:getAssetCostSummary', startDate, endDate),
+    getPreventiveTemplates:        (categoryId)                            => ipcRenderer.invoke('assetManagement:getPreventiveTemplates', categoryId),
+    createPreventiveTemplate:      (data)                                  => ipcRenderer.invoke('assetManagement:createPreventiveTemplate', data),
+    updatePreventiveTemplate:      (id, data)                              => ipcRenderer.invoke('assetManagement:updatePreventiveTemplate', id, data),
+    deletePreventiveTemplate:      (id)                                    => ipcRenderer.invoke('assetManagement:deletePreventiveTemplate', id),
+    getPreventiveAssignments:      (assetId, status)                       => ipcRenderer.invoke('assetManagement:getPreventiveAssignments', assetId, status),
+    createPreventiveAssignment:    (data)                                  => ipcRenderer.invoke('assetManagement:createPreventiveAssignment', data),
+    completePreventiveAssignment:  (id, notes)                             => ipcRenderer.invoke('assetManagement:completePreventiveAssignment', id, notes),
+    skipPreventiveAssignment:      (id, notes)                             => ipcRenderer.invoke('assetManagement:skipPreventiveAssignment', id, notes),
+    generatePreventiveAssignments: ()                                      => ipcRenderer.invoke('assetManagement:generatePreventiveAssignments'),
+    getAssetDashboard:             ()                                      => ipcRenderer.invoke('assetManagement:getAssetDashboard'),
+    setAssetRoomSellability:       (assetId, affectsSellability, sellabilityNotes) => ipcRenderer.invoke('assetManagement:setAssetRoomSellability', assetId, affectsSellability, sellabilityNotes)
   },
   operationsCompliance: {
     createLinenStocktake: (items) => ipcRenderer.invoke('operationsCompliance:createLinenStocktake', items),
@@ -923,6 +1106,9 @@ const api = {
     enableChannel:    (channelKey)                                => ipcRenderer.invoke('channelManager:enableChannel', channelKey),
     disableChannel:   (channelKey)                                => ipcRenderer.invoke('channelManager:disableChannel', channelKey),
     processSyncQueue: (channelKey)                                => ipcRenderer.invoke('channelManager:processSyncQueue', channelKey),
+    pushAvailability: (channelKey, payload)                       => ipcRenderer.invoke('channelManager:pushAvailability', channelKey, payload),
+    pushRates:        (channelKey, payload)                       => ipcRenderer.invoke('channelManager:pushRates', channelKey, payload),
+    fetchReservations:(channelKey, since)                         => ipcRenderer.invoke('channelManager:fetchReservations', channelKey, since),
     importReservation:  (payload)                                 => ipcRenderer.invoke('channelManager:importReservation', payload),
     confirmImport:    (importId)                                  => ipcRenderer.invoke('channelManager:confirmImport', importId),
     rejectImport:     (importId, reason)                          => ipcRenderer.invoke('channelManager:rejectImport', importId, reason)
@@ -942,9 +1128,9 @@ const api = {
     getRoleCapabilities: (roleKey)                   => ipcRenderer.invoke('hotelRoles:getRoleCapabilities', roleKey)
   },
   payments: {
-    getProviderConfig:   (provider)                  => ipcRenderer.invoke('payments:getProviderConfig', provider),
-    saveProviderConfig:  (payload)                   => ipcRenderer.invoke('payments:saveProviderConfig', payload),
-    getPaymentDashboard:  ()                         => ipcRenderer.invoke('payments:getPaymentDashboard'),
+    getProviderConfig:   (provider, lodgeId)                  => ipcRenderer.invoke('payments:getProviderConfig', provider, lodgeId),
+    saveProviderConfig:  (payload, lodgeId)                   => ipcRenderer.invoke('payments:saveProviderConfig', payload, lodgeId),
+    getPaymentDashboard:  (lodgeId)                           => ipcRenderer.invoke('payments:getPaymentDashboard', lodgeId),
     verifyWebhookSignature: (provider, signature, payloadRaw) => ipcRenderer.invoke('payments:verifyWebhookSignature', provider, signature, payloadRaw)
   },
   guestMessaging: {
@@ -957,7 +1143,9 @@ const api = {
     updateTrigger:      (id, data)                            => ipcRenderer.invoke('guestMessaging:updateTrigger', id, data),
     deleteTrigger:      (id)                                  => ipcRenderer.invoke('guestMessaging:deleteTrigger', id),
     renderTemplate:     (templateId, variables)               => ipcRenderer.invoke('guestMessaging:renderTemplate', templateId, variables),
-    getDeliveryStatus:  (status)                              => ipcRenderer.invoke('guestMessaging:getDeliveryStatus', status)
+    getDeliveryStatus:  (status)                              => ipcRenderer.invoke('guestMessaging:getDeliveryStatus', status),
+    getChannelReadiness:(channel)                             => ipcRenderer.invoke('guestMessaging:getChannelReadiness', channel),
+    dispatchMessage:    (messageId, options)                  => ipcRenderer.invoke('guestMessaging:dispatchMessage', messageId, options)
   },
   guestPortal: {
     getConfig:          ()                                    => ipcRenderer.invoke('guestPortal:getConfig'),
@@ -975,11 +1163,13 @@ const api = {
     getStayHistory:  (customerId)                             => ipcRenderer.invoke('guestCRM:getStayHistory', customerId),
     recordConsent:   (customerId, consentType, granted)       => ipcRenderer.invoke('guestCRM:recordConsent', customerId, consentType, granted),
     search:          (query)                                  => ipcRenderer.invoke('guestCRM:search', query),
-    getVipList:      ()                                       => ipcRenderer.invoke('guestCRM:getVipList')
+    getVipList:      ()                                       => ipcRenderer.invoke('guestCRM:getVipList'),
+    listNotes:       (customerId)                             => ipcRenderer.invoke('guestCRM:listNotes', customerId),
+    addNote:         (customerId, noteText, noteType)         => ipcRenderer.invoke('guestCRM:addNote', customerId, noteText, noteType)
   },
   nightAudit: {
     runChecks: () => ipcRenderer.invoke('nightAudit:runChecks'),
-    close: (closedBy, notes) => ipcRenderer.invoke('nightAudit:close', closedBy, notes),
+    close: (closedBy, notes, force = false) => ipcRenderer.invoke('nightAudit:close', closedBy, notes, force),
     reopen: (closeId, reopenedBy, reason) => ipcRenderer.invoke('nightAudit:reopen', closeId, reopenedBy, reason),
     getSummary: (date) => ipcRenderer.invoke('nightAudit:summary', date),
     getHistory: (limit) => ipcRenderer.invoke('nightAudit:history', limit),
@@ -990,12 +1180,16 @@ const api = {
     completeStep: (stepId, completedBy, data) => ipcRenderer.invoke('checkinWorkflow:completeStep', stepId, completedBy, data),
     resetStep: (stepId) => ipcRenderer.invoke('checkinWorkflow:resetStep', stepId),
     getConfig: () => ipcRenderer.invoke('checkinWorkflow:getConfig'),
-    updateConfig: (config) => ipcRenderer.invoke('checkinWorkflow:updateConfig', config)
+    updateConfig: (config) => ipcRenderer.invoke('checkinWorkflow:updateConfig', config),
+    completeHotelCheckin: (bookingId) => ipcRenderer.invoke('checkinWorkflow:completeHotelCheckin', bookingId),
+    completeHotelCheckinWithOverride: (bookingId, overrideReason) =>
+      ipcRenderer.invoke('checkinWorkflow:completeHotelCheckinWithOverride', bookingId, overrideReason)
   },
   checkoutWorkflow: {
     getChecklist: (bookingId) => ipcRenderer.invoke('checkoutWorkflow:getChecklist', bookingId),
     completeStep: (stepId, completedBy, data) => ipcRenderer.invoke('checkoutWorkflow:completeStep', stepId, completedBy, data),
-    resetStep: (stepId) => ipcRenderer.invoke('checkoutWorkflow:resetStep', stepId)
+    resetStep: (stepId) => ipcRenderer.invoke('checkoutWorkflow:resetStep', stepId),
+    completeHotelCheckout: (bookingId) => ipcRenderer.invoke('checkoutWorkflow:completeHotelCheckout', bookingId)
   },
   earlyLateCheckout: {
     getEarlyPolicies: () => ipcRenderer.invoke('earlyLateCheckout:getEarlyPolicies'),
@@ -1031,7 +1225,10 @@ const api = {
     calculatePrice: (roomTypeId, checkIn, checkOut, numGuests) => ipcRenderer.invoke('bookingEngine:calculatePrice', roomTypeId, checkIn, checkOut, numGuests),
     checkAvailability: (roomTypeId, checkIn, checkOut, numRooms) => ipcRenderer.invoke('bookingEngine:checkAvailability', roomTypeId, checkIn, checkOut, numRooms),
     getUpsells: (roomTypeId, checkIn, checkOut, numGuests) => ipcRenderer.invoke('bookingEngine:getUpsells', roomTypeId, checkIn, checkOut, numGuests),
-    createIntent: (roomTypeId, checkIn, checkOut, numGuests, priceEstimate) => ipcRenderer.invoke('bookingEngine:createIntent', roomTypeId, checkIn, checkOut, numGuests, priceEstimate),
+    createIntent: (roomTypeId, checkIn, checkOut, numGuests, priceEstimate, options) =>
+      ipcRenderer.invoke('bookingEngine:createIntent', roomTypeId, checkIn, checkOut, numGuests, priceEstimate, options),
+    confirmIntent: (intentOrId, confirmation) =>
+      ipcRenderer.invoke('bookingEngine:confirmIntent', intentOrId, confirmation),
     getRules: () => ipcRenderer.invoke('bookingEngine:getRules'),
     createRule: (data) => ipcRenderer.invoke('bookingEngine:createRule', data),
     updateRule: (id, data) => ipcRenderer.invoke('bookingEngine:updateRule', id, data),
@@ -1040,6 +1237,9 @@ const api = {
     createUpsell: (data) => ipcRenderer.invoke('bookingEngine:createUpsell', data),
     updateUpsell: (id, data) => ipcRenderer.invoke('bookingEngine:updateUpsell', id, data),
     deleteUpsell: (id) => ipcRenderer.invoke('bookingEngine:deleteUpsell', id)
+  },
+  restaurantAccountingV2: {
+    invoke: (operation, ...args) => ipcRenderer.invoke('restaurantAccountingV2:invoke', operation, args)
   },
   abandonedPayments: {
     logSession: (bookingId, amount, provider, sessionToken, expiresAt) =>
@@ -1053,6 +1253,7 @@ const api = {
     getPendingRecovery: () =>
       ipcRenderer.invoke('abandonedPayments:getPendingRecovery')
   },
+
 }
 
 if (process.contextIsolated) {

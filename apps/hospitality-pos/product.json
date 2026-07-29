@@ -1,10 +1,10 @@
 {
   "id": "hospitality-pos",
-  "name": "Boroko Restaurant & Bar POS",
+  "name": "Tsa Bonno Restaurant & Bar POS",
   "customer": "Restaurants, restaurant-bars and bar-only businesses",
   "database_product": "hospitality_pos",
   "modes": ["restaurant_bar", "bar_only"],
-  "current_implementation": "shared Electron runtime compiled with a Restaurant & Bar POS identity and restaurant-only module set",
+  "current_implementation": "shared Electron runtime compiled with a Tsa Bonno Restaurant & Bar POS identity and restaurant-only module set",
   "release_status": "runnable workspace with a distinct installer identity; it retains RPC-backed financial and inventory contracts",
   "shared_backend": "../../supabase"
 }

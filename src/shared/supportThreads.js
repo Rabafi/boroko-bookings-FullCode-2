@@ -30,13 +30,13 @@ export function supportMessageSide(message) {
   return MANAGER_SENDER_TYPES.has(normalizeSupportSenderType(message?.sender_type)) ? 'manager' : 'desk'
 }
 
-export function supportSenderName(message, fallback = 'Boroko user') {
+export function supportSenderName(message, fallback = 'Tsa Bonno user') {
   const type = normalizeSupportSenderType(message?.sender_type)
   const name = clean(message?.sender_name || message?.author_name || message?.name)
   if (name) return name
   if (MANAGER_SENDER_TYPES.has(type)) return 'Manager Mobile App'
   if (type === 'command_central') return 'Command Central'
-  if (type === 'support') return 'Boroko Support'
+  if (type === 'support') return 'Tsa Bonno Support'
   return fallback
 }
 

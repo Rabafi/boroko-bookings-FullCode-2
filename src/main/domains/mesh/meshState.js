@@ -166,7 +166,7 @@ export function getMeshHealthSnapshot() {
     warnings: [
       ...(meshState.localInterfaces.length === 0 ? ['No active private IPv4 network adapter was found.'] : []),
       ...(meshState.running && peersArray.length === 0
-        ? ['No nearby Boroko devices found. If another device is online, check extender AP/client isolation or add its IP manually.']
+        ? ['No nearby Tsa Bonno devices found. If another device is online, check extender AP/client isolation or add its IP manually.']
         : []),
       ...(meshState.lastDiscoveryError ? [meshState.lastDiscoveryError] : []),
       ...peersArray

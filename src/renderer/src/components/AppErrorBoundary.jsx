@@ -38,7 +38,7 @@ export default class AppErrorBoundary extends Component {
               <p className="text-xs font-semibold uppercase tracking-[0.22em] text-red-600">Recovery Screen</p>
               <h1 className="text-2xl font-bold text-slate-900">Something went wrong</h1>
               <p className="text-sm leading-6 text-slate-500">
-                The app hit an unexpected problem on this screen. Reload Boroko Bookings to recover and continue working.
+                The app hit an unexpected problem on this screen. Reload the Tsa Bonno application to recover and continue working.
               </p>
             </div>
             <button

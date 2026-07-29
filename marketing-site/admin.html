@@ -3,11 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Lead Management | Boroko Bookings CRM</title>
+    <title>Lead Management | Tsa Bonno HospitalityOS CRM</title>
     <meta name="robots" content="noindex, nofollow" />
     <meta name="theme-color" content="#18352b" />
-    <link rel="icon" type="image/svg+xml" href="./assets/boroko-bookings-logo.svg" />
-    <link rel="alternate icon" type="image/png" href="./assets/boroko-bookings-logo-light.png" />
+    <link rel="icon" type="image/svg+xml" href="./assets/tsa-bonno-hospitalityos-logo.svg" />
+    <link rel="alternate icon" type="image/png" href="./assets/tsa-bonno-hospitalityos-logo-light.png" />
     <link rel="stylesheet" href="./styles.css" />
     <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
     <style>
@@ -57,7 +57,7 @@
     <div class="crm-shell" id="main">
       <div id="login-view" style="display:none;">
         <div class="crm-login">
-          <img src="./assets/boroko-bookings-logo-light.png" alt="Boroko Bookings" style="width:140px;height:auto;margin-bottom:16px;" />
+          <img src="./assets/tsa-bonno-hospitalityos-logo-color.png" alt="Tsa Bonno HospitalityOS" style="width:180px;height:auto;margin-bottom:16px;" />
           <h1 style="font-size:1.4rem;margin-bottom:4px;">Lead Management</h1>
           <p style="color:var(--ink-soft);margin-bottom:24px;">Sign in to view enquiries</p>
           <form class="demo-form" id="login-form">
@@ -83,7 +83,7 @@
       <div id="dashboard-view" style="display:none;">
         <div class="crm-header">
           <div>
-            <h1>Lead Management</h1>
+            <h2>Lead Management</h2>
             <p style="color:var(--ink-soft);margin:4px 0 0;font-size:0.88rem;">Marketing enquiries from the website</p>
           </div>
           <div class="crm-user">
@@ -329,7 +329,7 @@
         var url = URL.createObjectURL(blob)
         var a = document.createElement('a')
         a.href = url
-        a.download = 'boroko-leads.csv'
+        a.download = 'tsa-bonno-leads.csv'
         document.body.appendChild(a)
         a.click()
         document.body.removeChild(a)

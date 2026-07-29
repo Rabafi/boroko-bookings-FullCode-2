@@ -1,19 +1,25 @@
 import { resolve } from 'path'
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 import react from '@vitejs/plugin-react'
+import { PRODUCT_IDS } from './packages/product-config/index.js'
 
 const allowedRendererHost = process.env.ELECTRON_RENDERER_ALLOWED_HOST?.trim()
-const productId = process.env.BOROKO_PRODUCT?.trim() || 'lodge-camp'
-const productDefine = { __BOROKO_PRODUCT__: JSON.stringify(productId) }
+const productId = process.env.BOROKO_PRODUCT?.trim()
+if (!PRODUCT_IDS.includes(productId)) {
+  throw new Error(`BOROKO_PRODUCT must be explicitly set to one of: ${PRODUCT_IDS.join(', ')}`)
+}
+const productDefine = { __TSA_BONNO_PRODUCT__: JSON.stringify(productId) }
 
 export default defineConfig({
   main: {
     plugins: [externalizeDepsPlugin()],
-    define: productDefine
+    define: productDefine,
+    build: { outDir: `out/${productId}/main` }
   },
   preload: {
     plugins: [externalizeDepsPlugin()],
-    define: productDefine
+    define: productDefine,
+    build: { outDir: `out/${productId}/preload` }
   },
   renderer: {
     define: productDefine,
@@ -25,6 +31,7 @@ export default defineConfig({
     },
     plugins: [react()],
     build: {
+      outDir: `out/${productId}/renderer`,
       rollupOptions: {
         output: {
           manualChunks(id) {

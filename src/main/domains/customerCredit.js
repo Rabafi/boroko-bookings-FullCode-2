@@ -249,14 +249,17 @@ export async function recordCustomerCredit({
   method,
   reference,
   notes,
-  recordedBy
+  recordedBy,
+  idempotencyKey: callerIdempotencyKey
 }) {
   try {
     if (!customerId) throw new Error('Customer ID is required');
     if (!amount || amount <= 0) throw new Error('Amount must be greater than zero');
     if (!method) throw new Error('Payment method is required');
 
-    const idempotencyKey = `customer-credit:receipt:${customerId}:${amount}:${method}:${Date.now()}`;
+    // Stable per-attempt key: caller must reuse on ambiguous timeout (never Date.now()).
+    const idempotencyKey = callerIdempotencyKey
+      || `customer-credit:receipt:${randomUUID()}`;
 
     if (state.isOnline) {
       const { data: result, error } = await state.supabase.rpc('record_customer_credit', {
@@ -354,14 +357,24 @@ export async function applyCustomerCreditToBooking({
   amount,
   notes,
   recordedBy,
-  expectedBookingUpdatedAt
+  expectedBookingUpdatedAt,
+  idempotencyKey: callerIdempotencyKey
 }) {
   try {
     if (!customerId) throw new Error('Customer ID is required');
     if (!bookingId) throw new Error('Booking ID is required');
     if (!amount || amount <= 0) throw new Error('Allocation amount must be greater than zero');
 
-    const idempotencyKey = `customer-credit:allocation:${bookingId}:${customerId}:${amount}:${Date.now()}`;
+    // Content-stable key so the same allocation payload cannot double-apply on retry.
+    // Callers may override with an explicit key for multi-attempt UI flows.
+    const idempotencyKey = callerIdempotencyKey
+      || buildCreditIdempotencyKey('customer-credit:allocation', {
+        lodge_id: state.lodgeId,
+        customer_id: customerId,
+        booking_id: bookingId,
+        amount: Number(amount),
+        notes: notes || ''
+      });
 
     if (!state.isOnline) {
       const balance = getCachedCreditBalance(customerId);
@@ -471,14 +484,16 @@ export async function refundCustomerCredit({
   reference,
   notes,
   requestedBy,
-  approvedBy
+  approvedBy,
+  idempotencyKey: callerIdempotencyKey
 }) {
   try {
     if (!customerId) throw new Error('Customer ID is required');
     if (!amount || amount <= 0) throw new Error('Refund amount must be greater than zero');
     if (!method) throw new Error('Refund method is required');
 
-    const idempotencyKey = `customer-credit:refund:${customerId}:${amount}:${method}:${Date.now()}`;
+    const idempotencyKey = callerIdempotencyKey
+      || `customer-credit:refund:${randomUUID()}`;
 
     if (!state.isOnline) {
       const balance = getCachedCreditBalance(customerId);
@@ -571,12 +586,18 @@ export async function refundCustomerCredit({
 export async function reverseCustomerCreditEntry({
   entryId,
   notes,
-  recordedBy
+  recordedBy,
+  idempotencyKey: callerIdempotencyKey
 }) {
   try {
     if (!entryId) throw new Error('Entry ID is required');
 
-    const idempotencyKey = `customer-credit:reverse:${entryId}:${Date.now()}`;
+    const idempotencyKey = callerIdempotencyKey
+      || buildCreditIdempotencyKey('customer-credit:reverse', {
+        lodge_id: state.lodgeId,
+        entry_id: entryId,
+        notes: notes || ''
+      });
 
     if (!state.isOnline) {
       const original = (readCache('customer-credit-ledger') || []).find((entry) => entry?.id === entryId);

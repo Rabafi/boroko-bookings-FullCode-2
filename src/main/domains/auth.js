@@ -101,6 +101,7 @@ export {
   createUser,
   updateUser,
   resetUserPassword,
+  getStaffAccessAudit,
   getAuthStatus,
   deleteUser
 } from './infrastructure.js'

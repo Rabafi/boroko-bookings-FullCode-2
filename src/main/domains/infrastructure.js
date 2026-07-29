@@ -473,6 +473,7 @@ function queueItemNeedsBookingRefresh(item) {
   if (item?.type === 'rpc') {
     return new Set([
     'create_booking',
+    'create_campsite_booking',
     'create_booking_invoice_group',
     'update_booking',
     'update_booking_status',
@@ -1669,6 +1670,7 @@ export { loginUser } from './authLogin.js';
 export {
   createUser,
   deleteUser,
+  getStaffAccessAudit,
   getAuthStatus,
   resetUserPassword,
   runAuthHealthCheck,

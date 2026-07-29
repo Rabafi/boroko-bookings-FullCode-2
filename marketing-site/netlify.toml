@@ -1,6 +1,9 @@
 [build]
   publish = "."
 
+[functions]
+  directory = "netlify/functions"
+
 [[headers]]
   for = "/*"
   [headers.values]
@@ -67,6 +70,16 @@
 [[redirects]]
   from = "/restaurant-pos"
   to = "/restaurant-pos.html"
+  status = 200
+
+[[redirects]]
+  from = "/lodge-app"
+  to = "/lodge-app.html"
+  status = 200
+
+[[redirects]]
+  from = "/hotel"
+  to = "/hotel.html"
   status = 200
 
 [[redirects]]

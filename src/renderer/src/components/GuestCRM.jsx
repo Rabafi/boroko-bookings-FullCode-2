@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Search, Star, Shield, Ban, Eye, ThumbsUp, ThumbsDown, History, UserCheck, RefreshCw, AlertTriangle, Crown } from 'lucide-react'
+import { Search, Star, Ban, Eye, ThumbsUp, ThumbsDown, Crown, StickyNote } from 'lucide-react'
 import { Modal } from './shared/Modal'
 import { ConfirmDialog } from './shared/ConfirmDialog'
+import { useAccess } from '../app-context'
+import { canAccessCapability } from '../../../shared/accessControl'
 
 const VIP_LEVELS = ['standard', 'silver', 'gold', 'platinum']
 const CONSENT_TYPES = ['marketing', 'communication', 'data_processing']
@@ -16,6 +18,11 @@ function VipBadge({ level }) {
 }
 
 export default function GuestCRM() {
+  const access = useAccess()
+  const canManage = canAccessCapability(access, 'guest_crm.manage')
+  const canVip = canAccessCapability(access, 'guest_crm.vip')
+  const canBlacklist = canAccessCapability(access, 'guest_crm.blacklist')
+
   const [searchQuery, setSearchQuery] = useState('')
   const [results, setResults] = useState([])
   const [loading, setLoading] = useState(false)
@@ -25,6 +32,8 @@ export default function GuestCRM() {
   const [selectedProfile, setSelectedProfile] = useState(null)
   const [profileData, setProfileData] = useState(null)
   const [stayHistory, setStayHistory] = useState([])
+  const [notes, setNotes] = useState([])
+  const [notesError, setNotesError] = useState('')
   const [loadingProfile, setLoadingProfile] = useState(false)
 
   const [showVipModal, setShowVipModal] = useState(false)
@@ -37,6 +46,9 @@ export default function GuestCRM() {
   const [showBlacklistModal, setShowBlacklistModal] = useState(false)
   const [blacklistReason, setBlacklistReason] = useState('')
   const [confirmDialog, setConfirmDialog] = useState(null)
+
+  const [showNoteModal, setShowNoteModal] = useState(false)
+  const [noteText, setNoteText] = useState('')
 
   const [vipList, setVipList] = useState([])
   const [showVipList, setShowVipList] = useState(false)
@@ -57,6 +69,7 @@ export default function GuestCRM() {
       setResults(Array.isArray(data) ? data : [])
     } catch (err) {
       setError(err?.message || 'Search failed')
+      setResults([])
     } finally {
       setLoading(false)
     }
@@ -65,6 +78,7 @@ export default function GuestCRM() {
   const loadProfile = async (customerId) => {
     setLoadingProfile(true)
     setError('')
+    setNotesError('')
     try {
       const [profile, history] = await Promise.all([
         window.api.guestCRM.getProfile(customerId),
@@ -72,9 +86,12 @@ export default function GuestCRM() {
       ])
       setProfileData(profile)
       setStayHistory(Array.isArray(history) ? history : [])
+      setNotes(Array.isArray(profile?.notes) ? profile.notes : [])
+      if (profile?.notesError) setNotesError(profile.notesError)
       setSelectedProfile(customerId)
     } catch (err) {
       setError(err?.message || 'Failed to load profile')
+      setProfileData(null)
     } finally {
       setLoadingProfile(false)
     }
@@ -82,6 +99,10 @@ export default function GuestCRM() {
 
   const handleSetVip = async () => {
     if (!selectedProfile) return
+    if (!canVip) {
+      setError('You do not have permission to set VIP levels.')
+      return
+    }
     try {
       await window.api.guestCRM.setVipLevel(selectedProfile, vipLevel)
       setShowVipModal(false)
@@ -94,6 +115,10 @@ export default function GuestCRM() {
 
   const handleAddPreference = async () => {
     if (!selectedProfile || !prefKey.trim()) return
+    if (!canManage) {
+      setError('You do not have permission to manage CRM preferences.')
+      return
+    }
     try {
       await window.api.guestCRM.addPreference(selectedProfile, prefKey.trim(), prefValue)
       setShowPreferenceModal(false)
@@ -108,6 +133,14 @@ export default function GuestCRM() {
 
   const handleSetBlacklist = async (blacklisted) => {
     if (!selectedProfile) return
+    if (!canBlacklist) {
+      setError('You do not have permission to manage the blacklist.')
+      return
+    }
+    if (blacklisted && !blacklistReason.trim()) {
+      setError('A reason is required when blacklisting a guest.')
+      return
+    }
     try {
       await window.api.guestCRM.setBlacklist(selectedProfile, blacklisted, blacklistReason)
       setShowBlacklistModal(false)
@@ -121,6 +154,10 @@ export default function GuestCRM() {
 
   const handleRecordConsent = async (consentType, granted) => {
     if (!selectedProfile) return
+    if (!canManage) {
+      setError('You do not have permission to record consent.')
+      return
+    }
     try {
       await window.api.guestCRM.recordConsent(selectedProfile, consentType, granted)
       setSuccess(`Consent (${consentType}) recorded.`)
@@ -130,14 +167,33 @@ export default function GuestCRM() {
     }
   }
 
+  const handleAddNote = async () => {
+    if (!selectedProfile || !noteText.trim()) return
+    if (!canManage) {
+      setError('You do not have permission to add CRM notes.')
+      return
+    }
+    try {
+      await window.api.guestCRM.addNote(selectedProfile, noteText.trim(), 'staff')
+      setShowNoteModal(false)
+      setNoteText('')
+      setSuccess('Note added.')
+      loadProfile(selectedProfile)
+    } catch (err) {
+      setError(err?.message || 'Failed to add note')
+    }
+  }
+
   const loadVipList = async () => {
     setLoadingVipList(true)
+    setError('')
     try {
       const data = await window.api.guestCRM.getVipList()
       setVipList(Array.isArray(data) ? data : [])
       setShowVipList(true)
     } catch (err) {
       setError(err?.message || 'Failed to load VIP list')
+      setVipList([])
     } finally {
       setLoadingVipList(false)
     }
@@ -149,7 +205,7 @@ export default function GuestCRM() {
         <div>
           <p className="bb-section-kicker">ENTERPRISE</p>
           <h1 className="bb-page-header-title">Guest CRM</h1>
-          <p className="bb-page-header-subtitle">Guest profiles, VIP management, preferences, stay history, and consent</p>
+          <p className="bb-page-header-subtitle">Guest profiles, VIP management, preferences, notes, stay history, and consent</p>
         </div>
         <button onClick={loadVipList} className="btn-primary"><Crown size={15} /> VIP List</button>
       </div>
@@ -201,9 +257,18 @@ export default function GuestCRM() {
                     <div className="flex items-center justify-between">
                       <h2 className="text-sm font-bold text-slate-900">CRM Profile</h2>
                       <div className="flex gap-1">
-                        <button onClick={() => { setVipLevel(profileData.profile?.vip_level || 'standard'); setShowVipModal(true) }} className="btn-ghost p-2" title="Set VIP level"><Crown size={15} /></button>
-                        <button onClick={() => setShowPreferenceModal(true)} className="btn-ghost p-2" title="Add preference"><Star size={15} /></button>
-                        <button onClick={() => setShowBlacklistModal(true)} className="btn-ghost p-2" title="Blacklist"><Ban size={15} /></button>
+                        {canVip && (
+                          <button onClick={() => { setVipLevel(profileData.profile?.vip_level || 'standard'); setShowVipModal(true) }} className="btn-ghost p-2" title="Set VIP level"><Crown size={15} /></button>
+                        )}
+                        {canManage && (
+                          <>
+                            <button onClick={() => setShowPreferenceModal(true)} className="btn-ghost p-2" title="Add preference"><Star size={15} /></button>
+                            <button onClick={() => setShowNoteModal(true)} className="btn-ghost p-2" title="Add note"><StickyNote size={15} /></button>
+                          </>
+                        )}
+                        {canBlacklist && (
+                          <button onClick={() => setShowBlacklistModal(true)} className="btn-ghost p-2" title="Blacklist"><Ban size={15} /></button>
+                        )}
                       </div>
                     </div>
                     <div className="mt-3 space-y-2 text-sm">
@@ -231,6 +296,29 @@ export default function GuestCRM() {
                       </div>
                     </section>
                   )}
+
+                  <section className="bb-card p-5">
+                    <div className="flex items-center justify-between">
+                      <h2 className="text-sm font-bold text-slate-900">Staff Notes</h2>
+                      {canManage && (
+                        <button onClick={() => setShowNoteModal(true)} className="btn-ghost text-xs">Add note</button>
+                      )}
+                    </div>
+                    {notesError && (
+                      <p className="mt-2 text-xs text-amber-700">{notesError}</p>
+                    )}
+                    <div className="mt-3 space-y-2">
+                      {notes.length === 0 && !notesError && <p className="text-sm text-slate-500">No notes yet.</p>}
+                      {notes.map((n) => (
+                        <div key={n.id || n.created_at} className="rounded-xl border border-slate-200 p-3 text-sm">
+                          <p className="text-slate-800">{n.payload?.text || n.text || n.note || JSON.stringify(n.payload || {})}</p>
+                          <p className="mt-1 text-xs text-slate-400">
+                            {n.note_type || 'note'} · {n.created_at ? new Date(n.created_at).toLocaleString() : ''}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
 
                   {stayHistory.length > 0 && (
                     <section className="bb-card p-5">
@@ -263,20 +351,28 @@ export default function GuestCRM() {
                           </span>
                         </div>
                       ))}
-                      <div className="mt-3">
-                        <p className="text-xs font-semibold text-slate-600 mb-2">Record new consent:</p>
-                        <div className="flex flex-wrap gap-2">
-                          {CONSENT_TYPES.map((type) => (
-                            <div key={type} className="flex gap-1">
-                              <button onClick={() => handleRecordConsent(type, true)} className="rounded-lg border border-emerald-200 px-3 py-1 text-xs font-semibold text-emerald-700 hover:bg-emerald-50">{type} +</button>
-                              <button onClick={() => handleRecordConsent(type, false)} className="rounded-lg border border-red-200 px-3 py-1 text-xs font-semibold text-red-600 hover:bg-red-50">{type} -</button>
-                            </div>
-                          ))}
+                      {canManage && (
+                        <div className="mt-3">
+                          <p className="text-xs font-semibold text-slate-600 mb-2">Record new consent:</p>
+                          <div className="flex flex-wrap gap-2">
+                            {CONSENT_TYPES.map((type) => (
+                              <div key={type} className="flex gap-1">
+                                <button onClick={() => handleRecordConsent(type, true)} className="rounded-lg border border-emerald-200 px-3 py-1 text-xs font-semibold text-emerald-700 hover:bg-emerald-50">{type} +</button>
+                                <button onClick={() => handleRecordConsent(type, false)} className="rounded-lg border border-red-200 px-3 py-1 text-xs font-semibold text-red-600 hover:bg-red-50">{type} -</button>
+                              </div>
+                            ))}
+                          </div>
                         </div>
-                      </div>
+                      )}
                     </div>
                   </section>
                 </>
+              )}
+
+              {!loadingProfile && profileData && !profileData.profile && (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+                  No CRM profile found for this guest yet. {canManage ? 'VIP, preferences, or notes actions will create one.' : 'Ask a manager to create a CRM profile.'}
+                </div>
               )}
             </>
           )}
@@ -332,11 +428,23 @@ export default function GuestCRM() {
         </Modal>
       )}
 
+      {showNoteModal && (
+        <Modal title="Add Staff Note" onClose={() => setShowNoteModal(false)}>
+          <div className="space-y-3">
+            <textarea className="input w-full" rows={4} value={noteText} onChange={(e) => setNoteText(e.target.value)} placeholder="Operational note for staff..." />
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setShowNoteModal(false)} className="btn-secondary">Cancel</button>
+              <button onClick={handleAddNote} className="btn-primary" disabled={!noteText.trim()}>Save note</button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
       {showBlacklistModal && (
         <Modal title="Blacklist Management" onClose={() => setShowBlacklistModal(false)}>
           <div className="space-y-3">
             <div>
-              <label className="text-xs font-semibold text-slate-600">Reason (for blacklisting)</label>
+              <label className="text-xs font-semibold text-slate-600">Reason (required for blacklisting)</label>
               <textarea className="input w-full" rows={3} value={blacklistReason} onChange={(e) => setBlacklistReason(e.target.value)} placeholder="Reason for blacklisting..." />
             </div>
             <div className="flex justify-end gap-2">
@@ -352,7 +460,7 @@ export default function GuestCRM() {
         <Modal title="VIP List" onClose={() => setShowVipList(false)}>
           <div className="max-h-96 space-y-2 overflow-y-auto">
             {loadingVipList && <p className="text-sm text-slate-500">Loading...</p>}
-            {vipList.length === 0 && <p className="text-sm text-slate-500">No VIP guests.</p>}
+            {!loadingVipList && vipList.length === 0 && <p className="text-sm text-slate-500">No VIP guests.</p>}
             {vipList.map((v) => (
               <div key={v.customer_id} className="flex items-center justify-between rounded-xl border border-slate-200 p-3">
                 <div className="min-w-0">

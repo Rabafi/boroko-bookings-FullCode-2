@@ -17,6 +17,24 @@ import {
   writeSyncQueue
 } from './syncStore.js'
 import { clearSessionNonce } from './authSession.js'
+import {
+  getProductDefinition,
+  getProductMismatchMessage,
+  getRuntimeProductId,
+  isProductCompatiblePropertyType
+} from '../../shared/productIdentity.js'
+
+function productBusinessTitle() {
+  return getProductDefinition(getRuntimeProductId()).businessNounTitle || 'Lodge'
+}
+
+function defaultDraftLabel() {
+  return `New ${productBusinessTitle()}`
+}
+
+function defaultUntitledLabel() {
+  return `Untitled ${productBusinessTitle()}`
+}
 
 export const PROFILE_STATUS = {
   DRAFT: 'draft',
@@ -44,6 +62,24 @@ export function getProfileCacheDir(profileLodgeId) {
   return path.join(state.profilesCacheDir, normalizeLodgeId(profileLodgeId));
 }
 
+function isProfileCompatibleWithCurrentProduct(profile) {
+  if (profile?.status === PROFILE_STATUS.DRAFT) return true;
+  const cached = readJsonFile(path.join(getProfileCacheDir(profile?.lodge_id), 'settings.json'), []);
+  const settings = Array.isArray(cached) ? cached[0] : cached;
+  const propertyType = settings?.property_type || settings?.business_type || 'lodge';
+  return isProductCompatiblePropertyType(getRuntimeProductId(), propertyType);
+}
+
+function productMismatchError(propertyType = '') {
+  const error = new Error(
+    propertyType
+      ? getProductMismatchMessage(getRuntimeProductId(), propertyType)
+      : 'This saved business belongs to a different Tsa Bonno product. Open it with its matching app instead.'
+  );
+  error.code = 'product_profile_mismatch';
+  return error;
+}
+
 function getInactiveCacheDir() {
   return path.join(state.cacheRootDir, '__inactive');
 }
@@ -56,7 +92,7 @@ export function sanitizeProfile(rawProfile) {
   const status = rawProfile?.status === PROFILE_STATUS.DRAFT ? PROFILE_STATUS.DRAFT : PROFILE_STATUS.READY;
   const label = typeof rawProfile?.label === 'string' && rawProfile.label.trim() ?
   rawProfile.label.trim() :
-  'Untitled Lodge';
+  defaultUntitledLabel();
 
   return {
     lodge_id: normalizedId,
@@ -108,8 +144,9 @@ export function writeProfilesRegistry(registry) {
   return next;
 }
 
-export function profileLabelFromSettings(settings = {}, fallback = 'Untitled Lodge') {
-  return settings?.lodge_name?.trim() || settings?.company_name?.trim() || fallback;
+export function profileLabelFromSettings(settings = {}, fallback) {
+  const safeFallback = fallback || defaultUntitledLabel();
+  return settings?.lodge_name?.trim() || settings?.company_name?.trim() || safeFallback;
 }
 
 export function ensureProfileCacheFiles(profileLodgeId) {
@@ -359,8 +396,15 @@ export function initializeProfileRuntime() {
   writeProfilesRegistry(readProfilesRegistry()) :
   migrateLegacySingleLodgeProfile();
 
-  setRuntimeActiveProfile(registry.active_lodge_id, { persistActive: false, touch: false });
-  return registry;
+  const compatibleProfiles = registry.profiles.filter(isProfileCompatibleWithCurrentProduct);
+  const activeLodgeId = compatibleProfiles.some((profile) => profile.lodge_id === registry.active_lodge_id) ?
+  registry.active_lodge_id :
+  compatibleProfiles[0]?.lodge_id || null;
+  const productScopedRegistry = activeLodgeId === registry.active_lodge_id ? registry :
+  writeProfilesRegistry({ ...registry, active_lodge_id: activeLodgeId });
+
+  setRuntimeActiveProfile(productScopedRegistry.active_lodge_id, { persistActive: false, touch: false });
+  return productScopedRegistry;
 }
 
 export function updateProfileMetadata(targetLodgeId, updates = {}) {
@@ -432,17 +476,18 @@ export function getActiveProfile() {
   return active || null;
 }
 
-export function ensureReadyProfileForLodge(lodgeId, { label = 'Existing Lodge' } = {}) {
+export function ensureReadyProfileForLodge(lodgeId, { label } = {}) {
   const normalizedId = normalizeLodgeId(lodgeId);
   if (!isUuid(normalizedId)) throw new Error('The server returned an invalid lodge ID.');
 
   const registry = readProfilesRegistry();
-  const nextLabel = typeof label === 'string' && label.trim() ? label.trim() : 'Existing Lodge';
+  const nextLabel = typeof label === 'string' && label.trim() ? label.trim() : `Existing ${productBusinessTitle()}`;
   const existing = registry.profiles.find((profile) => profile.lodge_id === normalizedId);
+  const genericLabels = new Set(['Untitled Lodge', 'New Lodge', defaultUntitledLabel(), defaultDraftLabel()]);
   const nextProfile = sanitizeProfile({
     ...(existing || {}),
     lodge_id: normalizedId,
-    label: existing?.label && existing.label !== 'Untitled Lodge' ? existing.label : nextLabel,
+    label: existing?.label && !genericLabels.has(existing.label) ? existing.label : nextLabel,
     status: PROFILE_STATUS.READY,
     created_at: existing?.created_at || new Date().toISOString(),
     last_used_at: new Date().toISOString()
@@ -476,6 +521,11 @@ export async function selectProfile(targetLodgeId) {
   const registry = readProfilesRegistry();
   const profile = registry.profiles.find((entry) => entry.lodge_id === normalizedId);
   if (!profile) throw new Error('That lodge profile was not found on this computer.');
+  if (!isProfileCompatibleWithCurrentProduct(profile)) {
+    const cached = readJsonFile(path.join(getProfileCacheDir(profile.lodge_id), 'settings.json'), []);
+    const settings = Array.isArray(cached) ? cached[0] : cached;
+    throw productMismatchError(settings?.property_type || settings?.business_type || '');
+  }
 
   // Shut down any active P2P mesh before changing profiles
   try {
@@ -511,7 +561,7 @@ export async function createDraftProfile() {
   const draftLodgeId = randomUUID();
   const draftProfile = sanitizeProfile({
     lodge_id: draftLodgeId,
-    label: 'New Lodge',
+    label: defaultDraftLabel(),
     status: PROFILE_STATUS.DRAFT,
     created_at: new Date().toISOString(),
     last_used_at: new Date().toISOString()

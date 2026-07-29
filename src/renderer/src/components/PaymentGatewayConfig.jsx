@@ -26,7 +26,7 @@ const emptyForm = {
   allowed_payment_methods: ['card', 'mobile_money']
 }
 
-export default function PaymentGatewayConfig() {
+export default function PaymentGatewayConfig({ lodgeId = null }) {
   const [configs, setConfigs] = useState([])
   const [dashboard, setDashboard] = useState({ recent_transactions: [], pending_transactions: [], failed_transactions: [] })
   const [loading, setLoading] = useState(true)
@@ -49,21 +49,22 @@ export default function PaymentGatewayConfig() {
     setLoading(true)
     setError('')
     try {
-      const [configData, dashData] = await Promise.all([
-        window.api.payments.getProviderConfig().catch(() => []),
-        window.api.payments.getPaymentDashboard().catch(() => ({ recent_transactions: [], pending_transactions: [], failed_transactions: [] }))
+      const [configResult, dashData] = await Promise.all([
+        window.api.payments.getProviderConfig(null, lodgeId),
+        window.api.payments.getPaymentDashboard(lodgeId)
       ])
+      const configData = Array.isArray(configResult) ? configResult : configResult?.data
       setConfigs(Array.isArray(configData) ? configData : [])
       if (Array.isArray(configData) && configData.length > 0) {
         setSignatureTest((current) => current.provider ? current : ({ ...current, provider: configData[0].provider || '' }))
       }
-      setDashboard(dashData)
+      setDashboard(dashData || { recent_transactions: [], pending_transactions: [], failed_transactions: [] })
     } catch (err) {
       setError(err?.message || 'Failed to load payment config')
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [lodgeId])
 
   useEffect(() => { load() }, [load])
 
@@ -100,7 +101,7 @@ export default function PaymentGatewayConfig() {
     setSaving(true)
     setError('')
     try {
-      await window.api.payments.saveProviderConfig(form)
+      await window.api.payments.saveProviderConfig(form, lodgeId)
       setShowModal(false)
       setSuccess('Payment config saved')
       load()

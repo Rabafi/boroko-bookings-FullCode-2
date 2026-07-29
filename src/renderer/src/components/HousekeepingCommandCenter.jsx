@@ -24,14 +24,22 @@ export default function HousekeepingCommandCenter() {
     setLoading(true)
     setError(null)
     try {
-      const [dash, items] = await Promise.all([
-        window.api.housekeepingCommandCenter.getDashboard(selectedDate),
-        window.api.housekeepingCommandCenter.getChecklistItems().catch(() => [])
-      ])
+      if (!window.api?.housekeepingCommandCenter?.getDashboard) {
+        throw new Error('Housekeeping command center API is not available')
+      }
+      const dash = await window.api.housekeepingCommandCenter.getDashboard(selectedDate)
       setDashboard(dash)
+      let items = []
+      try {
+        items = await window.api.housekeepingCommandCenter.getChecklistItems()
+      } catch (itemsErr) {
+        setError(`Dashboard loaded; checklist items failed: ${itemsErr?.message || 'unknown error'}`)
+      }
       setChecklistItems(Array.isArray(items) ? items : [])
     } catch (err) {
       setError(err?.message || 'Failed to load housekeeping data')
+      setDashboard(null)
+      setChecklistItems([])
     } finally {
       setLoading(false)
     }

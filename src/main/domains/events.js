@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto'
 import crypto from 'crypto'
 import { state } from '../state.js'
 import {
+  dedupePromise,
   logActivity,
   queueOperation,
   readCache,
@@ -456,6 +457,93 @@ export async function checkEventResourceAvailability(resourceKey, startAt, endAt
   })
   if (error) throw new Error(error.message)
   return { available: !data }
+}
+
+// ── Venue Packages ──────────────────────────────────────────────────────────
+const PACKAGES_CACHE = 'venue-packages'
+
+async function _getVenuePackages(category, activeOnly) {
+  const currentLodgeId = state.lodgeId
+  if (!currentLodgeId) return []
+  try {
+    const { data, error } = await state.supabase.rpc('get_venue_packages', {
+      p_lodge_id: currentLodgeId,
+      p_category: category || null,
+      p_active_only: activeOnly !== false
+    })
+    if (error) throw error
+    writeCache(PACKAGES_CACHE, data || [])
+    return data || []
+  } catch (e) {
+    const cached = readCache(PACKAGES_CACHE)
+    if (Array.isArray(cached) && (cached.length > 0 || !state.isOnline)) return cached
+    return []
+  }
+}
+export const getVenuePackages = (...args) => dedupePromise('getVenuePackages', () => _getVenuePackages(...args))
+
+function requireOnline() {
+  if (!state.isOnline) {
+    const err = new Error('Venue packages require an internet connection')
+    err.onlineOnly = true
+    throw err
+  }
+}
+
+export async function createVenuePackage(data) {
+  requireOnline()
+  const currentLodgeId = state.lodgeId
+  if (!currentLodgeId) throw new Error('No lodge selected')
+  const { data: result, error } = await state.supabase.rpc('create_venue_package', {
+    p_lodge_id: currentLodgeId,
+    p_payload: data
+  })
+  if (error) throw error
+  return result
+}
+
+export async function updateVenuePackage(id, data) {
+  requireOnline()
+  const currentLodgeId = state.lodgeId
+  if (!currentLodgeId) throw new Error('No lodge selected')
+  const { data: result, error } = await state.supabase.rpc('update_venue_package', {
+    p_id: id,
+    p_lodge_id: currentLodgeId,
+    p_payload: data
+  })
+  if (error) throw error
+  return result
+}
+
+export async function deleteVenuePackage(id) {
+  requireOnline()
+  const currentLodgeId = state.lodgeId
+  if (!currentLodgeId) throw new Error('No lodge selected')
+  const { data: result, error } = await state.supabase.rpc('delete_venue_package', {
+    p_id: id,
+    p_lodge_id: currentLodgeId
+  })
+  if (error) throw error
+  return result
+}
+
+export async function applyVenuePackageToEvent(packageId, eventBookingId, quantity, idempotencyKey) {
+  requireOnline()
+  const currentLodgeId = state.lodgeId
+  if (!currentLodgeId) throw new Error('No lodge selected')
+  const intentKey = String(idempotencyKey || '').trim()
+  if (intentKey.length < 8 || intentKey.length > 128) {
+    throw new Error('A stable idempotency key between 8 and 128 characters is required')
+  }
+  const { data: result, error } = await state.supabase.rpc('apply_venue_package_to_event', {
+    p_package_id: packageId,
+    p_event_booking_id: eventBookingId,
+    p_lodge_id: currentLodgeId,
+    p_quantity: quantity || 1,
+    p_idempotency_key: intentKey
+  })
+  if (error) throw error
+  return result
 }
 
 export { VALID_EVENT_TYPES, VALID_SCOPES, VALID_EVENT_STATUSES }

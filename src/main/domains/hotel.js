@@ -47,26 +47,75 @@ async function fetchBookingsByDateFilter(filterFn) {
   return bookings.filter(filterFn).map(annotateBooking).filter(Boolean);
 }
 
+function bookingStatus(b) {
+  return String(b?.status || '').toLowerCase();
+}
+
+function isCancelled(b) {
+  return bookingStatus(b) === 'cancelled';
+}
+
+function isCheckedIn(b) {
+  const s = bookingStatus(b);
+  return s === 'checked_in' || s === 'in_house' || s === 'staying';
+}
+
+function isCheckedOut(b) {
+  return bookingStatus(b) === 'checked_out';
+}
+
+function balanceOutstanding(b) {
+  return Math.max(
+    0,
+    Number(b?.total_amount || 0) + Number(b?.charges_total || 0) - Number(b?.amount_paid || 0)
+  );
+}
+
+function isVip(b) {
+  return Boolean(
+    b?.is_vip
+    || b?.vip
+    || b?.customers?.is_vip
+    || b?.customers?.vip
+    || String(b?.special_requests || '').toLowerCase().includes('vip')
+    || String(b?.notes || '').toLowerCase().includes('vip')
+  );
+}
+
+function isUnassignedRoom(b) {
+  return !b?.room_id && !b?.rooms?.id && !b?.room_number && !b?.rooms?.room_number;
+}
+
+function roomStatusOf(b) {
+  return String(b?.room_status || b?.rooms?.status || '').toLowerCase();
+}
+
+/** Expected arrivals today that have not checked in yet. */
 function _getArrivals() {
   const today = todayKey();
   return fetchBookingsByDateFilter((b) => {
-    if (!b || b.status === 'cancelled') return false;
-    return String(b.check_in || '') === today;
+    if (!b || isCancelled(b) || isCheckedOut(b)) return false;
+    if (String(b.check_in || '') !== today) return false;
+    // Still show checked-in arrivals so the board can mark them complete.
+    return true;
   });
 }
 
+/** Expected departures today (checked-in or still marked in-house). */
 function _getDepartures() {
   const today = todayKey();
   return fetchBookingsByDateFilter((b) => {
-    if (!b || b.status === 'cancelled') return false;
-    return String(b.check_out || '') === today;
+    if (!b || isCancelled(b)) return false;
+    if (String(b.check_out || '') !== today) return false;
+    return true;
   });
 }
 
 function _getInHouse() {
   const today = todayKey();
   return fetchBookingsByDateFilter((b) => {
-    if (!b || b.status === 'cancelled') return false;
+    if (!b || isCancelled(b) || isCheckedOut(b)) return false;
+    if (isCheckedIn(b)) return true;
     return String(b.check_in || '') <= today && String(b.check_out || '') > today;
   });
 }
@@ -74,9 +123,11 @@ function _getInHouse() {
 function _getNoShows() {
   const today = todayKey();
   return fetchBookingsByDateFilter((b) => {
-    if (!b || b.status === 'cancelled' || b.status === 'checked_in' || b.status === 'checked_out') return false;
-    const status = String(b.status || '').toLowerCase();
-    return status === 'no_show' || status === 'no-show' || String(b.check_in || '') < today;
+    if (!b || isCancelled(b) || isCheckedIn(b) || isCheckedOut(b)) return false;
+    const status = bookingStatus(b);
+    if (status === 'no_show' || status === 'no-show') return true;
+    // Overdue arrival not yet checked in / no-showed
+    return String(b.check_in || '') < today && (status === 'confirmed' || status === 'booked' || status === 'reserved' || status === 'pending' || !status);
   });
 }
 
@@ -85,40 +136,100 @@ async function _getDashboardStats() {
   const allBookings = await getAllBookings();
   const today = todayKey();
 
-  const roomCounts = { available: 0, occupied: 0, dirty: 0, maintenance: 0, reserved: 0, total: 0 };
+  const roomCounts = { available: 0, occupied: 0, dirty: 0, maintenance: 0, reserved: 0, ooo: 0, total: 0 };
   for (const room of rooms) {
     const status = String(room.status || 'available').toLowerCase();
-    if (roomCounts[status] !== undefined) roomCounts[status]++;
-    else roomCounts.available++;
-    roomCounts.total++;
+    if (status === 'out_of_order' || status === 'ooo' || status === 'out_of_service') {
+      roomCounts.ooo += 1;
+      roomCounts.maintenance += 1;
+    } else if (roomCounts[status] !== undefined) {
+      roomCounts[status] += 1;
+    } else {
+      roomCounts.available += 1;
+    }
+    roomCounts.total += 1;
   }
 
-  const arrivals = allBookings.filter((b) => b && b.status !== 'cancelled' && String(b.check_in || '') === today);
-  const departures = allBookings.filter((b) => b && b.status !== 'cancelled' && String(b.check_out || '') === today);
-  const inHouse = allBookings.filter((b) => b && b.status !== 'cancelled' && String(b.check_in || '') <= today && String(b.check_out || '') > today);
-  const noShows = allBookings.filter((b) => {
-    if (!b || b.status === 'cancelled' || b.status === 'checked_in' || b.status === 'checked_out') return false;
-    const status = String(b.status || '').toLowerCase();
-    return status === 'no_show' || status === 'no-show' || String(b.check_in || '') < today;
+  const arrivalsRaw = allBookings.filter((b) => b && !isCancelled(b) && !isCheckedOut(b) && String(b.check_in || '') === today);
+  const departuresRaw = allBookings.filter((b) => b && !isCancelled(b) && String(b.check_out || '') === today);
+  const inHouseRaw = allBookings.filter((b) => {
+    if (!b || isCancelled(b) || isCheckedOut(b)) return false;
+    if (isCheckedIn(b)) return true;
+    return String(b.check_in || '') <= today && String(b.check_out || '') > today;
   });
+  const noShowsRaw = allBookings.filter((b) => {
+    if (!b || isCancelled(b) || isCheckedIn(b) || isCheckedOut(b)) return false;
+    const status = bookingStatus(b);
+    if (status === 'no_show' || status === 'no-show') return true;
+    return String(b.check_in || '') < today && (status === 'confirmed' || status === 'booked' || status === 'reserved' || status === 'pending' || !status);
+  });
+
+  const annotate = (rows) => rows.map(annotateBooking).filter(Boolean);
+  const arrivals = annotate(arrivalsRaw);
+  const departures = annotate(departuresRaw);
+  const inHouse = annotate(inHouseRaw);
+  const noShows = annotate(noShowsRaw);
+
+  const pendingArrivals = arrivals.filter((b) => !isCheckedIn(b));
+  const pendingDepartures = departures.filter((b) => !isCheckedOut(b));
+  const unassignedArrivals = pendingArrivals.filter(isUnassignedRoom);
+  const dirtyBlockers = pendingArrivals.filter((b) => {
+    const rs = roomStatusOf(b);
+    return rs === 'dirty' || rs === 'cleaning' || rs === 'inspect' || rs === 'inspection';
+  });
+  const maintenanceBlockers = pendingArrivals.filter((b) => {
+    const rs = roomStatusOf(b);
+    return rs === 'maintenance' || rs === 'out_of_order' || rs === 'ooo' || rs === 'out_of_service';
+  });
+  const outstandingBalances = inHouse
+    .map((b) => ({ ...b, _balance: balanceOutstanding(b) }))
+    .filter((b) => b._balance > 0.009)
+    .sort((a, b) => b._balance - a._balance);
+  const vipArrivals = arrivals.filter(isVip);
+  const specialRequests = [...pendingArrivals, ...inHouse].filter((b) =>
+    String(b.special_requests || b.notes || '').trim().length > 0
+  );
 
   const occupancyPercent = roomCounts.total > 0
     ? Math.round(((roomCounts.occupied + roomCounts.reserved) / roomCounts.total) * 100)
     : 0;
 
-  const outstandingTotal = inHouse.reduce((sum, b) => {
-    return sum + Math.max(0, Number(b.total_amount || 0) + Number(b.charges_total || 0) - Number(b.amount_paid || 0));
-  }, 0);
+  const outstandingTotal = outstandingBalances.reduce((sum, b) => sum + b._balance, 0);
 
   return {
     rooms: roomCounts,
     occupancyPercent,
     arrivals: arrivals.length,
+    pendingArrivals: pendingArrivals.length,
     departures: departures.length,
+    pendingDepartures: pendingDepartures.length,
     inHouse: inHouse.length,
     noShows: noShows.length,
+    unassignedArrivals: unassignedArrivals.length,
+    dirtyBlockers: dirtyBlockers.length,
+    maintenanceBlockers: maintenanceBlockers.length,
+    outstandingBalanceCount: outstandingBalances.length,
     outstandingTotal,
-    date: today
+    vipArrivals: vipArrivals.length,
+    // Values are derived from live booking/room cache via the same domain reads
+    // as the rest of the front desk — labelled estimates until night-audit KPIs are used.
+    balanceSource: 'booking_ledger_estimate',
+    occupancySource: 'room_status_estimate',
+    date: today,
+    lists: {
+      arrivals,
+      departures,
+      inHouse,
+      noShows,
+      pendingArrivals,
+      pendingDepartures,
+      unassignedArrivals,
+      dirtyBlockers,
+      maintenanceBlockers,
+      outstandingBalances: outstandingBalances.slice(0, 20),
+      vipArrivals,
+      specialRequests: specialRequests.slice(0, 20)
+    }
   };
 }
 
@@ -180,6 +291,8 @@ async function _getHotelKpis(days = 7) {
   const adr = soldRoomNights > 0 ? estimatedRoomRevenue / soldRoomNights : 0;
   const revPar = roomNightsAvailable > 0 ? estimatedRoomRevenue / roomNightsAvailable : 0;
 
+  // Forward-looking board KPIs from local booking/room cache — not night-audit or ledger authority.
+  // Prefer advancedReports RPC occupancy/rate/debtor surfaces for ledger-derived historical KPIs.
   return {
     days: windowDays,
     totalRooms,
@@ -194,7 +307,11 @@ async function _getHotelKpis(days = 7) {
     arrivals,
     departures,
     noShows,
-    daily
+    daily,
+    occupancySource: 'booking_cache_estimate',
+    revenueSource: 'booking_cache_estimate',
+    kpiSource: 'booking_cache_estimate',
+    authority: 'estimate'
   };
 }
 

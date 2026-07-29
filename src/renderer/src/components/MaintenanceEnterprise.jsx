@@ -20,16 +20,39 @@ export default function MaintenanceEnterprise() {
     setLoading(true)
     setError(null)
     try {
+      const warn = []
+      const settle = async (label, promise) => {
+        try {
+          return await promise
+        } catch (e) {
+          warn.push(`${label}: ${e?.message || 'failed'}`)
+          return null
+        }
+      }
+      if (!window.api?.maintenanceEnterprise?.getMaintenanceDashboard) {
+        throw new Error('Maintenance enterprise API is not available')
+      }
       const [dash, schedules, due] = await Promise.all([
-        window.api.maintenanceEnterprise.getMaintenanceDashboard().catch(() => null),
-        window.api.maintenanceEnterprise.getAllPreventiveSchedules().catch(() => []),
-        window.api.maintenanceEnterprise.getDuePreventive(new Date().toISOString().slice(0, 10)).catch(() => [])
+        settle('Dashboard', window.api.maintenanceEnterprise.getMaintenanceDashboard()),
+        settle('Schedules', window.api.maintenanceEnterprise.getAllPreventiveSchedules()),
+        settle('Due preventive', window.api.maintenanceEnterprise.getDuePreventive(new Date().toISOString().slice(0, 10)))
       ])
+      if (dash == null && schedules == null && due == null) {
+        setError(warn.join(' · ') || 'Failed to load maintenance data')
+        setDashboard(null)
+        setPreventiveSchedules([])
+        setDuePreventive([])
+        return
+      }
       setDashboard(dash)
       setPreventiveSchedules(Array.isArray(schedules) ? schedules : [])
       setDuePreventive(Array.isArray(due) ? due : [])
+      if (warn.length) setError(`Partial load: ${warn.join(' · ')}`)
     } catch (err) {
       setError(err?.message || 'Failed to load maintenance data')
+      setDashboard(null)
+      setPreventiveSchedules([])
+      setDuePreventive([])
     } finally {
       setLoading(false)
     }

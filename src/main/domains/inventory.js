@@ -56,6 +56,22 @@ function movementSort(a, b) {
   return String(b.created_at || b.date || '').localeCompare(String(a.created_at || a.date || ''));
 }
 
+function localDateBoundary(value, endExclusive = false) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || ''))) return null;
+  const boundary = new Date(`${value}T00:00:00`);
+  if (endExclusive) boundary.setDate(boundary.getDate() + 1);
+  return boundary.toISOString();
+}
+
+function filterMovementsByDate(rows = [], startDate, endDate) {
+  const start = localDateBoundary(startDate);
+  const end = localDateBoundary(endDate, true);
+  return rows.filter((row) => {
+    const createdAt = String(row?.created_at || '');
+    return (!start || createdAt >= start) && (!end || createdAt < end);
+  });
+}
+
 function movementIdentity(row = {}) {
   if (row.reference_type && row.reference_id && row.item_id && row.movement_type) {
     return `${row.reference_type}:${row.reference_id}:${row.item_id}:${row.movement_type}`;
@@ -188,7 +204,7 @@ export async function createInventoryItem(data) {
     unit: data.unit || 'unit',
     current_stock: Number(data.current_stock) || 0,
     reorder_level: Number(data.reorder_level) || 0,
-    latest_unit_cost: 0,
+    latest_unit_cost: Number(data.unit_cost) || 0,
     selling_price: Number(data.selling_price) || 0,
     outlet_id: data.outlet_id || null
   };
@@ -241,6 +257,7 @@ export async function updateInventoryItem(id, data) {
     category: data.category,
     unit: data.unit,
     reorder_level: Number(data.reorder_level) || 0,
+    ...(Object.prototype.hasOwnProperty.call(data, 'unit_cost') ? { latest_unit_cost: Number(data.unit_cost) || 0 } : {}),
     ...(Object.prototype.hasOwnProperty.call(data, 'selling_price') ?
     { selling_price: Number(data.selling_price) || 0 } :
     {}),
@@ -275,6 +292,13 @@ export async function updateInventoryItem(id, data) {
     });
     if (error) throw new Error(error.message);
     if (!result?.success) throw new Error(result?.error || 'Could not update inventory item');
+    if (Object.prototype.hasOwnProperty.call(data, 'unit_cost')) {
+      const { data: costResult, error: costError } = await state.supabase.rpc('set_inventory_unit_cost', {
+        p_item_id: id, p_lodge_id: state.lodgeId, p_unit_cost: Number(data.unit_cost) || 0
+      });
+      if (costError) throw new Error(costError.message);
+      if (!costResult?.success) throw new Error(costResult?.error || 'Could not update the unit cost');
+    }
     const cached = readCache('inventory-items');
     writeCache('inventory-items', cached.map((row) => row.id === id ? { ...row, ...update } : row));
     return { success: true };
@@ -671,6 +695,8 @@ function buildDerivedInventoryMovements() {
 
 export async function getInventoryMovements(filters = {}) {
   const itemId = filters?.item_id || filters?.itemId || null;
+  const startDate = filters?.start_date || filters?.startDate || null;
+  const endDate = filters?.end_date || filters?.endDate || startDate || null;
   const limit = Math.max(1, Math.min(500, Number(filters?.limit || 200)));
   if (state.isOnline) {
     try {
@@ -681,6 +707,10 @@ export async function getInventoryMovements(filters = {}) {
       order('created_at', { ascending: false }).
       limit(limit);
       if (itemId) query = query.eq('item_id', itemId);
+      const startBoundary = localDateBoundary(startDate);
+      const endBoundary = localDateBoundary(endDate, true);
+      if (startBoundary) query = query.gte('created_at', startBoundary);
+      if (endBoundary) query = query.lt('created_at', endBoundary);
       const { data, error } = await query;
       if (error) throw error;
       const liveRows = decorateMovementRows(data || []);
@@ -695,6 +725,7 @@ export async function getInventoryMovements(filters = {}) {
 
   return buildDerivedInventoryMovements().
   filter((row) => !itemId || row.item_id === itemId).
+  filter((row) => filterMovementsByDate([row], startDate, endDate).length > 0).
   slice(0, limit);
 }
 

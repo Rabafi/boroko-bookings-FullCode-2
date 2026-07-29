@@ -1,4 +1,4 @@
-# Boroko Manager PWA
+# Tsa Bonno HospitalityOS Manager PWA
 
 The Manager PWA is the mobile operations surface for lodge managers and admins. It provides dashboards, bookings visibility, alerts, reports, POS reporting, maintenance, inventory, expenses, day-use, conference, quotation, guest intelligence, audit visibility, and support inbox workflows.
 
@@ -18,7 +18,7 @@ Or run inside this folder:
 
 ## Production Notes
 
-- The app uses Supabase Auth plus Boroko app-session validation.
+- The app uses Supabase Auth plus Tsa Bonno app-session validation.
 - The PWA is not globally read-only. Approved operational changes use Supabase RPCs and capability checks.
 - High-risk payment, refund, customer-credit allocation, booking-reschedule, and similar financial actions remain desktop-only unless a dedicated server-authorized PWA contract explicitly permits them.
 - Some approved operational actions can be queued in the PWA's device-local queue. The queue is lodge-scoped browser `localStorage`, not IndexedDB or the desktop queue.

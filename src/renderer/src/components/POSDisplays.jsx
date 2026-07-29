@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Check, Clock, Monitor, RefreshCw, Utensils } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { ArrowLeft, Check, Clock, Monitor, RefreshCw, Utensils, X } from 'lucide-react'
 import { useSettings } from '../app-context'
+import { isRestaurantOnly } from '../../../shared/propertyTypes'
 
 const DISPLAY_REFRESH_MS = 5000
 const currencyFallback = 'P'
@@ -26,26 +28,93 @@ function filterActiveTickets(tickets = []) {
   return tickets.filter((ticket) => !['served', 'cancelled'].includes(String(ticket.status || '').toLowerCase()))
 }
 
-function DisplayShell({ title, subtitle, children, right }) {
+/** Full-screen display routes sit outside the HPOS dock — always provide an exit. */
+function useDisplayExitPath() {
   const { settings } = useSettings()
+  const propertyType = settings?.property_type || settings?.business_type || 'lodge'
+  return isRestaurantOnly(propertyType) ? '/hpos/pos' : '/pos'
+}
+
+function DisplayShell({ title, subtitle, children, right, exitLabel = 'Exit display', onExit }) {
+  const { settings } = useSettings()
+  const navigate = useNavigate()
+  const defaultExit = useDisplayExitPath()
+
+  const handleExit = useCallback(() => {
+    if (typeof onExit === 'function') {
+      onExit()
+      return
+    }
+    // Always leave display routes explicitly — history.back can leave the
+    // operator stuck on a full-screen board with no HPOS dock.
+    navigate(defaultExit, { replace: true })
+  }, [defaultExit, navigate, onExit])
+
+  useEffect(() => {
+    const onKey = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        handleExit()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [handleExit])
+
   return (
     <div className="min-h-screen bg-slate-950 text-white">
       <div className="flex min-h-screen flex-col">
-        <header className="flex shrink-0 items-center justify-between border-b border-white/10 bg-slate-900 px-8 py-5">
-          <div className="min-w-0">
-            <p className="text-sm font-bold uppercase tracking-[0.22em] text-emerald-300">{settings?.lodge_name || settings?.company_name || 'Boroko Bookings'}</p>
-            <h1 className="mt-1 truncate text-4xl font-bold">{title}</h1>
-            {subtitle ? <p className="mt-1 text-base text-slate-300">{subtitle}</p> : null}
+        <header className="flex shrink-0 items-center justify-between gap-4 border-b border-white/10 bg-slate-900 px-6 py-4 sm:px-8 sm:py-5">
+          <div className="flex min-w-0 items-start gap-3 sm:gap-4">
+            <button
+              type="button"
+              onClick={handleExit}
+              className="mt-1 inline-flex shrink-0 items-center gap-2 rounded-2xl border border-white/15 bg-white/10 px-3 py-2.5 text-sm font-bold text-white transition hover:bg-white/20 active:scale-[0.98] sm:px-4"
+              title={`${exitLabel} (Esc)`}
+              aria-label={exitLabel}
+            >
+              <ArrowLeft size={18} />
+              <span className="hidden sm:inline">{exitLabel}</span>
+            </button>
+            <div className="min-w-0">
+              <p className="text-sm font-bold uppercase tracking-[0.22em] text-orange-300">{settings?.lodge_name || settings?.company_name || 'Tsa Bonno Restaurant & Bar POS'}</p>
+              <h1 className="mt-1 truncate text-3xl font-bold sm:text-4xl">{title}</h1>
+              {subtitle ? <p className="mt-1 text-sm text-slate-300 sm:text-base">{subtitle}</p> : null}
+              <p className="mt-1 text-xs text-slate-500">Press Esc to leave this board</p>
+            </div>
           </div>
-          <div className="shrink-0">{right}</div>
+          <div className="flex shrink-0 items-center gap-2">
+            {right}
+            <button
+              type="button"
+              onClick={handleExit}
+              className="inline-flex items-center gap-2 rounded-2xl bg-white px-4 py-3 text-sm font-black text-slate-950 transition hover:bg-slate-100 active:scale-[0.98] sm:px-5"
+            >
+              <X size={16} />
+              Exit
+            </button>
+          </div>
         </header>
-        <main className="min-h-0 flex-1 overflow-auto p-6">{children}</main>
+        <main className="min-h-0 flex-1 overflow-auto p-6 pb-28">{children}</main>
+        {/* Touch-friendly sticky exit — display routes have no app dock. */}
+        <div className="pointer-events-none fixed inset-x-0 bottom-0 z-50 flex justify-center p-4">
+          <button
+            type="button"
+            onClick={handleExit}
+            className="pointer-events-auto inline-flex min-h-[52px] min-w-[220px] items-center justify-center gap-2 rounded-2xl bg-white px-6 py-3 text-base font-black text-slate-950 shadow-[0_16px_40px_rgba(0,0,0,0.45)] transition hover:bg-slate-100 active:scale-[0.98]"
+          >
+            <ArrowLeft size={18} />
+            {exitLabel}
+          </button>
+        </div>
       </div>
     </div>
   )
 }
 
 export function CustomerDisplay() {
+  const navigate = useNavigate()
+  const exitPath = useDisplayExitPath()
   const { settings } = useSettings()
   const currency = settings?.currency || currencyFallback
   const [display, setDisplay] = useState(null)
@@ -77,7 +146,9 @@ export function CustomerDisplay() {
   return (
     <DisplayShell
       title="Customer Display"
-      subtitle={hasOrder ? (display?.table_name ? `Table ${display.table_name}` : 'Current order') : 'Ready for the next guest'}
+      subtitle={hasOrder ? (display?.table_name ? `Table ${display.table_name}` : 'Current order') : 'Ready for the next customer'}
+      exitLabel="Back to POS"
+      onExit={() => navigate(exitPath, { replace: true })}
       right={<div className="text-right text-sm text-slate-300">{new Date(now).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>}
     >
       {loading ? (
@@ -142,7 +213,7 @@ function TicketCard({ ticket, now, onStatus }) {
     <article className={`flex min-h-[22rem] flex-col rounded-3xl border-2 p-5 shadow-2xl ${statusTone(status)}`}>
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
-          <p className="truncate text-3xl font-black">{ticket.table_name || ticket.tab_name || (ticket.room_id ? 'Room order' : 'POS order')}</p>
+          <p className="truncate text-3xl font-black">{ticket.table_name || ticket.tab_name || 'POS order'}</p>
           <p className="mt-2 flex items-center gap-2 text-base font-bold opacity-80">
             <Clock size={18} /> {formatElapsed(ticket.created_at, now)}
           </p>
@@ -186,15 +257,19 @@ function TicketCard({ ticket, now, onStatus }) {
 }
 
 export function PrepDisplay({ station = 'kitchen' }) {
+  const navigate = useNavigate()
+  const exitPath = useDisplayExitPath()
   const [tickets, setTickets] = useState([])
   const [loading, setLoading] = useState(true)
   const [now, setNow] = useState(Date.now())
   const [busyId, setBusyId] = useState('')
-  const title = station === 'bar' ? 'Bar Tickets' : 'Kitchen Tickets'
+  const isBar = station === 'bar'
+  const title = isBar ? 'Bar board' : 'Kitchen board'
+  const exitLabel = isBar ? 'Back to sell' : 'Back to POS'
 
   const load = useCallback(async () => {
     try {
-      const rows = await window.api?.pos?.getTickets?.({ station })
+      const rows = await window.api?.pos?.getTickets?.({ station, status: 'active' })
       setTickets(filterActiveTickets(rows || []))
     } finally {
       setLoading(false)
@@ -203,11 +278,18 @@ export function PrepDisplay({ station = 'kitchen' }) {
 
   useEffect(() => {
     load()
-    const interval = window.setInterval(load, DISPLAY_REFRESH_MS)
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === 'visible') load()
+    }, DISPLAY_REFRESH_MS)
     const clock = window.setInterval(() => setNow(Date.now()), 1000)
+    const handleVisible = () => {
+      if (document.visibilityState === 'visible') load()
+    }
+    document.addEventListener('visibilitychange', handleVisible)
     return () => {
       window.clearInterval(interval)
       window.clearInterval(clock)
+      document.removeEventListener('visibilitychange', handleVisible)
     }
   }, [load])
 
@@ -236,8 +318,10 @@ export function PrepDisplay({ station = 'kitchen' }) {
   return (
     <DisplayShell
       title={title}
-      subtitle="Live prep board"
-      right={<button type="button" onClick={load} className="inline-flex items-center gap-2 rounded-2xl bg-white px-5 py-3 text-sm font-black text-slate-950"><RefreshCw size={16} /> Refresh</button>}
+      subtitle={isBar ? 'Live drink tickets — exit anytime to keep selling' : 'Live prep board — exit anytime to return to POS'}
+      exitLabel={exitLabel}
+      onExit={() => navigate(exitPath, { replace: true })}
+      right={<button type="button" onClick={load} className="inline-flex items-center gap-2 rounded-2xl border border-white/20 bg-white/10 px-4 py-3 text-sm font-black text-white hover:bg-white/20 sm:px-5"><RefreshCw size={16} /> Refresh</button>}
     >
       {loading ? (
         <div className="flex min-h-[70vh] items-center justify-center text-slate-300">

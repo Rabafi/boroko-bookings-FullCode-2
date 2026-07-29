@@ -64,6 +64,40 @@ body {
   letter-spacing: -0.01em;
 }
 
+html.has-app-window-titlebar body {
+  padding-top: 36px;
+}
+
+.app-window-titlebar {
+  position: fixed;
+  inset: 0 0 auto 0;
+  z-index: 100000;
+  height: 36px;
+  padding: 0 150px 0 14px;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  color: #ffffff;
+  background: #102a22;
+  font-family: 'Segoe UI', sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 36px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  user-select: none;
+  -webkit-app-region: drag;
+}
+
+html[data-product="hotel"] .app-window-titlebar {
+  background: #7a432b;
+}
+
+html[data-product="hospitality-pos"] .app-window-titlebar {
+  background: #8f3524;
+}
+
 button,
 input,
 select,

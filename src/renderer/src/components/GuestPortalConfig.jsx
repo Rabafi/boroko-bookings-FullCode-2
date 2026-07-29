@@ -25,22 +25,49 @@ export default function GuestPortalConfig() {
   const [requiredUploadFields, setRequiredUploadFields] = useState([])
   const [newField, setNewField] = useState('')
 
+  const [staleWarning, setStaleWarning] = useState('')
+  const [requestsError, setRequestsError] = useState('')
+
   const load = useCallback(async () => {
     setLoading(true)
     setError('')
+    setStaleWarning('')
+    setRequestsError('')
     try {
-      const [cfg, reqs] = await Promise.all([
+      const [cfgResult, reqsResult] = await Promise.allSettled([
         window.api.guestPortal.getConfig(),
         window.api.guestPortal.getPendingRequests()
       ])
-      if (cfg) {
-        setConfig(cfg)
-        setPortalEnabled(cfg.portal_enabled || false)
-        setAllowedActions(Array.isArray(cfg.allowed_actions) ? cfg.allowed_actions : ['view_booking'])
-        setBranding(cfg.branding || { logo_url: '', colors: { primary: '#1e293b', accent: '#059669' }, terms_text: '' })
-        setRequiredUploadFields(Array.isArray(cfg.required_upload_fields) ? cfg.required_upload_fields : [])
+
+      if (cfgResult.status === 'fulfilled') {
+        const cfg = cfgResult.value
+        if (cfg) {
+          setConfig(cfg)
+          setPortalEnabled(cfg.portal_enabled || false)
+          setAllowedActions(Array.isArray(cfg.allowed_actions) ? cfg.allowed_actions : ['view_booking'])
+          setBranding(cfg.branding || { logo_url: '', colors: { primary: '#1e293b', accent: '#059669' }, terms_text: '' })
+          setRequiredUploadFields(Array.isArray(cfg.required_upload_fields) ? cfg.required_upload_fields : [])
+          if (cfg.stale || cfg.fromCache || cfg.warning) {
+            setStaleWarning(cfg.warning || 'Showing cached portal configuration')
+          }
+        }
+      } else {
+        setError(cfgResult.reason?.message || 'Failed to load portal config')
       }
-      setPendingRequests(Array.isArray(reqs) ? reqs : [])
+
+      if (reqsResult.status === 'fulfilled') {
+        const reqs = reqsResult.value
+        setPendingRequests(Array.isArray(reqs) ? reqs : (reqs?.cached || []))
+      } else {
+        const reason = reqsResult.reason
+        if (reason?.cached) {
+          setPendingRequests(Array.isArray(reason.cached) ? reason.cached : [])
+          setRequestsError(reason.message || 'Showing cached pending requests')
+        } else {
+          setPendingRequests([])
+          setRequestsError(reason?.message || 'Failed to load pending guest requests')
+        }
+      }
     } catch (err) {
       setError(err?.message || 'Failed to load portal config')
     } finally {
@@ -110,9 +137,13 @@ export default function GuestPortalConfig() {
       </div>
 
       {error && <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error}</div>}
+      {staleWarning && <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">{staleWarning}</div>}
       {success && <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-700">{success}</div>}
 
       <section className="bb-card p-5">
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 mb-4 text-xs text-slate-600">
+          This screen configures the guest portal. Guests use the public booking-site portal at <code className="font-mono">/portal?token=…</code> after a session is created.
+        </div>
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <Globe size={20} className="text-slate-600" />
@@ -195,7 +226,10 @@ export default function GuestPortalConfig() {
           <button onClick={load} className="btn-ghost p-2"><RefreshCw size={15} /></button>
         </div>
         <div className="mt-4 space-y-2">
-          {pendingRequests.length === 0 && <p className="text-sm text-slate-500">No pending requests.</p>}
+          {requestsError && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">{requestsError}</div>
+          )}
+          {pendingRequests.length === 0 && !requestsError && <p className="text-sm text-slate-500">No pending requests.</p>}
           {pendingRequests.map((req) => (
             <div key={req.id} className="flex items-center justify-between rounded-xl border border-slate-200 p-4">
               <div className="min-w-0">

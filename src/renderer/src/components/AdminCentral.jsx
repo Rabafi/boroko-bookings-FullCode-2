@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo } from 'react'
+import { useEffect, useState, useCallback, useMemo, lazy, Suspense } from 'react'
 import { useAuth } from '../app-context'
 import { safeLoadAll, hasPartialFailures, getFailureSummary } from '../utils/safeLoad'
 import { timeAgo as sharedTimeAgo, formatMoney, fmtDate } from '../utils/timeAgo'
@@ -6,21 +6,21 @@ import { useToast } from './shared/Toast'
 import { DarkConfirmDialog } from './shared/DarkConfirmDialog'
 import { useTableSort, SortableHeader } from '../hooks/useTableSort'
 import { BarChart, DonutChart, Sparkline, HorizontalBar } from './shared/Charts'
-import LicensingWorkbench from './LicensingWorkbench'
-import ExecutiveCockpit from './ExecutiveCockpit'
-import Client360 from './Client360'
-import AccountingDashboard from './AccountingDashboard'
-import AdminToday from './AdminToday'
-import GlobalSearch from './GlobalSearch'
-import BulkActions from './BulkActions'
-import SystemHealth from './SystemHealth'
-import Notifications from './Notifications'
-import Fleet from './Fleet'
-import Releases from './Releases'
-import SurfaceIntelligence from './SurfaceIntelligence'
-import SubscriptionRequests from './SubscriptionRequests'
-import EnterpriseWorkflowWorkspace from './EnterpriseWorkflowWorkspace'
-import PaymentGatewayConfig from './PaymentGatewayConfig'
+const LicensingWorkbench = lazy(() => import('./LicensingWorkbench'))
+const ExecutiveCockpit = lazy(() => import('./ExecutiveCockpit'))
+const Client360 = lazy(() => import('./Client360'))
+const AccountingDashboard = lazy(() => import('./AccountingDashboard'))
+const AdminToday = lazy(() => import('./AdminToday'))
+const GlobalSearch = lazy(() => import('./GlobalSearch'))
+const BulkActions = lazy(() => import('./BulkActions'))
+const SystemHealth = lazy(() => import('./SystemHealth'))
+const Notifications = lazy(() => import('./Notifications'))
+const Fleet = lazy(() => import('./Fleet'))
+const Releases = lazy(() => import('./Releases'))
+const SurfaceIntelligence = lazy(() => import('./SurfaceIntelligence'))
+const SubscriptionRequests = lazy(() => import('./SubscriptionRequests'))
+const EnterpriseWorkflowWorkspace = lazy(() => import('./EnterpriseWorkflowWorkspace'))
+const PaymentGatewayConfig = lazy(() => import('./PaymentGatewayConfig'))
 import Pagination, { usePagination } from './shared/Pagination'
 import {
   MONTHLY_USAGE_RESET_COPY,
@@ -51,6 +51,7 @@ import { formatLocalDate, localToday } from '../utils/localDate'
 import { TRIAL_LENGTH_DAYS, DEFAULT_TAX_RATE, ACTION_ICON } from '../constants/adminConstants'
 import ErrorBoundary from './shared/ErrorBoundary'
 import { BIZ_EMOJI, BIZ_LABEL, ALL_FEATURES, FEAT_LABEL, INVOICE_CURRENCIES } from '../constants/adminConstants'
+import { resolveProductFamily } from '../../../shared/productIdentity'
 
 // ── Subscription Tiers ────────────────────────────────────────────────────────
 const TIERS = SUBSCRIPTION_PLAN_ORDER
@@ -325,8 +326,10 @@ function Dashboard({ companies, licenses, tickets, activityLogs, onOpenCompany }
   const expiring = licenses.filter(l => l.expires_at && l.is_active && new Date(l.expires_at) > new Date() && (new Date(l.expires_at) - new Date()) < 30 * 864e5).length
   const overdue = licenses.filter(l => l.next_due_date && l.next_due_date < today && l.payment_status !== 'free' && l.is_active).length
   const activeFinancial = licenses.filter(l => l.is_active && l.payment_status !== 'free')
+  const financialCurrencies = [...new Set(activeFinancial.map((license) => String(license.currency || 'BWP').toUpperCase()))]
+  const financialCurrency = financialCurrencies.length === 1 ? financialCurrencies[0] : financialCurrencies.length > 1 ? 'MIXED' : 'BWP'
   const mrr = activeFinancial.reduce((sum, l) => {
-    const amt = Number(l.amount || 0)
+    const amt = Number(l.monthly_fee || 0)
     if (l.billing_cycle === 'annual') return sum + (amt / 12)
     return sum + amt
   }, 0)
@@ -379,7 +382,7 @@ function Dashboard({ companies, licenses, tickets, activityLogs, onOpenCompany }
       <div>
         <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-2 font-semibold">Financial Health</p>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <StatCard label="Monthly Revenue" value={`$${mrr.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`} color="text-green-400" />
+          <StatCard label="Monthly Revenue" value={`${financialCurrency} ${mrr.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`} color="text-green-400" />
           <StatCard label="Paying Customers" value={activeFinancial.length} color="text-green-400" />
           <StatCard label="Overdue Payments" value={overdue} color={overdue > 0 ? 'text-red-400' : 'text-gray-500'} />
           <StatCard label="Active Licenses" value={active} color="text-green-400" />
@@ -495,6 +498,7 @@ function Companies({ companies, licenses, loading, onReload }) {
   const [detailTab, setDetailTab] = useState('overview')
   const [stats, setStats] = useState(null)
   const [statsLoading, setStatsLoading] = useState(false)
+  const [statsError, setStatsError] = useState('')
   const [usageStatsByLodge, setUsageStatsByLodge] = useState({})
   const [peakBookingUsageByLodge, setPeakBookingUsageByLodge] = useState({})
   const [usageFilter, setUsageFilter] = useState('all')
@@ -510,6 +514,8 @@ function Companies({ companies, licenses, loading, onReload }) {
   const [lifecycleMode, setLifecycleMode] = useState('archive') // 'archive' | 'restore' | 'delete'
   const [companyTarget, setCompanyTarget] = useState(null)
   const [confirmName, setConfirmName] = useState('')
+  const [lifecycleReason, setLifecycleReason] = useState('')
+  const [lifecycleOperationId, setLifecycleOperationId] = useState('')
   const [lifecycleLoading, setLifecycleLoading] = useState(false)
   const [repairLoading, setRepairLoading] = useState(false)
 
@@ -521,6 +527,7 @@ function Companies({ companies, licenses, loading, onReload }) {
   const [pwaTarget, setPwaTarget] = useState(null)
   const [companyUsers, setCompanyUsers] = useState([])
   const [pwaUsersLoading, setPwaUsersLoading] = useState(false)
+  const [pwaUsersError, setPwaUsersError] = useState('')
   const [pwaSaving, setPwaSaving] = useState(false)
   const [selectedCompanyUserId, setSelectedCompanyUserId] = useState('')
   const [pwaEnabled, setPwaEnabled] = useState(false)
@@ -547,8 +554,10 @@ function Companies({ companies, licenses, loading, onReload }) {
 
   const loadCompanyUsers = useCallback(async (targetLodgeId) => {
     setPwaUsersLoading(true)
+    setPwaUsersError('')
     try {
-      const rows = await window.api.admin.getCompanyUsers(targetLodgeId).catch(() => [])
+      const rows = await window.api.admin.getCompanyUsers(targetLodgeId)
+      if (!Array.isArray(rows)) throw new Error('Company user response was not authoritative')
       const nextUsers = Array.isArray(rows) ? rows : []
       setCompanyUsers(nextUsers)
       const nextEligible = nextUsers.filter((user) => user.role === 'manager' || user.role === 'admin')
@@ -559,6 +568,10 @@ function Companies({ companies, licenses, loading, onReload }) {
 
       const nextSelected = nextEligible.find((user) => user.id === selectedCompanyUserId) || nextEligible[0]
       applyPwaUser(nextSelected)
+    } catch (error) {
+      setCompanyUsers([])
+      applyPwaUser(null)
+      setPwaUsersError(error?.message || 'Company users are unavailable.')
     } finally {
       setPwaUsersLoading(false)
     }
@@ -568,38 +581,18 @@ function Companies({ companies, licenses, loading, onReload }) {
     setSelected(company)
     setDetailTab('overview')
     setStats(null)
+    setStatsError('')
     setStatsLoading(true)
-    const s = await window.api.admin.getCompanyStats(company.lodge_id).catch(() => null)
-    setStats(s)
-    setStatsLoading(false)
-  }
-
-  useEffect(() => {
-    let active = true
-    const targets = visibleCompaniesBase.filter((company) => !usageStatsByLodge[company.lodge_id])
-    if (!targets.length) return () => { active = false }
-
-    const loadWithLimit = async () => {
-      const entries = []
-      let nextIndex = 0
-      const worker = async () => {
-        while (active && nextIndex < targets.length) {
-          const company = targets[nextIndex]
-          nextIndex += 1
-          const companyStats = await window.api.admin.getCompanyStats(company.lodge_id).catch(() => null)
-          entries.push([company.lodge_id, companyStats])
-        }
-      }
-      await Promise.all(Array.from({ length: Math.min(3, targets.length) }, worker))
-      return entries
+    try {
+      const s = await window.api.admin.getCompanyStats(company.lodge_id)
+      setStats(s)
+      setUsageStatsByLodge((current) => ({ ...current, [company.lodge_id]: s }))
+    } catch (error) {
+      setStatsError(error?.message || 'Company statistics are unavailable')
+    } finally {
+      setStatsLoading(false)
     }
-
-    loadWithLimit().then((entries) => {
-      if (!active) return
-      setUsageStatsByLodge((current) => ({ ...current, ...Object.fromEntries(entries) }))
-    }).catch(() => {})
-    return () => { active = false }
-  }, [usageStatsByLodge, visibleCompaniesBase])
+  }
 
   useEffect(() => {
     setPeakBookingUsageByLodge((current) => {
@@ -682,21 +675,23 @@ function Companies({ companies, licenses, loading, onReload }) {
     setLifecycleLoading(true)
     try {
       if (lifecycleMode === 'archive') {
-        const res = await window.api.admin.archiveCompany(companyTarget.lodge_id)
+        const res = await window.api.admin.applyCompanyLifecycle({
+          operation_id: lifecycleOperationId, lodge_id: companyTarget.lodge_id, action: 'archive', reason: lifecycleReason
+        })
         if (res?.success === false) throw new Error(res.error)
         toast.success('Company archived successfully')
       } else if (lifecycleMode === 'restore') {
-        const res = await window.api.admin.restoreCompany(companyTarget.lodge_id)
+        const res = await window.api.admin.applyCompanyLifecycle({
+          operation_id: lifecycleOperationId, lodge_id: companyTarget.lodge_id, action: 'restore', reason: lifecycleReason
+        })
         if (res?.success === false) throw new Error(res.error)
         toast.success('Company restored successfully')
-      } else if (lifecycleMode === 'delete') {
-        const res = await window.api.admin.permanentlyDeleteCompany(companyTarget.lodge_id)
-        if (res?.success === false) throw new Error(res.error)
-        toast.success(`Company permanently deleted. Removed ${res?.deleted_count || 0} row(s).`)
       }
 
       setCompanyTarget(null)
       setConfirmName('')
+      setLifecycleReason('')
+      setLifecycleOperationId('')
       setSelected(null)
       onReload?.()
     } catch (err) {
@@ -713,7 +708,7 @@ function Companies({ companies, licenses, loading, onReload }) {
     try {
       const repairDuplicateEventBookings = window.api?.admin?.repairDuplicateEventBookings
       if (typeof repairDuplicateEventBookings !== 'function') {
-        throw new Error('This Boroko Bookings window is still using the old desktop bridge. Fully quit and reopen the app, then try Repair Duplicate Events again.')
+        throw new Error('This Tsa Bonno window is still using the old desktop bridge. Fully quit and reopen the app, then try Repair Duplicate Events again.')
       }
 
       const res = await repairDuplicateEventBookings(company.lodge_id)
@@ -997,6 +992,7 @@ function Companies({ companies, licenses, loading, onReload }) {
             <span className="rounded-full bg-gray-800 px-2.5 py-1 text-gray-300">Pro {usageFilterCounts.pro}</span>
             <span className="rounded-full bg-gray-800 px-2.5 py-1 text-gray-300">Upgrade opportunities {usageFilterCounts.upgradeOpportunities}</span>
           </div>
+          <p className="mt-2 text-[11px] text-gray-500">Usage signals load when a company is opened. Counts reflect companies already inspected in this session; unknown companies are never treated as clear.</p>
         </div>
         {attentionRows.length > 0 && (
           <div className="border-b border-gray-700 bg-gray-950/60 px-4 py-4">
@@ -1145,13 +1141,19 @@ function Companies({ companies, licenses, loading, onReload }) {
           </div>
           <div className="border-t border-gray-700 pt-3">
             <p className="text-xs text-gray-400 mb-1">Last activity</p>
-            <p className="text-sm font-semibold text-white">{stats?.last_booking_date ? fmt(stats.last_booking_date) : 'No bookings yet'}</p>
+            <p className={`text-sm font-semibold ${statsError ? 'text-red-300' : 'text-white'}`}>{statsError ? 'Unavailable' : stats?.last_booking_date ? fmt(stats.last_booking_date) : 'No bookings yet'}</p>
           </div>
           {/* Live stats */}
           <div className="border-t border-gray-700 pt-3">
             <p className="text-xs text-gray-400 uppercase tracking-wider mb-3">Live Stats</p>
             {statsLoading ? (
               <p className="text-xs text-gray-500 animate-pulse">Loading stats…</p>
+            ) : statsError ? (
+              <div className="rounded-lg border border-red-900/50 bg-red-950/30 p-3">
+                <p className="text-xs font-semibold text-red-300">Live statistics unavailable</p>
+                <p className="mt-1 text-[11px] text-red-200/80">{statsError}</p>
+                <button type="button" onClick={() => openDetail(selected)} className="mt-2 text-[11px] text-red-300 underline hover:text-white">Retry</button>
+              </div>
             ) : stats ? (
               <>
                 <div className="grid grid-cols-2 gap-2">
@@ -1237,25 +1239,22 @@ function Companies({ companies, licenses, loading, onReload }) {
             <div className="flex gap-2">
             {!selected.deleted ? (
               <button
-                onClick={() => { setLifecycleMode('archive'); setCompanyTarget(selected); setConfirmName('') }}
+                onClick={() => { setLifecycleMode('archive'); setCompanyTarget(selected); setConfirmName(''); setLifecycleReason(''); setLifecycleOperationId(crypto.randomUUID()) }}
                 className="flex-1 text-xs py-2 px-3 rounded-lg bg-gray-700 hover:bg-red-600/30 text-gray-300 hover:text-red-300 transition-all"
               >
                 Archive
               </button>
             ) : (
               <button
-                onClick={() => { setLifecycleMode('restore'); setCompanyTarget(selected); setConfirmName('') }}
+                onClick={() => { setLifecycleMode('restore'); setCompanyTarget(selected); setConfirmName(''); setLifecycleReason(''); setLifecycleOperationId(crypto.randomUUID()) }}
                 className="flex-1 text-xs py-2 px-3 rounded-lg bg-green-600/20 hover:bg-green-600 text-green-300 hover:text-white transition-all"
               >
                 Restore
               </button>
             )}
-            <button
-              onClick={() => { setLifecycleMode('delete'); setCompanyTarget(selected); setConfirmName('') }}
-              className="flex-1 text-xs py-2 px-3 rounded-lg bg-red-600/20 hover:bg-red-600 text-red-300 hover:text-white transition-all"
-            >
-              Delete
-            </button>
+            <p className="flex-1 text-center text-[11px] text-gray-500 py-2 px-3 rounded-lg bg-gray-800/70">
+              Permanent deletion is temporarily unavailable.
+            </p>
           </div>
           <button
             onClick={() => handleRepairDuplicateEvents(selected)}
@@ -1295,7 +1294,7 @@ function Companies({ companies, licenses, loading, onReload }) {
               lifecycleMode === 'restore' ? 'Restore Company' :
                 'Permanently Delete Company'
           }
-          onClose={() => { setCompanyTarget(null); setConfirmName('') }}
+          onClose={() => { setCompanyTarget(null); setConfirmName(''); setLifecycleReason(''); setLifecycleOperationId('') }}
         >
           <div className="space-y-4">
             {lifecycleMode === 'archive' && (
@@ -1324,16 +1323,24 @@ function Companies({ companies, licenses, loading, onReload }) {
               placeholder="Type company name"
               autoFocus
             />
+            <textarea
+              value={lifecycleReason}
+              onChange={(e) => setLifecycleReason(e.target.value)}
+              className="w-full min-h-20 bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+              placeholder="Reason for this lifecycle action (minimum 8 characters)"
+              minLength={8}
+              required
+            />
             <div className="flex gap-3">
               <button
-                onClick={() => { setCompanyTarget(null); setConfirmName('') }}
+                onClick={() => { setCompanyTarget(null); setConfirmName(''); setLifecycleReason(''); setLifecycleOperationId('') }}
                 className="flex-1 py-2 px-4 rounded-lg text-sm text-gray-300 bg-gray-700 hover:bg-gray-600"
               >
                 Cancel
               </button>
               <button
                 onClick={handleLifecycleAction}
-                disabled={confirmName.trim() !== companyTarget.lodge_name || lifecycleLoading}
+                disabled={confirmName.trim() !== companyTarget.lodge_name || lifecycleReason.trim().length < 8 || lifecycleLoading}
                 className={`flex-1 py-2 px-4 rounded-lg text-sm font-medium text-white transition-colors disabled:opacity-50 ${lifecycleMode === 'archive' ? 'bg-amber-600 hover:bg-amber-700' :
                     lifecycleMode === 'restore' ? 'bg-green-600 hover:bg-green-700' :
                       'bg-red-700 hover:bg-red-800'
@@ -1408,6 +1415,12 @@ function Companies({ companies, licenses, loading, onReload }) {
           <div className="space-y-4">
             {pwaUsersLoading ? (
               <p className="text-sm text-gray-400">Loading eligible company users…</p>
+            ) : pwaUsersError ? (
+              <div className="bg-amber-900/30 border border-amber-700 rounded-lg p-4 text-sm text-amber-200">
+                <p>Company users could not be verified.</p>
+                <p className="text-xs mt-1">{pwaUsersError}</p>
+                <button onClick={() => loadCompanyUsers(pwaTarget.lodge_id)} className="text-xs underline mt-3">Retry</button>
+              </div>
             ) : eligibleUsers.length === 0 ? (
               <div className="bg-amber-900/30 border border-amber-700 rounded-lg p-4 text-sm text-amber-200">
                 This company does not currently have any Manager or Admin users who are eligible for the manager mobile app.
@@ -1578,16 +1591,25 @@ function FeatureFlags({ companies, licenses }) {
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [loadError, setLoadError] = useState('')
 
   const loadFlags = async (lodgeId, planName = DEFAULT_PLAN) => {
     setLoading(true)
-    const data = await window.api.admin.getLodgeFeatures(lodgeId).catch(() => [])
-    const map = getPlanFlags(planName)
-    data.forEach(r => { map[r.feature_name] = r.enabled })
-    setSelectedPlan(normalizePlanName(planName))
-    setBaseFlags(getPlanFlags(planName))
-    setFlags(map)
-    setLoading(false)
+    setLoadError('')
+    try {
+      const data = await window.api.admin.getLodgeFeatures(lodgeId)
+      if (!Array.isArray(data)) throw new Error('Feature override response was not authoritative')
+      const map = getPlanFlags(planName)
+      data.forEach(r => { map[r.feature_name] = r.enabled })
+      setSelectedPlan(normalizePlanName(planName))
+      setBaseFlags(getPlanFlags(planName))
+      setFlags(map)
+    } catch (error) {
+      setFlags({})
+      setLoadError(error?.message || 'Feature overrides are unavailable.')
+    } finally {
+      setLoading(false)
+    }
   }
 
   const selectLodge = (c) => {
@@ -1601,6 +1623,7 @@ function FeatureFlags({ companies, licenses }) {
 
   const saveFlags = async () => {
     if (!selectedLodge) return
+    if (loadError) { toast.error('Reload authoritative feature overrides before saving'); return }
     setSaving(true)
     const errors = []
     await Promise.all(ALL_FEATURES.map(async (featureName) => {
@@ -1637,6 +1660,12 @@ function FeatureFlags({ companies, licenses }) {
           <div className="bg-gray-800 rounded-xl p-5 space-y-4">
             {loading ? (
               <div className="py-12 text-center text-gray-500 animate-pulse">Loading feature flags...</div>
+            ) : loadError ? (
+              <div className="py-12 text-center text-amber-400">
+                <p>Feature overrides could not be verified.</p>
+                <p className="text-xs text-amber-200/80 mt-2">{loadError}</p>
+                <button onClick={() => loadFlags(selectedLodge.lodge_id, getLicensePlanForLodge(licenses, selectedLodge.lodge_id))} className="mt-3 text-xs underline">Retry</button>
+              </div>
             ) : (
               <>
             <div className="flex items-center justify-between">
@@ -1732,12 +1761,20 @@ function Broadcasts() {
   const [saving, setSaving] = useState(false)
   const [loading, setLoading] = useState(true)
   const [confirmState, setConfirmState] = useState(null)
+  const [loadError, setLoadError] = useState('')
 
   const load = useCallback(async () => {
     setLoading(true)
-    const data = await window.api.admin.getBroadcasts().catch(() => [])
-    setBroadcasts(data)
-    setLoading(false)
+    setLoadError('')
+    try {
+      const data = await window.api.admin.getBroadcasts()
+      if (!Array.isArray(data)) throw new Error('Broadcast response was not authoritative')
+      setBroadcasts(data)
+    } catch (error) {
+      setLoadError(error?.message || 'Announcements are unavailable.')
+    } finally {
+      setLoading(false)
+    }
   }, [])
 
   useEffect(() => { load() }, [load])
@@ -1774,6 +1811,13 @@ function Broadcasts() {
         </button>
       </div>
 
+      {loadError && (
+        <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 flex items-center justify-between gap-3">
+          <p className="text-xs text-amber-200">Announcements unavailable · {loadError}</p>
+          <button onClick={load} className="text-xs text-amber-100 underline">Retry</button>
+        </div>
+      )}
+
       {showForm && (
         <div className="bg-gray-800 border border-gray-700 rounded-xl p-5">
           <form onSubmit={handleCreate} className="space-y-4">
@@ -1797,6 +1841,8 @@ function Broadcasts() {
       <div className="bg-gray-800 rounded-xl overflow-hidden">
         {loading ? (
           <div className="px-6 py-16 text-center text-gray-500 animate-pulse">Loading announcements...</div>
+        ) : loadError ? (
+          <div className="px-6 py-16 text-center text-amber-400"><Megaphone size={32} className="mx-auto mb-3 opacity-40" /><p>Announcements could not be verified.</p></div>
         ) : broadcasts.length === 0 ? (
           <div className="px-6 py-16 text-center text-gray-500"><Megaphone size={32} className="mx-auto mb-3 opacity-40" /><p>No announcements yet.</p><p className="text-xs text-gray-600 mt-1">Click "New Announcement" to create your first broadcast.</p></div>
         ) : (
@@ -1847,10 +1893,17 @@ function SupportTickets({ companies, onOpenCompany }) {
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState('')
   const [confirmState, setConfirmState] = useState(null)
+  const [loadError, setLoadError] = useState('')
 
   const load = useCallback(async () => {
-    const data = await window.api.admin.getSupportTickets({}).catch(() => [])
-    setTickets(data)
+    setLoadError('')
+    try {
+      const data = await window.api.admin.getSupportTickets({})
+      if (!Array.isArray(data)) throw new Error('Support ticket response was not authoritative')
+      setTickets(data)
+    } catch (error) {
+      setLoadError(error?.message || 'Support ticket data is unavailable.')
+    }
   }, [])
 
   useEffect(() => { load() }, [load])
@@ -1953,8 +2006,17 @@ function SupportTickets({ companies, onOpenCompany }) {
         </div>
       </div>
 
+      {loadError && (
+        <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 flex items-center justify-between gap-3">
+          <p className="text-xs text-amber-200">Support inbox unavailable · {loadError}</p>
+          <button onClick={load} className="text-xs text-amber-100 underline">Retry</button>
+        </div>
+      )}
+
       <div className="bg-gray-800 rounded-xl overflow-hidden">
-        {filtered.length === 0 ? (
+        {loadError ? (
+          <div className="px-6 py-16 text-center text-amber-400"><LifeBuoy size={32} className="mx-auto mb-3 opacity-40" /><p>Support tickets could not be verified.</p></div>
+        ) : filtered.length === 0 ? (
           <div className="px-6 py-16 text-center text-gray-500"><LifeBuoy size={32} className="mx-auto mb-3 opacity-40" /><p>No tickets found.</p></div>
         ) : (
           <table className="w-full text-sm">
@@ -2138,14 +2200,23 @@ function ActivityLog({ companies, onOpenCompany }) {
   const [filter, setFilter] = useState({ lodge_id: '', start: '', end: '' })
   const [limit, setLimit] = useState(100)
   const [logSearch, setLogSearch] = useState('')
+  const [loadError, setLoadError] = useState('')
+  const [loading, setLoading] = useState(false)
 
   const load = useCallback(async () => {
-    const [data, sum] = await Promise.all([
-      window.api.admin.getActivityLogs({ ...filter, limit }).catch(() => []),
-      window.api.admin.getAuditSummary({ start: filter.start || null, end: filter.end || null }).catch(() => [])
+    setLoading(true)
+    setLoadError('')
+    const [logsResult, summaryResult] = await Promise.allSettled([
+      window.api.admin.getActivityLogs({ ...filter, limit }),
+      window.api.admin.getAuditSummary({ start: filter.start || null, end: filter.end || null })
     ])
-    setLogs(data)
-    setSummary(sum)
+    const errors = []
+    if (logsResult.status === 'fulfilled') setLogs(Array.isArray(logsResult.value) ? logsResult.value : [])
+    else errors.push(`entries: ${logsResult.reason?.message || 'unavailable'}`)
+    if (summaryResult.status === 'fulfilled') setSummary(Array.isArray(summaryResult.value) ? summaryResult.value : [])
+    else errors.push(`summary: ${summaryResult.reason?.message || 'unavailable'}`)
+    setLoadError(errors.length > 0 ? `Authoritative audit data is unavailable (${errors.join('; ')}).` : '')
+    setLoading(false)
   }, [filter, limit])
 
   useEffect(() => { load() }, [load])
@@ -2243,8 +2314,19 @@ function ActivityLog({ companies, onOpenCompany }) {
         />
       </div>
 
+      {loadError && (
+        <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 flex items-center justify-between gap-3">
+          <p className="text-xs text-amber-200">{loadError}</p>
+          <button onClick={load} disabled={loading} className="text-xs text-amber-100 underline disabled:opacity-50">Retry</button>
+        </div>
+      )}
+
       <div className="bg-gray-800 rounded-xl overflow-hidden">
-        {logs.length === 0 ? (
+        {loading ? (
+          <div className="px-6 py-16 text-center text-gray-500">Loading authoritative audit data…</div>
+        ) : loadError ? (
+          <div className="px-6 py-16 text-center text-amber-400"><Activity size={32} className="mx-auto mb-3 opacity-40" /><p>Audit history could not be verified.</p></div>
+        ) : logs.length === 0 ? (
           <div className="px-6 py-16 text-center text-gray-500"><Activity size={32} className="mx-auto mb-3 opacity-40" /><p>No audit entries yet.</p></div>
         ) : (
           <div className="divide-y divide-gray-700">
@@ -2399,7 +2481,7 @@ function EmailSettings() {
           <div className="space-y-3">
             <div>
               <label className="text-xs text-gray-400 block mb-1">From Name / Address</label>
-              <input className={inp} placeholder='"Boroko Command Central" <you@gmail.com>' value={config.from} onChange={e => set('from', e.target.value)} />
+              <input className={inp} placeholder='"Tsa Bonno Command Central" <you@gmail.com>' value={config.from} onChange={e => set('from', e.target.value)} />
             </div>
             <div>
               <label className="text-xs text-gray-400 block mb-1">Send Notifications To</label>
@@ -2481,7 +2563,7 @@ function InvoicePreview({ invoice, onClose, taxRate = DEFAULT_TAX_RATE }) {
             <div className="space-y-2">
               <div className="flex items-center gap-2">
                 <div className="w-10 h-10 bg-purple-600 rounded-xl flex items-center justify-center text-white font-black text-xl">B</div>
-                <h1 className="text-2xl font-black tracking-tighter text-purple-900">BOROKO BOOKINGS</h1>
+                <h1 className="text-2xl font-black tracking-tighter text-purple-900">TSA BONNO HOSPITALITYOS</h1>
               </div>
               <p className="text-xs text-gray-500 font-medium">Software License & Support Services</p>
             </div>
@@ -2521,7 +2603,7 @@ function InvoicePreview({ invoice, onClose, taxRate = DEFAULT_TAX_RATE }) {
                 <tr className="border-b border-gray-100">
                   <td className="py-5">
                     <p className="font-bold text-gray-900">{normalizePlanName(invoice.package_name)} Subscription</p>
-                    <p className="text-xs text-gray-500 mt-1">Boroko Bookings Cloud License Fee</p>
+                    <p className="text-xs text-gray-500 mt-1">Tsa Bonno HospitalityOS Cloud License Fee</p>
                   </td>
                   <td className="py-5 text-right">1</td>
                   <td className="py-5 text-right">{invoice.currency} {subtotal.toFixed(2)}</td>
@@ -2556,7 +2638,7 @@ function InvoicePreview({ invoice, onClose, taxRate = DEFAULT_TAX_RATE }) {
           </div>
 
           <div className="pt-8 text-center text-[10px] text-gray-300 print:text-gray-400">
-            &copy; {new Date().getFullYear()} Boroko Bookings. All rights reserved.
+            &copy; {new Date().getFullYear()} Tsa Bonno HospitalityOS. All rights reserved.
           </div>
         </div>
       </div>
@@ -2566,6 +2648,7 @@ function InvoicePreview({ invoice, onClose, taxRate = DEFAULT_TAX_RATE }) {
 
 const STATUS_COLORS = {
   paid: 'bg-green-800 text-green-200',
+  posted: 'bg-blue-800 text-blue-200',
   draft: 'bg-gray-700 text-gray-300',
   sent: 'bg-blue-800 text-blue-200',
   overdue: 'bg-red-800 text-red-200',
@@ -2582,6 +2665,10 @@ function Bookkeeping({ companies }) {
   const [filterStatus, setFilterStatus] = useState('')
   const [showCreate, setShowCreate] = useState(false)
   const [editInvoice, setEditInvoice] = useState(null)
+  const [paymentInvoice, setPaymentInvoice] = useState(null)
+  const [paymentForm, setPaymentForm] = useState({ amount: '', method: 'bank_transfer', reference: '', reason: '' })
+  const [paymentSaving, setPaymentSaving] = useState(false)
+  const [paymentError, setPaymentError] = useState('')
   const [sendingEmail, setSendingEmail] = useState({})
   const [emailSent, setEmailSent] = useState({})
   const [createForm, setCreateForm] = useState({
@@ -2606,17 +2693,24 @@ function Bookkeeping({ companies }) {
   })
   const [viewingInvoice, setViewingInvoice] = useState(null)
   const [confirmState, setConfirmState] = useState(null)
+  const [loadError, setLoadError] = useState('')
 
   const loadData = useCallback(async () => {
     setLoading(true)
-    const [invs, sum, exps] = await Promise.all([
-      window.api.admin.getInvoices({}).catch(() => []),
-      window.api.admin.getInvoiceSummary().catch(() => null),
-      window.api.admin.getExpenses().catch(() => [])
+    setLoadError('')
+    const [invoicesResult, summaryResult, expensesResult] = await Promise.allSettled([
+      window.api.admin.getCommercialInvoices({}),
+      window.api.admin.getCommercialBillingSummary(),
+      window.api.admin.getExpenses()
     ])
-    setInvoices(invs)
-    setSummary(sum)
-    setExpenses(exps)
+    const errors = []
+    if (invoicesResult.status === 'fulfilled' && Array.isArray(invoicesResult.value?.rows)) setInvoices(invoicesResult.value.rows)
+    else errors.push(`invoices: ${invoicesResult.reason?.message || 'unavailable'}`)
+    if (summaryResult.status === 'fulfilled') setSummary(summaryResult.value)
+    else errors.push(`summary: ${summaryResult.reason?.message || 'unavailable'}`)
+    if (expensesResult.status === 'fulfilled' && Array.isArray(expensesResult.value)) setExpenses(expensesResult.value)
+    else errors.push(`expenses: ${expensesResult.reason?.message || 'unavailable'}`)
+    setLoadError(errors.length > 0 ? `Authoritative bookkeeping data is unavailable (${errors.join('; ')}).` : '')
     setLoading(false)
   }, [])
 
@@ -2637,37 +2731,69 @@ function Bookkeeping({ companies }) {
 
   const handleCreateInvoice = async (e) => {
     e.preventDefault(); setCreateError(''); setCreateSaving(true)
-    if (!createForm.amount || Number(createForm.amount) <= 0) { setCreateError('Enter a valid amount.'); setCreateSaving(false); return }
-    const invNum = await window.api.admin.getNextInvoiceNumber().catch(() => null)
-    if (!invNum || typeof invNum !== 'string') { setCreateError('Could not generate invoice number.'); setCreateSaving(false); return }
-    const r = await window.api.admin.createInvoice({ ...createForm, invoice_number: invNum, amount: Number(createForm.amount), due_date: createForm.due_date || null, paid_date: createForm.paid_date || null, description: createForm.description || null, notes: createForm.notes || null }).catch(e => ({ error: e.message }))
-    if (r?.error) { setCreateError(r.error); setCreateSaving(false); return }
+    if (!createForm.lodge_id) { setCreateError('Select a company with an active commercial subscription.'); setCreateSaving(false); return }
+    if (String(createForm.notes || '').trim().length < 8) { setCreateError('Provide a billing reason of at least 8 characters.'); setCreateSaving(false); return }
+    const company = companies.find((entry) => entry.lodge_id === createForm.lodge_id)
+    const r = await window.api.admin.generateCommercialInvoice({
+      operation_id: crypto.randomUUID(),
+      lodge_id: createForm.lodge_id,
+      product_id: resolveProductFamily(company?.property_type || company?.business_type),
+      due_date: createForm.due_date || null,
+      reason: createForm.notes
+    }).catch(e => ({ error: e.message }))
+    if (r?.error || r?.success === false) { setCreateError(r?.error || 'Could not post commercial invoice.'); setCreateSaving(false); return }
     setShowCreate(false)
-    setCreateForm({ lodge_id: '', lodge_name: '', package_name: DEFAULT_PLAN, amount: '', currency: 'BWP', status: 'paid', issued_date: localToday(), due_date: '', paid_date: localToday(), description: '', notes: '' })
+    setCreateForm({ lodge_id: '', lodge_name: '', package_name: DEFAULT_PLAN, amount: '', currency: 'BWP', status: 'posted', issued_date: localToday(), due_date: '', paid_date: '', description: '', notes: '' })
     loadData()
     setCreateSaving(false)
   }
 
   const handleSaveEdit = async () => {
     if (!editInvoice) return
-    try {
-      await window.api.admin.updateInvoice(editInvoice.id, {
-        package_name: editInvoice.package_name, amount: Number(editInvoice.amount),
-        currency: editInvoice.currency, status: editInvoice.status,
-        paid_date: editInvoice.paid_date || null, due_date: editInvoice.due_date || null,
-        description: editInvoice.description || null, notes: editInvoice.notes || null
-      })
-      setEditInvoice(null); loadData()
-    } catch (e) { console.error('Invoice update error:', e); toast.error('Failed to update invoice') }
+    toast.warning('Commercial invoices are immutable. Record a payment or issue a governed credit adjustment instead.')
+    setEditInvoice(null)
+  }
+
+  const openPayment = (invoice) => {
+    const balance = Number(invoice?.balance_due ?? invoice?.amount ?? 0)
+    setPaymentInvoice(invoice)
+    setPaymentError('')
+    setPaymentForm({
+      amount: balance > 0 ? balance.toFixed(2) : '',
+      method: 'bank_transfer',
+      reference: '',
+      reason: `Payment received for ${invoice?.invoice_number || 'commercial invoice'}`
+    })
+  }
+
+  const handleRecordPayment = async (event) => {
+    event.preventDefault()
+    if (!paymentInvoice) return
+    const amount = Number(paymentForm.amount)
+    if (!Number.isFinite(amount) || amount <= 0) { setPaymentError('Enter a positive payment amount.'); return }
+    if (String(paymentForm.method || '').trim().length < 2) { setPaymentError('Select a payment method.'); return }
+    if (String(paymentForm.reason || '').trim().length < 8) { setPaymentError('Provide a payment reason of at least 8 characters.'); return }
+    setPaymentSaving(true); setPaymentError('')
+    const result = await window.api.admin.recordCommercialPayment({
+      operation_id: crypto.randomUUID(),
+      invoice_id: paymentInvoice.id,
+      amount,
+      currency: paymentInvoice.currency,
+      method: paymentForm.method,
+      reference: paymentForm.reference.trim() || null,
+      reason: paymentForm.reason.trim()
+    }).catch(error => ({ success: false, error: error.message }))
+    setPaymentSaving(false)
+    if (!result?.success) { setPaymentError(result?.error || 'Could not record the commercial payment.'); return }
+    toast.success('Commercial payment recorded.')
+    setPaymentInvoice(null)
+    await loadData()
   }
 
   const handleDelete = (id) => setConfirmState({ type: 'invoice', id })
   const confirmDeleteInvoice = async () => {
     if (!confirmState?.id) return
-    try {
-      await window.api.admin.deleteInvoice(confirmState.id)
-      loadData()
-    } catch (e) { toast.error('Failed to delete invoice') }
+    toast.warning('Commercial invoices cannot be deleted. Void or credit workflows must be governed by the commercial ledger.')
     setConfirmState(null)
   }
 
@@ -2682,15 +2808,14 @@ function Bookkeeping({ companies }) {
       setEmailSent(s => ({ ...s, [inv.id]: true }))
       setTimeout(() => setEmailSent(s => { const n = { ...s }; delete n[inv.id]; return n }), 4000)
       if (inv.status === 'draft') {
-        await window.api.admin.updateInvoice(inv.id, { status: 'sent' }).catch(() => { })
-        loadData()
+        toast.info('This commercial invoice remains immutable after email delivery.')
       }
     } else toast.error('Email failed: ' + r.error)
   }
 
   const thisMonth = new Date().toISOString().slice(0, 7)
   const thisMonthTotal = summary?.byMonth?.find(m => m.month === thisMonth)?.amount || 0
-  const pendingCount = invoices.filter(i => ['draft', 'sent', 'overdue'].includes(i.status)).length
+  const pendingCount = invoices.filter(i => ['draft', 'posted'].includes(i.status) || Number(i.balance_due || 0) > 0).length
 
   const handleCreateExpense = async (e) => {
     e.preventDefault()
@@ -2741,6 +2866,13 @@ function Bookkeeping({ companies }) {
         ))}
       </div>
 
+      {loadError && (
+        <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 flex items-center justify-between gap-3">
+          <p className="text-xs text-amber-200">{loadError}</p>
+          <button onClick={loadData} disabled={loading} className="text-xs text-amber-100 underline disabled:opacity-50">Retry</button>
+        </div>
+      )}
+
       {/* ── INVOICES SUB-TAB ── */}
       {subTab === 'invoices' && (
         <div className="space-y-3">
@@ -2753,7 +2885,7 @@ function Bookkeeping({ companies }) {
             </select>
             <select className={`${inp} text-xs flex-1 min-w-28`} value={filterStatus} onChange={e => setFilterStatus(e.target.value)}>
               <option value="">All Statuses</option>
-              {['draft', 'sent', 'paid', 'overdue', 'cancelled'].map(s => <option key={s} value={s} className="capitalize">{s.charAt(0).toUpperCase() + s.slice(1)}</option>)}
+              {['posted', 'paid', 'void', 'written_off'].map(s => <option key={s} value={s} className="capitalize">{s.replace('_', ' ').replace(/^./, (letter) => letter.toUpperCase())}</option>)}
             </select>
             <button
               onClick={async () => {
@@ -2817,47 +2949,16 @@ function Bookkeeping({ companies }) {
                       ))}
                     </select>
                   </Field>
-                  <Field label="Package *">
-                    <select className={inp} value={createForm.package_name} onChange={e => setCreateForm(f => ({ ...f, package_name: e.target.value }))} required>
-                      {TIERS.map((planName) => (
-                        <option key={planName} value={planName}>
-                          {planName} - {getSubscriptionPlan(planName).headline}
-                        </option>
-                      ))}
-                    </select>
-                  </Field>
-                  <Field label="Amount *">
-                    <input type="number" step="0.01" min="0.01" className={inp} value={createForm.amount} onChange={e => setCreateForm(f => ({ ...f, amount: e.target.value }))} required placeholder="0.00" />
-                  </Field>
-                  <Field label="Currency">
-                    <select className={inp} value={createForm.currency} onChange={e => setCreateForm(f => ({ ...f, currency: e.target.value }))}>
-                      {INVOICE_CURRENCIES.map(c => <option key={c} value={c}>{c}</option>)}
-                    </select>
-                  </Field>
-                  <Field label="Status">
-                    <select className={inp} value={createForm.status} onChange={e => setCreateForm(f => ({ ...f, status: e.target.value }))}>
-                      {['draft', 'sent', 'paid', 'overdue', 'cancelled'].map(s => <option key={s} value={s} className="capitalize">{s.charAt(0).toUpperCase() + s.slice(1)}</option>)}
-                    </select>
-                  </Field>
-                  <Field label="Issued Date *">
-                    <input type="date" className={inp} value={createForm.issued_date} onChange={e => setCreateForm(f => ({ ...f, issued_date: e.target.value }))} required />
-                  </Field>
                   <Field label="Due Date">
                     <input type="date" className={inp} value={createForm.due_date} onChange={e => setCreateForm(f => ({ ...f, due_date: e.target.value }))} />
                   </Field>
-                  <Field label="Payment Date">
-                    <input type="date" className={inp} value={createForm.paid_date} onChange={e => setCreateForm(f => ({ ...f, paid_date: e.target.value }))} />
-                  </Field>
                 </div>
-                <Field label="Description">
-                  <input className={inp} placeholder="e.g. Annual subscription" value={createForm.description} onChange={e => setCreateForm(f => ({ ...f, description: e.target.value }))} />
-                </Field>
-                <Field label="Notes">
-                  <input className={inp} placeholder="Internal notes…" value={createForm.notes} onChange={e => setCreateForm(f => ({ ...f, notes: e.target.value }))} />
+                <Field label="Billing reason *">
+                  <input className={inp} minLength="8" required placeholder="e.g. July 2026 subscription billing" value={createForm.notes} onChange={e => setCreateForm(f => ({ ...f, notes: e.target.value }))} />
                 </Field>
                 <div className="flex gap-2 pt-1">
                   <button type="button" onClick={() => setShowCreate(false)} className={`flex-1 ${btn('ghost')} py-2 rounded-lg text-sm`}>Cancel</button>
-                  <button type="submit" disabled={createSaving} className={`flex-1 ${btn()} py-2 rounded-lg text-sm disabled:opacity-60`}>{createSaving ? 'Saving…' : 'Create Invoice'}</button>
+                  <button type="submit" disabled={createSaving} className={`flex-1 ${btn()} py-2 rounded-lg text-sm disabled:opacity-60`}>{createSaving ? 'Posting…' : 'Post commercial invoice'}</button>
                 </div>
               </form>
             </div>
@@ -2903,13 +3004,9 @@ function Bookkeeping({ companies }) {
                             className="p-1.5 rounded hover:bg-gray-700 text-gray-400 hover:text-blue-400 transition-colors disabled:opacity-50">
                             {emailSent[inv.id] ? <CheckCircle2 size={14} className="text-green-400" /> : sendingEmail[inv.id] ? <RefreshCw size={14} className="animate-spin" /> : <Mail size={14} />}
                           </button>
-                          <button title="Edit" onClick={() => setEditInvoice({ ...inv, package_name: normalizePlanName(inv.package_name) })}
-                            className="p-1.5 rounded hover:bg-gray-700 text-gray-400 hover:text-purple-400 transition-colors">
-                            <Edit3 size={14} />
-                          </button>
-                          <button title="Delete" onClick={() => handleDelete(inv.id)}
-                            className="p-1.5 rounded hover:bg-gray-700 text-gray-400 hover:text-red-400 transition-colors">
-                            <Trash2 size={14} />
+                          <button title={Number(inv.balance_due || 0) > 0 ? 'Record payment' : 'Invoice is fully paid'} disabled={Number(inv.balance_due || 0) <= 0 || ['void', 'written_off'].includes(inv.status)} onClick={() => openPayment(inv)}
+                            className="p-1.5 rounded hover:bg-gray-700 text-gray-400 hover:text-green-400 transition-colors disabled:opacity-30 disabled:cursor-not-allowed">
+                            <CreditCard size={14} />
                           </button>
                         </div>
                       </td>
@@ -3093,14 +3190,14 @@ function Bookkeeping({ companies }) {
                   return (
                     <tr key={plan} className="border-t border-gray-700 print:border-gray-300">
                       <td className="px-4 py-3 text-gray-200 font-medium print:text-black">{plan}</td>
-                      <td className="px-4 py-3 text-right text-white font-semibold print:text-black">{summary?.currency || 'USD'} {Number(planTotal).toFixed(2)}</td>
+                      <td className="px-4 py-3 text-right text-white font-semibold print:text-black">{summary?.currency || '—'} {Number(planTotal).toFixed(2)}</td>
                       <td className="px-4 py-3 text-right text-gray-400 print:text-gray-600">{planCount}</td>
                     </tr>
                   )
                 })}
                 <tr className="border-t-2 border-gray-600 print:border-gray-400 bg-gray-700/50 print:bg-gray-50">
                   <td className="px-4 py-3 text-white font-bold print:text-black">Total</td>
-                  <td className="px-4 py-3 text-right text-green-400 font-bold print:text-green-700">{summary?.currency || 'USD'} {Number(summary?.total || 0).toFixed(2)}</td>
+                  <td className="px-4 py-3 text-right text-green-400 font-bold print:text-green-700">{summary?.currency || '—'} {Number(summary?.total || 0).toFixed(2)}</td>
                   <td className="px-4 py-3 text-right text-gray-400 font-semibold print:text-gray-700">{invoices.filter(i => i.status === 'paid').length}</td>
                 </tr>
               </tbody>
@@ -3132,6 +3229,37 @@ function Bookkeeping({ companies }) {
             </div>
           )}
         </div>
+      )}
+
+      {paymentInvoice && (
+        <Modal title={`Record payment · ${paymentInvoice.invoice_number}`} onClose={() => !paymentSaving && setPaymentInvoice(null)}>
+          <form onSubmit={handleRecordPayment} className="space-y-3">
+            <div className="rounded-lg border border-gray-700 bg-gray-800/60 px-3 py-2 text-xs text-gray-300">
+              Outstanding balance: <span className="font-semibold text-white">{paymentInvoice.currency} {Number(paymentInvoice.balance_due ?? paymentInvoice.amount ?? 0).toFixed(2)}</span>
+            </div>
+            {paymentError && <div className="bg-red-900/50 border border-red-700 text-red-300 rounded-lg px-3 py-2 text-xs">{paymentError}</div>}
+            <Field label="Amount *">
+              <input type="number" min="0.01" step="0.01" className={inp} value={paymentForm.amount} onChange={e => setPaymentForm(v => ({ ...v, amount: e.target.value }))} required />
+            </Field>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Payment method *">
+                <select className={inp} value={paymentForm.method} onChange={e => setPaymentForm(v => ({ ...v, method: e.target.value }))} required>
+                  {['bank_transfer', 'card', 'cash', 'mobile_money', 'other'].map(method => <option key={method} value={method}>{method.replace('_', ' ').replace(/^./, letter => letter.toUpperCase())}</option>)}
+                </select>
+              </Field>
+              <Field label="Reference">
+                <input className={inp} value={paymentForm.reference} onChange={e => setPaymentForm(v => ({ ...v, reference: e.target.value }))} placeholder="Bank or receipt reference" />
+              </Field>
+            </div>
+            <Field label="Reason *">
+              <input className={inp} minLength="8" value={paymentForm.reason} onChange={e => setPaymentForm(v => ({ ...v, reason: e.target.value }))} required />
+            </Field>
+            <div className="flex gap-2 pt-1">
+              <button type="button" onClick={() => setPaymentInvoice(null)} disabled={paymentSaving} className={`flex-1 ${btn('ghost')} py-2 rounded-lg text-sm disabled:opacity-50`}>Cancel</button>
+              <button type="submit" disabled={paymentSaving} className={`flex-1 ${btn()} py-2 rounded-lg text-sm disabled:opacity-60`}>{paymentSaving ? 'Recording…' : 'Record governed payment'}</button>
+            </div>
+          </form>
+        </Modal>
       )}
 
       {/* Edit invoice modal */}
@@ -3379,8 +3507,9 @@ function PlatformOperations({ companies, onOpenCompany, initialTab = 'health' })
   )
 }
 
-function ImplementationAddons() {
+function ImplementationAddons({ companies = [] }) {
   const [tab, setTab] = useState('website')
+  const [selectedLodgeId, setSelectedLodgeId] = useState('')
   const tabs = [
     { id: 'website', label: 'Website Build', icon: Rocket },
     { id: 'payment-readiness', label: 'Payment Links Readiness', icon: CheckSquare },
@@ -3392,15 +3521,23 @@ function ImplementationAddons() {
         <p className="text-xs font-semibold uppercase tracking-[0.18em] text-purple-300">Implementation & Add-ons</p>
         <h2 className="mt-2 text-xl font-bold text-white">Website, payment, and Enterprise workflow readiness</h2>
         <p className="mt-2 max-w-3xl text-sm text-gray-300">
-          This Command Central area is reserved for Boroko-managed add-on setup. Website Build, Payment Gateway Setup,
+          This Command Central area is reserved for Tsa Bonno-managed add-on setup. Website Build, Payment Gateway Setup,
           Payment Links Readiness, and Enterprise workflow checklists should be mounted here as internal/admin tools.
         </p>
+        <label className="mt-4 block max-w-xl text-xs font-semibold uppercase tracking-wide text-purple-200">
+          Target company
+          <select value={selectedLodgeId} onChange={(event) => setSelectedLodgeId(event.target.value)} className="mt-2 w-full rounded-lg border border-purple-400/30 bg-gray-950 px-3 py-2 text-sm font-normal normal-case text-white">
+            <option value="">Select a company before loading or changing implementation data</option>
+            {companies.map((company) => <option key={company.lodge_id} value={company.lodge_id}>{company.name || company.lodge_name || company.lodge_id}</option>)}
+          </select>
+        </label>
       </div>
       <SectionTabs tabs={tabs} active={tab} onChange={setTab} />
       <div className="rounded-xl border border-gray-800 bg-gray-950/40">
-        {tab === 'website' && <EnterpriseWorkflowWorkspace workflowKey="custom_website" />}
-        {tab === 'payment-readiness' && <EnterpriseWorkflowWorkspace workflowKey="payment_gateway" />}
-        {tab === 'gateway' && <PaymentGatewayConfig />}
+        {!selectedLodgeId && <div className="p-8 text-center text-sm text-amber-300">Select the target company. Command Central will not infer a tenant from the desktop's active lodge.</div>}
+        {selectedLodgeId && tab === 'website' && <EnterpriseWorkflowWorkspace workflowKey="custom_website" lodgeId={selectedLodgeId} />}
+        {selectedLodgeId && tab === 'payment-readiness' && <EnterpriseWorkflowWorkspace workflowKey="payment_gateway" lodgeId={selectedLodgeId} />}
+        {selectedLodgeId && tab === 'gateway' && <PaymentGatewayConfig lodgeId={selectedLodgeId} />}
       </div>
     </div>
   )
@@ -3500,7 +3637,7 @@ function TestResetMaintenance({ companies }) {
           selectedLodge.lodge_id,
           'test_mode_enabled',
           true,
-          { reason: 'Boroko internal test reset mode enabled' }
+          { reason: 'Tsa Bonno internal test reset mode enabled' }
         )
         if (result?.success === false) throw new Error(result.error || 'Could not enable test mode')
         setTestModeEnabled(true)
@@ -3583,14 +3720,14 @@ function TestResetMaintenance({ companies }) {
         {!selectedLodge ? (
           <div className="bg-gray-800 rounded-xl p-12 text-center text-gray-500">
             <Trash2 size={32} className="mx-auto mb-3 opacity-40" />
-            <p>Select a company to manage Boroko-only test reset controls.</p>
+            <p>Select a company to manage Tsa Bonno-only test reset controls.</p>
           </div>
         ) : (
           <>
             <div className="rounded-2xl border border-red-500/30 bg-gradient-to-br from-red-950/70 to-gray-900 p-5">
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-red-300">Boroko Internal Tool</p>
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-red-300">Tsa Bonno Internal Tool</p>
                   <h3 className="mt-2 text-xl font-bold text-white">{selectedLodge.lodge_name}</h3>
                   <p className="mt-1 text-sm text-red-100/80">
                     This tool is for demos, QA, and sandbox cleanup only. It must never be used for live client finance records.
@@ -4199,6 +4336,12 @@ export default function AdminCentral() {
   const [viewClient360, setViewClient360] = useState(null)
   const [showShortcuts, setShowShortcuts] = useState(false)
   const [connected, setConnected] = useState(true)
+  const [reauthVerified, setReauthVerified] = useState(false)
+  const [reauthExpiresAt, setReauthExpiresAt] = useState(null)
+  const [showReauth, setShowReauth] = useState(false)
+  const [reauthPassword, setReauthPassword] = useState('')
+  const [reauthLoading, setReauthLoading] = useState(false)
+  const [reauthError, setReauthError] = useState('')
   // Expose navigate for Dashboard quick actions
   useEffect(() => { window.__adminNavigate = (s) => setSection(s); return () => { delete window.__adminNavigate } }, [])
 
@@ -4247,6 +4390,41 @@ export default function AdminCentral() {
   }, [])
 
   useEffect(() => { loadAll() }, [loadAll])
+
+  const refreshReauthStatus = useCallback(async () => {
+    try {
+      const status = await window.api.admin.getCommandCentralReauthStatus()
+      setReauthVerified(status?.verified === true)
+      setReauthExpiresAt(status?.expires_at || null)
+    } catch {
+      setReauthVerified(false)
+      setReauthExpiresAt(null)
+    }
+  }, [])
+
+  useEffect(() => {
+    refreshReauthStatus()
+    const interval = setInterval(refreshReauthStatus, 30000)
+    return () => clearInterval(interval)
+  }, [refreshReauthStatus])
+
+  const submitReauth = async (event) => {
+    event.preventDefault()
+    setReauthLoading(true)
+    setReauthError('')
+    try {
+      const result = await window.api.admin.reauthenticateCommandCentral(reauthPassword)
+      if (!result?.ok) throw new Error(result?.error || 'Master password was not accepted')
+      setReauthVerified(true)
+      setReauthExpiresAt(result.expires_at || null)
+      setReauthPassword('')
+      setShowReauth(false)
+    } catch (error) {
+      setReauthError(error?.message || 'Could not unlock sensitive changes')
+    } finally {
+      setReauthLoading(false)
+    }
+  }
 
   // Connection status ping
   useEffect(() => {
@@ -4307,11 +4485,28 @@ export default function AdminCentral() {
           <button onClick={loadAll} className="flex items-center gap-2 text-gray-400 hover:text-white text-xs px-3 py-1.5 rounded-lg hover:bg-gray-800 transition-colors">
             <RefreshCw size={13} className={loading ? 'animate-spin' : ''} /> Refresh
           </button>
+          <button onClick={() => { setShowReauth(true); setReauthError('') }} className={`flex items-center gap-2 text-xs px-3 py-1.5 rounded-lg transition-colors ${reauthVerified ? 'bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25' : 'bg-amber-500/15 text-amber-300 hover:bg-amber-500/25'}`} title={reauthVerified && reauthExpiresAt ? `Sensitive changes unlocked until ${new Date(reauthExpiresAt).toLocaleTimeString()}` : 'Confirm the master password to unlock sensitive changes'}>
+            <Key size={13} /> {reauthVerified ? 'Changes unlocked' : 'Unlock changes'}
+          </button>
           <button onClick={logout} className="flex items-center gap-2 text-red-400 hover:text-red-300 text-xs px-3 py-1.5 rounded-lg hover:bg-gray-800 transition-colors">
             <LogOut size={13} /> Sign out
           </button>
         </div>
       </div>
+
+      {showReauth && (
+        <Modal title="Unlock sensitive Command Central changes" onClose={() => { setShowReauth(false); setReauthPassword(''); setReauthError('') }}>
+          <form onSubmit={submitReauth} className="space-y-4">
+            <p className="text-sm text-gray-300">Confirm the current master password. High-risk changes remain unlocked for 10 minutes; read-only control-tower views stay available.</p>
+            <input type="password" value={reauthPassword} onChange={(event) => setReauthPassword(event.target.value)} autoFocus autoComplete="current-password" className="w-full rounded-lg border border-gray-600 bg-gray-700 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-purple-500" placeholder="Master password" />
+            {reauthError && <p className="text-xs text-red-300">{reauthError}</p>}
+            <div className="flex gap-3">
+              <button type="button" onClick={() => { setShowReauth(false); setReauthPassword(''); setReauthError('') }} className="flex-1 rounded-lg bg-gray-700 px-4 py-2 text-sm text-gray-300 hover:bg-gray-600">Cancel</button>
+              <button type="submit" disabled={reauthLoading || !reauthPassword} className="flex-1 rounded-lg bg-purple-600 px-4 py-2 text-sm font-medium text-white hover:bg-purple-500 disabled:opacity-50">{reauthLoading ? 'Confirming…' : 'Unlock changes'}</button>
+            </div>
+          </form>
+        </Modal>
+      )}
 
       {loadError && (
         <div className="bg-red-900/40 border-b border-red-700 px-6 py-3 flex items-center gap-3 print:hidden">
@@ -4383,20 +4578,24 @@ export default function AdminCentral() {
               <p className="text-sm">Loading Command Central…</p>
             </div>
           ) : viewClient360 ? (
-            <ErrorBoundary><Client360 company={viewClient360} licenses={licenses} onBack={() => setViewClient360(null)} /></ErrorBoundary>
+            <Suspense fallback={<div className="flex items-center justify-center h-full text-sm text-gray-500">Loading company workspace…</div>}>
+              <ErrorBoundary><Client360 company={viewClient360} licenses={licenses} onBack={() => setViewClient360(null)} /></ErrorBoundary>
+            </Suspense>
           ) : (
+          <Suspense fallback={<div className="flex items-center justify-center h-full text-sm text-gray-500">Loading Command Central workspace…</div>}>
           <>
-          {(section === 'dashboard' || section === 'cockpit') && <ErrorBoundary><DashboardHub companies={companies} licenses={licenses} tickets={tickets} activityLogs={activityLogs} onOpenCompany={(company) => setViewClient360(company)} initialTab={section === 'cockpit' ? 'executive' : 'overview'} /></ErrorBoundary>}
-          {section === 'companies' && <ErrorBoundary><Companies companies={companies} licenses={licenses} loading={loading} onReload={loadAll} /></ErrorBoundary>}
-          {(section === 'licensing' || section === 'subscription-requests') && <ErrorBoundary><LicensingHub companies={companies} licenses={licenses} tickets={tickets} onRefresh={loadAll} initialTab={section === 'subscription-requests' ? 'requests' : 'workbench'} /></ErrorBoundary>}
-          {(section === 'finance' || section === 'bookkeeping' || section === 'accounting') && <ErrorBoundary><FinanceOffice companies={companies} /></ErrorBoundary>}
-          {(section === 'tickets' || section === 'leads' || section === 'client-desk') && <ErrorBoundary><ClientDesk companies={companies} onOpenCompany={(company) => setViewClient360(company)} initialTab={section === 'leads' ? 'leads' : 'support'} /></ErrorBoundary>}
-          {(section === 'notifications' || section === 'broadcasts' || section === 'email-alerts' || section === 'communications') && <ErrorBoundary><CommunicationsHub companies={companies} onOpenCompany={(company) => setViewClient360(company)} initialTab={section === 'broadcasts' ? 'broadcasts' : section === 'email-alerts' ? 'email' : 'notifications'} /></ErrorBoundary>}
-          {section === 'activity' && <ErrorBoundary><ActivityLog companies={companies} onOpenCompany={(company) => setViewClient360(company)} /></ErrorBoundary>}
-          {(section === 'health' || section === 'surfaces' || section === 'fleet' || section === 'releases' || section === 'platform') && <ErrorBoundary><PlatformOperations onOpenCompany={(company) => setViewClient360(company)} companies={companies} initialTab={['health', 'surfaces', 'fleet', 'releases'].includes(section) ? section : 'health'} /></ErrorBoundary>}
-          {section === 'implementation' && <ErrorBoundary><ImplementationAddons /></ErrorBoundary>}
-          {(section === 'search' || section === 'bulk' || section === 'test-reset' || section === 'tools') && <ErrorBoundary><AdminTools onNavigate={(s) => setSection(s)} onOpenCompany={(company) => setViewClient360(company)} companies={companies} initialTab={['search', 'bulk', 'test-reset'].includes(section) ? section : 'search'} /></ErrorBoundary>}
+            {(section === 'dashboard' || section === 'cockpit') && <ErrorBoundary><DashboardHub companies={companies} licenses={licenses} tickets={tickets} activityLogs={activityLogs} onOpenCompany={(company) => setViewClient360(company)} initialTab={section === 'cockpit' ? 'executive' : 'overview'} /></ErrorBoundary>}
+            {section === 'companies' && <ErrorBoundary><Companies companies={companies} licenses={licenses} loading={loading} onReload={loadAll} /></ErrorBoundary>}
+            {(section === 'licensing' || section === 'subscription-requests') && <ErrorBoundary><LicensingHub companies={companies} licenses={licenses} tickets={tickets} onRefresh={loadAll} initialTab={section === 'subscription-requests' ? 'requests' : 'workbench'} /></ErrorBoundary>}
+            {(section === 'finance' || section === 'bookkeeping' || section === 'accounting') && <ErrorBoundary><FinanceOffice companies={companies} /></ErrorBoundary>}
+            {(section === 'tickets' || section === 'leads' || section === 'client-desk') && <ErrorBoundary><ClientDesk companies={companies} onOpenCompany={(company) => setViewClient360(company)} initialTab={section === 'leads' ? 'leads' : 'support'} /></ErrorBoundary>}
+            {(section === 'notifications' || section === 'broadcasts' || section === 'email-alerts' || section === 'communications') && <ErrorBoundary><CommunicationsHub companies={companies} onOpenCompany={(company) => setViewClient360(company)} initialTab={section === 'broadcasts' ? 'broadcasts' : section === 'email-alerts' ? 'email' : 'notifications'} /></ErrorBoundary>}
+            {section === 'activity' && <ErrorBoundary><ActivityLog companies={companies} onOpenCompany={(company) => setViewClient360(company)} /></ErrorBoundary>}
+            {(section === 'health' || section === 'surfaces' || section === 'fleet' || section === 'releases' || section === 'platform') && <ErrorBoundary><PlatformOperations onOpenCompany={(company) => setViewClient360(company)} companies={companies} initialTab={['health', 'surfaces', 'fleet', 'releases'].includes(section) ? section : 'health'} /></ErrorBoundary>}
+            {section === 'implementation' && <ErrorBoundary><ImplementationAddons companies={companies} /></ErrorBoundary>}
+            {(section === 'search' || section === 'bulk' || section === 'test-reset' || section === 'tools') && <ErrorBoundary><AdminTools onNavigate={(s) => setSection(s)} onOpenCompany={(company) => setViewClient360(company)} companies={companies} initialTab={['search', 'bulk', 'test-reset'].includes(section) ? section : 'search'} /></ErrorBoundary>}
           </>
+          </Suspense>
           )}
         </div>
       </div>

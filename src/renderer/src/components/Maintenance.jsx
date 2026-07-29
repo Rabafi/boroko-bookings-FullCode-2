@@ -168,18 +168,31 @@ function TicketsTab() {
   }
 
   const handleUpdate = async (id, data) => {
-    await window.api.maintenance.update(id, data).catch(console.error)
-    setEditOpen(false)
-    setEditing(null)
-    loadData()
+    setError('')
+    try {
+      const result = await window.api.maintenance.update(id, data)
+      if (result?.success === false) throw new Error(result.error || 'Failed to update ticket')
+      setEditOpen(false)
+      setEditing(null)
+      await loadData()
+    } catch (err) {
+      setError(err?.message || 'Failed to update ticket')
+    }
   }
 
   const handleResolve = async (ticket) => {
     if (!confirm(`Mark "${ticket.title || ticket.issue}" as resolved? The room will return to Available.`)) return
     setResolving(ticket.id)
-    await window.api.maintenance.resolve(ticket.id, ticket.room_id).catch(console.error)
-    setResolving(null)
-    loadData()
+    setError('')
+    try {
+      const result = await window.api.maintenance.resolve(ticket.id, ticket.room_id)
+      if (result?.success === false) throw new Error(result.error || 'Failed to resolve ticket')
+      await loadData()
+    } catch (err) {
+      setError(err?.message || 'Failed to resolve ticket')
+    } finally {
+      setResolving(null)
+    }
   }
 
   const displayed = tickets.filter((t) =>
@@ -523,14 +536,35 @@ function PreventiveTab() {
     setLoading(true)
     setError(null)
     try {
+      if (!window.api?.maintenanceEnterprise?.getAllPreventiveSchedules) {
+        throw new Error('Maintenance enterprise API is not available')
+      }
+      const warn = []
+      const settle = async (label, promise) => {
+        try {
+          return await promise
+        } catch (e) {
+          warn.push(`${label}: ${e?.message || 'failed'}`)
+          return null
+        }
+      }
       const [schedulesData, due] = await Promise.all([
-        window.api.maintenanceEnterprise.getAllPreventiveSchedules().catch(() => []),
-        window.api.maintenanceEnterprise.getDuePreventive(new Date().toISOString().slice(0, 10)).catch(() => [])
+        settle('Schedules', window.api.maintenanceEnterprise.getAllPreventiveSchedules()),
+        settle('Due preventive', window.api.maintenanceEnterprise.getDuePreventive(new Date().toISOString().slice(0, 10)))
       ])
+      if (schedulesData == null && due == null) {
+        setError(warn.join(' · ') || 'Failed to load preventive maintenance data')
+        setSchedules([])
+        setDuePreventive([])
+        return
+      }
       setSchedules(Array.isArray(schedulesData) ? schedulesData : [])
       setDuePreventive(Array.isArray(due) ? due : [])
+      if (warn.length) setError(`Partial load: ${warn.join(' · ')}`)
     } catch (err) {
       setError(err?.message || 'Failed to load preventive maintenance data')
+      setSchedules([])
+      setDuePreventive([])
     } finally {
       setLoading(false)
     }
@@ -657,6 +691,7 @@ function OooTab() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [dashboard, setDashboard] = useState(null)
+  const [rooms, setRooms] = useState([])
   const [selectedRoomId, setSelectedRoomId] = useState('')
   const [startDate, setStartDate] = useState(new Date().toISOString().slice(0, 10))
   const [endDate, setEndDate] = useState(new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10))
@@ -666,10 +701,28 @@ function OooTab() {
     setLoading(true)
     setError(null)
     try {
-      const dash = await window.api.maintenanceEnterprise.getMaintenanceDashboard().catch(() => null)
-      setDashboard(dash)
+      if (!window.api?.maintenanceEnterprise?.getMaintenanceDashboard) {
+        throw new Error('Maintenance enterprise API is not available')
+      }
+      const warn = []
+      try {
+        const dash = await window.api.maintenanceEnterprise.getMaintenanceDashboard()
+        setDashboard(dash)
+      } catch (e) {
+        warn.push(`Dashboard: ${e?.message || 'failed'}`)
+        setDashboard(null)
+      }
+      try {
+        const roomRows = await window.api.rooms.getAll()
+        setRooms(Array.isArray(roomRows) ? roomRows : [])
+      } catch (e) {
+        warn.push(`Rooms: ${e?.message || 'failed'}`)
+        setRooms([])
+      }
+      if (warn.length) setError(`Partial load: ${warn.join(' · ')}`)
     } catch (err) {
       setError(err?.message || 'Failed to load OOO data')
+      setDashboard(null)
     } finally {
       setLoading(false)
     }
@@ -678,29 +731,38 @@ function OooTab() {
   useEffect(() => { loadData() }, [loadData])
 
   const handleSetOutOfOrder = async () => {
-    if (!selectedRoomId || !reason) return
+    if (!selectedRoomId) { setError('Select a room'); return }
+    if (!String(reason || '').trim()) { setError('OOO requires a reason'); return }
     try {
-      await window.api.maintenanceEnterprise.setRoomOutOfOrder(selectedRoomId, startDate, reason, endDate, null)
+      setError(null)
+      await window.api.maintenanceEnterprise.setRoomOutOfOrder(selectedRoomId, startDate, String(reason).trim(), endDate, null)
       setReason('')
       await loadData()
     } catch (err) {
-      setError(err?.message)
+      setError(err?.message || 'Could not set room out of order')
     }
   }
 
   const handleSetOutOfService = async () => {
-    if (!selectedRoomId || !reason) return
+    if (!selectedRoomId) { setError('Select a room'); return }
+    if (!String(reason || '').trim()) { setError('OOS requires a reason'); return }
     try {
-      await window.api.maintenanceEnterprise.setRoomOutOfService(selectedRoomId, startDate, reason, endDate, null)
+      setError(null)
+      await window.api.maintenanceEnterprise.setRoomOutOfService(selectedRoomId, startDate, String(reason).trim(), endDate, null)
       setReason('')
       await loadData()
     } catch (err) {
-      setError(err?.message)
+      setError(err?.message || 'Could not set room out of service')
     }
   }
 
   return (
     <div className="space-y-4">
+      {loading && !dashboard && rooms.length === 0 ? (
+        <div className="flex justify-center py-12">
+          <div className="h-8 w-8 animate-spin rounded-full border-2 border-emerald-700 border-t-transparent" />
+        </div>
+      ) : null}
       {error && (
         <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>
       )}
@@ -728,10 +790,24 @@ function OooTab() {
 
       <section className="bb-card p-5">
         <h2 className="text-sm font-bold text-slate-800 mb-4">Room Out of Order / Out of Service Management</h2>
+        <p className="mb-3 text-xs text-slate-500">
+          Uses server RPCs <code>set_room_out_of_order</code> / <code>set_room_out_of_service</code>. Return rooms via Downtime tab (<code>return_room_to_service</code>).
+        </p>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
           <div>
-            <label className="text-xs font-semibold text-slate-500 block mb-1">Room ID</label>
-            <input type="text" value={selectedRoomId} onChange={(e) => setSelectedRoomId(e.target.value)} placeholder="Room UUID" className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs" />
+            <label className="text-xs font-semibold text-slate-500 block mb-1">Room</label>
+            <select
+              value={selectedRoomId}
+              onChange={(e) => setSelectedRoomId(e.target.value)}
+              className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs"
+            >
+              <option value="">Select room</option>
+              {rooms.map((r) => (
+                <option key={r.id} value={r.id}>
+                  Room {r.room_number} · {r.room_type || 'Room'} ({r.status || 'available'})
+                </option>
+              ))}
+            </select>
           </div>
           <div>
             <label className="text-xs font-semibold text-slate-500 block mb-1">Start Date</label>
@@ -742,13 +818,27 @@ function OooTab() {
             <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs" />
           </div>
           <div>
-            <label className="text-xs font-semibold text-slate-500 block mb-1">Reason</label>
+            <label className="text-xs font-semibold text-slate-500 block mb-1">Reason (required)</label>
             <input type="text" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Reason" className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs" />
           </div>
         </div>
         <div className="flex gap-2">
-          <button onClick={handleSetOutOfOrder} className="rounded-xl bg-amber-600 px-4 py-2 text-xs font-semibold text-white hover:bg-amber-700">Set Out of Order</button>
-          <button onClick={handleSetOutOfService} className="rounded-xl bg-orange-600 px-4 py-2 text-xs font-semibold text-white hover:bg-orange-700">Set Out of Service</button>
+          <button
+            type="button"
+            onClick={handleSetOutOfOrder}
+            disabled={!selectedRoomId || !String(reason || '').trim()}
+            className="rounded-xl bg-amber-600 px-4 py-2 text-xs font-semibold text-white hover:bg-amber-700 disabled:opacity-50"
+          >
+            Set Out of Order
+          </button>
+          <button
+            type="button"
+            onClick={handleSetOutOfService}
+            disabled={!selectedRoomId || !String(reason || '').trim()}
+            className="rounded-xl bg-orange-600 px-4 py-2 text-xs font-semibold text-white hover:bg-orange-700 disabled:opacity-50"
+          >
+            Set Out of Service
+          </button>
         </div>
       </section>
     </div>
@@ -757,37 +847,72 @@ function OooTab() {
 
 function DowntimeTab() {
   const [error, setError] = useState(null)
+  const [rooms, setRooms] = useState([])
   const [selectedRoomId, setSelectedRoomId] = useState('')
   const [downtimeHistory, setDowntimeHistory] = useState([])
+  const [loaded, setLoaded] = useState(false)
+
+  useEffect(() => {
+    window.api?.rooms?.getAll?.()
+      .then((rows) => setRooms(Array.isArray(rows) ? rows : []))
+      .catch((err) => setError(err?.message || 'Could not load rooms for downtime history'))
+  }, [])
 
   const handleLoadDowntimeHistory = async () => {
-    if (!selectedRoomId) return
+    if (!selectedRoomId) {
+      setError('Select a room')
+      return
+    }
+    setError(null)
+    setLoaded(false)
     try {
       const history = await window.api.maintenanceEnterprise.getRoomDowntimeHistory(selectedRoomId)
       setDowntimeHistory(Array.isArray(history) ? history : [])
+      setLoaded(true)
     } catch (err) {
-      setError(err?.message)
+      setError(err?.message || 'Could not load downtime history')
+      setDowntimeHistory([])
+      setLoaded(true)
     }
   }
 
   const handleReturnToService = async (downtimeId) => {
     try {
+      setError(null)
       await window.api.maintenanceEnterprise.returnRoomToService(downtimeId)
       await handleLoadDowntimeHistory()
     } catch (err) {
-      setError(err?.message)
+      setError(err?.message || 'Could not return room to service')
     }
   }
 
   return (
     <section className="bb-card p-5">
       <h2 className="text-sm font-bold text-slate-800 mb-4">Room Downtime History</h2>
+      <p className="mb-3 text-xs text-slate-500">
+        Return-to-service uses the authoritative <code>return_room_to_service</code> RPC.
+      </p>
       {error && (
         <div className="mb-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>
       )}
       <div className="flex gap-3 mb-4">
-        <input type="text" value={selectedRoomId} onChange={(e) => setSelectedRoomId(e.target.value)} placeholder="Room UUID" className="flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs" />
-        <button onClick={handleLoadDowntimeHistory} className="rounded-xl bg-emerald-600 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-700">Load History</button>
+        <select
+          value={selectedRoomId}
+          onChange={(e) => setSelectedRoomId(e.target.value)}
+          className="flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs"
+        >
+          <option value="">Select room</option>
+          {rooms.map((r) => (
+            <option key={r.id} value={r.id}>Room {r.room_number}</option>
+          ))}
+        </select>
+        <button
+          type="button"
+          onClick={handleLoadDowntimeHistory}
+          className="rounded-xl bg-emerald-600 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-700"
+        >
+          Load History
+        </button>
       </div>
       {downtimeHistory.length > 0 ? (
         <div className="overflow-x-auto">
@@ -810,7 +935,11 @@ function DowntimeTab() {
                   <td className="px-5 py-3 text-slate-500">{d.reason}</td>
                   <td className="px-5 py-3">
                     {!d.end_date && (
-                      <button onClick={() => handleReturnToService(d.id)} className="rounded-lg bg-emerald-100 px-3 py-1 text-[10px] font-semibold text-emerald-700 hover:bg-emerald-200">
+                      <button
+                        type="button"
+                        onClick={() => handleReturnToService(d.id)}
+                        className="rounded-lg bg-emerald-100 px-3 py-1 text-[10px] font-semibold text-emerald-700 hover:bg-emerald-200"
+                      >
                         Return to Service
                       </button>
                     )}
@@ -821,7 +950,9 @@ function DowntimeTab() {
           </table>
         </div>
       ) : (
-        <p className="text-xs text-slate-400">Enter a room ID and click Load History</p>
+        <p className="text-xs text-slate-400">
+          {loaded ? 'No downtime history for this room.' : 'Select a room and click Load History'}
+        </p>
       )}
     </section>
   )

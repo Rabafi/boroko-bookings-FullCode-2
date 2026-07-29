@@ -24,8 +24,8 @@ ALTER TABLE corporate_invoice_items ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY corporate_invoice_items_lodge_policy ON corporate_invoice_items
   FOR ALL
-  USING (lodge_id = (current_setting('request.jwt.claims', true)::jsonb ->> 'lodge_id')::uuid)
-  WITH CHECK (lodge_id = (current_setting('request.jwt.claims', true)::jsonb ->> 'lodge_id')::uuid);
+  USING (public.app_lodge_access(lodge_id))
+  WITH CHECK (public.app_lodge_access(lodge_id));
 
 CREATE INDEX IF NOT EXISTS idx_corp_inv_items_account ON corporate_invoice_items(corporate_account_id);
 CREATE INDEX IF NOT EXISTS idx_corp_inv_items_lodge_status ON corporate_invoice_items(lodge_id, status);
@@ -48,8 +48,8 @@ ALTER TABLE corporate_payments ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY corporate_payments_lodge_policy ON corporate_payments
   FOR ALL
-  USING (lodge_id = (current_setting('request.jwt.claims', true)::jsonb ->> 'lodge_id')::uuid)
-  WITH CHECK (lodge_id = (current_setting('request.jwt.claims', true)::jsonb ->> 'lodge_id')::uuid);
+  USING (public.app_lodge_access(lodge_id))
+  WITH CHECK (public.app_lodge_access(lodge_id));
 
 CREATE INDEX IF NOT EXISTS idx_corp_payments_account ON corporate_payments(corporate_account_id);
 CREATE INDEX IF NOT EXISTS idx_corp_payments_invoice ON corporate_payments(invoice_id);
@@ -128,6 +128,8 @@ DECLARE
   v_credit_limit numeric;
   v_invoices_total numeric;
 BEGIN
+  PERFORM public.app_require_feature(p_lodge_id, 'corporate_accounts', ARRAY['manager', 'admin', 'super_admin', 'finance']);
+
   SELECT credit_limit INTO v_credit_limit
   FROM corporate_accounts WHERE id = p_account_id AND lodge_id = p_lodge_id;
 
@@ -234,6 +236,7 @@ DECLARE
   v_opening numeric;
   v_closing numeric;
 BEGIN
+  PERFORM public.app_require_feature(p_lodge_id, 'corporate_accounts', ARRAY['manager', 'admin', 'super_admin', 'finance']);
   SELECT COALESCE(sum(i.amount - COALESCE(cp.paid_amt, 0)), 0) INTO v_opening
   FROM corporate_invoice_items i
   LEFT JOIN LATERAL (SELECT COALESCE(sum(cp2.amount), 0) as paid_amt FROM corporate_payments cp2 WHERE cp2.invoice_id = i.id) cp ON true
@@ -295,6 +298,8 @@ DECLARE
   v_current_outstanding numeric;
   v_within_limit boolean;
 BEGIN
+  PERFORM public.app_require_feature(p_lodge_id, 'corporate_accounts', ARRAY['manager', 'admin', 'super_admin', 'finance']);
+
   SELECT credit_limit INTO v_credit_limit
   FROM corporate_accounts WHERE id = p_account_id AND lodge_id = p_lodge_id;
 
@@ -332,10 +337,10 @@ CREATE OR REPLACE FUNCTION suspend_corporate_account(
 RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = 'public'
 AS $$
 BEGIN
-  PERFORM app_require_lodge_role(p_lodge_id, ARRAY['manager', 'admin', 'super_admin']);
+  PERFORM public.app_require_feature(p_lodge_id, 'corporate_accounts', ARRAY['manager', 'admin', 'super_admin']);
 
   UPDATE corporate_accounts SET status = 'suspended', notes = COALESCE(notes || E'\n' || p_reason, p_reason), updated_at = now()
   WHERE id = p_account_id AND lodge_id = p_lodge_id;
@@ -361,7 +366,7 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
 BEGIN
-  PERFORM app_require_lodge_role(p_lodge_id, ARRAY['manager', 'admin', 'super_admin']);
+  PERFORM public.app_require_feature(p_lodge_id, 'corporate_accounts', ARRAY['manager', 'admin', 'super_admin']);
 
   UPDATE corporate_accounts SET status = 'active', updated_at = now()
   WHERE id = p_account_id AND lodge_id = p_lodge_id AND status = 'suspended';

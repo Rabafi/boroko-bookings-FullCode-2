@@ -124,7 +124,7 @@ describe('Restaurant Ticket Status Contract', () => {
     it('pos.js getPosTickets fetches from server when online', () => {
       const js = read(POS_JS)
       const fnIdx = js.indexOf('export async function getPosTickets')
-      const fnBody = js.slice(fnIdx, fnIdx + 1000)
+      const fnBody = js.slice(fnIdx, fnIdx + 2500)
       assert.ok(fnBody.includes("'pos_prep_tickets'"), 'queries pos_prep_tickets table')
       assert.ok(fnBody.includes('writePosTickets'), 'caches results locally')
     })

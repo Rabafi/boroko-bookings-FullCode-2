@@ -1,7 +1,14 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Clock, AlertTriangle } from 'lucide-react'
+import { Clock, AlertTriangle, RefreshCw, CalendarDays } from 'lucide-react'
 
 const STATUSES = ['all', 'pending', 'preparing', 'ready', 'served']
+
+function localDateKey(date = new Date()) {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
 
 function elapsedMinutes(createdAt) {
   if (!createdAt) return 0
@@ -20,30 +27,58 @@ export default function RestaurantKitchen() {
   const [loading, setLoading] = useState(true)
   const [station, setStation] = useState('all')
   const [statusFilter, setStatusFilter] = useState('all')
-  const [stations, setStations] = useState(['all', 'kitchen', 'bar'])
+  const [serviceDate, setServiceDate] = useState(localDateKey())
+  const [stations, setStations] = useState([{ id: 'all', name: 'All stations' }, { id: 'kitchen', name: 'Kitchen' }, { id: 'bar', name: 'Bar' }])
   const [now, setNow] = useState(Date.now())
+  const [error, setError] = useState('')
+  const [updatingId, setUpdatingId] = useState(null)
 
   const loadTickets = useCallback(async () => {
     try {
-      const filters = station !== 'all' ? { station } : {}
+      setError('')
+      const selectedDate = serviceDate || localDateKey(new Date())
+      const start = new Date(`${selectedDate}T00:00:00`)
+      const end = new Date(start)
+      end.setDate(end.getDate() + 1)
+      const filters = {
+        ...(station !== 'all' ? { station } : {}),
+        createdFrom: start.toISOString(),
+        createdTo: end.toISOString()
+      }
       const data = await window.api.pos.getTickets(filters)
       setTickets(Array.isArray(data) ? data : [])
     } catch (err) {
       console.error('Failed to load tickets:', err)
+      setError(err.message || 'Could not refresh kitchen tickets.')
     } finally {
       setLoading(false)
     }
-  }, [station])
+  }, [serviceDate, station])
 
   useEffect(() => {
     loadTickets()
-    const interval = setInterval(loadTickets, 10000)
-    return () => clearInterval(interval)
+    const interval = setInterval(() => {
+      if (document.visibilityState === 'visible') loadTickets()
+    }, 10000)
+    const handleVisible = () => {
+      if (document.visibilityState === 'visible') loadTickets()
+    }
+    document.addEventListener('visibilitychange', handleVisible)
+    return () => {
+      clearInterval(interval)
+      document.removeEventListener('visibilitychange', handleVisible)
+    }
   }, [loadTickets])
 
   useEffect(() => {
     window.api.pos.getStations?.()
-      .then((rows) => setStations(['all', ...new Set((Array.isArray(rows) ? rows : []).filter((row) => row.enabled !== false).map((row) => row.id))]))
+      .then((rows) => {
+        const enabled = (Array.isArray(rows) ? rows : []).filter((row) => row.enabled !== false)
+        const builtIns = [{ id: 'all', name: 'All stations' }, { id: 'kitchen', name: 'Kitchen' }, { id: 'bar', name: 'Bar' }]
+        const merged = new Map(builtIns.map(row => [row.id, row]))
+        enabled.forEach(row => merged.set(row.id, { id: row.id, name: row.name || row.id }))
+        setStations([...merged.values()])
+      })
       .catch(() => {})
   }, [])
 
@@ -54,14 +89,21 @@ export default function RestaurantKitchen() {
 
   async function updateStatus(ticketId, newStatus) {
     try {
-      await window.api.pos.updateTicketStatus(ticketId, newStatus)
+      setUpdatingId(ticketId)
+      setError('')
+      const result = await window.api.pos.updateTicketStatus(ticketId, newStatus)
+      if (result?.success === false) throw new Error(result.error || 'Could not update ticket.')
       await loadTickets()
     } catch (err) {
       console.error('Failed to update ticket:', err)
+      setError(err.message || 'Could not update ticket.')
+    } finally {
+      setUpdatingId(null)
     }
   }
 
   const filtered = tickets.filter(t => {
+    if (serviceDate && t.created_at && localDateKey(new Date(t.created_at)) !== serviceDate) return false
     if (statusFilter !== 'all' && t.status !== statusFilter && !(statusFilter === 'pending' && t.status === 'new')) return false
     return true
   })
@@ -134,18 +176,18 @@ export default function RestaurantKitchen() {
         )}
         <div className="flex gap-2">
           {(ticket.status === 'new' || ticket.status === 'pending') && (
-            <button onClick={() => updateStatus(ticket.id, 'preparing')} className="bb-btn-primary text-xs flex-1">
-              Start Preparing
+            <button onClick={() => updateStatus(ticket.id, 'preparing')} disabled={updatingId === ticket.id} className="bb-btn-primary text-xs flex-1">
+              {updatingId === ticket.id ? 'Saving…' : 'Start Preparing'}
             </button>
           )}
           {ticket.status === 'preparing' && (
-            <button onClick={() => updateStatus(ticket.id, 'ready')} className="bb-btn-primary text-xs flex-1 bg-emerald-600 hover:bg-emerald-700">
-              Mark Ready
+            <button onClick={() => updateStatus(ticket.id, 'ready')} disabled={updatingId === ticket.id} className="bb-btn-primary text-xs flex-1 bg-emerald-600 hover:bg-emerald-700">
+              {updatingId === ticket.id ? 'Saving…' : 'Mark Ready'}
             </button>
           )}
           {ticket.status === 'ready' && (
-            <button onClick={() => updateStatus(ticket.id, 'served')} className="bb-btn-primary text-xs flex-1 bg-gray-500 hover:bg-gray-600">
-              Mark Served
+            <button onClick={() => updateStatus(ticket.id, 'served')} disabled={updatingId === ticket.id} className="bb-btn-primary text-xs flex-1 bg-gray-500 hover:bg-gray-600">
+              {updatingId === ticket.id ? 'Saving…' : 'Mark Served'}
             </button>
           )}
         </div>
@@ -154,32 +196,42 @@ export default function RestaurantKitchen() {
   }
 
   return (
-    <div className="p-6 max-w-7xl mx-auto">
-      <div className="flex items-center justify-between mb-6">
+    <div className="restaurant-native-page">
+      <div className="restaurant-native-hero">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Kitchen Display</h1>
           <p className="text-sm text-gray-500 mt-1">Live order tickets with station routing and timing</p>
         </div>
-        <button onClick={loadTickets} className="bb-btn-outline text-sm">Refresh</button>
+        <button onClick={loadTickets} className="bb-btn-outline flex items-center gap-2 px-4 text-sm"><RefreshCw size={14} /> Refresh</button>
+      </div>
+
+      {error && <div className="mb-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>}
+
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs">
+          <CalendarDays size={14} /> Service date
+          <input type="date" value={serviceDate} onChange={event => setServiceDate(event.target.value)} className="min-h-0 border-0 bg-transparent p-0" />
+        </label>
+        <span className="text-xs text-gray-500">Tickets refresh automatically every 10 seconds.</span>
       </div>
 
       {/* Station tabs */}
-      <div className="flex gap-1 bg-gray-100 rounded-lg p-1 mb-4 w-fit">
+      <div className="restaurant-native-segmented mb-4 w-fit">
         {stations.map(s => (
           <button
-            key={s}
-            onClick={() => setStation(s)}
+            key={s.id}
+            onClick={() => setStation(s.id)}
             className={`px-3 py-1.5 rounded-md text-xs font-medium transition ${
-              station === s ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+              station === s.id ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500 hover:text-gray-700'
             }`}
           >
-            {s.charAt(0).toUpperCase() + s.slice(1)}
+            {s.name}
           </button>
         ))}
       </div>
 
       {/* Status filter */}
-      <div className="flex gap-2 mb-6">
+      <div className="restaurant-native-segmented mb-6">
         {STATUSES.map(f => (
           <button
             key={f}
@@ -194,18 +246,18 @@ export default function RestaurantKitchen() {
       </div>
 
       {loading ? (
-        <div className="flex items-center justify-center h-64">
+        <div className="restaurant-native-loading">
           <div className="h-8 w-8 animate-spin rounded-full border-2 border-[#174c3a] border-t-transparent" />
         </div>
       ) : filtered.length === 0 ? (
-        <div className="bb-card p-12 text-center">
+        <div className="restaurant-native-empty">
           <p className="text-gray-500 text-lg mb-2">No tickets</p>
           <p className="text-gray-400 text-sm">Orders will appear here as they come in</p>
         </div>
       ) : (
         <div className="space-y-6">
           {/* Summary counts */}
-          <div className="grid grid-cols-4 gap-3">
+          <div className="restaurant-native-kpis">
             <div className="bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-center">
               <div className="text-xl font-bold text-red-700">{pending.length}</div>
               <div className="text-[10px] text-red-600">Pending</div>

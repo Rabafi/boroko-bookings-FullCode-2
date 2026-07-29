@@ -38,7 +38,7 @@ export default function ResetPassword() {
     try {
       await updateSupabasePassword(password)
       leaveRecoveryMode()
-      setSuccess('Password updated. You can return to Boroko Bookings desktop or the manager app and sign in with the new password.')
+      setSuccess('Password updated. You can return to your Tsa Bonno desktop application or the manager app and sign in with the new password.')
       setPassword('')
       setConfirmPassword('')
     } catch (err) {
@@ -57,8 +57,8 @@ export default function ResetPassword() {
           <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-green-900/40 text-green-300">
             <Lock size={24} />
           </div>
-          <h1 className="text-2xl font-bold text-white">Reset Boroko Password</h1>
-          <p className="text-gray-400 text-sm mt-1">This updates your Boroko sign-in password for desktop and any manager access you are allowed to use.</p>
+          <h1 className="text-2xl font-bold text-white">Reset Tsa Bonno Password</h1>
+          <p className="text-gray-400 text-sm mt-1">This updates your Tsa Bonno sign-in password for desktop and any manager access you are allowed to use.</p>
         </div>
 
         <form onSubmit={submit} className="space-y-4">
@@ -120,7 +120,7 @@ export default function ResetPassword() {
             onClick={returnToSignIn}
             className="block w-full text-center text-sm font-semibold text-green-400 hover:text-green-300"
           >
-            Back to Boroko sign in
+            Back to Tsa Bonno sign in
           </button>
         </form>
       </div>

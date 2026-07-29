@@ -22,11 +22,9 @@ import {
   MONTHLY_USAGE_RESET_COPY,
   SUBSCRIPTION_PLAN_ORDER,
   countMonthlyUsageBookings,
-  getAllSubscriptionPlans,
   getFeatureRequiredPlan,
   getPlanRecommendation,
   getPlanUsageLimits,
-  getSubscriptionPlan,
   getUsageLimitStatus,
   formatPlanLimits,
   normalizeSubscriptionPlan,
@@ -34,10 +32,17 @@ import {
 } from '../../../shared/subscriptionPlans'
 import {
   ENTERPRISE_ADDON_STATUS,
-  getEligibleEnterpriseAddons,
   isEnterpriseAddonEnabled
 } from '../../../shared/enterpriseAddons'
+import { getCommercialPackageCatalog, getCommercialPackageDisplayName, getCommercialPackageLabel, getAdvertisedEnterpriseAddons } from '../../../shared/commercialPackages'
+import { getProductDefinition, getRuntimeProductId } from '../../../shared/productIdentity'
+import { isCommercialFeatureIncluded } from '../../../shared/commercialAccess.js'
 import UsageLimitIndicator from './shared/UsageLimitIndicator'
+
+const BUILD_PRODUCT = getProductDefinition(getRuntimeProductId())
+const IS_HOTEL_PRODUCT = BUILD_PRODUCT.id === 'hotel'
+const IS_POS_PRODUCT = BUILD_PRODUCT.id === 'hospitality-pos'
+const IS_LODGE_PRODUCT = BUILD_PRODUCT.id === 'lodge-camp'
 
 function fmtDate(value) {
   if (!value) return '—'
@@ -66,6 +71,7 @@ function paymentBadge(status) {
 
 function getRecommendedUpgradePlan(currentPlan) {
   const normalizedPlan = normalizeSubscriptionPlan(currentPlan)
+  if (IS_HOTEL_PRODUCT || IS_POS_PRODUCT) return null
   if (normalizedPlan === 'Starter') return 'Standard'
   if (normalizedPlan === 'Standard') return 'Pro'
   if (normalizedPlan === 'Pro') return 'Enterprise'
@@ -85,7 +91,13 @@ function StatusHero({ licenseStatus }) {
   const licensed = licenseStatus.status === 'licensed'
   const expired = licenseStatus.expired === true
   const subscriptionState = String(licenseStatus.subscription_state || licenseStatus.payment_status || licenseStatus.status || '').toLowerCase()
-  const planLabel = licensed ? normalizeSubscriptionPlan(licenseStatus.plan || 'Starter') : 'Trial'
+  const planLabel = licensed
+    ? getCommercialPackageDisplayName({
+        productId: BUILD_PRODUCT.id,
+        commercialPackageKey: licenseStatus.commercial_package_key,
+        plan: licenseStatus.plan || 'Starter'
+      })
+    : 'Trial'
   const tone = licensed ? 'green' : expired ? 'red' : 'blue'
   const toneClasses = {
     green: 'from-green-700 via-emerald-700 to-teal-700 text-white',
@@ -105,18 +117,18 @@ function StatusHero({ licenseStatus }) {
             {licensed
               ? `${planLabel} plan active`
               : expired
-                ? 'Access is paused until the lodge is activated'
+                ? 'Access is paused until the property is activated'
                 : `${licenseStatus.daysLeft || 0} day${licenseStatus.daysLeft === 1 ? '' : 's'} left in trial`}
           </h2>
           <p className="text-sm text-white/85 mt-2">
             {licensed
               ? subscriptionState === 'grace_period'
-                ? 'This lodge is still running, but it is inside a grace period. Boroko will protect access until the grace window ends.'
-                : 'This lodge is currently licensed and Boroko will use this entitlement as the source of truth for modules and access.'
+                ? 'this property is still running, but it is inside a grace period. Tsa Bonno will protect access until the grace window ends.'
+                : 'this property is currently licensed and Tsa Bonno will use this entitlement as the source of truth for modules and access.'
               : expired
                 ? subscriptionState === 'offline_lease_expired'
                   ? 'The device stayed offline beyond its safe entitlement window. Reconnect and refresh the subscription to restore premium access.'
-                  : 'This trial has ended. Buy and activate a subscription to restore app features for this lodge.'
+                  : 'This trial has ended. Buy and activate a subscription to restore app features for this property.'
                 : 'Trial mode currently unlocks the full feature set so you can test workflows before activation.'}
           </p>
         </div>
@@ -165,7 +177,7 @@ export default function SubscriptionAccessPanel() {
   const [upgradeMsg, setUpgradeMsg] = useState('')
   const [upgradeSending, setUpgradeSending] = useState(false)
   const [upgradeSent, setUpgradeSent] = useState(false)
-  const [requestedPlan, setRequestedPlan] = useState('Standard')
+  const [requestedPackageKey, setRequestedPackageKey] = useState(IS_HOTEL_PRODUCT ? 'hotel_core' : IS_POS_PRODUCT ? 'restaurant_growth' : 'standard')
   const [lodgeIdCopied, setLodgeIdCopied] = useState(false)
   const [usageCounts, setUsageCounts] = useState({ monthlyBookings: 0, rooms: 0, users: 0 })
   const [usageSource, setUsageSource] = useState('cache')
@@ -177,7 +189,7 @@ export default function SubscriptionAccessPanel() {
   const licensedPlan = normalizeSubscriptionPlan(licenseStatus?.plan || 'Starter')
   const isProPlan = licensedPlan === 'Pro'
   const isEnterprisePlan = licensedPlan === 'Enterprise'
-  const hasUsageLimits = !isProPlan && !isEnterprisePlan
+  const hasUsageLimits = !IS_POS_PRODUCT && !isProPlan && !isEnterprisePlan
   const licensedPlanIndex = SUBSCRIPTION_PLAN_ORDER.indexOf(licensedPlan)
   const enterpriseAddons = Array.isArray(licenseStatus?.enterprise_addons)
     ? licenseStatus.enterprise_addons
@@ -185,13 +197,21 @@ export default function SubscriptionAccessPanel() {
       ? access.entitlement.enterprise_addons
       : []
   const propertyType = settings?.property_type || settings?.business_type || 'lodge'
+  const commercialPackages = useMemo(
+    () => getCommercialPackageCatalog(BUILD_PRODUCT.id),
+    []
+  )
+  const currentCommercialPackageKey = licenseStatus?.commercial_package_key || access?.entitlement?.commercial_package_key || null
+  const selectedCommercialPackage = commercialPackages.find((plan) => plan.commercialPackageKey === requestedPackageKey) || commercialPackages[0] || null
   const eligibleAddons = useMemo(
-    () => getEligibleEnterpriseAddons(propertyType),
+    () => IS_HOTEL_PRODUCT ? getAdvertisedEnterpriseAddons(propertyType, BUILD_PRODUCT.id) : [],
     [propertyType]
   )
 
   const isFeatureEnabled = (featureName) => {
     if (entitlementExpired) return false
+    if (IS_POS_PRODUCT && currentCommercialPackageKey
+      && !isCommercialFeatureIncluded(BUILD_PRODUCT.id, currentCommercialPackageKey, featureName)) return false
     const effectiveFeatures = licenseStatus?.effective_features || {}
     if (Object.prototype.hasOwnProperty.call(effectiveFeatures, featureName)) {
       return effectiveFeatures[featureName] !== false
@@ -224,8 +244,17 @@ export default function SubscriptionAccessPanel() {
   }, [canManageSubscription, licenseStatus?.status, lodgeId])
 
   useEffect(() => {
-    setRequestedPlan(getRecommendedUpgradePlan(licenseStatus?.plan))
-  }, [licenseStatus?.plan])
+    const currentKey = licenseStatus?.commercial_package_key || access?.entitlement?.commercial_package_key
+    if (currentKey && commercialPackages.some((plan) => plan.commercialPackageKey === currentKey)) {
+      setRequestedPackageKey(currentKey)
+      return
+    }
+    const recommendedPlan = getRecommendedUpgradePlan(licenseStatus?.plan)
+    const fallback = recommendedPlan || normalizeSubscriptionPlan(licenseStatus?.plan || 'Starter')
+    const fallbackPackage = commercialPackages.find((plan) => plan.internalPlan === fallback)
+      || commercialPackages[commercialPackages.length - 1]
+    if (fallbackPackage) setRequestedPackageKey(fallbackPackage.commercialPackageKey)
+  }, [access?.entitlement?.commercial_package_key, commercialPackages, licenseStatus?.commercial_package_key, licenseStatus?.plan])
 
   useEffect(() => {
     let active = true
@@ -269,13 +298,23 @@ export default function SubscriptionAccessPanel() {
     limit: usageLimits.monthlyBookings,
     grace: usageLimits.monthlyBookingsGrace
   })
-  const usageRecommendation = getPlanRecommendation({
+  const rawUsageRecommendation = getPlanRecommendation({
     plan: licenseStatus?.plan || 'Starter',
     bookingsUsage: usageCounts.monthlyBookings,
     roomsUsage: usageCounts.rooms,
     usersUsage: usageCounts.users,
     limits: usageLimits
   })
+  const usageRecommendation = rawUsageRecommendation.recommendedPlan === 'Enterprise'
+    ? {
+        ...rawUsageRecommendation,
+        label: IS_HOTEL_PRODUCT ? 'Hotel package' : 'Pro is the highest LodgingOS package',
+        recommendedPlan: IS_HOTEL_PRODUCT && !isEnterprisePlan ? 'Enterprise' : null,
+        reason: IS_HOTEL_PRODUCT
+          ? 'HotelOS is quoted as a separate Tsa Bonno product.'
+          : 'Pro is the highest LodgingOS package. Contact Tsa Bonno if your operation needs HotelOS.'
+      }
+    : rawUsageRecommendation
 
   const handleActivate = async () => {
     if (!licenseKey.trim()) return
@@ -301,18 +340,27 @@ export default function SubscriptionAccessPanel() {
     setUpgradeSending(true)
     try {
       const lodgeName = settings?.lodge_name || settings?.company_name || ''
-      await window.api.admin.createSupportTicket({
-        lodge_id: lodgeId || 'unknown',
-        lodge_name: lodgeName,
-        title: `Upgrade Request — ${requestedPlan} Plan`,
-        description: buildUpgradeRequestDescription({
+      if (!selectedCommercialPackage?.commercialPackageKey) throw new Error('Select a package before requesting an upgrade.')
+      await window.api.subscriptionRequests.submit({
+        source: 'desktop_app',
+        request_type: 'plan_upgrade',
+        lodge_id: lodgeId || null,
+        company_name: settings?.company_name || lodgeName,
+        property_name: lodgeName,
+        contact_name: user?.full_name || user?.name || '',
+        contact_email: user?.email || '',
+        property_type: propertyType,
+        operating_profile: settings?.operating_profile || null,
+        product_id: BUILD_PRODUCT.id,
+        commercial_package_key: selectedCommercialPackage.commercialPackageKey,
+        current_plan: licenseStatus?.plan || 'Starter',
+        requested_plan: selectedCommercialPackage.internalPlan,
+        notes: buildUpgradeRequestDescription({
           lodgeName,
           currentPlan: licenseStatus?.plan || 'Starter',
-          requestedPlan,
+          requestedPlan: selectedCommercialPackage.internalPlan,
           notes: upgradeMsg
-        }),
-        category: 'Upgrade Request',
-        priority: 'High'
+        })
       })
       setUpgradeSent(true)
       setUpgradeMsg('')
@@ -337,22 +385,30 @@ export default function SubscriptionAccessPanel() {
       <StatusHero licenseStatus={licenseStatus} />
 
       <div className="grid gap-6 2xl:grid-cols-[1.25fr_0.95fr]">
-        <div className="space-y-5">
-          <div className="bg-white rounded-2xl shadow-sm p-5">
+         <div className="space-y-5">
+           <div className="bg-white rounded-2xl shadow-sm p-5">
             <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
               <div className="min-w-0 flex-1">
                 <h3 className="text-base font-semibold text-gray-800">Feature Access</h3>
                 <p className="text-sm text-gray-500 mt-1">
-                  {enabledFeatures.length} of {APP_FEATURES.length} controlled modules currently unlocked for this lodge.
+                  {enabledFeatures.length} of {APP_FEATURES.length} controlled modules currently unlocked for this property.
                 </p>
               </div>
               <div className="inline-flex w-fit items-center gap-2 bg-green-50 text-green-700 px-3 py-2 rounded-xl text-sm font-semibold">
                 <Sparkles size={15} />
-                {licenseStatus?.status === 'licensed' ? normalizeSubscriptionPlan(licenseStatus?.plan || 'Starter') : 'Trial'}
+                 {licenseStatus?.status === 'licensed'
+                   ? getCommercialPackageDisplayName({ productId: BUILD_PRODUCT.id, commercialPackageKey: licenseStatus?.commercial_package_key, plan: licenseStatus?.plan || 'Starter' })
+                   : 'Trial'}
               </div>
             </div>
 
-            {isProPlan ? (
+            {IS_POS_PRODUCT ? (
+              <div className="mb-4 rounded-2xl border border-amber-200 bg-amber-50 p-4">
+                <p className="text-xs font-semibold uppercase tracking-wide text-amber-700">POS entitlement</p>
+                <p className="mt-2 text-sm font-semibold text-amber-800">Commercial POS packages do not inherit Lodge &amp; Camp usage caps.</p>
+                <p className="mt-1 text-xs text-amber-700">Your selected package controls feature access: Service, Control, or Growth workflows.</p>
+              </div>
+            ) : isProPlan ? (
               <div className="mb-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
                 <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Usage</p>
                 <p className="mt-2 text-sm font-semibold text-emerald-800">Unlimited access</p>
@@ -361,13 +417,8 @@ export default function SubscriptionAccessPanel() {
             ) : isEnterprisePlan ? (
               <div className="mb-4 rounded-2xl border border-purple-200 bg-purple-50 p-4">
                 <p className="text-xs font-semibold uppercase tracking-wide text-purple-700">Usage</p>
-                <p className="mt-2 text-sm font-semibold text-purple-800">Enterprise plan</p>
-                <p className="mt-1 text-xs text-purple-700">Hotel-grade operations with capacity packs available for additional rooms, users, and bookings.</p>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <UsageLimitIndicator label="Bookings this month" used={usageCounts.monthlyBookings} limit={usageLimits.monthlyBookings} grace={usageLimits.monthlyBookingsGrace} />
-                  <UsageLimitIndicator label="Rooms" used={usageCounts.rooms} limit={usageLimits.rooms} />
-                  <UsageLimitIndicator label="Users" used={usageCounts.users} limit={usageLimits.users} />
-                </div>
+                 <p className="mt-2 text-sm font-semibold text-purple-800">Hotel Core</p>
+                 <p className="mt-1 text-xs text-purple-700">Hotel is an independently quoted product. It has no Lodge &amp; Camp tier or usage-cap ladder.</p>
               </div>
             ) : (
               <div className="mb-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
@@ -398,7 +449,7 @@ export default function SubscriptionAccessPanel() {
                 )}
                 {(bookingsUsageStatus.isAbovePlan || usageCounts.rooms > (usageLimits.rooms ?? Infinity) || usageCounts.users > (usageLimits.users ?? Infinity)) && (
                   <p className="mt-2 text-xs text-rose-700">
-                    This lodge is above the {normalizeSubscriptionPlan(licenseStatus?.plan || 'Starter')} plan limits. Existing records remain available, but new records are restricted until usage is reduced or the plan is upgraded.
+                    this property is above the {normalizeSubscriptionPlan(licenseStatus?.plan || 'Starter')} plan limits. Existing records remain available, but new records are restricted until usage is reduced or the plan is upgraded.
                   </p>
                 )}
                 <div className="mt-3 rounded-2xl border border-blue-200 bg-blue-50 px-3 py-3">
@@ -443,12 +494,12 @@ export default function SubscriptionAccessPanel() {
               })}
             </div>
 
-            <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            {IS_HOTEL_PRODUCT && <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4">
               <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                 <div>
-                  <h4 className="text-sm font-semibold text-slate-800">Enterprise Add-ons</h4>
+                  <h4 className="text-sm font-semibold text-slate-800">Optional hotel services</h4>
                   <p className="mt-1 text-xs text-slate-500">
-                    Add-ons require Enterprise plus explicit activation. They are not unlocked just because the lodge is on Enterprise.
+                    These optional services are quoted and activated separately for the Hotel product.
                   </p>
                 </div>
                 <span className="w-fit rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-600">
@@ -482,16 +533,16 @@ export default function SubscriptionAccessPanel() {
                       <p className={`mt-3 text-xs font-semibold ${
                         enabled ? 'text-green-700' : requestable ? 'text-amber-700' : 'text-slate-500'
                       }`}>
-                        {enabled ? 'Activated for this lodge' : requestable ? 'Available by request' : 'Planned for a later rollout'}
+                        {enabled ? 'Activated for this property' : requestable ? 'Available by request' : 'Planned for a later rollout'}
                       </p>
                     </div>
                   )
                 })}
                 {eligibleAddons.length === 0 && (
-                  <p className="text-sm text-slate-500">No Enterprise add-ons are currently relevant to this property type.</p>
+                  <p className="text-sm text-slate-500">No optional hotel services are currently relevant to this property type.</p>
                 )}
               </div>
-            </div>
+            </div>}
           </div>
 
         </div>
@@ -500,30 +551,36 @@ export default function SubscriptionAccessPanel() {
           <div className="bg-white rounded-2xl shadow-sm p-5">
             <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
               <div className="min-w-0 flex-1">
-                <h3 className="text-base font-semibold text-gray-800">Plan Options</h3>
+                <h3 className="text-base font-semibold text-gray-800">{IS_HOTEL_PRODUCT ? 'Hotel package' : 'Package options'}</h3>
                 <p className="text-sm text-gray-500 mt-1">
-                  A clear commercial ladder for selling Boroko and giving each lodge an obvious next step.
+                  {IS_HOTEL_PRODUCT
+                    ? 'HotelOS is a separate Tsa Bonno product with a property-specific quotation.'
+                    : IS_POS_PRODUCT
+                      ? 'Choose the POS operating package that matches the workflows you need.'
+                      : 'Starter, Standard, and Pro are the LodgingOS packages.'}
                 </p>
               </div>
               <div className="inline-flex w-fit items-center gap-2 rounded-xl bg-slate-100 px-3 py-2 text-sm font-semibold text-slate-600">
                 <Sparkles size={15} />
-                Current: {normalizeSubscriptionPlan(licenseStatus?.plan || 'Starter')}
+                Current: {getCommercialPackageDisplayName({ productId: BUILD_PRODUCT.id, commercialPackageKey: currentCommercialPackageKey, plan: licenseStatus?.plan || 'Starter' })}
               </div>
             </div>
 
             <div className="grid gap-3">
-              {getAllSubscriptionPlans().map((plan) => {
-                const limits = formatPlanLimits(plan.name)
-                const isCurrent = normalizeSubscriptionPlan(licenseStatus?.plan || 'Starter') === plan.name
-                const isSelected = requestedPlan === plan.name
+              {commercialPackages.map((plan) => {
+                const limits = IS_LODGE_PRODUCT ? formatPlanLimits(plan.internalPlan) : null
+                const isCurrent = currentCommercialPackageKey
+                  ? currentCommercialPackageKey === plan.commercialPackageKey
+                  : normalizeSubscriptionPlan(licenseStatus?.plan || 'Starter') === plan.internalPlan
+                const isSelected = requestedPackageKey === plan.commercialPackageKey
                 const isRecommended = plan.spotlight === 'Most Popular'
-                const isPremium = plan.name === 'Pro'
-                const isEnterprise = plan.name === 'Enterprise'
+                const isPremium = plan.internalPlan === 'Pro'
+                const isEnterprise = plan.internalPlan === 'Enterprise'
                 return (
                   <button
-                    key={plan.name}
+                    key={plan.commercialPackageKey}
                     type="button"
-                    onClick={() => setRequestedPlan(plan.name)}
+                    onClick={() => setRequestedPackageKey(plan.commercialPackageKey)}
                     className={`rounded-2xl border p-4 text-left transition-all ${
                       isSelected
                         ? 'border-emerald-300 bg-emerald-50 shadow-sm'
@@ -539,7 +596,7 @@ export default function SubscriptionAccessPanel() {
                     <div className="flex items-center justify-between gap-2">
                       <div>
                         <div className="flex items-center gap-2">
-                          <p className="font-semibold text-gray-800">{plan.name}</p>
+                          <p className="font-semibold text-gray-800">{plan.displayName || plan.name}</p>
                           <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-gray-500">
                             {plan.badge}
                           </span>
@@ -564,10 +621,18 @@ export default function SubscriptionAccessPanel() {
                     <p className="mt-3 text-sm font-medium text-gray-800">{plan.headline}</p>
                     <p className="mt-2 text-sm text-gray-500">{plan.summary}</p>
                     <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3 text-xs text-slate-600">
-                      <p className="font-semibold text-slate-700">{limits.bookings}</p>
-                      <p>{limits.grace}</p>
-                      <p>{limits.rooms}</p>
-                      <p>{limits.users}</p>
+                      {IS_HOTEL_PRODUCT ? (
+                        <p className="font-semibold text-slate-700">Configured per hotel quotation</p>
+                      ) : IS_POS_PRODUCT ? (
+                        <p className="font-semibold text-slate-700">Feature bundle — no Lodge &amp; Camp capacity limits</p>
+                      ) : (
+                        <>
+                          <p className="font-semibold text-slate-700">{limits.bookings}</p>
+                          <p>{limits.grace}</p>
+                          <p>{limits.rooms}</p>
+                          <p>{limits.users}</p>
+                        </>
+                      )}
                     </div>
                     <div className="mt-3 space-y-1.5">
                       {plan.modules.slice(0, 4).map((moduleName) => (
@@ -576,9 +641,13 @@ export default function SubscriptionAccessPanel() {
                         </div>
                       ))}
                     </div>
-                    <p className="mt-3 text-[11px] font-medium text-slate-500">{limits.bookingExplanation}</p>
-                    <p className="mt-1 text-[11px] font-medium text-slate-500">{limits.graceExplanation}</p>
-                    <p className="mt-1 text-[11px] font-medium text-slate-500">{limits.resetCopy}</p>
+                    {IS_LODGE_PRODUCT && (
+                      <>
+                        <p className="mt-3 text-[11px] font-medium text-slate-500">{limits.bookingExplanation}</p>
+                        <p className="mt-1 text-[11px] font-medium text-slate-500">{limits.graceExplanation}</p>
+                        <p className="mt-1 text-[11px] font-medium text-slate-500">{limits.resetCopy}</p>
+                      </>
+                    )}
                     <p className="mt-4 text-xs text-gray-500">{plan.upgradeNudge}</p>
                   </button>
                 )
@@ -589,7 +658,7 @@ export default function SubscriptionAccessPanel() {
           <div className="bg-white rounded-2xl shadow-sm p-5">
             <h3 className="text-base font-semibold text-gray-800">Activation & Billing</h3>
             <p className="text-sm text-gray-500 mt-1">
-              Activate a purchased key, review lodge subscription billing, or request an upgrade.
+              Activate a purchased key, review property subscription billing, or request an upgrade.
             </p>
 
             {canManageSubscription ? (
@@ -639,7 +708,7 @@ export default function SubscriptionAccessPanel() {
                   <div className="rounded-2xl border border-green-200 bg-green-50 p-4 space-y-3">
                     <p className="text-sm font-semibold text-green-800">Upgrade request</p>
                     {upgradeSent ? (
-                      <p className="text-sm text-green-700">Request sent. Boroko will follow up shortly.</p>
+                      <p className="text-sm text-green-700">Request sent. Tsa Bonno will follow up shortly.</p>
                     ) : (
                       <>
                         <div className="grid gap-3 sm:grid-cols-[0.95fr_1.05fr]">
@@ -647,34 +716,34 @@ export default function SubscriptionAccessPanel() {
                             <label className="text-xs font-semibold uppercase tracking-wide text-green-800">Requested plan</label>
                             <select
                               className="input mt-2 text-sm"
-                              value={requestedPlan}
-                              onChange={(event) => setRequestedPlan(event.target.value)}
+                              value={requestedPackageKey}
+                              onChange={(event) => setRequestedPackageKey(event.target.value)}
                             >
-                              {SUBSCRIPTION_PLAN_ORDER.map((planName) => (
-                                <option key={planName} value={planName}>
-                                  {planName} - {getSubscriptionPlan(planName).headline}
+                              {commercialPackages.map((plan) => (
+                                <option key={plan.commercialPackageKey} value={plan.commercialPackageKey}>
+                                  {plan.displayName || plan.name} - {plan.headline}
                                 </option>
                               ))}
                             </select>
                           </div>
                           <div className="rounded-2xl border border-green-200 bg-white/75 p-3">
                             <p className="text-xs font-semibold uppercase tracking-wide text-green-800">
-                              {getSubscriptionPlan(requestedPlan).badge}
+                              {selectedCommercialPackage?.displayName || getCommercialPackageDisplayName({ productId: BUILD_PRODUCT.id, commercialPackageKey: requestedPackageKey, plan: selectedCommercialPackage?.internalPlan })}
                             </p>
-                            <p className="mt-1 text-sm font-semibold text-slate-800">{getSubscriptionPlan(requestedPlan).headline}</p>
-                            <p className="mt-1 text-xs text-slate-500">{getSubscriptionPlan(requestedPlan).summary}</p>
+                            <p className="mt-1 text-sm font-semibold text-slate-800">{selectedCommercialPackage?.headline}</p>
+                            <p className="mt-1 text-xs text-slate-500">{selectedCommercialPackage?.summary}</p>
                           </div>
                         </div>
                         <textarea
                           className="input h-24 resize-none text-sm"
-                          placeholder="Optional notes: expected usage, number of outlets, reporting needs, stock control, or anything else Boroko should know…"
+                          placeholder="Optional notes: expected usage, number of outlets, reporting needs, stock control, or anything else Tsa Bonno should know…"
                           value={upgradeMsg}
                           onChange={(event) => setUpgradeMsg(event.target.value)}
                         />
                         <div className="flex gap-2">
                           <button type="button" onClick={() => setUpgradeOpen(false)} className="btn-secondary flex-1 text-sm">Cancel</button>
                           <button type="button" onClick={handleUpgradeRequest} disabled={upgradeSending} className="btn-primary flex-1 text-sm">
-                            {upgradeSending ? 'Sending…' : `Request ${requestedPlan}`}
+                            {upgradeSending ? 'Sending…' : `Request ${selectedCommercialPackage?.displayName || 'package'}`}
                           </button>
                         </div>
                       </>
@@ -686,7 +755,7 @@ export default function SubscriptionAccessPanel() {
               <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 mt-5">
                 <p className="text-sm font-semibold text-amber-800">Subscription changes are restricted</p>
                 <p className="text-sm text-amber-700 mt-1">
-                  Your current role can review access, but only finance, manager, or admin-level users can activate or change the lodge subscription.
+                  Your current role can review access, but only finance, manager, or admin-level users can activate or change the property subscription.
                 </p>
               </div>
             )}
@@ -700,7 +769,7 @@ export default function SubscriptionAccessPanel() {
             {!canManageSubscription ? (
               <p className="text-sm text-gray-500">Your role can view access status, but only finance, manager, or admin users can open subscription billing history.</p>
             ) : invoices.length === 0 ? (
-              <p className="text-sm text-gray-500">No subscription invoices have been recorded for this lodge yet.</p>
+              <p className="text-sm text-gray-500">No subscription invoices have been recorded for this property yet.</p>
             ) : (
               <div className="space-y-3">
                 {invoices.slice(0, 6).map((invoice) => (
@@ -719,12 +788,12 @@ export default function SubscriptionAccessPanel() {
             )}
           </div>
 
-          <div className="bg-white rounded-2xl shadow-sm p-5">
-            <div className="flex items-center gap-2 mb-3">
+           {IS_HOTEL_PRODUCT && <div className="bg-white rounded-2xl shadow-sm p-5">
+             <div className="flex items-center gap-2 mb-3">
               <Sparkles size={16} className="text-indigo-600" />
-              <h3 className="text-base font-semibold text-gray-800">Enterprise Upgrade</h3>
+              <h3 className="text-base font-semibold text-gray-800">Hotel package</h3>
             </div>
-            <p className="text-sm text-gray-500 mb-3">Need more capacity or Enterprise hotel features? Use the Package Builder to select your target plan, choose add-ons, and submit a structured request.</p>
+            <p className="text-sm text-gray-500 mb-3">Need the separate Tsa Bonno HotelOS workspace or an optional hotel service? Use the Package Builder to submit a structured quotation request.</p>
             <button
               type="button"
               onClick={() => window.location.hash = '#/subscription-builder'}
@@ -733,14 +802,14 @@ export default function SubscriptionAccessPanel() {
               <Sparkles size={16} />
               Open Package Builder
             </button>
-          </div>
+          </div>}
 
           <div className="bg-white rounded-2xl shadow-sm p-5">
             <div className="flex items-center gap-2 mb-3">
               <Hash size={16} className="text-gray-500" />
               <h3 className="text-base font-semibold text-gray-800">Installation Identity</h3>
             </div>
-            <p className="text-sm text-gray-500">Share this installation ID with Boroko when requesting a new key or investigating lodge entitlement issues.</p>
+            <p className="text-sm text-gray-500">Share this installation ID with Tsa Bonno when requesting a new key or investigating property entitlement issues.</p>
             <div className="flex items-center gap-2 mt-4">
               <code className="flex-1 text-xs bg-gray-100 rounded-xl px-3 py-3 text-gray-600 font-mono truncate">
                 {lodgeId || '—'}

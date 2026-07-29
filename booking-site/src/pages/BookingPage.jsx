@@ -20,6 +20,7 @@ import { trackBeginCheckout, trackBookingRequest } from '../lib/analytics.js'
 import SeoMeta from '../components/SeoMeta.jsx'
 import LodgeHeader from '../components/LodgeHeader.jsx'
 import { Lightbox, optimizeImageUrl } from '../components/RoomCard.jsx'
+import { computeStayTotal, isCampsiteUnit, normalizeRateMode } from '../../../src/shared/accommodation.js'
 import {
   buildWhatsAppUrl,
   buildCalendarUrl,
@@ -93,6 +94,15 @@ function buildBookingState({ lodge, room, rooms, bookingType, checkIn, checkOut,
       room_type: room?.room_type,
       total_price: room?.total_price,
       rate_per_night: room?.rate_per_night,
+      accommodation_kind: room?.accommodation_kind,
+      capacity_adults: room?.capacity_adults,
+      capacity_children: room?.capacity_children,
+      max_tents: room?.max_tents,
+      max_vehicles: room?.max_vehicles,
+      rate_mode: room?.rate_mode,
+      rate_per_person: room?.rate_per_person,
+      rate_per_tent: room?.rate_per_tent,
+      rate_per_vehicle: room?.rate_per_vehicle,
       max_occupancy: room?.max_occupancy,
       photo: room?.photo,
       photos: room?.photos,
@@ -106,6 +116,15 @@ function buildBookingState({ lodge, room, rooms, bookingType, checkIn, checkOut,
       room_type: entry?.room_type,
       total_price: entry?.total_price,
       rate_per_night: entry?.rate_per_night,
+      accommodation_kind: entry?.accommodation_kind,
+      capacity_adults: entry?.capacity_adults,
+      capacity_children: entry?.capacity_children,
+      max_tents: entry?.max_tents,
+      max_vehicles: entry?.max_vehicles,
+      rate_mode: entry?.rate_mode,
+      rate_per_person: entry?.rate_per_person,
+      rate_per_tent: entry?.rate_per_tent,
+      rate_per_vehicle: entry?.rate_per_vehicle,
       max_occupancy: entry?.max_occupancy,
       photo: entry?.photo,
       photos: entry?.photos,
@@ -204,6 +223,8 @@ export default function BookingPage() {
     guest_phone: '',
     adults: 1,
     children: 0,
+    tents: 0,
+    vehicles: 0,
     notes: ''
   })
 
@@ -245,12 +266,17 @@ export default function BookingPage() {
     const adults = clampGuestCount(form.adults, Math.max(1, maxOccupancy))
     const maxChildren = Math.max(0, maxOccupancy - adults)
     const children = clampGuestCount(form.children, maxChildren)
+    const campsite = selectedRooms.find((entry) => isCampsiteUnit(entry))
+    const tents = campsite ? clampGuestCount(form.tents, Number(campsite.max_tents || 0)) : 0
+    const vehicles = campsite ? clampGuestCount(form.vehicles, Number(campsite.max_vehicles || 0)) : 0
 
-    if (adults !== Number(form.adults) || children !== Number(form.children)) {
+    if (adults !== Number(form.adults) || children !== Number(form.children) || tents !== Number(form.tents) || vehicles !== Number(form.vehicles)) {
       setForm((current) => ({
         ...current,
         adults,
-        children
+        children,
+        tents,
+        vehicles
       }))
     }
   }, [form.adults, form.children, room?.max_occupancy, selectedRooms, hasState, setForm])
@@ -403,7 +429,9 @@ export default function BookingPage() {
       return {
         room_id: entry.id,
         adults,
-        children
+        children,
+        tents: isCampsiteUnit(entry) ? Number(form.tents) || 0 : 0,
+        vehicles: isCampsiteUnit(entry) ? Number(form.vehicles) || 0 : 0
       }
     }).filter((entry) => entry.room_id)
 
@@ -421,6 +449,8 @@ export default function BookingPage() {
         guest_phone: form.guest_phone.trim(),
         adults: Number(form.adults),
         children: Number(form.children),
+        tents: Number(form.tents),
+        vehicles: Number(form.vehicles),
         notes: form.notes.trim()
       }
     })
@@ -474,12 +504,18 @@ export default function BookingPage() {
     )
   }
 
-  const totalAmount = Number(room.total_price || 0)
+  const campsite = selectedRooms.find((entry) => isCampsiteUnit(entry))
   const hasContact = lodge?.phone || lodge?.email || lodge?.whatsapp_number
   const whatsappUrl = buildWhatsAppUrl(lodge?.whatsapp_number)
   const maxOccupancy = Math.max(1, selectedRooms.reduce((sum, entry) => sum + Number(entry?.max_occupancy || 0), 0) || Number(room?.max_occupancy || 1))
   const selectedAdults = clampGuestCount(form.adults, maxOccupancy)
   const maxChildren = Math.max(0, maxOccupancy - selectedAdults)
+  const campsiteRateMode = normalizeRateMode(campsite?.rate_mode)
+  const maxTents = Math.max(0, Number(campsite?.max_tents || 0))
+  const maxVehicles = Math.max(0, Number(campsite?.max_vehicles || 0))
+  const totalAmount = campsite
+    ? computeStayTotal(campsite, { nights, adults: selectedAdults, children: Number(form.children), tents: Number(form.tents), vehicles: Number(form.vehicles) })
+    : Number(room.total_price || 0)
   const stayLabel = isFullLodge ? 'Full lodge' : isMultiRoom ? `${selectedRooms.length} rooms` : `Room ${room.room_number}`
   const roomTitle = isFullLodge ? 'Full Lodge' : isMultiRoom ? `${selectedRooms.length} rooms` : room.room_number
   const roomTypeLabel = isFullLodge ? 'Exclusive use' : isMultiRoom ? 'Multi-room stay' : room.room_type
@@ -762,6 +798,21 @@ export default function BookingPage() {
                   )}
                 </div>
               </div>
+
+              {campsite && (campsiteRateMode === 'tent' || campsiteRateMode === 'composite') && (
+                <div className="mt-4 rounded-2xl border border-[var(--line)] bg-[var(--surface-soft)] p-4">
+                  <label className="mb-1.5 block text-sm font-semibold text-[var(--text)]" htmlFor="tents">Tents</label>
+                  <input id="tents" name="tents" type="number" min={0} max={maxTents} value={form.tents} onChange={handleChange} className="w-full rounded-xl border border-[var(--line)] bg-white px-3 py-2 text-sm" />
+                  <p className="mt-1 text-xs text-[var(--muted)]">Maximum {maxTents} tent{maxTents === 1 ? '' : 's'}.</p>
+                </div>
+              )}
+              {campsite && (campsiteRateMode === 'vehicle' || campsiteRateMode === 'composite') && (
+                <div className="mt-4 rounded-2xl border border-[var(--line)] bg-[var(--surface-soft)] p-4">
+                  <label className="mb-1.5 block text-sm font-semibold text-[var(--text)]" htmlFor="vehicles">Vehicles</label>
+                  <input id="vehicles" name="vehicles" type="number" min={0} max={maxVehicles} value={form.vehicles} onChange={handleChange} className="w-full rounded-xl border border-[var(--line)] bg-white px-3 py-2 text-sm" />
+                  <p className="mt-1 text-xs text-[var(--muted)]">Maximum {maxVehicles} vehicle{maxVehicles === 1 ? '' : 's'}.</p>
+                </div>
+              )}
 
               <div>
                 <label className="mb-1.5 block text-sm font-semibold text-[var(--text)]" htmlFor="guest_email">

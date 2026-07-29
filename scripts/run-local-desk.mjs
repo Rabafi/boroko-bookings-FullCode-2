@@ -5,7 +5,7 @@ import { homedir } from 'os'
 
 const deskKey = String(process.argv[2] || 'A').trim().toUpperCase()
 const safeDeskKey = deskKey.replace(/[^A-Z0-9_-]/g, '') || 'A'
-const deskName = `Boroko Bookings Local Desk ${safeDeskKey}`
+const deskName = `Tsa Bonno LodgingOS Local Desk ${safeDeskKey}`
 
 const electronBin = process.platform === 'win32'
   ? 'node_modules\\.bin\\electron.cmd'

@@ -85,7 +85,7 @@ test('No duplicate polling between InboxProvider and Control', async () => {
   const inbox = await read('manager-pwa/src/contexts/InboxContext.jsx')
   const control = await read('manager-pwa/src/pages/Control.jsx')
 
-  assert.match(inbox, /30_000/)
+  assert.match(inbox, /60_000/)
   assert.doesNotMatch(control, /setInterval.*load/)
 })
 

@@ -5,14 +5,23 @@ const ERROR_ENDPOINT = import.meta.env.VITE_ANALYTICS_ENDPOINT || ''
  * Captures uncaught JS errors and unhandled promise rejections,
  * then logs them to console and optionally POSTs to the analytics endpoint.
  */
+import { telemetryUrl } from './analytics.js'
+
+function scrub(value) {
+  return String(value || '')
+    .replace(/[?&](token|session|code)=[^&#]*/gi, '')
+    .replace(/\b[A-Za-z0-9_-]{24,}\b/g, '[redacted]')
+    .slice(0, 1000)
+}
+
 function reportError(error, context = {}) {
   const payload = {
     type: 'js_error',
-    message: error?.message || String(error),
-    stack: error?.stack || '',
-    url: typeof window !== 'undefined' ? window.location.href : '',
+    message: scrub(error?.message || String(error)),
+    stack: scrub(error?.stack || ''),
+    url: telemetryUrl(),
     userAgent: typeof window !== 'undefined' ? window.navigator.userAgent : '',
-    context,
+    context: Object.fromEntries(Object.entries(context).filter(([key]) => !['token', 'session', 'code', 'email', 'phone', 'notes'].includes(key))),
     timestamp: new Date().toISOString()
   }
 

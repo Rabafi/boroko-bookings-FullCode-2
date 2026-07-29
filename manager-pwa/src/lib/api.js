@@ -79,6 +79,53 @@ export function getFriendlyErrorMessage(error, fallback = 'Unexpected issue') {
   return friendlyErrorMessage(error, fallback)
 }
 
+export async function listHotelRatePlans(lodgeId) {
+  assertCapability('rate_plans.view')
+  return safeSelect(
+    supabase
+      .from('rate_plans')
+      .select('id, name, description, rate_amount, rate_type, currency, valid_from, valid_to, min_stay, max_stay, days_of_week, corporate_account_id, status, updated_at')
+      .eq('lodge_id', lodgeId)
+      .order('name')
+      .limit(300)
+  )
+}
+
+export async function listCorporateAccountsPwa(lodgeId) {
+  assertCapability('corporate_accounts.view')
+  return safeSelect(
+    supabase
+      .from('corporate_accounts')
+      .select('id, company_name, contact_name, contact_email, contact_phone, credit_limit, payment_terms_days, status, updated_at')
+      .eq('lodge_id', lodgeId)
+      .order('company_name')
+      .limit(300)
+  )
+}
+
+export async function listRoomSuppliesPwa(lodgeId) {
+  assertCapability('supplies.view')
+  const [items, roomStock] = await Promise.all([
+    safeSelect(
+      supabase
+        .from('supply_items')
+        .select('id, name, category, unit, current_stock, reorder_level, latest_unit_cost, is_active, updated_at')
+        .eq('lodge_id', lodgeId)
+        .order('category')
+        .order('name')
+        .limit(500)
+    ),
+    safeSelect(
+      supabase
+        .from('room_supply_room_stock')
+        .select('id, supply_item_id, room_id, quantity_on_hand, reorder_level, updated_at')
+        .eq('lodge_id', lodgeId)
+        .limit(1000)
+    )
+  ])
+  return { items, roomStock }
+}
+
 function ensureSuccess(result, error, fallbackMessage) {
   if (error) throw new Error(friendlyErrorMessage(error, fallbackMessage))
   if (result?.success === false) throw new Error(friendlyErrorMessage(result.error, fallbackMessage))
@@ -1287,6 +1334,89 @@ export async function listInvoices(lodgeId, options = {}) {
   })
 }
 
+export async function listHotelFolios(lodgeId, bookingId = null) {
+  assertCapability('folios.view')
+  const { data, error } = await supabase.rpc('get_hotel_folios', {
+    p_lodge_id: lodgeId,
+    p_booking_id: bookingId || null
+  })
+  if (error) throw new Error(friendlyErrorMessage(error, 'Could not load hotel folios.'))
+  return Array.isArray(data) ? data : []
+}
+
+export async function getHotelFolioLines(lodgeId, folioId) {
+  assertCapability('folios.view')
+  const { data, error } = await supabase.rpc('get_folio_line_items', {
+    p_lodge_id: lodgeId,
+    p_folio_id: folioId
+  })
+  if (error) throw new Error(friendlyErrorMessage(error, 'Could not load folio lines.'))
+  return Array.isArray(data) ? data : []
+}
+
+async function hotelWorkflowRpc(name, args, fallback) {
+  const { data, error } = await supabase.rpc(name, args)
+  if (error) throw new Error(friendlyErrorMessage(error, fallback))
+  if (data?.success === false) throw new Error(data.error || fallback)
+  return data || {}
+}
+
+export async function getHotelWorkflowChecklist(lodgeId, bookingId, direction) {
+  assertCapability(direction === 'checkout' ? 'checkout.manage' : 'checkin.manage')
+  return hotelWorkflowRpc(
+    direction === 'checkout' ? 'get_checkout_checklist' : 'get_checkin_checklist',
+    { p_booking_id: bookingId, p_lodge_id: lodgeId },
+    'Could not load the hotel workflow checklist.'
+  )
+}
+
+export async function completeHotelWorkflowStep(lodgeId, stepId, direction) {
+  assertCapability(direction === 'checkout' ? 'checkout.manage' : 'checkin.manage')
+  return hotelWorkflowRpc(
+    direction === 'checkout' ? 'complete_checkout_step' : 'complete_checkin_step',
+    { p_step_id: stepId, p_lodge_id: lodgeId, p_completed_by: null, p_data: null },
+    'Could not complete this hotel workflow step.'
+  )
+}
+
+export async function completeHotelStayWorkflow(lodgeId, bookingId, direction) {
+  assertCapability(direction === 'checkout' ? 'checkout.manage' : 'checkin.manage')
+  return hotelWorkflowRpc(
+    direction === 'checkout' ? 'complete_hotel_checkout' : 'complete_hotel_checkin',
+    { p_lodge_id: lodgeId, p_booking_id: bookingId },
+    direction === 'checkout' ? 'Could not complete hotel check-out.' : 'Could not complete hotel check-in.'
+  )
+}
+
+export async function getHotelNightAuditChecks(lodgeId) {
+  assertCapability('night_audit.checks')
+  return hotelWorkflowRpc(
+    'run_night_audit_checks',
+    { p_lodge_id: lodgeId },
+    'Could not run hotel night-audit checks.'
+  )
+}
+
+export async function listRestaurantTables(lodgeId) {
+  assertCapability('pos.reports')
+  return safeSelect(supabase.from('pos_tables').select('id, outlet_id, name, area, seats, active, updated_at').eq('lodge_id', lodgeId).eq('active', true).order('area').order('name'), [])
+}
+
+export async function listRestaurantPrepTickets(lodgeId) {
+  assertCapability('pos.reports')
+  return safeSelect(supabase.from('pos_prep_tickets').select('id, outlet_id, station, status, table_name, tab_name, waiter_name, notes, items, created_at, updated_at').eq('lodge_id', lodgeId).in('status', ['new', 'preparing', 'ready']).order('created_at'), [])
+}
+
+export async function updateRestaurantPrepTicket(lodgeId, ticketId, status) {
+  assertCapability('pos.reports')
+  return hotelWorkflowRpc('update_pos_prep_ticket_status', { p_ticket_id: ticketId, p_status: status, p_lodge_id: lodgeId }, 'Could not update the kitchen ticket.')
+}
+
+export async function listRestaurantMenu(lodgeId) {
+  assertCapability('pos.reports')
+  return safeSelect(supabase.from('pos_menu_items').select('id, name, category, price, is_available, barcode, prep_time_minutes, dietary_flags, outlet_id').eq('lodge_id', lodgeId).order('category').order('name').limit(500), [])
+}
+
 export async function getNightAudit(lodgeId, date) {
   assertCapability('audit.view')
   return queryWithCache({
@@ -1441,13 +1571,23 @@ export async function getFinancialActivityFeed(lodgeId, limit = 20) {
     .slice(0, limit)
 }
 
-export async function getSupportRequests(lodgeId, limit = 20) {
-  const { data, error } = await supabase.rpc('get_lodge_support_tickets', {
-    p_lodge_id: lodgeId,
-    p_limit: Math.min(Math.max(Number(limit) || 20, 1), 100)
+export async function getSupportRequests(lodgeId, limit = 20, options = {}) {
+  const safeLimit = Math.min(Math.max(Number(limit) || 20, 1), 100)
+  return queryWithCache({
+    lodgeId,
+    key: `support_requests:${safeLimit}`,
+    fallback: [],
+    forceFresh: options.forceFresh === true,
+    maxAgeMs: 60_000,
+    fetcher: async () => {
+      const { data, error } = await supabase.rpc('get_lodge_support_tickets', {
+        p_lodge_id: lodgeId,
+        p_limit: safeLimit
+      })
+      if (error) throw new Error(friendlyErrorMessage(error, 'Could not load support requests.'))
+      return normalizeSupportTickets(data)
+    }
   })
-  if (error) throw new Error(friendlyErrorMessage(error, 'Could not load support requests.'))
-  return normalizeSupportTickets(data)
 }
 
 export async function markSupportRequestRead(lodgeId, ticketId, audience = 'manager', messageId = null) {
@@ -1638,7 +1778,7 @@ function normalizeManagerCandidate(row = {}, email = '') {
     pwa_enabled: row.pwa_enabled === true,
     pwa_password_set_at: row.pwa_password_set_at || null,
     pwa_disabled_reason: row.pwa_disabled_reason || '',
-    pwa_feature_enabled: row.pwa_feature_enabled !== false,
+    pwa_feature_enabled: row.pwa_feature_enabled === true,
     plan: row.pwa_plan || row.plan || 'Starter',
     session_token: typeof row.session_token === 'string' && row.session_token ? row.session_token : null,
     session_expires_at: row.session_expires_at || null,
@@ -1660,6 +1800,7 @@ function extractManagerCandidates(data, email = '') {
     if (Array.isArray(data.lodges)) data.lodges.forEach(pushRow)
     if (Array.isArray(data.options)) data.options.forEach(pushRow)
     if (Array.isArray(data.users)) data.users.forEach(pushRow)
+    if (Array.isArray(data.memberships)) data.memberships.forEach(pushRow)
     if (data.user) pushRow(data.user)
     if (data.session) pushRow(data.session)
     if (data.lodge_id || data.role || data.name || data.id) pushRow(data)
@@ -1668,52 +1809,9 @@ function extractManagerCandidates(data, email = '') {
   return rows.filter((row) => row.lodge_id)
 }
 
-export async function authenticateManager(identifier, password, lodgeId = null) {
-  const email = identifier.trim().toLowerCase()
-  let data
-  let error
-
-  async function tryLegacy() {
-    const legacy = await supabase.rpc('authenticate_manager', {
-      p_email: email,
-      p_password: password,
-      p_lodge_id: lodgeId
-    })
-    return legacy
-  }
-
-  try {
-    await signInWithSupabaseAuth(email, password)
-    const result = await supabase.rpc('authenticate_manager_from_supabase', {
-      p_lodge_id: lodgeId
-    })
-    data = result.data
-    error = result.error
-
-    if (error && /could not find the function|schema cache|authenticate_manager_from_supabase/i.test(error.message || '')) {
-      const legacy = await tryLegacy()
-      data = legacy.data
-      error = legacy.error
-    } else if (!error && (!data || (Array.isArray(data) && data.length === 0))) {
-      const legacy = await tryLegacy()
-      if (!legacy.error && legacy.data && legacy.data.length > 0) {
-        data = legacy.data
-        error = legacy.error
-      }
-    }
-  } catch (authError) {
-    const legacy = await tryLegacy()
-    data = legacy.data
-    error = legacy.error || authError
-  }
-
-  if (error) {
-    throw new Error('Login failed. Please try again.')
-  }
-
-  const rows = extractManagerCandidates(data, email)
+function assertMembershipEntitlements(rows) {
   if (rows.length === 0) {
-    throw new Error('That email or mobile app password is incorrect.')
+    throw new Error('That email or password is incorrect, or this account has no manager access.')
   }
 
   const enabledRows = rows.filter((row) => row.pwa_enabled === true)
@@ -1721,34 +1819,117 @@ export async function authenticateManager(identifier, password, lodgeId = null) 
     throw new Error(rows[0]?.pwa_disabled_reason || 'Manager mobile app access is disabled for this account.')
   }
 
-  const entitledRows = enabledRows.filter((row) => row.pwa_feature_enabled !== false)
+  const entitledRows = enabledRows.filter((row) => row.pwa_feature_enabled === true)
   if (entitledRows.length === 0) {
     const planError = new Error(PWA_PLAN_REQUIRED_MESSAGE)
     planError.code = 'pwa_plan_required'
     throw planError
   }
 
-  if (!lodgeId && entitledRows.length > 1) {
-    return { lodges: entitledRows }
+  return entitledRows
+}
+
+/**
+ * After Supabase Auth password verification, list company memberships only.
+ * Does not mint a lodge-scoped PWA session.
+ */
+export async function listManagerPwaMemberships() {
+  const { data, error } = await supabase.rpc('list_manager_pwa_memberships')
+  if (error) {
+    throw new Error(friendlyErrorMessage(error, 'Could not load businesses for this account.'))
+  }
+  return extractManagerCandidates(data)
+}
+
+/**
+ * Mint a lodge-scoped PWA session for one explicitly selected company.
+ * Relies on the existing Supabase Auth session — password is not re-sent.
+ */
+export async function issueManagerPwaSession(lodgeId) {
+  if (!lodgeId) {
+    throw new Error('Select a business before continuing.')
   }
 
-  const authedRows = rows.filter((row) => row.authenticated === true)
-  if (authedRows.length === 0) {
-    throw new Error('That email or mobile app password is incorrect.')
+  const { data, error } = await supabase.rpc('issue_manager_pwa_session', {
+    p_lodge_id: lodgeId
+  })
+  if (error) {
+    throw new Error(friendlyErrorMessage(error, 'Could not open a manager session for that business.'))
   }
 
-  const selected = lodgeId
-    ? authedRows.find((row) => row.lodge_id === String(lodgeId).trim().toLowerCase())
-    : authedRows[0]
-
+  const rows = extractManagerCandidates(data)
+  const selected = rows.find((row) => row.lodge_id === String(lodgeId).trim().toLowerCase()) || rows[0]
   if (!selected) {
-    throw new Error('That lodge is no longer available for this account.')
+    throw new Error('That business is no longer available for this account.')
   }
-  if (!selected.session_token) {
+  if (selected.pwa_enabled !== true) {
+    throw new Error(selected.pwa_disabled_reason || 'Manager mobile app access is disabled for this account.')
+  }
+  if (selected.pwa_feature_enabled !== true) {
+    const planError = new Error(PWA_PLAN_REQUIRED_MESSAGE)
+    planError.code = 'pwa_plan_required'
+    throw planError
+  }
+  if (!selected.session_token || selected.authenticated !== true) {
     throw new Error('The server did not issue a valid mobile app session.')
   }
-
   return { user: selected }
+}
+
+/**
+ * Sign in with email/password, then either:
+ * - return { memberships } when more than one entitled company exists, or
+ * - issue a session immediately when exactly one entitled company exists.
+ * Password is not retained for a later chooser step; selection uses Supabase Auth.
+ */
+export async function authenticateManager(identifier, password) {
+  const email = identifier.trim().toLowerCase()
+
+  try {
+    await signInWithSupabaseAuth(email, password)
+  } catch {
+    throw new Error('Login failed. Please try again.')
+  }
+
+  let memberships
+  try {
+    memberships = await listManagerPwaMemberships()
+  } catch {
+    // Older databases may not have the split membership RPC yet.
+    try {
+      const legacy = await supabase.rpc('authenticate_manager_from_supabase', { p_lodge_id: null })
+      if (legacy.error) throw legacy.error
+      memberships = extractManagerCandidates(legacy.data, email)
+    } catch {
+      throw new Error('Login failed. Please try again.')
+    }
+  }
+
+  const entitled = assertMembershipEntitlements(memberships)
+
+  if (entitled.length > 1) {
+    return { memberships: entitled, user: null }
+  }
+
+  const only = entitled[0]
+  try {
+    return await issueManagerPwaSession(only.lodge_id)
+  } catch (issueError) {
+    // Compatibility: older issue path via authenticate_manager_from_supabase(lodge_id).
+    if (issueError?.code === 'pwa_plan_required') throw issueError
+    const legacy = await supabase.rpc('authenticate_manager_from_supabase', {
+      p_lodge_id: only.lodge_id
+    })
+    if (legacy.error) {
+      throw new Error(friendlyErrorMessage(legacy.error, 'Could not open a manager session.'))
+    }
+    const rows = extractManagerCandidates(legacy.data, email)
+    const selected = rows.find((row) => row.authenticated === true && row.session_token) || rows[0]
+    if (!selected?.session_token) {
+      throw new Error('The server did not issue a valid mobile app session.')
+    }
+    return { user: selected }
+  }
 }
 
 export async function validateManagerSession(sessionToken = null) {

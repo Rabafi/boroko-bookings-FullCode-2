@@ -14,10 +14,17 @@ import {
   subscriptionAllowsAccess,
   toPositiveInt
 } from './subscriptionState.js';
+import { refreshCachedTrialCountdown } from './trialCountdown.js';
+
+export { refreshCachedTrialCountdown } from './trialCountdown.js';
 
 const _entitlementCache = new Map()
 const _entitlementRequests = new Map()
 const ENTITLEMENT_CACHE_TTL_MS = 2 * 60_000
+// Entitlement is an authorization boundary. Give the authoritative RPC enough
+// time to complete on a cold authenticated session before falling back to a
+// local trial date, which may predate a later active license.
+const ENTITLEMENT_RPC_TIMEOUT_MS = 15 * 1000
 
 export function isMissingEntitlementRpcError(error) {
   const message = String(error?.message || '');
@@ -43,6 +50,11 @@ async function getActiveProfileLodgeId() {
 function getCachedEntitlement(targetLodgeId = null) {
   const cached = readCache('trial_status');
   if (!cached || typeof cached !== 'object') return null;
+  const refreshed = refreshCachedTrialCountdown(cached);
+  if (targetLodgeId && String(refreshed.lodge_id || '').trim().toLowerCase() !== String(targetLodgeId || '').trim().toLowerCase()) {
+    return null;
+  }
+  if (refreshed.status === 'expired' && cached.status === 'trial') return refreshed;
   const offlineValidUntil = cached.offline_valid_until ||
   cached.offlineValidUntil || (
   cached.cached_at ? addDays(cached.cached_at, DEFAULT_OFFLINE_LEASE_DAYS).toISOString() : null);
@@ -52,10 +64,7 @@ function getCachedEntitlement(targetLodgeId = null) {
       return null;
     }
   }
-  if (!targetLodgeId) return cached;
-  return String(cached.lodge_id || '').trim().toLowerCase() === String(targetLodgeId || '').trim().toLowerCase() ?
-  cached :
-  null;
+  return refreshed;
 }
 
 function cacheEntitlement(targetLodgeId, entitlement) {
@@ -96,6 +105,7 @@ function buildTrialEntitlement(trialStartedAt = null, lodgeId = null) {
       subscription_state: 'trial',
       monthly_fee: 0,
       effective_features: getPlanFeatureMap('Pro', { trial: true }),
+      trial_ends_at: null,
       expires_at: null,
       next_due_date: null,
       grace_period_days: 0,
@@ -124,6 +134,7 @@ function buildTrialEntitlement(trialStartedAt = null, lodgeId = null) {
     subscription_state: expired ? 'expired' : 'trial',
     monthly_fee: 0,
     effective_features: getPlanFeatureMap('Pro', { trial: !expired, expired }),
+    trial_ends_at: trialEnd.toISOString(),
     expires_at: expired ? trialEnd.toISOString() : null,
     next_due_date: null,
     grace_period_days: 0,
@@ -151,6 +162,7 @@ function buildLicensedEntitlement(license, featureOverrides = []) {
   const status = activeAccess ? 'licensed' : 'expired';
   const gracePeriodEndsAt = computeGracePeriodEnd(license?.next_due_date, license?.grace_period_days || DEFAULT_SUBSCRIPTION_GRACE_DAYS);
 
+  const commercialAddonKeys = license?.commercial_pricing_snapshot?.selection?.selected_addon_keys;
   return {
     lodge_id: license?.lodge_id || null,
     status,
@@ -164,6 +176,11 @@ function buildLicensedEntitlement(license, featureOverrides = []) {
     next_due_date: license?.next_due_date || null,
     currency: license?.currency || null,
     lodge_name: license?.lodge_name || null,
+    product_id: license?.product_id || null,
+    commercial_package_key: license?.commercial_package_key || null,
+    commercial_catalog_version: license?.commercial_catalog_version || null,
+    commercial_pricing_snapshot: license?.commercial_pricing_snapshot || null,
+    enterprise_addons: Array.isArray(commercialAddonKeys) ? commercialAddonKeys : [],
     plan_version_code: license?.plan_version_code || '2026.04',
     grace_period_days: toPositiveInt(license?.grace_period_days, DEFAULT_SUBSCRIPTION_GRACE_DAYS),
     grace_period_ends_at: gracePeriodEndsAt,
@@ -192,6 +209,8 @@ function coerceEntitlementResponse(payload) {
     Object.entries(payload.effective_features || {}).map(([feature_name, enabled]) => ({ feature_name, enabled }))
   );
 
+  const commercialAddonKeys = payload.enterprise_addons
+    || payload.commercial_pricing_snapshot?.selection?.selected_addon_keys;
   return {
     ...payload,
     lodge_id: payload.lodge_id || null,
@@ -205,6 +224,7 @@ function coerceEntitlementResponse(payload) {
     grace_period_ends_at: payload.grace_period_ends_at || null,
     offline_lease_days: payload.offline_lease_days ?? null,
     offline_valid_until: payload.offline_valid_until || payload.offlineValidUntil || null,
+    enterprise_addons: Array.isArray(commercialAddonKeys) ? commercialAddonKeys : [],
     effective_features: effectiveFeatures
   };
 }
@@ -222,7 +242,7 @@ async function getLegacyEntitlement(targetLodgeId) {
   const now = new Date().toISOString();
   const { data: licenseRows, error: licenseError } = await state.supabase.
   from('licenses').
-  select('id, lodge_id, lodge_name, expires_at, subscription_plan, monthly_fee, payment_status, next_due_date, currency, is_active, plan_version_code, grace_period_days, offline_lease_days').
+  select('id, lodge_id, lodge_name, expires_at, subscription_plan, monthly_fee, payment_status, next_due_date, currency, is_active, plan_version_code, grace_period_days, offline_lease_days, product_id, commercial_package_key, commercial_catalog_version, commercial_pricing_snapshot').
   eq('lodge_id', targetLodgeId).
   eq('is_active', true).
   or(`expires_at.is.null,expires_at.gt.${now}`).
@@ -293,7 +313,7 @@ async function loadTrialStatus(targetLodgeId) {
   try {
     const { data, error } = await supabaseRpcWithTimeout(state.supabase, 'get_lodge_entitlement', {
       p_lodge_id: targetLodgeId
-    }, 5000);
+    }, ENTITLEMENT_RPC_TIMEOUT_MS);
     if (error) throw error;
     const normalized = coerceEntitlementResponse(data);
     if (normalized) {

@@ -21,7 +21,7 @@ declare
   v_as_of_date date;
 begin
   v_actor_id := public.app_get_actor_user_id();
-  perform public.app_require_lodge_role(p_lodge_id, ARRAY['admin', 'super_admin', 'manager', 'finance']);
+  perform public.app_require_feature(p_lodge_id, 'restaurant_accounting', ARRAY['admin', 'super_admin', 'manager', 'finance']);
 
   v_as_of_date := coalesce(p_as_of_date, current_date);
 
@@ -38,17 +38,19 @@ begin
           a.opening_balance,
           a.is_active,
           coalesce((
-            select sum(je.debit_amount)
-            from public.restaurant_journal_entries je
+            select sum(jl.debit)
+            from public.restaurant_journal_lines jl
+            join public.restaurant_journal_entries je on je.id = jl.entry_id
             where je.lodge_id = p_lodge_id
-              and je.debit_account_id = a.id
+              and jl.account_id = a.id
               and je.entry_date <= v_as_of_date
           ), 0) as total_debits,
           coalesce((
-            select sum(je.credit_amount)
-            from public.restaurant_journal_entries je
+            select sum(jl.credit)
+            from public.restaurant_journal_lines jl
+            join public.restaurant_journal_entries je on je.id = jl.entry_id
             where je.lodge_id = p_lodge_id
-              and je.credit_account_id = a.id
+              and jl.account_id = a.id
               and je.entry_date <= v_as_of_date
           ), 0) as total_credits
         from public.restaurant_accounts a
@@ -179,7 +181,7 @@ declare
   v_actor_id uuid;
 begin
   v_actor_id := public.app_get_actor_user_id();
-  perform public.app_require_lodge_role(p_lodge_id, ARRAY['admin', 'super_admin', 'manager', 'finance']);
+  perform public.app_require_feature(p_lodge_id, 'restaurant_accounting', ARRAY['admin', 'super_admin', 'manager', 'finance']);
 
   return jsonb_build_object(
     'success', true,
@@ -194,17 +196,19 @@ begin
           a.account_type,
           a.opening_balance,
           coalesce((
-            select sum(je.debit_amount)
-            from public.restaurant_journal_entries je
+            select sum(jl.debit)
+            from public.restaurant_journal_lines jl
+            join public.restaurant_journal_entries je on je.id = jl.entry_id
             where je.lodge_id = p_lodge_id
-              and je.debit_account_id = a.id
+              and jl.account_id = a.id
               and je.entry_date between p_start_date and p_end_date
           ), 0) as period_debits,
           coalesce((
-            select sum(je.credit_amount)
-            from public.restaurant_journal_entries je
+            select sum(jl.credit)
+            from public.restaurant_journal_lines jl
+            join public.restaurant_journal_entries je on je.id = jl.entry_id
             where je.lodge_id = p_lodge_id
-              and je.credit_account_id = a.id
+              and jl.account_id = a.id
               and je.entry_date between p_start_date and p_end_date
           ), 0) as period_credits
         from public.restaurant_accounts a
@@ -266,62 +270,84 @@ declare
   v_financing_items jsonb;
 begin
   v_actor_id := public.app_get_actor_user_id();
-  perform public.app_require_lodge_role(p_lodge_id, ARRAY['admin', 'super_admin', 'manager', 'finance']);
+  perform public.app_require_feature(p_lodge_id, 'restaurant_accounting', ARRAY['admin', 'super_admin', 'manager', 'finance']);
 
-  -- Operating: cash from revenue accounts (debit = cash in) and cash to expense accounts (credit = cash out)
-  with period_entries as (
+  -- Cash flow classified per-entry from journal_lines.
+  -- Cash accounts are assets with code 1000-1029 (petty cash, cash on hand, bank).
+  -- For each entry, the cash-side line determines the cash flow direction,
+  -- and the non-cash side line(s) determine the category (operating/investing/financing).
+  with
+  cash_account_ids as (
+    select id from public.restaurant_accounts
+    where lodge_id = p_lodge_id and account_type = 'asset' and code >= '1000' and code < '1030'
+  ),
+  entry_cash_lines as (
     select
-      je.id,
-      je.entry_date,
-      je.debit_account_id,
-      je.credit_account_id,
-      je.debit_amount,
-      je.credit_amount,
-      da.account_type as debit_account_type,
-      da.code as debit_code,
-      da.name as debit_name,
-      ca.account_type as credit_account_type,
-      ca.code as credit_code,
-      ca.name as credit_name
+      je.id as entry_id,
+      jl.debit,
+      jl.credit,
+      jl.account_id
     from public.restaurant_journal_entries je
-    join public.restaurant_accounts da on da.id = je.debit_account_id and da.lodge_id = p_lodge_id
-    join public.restaurant_accounts ca on ca.id = je.credit_account_id and ca.lodge_id = p_lodge_id
+    join public.restaurant_journal_lines jl on jl.entry_id = je.id
+    join public.restaurant_accounts a on a.id = jl.account_id
     where je.lodge_id = p_lodge_id
       and je.entry_date between p_start_date and p_end_date
+      and jl.account_id in (select id from cash_account_ids)
+  ),
+  entry_non_cash_lines as (
+    select
+      je.id as entry_id,
+      jl.debit,
+      jl.credit,
+      a.account_type,
+      a.code,
+      a.name
+    from public.restaurant_journal_entries je
+    join public.restaurant_journal_lines jl on jl.entry_id = je.id
+    join public.restaurant_accounts a on a.id = jl.account_id
+    where je.lodge_id = p_lodge_id
+      and je.entry_date between p_start_date and p_end_date
+      and jl.account_id not in (select id from cash_account_ids)
+      and a.lodge_id = p_lodge_id
+  ),
+  entry_classified as (
+    select
+      ecl.entry_id,
+      ecl.debit as cash_debit,
+      ecl.credit as cash_credit,
+      case
+        when exists (select 1 from entry_non_cash_lines ncl where ncl.entry_id = ecl.entry_id and ncl.account_type = 'revenue') then 'operating_inflow'
+        when exists (select 1 from entry_non_cash_lines ncl where ncl.entry_id = ecl.entry_id and ncl.account_type = 'expense') then 'operating_outflow'
+        when exists (select 1 from entry_non_cash_lines ncl where ncl.entry_id = ecl.entry_id and ncl.account_type = 'asset' and ncl.code >= '1500') then 'investing'
+        when exists (select 1 from entry_non_cash_lines ncl where ncl.entry_id = ecl.entry_id and ncl.account_type = 'equity') then 'financing'
+        else 'other'
+      end as category,
+      (select ncl.name from entry_non_cash_lines ncl where ncl.entry_id = ecl.entry_id limit 1) as source_name
+    from entry_cash_lines ecl
   ),
   operating_inflows as (
-    select
-      jsonb_build_object('source', debit_name, 'amount', sum(debit_amount)) as item
-    from period_entries
-    where debit_account_type = 'asset' and credit_account_type = 'revenue'
-    group by debit_name
+    select jsonb_build_object('source', source_name, 'amount', sum(cash_debit)) as item
+    from entry_classified
+    where category = 'operating_inflow' and cash_debit > 0
+    group by source_name
   ),
   operating_outflows as (
-    select
-      jsonb_build_object('source', credit_name, 'amount', sum(credit_amount)) as item
-    from period_entries
-    where debit_account_type = 'expense' and credit_account_type = 'asset'
-    group by credit_name
+    select jsonb_build_object('source', source_name, 'amount', sum(cash_credit)) as item
+    from entry_classified
+    where category = 'operating_outflow' and cash_credit > 0
+    group by source_name
   ),
   investing_entries as (
-    select
-      jsonb_build_object('source', debit_name, 'amount', sum(debit_amount)) as item
-    from period_entries
-    where debit_account_type = 'asset' and debit_code >= '1500' and debit_code < '1600'
-      and credit_account_type = 'asset' and credit_code < '1500'
-    group by debit_name
+    select jsonb_build_object('source', source_name, 'amount', sum(cash_debit)) as item
+    from entry_classified
+    where category = 'investing' and cash_debit > 0
+    group by source_name
   ),
   financing_entries as (
-    select
-      jsonb_build_object(
-        'source', case when credit_account_type = 'equity' then credit_name else debit_name end,
-        'amount', case when credit_account_type = 'equity' then sum(credit_amount) else -sum(debit_amount) end
-      ) as item
-    from period_entries
-    where (credit_account_type = 'equity' or debit_account_type = 'equity')
-      and (debit_account_type = 'asset' or credit_account_type = 'asset')
-    group by case when credit_account_type = 'equity' then credit_name else debit_name end,
-             credit_account_type
+    select jsonb_build_object('source', source_name, 'amount', sum(cash_credit) - sum(cash_debit)) as item
+    from entry_classified
+    where category = 'financing'
+    group by source_name
   )
   select
     coalesce((select jsonb_agg(item) from operating_inflows), '[]'::jsonb),
@@ -380,7 +406,7 @@ declare
   v_cash_flow jsonb;
 begin
   v_actor_id := public.app_get_actor_user_id();
-  perform public.app_require_lodge_role(p_lodge_id, ARRAY['admin', 'super_admin', 'manager', 'finance']);
+  perform public.app_require_feature(p_lodge_id, 'restaurant_accounting', ARRAY['admin', 'super_admin', 'manager', 'finance']);
 
   -- Balance sheet as of end date
   select public.get_restaurant_balance_sheet(p_lodge_id, p_end_date)

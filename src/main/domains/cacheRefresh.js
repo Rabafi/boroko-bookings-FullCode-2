@@ -8,6 +8,7 @@ import { mergeRemotePosOrdersWithLocalState } from './posMerge.js';
 import { applyQueuedPosInventoryReservations, applyQueuedDayUseInventoryReservations } from './posOffline.js';
 import { mergeRemoteInventoryWithLocalState } from './inventoryMerge.js';
 import { mergeRemoteQuotationsWithLocalState } from './quotationMerge.js';
+import { getRuntimeProductId } from '../../shared/productIdentity.js';
 
 const SYNC_REFRESH_RETRY_BASE_DELAY_MS = 5_000;
 const SYNC_REFRESH_RETRY_MAX_DELAY_MS = 60_000;
@@ -23,6 +24,46 @@ const MAINTENANCE_TICKET_LEGACY_SELECT = 'id, room_id, title, description, statu
 const BOOKING_PAGE_SIZE = 1000;
 const BOOKING_REFRESH_MAX_ROWS = 10000;
 const CACHE_REFRESH_CONCURRENCY = 3;
+const FULL_CACHE_NAMES = Object.freeze([
+  'users',
+  'rooms',
+  'customers',
+  'bookings',
+  'maintenance',
+  'inventory-items',
+  'inventory-purchases',
+  'inventory-stocktakes',
+  'quotations',
+  'conference-bookings',
+  'event-line-items',
+  'pool-day-use',
+  'pos-orders',
+  'pos-menu-items',
+  'outlets',
+  'expenses',
+  'booking-charges',
+  'room-rate-overrides',
+  'customer-credit-summary',
+  'supply-items',
+  'supply-purchases',
+  'room-supply-stock',
+  'room-supply-movements',
+  'room-supply-allocations',
+  'supply-stocktakes',
+  'room-supply-stocktakes'
+]);
+const RESTAURANT_CACHE_NAMES = Object.freeze([
+  'users',
+  'customers',
+  'inventory-items',
+  'inventory-purchases',
+  'inventory-stocktakes',
+  'pos-orders',
+  'pos-menu-items',
+  'outlets',
+  'expenses',
+  'customer-credit-summary'
+]);
 const PRESERVE_PENDING_LOCAL_CACHE_NAMES = new Set([
   'booking-charges',
   'room-rate-overrides',
@@ -213,7 +254,7 @@ async function refreshCacheStrict(...names) {
       p_limit: 1000,
       p_offset: 0
     }),
-    quotations: () => state.supabase.from('quotations').select('id, customer_id, customer_name, customer_phone, customer_email, room_id, room_name, check_in, check_out, adults, children, subtotal, tax_amount, total_amount, currency, notes, status, valid_until, quotation_number, created_at, updated_at, created_by, lodge_id, parent_quotation_id, converted_booking_id, quotation_type, event_name, event_daily_rate').eq('lodge_id', state.lodgeId).order('created_at', { ascending: false }).limit(200),
+    quotations: () => state.supabase.from('quotations').select('id, customer_id, customer_name, customer_phone, room_id, room_name, check_in, check_out, adults, children, subtotal, tax_amount, total_amount, currency, notes, status, valid_until, quotation_number, created_at, updated_at, created_by, lodge_id, parent_quotation_id, converted_booking_id, quotation_type, event_name, event_daily_rate').eq('lodge_id', state.lodgeId).order('created_at', { ascending: false }).limit(200),
     'conference-bookings': () => state.supabase.from('conference_bookings').select('id, booking_date, start_time, end_time, client_name, company, attendees, setup_type, room_name, includes_catering, catering_notes, total_amount, deposit_paid, payment_status, payment_method, notes, created_at, updated_at, lodge_id').eq('lodge_id', state.lodgeId).order('booking_date', { ascending: false }).order('start_time', { ascending: true }).limit(200),
     'event-line-items': () => state.supabase.from('event_booking_line_items').select('*').eq('lodge_id', state.lodgeId).order('created_at', { ascending: false }).limit(1000),
     'pool-day-use': () => state.supabase.from('pool_day_use').select(POOL_DAY_USE_SELECT).eq('lodge_id', state.lodgeId).order('date', { ascending: false }).limit(500),
@@ -231,7 +272,7 @@ async function refreshCacheStrict(...names) {
     eq('lodge_id', state.lodgeId).
     order('created_at', { ascending: false }).
     limit(500),
-    'pos-menu-items': () => state.supabase.from('pos_menu_items').select('id, name, category, price, is_available, barcode, inventory_item_id, depletion_qty, outlet_id, template_kind, lodge_id, created_at, updated_at, kitchen_station_id').eq('lodge_id', state.lodgeId).order('category').order('name').limit(500),
+    'pos-menu-items': () => state.supabase.from('pos_menu_items').select('id, name, category, price, is_available, archived_at, barcode, inventory_item_id, depletion_qty, outlet_id, template_kind, lodge_id, created_at, updated_at, kitchen_station_id').eq('lodge_id', state.lodgeId).order('category').order('name').limit(500),
     outlets: () => state.supabase.from('outlets').select('id, name, type, sort_order, is_active').eq('lodge_id', state.lodgeId).order('sort_order').limit(100)
   };
 
@@ -414,32 +455,8 @@ export async function refreshCache(...names) {
 
 export async function refreshAllCaches() {
   if (!state.lodgeId) return;
-  await refreshCache(
-    'users',
-    'rooms',
-    'customers',
-    'bookings',
-    'maintenance',
-    'inventory-items',
-    'inventory-purchases',
-    'inventory-stocktakes',
-    'quotations',
-    'conference-bookings',
-    'event-line-items',
-    'pool-day-use',
-    'pos-orders',
-    'pos-menu-items',
-    'outlets',
-    'expenses',
-    'booking-charges',
-    'room-rate-overrides',
-    'customer-credit-summary',
-    'supply-items',
-    'supply-purchases',
-    'room-supply-stock',
-    'room-supply-movements',
-    'room-supply-allocations',
-    'supply-stocktakes',
-    'room-supply-stocktakes'
-  );
+  const names = getRuntimeProductId() === 'hospitality-pos'
+    ? RESTAURANT_CACHE_NAMES
+    : FULL_CACHE_NAMES;
+  await refreshCache(...names);
 }

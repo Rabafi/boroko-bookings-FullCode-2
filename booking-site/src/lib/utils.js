@@ -3,9 +3,20 @@
  * These functions are pure, stateless, and safe to import anywhere.
  */
 
-export function buildWhatsAppUrl(number) {
-  const digits = String(number || '').replace(/[^\d]/g, '')
-  return digits ? `https://wa.me/${digits}` : null
+export function buildWhatsAppUrl(number, { defaultCountryCode = '267' } = {}) {
+  let digits = String(number || '').replace(/[^\d]/g, '')
+  if (!digits) return null
+
+  // Common local Botswana mobiles are 8 digits (7x/6x). Prefix country code when missing.
+  if (defaultCountryCode && !digits.startsWith(defaultCountryCode)) {
+    if (digits.length === 8 && /^[67]/.test(digits)) {
+      digits = `${defaultCountryCode}${digits}`
+    } else if (digits.length === 7 || digits.length === 8) {
+      digits = `${defaultCountryCode}${digits}`
+    }
+  }
+
+  return `https://wa.me/${digits}`
 }
 
 export function sanitizeWebsiteUrl(value) {

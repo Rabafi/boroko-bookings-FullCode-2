@@ -1,15 +1,24 @@
 import { useState, useEffect, useRef, useCallback, useContext, lazy, Suspense } from 'react'
-import { HashRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom'
+import { HashRouter, Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom'
 import { BellRing, ChevronDown, ChevronUp, Download, FileText, RefreshCw, RotateCcw, X } from 'lucide-react'
-import { APP_FEATURES, FEATURE_LABELS, buildCapabilitySnapshot, isPosFullAccessRole } from '../../shared/accessControl'
-import { SUBSCRIPTION_PLAN_ORDER, getAllSubscriptionPlans, getFeatureRequiredPlan, getSubscriptionPlan, normalizeSubscriptionPlan } from '../../shared/subscriptionPlans'
+import { APP_FEATURES, FEATURE_LABELS, buildCapabilitySnapshot, canAccessCapability, isPosFullAccessRole } from '../../shared/accessControl'
+import { SUBSCRIPTION_PLAN_ORDER, getFeatureRequiredPlan, getSubscriptionPlan, normalizeSubscriptionPlan } from '../../shared/subscriptionPlans'
+import { getCommercialPackageCatalog, getCommercialPackageLabel } from '../../shared/commercialPackages'
+import { getCommercialFeatureSet, isCommercialFeatureIncluded } from '../../shared/commercialAccess.js'
 import { isBarOnlyMode, isRestaurantOnly } from '../../shared/propertyTypes'
+import { isBarOnlyBlockedPath, normalizeAppPath } from '../../shared/barModeProfile'
+import {
+  getProductDefinition,
+  getRuntimeProductId,
+  isProductRouteAllowed
+} from '../../shared/productIdentity'
+import { HOTEL_CHROME } from './components/hotel/hotelChrome'
 import AppErrorBoundary from './components/AppErrorBoundary'
 import { ToastProvider } from './components/shared/Toast'
 import { Modal } from './components/shared/Modal'
 import { extractReleaseHighlights, formatReleaseDate, toReleaseSections } from './utils/updatePresentation'
 import { applyThemeMode, getStoredThemeMode } from './utils/themeMode'
-import borokoLogoDark from './assets/boroko-bookings-logo-dark.png'
+import { productLogoColor, productLogoLight } from './assets/productLogos'
 import { CustomerDisplay, PrepDisplay } from './components/POSDisplays'
 import {
   AuthContext,
@@ -27,6 +36,8 @@ import {
 const Welcome     = lazy(() => import('./components/Welcome'))
 const Login       = lazy(() => import('./components/Login'))
 const Layout      = lazy(() => import('./components/Layout'))
+const HotelLayout = lazy(() => import('./components/hotel/HotelLayout'))
+const HotelHome   = lazy(() => import('./components/hotel/HotelHome'))
 const Dashboard   = lazy(() => import('./components/Dashboard'))
 const Rooms       = lazy(() => import('./components/Rooms'))
 const Bookings    = lazy(() => import('./components/Bookings'))
@@ -46,6 +57,7 @@ const POS         = lazy(() => import('./components/POS'))
 const Inventory   = lazy(() => import('./components/Inventory'))
 const RoomSupplies = lazy(() => import('./components/RoomSupplies'))
 const NightAudit  = lazy(() => import('./components/NightAudit'))
+const NightAuditEnterprise = lazy(() => import('./components/NightAuditEnterprise'))
 const AdminCentral = lazy(() => import('./components/AdminCentral'))
 const Conference  = lazy(() => import('./components/Conference'))
 const DayUse      = lazy(() => import('./components/DayUse'))
@@ -113,7 +125,47 @@ const RestaurantStaffPerformance = lazy(() => import('./components/restaurant/Re
 const RestaurantPrepBatches = lazy(() => import('./components/restaurant/RestaurantPrepBatches'))
 const RestaurantKitchenAnalytics = lazy(() => import('./components/restaurant/RestaurantKitchenAnalytics'))
 const RestaurantPurchaseSuggestions = lazy(() => import('./components/restaurant/RestaurantPurchaseSuggestions'))
+const RestaurantGrowthControls = lazy(() => import('./components/restaurant/RestaurantGrowthControls'))
 const RestaurantWorkspace = lazy(() => import('./components/restaurant/RestaurantWorkspace'))
+const LodgeFoodBeverageHub = lazy(() => import('./components/LodgeFoodBeverageHub'))
+
+// ── Restaurant Accounting (Finance module) ────────────────────────────────────
+const RestaurantChartOfAccounts = lazy(() => import('./components/restaurant-accounting/RestaurantChartOfAccounts'))
+const RestaurantGeneralLedger = lazy(() => import('./components/restaurant-accounting/RestaurantGeneralLedger'))
+const RestaurantBankReconciliation = lazy(() => import('./components/restaurant-accounting/RestaurantBankReconciliation'))
+const RestaurantAccountsPayable = lazy(() => import('./components/restaurant-accounting/RestaurantAccountsPayable'))
+const RestaurantTaxReturns = lazy(() => import('./components/restaurant-accounting/RestaurantTaxReturns'))
+const RestaurantBudgets = lazy(() => import('./components/restaurant-accounting/RestaurantBudgets'))
+const RestaurantBalanceSheet = lazy(() => import('./components/restaurant-accounting/RestaurantBalanceSheet'))
+const RestaurantPayroll = lazy(() => import('./components/restaurant-accounting/RestaurantPayroll'))
+
+// ── Restaurant & Bar POS UI ───────────────────────────────────────────────────
+const HposLayout       = lazy(() => import('./components/hospitality-pos/HposLayout'))
+const HposFloorPlan    = lazy(() => import('./components/hospitality-pos/HposFloorPlan'))
+const HposServiceReservations = lazy(() => import('./components/hospitality-pos/HposServiceReservations'))
+const HposKitchen      = lazy(() => import('./components/hospitality-pos/HposKitchen'))
+const HposMenu         = lazy(() => import('./components/hospitality-pos/HposMenu'))
+const HposStock        = lazy(() => import('./components/hospitality-pos/HposStock'))
+const HposTeam         = lazy(() => import('./components/hospitality-pos/HposTeam'))
+const HposCashClose    = lazy(() => import('./components/hospitality-pos/HposCashClose'))
+const HposCustomers    = lazy(() => import('./components/hospitality-pos/HposCustomers'))
+const HposControl      = lazy(() => import('./components/hospitality-pos/HposControl'))
+const HposTerminal     = lazy(() => import('./components/hospitality-pos/HposTerminal'))
+const HposMyShift      = lazy(() => import('./components/hospitality-pos/HposMyShift'))
+const HposMyCashup     = lazy(() => import('./components/hospitality-pos/HposMyCashup'))
+const HposAttendanceKiosk = lazy(() => import('./components/hospitality-pos/HposAttendanceKiosk'))
+const HposSharedCashup = lazy(() => import('./components/hospitality-pos/HposSharedCashup'))
+const HposOpenChecks   = lazy(() => import('./components/hospitality-pos/HposOpenChecks'))
+const HposSystemHealth = lazy(() => import('./components/hospitality-pos/HposSystemHealth'))
+const HposBusinessControl = lazy(() => import('./components/hospitality-pos/HposBusinessControl'))
+const StaffOperations = lazy(() => import('./components/hotel/StaffOperations'))
+const AssetManagement = lazy(() => import('./components/hotel/AssetManagement'))
+const VenueManagement = lazy(() => import('./components/hotel/VenueManagement'))
+const HposReports      = lazy(() => import('./components/hospitality-pos/HposReports'))
+const HposMySales      = lazy(() => import('./components/hospitality-pos/HposMySales'))
+const HposExpenses     = lazy(() => import('./components/hospitality-pos/HposExpenses'))
+const HposManageHub    = lazy(() => import('./components/hospitality-pos/HposManageHub'))
+const HposSetupReadiness = lazy(() => import('./components/hospitality-pos/HposSetupReadiness'))
 
 // ── Loading fallback for lazy routes ─────────────────────────────────────────
 function PageLoader() {
@@ -123,7 +175,7 @@ function PageLoader() {
         <div className="h-9 w-9 animate-spin rounded-full border-2 border-[#174c3a] border-t-transparent" />
         <div>
           <p className="text-sm font-semibold text-[#163229]">Loading workspace</p>
-          <p className="mt-1 text-xs text-[#6e857d]">Preparing Boroko Bookings for this screen.</p>
+          <p className="mt-1 text-xs text-[#6e857d]">Preparing {BUILD_PRODUCT.brandName} for this screen.</p>
         </div>
       </div>
     </div>
@@ -149,40 +201,105 @@ function isEditableFieldTarget(target) {
   return true
 }
 
+const BUILD_PRODUCT = getProductDefinition(getRuntimeProductId())
+const IS_HOTEL_PRODUCT = BUILD_PRODUCT.id === 'hotel'
+const IS_HPOS_PRODUCT = BUILD_PRODUCT.id === 'hospitality-pos'
+const IS_LODGE_PRODUCT = BUILD_PRODUCT.id === 'lodge-camp'
+
 // ── Upgrade Wall ───────────────────────────────────────────────────────────────
 function UpgradeWall({ feature, children }) {
   const features = useContext(FeaturesContext)
   const access = useContext(AccessContext)
+  const commercialPackageKey = access?.entitlement?.commercial_package_key || null
+  const commercialAddonKeys = access?.entitlement?.enterprise_addons || []
+  const commercialBlocked = IS_HPOS_PRODUCT && commercialPackageKey
+    ? !isCommercialFeatureIncluded(BUILD_PRODUCT.id, commercialPackageKey, feature, commercialAddonKeys)
+    : false
 
   // Only block when flags have been loaded AND this feature is explicitly false
-  if (Object.keys(features).length > 0 && features[feature] === false) {
+  if ((Object.keys(features).length > 0 && features[feature] === false) || commercialBlocked) {
     const requiredTier = getFeatureRequiredPlan(feature)
     const requiredPlan = getSubscriptionPlan(requiredTier)
+    const requiredPackage = commercialBlocked ? 'a higher POS package' : getCommercialPackageLabel(requiredTier, BUILD_PRODUCT.id)
     const trialExpired = access?.entitlement?.expired === true
     const moduleLabel = FEATURE_LABELS[feature] || 'This module'
     const tierColor = requiredTier === 'Pro' ? 'purple' : 'blue'
+    const accessNoun = IS_HOTEL_PRODUCT ? 'hotel' : IS_HPOS_PRODUCT ? 'restaurant' : 'lodge'
     return (
       <div className="flex flex-col items-center justify-center h-full min-h-[500px] p-10 text-center select-none">
         <div className="text-6xl mb-5">🔒</div>
         <h2 className="text-2xl font-bold text-gray-800 mb-2">
-          {trialExpired ? 'Trial expired' : `${requiredTier} Plan Required`}
+          {trialExpired ? 'Trial expired' : `${requiredPackage} Package Required`}
         </h2>
         <p className="text-gray-500 text-sm max-w-sm mb-6">
           {trialExpired
-            ? `${moduleLabel} is unavailable because this trial has ended. Buy a subscription to restore lodge access.`
-            : `${moduleLabel} is not included in your current subscription. ${requiredPlan.headline}. ${requiredPlan.upgradeNudge}`}
+            ? `${moduleLabel} is unavailable because this trial has ended. Buy a subscription to restore ${accessNoun} access.`
+            : `${moduleLabel} is not included in your current subscription. ${commercialBlocked ? 'Request the package that includes this workflow.' : `${requiredPlan.headline}. ${requiredTier === 'Enterprise' ? 'HotelOS is a separate Tsa Bonno product with quotation-based access.' : requiredPlan.upgradeNudge}`}`}
         </p>
         <div className={`inline-flex items-center gap-2 px-5 py-2.5 rounded-full text-sm font-semibold ${
           tierColor === 'purple'
             ? 'bg-purple-100 text-purple-700 border border-purple-200'
             : 'bg-blue-100 text-blue-700 border border-blue-200'
         }`}>
-          {trialExpired ? 'Buy a subscription to continue' : `Upgrade to ${requiredTier} to access this feature`}
+          {trialExpired ? 'Buy a subscription to continue' : `Request ${requiredPackage} to access this feature`}
         </div>
       </div>
     )
   }
   return children
+}
+
+/**
+ * Hard product boundary: foreign modules may still exist in the shared bundle,
+ * but this product binary will not navigate into routes outside its allowlist.
+ * Lodge allowlist remains full so live Lodge behaviour is unchanged.
+ */
+function ProductShellGuard({ children }) {
+  const location = useLocation()
+  if (!isProductRouteAllowed(location.pathname, BUILD_PRODUCT.id)) {
+    return <Navigate to={BUILD_PRODUCT.defaultHome || '/'} replace />
+  }
+  return children
+}
+
+// ── Layout Switcher ──────────────────────────────────────────────────────────
+// Hotel product = HotelLayout (independent PMS shell).
+// Restaurant product / restaurant property = HposLayout.
+// Lodge product = live Layout (frozen).
+function HposAwareLayout() {
+  const { settings } = useContext(SettingsContext)
+  const propertyType = settings?.property_type || settings?.business_type || 'lodge'
+  if (IS_HOTEL_PRODUCT) {
+    return <Lazy><HotelLayout /></Lazy>
+  }
+  if (IS_HPOS_PRODUCT || isRestaurantOnly(propertyType)) {
+    return <Lazy><HposLayout /></Lazy>
+  }
+  return <Lazy><Layout /></Lazy>
+}
+
+function ProductHome() {
+  if (IS_HOTEL_PRODUCT) return <Lazy><HotelHome /></Lazy>
+  if (IS_HPOS_PRODUCT) return <Navigate to="/hpos/pos" replace />
+  return <Lazy><Dashboard /></Lazy>
+}
+
+function RestaurantPosEntry() {
+  const { settings } = useContext(SettingsContext)
+  const propertyType = settings?.property_type || settings?.business_type || 'lodge'
+  return isRestaurantOnly(propertyType)
+    ? <Lazy><HposTerminal /></Lazy>
+    : <Lazy><POS /></Lazy>
+}
+
+function RestaurantReportsEntry() {
+  const { settings } = useContext(SettingsContext)
+  return isRestaurantOnly(settings?.property_type || settings?.business_type || 'lodge') ? <Lazy><HposReports /></Lazy> : <Lazy><Reports /></Lazy>
+}
+
+function RestaurantExpensesEntry() {
+  const { settings } = useContext(SettingsContext)
+  return isRestaurantOnly(settings?.property_type || settings?.business_type || 'lodge') ? <Lazy><HposExpenses /></Lazy> : <Lazy><Expenses /></Lazy>
 }
 
 // ── Restaurant Route Guard ────────────────────────────────────────────────────
@@ -202,27 +319,41 @@ const RESTAURANT_EXCLUDED_PATHS = [
   '/supplies'
 ]
 
-const BAR_ONLY_EXCLUDED_ROUTE_SEGMENTS = [
-  'floor', 'kitchen-workspace', 'menu-production', 'tables', 'kitchen', 'recipes',
-  'reservations', 'combos', 'recipe-variance', 'prep-batches', 'kitchen-analytics'
-]
+/**
+ * Blocks bar_only operators from restaurant kitchen/floor/production surfaces.
+ * Used under the main layout and on sibling display routes (e.g. kitchen-display)
+ * that sit outside RestaurantGuard.
+ */
+function BarOnlyBlockedRedirect({ children, redirectTo = '/hpos/pos' }) {
+  const { settings } = useContext(SettingsContext)
+  const access = useContext(AccessContext)
+  const propertyType = settings?.property_type || settings?.business_type || 'lodge'
+  const barOnlyMode = isRestaurantOnly(propertyType) && isBarOnlyMode(settings)
+  const location = normalizeAppPath(window.location.hash.replace('#', '').split('?')[0] || '/')
+
+  const enabledFeatures = getCommercialFeatureSet(
+    access?.entitlement?.product_id || BUILD_PRODUCT.id,
+    access?.entitlement?.commercial_package_key,
+    access?.entitlement?.enterprise_addons || []
+  )
+  if (barOnlyMode && isBarOnlyBlockedPath(location, enabledFeatures)) {
+    return <Navigate to={redirectTo} replace />
+  }
+  return children
+}
 
 function RestaurantGuard({ children }) {
   const { settings } = useContext(SettingsContext)
   const propertyType = settings?.property_type || settings?.business_type || 'lodge'
   const restaurantMode = isRestaurantOnly(propertyType)
-  const barOnlyMode = restaurantMode && isBarOnlyMode(settings)
-  const location = window.location.hash.replace('#', '').split('?')[0]
+  const location = normalizeAppPath(window.location.hash.replace('#', '').split('?')[0] || '/')
 
   if (restaurantMode && RESTAURANT_EXCLUDED_PATHS.some(path => location.startsWith(path))) {
     return <Navigate to="/" replace />
   }
 
-  if (barOnlyMode && BAR_ONLY_EXCLUDED_ROUTE_SEGMENTS.some(segment => location.startsWith(`/restaurant/${segment}`))) {
-    return <Navigate to="/" replace />
-  }
-
-  return children
+  // Bar Only blocks restaurant kitchen/floor/production and matching HPOS routes.
+  return <BarOnlyBlockedRedirect>{children}</BarOnlyBlockedRedirect>
 }
 
 // ── Restaurant-Only Route Guard ────────────────────────────────────────────────
@@ -233,6 +364,20 @@ function RestaurantOnlyRoute({ children }) {
   return children
 }
 
+function BarAddonFeatureRoute({ feature, children }) {
+  const { settings } = useContext(SettingsContext)
+  if (!isBarOnlyMode(settings)) return children
+  return <UpgradeWall feature={feature}>{children}</UpgradeWall>
+}
+
+function RestaurantAccountingRoute({ payroll = false, children }) {
+  const access = useContext(AccessContext)
+  const capability = payroll ? 'accounting.payroll_view' : 'accounting.read'
+  if (!canAccessCapability(access, capability)) {
+    return <div className="flex min-h-[420px] items-center justify-center p-8"><div className="max-w-lg rounded-2xl border border-rose-200 bg-rose-50 p-8 text-center"><h1 className="text-2xl font-bold text-rose-950">Accounting access required</h1><p className="mt-3 text-sm leading-6 text-rose-800">{payroll ? 'Private payroll access is assigned separately from general Accounting.' : 'Your role does not include Restaurant Accounting read access.'}</p></div></div>
+  }
+  return <UpgradeWall feature="restaurant_accounting">{children}</UpgradeWall>
+}
 // ── Update Banner ─────────────────────────────────────────────────────────────
 function UpdateBanner() {
   const UPDATE_SNOOZE_KEY = 'bb_update_snooze_until'
@@ -380,12 +525,12 @@ function UpdateBanner() {
                 <p className="text-xs font-semibold uppercase tracking-[0.18em] text-white/70">App update</p>
                 <p className="mt-1 text-sm font-semibold">
                   {state === 'ready'
-                    ? `Boroko Bookings v${version} is ready`
+                    ? `${BUILD_PRODUCT.brandName} v${version} is ready`
                     : state === 'downloading'
                       ? `Downloading v${version}`
                       : state === 'error'
                         ? 'Update needs attention'
-                        : `Boroko Bookings v${version} is available`}
+                        : `${BUILD_PRODUCT.brandName} v${version} is available`}
                 </p>
               </div>
               <div className="flex items-center gap-1">
@@ -493,7 +638,7 @@ function UpdateBanner() {
       </div>
 
       {detailsOpen && (
-        <Modal title={`Boroko Bookings v${version}`} onClose={() => setDetailsOpen(false)} size="lg">
+        <Modal title={`${BUILD_PRODUCT.brandName} v${version}`} onClose={() => setDetailsOpen(false)} size="lg">
           <div className="space-y-5">
             <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
               <p className="text-sm font-semibold text-slate-900">Update details</p>
@@ -890,16 +1035,24 @@ function BookingSyncConflictNotification() {
 function TrialExpiredScreen({ lodgeName, onSwitchAccount }) {
   const [submitted, setSubmitted] = useState(false)
   const [submitting, setSubmitting] = useState(false)
-  const tiers = getAllSubscriptionPlans()
+  const tiers = getCommercialPackageCatalog(BUILD_PRODUCT.id)
   const lockedFeatures = APP_FEATURES.map((featureName) => FEATURE_LABELS[featureName] || featureName)
+  const brand = BUILD_PRODUCT.brandName
+  const noun = IS_LODGE_PRODUCT ? 'lodge' : BUILD_PRODUCT.businessNoun
+  const shell = IS_HOTEL_PRODUCT
+    ? `${HOTEL_CHROME.shell} flex flex-col items-center justify-center p-6`
+    : IS_HPOS_PRODUCT
+      ? 'min-h-screen bg-gradient-to-br from-[#6f8061] via-[#d08a64] to-[#a83c26] flex flex-col items-center justify-center p-6'
+      : 'min-h-screen bg-gradient-to-br from-green-900 via-green-800 to-green-700 flex flex-col items-center justify-center p-6'
+  const subText = IS_HOTEL_PRODUCT ? `${HOTEL_CHROME.mute} text-sm max-w-md` : IS_HPOS_PRODUCT ? 'text-orange-50 text-sm max-w-md' : 'text-green-200 text-sm max-w-md'
 
   const requestUpgrade = async (tier) => {
     setSubmitting(true)
     try {
       await window.api.admin.createSupportTicket({
-        lodge_name: lodgeName || 'Unknown Lodge',
+        lodge_name: lodgeName || `Unknown ${IS_LODGE_PRODUCT ? 'Lodge' : BUILD_PRODUCT.businessNounTitle}`,
         title: `Subscription Request — ${tier} Plan`,
-        description: `The lodge has requested to buy a ${tier} subscription after their free trial ended.`,
+        description: `The ${noun} has requested to buy a ${tier} subscription after their free trial ended.`,
         category: 'Upgrade Request',
         priority: 'High'
       })
@@ -908,18 +1061,24 @@ function TrialExpiredScreen({ lodgeName, onSwitchAccount }) {
     setSubmitting(false)
   }
 
+  const trialTitleClass = IS_HOTEL_PRODUCT ? `text-3xl font-bold ${HOTEL_CHROME.ink} mb-2` : 'text-3xl font-bold text-white mb-2'
+  const trialBadgeClass = IS_HOTEL_PRODUCT ? 'text-xs font-bold uppercase tracking-[0.16em] text-[#a84a3c] mb-3' : 'text-xs font-bold uppercase tracking-[0.3em] text-red-200 mb-3'
+  const trialBtnClass = IS_HOTEL_PRODUCT
+    ? `mt-4 ${HOTEL_CHROME.secondaryBtn}`
+    : 'mt-4 inline-flex items-center justify-center rounded-full border border-white/20 bg-white/10 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-white/15'
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-green-900 via-green-800 to-green-700 flex flex-col items-center justify-center p-6">
+    <div className={shell}>
       <div className="text-center mb-8">
-        <div className="text-xs font-bold uppercase tracking-[0.3em] text-red-200 mb-3">Trial expired</div>
-        <h1 className="text-3xl font-bold text-white mb-2">Boroko Bookings is paused</h1>
-        <p className="text-green-200 text-sm max-w-md">
-          This lodge is using an expired trial. App features are locked until a subscription is purchased and activated.
+        <div className={trialBadgeClass}>Trial expired</div>
+        <h1 className={trialTitleClass}>{brand} is paused</h1>
+        <p className={subText}>
+          This {noun} is using an expired trial. App features are locked until a subscription is purchased and activated.
         </p>
         <button
           type="button"
           onClick={onSwitchAccount}
-          className="mt-4 inline-flex items-center justify-center rounded-full border border-white/20 bg-white/10 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-white/15"
+          className={trialBtnClass}
         >
           Log in to another account
         </button>
@@ -929,7 +1088,7 @@ function TrialExpiredScreen({ lodgeName, onSwitchAccount }) {
         <div className="bg-white rounded-2xl p-8 max-w-md w-full text-center shadow-2xl">
           <div className="text-5xl mb-4">✅</div>
           <h2 className="text-xl font-bold text-gray-800 mb-2">Request sent!</h2>
-          <p className="text-gray-500 text-sm">Our team will contact you shortly to activate your subscription. Thank you for choosing Boroko Bookings.</p>
+          <p className="text-gray-500 text-sm">Our team will contact you shortly to activate your subscription. Thank you for choosing {brand}.</p>
         </div>
       ) : (
         <div className="w-full max-w-5xl space-y-5">
@@ -943,8 +1102,8 @@ function TrialExpiredScreen({ lodgeName, onSwitchAccount }) {
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {tiers.map((tier) => (
-            <div key={tier.name} className="bg-white rounded-2xl p-6 shadow-2xl flex flex-col">
-              <div className={`text-xs font-bold uppercase tracking-widest mb-1 ${tier.name === 'Pro' ? 'text-purple-600' : tier.name === 'Standard' ? 'text-green-600' : 'text-blue-600'}`}>
+            <div key={tier.internalPlan} className="bg-white rounded-2xl p-6 shadow-2xl flex flex-col">
+              <div className={`text-xs font-bold uppercase tracking-widest mb-1 ${tier.internalPlan === 'Pro' ? 'text-purple-600' : tier.internalPlan === 'Standard' ? 'text-green-600' : 'text-blue-600'}`}>
                 {tier.name}
               </div>
               <div className="text-lg font-bold text-gray-800 mb-2">Contact us</div>
@@ -960,8 +1119,8 @@ function TrialExpiredScreen({ lodgeName, onSwitchAccount }) {
                 onClick={() => requestUpgrade(tier.name)}
                 disabled={submitting}
                 className={`w-full py-2 rounded-lg text-sm font-semibold text-white transition-colors disabled:opacity-50 ${
-                  tier.name === 'Pro' ? 'bg-purple-600 hover:bg-purple-700' :
-                  tier.name === 'Standard' ? 'bg-green-600 hover:bg-green-700' :
+                  tier.internalPlan === 'Pro' ? 'bg-purple-600 hover:bg-purple-700' :
+                  tier.internalPlan === 'Standard' ? 'bg-green-600 hover:bg-green-700' :
                   'bg-blue-600 hover:bg-blue-700'
                 }`}
               >
@@ -1035,6 +1194,27 @@ export default function App() {
   const restoreAttemptedRef = useRef(false)
   const navigationGuardRef = useRef({ isDirty: false, confirmLeave: null })
 
+  // Windows' native caption can fail to paint parts of the product name on
+  // some machines. Electron keeps the native window controls, while this
+  // renderer-owned drag region paints the complete product name reliably.
+  useEffect(() => {
+    document.title = BUILD_PRODUCT.name
+    if (isBrowserPreview) return undefined
+
+    document.documentElement.classList.add('has-app-window-titlebar')
+    const titlebar = document.createElement('div')
+    titlebar.className = 'app-window-titlebar'
+    titlebar.setAttribute('role', 'banner')
+    titlebar.setAttribute('aria-label', `${BUILD_PRODUCT.name} window`)
+    titlebar.textContent = BUILD_PRODUCT.name
+    document.body.appendChild(titlebar)
+
+    return () => {
+      titlebar.remove()
+      document.documentElement.classList.remove('has-app-window-titlebar')
+    }
+  }, [])
+
   // Theme — apply saved preference on startup and follow system changes when requested.
   useEffect(() => {
     applyThemeMode(getStoredThemeMode())
@@ -1058,6 +1238,10 @@ export default function App() {
 
   useEffect(() => {
     if (isBrowserPreview) return
+    if (IS_HPOS_PRODUCT) {
+      setOnlineRequests([])
+      return
+    }
     if (!user || user.isMasterAdmin) return
     if (activeProfile?.status !== 'ready') return
     refreshOnlineRequests()
@@ -1125,6 +1309,11 @@ export default function App() {
     const normalizedPlan = normalizeSubscriptionPlan(nextTrial?.plan || 'Starter')
     const planIndex = SUBSCRIPTION_PLAN_ORDER.indexOf(normalizedPlan)
     APP_FEATURES.forEach((featureName) => {
+      if (nextTrial?.product_id === 'hospitality-pos' && nextTrial?.commercial_package_key
+        && !isCommercialFeatureIncluded('hospitality-pos', nextTrial.commercial_package_key, featureName, nextTrial.enterprise_addons || [])) {
+        nextFeatures[featureName] = false
+        return
+      }
       if (Object.prototype.hasOwnProperty.call(nextTrial?.effective_features || {}, featureName)) {
         nextFeatures[featureName] = nextTrial.effective_features[featureName] !== false
       } else if (nextTrial?.expired === true) {
@@ -1193,7 +1382,7 @@ export default function App() {
     }
     const result = await window.api.profiles.select(lodgeId)
     if (!result?.success) {
-      throw new Error(result?.error || 'Could not switch to that lodge on this computer.')
+      throw new Error(result?.error || `Could not switch to that ${BUILD_PRODUCT.businessNoun || 'business'} on this computer.`)
     }
     await reloadProfiles()
     return result.data
@@ -1205,7 +1394,7 @@ export default function App() {
     }
     const result = await window.api.profiles.createDraft()
     if (!result?.success) {
-      throw new Error(result?.error || 'Could not create a new lodge profile.')
+      throw new Error(result?.error || `Could not create a new ${BUILD_PRODUCT.businessNoun || 'business'} profile.`)
     }
     await reloadProfiles()
     return result.data
@@ -1453,7 +1642,7 @@ export default function App() {
           <div className="text-5xl mb-4">🖥️</div>
           <h1 className="text-2xl font-bold text-gray-800 mb-3">Desktop App Required</h1>
           <p className="text-sm text-gray-600 leading-6">
-            This Boroko Bookings screen is the desktop version. It needs the app installed on your computer and cannot run fully inside a browser tab.
+            This {BUILD_PRODUCT.brandName} screen is the desktop version. It needs the app installed on your computer and cannot run fully inside a browser tab.
           </p>
           <div className="mt-5 rounded-xl bg-amber-50 border border-amber-200 px-4 py-3 text-sm text-amber-800 text-left">
             Use this link only for visual review, or share the manager mobile app link if your partner needs browser access.
@@ -1471,20 +1660,54 @@ export default function App() {
       : '/choose-lodge'
 
   if (appLoading) {
+    // Lodge live loading screen frozen. Hotel/HPOS get product shells only.
+    if (IS_LODGE_PRODUCT) {
+      return (
+        <div className="flex min-h-screen items-center justify-center bg-green-900">
+          <div className="text-center text-white">
+            <div className="mx-auto mb-5 flex h-36 w-[420px] max-w-[86vw] items-center justify-center">
+              <img src={productLogoLight} alt={BUILD_PRODUCT.brandName} className="max-h-full max-w-full object-contain" draggable="false" />
+            </div>
+            <p className="text-sm text-green-200">Loading {BUILD_PRODUCT.brandName}...</p>
+          </div>
+        </div>
+      )
+    }
+    if (IS_HOTEL_PRODUCT) {
+      return (
+        <div className={`flex min-h-screen items-center justify-center ${HOTEL_CHROME.shell}`}>
+          <div className={`text-center ${HOTEL_CHROME.ink}`}>
+            <div className="mx-auto mb-5 flex h-36 w-[420px] max-w-[86vw] items-center justify-center">
+              <img src={productLogoColor} alt={BUILD_PRODUCT.brandName} className="max-h-full max-w-full object-contain" draggable="false" />
+            </div>
+            <h1 className="sr-only">{BUILD_PRODUCT.brandName}</h1>
+            <p className={`mt-2 text-sm ${HOTEL_CHROME.mute}`}>{HOTEL_CHROME.loadingLine}</p>
+          </div>
+        </div>
+      )
+    }
     return (
-      <div className="flex min-h-screen items-center justify-center bg-green-900">
+      <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-[#6f8061] via-[#d08a64] to-[#a83c26]">
         <div className="text-center text-white">
           <div className="mx-auto mb-5 flex h-36 w-[420px] max-w-[86vw] items-center justify-center">
-            <img src={borokoLogoDark} alt="Boroko Bookings" className="max-h-full max-w-full object-contain" draggable="false" />
+            <img src={productLogoLight} alt={BUILD_PRODUCT.brandName} className="max-h-full max-w-full object-contain" draggable="false" />
           </div>
-          <p className="text-sm text-green-200">Loading Boroko Bookings...</p>
+          <h1 className="sr-only">{BUILD_PRODUCT.brandName}</h1>
+          <p className="mt-2 text-sm text-orange-50">Loading restaurant workspace...</p>
         </div>
       </div>
     )
   }
 
   const authContextValue = { user, login, logout }
-  const settingsContextValue = { settings, setSettings }
+  // Commercial package identity comes from the authenticated entitlement and is
+  // authoritative for Bar POS, even when older settings rows lack bar_only.
+  const effectiveSettings = settings ? {
+    ...settings,
+    commercial_package_key: trialStatus?.commercial_package_key || settings.commercial_package_key || null,
+    product_id: trialStatus?.product_id || settings.product_id || null
+  } : settings
+  const settingsContextValue = { settings: effectiveSettings, setSettings }
   const profilesContextValue = {
     profiles,
     activeProfile,
@@ -1506,7 +1729,10 @@ export default function App() {
       role: user?.role,
       isMasterAdmin: user?.isMasterAdmin,
       features,
-      capabilityOverrides: user?.capability_overrides || {}
+      capabilityOverrides: user?.capability_overrides || {},
+      productId: trialStatus?.product_id || null,
+      commercialPackageKey: trialStatus?.commercial_package_key || null,
+      commercialAddonKeys: trialStatus?.enterprise_addons || []
     }),
     entitlement: trialStatus,
     allowedOutletIds: _allowedOutletIds
@@ -1584,14 +1810,16 @@ export default function App() {
                 path="/"
                 element={
                   <ProtectedRoute fallbackPath={preAuthFallbackPath} isTransitioning={isLoggingIn}>
-                    <RestaurantGuard>
-                      <Lazy><Layout /></Lazy>
-                    </RestaurantGuard>
+                    <ProductShellGuard>
+                      <RestaurantGuard>
+                        <HposAwareLayout />
+                      </RestaurantGuard>
+                    </ProductShellGuard>
                   </ProtectedRoute>
                 }
               >
                 {/* Always available — eager */}
-                <Route index element={<Lazy><Dashboard /></Lazy>} />
+                <Route index element={<ProductHome />} />
                 <Route path="rooms" element={<Lazy><Rooms /></Lazy>} />
                 <Route path="bookings"    element={<Lazy><Bookings /></Lazy>} />
                 <Route path="quotations" element={<Lazy><Quotations /></Lazy>} />
@@ -1605,21 +1833,30 @@ export default function App() {
                 <Route path="maintenance" element={<Lazy><Maintenance /></Lazy>} />
                 <Route path="settings"    element={<Lazy><Settings /></Lazy>} />
                 {/* Standard tier — lazy (UpgradeWall outside Lazy so wall renders without loading) */}
-                <Route path="reports"    element={<UpgradeWall feature="reports">   <Lazy><Reports /></Lazy>    </UpgradeWall>} />
-                <Route path="expenses"   element={<UpgradeWall feature="expenses">  <Lazy><Expenses /></Lazy>   </UpgradeWall>} />
+                <Route path="reports"    element={<UpgradeWall feature="reports">   <RestaurantReportsEntry />    </UpgradeWall>} />
+                <Route path="expenses"   element={<UpgradeWall feature="expenses">  <RestaurantExpensesEntry />   </UpgradeWall>} />
                 <Route path="staff"      element={<UpgradeWall feature="staff">     <Lazy><Staff /></Lazy>      </UpgradeWall>} />
                 <Route path="audit"      element={<UpgradeWall feature="audit">     <Lazy><NightAudit /></Lazy> </UpgradeWall>} />
                 <Route path="conference" element={<UpgradeWall feature="conference"><Lazy><Conference /></Lazy>  </UpgradeWall>} />
                 <Route path="dayuse"     element={<UpgradeWall feature="pool">      <Lazy><DayUse /></Lazy>     </UpgradeWall>} />
+                <Route path="workforce" element={<UpgradeWall feature="workforce_management"><Lazy><StaffOperations /></Lazy></UpgradeWall>} />
+                <Route path="assets"   element={<UpgradeWall feature="asset_management">   <Lazy><AssetManagement /></Lazy></UpgradeWall>} />
+                <Route path="venues"   element={<UpgradeWall feature="venue_management">   <Lazy><VenueManagement /></Lazy></UpgradeWall>} />
                 <Route path="data-management" element={<UpgradeWall feature="import"><Lazy><DataManagement /></Lazy></UpgradeWall>} />
                 {/* Pro tier — lazy */}
-                <Route path="pos"        element={<UpgradeWall feature="pos">       <Lazy><POS /></Lazy>        </UpgradeWall>} />
+                <Route path="pos"        element={<UpgradeWall feature="pos">       <RestaurantPosEntry />        </UpgradeWall>} />
+                <Route
+                  path="food-beverage/:workspace?"
+                  element={IS_LODGE_PRODUCT
+                    ? <UpgradeWall feature="pos"><Lazy><LodgeFoodBeverageHub /></Lazy></UpgradeWall>
+                    : <Navigate to="/" replace />}
+                />
                 <Route path="inventory"  element={<UpgradeWall feature="inventory"> <Lazy><Inventory /></Lazy>  </UpgradeWall>} />
                 <Route path="supplies"   element={<UpgradeWall feature="supplies">  <Lazy><RoomSupplies /></Lazy></UpgradeWall>} />
                 <Route path="ai"         element={<Lazy><OpsAi /></Lazy>} />
 
                 {/* Hotel / Enterprise — consolidated redirects */}
-                <Route path="hotel-dashboard" element={<Navigate to="/" replace />} />
+                <Route path="hotel-dashboard" element={IS_HOTEL_PRODUCT ? <Lazy><HotelHome /></Lazy> : <UpgradeWall feature="front_desk_dashboard"><Lazy><HotelDashboard /></Lazy></UpgradeWall>} />
                 <Route path="room-types" element={<Navigate to="/rooms?tab=room-types" replace />} />
                 <Route path="floors" element={<Navigate to="/rooms?tab=floors-sections" replace />} />
                 <Route path="room-attributes" element={<Navigate to="/rooms?tab=attributes" replace />} />
@@ -1633,13 +1870,13 @@ export default function App() {
                 <Route path="rate-calendar" element={<Navigate to="/rate-plans?tab=calendar" replace />} />
                 <Route path="revenue-manager" element={<Navigate to="/rate-plans?tab=revenue" replace />} />
                 <Route path="promo-codes" element={<Navigate to="/rate-plans?tab=promo-codes" replace />} />
-                <Route path="checkin-workflow" element={<Navigate to="/bookings?tab=checkin" replace />} />
+                <Route path="checkin-workflow" element={<UpgradeWall feature="checkin_workflow"><Lazy><CheckinWorkflow /></Lazy></UpgradeWall>} />
                 <Route path="early-late-checkout" element={<Navigate to="/bookings?tab=early-late" replace />} />
                 <Route path="cancellation-policies" element={<Navigate to="/bookings?tab=cancellations" replace />} />
                 <Route path="documents" element={<Navigate to="/settings?tab=document-templates" replace />} />
                 <Route path="payment-links" element={<Navigate to="/folios" replace />} />
                 <Route path="booking-engine" element={<Navigate to="/rate-plans?tab=booking-engine" replace />} />
-                <Route path="night-audit-enterprise" element={<Navigate to="/audit" replace />} />
+                <Route path="night-audit-enterprise" element={<UpgradeWall feature="night_audit_enterprise"><Lazy><NightAuditEnterprise /></Lazy></UpgradeWall>} />
                 <Route path="payment-gateway-config" element={<Navigate to="/" replace />} />
                 {/* Hotel / Enterprise — distinct modules */}
                 <Route path="folios" element={<UpgradeWall feature="folios"><Lazy><Folios /></Lazy></UpgradeWall>} />
@@ -1654,38 +1891,85 @@ export default function App() {
                 <Route path="multi-property" element={<UpgradeWall feature="multi_property"><Lazy><MultiPropertyDashboard /></Lazy></UpgradeWall>} />
                 <Route path="guest-crm" element={<UpgradeWall feature="guest_crm"><Lazy><GuestCRM /></Lazy></UpgradeWall>} />
                 <Route path="operations-compliance" element={<UpgradeWall feature="operations_compliance"><Lazy><OperationsCompliance /></Lazy></UpgradeWall>} />
-                <Route path="multi-outlet-pos" element={<UpgradeWall feature="multi_outlet_pos"><Lazy><MultiOutletPos /></Lazy></UpgradeWall>} />
+                <Route path="restaurant/outlet-control" element={<RestaurantOnlyRoute><BarAddonFeatureRoute feature="multi_outlet_controls"><Lazy><MultiOutletPos /></Lazy></BarAddonFeatureRoute></RestaurantOnlyRoute>} />
+                <Route path="multi-outlet-pos" element={<Navigate to="/restaurant/outlet-control" replace />} />
                 <Route path="group-operations" element={<UpgradeWall feature="group_operations"><Lazy><GroupOperations /></Lazy></UpgradeWall>} />
                 {/* Restaurant workspaces. The legacy standalone routes below remain valid deep links. */}
-                <Route path="restaurant/floor" element={<RestaurantOnlyRoute><Lazy><RestaurantWorkspace workspace="floor" /></Lazy></RestaurantOnlyRoute>} />
-                <Route path="restaurant/kitchen-workspace" element={<RestaurantOnlyRoute><Lazy><RestaurantWorkspace workspace="kitchen" /></Lazy></RestaurantOnlyRoute>} />
-                <Route path="restaurant/menu-production" element={<RestaurantOnlyRoute><Lazy><RestaurantWorkspace workspace="menu" /></Lazy></RestaurantOnlyRoute>} />
-                <Route path="restaurant/stock-purchasing" element={<RestaurantOnlyRoute><Lazy><RestaurantWorkspace workspace="stock" /></Lazy></RestaurantOnlyRoute>} />
-                <Route path="restaurant/team" element={<RestaurantOnlyRoute><Lazy><RestaurantWorkspace workspace="team" /></Lazy></RestaurantOnlyRoute>} />
-                <Route path="restaurant/cash-close" element={<RestaurantOnlyRoute><Lazy><RestaurantWorkspace workspace="close" /></Lazy></RestaurantOnlyRoute>} />
-                <Route path="restaurant/control" element={<RestaurantOnlyRoute><Lazy><RestaurantWorkspace workspace="control" /></Lazy></RestaurantOnlyRoute>} />
+                <Route path="restaurant/floor" element={<RestaurantOnlyRoute><Navigate to="/hpos/floor" replace /></RestaurantOnlyRoute>} />
+                <Route path="restaurant/floor-workspace" element={<RestaurantOnlyRoute><UpgradeWall feature="pos"><Lazy><RestaurantWorkspace workspace="floor" defaultTab="tables" /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
+                <Route path="restaurant/kitchen-workspace" element={<RestaurantOnlyRoute><UpgradeWall feature="kitchen_tickets"><Lazy><RestaurantWorkspace workspace="kitchen" defaultTab="live" /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
+                <Route path="restaurant/menu-production" element={<RestaurantOnlyRoute><BarAddonFeatureRoute feature="recipes"><Lazy><RestaurantWorkspace workspace="menu" defaultTab="menu" /></Lazy></BarAddonFeatureRoute></RestaurantOnlyRoute>} />
+                <Route path="restaurant/stock-purchasing" element={<RestaurantOnlyRoute><Navigate to="/restaurant/inventory" replace /></RestaurantOnlyRoute>} />
+                <Route path="restaurant/team" element={<RestaurantOnlyRoute><Navigate to="/restaurant/team-workspace" replace /></RestaurantOnlyRoute>} />
+                <Route path="restaurant/team-workspace" element={<RestaurantOnlyRoute><BarAddonFeatureRoute feature="workforce_management"><Lazy><RestaurantWorkspace workspace="team" defaultTab="shifts" /></Lazy></BarAddonFeatureRoute></RestaurantOnlyRoute>} />
+                <Route path="restaurant/finance-close" element={<RestaurantOnlyRoute><UpgradeWall feature="reports"><Lazy><RestaurantWorkspace workspace="finance" defaultTab="overview" /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
+                <Route path="restaurant/cash-close" element={<RestaurantOnlyRoute><Navigate to="/restaurant/finance-close?tab=cashups" replace /></RestaurantOnlyRoute>} />
+                <Route path="restaurant/control" element={<RestaurantOnlyRoute><Navigate to="/restaurant/control-workspace" replace /></RestaurantOnlyRoute>} />
+                <Route path="restaurant/control-workspace" element={<RestaurantOnlyRoute><UpgradeWall feature="pos"><Lazy><RestaurantWorkspace workspace="control" defaultTab="checklists" /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
                 {/* ── Restaurant standalone modules ─────────────────────────────── */}
-                <Route path="restaurant/tables" element={<RestaurantOnlyRoute><UpgradeWall feature="pos"><Lazy><RestaurantTables /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
-                <Route path="restaurant/kitchen" element={<RestaurantOnlyRoute><UpgradeWall feature="pos"><Lazy><RestaurantKitchen /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
-                <Route path="restaurant/menu" element={<RestaurantOnlyRoute><UpgradeWall feature="pos"><Lazy><RestaurantMenu /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
-                <Route path="restaurant/recipes" element={<RestaurantOnlyRoute><UpgradeWall feature="inventory"><Lazy><RestaurantRecipes /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
-                <Route path="restaurant/stock" element={<RestaurantOnlyRoute><UpgradeWall feature="inventory"><Lazy><RestaurantStock /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
-                <Route path="restaurant/purchasing" element={<RestaurantOnlyRoute><UpgradeWall feature="inventory"><Lazy><RestaurantPurchasing /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
-                <Route path="restaurant/shifts" element={<RestaurantOnlyRoute><UpgradeWall feature="staff"><Lazy><RestaurantShifts /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
-                <Route path="restaurant/cash-drawer" element={<RestaurantOnlyRoute><UpgradeWall feature="pos"><Lazy><RestaurantCashDrawer /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
-                <Route path="restaurant/daily-close" element={<RestaurantOnlyRoute><UpgradeWall feature="reports"><Lazy><RestaurantDailyClose /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
-                <Route path="restaurant/customers" element={<RestaurantOnlyRoute><UpgradeWall feature="pos"><Lazy><RestaurantCustomers /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
-                <Route path="restaurant/checklists" element={<RestaurantOnlyRoute><UpgradeWall feature="pos"><Lazy><RestaurantChecklists /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
-                <Route path="restaurant/alerts" element={<RestaurantOnlyRoute><UpgradeWall feature="reports"><Lazy><RestaurantAlerts /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
-                <Route path="restaurant/owner-digest" element={<RestaurantOnlyRoute><UpgradeWall feature="reports"><Lazy><RestaurantOwnerDigest /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
+                <Route path="restaurant/tables" element={<RestaurantOnlyRoute><Navigate to="/hpos/floor" replace /></RestaurantOnlyRoute>} />
+                <Route path="restaurant/kitchen" element={<RestaurantOnlyRoute><Navigate to="/hpos/kitchen" replace /></RestaurantOnlyRoute>} />
+                <Route path="restaurant/menu" element={<RestaurantOnlyRoute><Navigate to="/hpos/menu" replace /></RestaurantOnlyRoute>} />
+                <Route path="restaurant/recipes" element={<RestaurantOnlyRoute><UpgradeWall feature="recipes"><Lazy><RestaurantWorkspace workspace="menu" defaultTab="recipes" /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
+                <Route path="restaurant/stock" element={<RestaurantOnlyRoute><Navigate to="/hpos/stock" replace /></RestaurantOnlyRoute>} />
+                <Route path="restaurant/purchasing" element={<RestaurantOnlyRoute><UpgradeWall feature="purchasing"><Lazy><RestaurantWorkspace workspace="stock" defaultTab="purchasing" /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
+                <Route path="restaurant/shifts" element={<RestaurantOnlyRoute><Navigate to="/hpos/team" replace /></RestaurantOnlyRoute>} />
+                <Route path="restaurant/cash-drawer" element={<RestaurantOnlyRoute><Navigate to="/hpos/cash" replace /></RestaurantOnlyRoute>} />
+                <Route path="restaurant/daily-close" element={<RestaurantOnlyRoute><Navigate to="/restaurant/finance-close?tab=daily-close" replace /></RestaurantOnlyRoute>} />
+                <Route path="restaurant/customers" element={<RestaurantOnlyRoute><Navigate to="/hpos/customers" replace /></RestaurantOnlyRoute>} />
+                <Route path="restaurant/checklists" element={<RestaurantOnlyRoute><Navigate to="/hpos/control" replace /></RestaurantOnlyRoute>} />
+                <Route path="restaurant/alerts" element={<RestaurantOnlyRoute><Navigate to="/hpos/control" replace /></RestaurantOnlyRoute>} />
+                <Route path="restaurant/owner-digest" element={<RestaurantOnlyRoute><Navigate to="/restaurant/finance-close?tab=owner-review" replace /></RestaurantOnlyRoute>} />
                 {/* Phase 6: Differentiators */}
-                <Route path="restaurant/reservations" element={<RestaurantOnlyRoute><UpgradeWall feature="pos"><Lazy><RestaurantReservations /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
-                <Route path="restaurant/combos" element={<RestaurantOnlyRoute><UpgradeWall feature="pos"><Lazy><RestaurantCombos /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
-                <Route path="restaurant/recipe-variance" element={<RestaurantOnlyRoute><UpgradeWall feature="inventory"><Lazy><RestaurantRecipeVariance /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
-                <Route path="restaurant/staff-performance" element={<RestaurantOnlyRoute><UpgradeWall feature="staff"><Lazy><RestaurantStaffPerformance /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
-                <Route path="restaurant/prep-batches" element={<RestaurantOnlyRoute><UpgradeWall feature="inventory"><Lazy><RestaurantPrepBatches /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
-                <Route path="restaurant/kitchen-analytics" element={<RestaurantOnlyRoute><UpgradeWall feature="reports"><Lazy><RestaurantKitchenAnalytics /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
-                <Route path="restaurant/purchase-suggestions" element={<RestaurantOnlyRoute><UpgradeWall feature="inventory"><Lazy><RestaurantPurchaseSuggestions /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
+                <Route path="restaurant/reservations" element={<RestaurantOnlyRoute><UpgradeWall feature="pos"><Lazy><RestaurantWorkspace workspace="floor" defaultTab="reservations" /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
+                <Route path="restaurant/combos" element={<RestaurantOnlyRoute><UpgradeWall feature="pos"><Lazy><RestaurantWorkspace workspace="menu" defaultTab="combos" /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
+                <Route path="restaurant/recipe-variance" element={<RestaurantOnlyRoute><UpgradeWall feature="variance"><Lazy><RestaurantWorkspace workspace="menu" defaultTab="variance" /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
+                <Route path="restaurant/staff-performance" element={<RestaurantOnlyRoute><UpgradeWall feature="performance"><Lazy><RestaurantWorkspace workspace="team" defaultTab="performance" /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
+                <Route path="restaurant/prep-batches" element={<RestaurantOnlyRoute><UpgradeWall feature="prep"><Lazy><RestaurantWorkspace workspace="menu" defaultTab="prep" /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
+                <Route path="restaurant/kitchen-analytics" element={<RestaurantOnlyRoute><UpgradeWall feature="performance"><Lazy><RestaurantWorkspace workspace="kitchen" defaultTab="analytics" /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
+                <Route path="restaurant/stations" element={<RestaurantOnlyRoute><UpgradeWall feature="pos"><Lazy><RestaurantWorkspace workspace="kitchen" defaultTab="stations" /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
+                <Route path="restaurant/inventory" element={<RestaurantOnlyRoute><BarAddonFeatureRoute feature="inventory_advanced"><Lazy><RestaurantWorkspace workspace="stock" defaultTab="stock" /></Lazy></BarAddonFeatureRoute></RestaurantOnlyRoute>} />
+                <Route path="restaurant/lots-expiry" element={<RestaurantOnlyRoute><BarAddonFeatureRoute feature="lots_expiry"><Lazy><RestaurantWorkspace workspace="stock" defaultTab="lots" /></Lazy></BarAddonFeatureRoute></RestaurantOnlyRoute>} />
+                <Route path="restaurant/tips" element={<RestaurantOnlyRoute><Navigate to="/restaurant/finance-close?tab=tips" replace /></RestaurantOnlyRoute>} />
+                <Route path="restaurant/settlements" element={<RestaurantOnlyRoute><Navigate to="/restaurant/finance-close?tab=settlements" replace /></RestaurantOnlyRoute>} />
+                <Route path="restaurant/feedback-deposits" element={<RestaurantOnlyRoute><Navigate to="/restaurant/finance-close?tab=customer-funds" replace /></RestaurantOnlyRoute>} />
+                <Route path="restaurant/gift-cards-policies" element={<RestaurantOnlyRoute><Navigate to="/restaurant/finance-close?tab=customer-funds" replace /></RestaurantOnlyRoute>} />
+                <Route path="restaurant/purchase-suggestions" element={<RestaurantOnlyRoute><UpgradeWall feature="stock_control"><Lazy><RestaurantWorkspace workspace="stock" defaultTab="suggestions" /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
+                {/* ── Restaurant Accounting (Finance module) ──────────────────────────────── */}
+                <Route path="restaurant/chart-of-accounts" element={<RestaurantOnlyRoute><RestaurantAccountingRoute><Lazy><RestaurantChartOfAccounts /></Lazy></RestaurantAccountingRoute></RestaurantOnlyRoute>} />
+                <Route path="restaurant/general-ledger" element={<RestaurantOnlyRoute><RestaurantAccountingRoute><Lazy><RestaurantGeneralLedger /></Lazy></RestaurantAccountingRoute></RestaurantOnlyRoute>} />
+                <Route path="restaurant/bank-reconciliation" element={<RestaurantOnlyRoute><RestaurantAccountingRoute><Lazy><RestaurantBankReconciliation /></Lazy></RestaurantAccountingRoute></RestaurantOnlyRoute>} />
+                <Route path="restaurant/accounts-payable" element={<RestaurantOnlyRoute><RestaurantAccountingRoute><Lazy><RestaurantAccountsPayable /></Lazy></RestaurantAccountingRoute></RestaurantOnlyRoute>} />
+                <Route path="restaurant/tax-returns" element={<RestaurantOnlyRoute><RestaurantAccountingRoute><Lazy><RestaurantTaxReturns /></Lazy></RestaurantAccountingRoute></RestaurantOnlyRoute>} />
+                <Route path="restaurant/budgets" element={<RestaurantOnlyRoute><RestaurantAccountingRoute><Lazy><RestaurantBudgets /></Lazy></RestaurantAccountingRoute></RestaurantOnlyRoute>} />
+                <Route path="restaurant/balance-sheet" element={<RestaurantOnlyRoute><RestaurantAccountingRoute><Lazy><RestaurantBalanceSheet /></Lazy></RestaurantAccountingRoute></RestaurantOnlyRoute>} />
+                <Route path="restaurant/payroll" element={<RestaurantOnlyRoute><RestaurantAccountingRoute payroll><Lazy><RestaurantPayroll /></Lazy></RestaurantAccountingRoute></RestaurantOnlyRoute>} />
+                {/* ── HPOS: New restaurant UI routes ────────────────────────────────── */}
+                <Route path="hpos/" element={<RestaurantOnlyRoute><Lazy><HposTerminal /></Lazy></RestaurantOnlyRoute>} />
+                <Route path="hpos/floor" element={<RestaurantOnlyRoute><UpgradeWall feature="tables"><Lazy><HposFloorPlan /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
+                <Route path="hpos/service" element={<RestaurantOnlyRoute><UpgradeWall feature="tables"><Lazy><HposServiceReservations /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
+                <Route path="hpos/kitchen" element={<RestaurantOnlyRoute><UpgradeWall feature="kitchen_tickets"><Lazy><HposKitchen /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
+                <Route path="hpos/menu" element={<RestaurantOnlyRoute><Lazy><HposMenu /></Lazy></RestaurantOnlyRoute>} />
+                <Route path="hpos/stock" element={<RestaurantOnlyRoute><UpgradeWall feature="inventory"><Lazy><HposStock /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
+                <Route path="hpos/team" element={<RestaurantOnlyRoute><Lazy><HposTeam /></Lazy></RestaurantOnlyRoute>} />
+                <Route path="hpos/my-shift" element={<RestaurantOnlyRoute><Lazy><HposMyShift /></Lazy></RestaurantOnlyRoute>} />
+                <Route path="hpos/my-sales" element={<RestaurantOnlyRoute><Lazy><HposMySales /></Lazy></RestaurantOnlyRoute>} />
+                <Route path="hpos/sale-correction" element={<RestaurantOnlyRoute><Lazy><HposReports correctionMode /></Lazy></RestaurantOnlyRoute>} />
+                <Route path="hpos/my-cashup" element={<RestaurantOnlyRoute><Lazy><HposMyCashup /></Lazy></RestaurantOnlyRoute>} />
+                <Route path="hpos/attendance" element={<RestaurantOnlyRoute><Lazy><HposAttendanceKiosk /></Lazy></RestaurantOnlyRoute>} />
+                <Route path="hpos/shared-cashup" element={<RestaurantOnlyRoute><Lazy><HposSharedCashup /></Lazy></RestaurantOnlyRoute>} />
+                <Route path="hpos/cash" element={<RestaurantOnlyRoute><Lazy><HposCashClose /></Lazy></RestaurantOnlyRoute>} />
+                <Route path="hpos/reports" element={<RestaurantOnlyRoute><UpgradeWall feature="reports"><Lazy><HposReports /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
+                <Route path="hpos/expenses" element={<RestaurantOnlyRoute><BarAddonFeatureRoute feature="expenses"><UpgradeWall feature="expenses"><Lazy><HposExpenses /></Lazy></UpgradeWall></BarAddonFeatureRoute></RestaurantOnlyRoute>} />
+                <Route path="hpos/customers" element={<RestaurantOnlyRoute><UpgradeWall feature="customer_accounts"><Lazy><HposCustomers /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
+                <Route path="hpos/growth-tools" element={<RestaurantOnlyRoute><BarAddonFeatureRoute feature="vouchers"><Lazy><RestaurantGrowthControls tabKey="growth" /></Lazy></BarAddonFeatureRoute></RestaurantOnlyRoute>} />
+                <Route path="hpos/control" element={<RestaurantOnlyRoute><UpgradeWall feature="checklists"><Lazy><HposControl /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
+                <Route path="hpos/manage" element={<RestaurantOnlyRoute><Lazy><HposManageHub /></Lazy></RestaurantOnlyRoute>} />
+                <Route path="hpos/setup-readiness" element={<RestaurantOnlyRoute><Lazy><HposSetupReadiness /></Lazy></RestaurantOnlyRoute>} />
+                <Route path="hpos/pos" element={<RestaurantOnlyRoute><Lazy><HposTerminal /></Lazy></RestaurantOnlyRoute>} />
+                <Route path="hpos/checks" element={<RestaurantOnlyRoute><Lazy><HposOpenChecks /></Lazy></RestaurantOnlyRoute>} />
+                <Route path="hpos/system-health" element={<RestaurantOnlyRoute><Lazy><HposSystemHealth /></Lazy></RestaurantOnlyRoute>} />
+                <Route path="hpos/business-control" element={<RestaurantOnlyRoute><BarAddonFeatureRoute feature="advanced_reports"><Lazy><HposBusinessControl /></Lazy></BarAddonFeatureRoute></RestaurantOnlyRoute>} />
               </Route>
               <Route
                 path="/pos/customer-display"
@@ -1701,9 +1985,11 @@ export default function App() {
                 path="/pos/kitchen-display"
                 element={
                   <ProtectedRoute fallbackPath={preAuthFallbackPath} isTransitioning={isLoggingIn}>
-                    <UpgradeWall feature="pos">
-                      <PrepDisplay station="kitchen" />
-                    </UpgradeWall>
+                    <BarOnlyBlockedRedirect>
+                      <UpgradeWall feature="pos">
+                        <PrepDisplay station="kitchen" />
+                      </UpgradeWall>
+                    </BarOnlyBlockedRedirect>
                   </ProtectedRoute>
                 }
               />

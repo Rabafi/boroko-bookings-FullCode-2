@@ -250,7 +250,7 @@ export function buildEscPosReceipt(order = {}, business = {}, settings = {}, opt
 
   pushAlign(buffers, 'center');
   pushBold(buffers, true);
-  pushText(buffers, business.lodge_name || business.company_name || 'Boroko POS');
+  pushText(buffers, business.lodge_name || business.company_name || 'Tsa Bonno POS Legacy');
   pushBold(buffers, false);
   for (const line of [business.company_name, business.address, business.city, business.country].filter(Boolean)) {
     for (const wrapped of wrapText(line, width)) pushText(buffers, wrapped);
@@ -319,7 +319,7 @@ export function buildEscPosReceipt(order = {}, business = {}, settings = {}, opt
   pushRule(buffers, width);
   pushAlign(buffers, 'center');
   pushText(buffers, 'Thank you for your business');
-  pushText(buffers, 'Boroko POS Legacy');
+  pushText(buffers, 'Tsa Bonno POS Legacy');
   pushAlign(buffers, 'left');
   buffers.push(textBuffer('\n\n\n'));
 

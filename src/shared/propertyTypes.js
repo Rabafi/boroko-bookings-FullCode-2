@@ -26,8 +26,8 @@ export const PROPERTY_TYPE_ORDER = [
 export const PROPERTY_TYPE_LABELS = {
   guest_house: 'Guest House',
   bnb: 'Bed & Breakfast',
-  lodge: 'Lodge / Camp',
-  camp: 'Lodge / Camp',
+  lodge: 'Lodge',
+  camp: 'Camp / Campsite',
   motel: 'Motel',
   hotel: 'Hotel',
   resort: 'Resort',
@@ -40,8 +40,8 @@ export const PROPERTY_TYPE_LABELS = {
 export const PROPERTY_TYPE_DESCRIPTIONS = {
   guest_house: 'Simple accommodation with a few rooms',
   bnb: 'Accommodation with breakfast service',
-  lodge: 'Nature or safari accommodation',
-  camp: 'Nature or safari accommodation',
+  lodge: 'Nature or safari lodge with rooms or units',
+  camp: 'Camp with campsites, tented stays, and optional rooms',
   motel: 'Drive-up room accommodation',
   hotel: 'Full-service hotel operations',
   resort: 'Multi-outlet resort operations',
@@ -50,11 +50,11 @@ export const PROPERTY_TYPE_DESCRIPTIONS = {
 
 export const PROPERTY_TYPE_DEFAULTS = {
   guest_house: {
-    modules: ['bookings', 'rooms', 'guests', 'invoices', 'housekeeping', 'maintenance'],
+    modules: ['bookings', 'rooms', 'guests', 'invoices', 'housekeeping', 'maintenance', 'supplies'],
     operation_style: 'simple'
   },
   bnb: {
-    modules: ['bookings', 'rooms', 'guests', 'invoices', 'housekeeping', 'maintenance'],
+    modules: ['bookings', 'rooms', 'guests', 'invoices', 'housekeeping', 'maintenance', 'supplies'],
     operation_style: 'simple'
   },
   lodge: {
@@ -62,7 +62,7 @@ export const PROPERTY_TYPE_DEFAULTS = {
     operation_style: 'managed'
   },
   camp: {
-    modules: ['bookings', 'rooms', 'guests', 'invoices', 'housekeeping', 'maintenance', 'day_use', 'events'],
+    modules: ['bookings', 'rooms', 'campsites', 'guests', 'invoices', 'housekeeping', 'maintenance', 'day_use', 'events'],
     operation_style: 'managed'
   },
   motel: {
@@ -101,9 +101,10 @@ export const OPERATION_STYLE_LABELS = {
 
 export function normalizePropertyType(propertyType) {
   const raw = String(propertyType || '').trim().toLowerCase()
-  if (raw === 'camp') return 'lodge'
+  // Keep camp as a first-class property type so campsite inventory and terminology work.
   if (PROPERTY_TYPES[raw]) return raw
   if (raw === 'lodge') return 'lodge'
+  if (raw === 'camp' || raw === 'campsite' || raw === 'camping') return 'camp'
   if (raw === 'guesthouse' || raw === 'guest_house') return 'guest_house'
   if (raw === 'bed_and_breakfast' || raw === 'bnb') return 'bnb'
   if (raw === 'motel') return 'motel'
@@ -135,6 +136,17 @@ export function isRestaurantOnly(propertyType) {
   return normalizePropertyType(propertyType) === 'restaurant'
 }
 
+export function isCampPropertyType(propertyType) {
+  return normalizePropertyType(propertyType) === 'camp'
+}
+
+export function supportsCampsites(propertyType, operatingProfile = null) {
+  if (isCampPropertyType(propertyType)) return true
+  const mix = operatingProfile?.accommodation_mix || operatingProfile?.campsite_profile
+  if (mix?.campsites === true || mix?.enabled === true) return true
+  return false
+}
+
 export const HOSPITALITY_MODES = Object.freeze({
   RESTAURANT_BAR: 'restaurant_bar',
   BAR_ONLY: 'bar_only'
@@ -146,12 +158,70 @@ export function normalizeHospitalityMode(value) {
 }
 
 export function getHospitalityMode(settingsOrProfile) {
-  const source = settingsOrProfile?.operating_profile || settingsOrProfile || {}
-  return normalizeHospitalityMode(source.hospitality_mode)
+  const root = settingsOrProfile && typeof settingsOrProfile === 'object' ? settingsOrProfile : {}
+  let nested = root.operating_profile
+  if (typeof nested === 'string') {
+    try { nested = JSON.parse(nested) } catch { nested = {} }
+  }
+  const source = nested && typeof nested === 'object' ? nested : {}
+  const packageKey = String(root.commercial_package_key || root.package_key || source.commercial_package_key || '').trim().toLowerCase()
+  if (packageKey === 'bar_pos') return HOSPITALITY_MODES.BAR_ONLY
+  const explicit = source.hospitality_mode || root.hospitality_mode || root.operating_mode
+  return explicit ? normalizeHospitalityMode(explicit) : HOSPITALITY_MODES.RESTAURANT_BAR
 }
 
 export function isBarOnlyMode(settingsOrProfile) {
   return getHospitalityMode(settingsOrProfile) === HOSPITALITY_MODES.BAR_ONLY
+}
+
+/**
+ * Explicit hospitality_mode already stored on a company (not the default fallback).
+ * Once set, restaurant_bar vs bar_only is a priced product choice and must not be
+ * operator-switchable in Settings or later profile edits.
+ */
+export function getExplicitHospitalityMode(settingsOrProfile) {
+  const root = settingsOrProfile && typeof settingsOrProfile === 'object' ? settingsOrProfile : {}
+  let source = root.operating_profile || root
+  if (typeof source === 'string') {
+    try { source = JSON.parse(source) } catch { source = {} }
+  }
+  const raw = source.hospitality_mode || root.hospitality_mode || root.operating_mode
+  if (raw == null || String(raw).trim() === '') return null
+  return normalizeHospitalityMode(raw)
+}
+
+/**
+ * Merge operating_profile patches while locking hospitality_mode after first set.
+ * First write may set the mode; subsequent writes always keep the existing mode.
+ */
+export function mergeOperatingProfileWithLockedHospitalityMode(nextProfile = {}, existingProfile = {}) {
+  const next = nextProfile && typeof nextProfile === 'object' ? { ...nextProfile } : {}
+  const existing = existingProfile && typeof existingProfile === 'object' ? existingProfile : {}
+  const locked = getExplicitHospitalityMode(existing)
+  const merged = { ...existing, ...next }
+  if (locked) {
+    merged.hospitality_mode = locked
+  } else if (next.hospitality_mode != null && String(next.hospitality_mode).trim() !== '') {
+    merged.hospitality_mode = normalizeHospitalityMode(next.hospitality_mode)
+  }
+  return merged
+}
+
+/**
+ * Resolve property_type for settings save.
+ * Product family is chosen by app + setup (Lodge / Hotel / POS). After setup is
+ * complete, Settings must not reclassify the business (e.g. lodge → hotel).
+ * First bootstrap / incomplete setup may still set the type from the payload.
+ */
+export function resolveLockedPropertyType(incomingSettings = {}, existingSettings = {}) {
+  const existingRaw = existingSettings?.property_type || existingSettings?.business_type || ''
+  const incomingRaw = incomingSettings?.property_type || incomingSettings?.business_type || ''
+  const existing = existingRaw ? normalizePropertyType(existingRaw) : null
+  const incoming = incomingRaw ? normalizePropertyType(incomingRaw) : null
+  const setupComplete = existingSettings?.setup_complete === true
+
+  if (setupComplete && existing) return existing
+  return incoming || existing || 'lodge'
 }
 
 export function getRelevantModules(propertyType, subscriptionPlan) {
@@ -162,7 +232,13 @@ export function getRelevantModules(propertyType, subscriptionPlan) {
     Starter: [],
     Standard: ['reports', 'expenses', 'staff', 'audit', 'conference', 'pool', 'import'],
     Pro: ['pos', 'inventory', 'supplies', 'pwa', 'online_booking'],
-    Enterprise: ['hotel_mode', 'room_types', 'physical_inventory', 'floors_sections', 'front_desk_dashboard', 'folios', 'advanced_housekeeping', 'hotel_kpis', 'corporate_accounts', 'rate_plans']
+    Enterprise: [
+      'hotel_mode', 'room_types', 'physical_inventory', 'floors_sections', 'room_attributes',
+      'front_desk_dashboard', 'folios', 'advanced_housekeeping', 'housekeeping_command_center',
+      'maintenance_enterprise', 'hotel_kpis', 'corporate_accounts', 'rate_plans', 'room_moves',
+      'checkin_workflow', 'early_late_checkout', 'cancellation_policies', 'night_audit_enterprise',
+      'documents', 'hotel_roles', 'subscription_builder'
+    ]
   }
   
   const planAdditions = planModules[subscriptionPlan] || []
@@ -204,12 +280,16 @@ const CAPACITY_LIMITS_DEFAULTS = {
   restaurant:  { rooms: 0,  users: 10, monthlyBookings: 0,   posOutlets: 3,  properties: 1 },
 }
 
-export function buildOperatingProfile(propertyType, subscriptionPlan = 'Starter', enterpriseAddons = []) {
+export function buildOperatingProfile(propertyType, subscriptionPlan = 'Starter', enterpriseAddons = [], options = {}) {
   const normalized = normalizePropertyType(propertyType)
   const defaults = getPropertyTypeDefaults(normalized)
   const relevantModules = getRelevantModules(normalized, subscriptionPlan)
   const hiddenModules = getHiddenModules(normalized, subscriptionPlan)
   const enabledModules = relevantModules.filter(m => !hiddenModules.includes(m))
+  const campsitesEnabled = options.campsitesEnabled === true || normalized === 'camp'
+  const hospitalityMode = options.hospitalityMode != null
+    ? normalizeHospitalityMode(options.hospitalityMode)
+    : (options.hospitality_mode != null ? normalizeHospitalityMode(options.hospitality_mode) : null)
 
   return {
     property_type: normalized,
@@ -219,6 +299,21 @@ export function buildOperatingProfile(propertyType, subscriptionPlan = 'Starter'
     hidden_modules: hiddenModules,
     subscription_plan: subscriptionPlan,
     enterprise_addons: enterpriseAddons,
+    ...(hospitalityMode ? { hospitality_mode: hospitalityMode } : {}),
+    accommodation_mix: {
+      rooms_or_units: options.roomsOrUnits !== false,
+      campsites: campsitesEnabled,
+      whole_property_exclusive_use: options.wholeProperty === true
+    },
+    campsite_profile: {
+      enabled: campsitesEnabled,
+      has_numbered_sites: campsitesEnabled,
+      has_powered_sites: campsitesEnabled,
+      has_unpowered_sites: campsitesEnabled,
+      supports_per_person_pricing: campsitesEnabled,
+      supports_per_site_pricing: campsitesEnabled,
+      supports_vehicle_or_tent_limits: campsitesEnabled
+    },
     capacity_limits: {
       rooms: CAPACITY_LIMITS_DEFAULTS[normalized]?.rooms ?? 1,
       users: CAPACITY_LIMITS_DEFAULTS[normalized]?.users ?? 10,

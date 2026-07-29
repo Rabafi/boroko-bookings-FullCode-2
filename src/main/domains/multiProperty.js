@@ -7,14 +7,20 @@ async function _getAllPropertyGroups() {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return []
   try {
-    const { data, error } = await state.supabase.rpc('rpc', { fn: 'get_all_property_groups', args: {} })
+    const { data, error } = await state.supabase.rpc('get_all_property_groups', {})
     if (error) throw error
-    const groups = data?.groups || []
+    const groups = data?.groups || (Array.isArray(data) ? data : [])
     writeCache(CACHE_KEY, groups)
     return groups
   } catch (e) {
     const cached = readCache(CACHE_KEY)
-    return Array.isArray(cached) ? cached : []
+    if (Array.isArray(cached) && cached.length > 0) {
+      const err = new Error(e?.message || 'Failed to load property groups; showing cached data')
+      err.code = 'STALE_CACHE'
+      err.cached = cached
+      throw err
+    }
+    throw e
   }
 }
 
@@ -245,12 +251,69 @@ async function _getGroupMemberLodges(groupId) {
 
 export const getGroupMemberLodges = (...args) => dedupePromise('getGroupMemberLodges', () => _getGroupMemberLodges(...args))
 
+/**
+ * Switch active property. Fail closed: never update local lodge scope when the
+ * server rejects the switch. Surfaces property isolation messaging on error.
+ */
 export async function switchActiveProperty(lodgeId) {
-  const { data: result, error } = await state.supabase.rpc('switch_active_property', {
-    p_lodge_id: state.lodgeId,
-    p_new_lodge_id: lodgeId
-  })
-  if (error) throw error
-  if (!result?.success) throw new Error(result?.error || 'Could not switch property')
-  return result
+  const currentLodgeId = state.lodgeId
+  if (!currentLodgeId) {
+    throw new Error('No active property selected. Cannot switch until the current property session is established.')
+  }
+  if (!lodgeId) {
+    throw new Error('Target property is required for switch.')
+  }
+  if (String(lodgeId) === String(currentLodgeId)) {
+    return {
+      success: true,
+      switched: false,
+      lodge_id: currentLodgeId,
+      message: 'Already on the selected property.'
+    }
+  }
+
+  let result
+  try {
+    const { data, error } = await state.supabase.rpc('switch_active_property', {
+      p_lodge_id: currentLodgeId,
+      p_new_lodge_id: lodgeId
+    })
+    if (error) throw error
+    result = data
+  } catch (e) {
+    const err = new Error(
+      e?.message
+      || 'Property switch failed. The active property was not changed (fail closed for lodge isolation).'
+    )
+    err.code = 'PROPERTY_SWITCH_FAILED'
+    err.current_lodge_id = currentLodgeId
+    err.target_lodge_id = lodgeId
+    throw err
+  }
+
+  if (!result?.success) {
+    const err = new Error(
+      result?.error
+      || 'Property switch was rejected. The active property was not changed to protect data isolation.'
+    )
+    err.code = 'PROPERTY_SWITCH_REJECTED'
+    err.current_lodge_id = currentLodgeId
+    err.target_lodge_id = lodgeId
+    throw err
+  }
+
+  // Only update local state after authoritative success.
+  const nextLodgeId = result.new_lodge_id || result.lodge_id || lodgeId
+  if (nextLodgeId) {
+    state.lodgeId = nextLodgeId
+  }
+
+  return {
+    ...result,
+    success: true,
+    switched: true,
+    previous_lodge_id: currentLodgeId,
+    lodge_id: nextLodgeId,
+    isolation_message: 'Property scope switched. All subsequent reads and writes use the selected lodge only.'
+  }
 }

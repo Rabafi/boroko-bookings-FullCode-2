@@ -1,26 +1,9 @@
+import { randomUUID } from 'crypto';
 import { state } from '../state.js';
 import { logActivity, dedupePromise, requireAdmin, refreshCache } from './infrastructure.js';
 import { normalizePlanName } from './subscriptionState.js';
 import { logAdminActivity } from './admin.js';
 import { buildSubscriptionCommercialDocument } from '../../shared/commercialPackages.js';
-
-const ADDON_FEATURE_MAP = {
-  corporate_accounts: ['corporate_accounts'],
-  rate_plans: ['rate_plans'],
-  custom_website: ['custom_website'],
-  payment_gateway: ['payment_gateway'],
-  channel_manager: ['channel_manager'],
-  advanced_housekeeping_mobile: ['advanced_housekeeping'],
-  guest_portal: ['guest_portal'],
-  multi_property: ['multi_property'],
-  advanced_rates: ['advanced_rates'],
-  linen_laundry: ['linen_laundry'],
-  lost_found: ['lost_found'],
-  incident_log: ['incident_log'],
-  visitor_register: ['visitor_register'],
-  emergency_list: ['emergency_list'],
-  multi_outlet_pos: ['multi_outlet_pos']
-};
 
 const DOCUMENT_STATUS = {
   quote: 'quoted',
@@ -32,6 +15,11 @@ function normalizeRow(row) {
   return {
     ...row,
     requested_addons: Array.isArray(row.requested_addons) ? row.requested_addons : [],
+    product_id: row.product_id || null,
+    commercial_package_key: row.commercial_package_key || null,
+    operating_profile: row.operating_profile || null,
+    commercial_catalog_version: row.commercial_catalog_version || null,
+    canonical_pricing_snapshot: row.canonical_pricing_snapshot || null,
     pricing_snapshot: row.pricing_snapshot || null,
     quote_payload: row.quote_payload || null,
     invoice_payload: row.invoice_payload || null,
@@ -54,6 +42,35 @@ function buildCommercialDocumentPayload(request, type, input = {}) {
 
 async function _submitSubscriptionRequest(request) {
   if (!state.supabase) throw new Error('Database not connected');
+
+  if (request?.product_id && request?.commercial_package_key) {
+    const customer = {
+      company_name: request.company_name || '',
+      property_name: request.property_name || '',
+      contact_name: request.contact_name || '',
+      contact_email: request.contact_email || '',
+      contact_phone: request.contact_phone || '',
+      country: request.country || '',
+      notes: request.notes || ''
+    };
+    const selection = {
+      product_id: request.product_id,
+      commercial_package_key: request.commercial_package_key,
+      selected_addon_keys: Array.isArray(request.requested_addons) ? request.requested_addons : [],
+      operating_profile: request.operating_profile || null,
+      property_type: request.property_type || null,
+      lodge_id: request.lodge_id || null,
+      current_plan: request.current_plan || null,
+      customer
+    };
+    const { data, error } = await state.supabase.rpc('submit_authenticated_commercial_quote_request', {
+      p_selection: selection,
+    });
+    if (error) throw new Error(error.message);
+    if (data?.success === false) throw new Error(data.error || 'Failed to submit commercial quote');
+    logActivity('subscription_request_submitted', `Commercial quote submitted: ${request.commercial_package_key}`);
+    return data;
+  }
 
   const { data, error } = await state.supabase.rpc('submit_subscription_request', {
     p_source: request.source || 'desktop_app',
@@ -144,67 +161,30 @@ async function _activateSubscriptionRequest(requestId, activatedBy = 'admin', ac
     : Array.isArray(request.requested_addons)
       ? request.requested_addons
       : [];
-
   if (!licenseId || !lodgeId) {
     throw new Error('Link this request to an existing license and lodge before activation.');
   }
 
-  const updatePayload = {
-    subscription_plan: plan,
-    payment_status: activationPayload?.payment_status || 'active',
-    notes: [
-      activationPayload?.notes || '',
-      `Activated from subscription request ${requestId} by ${activatedBy || state.currentUser?.email || 'admin'}.`
-    ].filter(Boolean).join('\n')
-  };
-
-  try {
-    const { data: updateResult, error: updateError } = await db.rpc('update_subscription_contract', {
-      p_license_id: licenseId,
-      p_payload: updatePayload
-    });
-    if (updateError) throw updateError;
-    if (updateResult?.success === false) throw new Error(updateResult.error || 'Could not update subscription contract');
-  } catch (error) {
-    const { error: fallbackError } = await db.from('licenses').update(updatePayload).eq('id', licenseId);
-    if (fallbackError) throw new Error(fallbackError.message || error.message);
-  }
-
-  const enabledFeatures = new Set();
-  for (const addon of addons) {
-    for (const feature of ADDON_FEATURE_MAP[addon] || []) enabledFeatures.add(feature);
-  }
-
-  for (const feature of enabledFeatures) {
-    const { error } = await db.from('lodge_features').upsert({
-      lodge_id: lodgeId,
-      feature_name: feature,
-      enabled: true,
-      reason: `Activated from subscription request ${requestId}`,
-      granted_by: state.currentUser?.id || null,
-      granted_at: new Date().toISOString(),
-      updated_at: new Date().toISOString()
-    }, { onConflict: 'lodge_id,feature_name' });
-    if (error) throw new Error(error.message);
-  }
-
   const finalActivationPayload = {
     ...(activationPayload || {}),
+    operation_id: activationPayload?.operation_id || randomUUID(),
+    request_id: requestId,
     license_id: licenseId,
     lodge_id: lodgeId,
     plan,
     enterprise_addons: addons,
-    effective_features: Object.fromEntries([...enabledFeatures].map((feature) => [feature, true])),
+    product_id: request.product_id || null,
+    commercial_package_key: request.commercial_package_key || null,
+    commercial_catalog_version: request.commercial_catalog_version || null,
+    activation_reason: activationPayload?.activation_reason || `Governed activation of subscription request ${requestId}`,
     activated_by: activatedBy || state.currentUser?.email || 'admin',
     related_request_id: requestId,
     related_invoice_number: activationPayload?.related_invoice_number || request.invoice_payload?.document_number || null,
     activated_at: new Date().toISOString()
   };
 
-  const { data, error } = await db.rpc('activate_subscription_request', {
-    p_request_id: requestId,
-    p_activated_by: activatedBy || state.currentUser?.email || 'admin',
-    p_activation_payload: finalActivationPayload
+  const { data, error } = await db.rpc('admin_governed_activate_subscription_request', {
+    p_payload: finalActivationPayload
   });
 
   if (error) throw new Error(error.message);
@@ -261,6 +241,30 @@ async function _createSubscriptionRequestDocument(requestId, type = 'quote', doc
 
 async function _submitPublicSubscriptionRequest(request) {
   if (!state.supabase) throw new Error('Database not connected');
+
+  if (request?.product_id && request?.commercial_package_key) {
+    const { data, error } = await state.supabase.rpc('submit_public_commercial_quote_request', {
+      p_selection: {
+        product_id: request.product_id,
+        commercial_package_key: request.commercial_package_key,
+        selected_addon_keys: Array.isArray(request.requested_addons) ? request.requested_addons : [],
+        operating_profile: request.operating_profile || null,
+        property_type: request.property_type || null
+      },
+      p_customer: {
+        company_name: request.company_name || '',
+        property_name: request.property_name || '',
+        contact_name: request.contact_name || '',
+        contact_email: request.contact_email || '',
+        contact_phone: request.contact_phone || '',
+        country: request.country || '',
+        notes: request.notes || ''
+      }
+    });
+    if (error) throw new Error(error.message);
+    if (data?.success === false) throw new Error(data.error || 'Failed to submit commercial quote');
+    return data;
+  }
 
   const { data, error } = await state.supabase.rpc('submit_public_subscription_request', {
     p_company_name: request.company_name || '',

@@ -49,11 +49,17 @@ export default function GuestPayment() {
     try {
       const { data, error: rpcErr } = await rpc('request_payment_link', { p_token: token })
       if (rpcErr) { setRequestError(rpcErr.message); return }
-      if (!data || data.success === false) { setRequestError(data?.error || 'Could not generate payment link.'); return }
+      if (!data || data.success === false) {
+        setRequestError(
+          data?.error
+          || 'Online payment links are not enabled for this property yet. Please pay at the property or contact the front desk.'
+        )
+        return
+      }
       if (data.payment_url) {
         setPaymentLink(data.payment_url)
       } else {
-        setRequestError('Payment link was not returned.')
+        setRequestError('Online payment links are not available. Please pay at the property or contact the front desk.')
       }
     } catch (e) {
       setRequestError(e.message || 'Network error.')
@@ -100,7 +106,7 @@ export default function GuestPayment() {
       {hasBalance && (
         <div className="surface-card rounded-[20px] border border-[var(--line)] p-5 text-center">
           <p className="mb-4 text-sm leading-relaxed text-[var(--muted)]">
-            A payment link will be sent to your email on file. You can use it to pay your outstanding balance securely online.
+            Outstanding balances are settled with the property. Online payment links are only available when the property has enabled them.
           </p>
 
           {requestError && (

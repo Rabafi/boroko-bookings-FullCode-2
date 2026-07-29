@@ -13,6 +13,22 @@ const bookingBase = process.env.BOOKING_URL || 'http://127.0.0.1:5175'
 const mediaBase = process.env.MEDIA_URL || 'http://127.0.0.1:4173'
 const desktopBase = process.env.DESKTOP_RENDERER_URL || 'http://127.0.0.1:5176'
 
+async function resolveChromiumExecutable() {
+  const preferred = chromium.executablePath()
+  if (fs.existsSync(preferred)) return preferred
+  const browserRoot = path.join(process.env.LOCALAPPDATA || '', 'ms-playwright')
+  const pending = [browserRoot]
+  while (pending.length) {
+    const directory = pending.pop()
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const target = path.join(directory, entry.name)
+      if (entry.isDirectory()) pending.push(target)
+      else if (entry.name.toLowerCase() === 'chrome.exe' && target.includes('chromium-')) return target
+    }
+  }
+  throw new Error('No installed Playwright Chromium executable was found.')
+}
+
 const lodgeId = '00000000-0000-4000-8000-000000000001'
 const today = new Date()
 const iso = (offset) => {
@@ -537,7 +553,17 @@ async function prepareDesktop(page) {
 
 async function captureDesktop(page, route, fileName) {
   await page.goto(`${desktopBase}/#${route}`, { waitUntil: 'domcontentloaded' })
-  await page.waitForSelector('h1', { timeout: 20000 })
+  try {
+    await page.waitForSelector('h1', { timeout: Number(process.env.CAPTURE_TIMEOUT_MS) || 20000 })
+  } catch (error) {
+    await fs.promises.mkdir(path.join(root, 'tmp'), { recursive: true })
+    await page.screenshot({ path: path.join(root, 'tmp', 'marketing-capture-desktop-error.png'), fullPage: false }).catch((screenshotError) => {
+      console.error('[desktop screenshot failed]', screenshotError.message)
+    })
+    const bodyText = await page.locator('body').innerText().catch(() => '')
+    const rootHtml = await page.locator('#root').innerHTML().catch(() => '')
+    throw new Error(`Desktop capture did not render ${route}. Body: ${bodyText.slice(0, 1000)} Root: ${rootHtml.slice(0, 2000)}`, { cause: error })
+  }
   await page.waitForTimeout(2600)
   await page.screenshot({ path: path.join(outDir, fileName), fullPage: false })
 }
@@ -647,7 +673,7 @@ async function captureBooking(page) {
   await page.fill('input[type="date"]', iso(7))
   const dateInputs = await page.$$('input[type="date"]')
   if (dateInputs[1]) await dateInputs[1].fill(iso(9))
-  await page.getByRole('button', { name: /search rooms/i }).click()
+  await page.getByRole('button', { name: /search rooms|search availability/i }).click()
   await page.waitForSelector('text=room ready for your dates, text=rooms ready for your dates', { timeout: 15000 }).catch(() => {})
   await page.waitForTimeout(1200)
 
@@ -674,13 +700,21 @@ async function main() {
   const pwaServer = await startStaticServer(path.join(root, 'manager-pwa', 'dist'), Number(pwaUrl.port || 5174))
   const bookingServer = await startStaticServer(path.join(root, 'booking-site', 'dist'), Number(bookingUrl.port || 5175))
   const mediaServer = await startStaticServer(path.join(root, 'marketing-site'), Number(mediaUrl.port || 4173))
-  const browser = await chromium.launch({ headless: true, channel: 'msedge' })
+  const browser = await chromium.launch({ headless: true, executablePath: await resolveChromiumExecutable() })
   try {
     const desktopContext = await browser.newContext({
       viewport: { width: 1920, height: 993 },
       deviceScaleFactor: 1
     })
     const desktop = await desktopContext.newPage()
+    desktop.on('pageerror', (error) => console.error('[desktop pageerror]', error.message))
+    desktop.on('console', (message) => {
+      if (message.type() === 'error') console.error('[desktop console]', message.text())
+    })
+    desktop.on('requestfailed', (request) => console.error('[desktop request failed]', request.url(), request.failure()?.errorText))
+    desktop.on('response', (response) => {
+      if (response.status() >= 400) console.error('[desktop response]', response.status(), response.url())
+    })
     await prepareDesktop(desktop)
     await captureDesktop(desktop, '/', 'desktop-dashboard.png')
     await captureDesktop(desktop, '/bookings', 'desktop-bookings.png')

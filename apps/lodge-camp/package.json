@@ -1,8 +1,8 @@
 {
-  "name": "@boroko/lodge-camp",
+  "name": "@tsa-bonno/lodging-os",
   "version": "0.1.0",
   "private": true,
-  "description": "Boroko Lodge & Camp product",
+  "description": "Tsa Bonno LodgingOS product",
   "scripts": {
     "dev": "node ../../scripts/product-app.mjs lodge-camp dev",
     "build": "node ../../scripts/product-app.mjs lodge-camp build",

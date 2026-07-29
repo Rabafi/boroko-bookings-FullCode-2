@@ -211,7 +211,7 @@ export function createLegacyMeshController({
       warnings: [
         ...(mesh.localInterfaces.length === 0 ? ['No active private lodge network was found.'] : []),
         ...(mesh.running && mesh.peers.size === 0
-          ? ['No nearby Boroko devices found. Check extender client isolation, Windows Firewall, or add the other device IP manually.']
+          ? ['No nearby Tsa Bonno devices found. Check extender client isolation, Windows Firewall, or add the other device IP manually.']
           : []),
         ...[...mesh.peers.values()]
           .filter((peer) => peer.sameSubnet === false)
@@ -429,7 +429,7 @@ export function createLegacyMeshController({
       if (messages.some((message) => /timestamp drift|clock/i.test(message))) {
         throw new Error(`The clock on ${address} differs too much. Correct the date and time on both computers, then try again.`);
       }
-      throw new Error(`No Boroko device responded at ${address}. Check Windows Firewall and extender client isolation.`);
+      throw new Error(`No Tsa Bonno device responded at ${address}. Check Windows Firewall and extender client isolation.`);
     }
   }
 

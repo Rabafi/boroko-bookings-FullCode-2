@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { Plus, Pencil, Trash2, BedDouble, Image, X, ChevronLeft, ChevronRight, Calendar, RefreshCw, Lock } from 'lucide-react'
+import { Plus, Pencil, Trash2, BedDouble, Image, X, ChevronLeft, ChevronRight, Calendar, RefreshCw, Lock, TentTree, Zap } from 'lucide-react'
 import { StatusBadge } from './shared/StatusBadge'
 import { Modal } from './shared/Modal'
 import { ConfirmDialog } from './shared/ConfirmDialog'
@@ -11,13 +11,18 @@ import UsageUpgradePrompt from './shared/UpgradePromptModal'
 import UpgradeNudgeBanner from './shared/UpgradeNudgeBanner'
 import { useAccess, useSettings, useFeatures } from '../app-context'
 import { MONTHLY_USAGE_RESET_COPY, canCreateRoom, getEarlyUpgradePromptState, getPlanUsageLimits, normalizeSubscriptionPlan } from '../../../shared/subscriptionPlans'
+import { getAccommodationInventoryLabel, getAccommodationKindLabel, isCampsiteUnit, ACCOMMODATION_KIND_LABELS, RATE_MODE_LABELS } from '../../../shared/accommodation'
+import { isCampPropertyType, normalizePropertyType } from '../../../shared/propertyTypes'
+import { getUiVocabulary } from '../../../shared/uiVocabulary'
 import { formatLocalDate } from '../utils/localDate'
 import RoomTypes from './RoomTypes'
 import FloorsSections from './FloorsSections'
 import RoomAttributes from './RoomAttributes'
 
-const ROOM_TYPES = ['Single', 'Double', 'Twin', 'Suite', 'Family', 'Deluxe']
+const ROOM_TYPES = ['Single', 'Double', 'Twin', 'Suite', 'Family', 'Deluxe', 'Campsite', 'Powered site', 'Unpowered site', 'Cabin', 'Chalet']
 const STATUSES = ['available', 'occupied', 'maintenance', 'reserved']
+const ACCOMMODATION_KINDS = Object.entries(ACCOMMODATION_KIND_LABELS)
+const RATE_MODES = Object.entries(RATE_MODE_LABELS)
 
 const MAX_PHOTOS = 5
 
@@ -34,7 +39,19 @@ const emptyForm = {
   maintenance_priority: 'medium',
   description: '',
   photos: [],
-  amenities: []
+  amenities: [],
+  accommodation_kind: 'room',
+  capacity_adults: 2,
+  capacity_children: 0,
+  max_tents: 1,
+  max_vehicles: 1,
+  is_powered: false,
+  site_surface: '',
+  shared_facilities: false,
+  rate_mode: 'site',
+  rate_per_person: '',
+  rate_per_tent: '',
+  rate_per_vehicle: ''
 }
 
 export default function Rooms() {
@@ -56,8 +73,12 @@ export default function Rooms() {
     setSearchParams({ tab: key }, { replace: true })
   }
 
+  const { settings } = useSettings()
+  const propertyType = normalizePropertyType(settings?.property_type || settings?.business_type || 'lodge')
+  const inventoryLabel = getAccommodationInventoryLabel(propertyType, { plural: true })
+
   const TABS = [
-    ['rooms', 'Rooms'],
+    ['rooms', inventoryLabel],
     ...(hasRoomTypes ? [['room-types', 'Room Types']] : []),
     ...(hasFloorsSections ? [['floors-sections', 'Floors & Sections']] : []),
     ...(hasRoomAttributes ? [['attributes', 'Attributes']] : []),
@@ -69,7 +90,12 @@ export default function Rooms() {
       <div className="bb-page-header">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.22em] text-emerald-700/70">Property Configuration</p>
-          <h1 className="bb-page-header-title mt-2">Rooms</h1>
+          <h1 className="bb-page-header-title mt-2">{inventoryLabel}</h1>
+          {isCampPropertyType(propertyType) && (
+            <p className="bb-page-header-subtitle mt-1">
+              Manage campsites, powered/unpowered pitches, tents, and any rooms or cabins on the same property.
+            </p>
+          )}
         </div>
       </div>
 
@@ -251,7 +277,19 @@ function RoomsTab() {
       maintenance_priority: 'medium',
       description: room.description || '',
       photos,
-      amenities: Array.isArray(room.amenities) ? room.amenities : []
+      amenities: Array.isArray(room.amenities) ? room.amenities : [],
+      accommodation_kind: room.accommodation_kind || 'room',
+      capacity_adults: room.capacity_adults || room.max_occupancy || 2,
+      capacity_children: room.capacity_children ?? 0,
+      max_tents: room.max_tents ?? 1,
+      max_vehicles: room.max_vehicles ?? 1,
+      is_powered: room.is_powered === true,
+      site_surface: room.site_surface || '',
+      shared_facilities: room.shared_facilities === true,
+      rate_mode: room.rate_mode || 'site',
+      rate_per_person: room.rate_per_person ?? '',
+      rate_per_tent: room.rate_per_tent ?? '',
+      rate_per_vehicle: room.rate_per_vehicle ?? ''
     })
     setError('')
     setShowModal(true)
@@ -263,8 +301,17 @@ function RoomsTab() {
     setError('')
     const data = {
       ...form,
-      rate_per_night: parseFloat(form.rate_per_night),
-      max_occupancy: parseInt(form.max_occupancy),
+      rate_per_night: parseFloat(form.rate_per_night) || 0,
+      max_occupancy: parseInt(form.max_occupancy || form.capacity_adults || 2, 10),
+      capacity_adults: parseInt(form.capacity_adults || form.max_occupancy || 2, 10),
+      capacity_children: parseInt(form.capacity_children || 0, 10),
+      max_tents: form.accommodation_kind === 'campsite' ? parseInt(form.max_tents || 1, 10) : null,
+      max_vehicles: form.accommodation_kind === 'campsite' ? parseInt(form.max_vehicles || 1, 10) : null,
+      is_powered: form.is_powered === true,
+      shared_facilities: form.shared_facilities === true,
+      rate_per_person: parseFloat(form.rate_per_person) || 0,
+      rate_per_tent: parseFloat(form.rate_per_tent) || 0,
+      rate_per_vehicle: parseFloat(form.rate_per_vehicle) || 0,
       amenities: Array.isArray(form.amenities) ? form.amenities.filter(Boolean) : [],
       room_type_id: form.room_type_id || null,
       floor_section_id: form.floor_section_id || null
@@ -335,10 +382,11 @@ function RoomsTab() {
     limits: usageLimits
   })
   const showRoomEarlyPrompt = !isProPlan && !roomLimitStatus.isBlocked && roomEarlyPrompt.shouldPrompt
+  const vocab = getUiVocabulary({ settings })
   const roomLimitMessage = roomLimitStatus.isAbovePlan
-    ? `This lodge is above the ${usageSnapshot?.plan || access?.entitlement?.plan || 'Starter'} plan limits. Existing records remain available, but new records are restricted until usage is reduced or the plan is upgraded.`
+    ? `${vocab.thisNoun[0].toUpperCase()}${vocab.thisNoun.slice(1)} is above the ${usageSnapshot?.plan || access?.entitlement?.plan || 'Starter'} plan limits. Existing records remain available, but new records are restricted until usage is reduced or the plan is upgraded.`
     : roomLimitStatus.isBlocked
-      ? `Room creation is restricted because this lodge has reached the ${usageSnapshot?.plan || access?.entitlement?.plan || 'Starter'} room limit.`
+      ? `Room creation is restricted because ${vocab.thisNoun} has reached the ${usageSnapshot?.plan || access?.entitlement?.plan || 'Starter'} room limit.`
       : ''
   const roomViews = [
     { value: 'all', label: 'All' },
@@ -478,16 +526,37 @@ function RoomsTab() {
         >
           <form onSubmit={handleSave} className="space-y-4">
             <div className="grid grid-cols-2 gap-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
-              <Field label="Room Number" required helper="Use the label staff will recognise quickly at the front desk, for example 101 or Chalet 3.">
+              <Field label="Number / Code" required helper="Front-desk label, for example 101, Site A12, or Chalet 3.">
                 <input
                   className="input"
                   value={form.room_number}
                   onChange={(e) => setForm({ ...form, room_number: e.target.value })}
-                  placeholder="e.g. 101"
+                  placeholder={form.accommodation_kind === 'campsite' ? 'e.g. A12' : 'e.g. 101'}
                   required
                 />
               </Field>
-              <Field label="Room Type" required helper="This helps bookings, reports, and staff quickly understand the room category.">
+              <Field label="Accommodation kind" required helper="Campsites, tents, cabins/units, or standard rooms.">
+                <select
+                  className="input"
+                  value={form.accommodation_kind}
+                  onChange={(e) => {
+                    const kind = e.target.value
+                    setForm({
+                      ...form,
+                      accommodation_kind: kind,
+                      room_type: kind === 'campsite' && !String(form.room_type || '').toLowerCase().includes('site')
+                        ? (form.is_powered ? 'Powered site' : 'Campsite')
+                        : form.room_type,
+                      rate_mode: kind === 'campsite' ? (form.rate_mode || 'site') : form.rate_mode
+                    })
+                  }}
+                >
+                  {ACCOMMODATION_KINDS.map(([value, label]) => (
+                    <option key={value} value={value}>{label}</option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Type / category" required helper="Helps bookings, reports, and staff recognise the category.">
                 <select
                   className="input"
                   value={form.room_type}
@@ -511,7 +580,7 @@ function RoomsTab() {
                   }
                 </select>
               </Field>
-              <Field label="Floor / Section" helper="Optional Enterprise hotel structure for grouping rooms by building, wing, floor, or section.">
+              <Field label="Floor / Section" helper="Optional structure for grouping units by building, wing, floor, or section.">
                 <select
                   className="input"
                   value={form.floor_section_id || ''}
@@ -525,7 +594,18 @@ function RoomsTab() {
                   ))}
                 </select>
               </Field>
-              <Field label="Rate Per Night (P)" required helper="Standard nightly selling price used when new bookings are estimated and created.">
+              <Field label="Rate mode" helper="How this unit is priced for stays.">
+                <select
+                  className="input"
+                  value={form.rate_mode}
+                  onChange={(e) => setForm({ ...form, rate_mode: e.target.value })}
+                >
+                  {RATE_MODES.map(([value, label]) => (
+                    <option key={value} value={value}>{label}</option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Base rate / night (P)" required helper="Site/unit base rate. Used for site and composite pricing.">
                 <input
                   type="number"
                   min="0"
@@ -537,16 +617,114 @@ function RoomsTab() {
                   required
                 />
               </Field>
-              <Field label="Max Occupancy" helper="Maximum number of guests this room should comfortably hold.">
+              {(form.rate_mode === 'person' || form.rate_mode === 'composite') && (
+                <Field label="Rate per person / night (P)">
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    className="input"
+                    value={form.rate_per_person}
+                    onChange={(e) => setForm({ ...form, rate_per_person: e.target.value })}
+                  />
+                </Field>
+              )}
+              {(form.rate_mode === 'tent' || form.rate_mode === 'composite') && (
+                <Field label="Rate per tent / night (P)">
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    className="input"
+                    value={form.rate_per_tent}
+                    onChange={(e) => setForm({ ...form, rate_per_tent: e.target.value })}
+                  />
+                </Field>
+              )}
+              {(form.rate_mode === 'vehicle' || form.rate_mode === 'composite') && (
+                <Field label="Rate per vehicle / night (P)">
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    className="input"
+                    value={form.rate_per_vehicle}
+                    onChange={(e) => setForm({ ...form, rate_per_vehicle: e.target.value })}
+                  />
+                </Field>
+              )}
+              <Field label="Adult capacity" helper="Maximum adults for this unit/site.">
                 <input
                   type="number"
                   min="1"
-                  max="20"
+                  max="40"
                   className="input"
-                  value={form.max_occupancy}
-                  onChange={(e) => setForm({ ...form, max_occupancy: e.target.value })}
+                  value={form.capacity_adults}
+                  onChange={(e) => setForm({
+                    ...form,
+                    capacity_adults: e.target.value,
+                    max_occupancy: e.target.value
+                  })}
                 />
               </Field>
+              <Field label="Children capacity">
+                <input
+                  type="number"
+                  min="0"
+                  max="40"
+                  className="input"
+                  value={form.capacity_children}
+                  onChange={(e) => setForm({ ...form, capacity_children: e.target.value })}
+                />
+              </Field>
+              {form.accommodation_kind === 'campsite' && (
+                <>
+                  <Field label="Max tents">
+                    <input
+                      type="number"
+                      min="0"
+                      max="20"
+                      className="input"
+                      value={form.max_tents}
+                      onChange={(e) => setForm({ ...form, max_tents: e.target.value })}
+                    />
+                  </Field>
+                  <Field label="Max vehicles">
+                    <input
+                      type="number"
+                      min="0"
+                      max="20"
+                      className="input"
+                      value={form.max_vehicles}
+                      onChange={(e) => setForm({ ...form, max_vehicles: e.target.value })}
+                    />
+                  </Field>
+                  <Field label="Site surface">
+                    <input
+                      className="input"
+                      value={form.site_surface}
+                      onChange={(e) => setForm({ ...form, site_surface: e.target.value })}
+                      placeholder="e.g. grass, gravel, hardstand"
+                    />
+                  </Field>
+                  <label className="flex items-center gap-2 text-sm text-slate-700 pt-6">
+                    <input
+                      type="checkbox"
+                      checked={form.is_powered === true}
+                      onChange={(e) => setForm({ ...form, is_powered: e.target.checked })}
+                    />
+                    Powered site
+                  </label>
+                  <label className="flex items-center gap-2 text-sm text-slate-700 pt-6">
+                    <input
+                      type="checkbox"
+                      checked={form.shared_facilities === true}
+                      onChange={(e) => setForm({ ...form, shared_facilities: e.target.checked })}
+                    />
+                    Shared ablutions / facilities
+                  </label>
+                </>
+              )}
             </div>
             <Field label="Status" helper="Available means ready to sell, Occupied means a guest is currently staying, Maintenance blocks the room from new bookings, and Reserved is useful for manual holding.">
               <select
@@ -748,7 +926,7 @@ function RoomsTab() {
         limit={usageLimits.rooms}
         grace={0}
         status={roomLimitStatus}
-        message={roomLimitMessage || `Upgrade to add more rooms for this lodge.`}
+        message={roomLimitMessage || `Upgrade to add more rooms for ${vocab.thisNoun}.`}
         usage={usageSnapshot?.usage}
         recommendation={usageSnapshot?.recommendation}
         lodgeName={usageSnapshot?.lodge_name || settings?.lodge_name || settings?.company_name || ''}
@@ -1117,16 +1295,30 @@ function RoomCard({ room, activeRate, meshLocks = [], compact = false, onSelect,
   const coverPhoto = (Array.isArray(room.photos) && room.photos[0]) || room.photo || null
   const showingOverride = activeRate && Number(activeRate.rate_per_night) !== Number(room.rate_per_night)
   const isHeld = meshLocks.length > 0
+  const kindLabel = getAccommodationKindLabel(room.accommodation_kind)
+  const campsite = isCampsiteUnit(room)
   return (
     <div className="bb-card overflow-hidden transition-shadow hover:shadow-[0_18px_45px_rgba(15,23,42,0.12)]">
       {coverPhoto && (
-        <img src={coverPhoto} alt={`Room ${room.room_number}`} className="w-full h-32 object-cover" />
+        <img src={coverPhoto} alt={`${kindLabel} ${room.room_number}`} className="w-full h-32 object-cover" />
       )}
       <div className={compact ? 'p-4' : 'p-5'}>
       <div className="mb-4 flex items-start justify-between gap-3">
         <div>
-          <p className="text-lg font-bold tracking-[-0.02em] text-slate-800">Room {room.room_number}</p>
+          <p className="text-lg font-bold tracking-[-0.02em] text-slate-800">{kindLabel} {room.room_number}</p>
           <p className="text-sm text-slate-500">{room.room_type}</p>
+          <div className="mt-1 flex flex-wrap gap-1">
+            {campsite && (
+              <span className="inline-flex items-center gap-1 rounded-full border border-emerald-100 bg-emerald-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-emerald-700">
+                <TentTree size={10} /> Campsite
+              </span>
+            )}
+            {room.is_powered && (
+              <span className="inline-flex items-center gap-1 rounded-full border border-amber-100 bg-amber-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-700">
+                <Zap size={10} /> Powered
+              </span>
+            )}
+          </div>
         </div>
         <div className="flex flex-col items-end gap-1.5">
           <StatusBadge status={room.status} />
@@ -1157,8 +1349,19 @@ function RoomCard({ room, activeRate, meshLocks = [], compact = false, onSelect,
         </div>
         <div className="flex items-center justify-between gap-4">
           <span className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">Capacity</span>
-          <span className="font-semibold text-slate-800">{room.max_occupancy} guests</span>
+          <span className="font-semibold text-slate-800">
+            {room.capacity_adults || room.max_occupancy} adults
+            {Number(room.capacity_children) > 0 ? ` + ${room.capacity_children} children` : ''}
+          </span>
         </div>
+        {campsite && (
+          <div className="flex items-center justify-between gap-4">
+            <span className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">Site limits</span>
+            <span className="font-semibold text-slate-800">
+              {room.max_tents || 0} tents · {room.max_vehicles || 0} vehicles
+            </span>
+          </div>
+        )}
           {!compact && room.description && <p className="border-t border-slate-200 pt-2 text-xs italic text-slate-500">{room.description}</p>}
         </div>
       {!compact && Array.isArray(room.amenities) && room.amenities.length > 0 && (

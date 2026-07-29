@@ -279,7 +279,7 @@ async function run() {
   assert.match(bookingInvoices, /refund_settled !== true/, 'Invoice refund visibility must depend on refund settlement state')
   assert.doesNotMatch(bookingInvoices, /status === 'cancelled' && Number\(invoice\.amount_paid \|\| 0\) > 0\.01 && invoice\.payment_status !== 'paid'/, 'Paid cancelled invoices must still expose refund actions before settlement')
   assert.match(bookingInvoices, /settlement_mode: 'customer_credit'/, 'Refund modal must expose customer-credit settlement mode')
-  assert.match(bookingInvoices, /No cash leaves the lodge/, 'Credit-transfer mode must clearly distinguish credit from external refunds')
+  assert.match(bookingInvoices, /No cash leaves the (lodge|property)/, 'Credit-transfer mode must clearly distinguish credit from external refunds')
   assert.match(bookingInvoices, /method: transferToCredit \? 'customer_credit_transfer' : form\.method/, 'Refund modal must send customer-credit transfer method when selected')
   assert.match(bookingInvoices, /result\?\.pending_approval/, 'Refund modal must keep offline refund requests separate from approved refunds')
   assert.match(bookingInvoices, /required=\{!isOffline\}/, 'Refund modal must require manager PIN only for live approval')

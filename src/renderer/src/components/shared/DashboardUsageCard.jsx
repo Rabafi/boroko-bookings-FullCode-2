@@ -9,6 +9,10 @@ import {
   trackUpgradeIntent,
   normalizeSubscriptionPlan
 } from '../../../../shared/subscriptionPlans'
+import { getProductDefinition, getRuntimeProductId } from '../../../../shared/productIdentity'
+
+const BUILD_PRODUCT = getProductDefinition(getRuntimeProductId())
+const IS_CAPACITYLESS_PRODUCT = BUILD_PRODUCT.id === 'hotel' || BUILD_PRODUCT.id === 'hospitality-pos'
 
 export default function DashboardUsageCard({
   plan = 'Starter',
@@ -21,6 +25,29 @@ export default function DashboardUsageCard({
   trigger = 'dashboard'
 } = {}) {
   const currentPlan = normalizeSubscriptionPlan(plan)
+  if (IS_CAPACITYLESS_PRODUCT) {
+    return (
+      <section className="bb-card overflow-hidden border border-slate-200 bg-white">
+        <div className="flex flex-wrap items-start justify-between gap-4 px-5 py-5">
+          <div className="min-w-0">
+            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-500">Product access</p>
+            <h2 className="mt-2 text-xl font-semibold text-slate-900">
+              {BUILD_PRODUCT.id === 'hotel' ? 'Hotel Core' : 'Commercial POS'}
+            </h2>
+            <p className="mt-1 text-sm text-slate-500">
+              {BUILD_PRODUCT.id === 'hotel'
+                ? 'Configured through Hotel Core and optional services.'
+                : 'Feature-bundle access with no LodgingOS capacity limits.'}
+            </p>
+          </div>
+          <span className="inline-flex items-center rounded-full border border-slate-300 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-700">
+            <CheckCircle2 size={14} className="mr-1" />
+            Package access enabled
+          </span>
+        </div>
+      </section>
+    )
+  }
   const limits = getPlanUsageLimits(currentPlan)
   const currentLimits = formatPlanLimits(currentPlan)
   const bookingsUsed = Number(usage?.monthlyBookings ?? 0)
