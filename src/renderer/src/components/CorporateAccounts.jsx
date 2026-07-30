@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, lazy, Suspense } from 'react'
 import { Plus, Pencil, Trash2, Building2, AlertTriangle, RefreshCw, Phone, Mail, MapPin } from 'lucide-react'
-import { useSearchParams } from 'react-router-dom'
+import { useSearchParams } from 'react-router'
 import { Modal } from './shared/Modal'
 import { ConfirmDialog } from './shared/ConfirmDialog'
 

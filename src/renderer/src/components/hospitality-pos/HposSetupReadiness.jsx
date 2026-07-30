@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { CheckCircle2, Circle, ClipboardCheck, ExternalLink, RefreshCw } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { HposButton, HposNotice, HposPageHero, HposStatusBadge } from './HposUi';
 import { useSettings } from '../../app-context';
 import { isBarOnlyMode } from '../../../../shared/propertyTypes';

@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { BrowserRouter, useLocation } from 'react-router-dom'
+import { BrowserRouter, useLocation } from 'react-router'
 import AppRoutes from './AppRoutes.jsx'
 
 /**

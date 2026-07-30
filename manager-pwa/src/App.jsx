@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, lazy, Suspense, createContext, useContext, useMemo } from 'react'
-import { HashRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom'
+import { HashRouter, Navigate, Route, Routes, useLocation } from 'react-router'
 import { Bell, Download, Moon, RefreshCw, Sun, X } from 'lucide-react'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { FeaturesProvider, useFeatures } from './contexts/FeaturesContext'

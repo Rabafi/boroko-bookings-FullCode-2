@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import { BedDouble, ChevronRight, ClipboardCheck, LogIn, LogOut, RefreshCw, Users } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { listBookings, listRooms } from '../lib/api'

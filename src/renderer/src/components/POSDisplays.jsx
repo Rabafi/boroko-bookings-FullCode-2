@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router'
 import { ArrowLeft, Check, Clock, Monitor, RefreshCw, Utensils, X } from 'lucide-react'
 import { useSettings } from '../app-context'
 import { isRestaurantOnly } from '../../../shared/propertyTypes'

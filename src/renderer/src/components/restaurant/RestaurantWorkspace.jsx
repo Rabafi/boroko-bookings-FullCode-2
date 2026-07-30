@@ -1,5 +1,5 @@
 import { Component, useMemo } from 'react'
-import { NavLink, useSearchParams } from 'react-router-dom'
+import { NavLink, useSearchParams } from 'react-router'
 import {
   AlertTriangle,
   Boxes,

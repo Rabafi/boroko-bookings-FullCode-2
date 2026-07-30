@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Navigate, Outlet, useLocation, useNavigate, useNavigationType } from 'react-router-dom';
+import { Navigate, Outlet, useLocation, useNavigate, useNavigationType } from 'react-router';
 import {
   Grid3X3,
   UtensilsCrossed,

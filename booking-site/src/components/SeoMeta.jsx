@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { useLocation } from 'react-router-dom'
+import { useLocation } from 'react-router'
 
 /**
  * SeoMeta — injects per-page SEO tags into <head> via runtime DOM manipulation.

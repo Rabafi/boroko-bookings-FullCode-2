@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { ArrowRight, Banknote, CircleDollarSign, CreditCard, HandCoins, RefreshCw, WalletCards } from 'lucide-react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router'
 import { useSettings } from '../../app-context'
 
 const today = () => new Date().toISOString().slice(0, 10)

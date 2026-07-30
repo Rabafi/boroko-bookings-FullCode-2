@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, useCallback } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useSearchParams } from 'react-router'
 import { useAuth } from '../contexts/AuthContext'
 import { CalendarClock, RefreshCw, Search, X } from 'lucide-react'
 import { format, parseISO } from 'date-fns'

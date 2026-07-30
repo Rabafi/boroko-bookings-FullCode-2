@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useContext } from 'react'
-import { Outlet, NavLink, useLocation, useNavigate } from 'react-router-dom'
+import { Outlet, NavLink, useLocation, useNavigate } from 'react-router'
 import { useAuth, useSettings, useAccess, useOnlineRequests, UnsavedChangesContext } from '../app-context'
 import {
   LogOut,

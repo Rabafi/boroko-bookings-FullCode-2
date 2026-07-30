@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ArrowRight, Clock3, LayoutGrid, List, MapPinned, RefreshCw, Users } from 'lucide-react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router'
 import { HposButton, HposEmptyState, HposNotice, HposPageHero, HposStatusBadge } from './HposUi'
 
 const TABLE_STATES = {

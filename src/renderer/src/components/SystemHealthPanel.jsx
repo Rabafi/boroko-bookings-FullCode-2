@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router'
 import {
   AlertTriangle, CheckCircle2, Database, Download, HardDrive,
   RefreshCw, RotateCcw, ShieldCheck, Trash2, Wifi, Play,

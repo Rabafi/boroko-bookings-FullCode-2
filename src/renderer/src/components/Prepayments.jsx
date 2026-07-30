@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { CreditCard, Download, FileText, History, Plus, Printer, RefreshCw, RotateCcw, Search, Undo2 } from 'lucide-react'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router'
 import { useAccess, useAuth, useSettings } from '../app-context'
 import { canAccessCapability } from '../../../shared/accessControl'
 import { Modal } from './shared/Modal'

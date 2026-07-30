@@ -8,7 +8,7 @@ import {
   WalletCards,
   X,
 } from "lucide-react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router";
 import { useSettings } from "../../app-context";
 import { isBarOnlyMode } from "../../../../shared/propertyTypes";
 import { HposButton, HposEmptyState, HposNotice, HposPageHero } from "./HposUi";

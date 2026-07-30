@@ -1,4 +1,4 @@
-import { useLocation, useParams, Link, useNavigate } from 'react-router-dom'
+import { useLocation, useParams, Link, useNavigate } from 'react-router'
 import { useEffect, useState, useRef } from 'react'
 import { format } from 'date-fns'
 import { CheckCircle2, CalendarPlus, Copy, Check, Mail, Moon, ShieldCheck } from 'lucide-react'

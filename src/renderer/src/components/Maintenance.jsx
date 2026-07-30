@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useSearchParams } from 'react-router'
 import { Plus, CheckCircle, Wrench, AlertTriangle, RefreshCw } from 'lucide-react'
 import { Modal } from './shared/Modal'
 import { StatusBadge } from './shared/StatusBadge'

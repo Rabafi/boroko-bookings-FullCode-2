@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router'
 import { CheckCircle, AlertCircle, Clock, RefreshCw, Package2, BarChart3, ClipboardList, Search, ShowerHead, Sparkles, XCircle, AlertTriangle } from 'lucide-react'
 import { useFeatures, useSettings } from '../app-context'
 import { formatLocalDate, localDateStringFromOffset, localToday } from '../utils/localDate'

@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Search, UserX, Clock, ChevronDown, ChevronUp, Camera, X, Pencil, Plus, RefreshCw, CreditCard } from 'lucide-react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router'
 import { Modal } from './shared/Modal'
 import HorizontalScrollArea from './shared/HorizontalScrollArea'
 import { useAccess, useSettings } from '../app-context'

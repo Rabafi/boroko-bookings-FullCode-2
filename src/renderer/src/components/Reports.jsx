@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { TrendingUp, BedDouble, DollarSign, Calendar, Download, Printer, FileDown, Table, PiggyBank, ShoppingCart, Package, Building2, CreditCard, Presentation, Briefcase } from 'lucide-react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router'
 import { formatPaymentMethod } from '../constants/paymentMethods'
 import { useSettings, useAccess, useFeatures } from '../app-context'
 import HotelKpis from './HotelKpis'

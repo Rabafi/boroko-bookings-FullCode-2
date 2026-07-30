@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { CreditCard, Download, FileText, Mail, Printer, Receipt, RefreshCw, RotateCcw, Search } from 'lucide-react'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router'
 import { Modal } from './shared/Modal'
 import { Receipt as BookingReceipt } from './shared/Receipt'
 import HorizontalScrollArea from './shared/HorizontalScrollArea'

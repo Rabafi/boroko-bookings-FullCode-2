@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, CheckCircle2, ChefHat, Clock3, RefreshCw, Settings2, UtensilsCrossed } from 'lucide-react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router'
 import { HposButton, HposEmptyState, HposNotice, HposPageHero } from './HposUi'
 
 const TICKET_STATES = {

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState, useCallback, Suspense, lazy } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router'
 import {
   Plus,
   Pencil,

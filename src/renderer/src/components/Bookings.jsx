@@ -20,7 +20,7 @@ import {
   Mail,
   CalendarClock
 } from 'lucide-react'
-import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
+import { useLocation, useNavigate, useSearchParams } from 'react-router'
 import { StatusBadge } from './shared/StatusBadge'
 import { Modal } from './shared/Modal'
 import { Receipt } from './shared/Receipt'

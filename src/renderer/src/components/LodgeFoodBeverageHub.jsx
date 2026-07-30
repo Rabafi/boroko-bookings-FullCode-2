@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { NavLink, Navigate, useParams } from 'react-router-dom'
+import { NavLink, Navigate, useParams } from 'react-router'
 import { ChefHat, ClipboardCheck, CookingPot, PackageSearch, UsersRound, WalletCards, LayoutGrid, CalendarClock } from 'lucide-react'
 import RestaurantWorkspace from './restaurant/RestaurantWorkspace'
 import RestaurantReservations from './restaurant/RestaurantReservations'
