@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'crypto'
 import { state } from '../state.js'
 import { getActiveBookingForRoom } from './bookings.js'
-import { recordCriticalError } from './operationalLog.js'
+import { getLocalDateKey, recordCriticalError } from './operationalLog.js'
 import { mergeRemotePosOrdersWithLocalState } from './posMerge.js'
 import { patchCachedPosOrderSyncState } from './syncCache.js'
 import {
@@ -16,10 +16,17 @@ import {
   writeCache,
   dedupePromise
 } from './infrastructure.js'
+import {
+  resolvePosSubmitAttempt,
+  commitPosSubmitAttempt,
+  getPendingPosSubmitAttempt as getPendingSubmitAttemptRecord,
+  clearPosSubmitAttempt as clearPosSubmitAttemptRecord
+} from './posSubmitJournal.js'
+import { classifyAuthoritativeShiftClose } from './posShiftClose.js'
 
 const POS_REMOTE_READ_TTL_MS = 2_500;
 const POS_TICKET_SELECT = 'id, lodge_id, order_id, outlet_id, station, status, table_name, tab_name, waiter_name, room_id, notes, items, created_at, updated_at';
-const POS_TAB_SELECT = 'id, lodge_id, outlet_id, table_name, tab_name, customer_name, waiter_name, room_id, booking_id, items, notes, status, opened_by, opened_by_name, created_at, updated_at, closed_at';
+const POS_TAB_SELECT = 'id, lodge_id, outlet_id, table_name, tab_name, customer_name, waiter_name, waiter_id, shift_id, room_id, booking_id, items, notes, status, opened_by, opened_by_name, created_at, updated_at, closed_at, tab_version, financial_snapshot';
 const ACTIVE_PREP_TICKET_STATUSES = Object.freeze(['new', 'pending', 'preparing', 'ready']);
 const posRemoteReadCache = new Map();
 
@@ -95,6 +102,60 @@ function applyPosOrderFilters(rows = [], startDate, endDate, outletFilter = null
   return filtered.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
 }
 
+function hasFiniteRecordedMoney(value) {
+  return value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
+}
+
+function hasRecordedPosTenderEnvelope(order = {}) {
+  const breakdown = parseJsonField(order.payment_breakdown, null);
+  if (!Array.isArray(breakdown) || breakdown.length === 0) return false;
+  if (breakdown.some((row) => !row || !String(row.method || row.type || '').trim() || !hasFiniteRecordedMoney(row.amount))) return false;
+  const expected = Math.round(Number(order.total) * 100) / 100;
+  const actual = Math.round(breakdown.reduce((sum, row) => sum + Number(row.amount), 0) * 100) / 100;
+  return Number.isFinite(expected) && Math.abs(expected - actual) <= 0.005;
+}
+
+function hasIncompletePosItemDetail(order = {}) {
+  const items = Array.isArray(order.pos_order_items)
+    ? order.pos_order_items
+    : Array.isArray(order.items)
+      ? order.items
+      : [];
+  if (items.length === 0) return true;
+  return items.some((item) => {
+    const gross = ['gross_subtotal', 'gross', 'subtotal'].some((key) => hasFiniteRecordedMoney(item?.[key]));
+    const net = ['net_subtotal', 'net', 'subtotal'].some((key) => hasFiniteRecordedMoney(item?.[key]));
+    return !gross || !net;
+  });
+}
+
+function withPosReadMetadata(rows, source, complete, metadata = {}) {
+  const result = rows || [];
+  Object.defineProperties(result, {
+    _source: { value: source, enumerable: true, configurable: true },
+    _complete: { value: complete === true, enumerable: true, configurable: true },
+    _tender_complete: { value: metadata.tenderComplete === true, enumerable: true, configurable: true },
+    _item_detail_complete: { value: metadata.itemDetailComplete === true, enumerable: true, configurable: true }
+  });
+  return result;
+}
+
+function hasUnresolvedPosRows(rows = []) {
+  return rows.some((order) => order?._pending_sync === true
+    || ['pending', 'failed', 'manual_review_required'].includes(String(order?._sync_state || '').toLowerCase())
+    || !['completed', 'settled', 'voided', 'cancelled'].includes(String(order?.status || '').toLowerCase())
+    || (['completed', 'settled'].includes(String(order?.status || '').toLowerCase())
+      && (!hasFiniteRecordedMoney(order?.total) || !hasRecordedPosTenderEnvelope(order))));
+}
+
+function hasUnresolvedPosTenderRows(rows = []) {
+  return rows.some((order) => ['completed', 'settled'].includes(String(order?.status || '').toLowerCase()) && !hasRecordedPosTenderEnvelope(order));
+}
+
+function hasIncompletePosItemRows(rows = []) {
+  return rows.some((order) => ['completed', 'settled'].includes(String(order?.status || '').toLowerCase()) && hasIncompletePosItemDetail(order));
+}
+
 function normalizeInclusiveDateEnd(value) {
   if (!value) return null;
   const raw = String(value);
@@ -129,9 +190,12 @@ function normalizePaymentBreakdown(payments = [], fallbackMethod = 'cash', total
   const rows = Array.isArray(payments) ? payments : [];
   const normalized = rows.
   map((row) => ({
-    method: String(row?.method || fallbackMethod || 'cash').trim() || 'cash',
+    method: String(row?.method || fallbackMethod || 'cash').trim().toLowerCase() || 'cash',
     amount: normalizeMoney(row?.amount),
-    reference: String(row?.reference || '').trim() || null
+    reference: String(row?.reference || '').trim() || null,
+    ...(row?.customer_id ? { customer_id: row.customer_id } : {}),
+    ...(row?.voucher_id ? { voucher_id: row.voucher_id } : {}),
+    ...(row?.code ? { code: String(row.code).trim().toUpperCase() } : {}),
   })).
   filter((row) => row.amount !== 0);
   if (normalized.length === 0 && normalizeMoney(total) !== 0) {
@@ -159,8 +223,76 @@ function validateProviderPaymentReferences(paymentBreakdown = [], fallbackMethod
 
 function getOrderPaymentRows(order = {}) {
   const breakdown = parseJsonField(order.payment_breakdown, null);
-  if (Array.isArray(breakdown) && breakdown.length > 0) return normalizePaymentBreakdown(breakdown, order.payment_method || 'cash', order.total || 0);
-  return normalizePaymentBreakdown([], order.payment_method || 'cash', order.total || 0);
+  // An order-level payment_method is only a label. It cannot certify a
+  // tender allocation for cash-up or financial reporting.
+  if (Array.isArray(breakdown) && breakdown.length > 0) {
+    return breakdown
+      .map((row) => ({
+        method: String(row?.method || row?.type || '').trim().toLowerCase(),
+        amount: Number(row?.amount),
+        reference: String(row?.reference || '').trim() || null
+      }))
+      .filter((row) => row.method && Number.isFinite(row.amount) && row.amount !== 0);
+  }
+  return [];
+}
+
+function buildCertifiedPosRevenueSummary(envelope = {}, startDate, endDate, outletId = 'all') {
+  const rows = Array.isArray(envelope.rows) ? envelope.rows : [];
+  const controls = envelope.control_totals || {};
+  const numeric = (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback;
+  const round = (value) => Math.round(numeric(value) * 100) / 100;
+  const byCashier = {};
+  const daily = {};
+  const items = {};
+  let folioRevenue = 0;
+  for (const row of rows) {
+    const classification = String(row.classification || '').toLowerCase();
+    if (!['sale', 'return'].includes(classification)) continue;
+    const signedTotal = classification === 'return' ? -Math.abs(numeric(row.total)) : numeric(row.total);
+    if (String(row.payment_method || '').trim().toLowerCase() === 'folio') {
+      folioRevenue = round(folioRevenue + signedTotal);
+    }
+    const cashier = row.cashier_name || row.cashier_id || 'Unassigned';
+    byCashier[cashier] = round((byCashier[cashier] || 0) + signedTotal);
+    const day = String(row.business_date || '').slice(0, 10);
+    if (day) daily[day] = round((daily[day] || 0) + signedTotal);
+    for (const item of Array.isArray(row.items) ? row.items : []) {
+      const name = item.item_name || item.name || 'Unknown item';
+      const entry = items[name] || { name, qty: 0, revenue: 0 };
+      entry.qty += numeric(item.quantity);
+      const lineAmount = item.net ?? item.subtotal ?? item.gross;
+      entry.revenue = round(entry.revenue + (classification === 'return' ? -Math.abs(numeric(lineAmount)) : numeric(lineAmount)));
+      items[name] = entry;
+    }
+  }
+  const totalOrders = numeric(controls.completed_sale_count) + numeric(controls.return_count);
+  const totalRevenue = numeric(controls.net_recorded_sales);
+  return {
+    total_revenue: round(totalRevenue),
+    gross_revenue: round(controls.gross_sales),
+    discount_total: round(controls.discounts),
+    returns_total: round(controls.returns),
+    tax_total: round(controls.tax),
+    tip_total: round(controls.tips),
+    net_revenue: round(totalRevenue),
+    folio_revenue: round(folioRevenue),
+    direct_revenue: round(totalRevenue - folioRevenue),
+    total_orders: totalOrders,
+    avg_order: numeric(controls.completed_sale_count) > 0 ? round(totalRevenue / numeric(controls.completed_sale_count)) : 0,
+    by_payment: controls.tender_totals && typeof controls.tender_totals === 'object' ? controls.tender_totals : {},
+    by_cashier: byCashier,
+    top_items: Object.values(items).sort((a, b) => b.revenue - a.revenue).slice(0, 15),
+    daily: Object.entries(daily).sort(([a], [b]) => a.localeCompare(b)).map(([date, total]) => ({ date, total })),
+    source: 'server',
+    complete: true,
+    financial_truth: 'server_confirmed',
+    dataset_status: 'certified',
+    report_run_id: envelope.report_run_id || null,
+    dataset_hash: envelope.dataset_hash || null,
+    as_of_range: { start: startDate, end: endDate },
+    outlet_selector: outletId
+  };
 }
 
 function buildPosTotals(items = [], data = {}) {
@@ -548,44 +680,96 @@ export async function setBarPosPackTemplate(data) {
   return { ...result, success: true };
 }
 
+export async function saveBarPosProductWithPacks(data = {}) {
+  if (!state.isOnline) throw new Error('No internet connection. Please check your connection and try again.');
+  const rawBarcode = data?.barcode == null ? '' : String(data.barcode).trim();
+  if (rawBarcode.length > 128 || /[\u0000-\u001f\u007f]/.test(rawBarcode)) throw new Error('Product barcode must be 128 characters or fewer and contain no control characters.');
+  const packs = [6, 12, 24].map((packSize) => ({
+    pack_size: packSize,
+    enabled: data[`pack${packSize}`] === true,
+    barcode: data[`pack${packSize}Barcode`] || null
+  }));
+  const payload = {
+    lodge_id: state.lodgeId,
+    menu_item_id: data.menu_item_id || null,
+    operation_key: data.operation_key || randomUUID(),
+    name: data.name,
+    category: data.category || 'Drinks',
+    price: Number(data.price) || 0,
+    is_available: data.is_available !== false,
+    barcode: rawBarcode || null,
+    stock_method: data.stock_method || 'direct',
+    inventory_item_id: data.inventory_item_id || null,
+    depletion_qty: data.inventory_item_id ? normalizePositiveQty(data.depletion_qty, 1) : null,
+    outlet_id: data.outlet_id || null,
+    dietary_flags: Array.isArray(data.dietary_flags) ? data.dietary_flags : [],
+    prep_time_minutes: Number(data.prep_time_minutes) || 0,
+    is_popular: data.is_popular === true,
+    kitchen_station_id: data.kitchen_station_id || null,
+    packs
+  };
+  const { data: result, error } = await state.supabase.rpc('save_bar_pos_product_with_packs', { payload });
+  if (error) throw new Error(error.message);
+  if (!result?.success) throw new Error(result?.error || 'Could not save Bar product and packs');
+  await publishPosCatalogSnapshotsForChange([payload.outlet_id]).catch((publishError) => { throw new Error(`Product was saved, but catalog publication failed: ${publishError.message}`); });
+  return { ...result, success: true };
+}
+
 // outletFilter: null = all, [] = no access, [uuid1,...] = restrict to these outlet IDs
+async function fetchAllPosRows(buildQuery, pageSize = 1000) {
+  const rows = [];
+  for (let from = 0; from < 100000; from += pageSize) {
+    const to = from + pageSize - 1;
+    const { data, error } = await buildQuery().range(from, to);
+    if (error) return { data: null, error };
+    const page = data || [];
+    rows.push(...page);
+    if (page.length < pageSize) break;
+  }
+  return { data: rows, error: null };
+}
+
 async function _getPosOrders(startDate, endDate, outletFilter = null) {
   if (state.isOnline) {
     const cachedOrders = readCache('pos-orders');
-    let query = state.supabase.
-    from('pos_orders').
-    select('id, room_id, booking_id, walk_in_name, total, gross_total, discount_total, tax_rate, tax_total, tip_total, notes, payment_method, payment_breakdown, receipt_number, order_number, daily_order_number, business_date, transaction_type, original_order_id, outlet_id, service_mode, table_name, tab_name, waiter_name, cashier_id, cashier_name, shift_id, ticket_status, status, created_at, pos_order_items(*), outlets(name)').
-    eq('lodge_id', state.lodgeId);
-    if (startDate) query = query.gte('business_date', startDate);
-    if (endDate) query = query.lte('business_date', endDate);
     let data = null;
     let error = null;
-    ({ data, error } = await query.order('created_at', { ascending: false }).limit(500));
+    ({ data, error } = await fetchAllPosRows(() => {
+      let query = state.supabase.
+      from('pos_orders').
+      select('id, room_id, booking_id, walk_in_name, total, gross_total, discount_total, tax_rate, tax_total, tip_total, notes, payment_method, payment_breakdown, receipt_number, order_number, daily_order_number, business_date, transaction_type, original_order_id, outlet_id, service_mode, table_name, tab_name, waiter_name, cashier_id, cashier_name, shift_id, ticket_status, status, created_at, pos_order_items(*), outlets(name)').
+      eq('lodge_id', state.lodgeId);
+      if (startDate) query = query.gte('business_date', startDate);
+      if (endDate) query = query.lte('business_date', endDate);
+      return query.order('created_at', { ascending: false }).order('id', { ascending: false });
+    }));
 
     if (error) {
       if (isReadOnlySessionTouchError(error)) {
         const filteredCached = applyPosOrderFilters(cachedOrders, startDate, endDate, outletFilter);
         if (filteredCached.length > 0) {
           console.warn('getPosOrders using cache because the database session touch fix has not been applied yet:', error.message);
-          return filteredCached;
+          return withPosReadMetadata(filteredCached, 'cache', false);
         }
         throw new Error(buildReadOnlySessionTouchMessage('POS history'));
       }
 
-      let fallbackQuery = state.supabase.
-      from('pos_orders').
-      select('id, room_id, booking_id, walk_in_name, total, gross_total, discount_total, tax_rate, tax_total, tip_total, notes, payment_method, payment_breakdown, receipt_number, order_number, daily_order_number, business_date, transaction_type, original_order_id, outlet_id, service_mode, table_name, tab_name, waiter_name, cashier_id, cashier_name, shift_id, ticket_status, status, created_at, pos_order_items(*)').
-      eq('lodge_id', state.lodgeId);
-      if (startDate) fallbackQuery = fallbackQuery.gte('business_date', startDate);
-      if (endDate) fallbackQuery = fallbackQuery.lte('business_date', endDate);
-      const fallback = await fallbackQuery.order('created_at', { ascending: false }).limit(500);
+      const fallback = await fetchAllPosRows(() => {
+        let fallbackQuery = state.supabase.
+        from('pos_orders').
+        select('id, room_id, booking_id, walk_in_name, total, gross_total, discount_total, tax_rate, tax_total, tip_total, notes, payment_method, payment_breakdown, receipt_number, order_number, daily_order_number, business_date, transaction_type, original_order_id, outlet_id, service_mode, table_name, tab_name, waiter_name, cashier_id, cashier_name, shift_id, ticket_status, status, created_at, pos_order_items(*)').
+        eq('lodge_id', state.lodgeId);
+        if (startDate) fallbackQuery = fallbackQuery.gte('business_date', startDate);
+        if (endDate) fallbackQuery = fallbackQuery.lte('business_date', endDate);
+        return fallbackQuery.order('created_at', { ascending: false }).order('id', { ascending: false });
+      });
       data = fallback.data || [];
       error = fallback.error || null;
       if (error && isReadOnlySessionTouchError(error)) {
         const filteredCached = applyPosOrderFilters(cachedOrders, startDate, endDate, outletFilter);
         if (filteredCached.length > 0) {
           console.warn('getPosOrders fallback using cache because the database session touch fix has not been applied yet:', error.message);
-          return filteredCached;
+          return withPosReadMetadata(filteredCached, 'cache', false);
         }
         throw new Error(buildReadOnlySessionTouchMessage('POS history'));
       }
@@ -601,9 +785,18 @@ async function _getPosOrders(startDate, endDate, outletFilter = null) {
     if (error) throw new Error(error.message);
     const mergedLiveRows = mergeRemotePosOrdersWithLocalState(data || [], cachedOrders);
     writeCache('pos-orders', mergedLiveRows);
-    return applyPosOrderFilters(mergedLiveRows, startDate, endDate, outletFilter);
+    const filteredLiveRows = applyPosOrderFilters(mergedLiveRows, startDate, endDate, outletFilter);
+    return withPosReadMetadata(
+      filteredLiveRows,
+      'server',
+      !hasUnresolvedPosRows(filteredLiveRows),
+      {
+        tenderComplete: !hasUnresolvedPosTenderRows(filteredLiveRows),
+        itemDetailComplete: !hasIncompletePosItemRows(filteredLiveRows)
+      }
+    );
   }
-  return applyPosOrderFilters(readCache('pos-orders'), startDate, endDate, outletFilter);
+  return withPosReadMetadata(applyPosOrderFilters(readCache('pos-orders'), startDate, endDate, outletFilter), 'offline-cache', false);
 }
 
 export function getPosOrders(startDate, endDate, outletFilter = null) {
@@ -616,9 +809,18 @@ export function getPosOrders(startDate, endDate, outletFilter = null) {
 export async function getSharedTillOperatorOrders(startDate, endDate, outletFilter, operatorId, { refresh = false } = {}) {
   const belongsToOperator = (order) => order?.cashier_id === operatorId;
   const cached = applyPosOrderFilters(readCache('pos-orders'), startDate, endDate, outletFilter).filter(belongsToOperator);
-  if (!refresh || !state.isOnline) return { orders: cached, source: 'local_cache', refreshed: false };
+  if (!refresh || !state.isOnline) return { orders: cached, source: 'local_cache', refreshed: false, complete: false };
   const live = await getPosOrders(startDate, endDate, outletFilter);
-  return { orders: (live || []).filter(belongsToOperator), source: 'server', refreshed: true };
+  const orders = (live || []).filter(belongsToOperator);
+  const unresolved = hasUnresolvedPosRows(orders);
+  return {
+    orders,
+    source: 'server',
+    refreshed: true,
+    complete: live?._complete === true && live?._source === 'server' && !unresolved,
+    tender_complete: live?._tender_complete === true,
+    item_detail_complete: live?._item_detail_complete === true
+  };
 }
 
 export async function getPosVoidHistory(startDate, endDate, outletFilter = null) {
@@ -769,6 +971,38 @@ export async function getPosOrderById(id) {
   return readCache('pos-orders').find((order) => order.id === id) || null;
 }
 
+// Renderer reload recovery: return the newest unresolved order attempt for this
+// lodge/user so the Till can offer to retry the original sale. If the order was
+// already recorded (for example by an earlier offline replay), the attempt is
+// settled and cleared instead of surfacing a stale interruption.
+export async function getPendingPosSubmitAttempt({ lodgeId, userId } = {}) {
+  const attempt = getPendingSubmitAttemptRecord({ lodgeId, userId });
+  if (!attempt?.orderId) return null;
+  if (state.isOnline) {
+    const existing = await getPosOrderById(attempt.orderId).catch(() => null);
+    if (existing && !existing._pending_sync) {
+      clearPosSubmitAttemptRecord(attempt.submitIntentId);
+      return {
+        success: true,
+        resolved: true,
+        replayed: true,
+        already_exists: true,
+        submitIntentId: attempt.submitIntentId,
+        orderId: attempt.orderId,
+        order: existing,
+        message: 'The original sale was already recorded. The recovery journal is settled safely.'
+      };
+    }
+  }
+  return {
+    submitIntentId: attempt.submitIntentId,
+    orderId: attempt.orderId,
+    createdAtClient: attempt.createdAtClient,
+    payload: attempt.payload,
+    status: attempt.status
+  };
+}
+
 async function getPosOrderWithItemsById(id) {
   const cached = readCache('pos-orders').find((order) => order.id === id);
   if (cached && (Array.isArray(cached.pos_order_items) || Array.isArray(cached.items))) return cached;
@@ -802,6 +1036,31 @@ export async function createPosOrder(data) {
     const submitIntentId = callerSubmitIntentId || randomUUID();
     const orderId = callerOrderId || submitIntentId;
     const submitIdempotencyKey = `pos-order:${submitIntentId}`;
+    // client_created_at participates in the server request hash. Materialise
+    // it before journalling the attempt so a retry cannot silently change the
+    // business payload after a timeout or renderer interruption.
+    const stableCreatedAtClient = String(data?.created_at_client || data?.client_created_at || '').trim() || new Date().toISOString();
+    data = { ...data, id: orderId, submit_intent_id: submitIntentId, created_at_client: stableCreatedAtClient };
+
+    // The attempt is journalled only after the exact v3 RPC envelope has been
+    // resolved (catalog snapshot, booking linkage, payment breakdown, item
+    // selections and stable client timestamp included). This keeps the main
+    // process journal digest byte-equivalent to the server request hash.
+    let attemptResolution = null;
+    let attemptRecord = null;
+    const recordAttempt = (rpcPayload) => {
+      const resolution = resolvePosSubmitAttempt({
+        submitIntentId,
+        orderId,
+        lodgeId: state.lodgeId,
+        userId: state.currentUser?.id || null,
+        payload: rpcPayload
+      });
+      if (resolution.conflict) return { success: false, code: 'idempotency_conflict', error: resolution.error };
+      attemptResolution = resolution;
+      attemptRecord = resolution.attempt;
+      return null;
+    };
 
     // Restaurant mode guard: reject room/event/folio charges
     const cachedSettings = readCache('settings')?.[0] || {};
@@ -810,7 +1069,7 @@ export async function createPosOrder(data) {
     if (isRestaurantMode && (data.room_id || data.booking_id || data.event_booking_id || paymentMethod === 'folio')) {
       throw new Error('Room charges, booking charges, and folio payments are not available in restaurant mode.');
     }
-    const today = new Date().toISOString().split('T')[0];
+    const today = getLocalDateKey();
     const cachedBookings = readCache('bookings');
     const cachedBooking = data.booking_id ?
     cachedBookings.find((entry) => entry?.id === data.booking_id && entry?.lodge_id === state.lodgeId) :
@@ -861,14 +1120,19 @@ export async function createPosOrder(data) {
       }
 
       const id = orderId;
-      const createdAt = data.created_at_client || new Date().toISOString();
+      const createdAt = data.created_at_client || data.client_created_at || stableCreatedAtClient;
       const idempotencyKey = submitIdempotencyKey;
       const inventoryReservations = getOfflinePosInventoryReservation(items);
 
       // v3 offline payload: only item selections, no client-computed prices
       const v3OfflineItems = items.map((item) => ({
         menu_item_id: item.menu_item_id || null,
+        item_name: item.item_name || null,
+        category: item.category || null,
         quantity: normalizePositiveQty(item.quantity, 1),
+        unit_price: Number(item.unit_price || 0),
+        base_unit_price: Number(item.base_unit_price || item.unit_price || 0),
+        modifiers: Array.isArray(item.modifiers) ? item.modifiers : [],
         modifier_option_ids: Array.isArray(item.modifier_option_ids)
           ? item.modifier_option_ids
           : (Array.isArray(item.modifiers) ? item.modifiers : [])
@@ -879,6 +1143,7 @@ export async function createPosOrder(data) {
 
       const v3OfflinePayload = {
         id,
+        submit_intent_id: submitIntentId,
         lodge_id: state.lodgeId,
         catalog_snapshot_id: offlineCatalogSnapshotId,
         shift_id: data.shift_id,
@@ -888,13 +1153,28 @@ export async function createPosOrder(data) {
         room_id: data.room_id || null,
         booking_id: bookingId || null,
         event_booking_id: eventBookingId || null,
+        customer_id: data.customer_id || null,
         notes: data.notes || null,
         payment_method: paymentMethod,
         payment_breakdown: paymentBreakdown,
+        gross_total: totals.gross_total,
+        discount_total: totals.discount_total,
+        tax_rate: totals.tax_rate,
+        tax_total: totals.tax_total,
+        total,
         service_mode: data.service_mode || (data.table_name ? 'table' : data.room_id ? 'room' : 'takeaway'),
         table_name: data.table_name || null,
         tab_name: data.tab_name || null,
+        tab_id: data.tab_id || null,
+        delivery_address: data.delivery_address || null,
+        delivery_notes: data.delivery_notes || null,
         waiter_name: data.waiter_name || null,
+        waiter_id: data.waiter_id || null,
+        cashier_id: data.cashier_id || null,
+        cashier_name: data.cashier_name || null,
+        operator_id: data.cashier_id || data.operator_id || null,
+        customer_account_charge: data.customer_account_charge || null,
+        customer_segment: data.customer_segment || null,
         ticket_status: data.ticket_status || 'new',
         create_idempotency_key: idempotencyKey,
         client_created_at: createdAt,
@@ -904,33 +1184,31 @@ export async function createPosOrder(data) {
         items: v3OfflineItems
       };
 
+      // Record the exact offline RPC envelope, not the renderer's richer
+      // pre-resolution cart object. Queue replay and renderer recovery then
+      // use the same order ID, key, timestamp, snapshot and item payload.
+      const offlineAttemptError = recordAttempt(v3OfflinePayload);
+      if (offlineAttemptError) return offlineAttemptError;
+      const effectiveOfflinePayload = attemptResolution.reused && attemptRecord?.payload
+        ? attemptRecord.payload
+        : v3OfflinePayload;
+
       queueOperation('rpc', 'create_pos_order_v3', {
-        payload: v3OfflinePayload
+        payload: {
+          ...effectiveOfflinePayload,
+          client_created_at: effectiveOfflinePayload.client_created_at || stableCreatedAtClient
+        }
       }, null, {
         _queue_id: `pos-order-${id}`,
         ...(cachedBooking?._pending_sync ? { _depends_on: `booking-${cachedBooking.id}` } : {})
       });
 
-      // Queue recipe depletion as dependent operation for offline replay
-      const recipeDepletionItems = items
-        .filter((item) => item.menu_item_id)
-        .map((item) => ({
-          menu_item_id: item.menu_item_id || null,
-          order_item_id: item.id || null,
-          quantity: normalizePositiveQty(item.quantity, 1)
-        }));
-      if (recipeDepletionItems.length > 0) {
-        queueOperation('rpc', 'record_recipe_stock_depletion', {
-          payload: {
-            lodge_id: state.lodgeId,
-            order_id: id,
-            items: recipeDepletionItems
-          }
-        }, null, {
-          _queue_id: `pos-recipe-depletion-${id}`,
-          _depends_on: `pos-order-${id}`
-        });
-      }
+      // Recipe stock depletion is server-authoritative inside create_pos_order_v3
+      // (see 20260805090000_pos_recipe_stock_depletion_server_atomic.sql). New
+      // offline orders must not queue a separate depletion operation; the
+      // trigger writes movements atomically when the order replays. Legacy
+      // queued depletion operations remain compatible through the rewritten
+      // record_recipe_stock_depletion replay RPC.
 
       const orderRow = {
         id,
@@ -958,8 +1236,8 @@ export async function createPosOrder(data) {
         cashier_name: state.currentUser?.name || state.currentUser?.email || null,
         shift_id: data.shift_id || null,
         ticket_status: data.ticket_status || 'new',
-        catalog_snapshot_id: offlineCatalogSnapshotId,
-        created_at: createdAt,
+        catalog_snapshot_id: effectiveOfflinePayload.catalog_snapshot_id || offlineCatalogSnapshotId,
+        created_at: effectiveOfflinePayload.client_created_at || createdAt,
         _pending_sync: true,
         _sync_state: 'pending',
         _sync_error: null,
@@ -1024,8 +1302,9 @@ export async function createPosOrder(data) {
     // v3 RPC: server resolves all prices from catalog snapshot.
     // Client sends only item selections (menu_item_id, quantity, item_name, category, modifiers).
     // Server ignores any client-supplied unit_price.
-    const v3Payload = {
+    let v3Payload = {
       id: orderId,
+      submit_intent_id: submitIntentId,
       lodge_id: state.lodgeId,
       catalog_snapshot_id: catalogSnapshotId,
       shift_id: data.shift_id,
@@ -1035,22 +1314,42 @@ export async function createPosOrder(data) {
       room_id: data.room_id || null,
       booking_id: bookingIdForRpc || null,
       event_booking_id: eventBookingId || null,
+      customer_id: data.customer_id || null,
       notes: data.notes || null,
       payment_method: paymentMethod,
       payment_breakdown: paymentBreakdown,
+      gross_total: totals.gross_total,
+      discount_total: totals.discount_total,
+      tax_rate: totals.tax_rate,
+      tax_total: totals.tax_total,
+      total,
       service_mode: data.service_mode || (data.table_name ? 'table' : data.room_id ? 'room' : 'takeaway'),
       table_name: data.table_name || null,
       tab_name: data.tab_name || null,
+      tab_id: data.tab_id || null,
+      delivery_address: data.delivery_address || null,
+      delivery_notes: data.delivery_notes || null,
       waiter_name: data.waiter_name || null,
+      waiter_id: data.waiter_id || null,
+      cashier_id: data.cashier_id || null,
+      cashier_name: data.cashier_name || null,
+      operator_id: data.cashier_id || data.operator_id || null,
+      customer_account_charge: data.customer_account_charge || null,
+      customer_segment: data.customer_segment || null,
       ticket_status: data.ticket_status || 'new',
       create_idempotency_key: submitIdempotencyKey,
-      client_created_at: data.created_at_client || new Date().toISOString(),
+      client_created_at: stableCreatedAtClient,
       tip_total: totals.tip_total,
       promotion_id: data.promotion_id || null,
       manual_discount: data.manual_discount || null,
       items: items.map((i) => ({
         menu_item_id: i.menu_item_id || null,
+        item_name: i.item_name || null,
+        category: i.category || null,
         quantity: i.quantity,
+        unit_price: Number(i.unit_price || 0),
+        base_unit_price: Number(i.base_unit_price || i.unit_price || 0),
+        modifiers: Array.isArray(i.modifiers) ? i.modifiers : [],
         modifier_option_ids: Array.isArray(i.modifier_option_ids)
           ? i.modifier_option_ids
           : (Array.isArray(i.modifiers) ? i.modifiers : [])
@@ -1060,6 +1359,15 @@ export async function createPosOrder(data) {
       }))
     };
 
+    // The journal digest is based on the exact payload sent to
+    // create_pos_order_v3. On a retry, replace the newly rebuilt envelope
+    // with the originally journalled one before issuing the RPC.
+    const onlineAttemptError = recordAttempt(v3Payload);
+    if (onlineAttemptError) return onlineAttemptError;
+    if (attemptResolution.reused && attemptRecord?.payload) {
+      v3Payload = { ...attemptRecord.payload };
+    }
+
     // All DB writes are delegated to a single Postgres transaction via RPC.
     // If any step fails, Postgres rolls back the entire operation automatically.
     const { data: result, error } = await state.supabase.rpc('create_pos_order_v3', {
@@ -1068,7 +1376,9 @@ export async function createPosOrder(data) {
 
     if (error) throw new Error(error.message);
     if (result?.success) {
-      const serverTotal = normalizeMoney(result.total || 0);
+      const serverTotal = result.total === null || result.total === undefined || result.total === ''
+        ? null
+        : normalizeMoney(result.total);
       // Use server-created tickets from the RPC result (item-grouped by station)
       const serverTickets = Array.isArray(result.tickets) ? result.tickets : [];
       if (serverTickets.length > 0) {
@@ -1090,8 +1400,24 @@ export async function createPosOrder(data) {
       }
       appendPosAudit('order_completed', { entity_type: 'pos_order', entity_id: result.id || orderId, details: { total: serverTotal, outlet_id: data.outlet_id || null, table_name: data.table_name || null, catalog_snapshot_id: catalogSnapshotId, v3: true, ticket_count: serverTickets.length } });
       if (data.tab_id) closePosTab(data.tab_id).catch(() => {});
-      // Synchronous recipe depletion - must complete with order
-      await recordRecipeStockDepletion(result.id || orderId, items, data.outlet_id || null);
+      commitPosSubmitAttempt(submitIntentId);
+      // Recipe stock depletion is written atomically inside create_pos_order_v3
+      // (server trigger), so no follow-up call is needed here.
+    }
+    if (result?.success === false) {
+      const resultCode = String(result?.code || '');
+      const outcomeMayStillBeAmbiguous =
+        resultCode.startsWith('till_operator_') ||
+        resultCode === 'till_shift_closed' ||
+        resultCode === 'shift_not_open' ||
+        resultCode === 'idempotency_conflict' ||
+        resultCode === 'idempotency_expired';
+      if (!outcomeMayStillBeAmbiguous) {
+        // A structured server rejection is authoritative proof that this
+        // attempt did not commit. Only then may the operator correct the
+        // cart and begin a genuinely new sale.
+        clearPosSubmitAttemptRecord(submitIntentId);
+      }
     }
     return result;
   } catch (error) {
@@ -1329,7 +1655,9 @@ export async function createPosPartialReturnWithPin(payload = {}) {
       items: returnLines,
       total,
       gross_total: total,
-      payment_method: payment_method || originalOrder.payment_method || 'cash',
+      // A queued return has no server-confirmed tender envelope yet. Do not
+      // inherit the original sale's tender and present it as a real payment.
+      payment_method: payment_method || null,
       outlet_id: outlet_id || originalOrder.outlet_id || null,
       walk_in_name: `Return: ${originalOrder.walk_in_name || 'Guest'}`,
       notes,
@@ -1480,7 +1808,10 @@ function summarizeCashupOrders(orders = [], { openingFloat = 0 } = {}) {
   for (const order of completed) {
     const total = normalizeMoney(order.total);
     const orderSign = total >= 0 ? 1 : -1;
-    for (const payment of getOrderPaymentRows(order)) {
+    // A partial breakdown is not a cash-up expectation. Keep the cached row
+    // visible for investigation, but do not let it create a partial drawer
+    // variance or tender total.
+    for (const payment of (hasRecordedPosTenderEnvelope(order) ? getOrderPaymentRows(order) : [])) {
       const amount = Number(payment.amount || 0);
       const signedAmount = orderSign < 0 ? -Math.abs(amount) : Math.abs(amount);
       byMethod[payment.method] = normalizeMoney((byMethod[payment.method] || 0) + signedAmount);
@@ -1525,7 +1856,7 @@ export async function getPosCashupSummary(filters = {}) {
     };
   }
 
-  const date = filters.date || new Date().toISOString().slice(0, 10);
+  const date = filters.date || getLocalDateKey();
   const outletId = filters.outlet_id && filters.outlet_id !== 'all' ? filters.outlet_id : null;
   const outletFilter = outletId ? [outletId] : Array.isArray(filters.outlet_filter) ? filters.outlet_filter : null;
   const operatorId = filters.cashier_id || null;
@@ -1731,24 +2062,45 @@ function upsertLocalPosTab(row = {}) {
   return row;
 }
 
+function markCachedPosTabsUncertified(rows = []) {
+  return (Array.isArray(rows) ? rows : []).map((row) => ({
+    ...row,
+    _source: 'local_cache',
+    financial_complete: false,
+    _financial_complete: false,
+    financial_snapshot: row?.financial_snapshot && typeof row.financial_snapshot === 'object'
+      ? { ...row.financial_snapshot, financial_complete: false }
+      : row?.financial_snapshot || null
+  }));
+}
+
+function applyPosTabFilters(rows = [], filters = {}) {
+  const outletId = filters.outletId || filters.outlet_id || null;
+  const status = String(filters.status || '').trim().toLowerCase();
+  return (Array.isArray(rows) ? rows : []).filter((row) => {
+    if (outletId && row?.outlet_id !== outletId) return false;
+    if (!status) return true;
+    if (status === 'active') return isActiveTableTab(row);
+    return String(row?.status || '').trim().toLowerCase() === status;
+  });
+}
+
 async function fetchRemotePosTabs(filters = {}) {
   if (!state.isOnline || !state.supabase || !state.lodgeId) return null;
   const status = String(filters.status || '').trim().toLowerCase();
   const outletId = filters.outletId || filters.outlet_id || null;
   const key = `tabs:${state.lodgeId}:${outletId || 'all'}:${status || 'all'}`;
   return readPosRemoteCached(key, async () => {
-    let query = state.supabase
-      .from('pos_tabs')
-      .select(POS_TAB_SELECT)
-      .eq('lodge_id', state.lodgeId)
-      .order('updated_at', { ascending: false })
-      .limit(500);
-    if (outletId) query = query.eq('outlet_id', outletId);
-    if (status === 'active') query = query.in('status', [...ACTIVE_TABLE_TAB_STATUSES]);
-    else if (status) query = query.eq('status', status);
-    const { data, error } = await query;
+    const { data: rpcResult, error } = await state.supabase.rpc('get_restaurant_pos_tabs_financial_truth', {
+      p_lodge_id: state.lodgeId,
+      p_outlet_id: outletId,
+      p_status: status || null,
+    });
     if (error) throw new Error(error.message);
-    return Array.isArray(data) ? data : [];
+    if (rpcResult?.success === false) throw new Error(rpcResult.error || 'The server could not read open tabs.');
+    const rows = Array.isArray(rpcResult?.data) ? rpcResult.data : Array.isArray(rpcResult) ? rpcResult : [];
+    if (rpcResult?.complete !== true) throw new Error('The server returned an incomplete tab snapshot.');
+    return rows;
   });
 }
 
@@ -1757,11 +2109,11 @@ export async function getPosTabs(filters = {}) {
     const remote = await fetchRemotePosTabs(filters);
     if (remote) {
       if (String(filters.status || '').trim().toLowerCase() === 'active') {
-        const pendingLocal = readPosTabs().filter((row) => row?._pending_sync === true && isActiveTableTab(row));
+        const pendingLocal = applyPosTabFilters(readPosTabs(), filters).filter((row) => row?._pending_sync === true);
         const remoteIds = new Set(remote.map((row) => row.id));
         const activeRows = [
           ...remote,
-          ...pendingLocal.filter((row) => !remoteIds.has(row.id))
+          ...markCachedPosTabsUncertified(pendingLocal.filter((row) => !remoteIds.has(row.id)))
         ].sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')));
         const retainedHistory = readPosTabs().filter((row) => !isActiveTableTab(row) && !remoteIds.has(row.id));
         writePosTabs([...activeRows, ...retainedHistory], { invalidate: false });
@@ -1769,7 +2121,7 @@ export async function getPosTabs(filters = {}) {
       }
       const merged = [
         ...remote,
-        ...readPosTabs().filter((local) => !remote.some((row) => row.id === local.id))
+        ...markCachedPosTabsUncertified(applyPosTabFilters(readPosTabs(), filters).filter((local) => !remote.some((row) => row.id === local.id)))
       ].sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')));
       writePosTabs(merged, { invalidate: false });
       return merged;
@@ -1777,7 +2129,7 @@ export async function getPosTabs(filters = {}) {
   } catch (error) {
     console.warn('[POS TABS] Remote tab refresh unavailable:', error?.message || error);
   }
-  return readPosTabs().sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')));
+  return markCachedPosTabsUncertified(applyPosTabFilters(readPosTabs(), filters)).sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')));
 }
 
 export async function savePosTab(data = {}) {
@@ -1816,7 +2168,9 @@ export async function savePosTab(data = {}) {
     opened_by: data.opened_by || state.currentUser?.id || null,
     opened_by_name: data.opened_by_name || state.currentUser?.name || state.currentUser?.email || null,
     created_at: data.created_at || now,
-    updated_at: now
+    updated_at: now,
+    expected_version: data.id ? Number(data.expected_version ?? data.tab_version ?? 1) : null,
+    tab_version: data.tab_version ?? 1
   };
   upsertLocalPosTab(row);
 
@@ -1859,33 +2213,37 @@ export async function savePosTab(data = {}) {
 export async function updatePosTabStatus(id, status = 'closed', extra = {}) {
   const nextStatus = normalizeTabStatus(status, 'closed');
   const now = new Date().toISOString();
-  let updated = null;
-  writePosTabs(readPosTabs().map((row) => {
-    if (row.id !== id) return row;
-    updated = { ...row, ...extra, status: nextStatus, updated_at: now };
-    return updated;
-  }));
-  if (!updated) return { success: false, error: 'Open table tab not found.' };
-  appendPosAudit('tab_status_updated', { entity_type: 'pos_tab', entity_id: id, details: { status: nextStatus, table_name: updated.table_name || null } });
-
+  const current = readPosTabs().find((row) => row.id === id) || null;
+  if (!current) return { success: false, error: 'Open table tab not found.' };
+  const updated = { ...current, ...extra, status: nextStatus, updated_at: now };
   if (state.isOnline && state.supabase) {
     try {
-      const { error } = await state.supabase.rpc('update_pos_tab_status', {
+      const { data: rpcData, error } = await state.supabase.rpc('update_pos_tab_status', {
         p_tab_id: id,
         p_status: nextStatus,
         p_notes: extra.notes || null
       });
       if (error) throw new Error(error.message);
+      if (rpcData?.success === false) throw new Error(rpcData.error || 'The server rejected this tab status change.');
+      const remoteRow = rpcData?.tab || rpcData?.row || null;
+      upsertLocalPosTab(remoteRow?.id ? { ...updated, ...remoteRow, _pending_sync: false } : { ...updated, _pending_sync: false });
+      appendPosAudit('tab_status_updated', { entity_type: 'pos_tab', entity_id: id, details: { status: nextStatus, table_name: updated.table_name || null, source: 'server' } });
+      return { success: true, tab: remoteRow?.id ? { ...updated, ...remoteRow } : updated };
     } catch (error) {
-      console.warn('[POS TABS] Remote status update unavailable; kept local status:', error?.message || error);
+      // An online failure is not a local success. Do not close or otherwise
+      // mutate the cached tab because doing so could make an unposted state
+      // look server-confirmed. The operator can retry the same action.
+      return { success: false, error: error?.message || 'Could not confirm the tab status change with the server.' };
     }
   } else {
+    const pending = { ...updated, _pending_sync: true, financial_complete: false, _financial_complete: false };
+    upsertLocalPosTab(pending);
     queueOperation('rpc', 'update_pos_tab_status', { p_tab_id: id, p_status: nextStatus, p_notes: extra.notes || null }, null, {
       _queue_id: `pos-tab-status-${id}-${nextStatus}`
     });
+    appendPosAudit('tab_status_updated', { entity_type: 'pos_tab', entity_id: id, details: { status: nextStatus, table_name: updated.table_name || null, source: 'offline_queue' } });
+    return { success: true, tab: pending, offline: true, pending: true };
   }
-
-  return { success: true, tab: updated };
 }
 
 export async function closePosTab(id, status = 'closed') {
@@ -2055,7 +2413,7 @@ export async function splitBillByItems(data = {}) {
 }
 
 export async function splitBillEvenly(data = {}) {
-  const { source_tab_id, split_count, target_table_names } = data || {};
+  const { source_tab_id, split_count, target_table_names, source_tab_version } = data || {};
   if (!source_tab_id) return { success: false, error: 'Source tab is required.' };
   const numSplits = Number(split_count);
   if (!Number.isInteger(numSplits) || numSplits < 2 || numSplits > 10) {
@@ -2072,6 +2430,7 @@ export async function splitBillEvenly(data = {}) {
       source_tab_id,
       split_count: numSplits,
       target_table_names: Array.isArray(target_table_names) ? target_table_names : [],
+      source_tab_version: source_tab_version == null ? null : Number(source_tab_version),
       idempotency_key: data.idempotency_key || randomUUID()
     }
   });
@@ -2126,6 +2485,7 @@ export async function getMyPosCashupSubmission(shiftId) {
         submitted_at: data.submission.submitted_at,
         notes: data.submission.notes,
         review_notes: data.submission.review_notes,
+        idempotency_key: data.submission.idempotency_key,
       },
     };
   }
@@ -2694,18 +3054,175 @@ export async function linkMyPosShiftToAttendance({ pos_shift_id, attendance_shif
   if (error) throw new Error(error.message); return data || { success: false };
 }
 
+async function readAuthoritativeShiftClose(shiftId, idempotencyKey = null) {
+  const { data, error } = await state.supabase.rpc('get_pos_shift_close_resolution', {
+    p_lodge_id: state.lodgeId,
+    p_shift_id: shiftId,
+    p_close_idempotency_key: idempotencyKey
+  });
+  if (error) throw new Error(error.message);
+  return data || { success: false, code: 'shift_close_unresolved', error: 'The server returned no shift-close evidence.' };
+}
+
 export async function closePosShift(data = {}) {
-  const shift = data.shift_id ? readPosShifts().find((row) => row.id === data.shift_id) : await getCurrentPosShift(data.outlet_id || null, data.cashier_id || null);
-  if (!shift) return { success: false, error: 'No open shift found.' };
-  const closed = {
-    ...shift,
-    status: 'closed',
-    closing_cash: normalizeMoney(data.closing_cash),
-    closed_at: new Date().toISOString(),
-    close_notes: data.notes || null
-  };
-  writePosShifts([closed, ...readPosShifts().filter((row) => row.id !== shift.id)]);
-  return { success: true, shift: closed };
+  if (!state.isOnline || !state.supabase) {
+    return {
+      success: false,
+      error: 'Closing a shift needs server confirmation. Reconnect and use Cash & close to finalize it; this local shift remains open until the server confirms closure.'
+    };
+  }
+
+  let shift = data.shift_id
+    ? readPosShifts().find((row) => row.id === data.shift_id)
+    : await getCurrentPosShift(data.outlet_id || null, data.cashier_id || null);
+
+  // A missing cache row is not proof that the shift is missing. Resolve the
+  // exact server row first, and only then allow the authoritative finalizer to
+  // proceed or reconcile an already-finalized close.
+  if (!shift && data.shift_id) {
+    try {
+      const resolution = await readAuthoritativeShiftClose(data.shift_id);
+      const resolved = classifyAuthoritativeShiftClose(resolution);
+      if (resolved.success) {
+        const mirrored = { ...(resolved.shift || {}), status: 'closed', _server_closed: true };
+        writePosShifts([mirrored, ...readPosShifts().filter((row) => row.id !== data.shift_id)]);
+        return { ...resolved, shift: mirrored, resolved_authoritatively: true };
+      }
+      if (resolution?.exists === true && String(resolution.status || '').toLowerCase() === 'open') {
+        shift = resolution.shift || { id: data.shift_id, status: 'open' };
+      } else {
+        return { success: false, code: resolved.code, error: resolved.error };
+      }
+    } catch (error) {
+      return { success: false, code: 'shift_close_resolution_unavailable', error: `Could not verify the exact shift on the server. Keep it open and ask a manager to review. ${error.message}` };
+    }
+  }
+  if (!shift) return { success: false, code: 'shift_missing', error: 'No shift could be verified on the server. Manager review is required.' };
+
+  const closeAttemptCacheKey = 'pos-shift-close-attempts';
+  let closeAttempts = readCache(closeAttemptCacheKey);
+  let closeAttempt = null;
+  try {
+    const countedByMethod = { cash: normalizeMoney(data.closing_cash || 0) };
+    const closeFingerprint = JSON.stringify({
+      lodge_id: state.lodgeId,
+      shift_id: shift.id,
+      cashier_id: shift.cashier_id || data.cashier_id || null,
+      counted_by_method: countedByMethod,
+      notes: data.notes || null
+    });
+    const existingCloseAttempt = (Array.isArray(closeAttempts) ? closeAttempts : [])
+      .find((attempt) => attempt?.shift_id === shift.id);
+    if (existingCloseAttempt && existingCloseAttempt.fingerprint !== closeFingerprint) {
+      return {
+        success: false,
+        code: 'idempotency_conflict',
+        error: 'This shift-close attempt is still unresolved. Reconnect and retry the original cash count and notes before changing the close.'
+      };
+    }
+    const replayingExistingAttempt = Boolean(existingCloseAttempt);
+    closeAttempt = existingCloseAttempt || {
+      shift_id: shift.id,
+      cashup_id: randomUUID(),
+      idempotency_key: `pos-cashup-close:${shift.id}`,
+      fingerprint: closeFingerprint,
+      created_at: new Date().toISOString()
+    };
+    if (!existingCloseAttempt) {
+      closeAttempts = Array.isArray(closeAttempts) ? closeAttempts : [];
+      writeCache(closeAttemptCacheKey, [closeAttempt, ...closeAttempts]);
+    }
+    const idempotencyKey = closeAttempt.idempotency_key;
+    const payload = {
+      lodge_id: state.lodgeId,
+      shift_id: shift.id,
+      cashup_id: closeAttempt.cashup_id,
+      idempotency_key: idempotencyKey,
+      counted_by_method: countedByMethod,
+      notes: data.notes || null
+    };
+
+    let result;
+    let rpcError = null;
+    try {
+      const response = await state.supabase.rpc('finalize_pos_shift_cashup_v2', { payload });
+      result = response.data;
+      rpcError = response.error;
+    } catch (error) {
+      rpcError = error;
+    }
+
+    if (rpcError || !result?.success) {
+      let resolution;
+      try {
+        resolution = await readAuthoritativeShiftClose(shift.id, idempotencyKey);
+      } catch (resolutionError) {
+        return {
+          success: false,
+          code: 'shift_close_resolution_unavailable',
+          error: `${rpcError?.message || result?.error || 'The shift close result is uncertain.'} Keep the shift open; authoritative reconciliation is unavailable until the connection or migration is restored.`
+        };
+      }
+      const reconciled = classifyAuthoritativeShiftClose(resolution, idempotencyKey);
+      if (!reconciled.success) {
+        return { success: false, code: reconciled.code, error: result?.error || rpcError?.message || reconciled.error };
+      }
+      const closed = { ...(reconciled.shift || shift), status: 'closed', _server_closed: true };
+      writePosShifts([closed, ...readPosShifts().filter((row) => row.id !== shift.id)]);
+      writeCache(closeAttemptCacheKey, (Array.isArray(closeAttempts) ? closeAttempts : []).filter((attempt) => attempt?.shift_id !== shift.id));
+      await refreshCache('pos-shifts').catch(() => {});
+      return { ...reconciled, shift: closed, resolved_authoritatively: true };
+    }
+
+    const closed = {
+      ...shift,
+      status: 'closed',
+      closing_cash: normalizeMoney(result.counted_by_method?.cash ?? payload.counted_by_method.cash),
+      closed_at: new Date().toISOString(),
+      close_notes: payload.notes,
+      _server_closed: true
+    };
+    writePosShifts([closed, ...readPosShifts().filter((row) => row.id !== shift.id)]);
+    writeCache(closeAttemptCacheKey, (Array.isArray(closeAttempts) ? closeAttempts : []).filter((attempt) => attempt?.shift_id !== shift.id));
+    // A persisted close attempt means this was a replay after an interrupted
+    // response. The server already wrote its audit, so do not append a second
+    // local close audit for that same finalized operation.
+    if (!replayingExistingAttempt) {
+      appendPosAudit('shift_closed', {
+        entity_type: 'pos_shift',
+        entity_id: shift.id,
+        details: {
+          cashup_id: result.cashup_id,
+          expected_cash_drawer: result.expected_cash_drawer,
+          variance_by_method: result.variance_by_method,
+          outlet_id: shift.outlet_id || null
+        }
+      });
+    }
+    await refreshCache('pos-orders').catch(() => {});
+    return {
+      success: true,
+      shift: closed,
+      cashup_id: result.cashup_id || closeAttempt.cashup_id,
+      expected_cash_drawer: result.expected_cash_drawer,
+      variance_by_method: result.variance_by_method,
+      replayed: replayingExistingAttempt
+    };
+  } catch (e) {
+    if (closeAttempt?.shift_id && state.supabase) {
+      try {
+        const resolution = await readAuthoritativeShiftClose(closeAttempt.shift_id, closeAttempt.idempotency_key);
+        const reconciled = classifyAuthoritativeShiftClose(resolution, closeAttempt.idempotency_key);
+        if (reconciled.success) {
+          const closed = { ...(reconciled.shift || shift), status: 'closed', _server_closed: true };
+          writePosShifts([closed, ...readPosShifts().filter((row) => row.id !== shift.id)]);
+          writeCache(closeAttemptCacheKey, (Array.isArray(closeAttempts) ? closeAttempts : []).filter((attempt) => attempt?.shift_id !== shift.id));
+          return { ...reconciled, shift: closed, resolved_authoritatively: true };
+        }
+      } catch { /* keep the unresolved close attempt for retry/reconciliation */ }
+    }
+    return { success: false, code: 'shift_close_unresolved', error: e.message };
+  }
 }
 
 export async function getPosHardwareSettings() {
@@ -2803,6 +3320,10 @@ export async function recordPosHardwareEvent(action = 'hardware_event', details 
     entity_id: details.entity_id || null,
     details
   });
+}
+
+export async function recordPosAudit(action = 'pos_audit', details = {}) {
+  return appendPosAudit(action, details);
 }
 
 export async function getPosStaff() {
@@ -2997,12 +3518,48 @@ export async function getPosRevenueSummary(startDate, endDate, outletId = 'all')
       });
       if (error) throw error;
       if (data && typeof data === 'object') {
-        return {
-          ...data,
-          source: 'server',
-          as_of_range: { start: startDate, end: endDate },
-          outlet_selector: outletId || 'all'
-        };
+        if (data.complete === true && data.financial_truth === 'server_confirmed') {
+          return { ...data, source: 'server', complete: true, financial_truth: 'server_confirmed', as_of_range: { start: startDate, end: endDate }, outlet_selector: outletId || 'all' };
+        }
+
+        // The historical summary RPC does not carry a certification envelope
+        // and older versions synthesized tenders from payment_method. Never
+        // promote that response to a financial report. Use the report-run
+        // export contract when the filter can be represented by its UUID API.
+        if (outletId !== 'unassigned') {
+          try {
+            const { data: exportResponse, error: exportError } = await state.supabase.rpc('get_pos_financial_report_export_v2', {
+              p_lodge_id: state.lodgeId,
+              p_start_date: startDate,
+              p_end_date: endDate,
+              p_outlet_id: outletId && outletId !== 'all' ? outletId : null
+            });
+            if (exportError) throw exportError;
+            const envelope = exportResponse?.data || exportResponse;
+            if (envelope?.dataset_status === 'certified' && envelope?.source_coverage_complete === true) {
+              return buildCertifiedPosRevenueSummary(envelope, startDate, endDate, outletId || 'all');
+            }
+            return {
+              source: 'server',
+              complete: false,
+              financial_truth: 'server_incomplete',
+              dataset_status: envelope?.dataset_status || 'incomplete',
+              unresolved_rows: envelope?.row_count ?? null,
+              unresolved_status_rows: envelope?.source_manifest?.unresolved_status_rows ?? null,
+              unresolved_amount_rows: envelope?.source_manifest?.unresolved_amount_rows ?? null,
+              unresolved_tender_rows: envelope?.source_manifest?.unresolved_tender_rows ?? null,
+              unresolved_item_rows: envelope?.source_manifest?.unresolved_item_rows ?? null,
+              as_of_range: { start: startDate, end: endDate },
+              outlet_selector: outletId || 'all'
+            };
+          } catch (exportError) {
+            recordCriticalError('reports.pos_sales.authoritative_export', exportError, {
+              startDate,
+              endDate,
+              outletId: outletId || 'all'
+            }, { level: 'warn', limit: 120 });
+          }
+        }
       }
       throw new Error('POS sales summary was empty.');
     } catch (error) {
@@ -3197,6 +3754,8 @@ export async function getPosRevenueSummary(startDate, endDate, outletId = 'all')
     top_items,
     daily,
     source: 'local',
+    complete: false,
+    financial_truth: 'cache_estimate',
     as_of_range: { start: startDate, end: endDate },
     outlet_selector: outletId || 'all'
   };
@@ -3369,16 +3928,41 @@ export async function getPosCustomers() {
   if (!state.isOnline || !state.supabase) return readCachedCustomers();
 
   try {
-    const { data, error } = await state.supabase.rpc('get_restaurant_customers', {
-      p_lodge_id: state.lodgeId
+    const { data, error } = await state.supabase.rpc('get_restaurant_customer_account_dto', {
+      p_lodge_id: state.lodgeId,
+      p_customer_id: null
     });
     if (error) throw new Error(error.message);
-    const customers = Array.isArray(data) ? data : [];
+    const customers = (Array.isArray(data) ? data : []).map((row) => ({
+      ...row,
+      // Compatibility for older terminal renderers. New code must use the
+      // explicitly named DTO fields below.
+      account_balance: Number(row.outstanding_balance || 0)
+    }));
     writeCachedCustomers(customers);
     return customers;
   } catch (error) {
-    console.error('[POS CUSTOMERS] Load failed:', error?.message || error);
-    return readCachedCustomers();
+    // Older deployments may not yet have the DTO migration. Keep the read
+    // compatible, but never relabel outstanding debt as available credit.
+    try {
+      const { data, error: fallbackError } = await state.supabase.rpc('get_restaurant_customers', {
+        p_lodge_id: state.lodgeId
+      });
+      if (fallbackError) throw fallbackError;
+      const customers = (Array.isArray(data) ? data : []).map((row) => ({
+        ...row,
+        outstanding_balance: Number(row.outstanding_balance ?? row.account_balance ?? 0),
+        credit_limit: Number(row.credit_limit || 0),
+        available_credit: Math.max(0, Number(row.credit_limit || 0) - Number(row.outstanding_balance ?? row.account_balance ?? 0)),
+        account_status: row.account_status || 'active',
+        account_balance: Number(row.outstanding_balance ?? row.account_balance ?? 0)
+      }));
+      writeCachedCustomers(customers);
+      return customers;
+    } catch (fallbackError) {
+      console.error('[POS CUSTOMERS] Load failed:', error?.message || fallbackError?.message || fallbackError);
+      return readCachedCustomers();
+    }
   }
 }
 
@@ -3427,6 +4011,23 @@ export async function awardLoyaltyPoints({ customerId, orderId, points, descript
     console.error('[POS LOYALTY] Award failed:', error?.message || error);
     throw error;
   }
+}
+
+export async function queueLoyaltyRepair({ customerId, orderId, points, description, operationId }) {
+  if (!state.isOnline || !state.supabase) throw new Error('Cannot queue loyalty repair offline');
+  const { data: result, error } = await state.supabase.rpc('queue_restaurant_loyalty_repair', {
+    payload: {
+      lodge_id: state.lodgeId,
+      customer_id: customerId,
+      order_id: orderId || null,
+      points,
+      description: description || null,
+      operation_id: operationId
+    }
+  });
+  if (error) throw new Error(error.message);
+  if (!result?.success) throw new Error(result?.error || 'Could not queue loyalty repair');
+  return result;
 }
 
 export async function redeemLoyaltyPoints({ customerId, orderId, points, description }) {
@@ -3522,7 +4123,6 @@ export async function clockInStaff({ staff_user_id, staffUserId, role, expected_
   try {
     const { data: result, error } = await state.supabase.rpc('clock_in_staff', {
       payload: {
-        id: transferData.id || null,
         lodge_id: state.lodgeId,
         staff_user_id: staff_user_id || staffUserId || null,
         role: role || 'cashier',
@@ -3718,10 +4318,10 @@ export async function updatePosSupplier(supplierId, supplierData) {
   }
 }
 
-export async function clockOutStaffWithAttendancePin({ shiftId, pin, notes } = {}) {
+export async function clockOutStaffWithAttendancePin({ shiftId, pin, notes, idempotency_key, idempotencyKey } = {}) {
   if (!state.isOnline || !state.supabase) throw new Error('Attendance PIN clock-out needs an internet connection.');
   const { data: result, error } = await state.supabase.rpc('clock_out_staff_with_attendance_pin', {
-    payload: { lodge_id: state.lodgeId, shift_id: shiftId, pin: String(pin || ''), notes: notes || null, device_id: getDesktopPosDeviceId() }
+    payload: { lodge_id: state.lodgeId, shift_id: shiftId, pin: String(pin || ''), notes: notes || null, idempotency_key: idempotency_key || idempotencyKey || randomUUID(), device_id: getDesktopPosDeviceId() }
   });
   if (error) throw new Error(error.message);
   return result || { success: false, error: 'Clock-out failed.' };
@@ -3905,7 +4505,7 @@ export async function resolveExceptionAlert(alertId) {
 }
 
 export async function getPosPurchaseOrders(startDate, endDate) {
-  if (!state.isOnline || !state.supabase) return [];
+  if (!state.isOnline || !state.supabase) return withPosReadMetadata([], 'offline-cache', false);
 
   try {
     let query = state.supabase
@@ -3918,7 +4518,7 @@ export async function getPosPurchaseOrders(startDate, endDate) {
     const { data, error } = await query;
     if (error) throw new Error(error.message);
     // Return an explicitly plain payload across the Electron IPC boundary.
-    return Array.isArray(data) ? data.map((order) => ({
+    return withPosReadMetadata(Array.isArray(data) ? data.map((order) => ({
       id: order.id,
       order_date: order.order_date || null,
       expected_delivery: order.expected_delivery || null,
@@ -3943,15 +4543,15 @@ export async function getPosPurchaseOrders(startDate, endDate) {
         total: Number(item.total || 0),
         unit: item.inventory?.unit || null
       })) : []
-    })) : [];
+    })) : [], 'server', true);
   } catch (error) {
     console.error('[POS PURCHASE] List failed:', error?.message || error);
-    return [];
+    throw error;
   }
 }
 
 export async function getShiftHistory(startDate, endDate) {
-  if (!state.isOnline || !state.supabase) return [];
+  if (!state.isOnline || !state.supabase) return withPosReadMetadata([], 'offline-cache', false);
 
   try {
     let query = state.supabase
@@ -3963,15 +4563,15 @@ export async function getShiftHistory(startDate, endDate) {
     if (endDate) query = query.lte('clock_in', endDate);
     const { data, error } = await query;
     if (error) throw new Error(error.message);
-    return Array.isArray(data) ? data : [];
+    return withPosReadMetadata(Array.isArray(data) ? data : [], 'server', true);
   } catch (error) {
     console.error('[POS SHIFTS] History failed:', error?.message || error);
-    return [];
+    throw error;
   }
 }
 
 export async function getCashDrawerSessions(startDate, endDate) {
-  if (!state.isOnline || !state.supabase) return [];
+  if (!state.isOnline || !state.supabase) return withPosReadMetadata([], 'offline-cache', false);
 
   try {
     let query = state.supabase
@@ -3983,10 +4583,10 @@ export async function getCashDrawerSessions(startDate, endDate) {
     if (endDate) query = query.lte('created_at', endDate);
     const { data, error } = await query;
     if (error) throw new Error(error.message);
-    return Array.isArray(data) ? data : [];
+    return withPosReadMetadata(Array.isArray(data) ? data : [], 'server', true);
   } catch (error) {
     console.error('[POS CASH] Sessions list failed:', error?.message || error);
-    return [];
+    throw error;
   }
 }
 
@@ -4227,7 +4827,7 @@ export async function deleteRestaurantCombo(comboId) {
 
 // 6.3 Recipe Variance
 export async function getRecipeVarianceReport(startDate, endDate, outletId) {
-  if (!state.isOnline || !state.supabase) return [];
+  if (!state.isOnline || !state.supabase) return withPosReadMetadata([], 'offline-cache', false);
   try {
     const { data, error } = await state.supabase.rpc('get_recipe_variance_report', {
       p_lodge_id: state.lodgeId,
@@ -4236,10 +4836,10 @@ export async function getRecipeVarianceReport(startDate, endDate, outletId) {
       p_outlet_id: outletId || null
     });
     if (error) throw new Error(error.message);
-    return Array.isArray(data) ? data : [];
+    return withPosReadMetadata(Array.isArray(data) ? data : [], 'server', true);
   } catch (error) {
     console.error('[POS VARIANCE] Get failed:', error?.message || error);
-    return [];
+    return withPosReadMetadata([], 'error', false);
   }
 }
 
@@ -4393,25 +4993,24 @@ export async function serviceRestaurantReservationAction(id, action, tableIds = 
 // operational loss report, sourced from the immutable void audit and frozen
 // recipe movement cost rather than a current recipe estimate.
 export async function getRecipePreparationLosses(startDate, endDate, outletId) {
-  if (!state.isOnline || !state.supabase) return [];
+  if (!state.isOnline || !state.supabase) return withPosReadMetadata([], 'offline-cache', false);
   try {
     const { data, error } = await state.supabase.rpc('get_recipe_preparation_losses', {
       p_lodge_id: state.lodgeId,
       p_start_date: startDate,
       p_end_date: endDate,
-      p_outlet_id: outletId || null,
-      p_include_reservation_waitlist: includeReservationWaitlist
+      p_outlet_id: outletId || null
     });
     if (error) throw new Error(error.message);
-    return Array.isArray(data) ? data : [];
+    return withPosReadMetadata(Array.isArray(data) ? data : [], 'server', true);
   } catch (error) {
     console.error('[POS PREPARATION LOSS] Get failed:', error?.message || error);
-    return [];
+    return withPosReadMetadata([], 'error', false);
   }
 }
 
 export async function getRecipePreparationLossIngredientSummary(startDate, endDate, outletId) {
-  if (!state.isOnline || !state.supabase) return [];
+  if (!state.isOnline || !state.supabase) return withPosReadMetadata([], 'offline-cache', false);
   try {
     const { data, error } = await state.supabase.rpc('get_recipe_preparation_loss_ingredient_summary', {
       p_lodge_id: state.lodgeId,
@@ -4420,10 +5019,10 @@ export async function getRecipePreparationLossIngredientSummary(startDate, endDa
       p_outlet_id: outletId || null
     });
     if (error) throw new Error(error.message);
-    return Array.isArray(data) ? data : [];
+    return withPosReadMetadata(Array.isArray(data) ? data : [], 'server', true);
   } catch (error) {
     console.error('[POS PREPARATION LOSS] Ingredient summary failed:', error?.message || error);
-    return [];
+    return withPosReadMetadata([], 'error', false);
   }
 }
 
@@ -4480,8 +5079,8 @@ export async function getRestaurantShiftPlans(startDate, endDate) {
   if (!state.isOnline || !state.supabase) return [];
   const { data, error } = await state.supabase.rpc('get_restaurant_shift_plans', {
     p_lodge_id: state.lodgeId,
-    p_start_date: startDate || new Date().toISOString().slice(0, 10),
-    p_end_date: endDate || new Date(Date.now() + 14 * 86400000).toISOString().slice(0, 10)
+    p_start_date: startDate || getLocalDateKey(),
+    p_end_date: endDate || getLocalDateKey(new Date(Date.now() + 14 * 86400000))
   });
   if (error) throw new Error(error.message);
   return Array.isArray(data) ? data : [];
@@ -4520,11 +5119,21 @@ export async function recordRestaurantSettlement(data) {
   return result;
 }
 
-export async function getRestaurantSettlements(businessDate) {
+export async function getRestaurantSettlementBankAccounts() {
   if (!state.isOnline || !state.supabase) return [];
+  const { data, error } = await state.supabase.rpc('get_restaurant_settlement_bank_accounts', {
+    p_lodge_id: state.lodgeId,
+  });
+  if (error) throw new Error(error.message);
+  if (!data?.success) throw new Error(data?.error || 'Could not load settlement bank accounts');
+  return Array.isArray(data.data) ? data.data : [];
+}
+
+export async function getRestaurantSettlements(businessDate) {
+  if (!state.isOnline || !state.supabase) return withPosReadMetadata([], 'offline-cache', false);
   const { data, error } = await state.supabase.rpc('get_restaurant_settlements', { p_lodge_id: state.lodgeId, p_business_date: businessDate || null });
   if (error) throw new Error(error.message);
-  return Array.isArray(data) ? data : [];
+  return withPosReadMetadata(Array.isArray(data) ? data : [], 'server', true);
 }
 
 export async function getRestaurantSettlementExpectedTotal(startDate, endDate, channel) {
@@ -4547,13 +5156,13 @@ export async function recordRestaurantReservationDeposit(data) {
 }
 
 export async function getRestaurantReservationDeposits(days = 90) {
-  if (!state.isOnline || !state.supabase) return [];
+  if (!state.isOnline || !state.supabase) return withPosReadMetadata([], 'offline-cache', false);
   const { data, error } = await state.supabase.rpc('get_restaurant_reservation_deposits', {
     p_lodge_id: state.lodgeId,
     p_days: days,
   });
   if (error) throw new Error(error.message);
-  return Array.isArray(data) ? data : [];
+  return withPosReadMetadata(Array.isArray(data) ? data : [], 'server', true);
 }
 
 export async function getRestaurantOutletControls() {
@@ -4673,7 +5282,7 @@ export async function recordRestaurantSetupEvidence(data = {}) {
 export async function createRestaurantGiftCard(data) { if (!state.isOnline || !state.supabase) throw new Error('Gift cards require an online connection'); const { data: result, error } = await state.supabase.rpc('create_restaurant_gift_card', { p_payload: { ...data, lodge_id: state.lodgeId } }); if (error) throw new Error(error.message); return result }
 export async function recordRestaurantTipPayout(data) { if (!state.isOnline || !state.supabase) throw new Error('Tip payouts require an online connection'); const { data: result, error } = await state.supabase.rpc('record_restaurant_tip_payout', { p_payload: { ...data, lodge_id: state.lodgeId, idempotency_key: data.idempotency_key || randomUUID() } }); if (error) throw new Error(error.message); return result }
 export async function getRestaurantTipPayouts(days = 30) { if (!state.isOnline || !state.supabase) return []; const { data, error } = await state.supabase.rpc('get_restaurant_tip_payouts', { p_lodge_id: state.lodgeId, p_days: days }); if (error) throw new Error(error.message); return Array.isArray(data) ? data : [] }
-export async function getRestaurantTipBalances(days = 30) { if (!state.isOnline || !state.supabase) return []; const { data, error } = await state.supabase.rpc('get_restaurant_tip_balances', { p_lodge_id: state.lodgeId, p_days: days }); if (error) throw new Error(error.message); return Array.isArray(data) ? data : [] }
+export async function getRestaurantTipBalances(days = 30) { if (!state.isOnline || !state.supabase) return withPosReadMetadata([], 'offline-cache', false); const { data, error } = await state.supabase.rpc('get_restaurant_tip_balances', { p_lodge_id: state.lodgeId, p_days: days }); if (error) throw new Error(error.message); return withPosReadMetadata(Array.isArray(data) ? data : [], 'server', true) }
 export async function saveRestaurantReservationPolicy(data) { if (!state.isOnline || !state.supabase) throw new Error('Reservation policy requires an online connection'); const { data: result, error } = await state.supabase.rpc('upsert_restaurant_reservation_policy', { p_payload: { ...data, lodge_id: state.lodgeId } }); if (error) throw new Error(error.message); return result }
 export async function recordRestaurantInventoryLot(data) { if (!state.isOnline || !state.supabase) throw new Error('Inventory lots require an online connection'); const { data: result, error } = await state.supabase.rpc('record_restaurant_inventory_lot', { p_payload: { ...data, lodge_id: state.lodgeId } }); if (error) throw new Error(error.message); return result }
 export async function updateRestaurantInventoryLotExpiry(lotId, data) { if (!state.isOnline || !state.supabase) throw new Error('Inventory lots require an online connection'); const { data: result, error } = await state.supabase.rpc('update_restaurant_inventory_lot_expiry', { p_payload: { ...data, lot_id: lotId, lodge_id: state.lodgeId } }); if (error) throw new Error(error.message); return result }

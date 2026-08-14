@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router'
 import { AlertTriangle, BellRing, CalendarClock, CreditCard, FileText, MessageSquare, Package, RefreshCw, ShoppingCart, TrendingUp, Utensils, Wrench } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
@@ -81,27 +81,33 @@ export default function Dashboard() {
   // Authority: server product_family on the session, not a client-inferred mode.
   const restaurantMode = isRestaurantProductFamily(user?.product_family)
   const barOnly = restaurantMode && isBarHospitalityMode(user?.hospitality_mode)
-  const today = new Date().toISOString().slice(0, 10)
+  const todayParts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Gaborone', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date()).reduce((result, part) => ({ ...result, [part.type]: part.value }), {})
+  const today = `${todayParts.year}-${todayParts.month}-${todayParts.day}`
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true)
     setLoadError('')
     try {
       const [snapshot, bookingRows] = restaurantMode
         ? await Promise.all([
-            Promise.all([
-              getManagerPosSnapshot(user.lodge_id).catch(() => null),
-              listInventory(user.lodge_id).catch(() => [])
-            ]).then(([pos, inventory]) => {
+            Promise.allSettled([
+              getManagerPosSnapshot(user.lodge_id),
+              listInventory(user.lodge_id)
+            ]).then(([posResult, inventoryResult]) => {
+              const pos = posResult.status === 'fulfilled' ? posResult.value : null
+              const inventory = inventoryResult.status === 'fulfilled' ? inventoryResult.value : null
+              const posComplete = pos?.complete === true
               const lowStock = (Array.isArray(inventory) ? inventory : []).filter((item) => {
                 const reorder = Number(item.reorder_level || 0)
                 return reorder > 0 && Number(item.current_stock || 0) <= reorder
               })
               return {
-                posRevenue: Number(pos?.net_sales || 0),
-                todayOrderCount: Number(pos?.sale_count || 0),
-                openCheckCount: Number(pos?.open_count || 0),
-                lowStockCount: lowStock.length,
+                posComplete,
+                posError: posResult.status === 'rejected' ? (posResult.reason?.message || 'POS snapshot unavailable.') : (posComplete ? '' : 'POS snapshot incomplete.'),
+                posRevenue: posComplete ? Number(pos.net_sales || 0) : null,
+                todayOrderCount: posComplete ? Number(pos.sale_count || 0) : null,
+                openCheckCount: posComplete ? Number(pos.open_count || 0) : null,
+                lowStockCount: Array.isArray(inventory) ? lowStock.length : null,
                 lowStock: lowStock.slice(0, 5),
                 asOf: pos?.as_of || new Date().toISOString()
               }
@@ -113,6 +119,7 @@ export default function Dashboard() {
             listBookings(user.lodge_id).catch(() => [])
           ])
       setData(snapshot)
+      if (restaurantMode && snapshot?.posError) setLoadError(snapshot.posError)
       setBookings(Array.isArray(bookingRows) ? bookingRows : [])
       setLastUpdated(
         restaurantMode
@@ -120,12 +127,14 @@ export default function Dashboard() {
           : readCacheEntry(user.lodge_id, 'dashboard', null)?.updatedAt || null
       )
     } catch (error) {
+      setData(null)
+      setBookings([])
       setLoadError(error?.message || 'Dashboard could not load.')
     }
     setLoading(false)
-  }
+  }, [restaurantMode, user.lodge_id])
 
-  useEffect(() => { load() }, [restaurantMode, user.lodge_id])
+  useEffect(() => { load() }, [load])
 
   useEffect(() => {
     const handleVisible = () => {
@@ -137,7 +146,7 @@ export default function Dashboard() {
       document.removeEventListener('visibilitychange', handleVisible)
       window.removeEventListener('online', load)
     }
-  }, [])
+  }, [load])
 
   const todayArrivals = useMemo(
     () => bookings.filter((booking) => booking.check_in === today && booking.status !== 'cancelled'),
@@ -270,7 +279,7 @@ export default function Dashboard() {
           </div>
           <div className="space-y-1.5">
             {attentionItems.map((item) => <AttentionRow key={item.id} item={item} />)}
-            {!loading && attentionItems.length === 0 && (
+            {!loading && attentionItems.length === 0 && !loadError && (!restaurantMode || data?.posComplete === true) && (
               <div className="rounded-xl bg-gray-900 px-3 py-3 text-sm text-green-400 text-center">
                 All clear \u2022 nothing needs attention
               </div>
@@ -285,26 +294,26 @@ export default function Dashboard() {
               <>
                 <KpiCard
                   label="POS Sales Today"
-                  value={money(data?.posRevenue || 0)}
+                  value={data?.posComplete ? money(data.posRevenue) : 'Unavailable'}
                   accent="text-green-300"
                   to="/pos"
                 />
                 <KpiCard
                   label="Orders Today"
-                  value={data?.todayOrderCount || 0}
-                  sub="Completed orders"
+                  value={data?.posComplete ? data.todayOrderCount : 'Unavailable'}
+                  sub={data?.posComplete ? 'Completed sales' : 'Server confirmation required'}
                   to="/pos"
                 />
                 <KpiCard
-                  label="Open checks"
-                  value={data?.openCheckCount || 0}
-                  accent={Number(data?.openCheckCount || 0) > 0 ? 'text-yellow-300' : 'text-green-300'}
+                  label={barOnly ? 'Open tabs' : 'Open checks'}
+                  value={data?.posComplete ? data.openCheckCount : 'Unavailable'}
+                  accent={data?.posComplete && Number(data?.openCheckCount || 0) > 0 ? 'text-yellow-300' : 'text-green-300'}
                   to={barOnly ? '/restaurant/service' : '/restaurant/floor'}
                 />
                 <KpiCard
                   label="Low Stock"
-                  value={data?.lowStockCount || 0}
-                  sub="Items below par"
+                  value={data?.lowStockCount === null ? 'Unavailable' : data?.lowStockCount}
+                  sub="Items below reorder level"
                   to="/alerts?filter=stock"
                 />
               </>
@@ -341,7 +350,7 @@ export default function Dashboard() {
           <QuickLink to="/alerts?filter=all" icon={AlertTriangle} label="Alerts" sub={`${openAlertCount} open`} />
           <QuickLink to="/money?focus=outstanding" icon={TrendingUp} label="Money" sub="Balances and audit" />
           {can('pos.reports') && isEnabled('pos') && <QuickLink to="/pos" icon={ShoppingCart} label="POS Sales" sub="Live sales and history" />}
-          {restaurantMode && (!barOnly || isEnabled('owner_mobile_view')) && <QuickLink to="/restaurant-owner" icon={Utensils} label={barOnly ? 'Bar Owner' : 'Owner View'} sub="Today's overview" />}
+          {restaurantMode && (!barOnly || features?.owner_mobile_view === true) && <QuickLink to="/restaurant-owner" icon={Utensils} label={barOnly ? 'Bar Owner' : 'Owner View'} sub="Today's overview" />}
           {pwaEnabled && <QuickLink to="/control" icon={MessageSquare} label="Inbox" sub={inboxUnreadCount > 0 ? `${inboxUnreadCount} unread` : restaurantMode ? 'Manager chat' : 'Front desk chat'} />}
           {restaurantMode ? (
             <QuickLink to="/inventory" icon={Package} label={barOnly ? 'Bar Stock' : 'Inventory'} sub={barOnly ? 'Drinks, packs and low stock' : 'Stock and menu items'} />

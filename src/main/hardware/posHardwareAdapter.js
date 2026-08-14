@@ -218,7 +218,6 @@ export function buildCashDrawerPulse(settings = {}) {
 }
 
 function isCashOrder(order = {}) {
-  if (String(order.payment_method || '').toLowerCase() === 'cash') return true
   const payments = Array.isArray(order.payment_breakdown)
     ? order.payment_breakdown
     : typeof order.payment_breakdown === 'string'
@@ -248,6 +247,20 @@ function formatCurrency(currency, value) {
   return `${currency || 'P'} ${normalizeMoney(value).toFixed(2)}`
 }
 
+function recordedMoney(value) {
+  if (value === null || value === undefined || value === '') return null
+  const amount = Number(value)
+  return Number.isFinite(amount) ? amount : null
+}
+
+function recordedItemAmount(item = {}) {
+  for (const key of ['net_subtotal', 'subtotal', 'gross_subtotal']) {
+    const amount = recordedMoney(item?.[key])
+    if (amount !== null) return amount
+  }
+  return null
+}
+
 function receiptItems(order) {
   return Array.isArray(order?.pos_order_items) ? order.pos_order_items : Array.isArray(order?.items) ? order.items : []
 }
@@ -270,7 +283,8 @@ export function buildEscPosReceipt(order = {}, business = {}, settings = {}, opt
   const width = paperColumns(normalized.receipt_paper_width)
   const currency = business.currency || 'P'
   const receiptNo = order.receipt_number
-    || (order.id ? `POS-${String(order.id).slice(0, 8).toUpperCase()}` : 'DRAFT')
+    || (order?._pending_sync === true ? 'PROVISIONAL — PENDING SERVER NUMBER' : 'RECEIPT NUMBER UNAVAILABLE')
+  const provisional = order?._pending_sync === true
   const buffers = [
     commandBuffer([ESC, 0x40]),
     commandBuffer([ESC, 0x74, escposCodepageByte(normalized.escpos_codepage)])
@@ -292,6 +306,11 @@ export function buildEscPosReceipt(order = {}, business = {}, settings = {}, opt
 
   pushAlign(buffers, 'left')
   pushRule(buffers, width)
+  if (provisional) {
+    pushText(buffers, 'PROVISIONAL — PENDING SERVER CONFIRMATION')
+    pushText(buffers, 'Amounts remain estimates until the server confirms this sale.')
+    pushRule(buffers, width)
+  }
   pushText(buffers, `Receipt: ${receiptNo}`)
   pushText(buffers, `Date: ${new Date(order.created_at || Date.now()).toLocaleString('en-GB')}`)
   if (order.cashier_name) pushText(buffers, `Cashier: ${order.cashier_name}`)
@@ -303,10 +322,12 @@ export function buildEscPosReceipt(order = {}, business = {}, settings = {}, opt
 
   for (const item of receiptItems(order)) {
     const quantity = normalizeMoney(item.quantity || 0)
-    const unitPrice = normalizeMoney(item.unit_price || item.price || 0)
-    const total = normalizeMoney(quantity * unitPrice)
+    const unitPrice = recordedMoney(item.unit_price ?? item.price)
+    const total = recordedItemAmount(item)
     for (const line of wrapText(item.item_name || item.name || 'Item', width)) pushText(buffers, line)
-    pushText(buffers, twoColumn(`${quantity} x ${formatCurrency(currency, unitPrice)}`, formatCurrency(currency, total), width)[0])
+    const unitLabel = unitPrice === null ? 'Unit price unavailable' : `${quantity} x ${formatCurrency(currency, unitPrice)}`
+    const amountLabel = total === null ? 'Amount unavailable' : formatCurrency(currency, total)
+    pushText(buffers, twoColumn(unitLabel, amountLabel, width)[0])
     const modifierText = [
       ...(Array.isArray(item.modifiers) ? item.modifiers.map((mod) => mod.name).filter(Boolean) : []),
       item.item_notes
@@ -319,15 +340,17 @@ export function buildEscPosReceipt(order = {}, business = {}, settings = {}, opt
   pushRule(buffers, width)
   const totals = [
     ['Gross', order.gross_total],
-    ['Discount', Number(order.discount_total || 0) > 0 ? -Math.abs(Number(order.discount_total || 0)) : null],
+    ['Discount', recordedMoney(order.discount_total) !== null && Number(order.discount_total) > 0 ? -Math.abs(Number(order.discount_total)) : null],
     ['Tax/VAT', order.tax_total],
     ['Tip', order.tip_total]
-  ].filter(([, value]) => value !== null && Number(value || 0) !== 0)
+  ].filter(([, value]) => recordedMoney(value) !== null && Number(value) !== 0)
   for (const [label, value] of totals) {
     for (const line of twoColumn(label, formatCurrency(currency, value), width)) pushText(buffers, line)
   }
   pushBold(buffers, true)
-  for (const line of twoColumn('TOTAL', formatCurrency(currency, order.total || 0), width)) pushText(buffers, line)
+  const totalAmount = recordedMoney(order.total)
+  const totalLabel = totalAmount === null ? 'Amount unavailable' : formatCurrency(currency, totalAmount)
+  for (const line of twoColumn('TOTAL', totalLabel, width)) pushText(buffers, line)
   pushBold(buffers, false)
 
   const payments = receiptPayments(order)
@@ -335,11 +358,12 @@ export function buildEscPosReceipt(order = {}, business = {}, settings = {}, opt
     pushRule(buffers, width)
     pushText(buffers, 'Payments')
     for (const payment of payments) {
-      for (const line of twoColumn(payment.method || 'Payment', formatCurrency(currency, payment.amount || 0), width)) pushText(buffers, line)
+      const paymentAmount = recordedMoney(payment.amount)
+      for (const line of twoColumn(payment.method || 'Tender unavailable', paymentAmount === null ? 'Amount unavailable' : formatCurrency(currency, paymentAmount), width)) pushText(buffers, line)
       if (payment.reference) pushText(buffers, `Ref: ${payment.reference}`)
     }
-  } else if (order.payment_method) {
-    pushText(buffers, `Method: ${order.payment_method}`)
+  } else {
+    pushText(buffers, `Method: ${order.payment_method || 'Tender unavailable'}`)
   }
 
   pushRule(buffers, width)
@@ -411,6 +435,9 @@ function sendPath(targetPath, payload) {
 }
 
 export async function printEscPosReceipt({ order = {}, business = {}, settings = {}, openDrawer = false } = {}) {
+  if (!order?.receipt_number && order?._pending_sync !== true) {
+    return { success: false, error: 'Printing is blocked until the server-issued receipt number is available.' }
+  }
   const normalized = normalizePosHardwareSettings(settings)
   const drawerTiming = openDrawer && normalized.cash_drawer_enabled && isCashOrder(order)
     ? normalized.cash_drawer_open_timing

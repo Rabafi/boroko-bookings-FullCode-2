@@ -11,6 +11,7 @@ import { createClient } from '@supabase/supabase-js';
 import { normalizePosHardwareSettings } from '../shared/hardwareSettings.js';
 import {
   buildCreatePosOrderPayloadV3,
+  adaptLegacyPosOrderFinancialPayload,
   buildVoidPayload,
   buildReturnPayloadV3,
   buildFinalizeCashupPayloadV2,
@@ -133,7 +134,24 @@ function getOrderPaymentRows(order = {}) {
     : typeof order.payment_breakdown === 'string'
       ? (() => { try { return JSON.parse(order.payment_breakdown); } catch { return []; } })()
       : [];
-  return breakdown.length > 0 ? breakdown : [{ method: order.payment_method || 'cash', amount: Number(order.total || 0) }];
+  // A legacy payment_method label is not a recorded tender allocation. Keep
+  // the row visible for reconciliation, but never turn the order total into
+  // an invented cash/card amount in a cash-up preview.
+  return breakdown
+    .map((row) => ({
+      ...row,
+      method: String(row?.method || row?.type || '').trim().toLowerCase(),
+      amount: Number(row?.amount)
+    }))
+    .filter((row) => row.method && Number.isFinite(row.amount) && row.amount !== 0);
+}
+
+function hasRecordedPosTenderEnvelope(order = {}) {
+  const rows = getOrderPaymentRows(order);
+  const total = Number(order?.total);
+  return rows.length > 0
+    && Number.isFinite(total)
+    && Math.abs(rows.reduce((sum, row) => sum + Number(row.amount), 0) - Math.abs(total)) <= 0.005;
 }
 
 function summarizeCashupOrders(orders = [], { openingFloat = 0 } = {}) {
@@ -143,11 +161,16 @@ function summarizeCashupOrders(orders = [], { openingFloat = 0 } = {}) {
   let grossSales = 0;
   let returnTotal = 0;
   let pendingCount = 0;
+  let incompleteTenderCount = 0;
 
   for (const order of completed) {
     const total = normalizeMoney(order.total);
     const orderSign = total >= 0 ? 1 : -1;
-    for (const payment of getOrderPaymentRows(order)) {
+    // A non-empty breakdown is not enough: a partial or unbalanced envelope
+    // must not leak a partial cash/card amount into even a cache estimate.
+    const paymentRows = hasRecordedPosTenderEnvelope(order) ? getOrderPaymentRows(order) : [];
+    if (paymentRows.length === 0) incompleteTenderCount += 1;
+    for (const payment of paymentRows) {
       const amount = Number(payment.amount || 0);
       const signedAmount = orderSign < 0 ? -Math.abs(amount) : Math.abs(amount);
       byMethod[payment.method] = normalizeMoney((byMethod[payment.method] || 0) + signedAmount);
@@ -167,6 +190,10 @@ function summarizeCashupOrders(orders = [], { openingFloat = 0 } = {}) {
     returns_total: returnTotal,
     net_sales: netSales,
     by_method: byMethod,
+    source: 'cache',
+    complete: false,
+    financial_truth: 'cache_estimate',
+    incomplete_tender_count: incompleteTenderCount,
     expected_cash_sales: cashSales,
     expected_cash_drawer: normalizeMoney(openingFloat + cashSales)
   };
@@ -1687,7 +1714,10 @@ function registerIpcHandlers() {
         _sync_created_offline: true,
         pos_order_items: (data.items || []).map((item) => ({
           id: randomUUID(), order_id: payload.id, lodge_id: lodgeId, ...item,
-          subtotal: Number(item.quantity || 0) * Number(item.unit_price || 0)
+          // Quantity × unit price is only a local pricing estimate. Keep the
+          // provisional row visibly unposted until the authoritative RPC
+          // records the line amount.
+          subtotal: item.subtotal ?? item.net_subtotal ?? item.gross_subtotal ?? null
         }))
       };
       const cachedOrders = readCache('pos-orders');
@@ -1733,9 +1763,14 @@ function registerIpcHandlers() {
       if (error) throw new Error(error.message);
       const merged = mergeOrders(data || [], readCache('pos-orders'));
       writeCache('pos-orders', merged);
-      return applyOutletFilter(merged, outletFilter);
+      return applyOutletFilter(merged, outletFilter).map((order) => ({
+        ...order,
+        _financial_complete: ['completed', 'settled'].includes(String(order?.status || '').toLowerCase())
+          && Number.isFinite(Number(order?.total))
+          && hasRecordedPosTenderEnvelope(order)
+      }));
     }
-    return applyOutletFilter(readCache('pos-orders'), outletFilter);
+    return applyOutletFilter(readCache('pos-orders'), outletFilter).map((order) => ({ ...order, _financial_complete: false }));
   });
 
   ipcMain.handle('pos:void-order', async (_event, payload) => {
@@ -1885,7 +1920,9 @@ function registerIpcHandlers() {
       items: returnItems,
       total: returnTotal,
       gross_total: returnTotal,
-      payment_method: parentOrder.payment_method || 'cash',
+      // The return is provisional until the authoritative RPC records its
+      // reversal and tender. Never inherit the original sale's tender here.
+      payment_method: null,
       outlet_id: rpcPayload.outlet_id,
       walk_in_name: `Return: ${parentOrder.walk_in_name || 'Guest'}`,
       room_id: parentOrder.room_id || null,
@@ -1925,7 +1962,18 @@ function registerIpcHandlers() {
         orders_count: data.order_count || 0,
         returns_total: data.returns || 0,
         by_method: data.expected_by_method || {},
-        pending_count: 0
+        pending_count: 0,
+        source: 'server',
+        // Blind operator previews intentionally omit monetary expectations.
+        // Only a complete server envelope may drive displayed totals/variance.
+        complete: data.expected_by_method !== undefined
+          && data.gross_sales !== undefined
+          && data.net_sales !== undefined,
+        financial_truth: data.expected_by_method !== undefined
+          && data.gross_sales !== undefined
+          && data.net_sales !== undefined
+          ? 'server_confirmed'
+          : 'operator_blind'
       };
     }
     const outletFilter = getUserOutletFilter();
@@ -2030,6 +2078,9 @@ function registerIpcHandlers() {
         expected_by_method: result.expected_by_method || {},
         counted_by_method: result.counted_by_method || countedByMethod,
         variance_by_method: result.variance_by_method || {},
+        source: 'server',
+        complete: true,
+        financial_truth: 'server_confirmed',
         _pending_sync: false,
         _sync_state: 'synced'
       });
@@ -2051,12 +2102,12 @@ function registerIpcHandlers() {
           .select('*, outlets(name)').eq('lodge_id', requireLodgeContext())
           .order('created_at', { ascending: false }).limit(limit);
         if (error) throw error;
-        const rows = (data || []).map((r) => ({ ...r, outlet_name: r.outlets?.name || null }));
+        const rows = (data || []).map((r) => ({ ...r, outlet_name: r.outlets?.name || null, source: 'server', complete: true, financial_truth: 'server_confirmed' }));
         if (rows.length > 0) writeCache('pos-cashups', rows);
-        return rows.length > 0 ? rows : readCache('pos-cashups').slice(0, limit);
-      } catch { return readCache('pos-cashups').slice(0, limit); }
+        return rows.length > 0 ? rows : readCache('pos-cashups').slice(0, limit).map((r) => ({ ...r, source: 'cache', complete: false, financial_truth: 'cache_estimate' }));
+      } catch { return readCache('pos-cashups').slice(0, limit).map((r) => ({ ...r, source: 'cache', complete: false, financial_truth: 'cache_estimate' })); }
     }
-    return readCache('pos-cashups').slice(0, limit);
+    return readCache('pos-cashups').slice(0, limit).map((r) => ({ ...r, source: 'cache', complete: false, financial_truth: 'cache_estimate' }));
   });
 
   // ── Outlets ────────────────────────────────────────────────────────────────
@@ -2408,6 +2459,9 @@ function registerIpcHandlers() {
 
   ipcMain.handle('pos:print-receipt', async (_event, { order, business, settings, openDrawer }) => {
     const normalized = normalizePosHardwareSettings(settings || readCache('pos-hardware-settings')?.[0] || {});
+    if (order && !order.receipt_number && order._pending_sync !== true) {
+      return { success: false, error: 'Printing is blocked until the server-issued receipt number is available.' };
+    }
     if (normalized.receipt_print_mode === 'escpos') {
       return printEscPosReceipt({ order: order || {}, business: business || {}, settings: normalized, openDrawer: !!openDrawer });
     }
@@ -2670,23 +2724,41 @@ function registerIpcHandlers() {
 
   // ── POS History Export ─────────────────────────────────────────────────────
   ipcMain.handle('pos:export-history', async (_event, { startDate, endDate } = {}) => {
-    const orders = await (async () => {
-      if (state.isOnline && state.supabase && hasLodgeContext()) {
-        let q = state.supabase.from('pos_orders')
-          .select('id, created_at, walk_in_name, total, payment_method, outlet_id, table_name, cashier_name, status, pos_order_items(item_name, quantity, unit_price)')
-          .eq('lodge_id', requireLodgeContext());
-        if (startDate) q = q.gte('created_at', startDate);
-        if (endDate) q = q.lte('created_at', endDate + 'T23:59:59.999Z');
-        const { data, error } = await q.order('created_at', { ascending: false }).limit(state.lowResource.exportMaxRows);
-        if (error) throw new Error(error.message);
-        return data || [];
-      }
-      return readCache('pos-orders');
-    })();
+    if (!state.isOnline || !state.supabase || !hasLodgeContext()) {
+      throw new Error('History export requires an online, server-confirmed POS dataset. Cached or offline rows cannot be exported as financial truth.');
+    }
+    let q = state.supabase.from('pos_orders')
+      .select('id, created_at, walk_in_name, total, payment_method, payment_breakdown, outlet_id, table_name, cashier_name, status, pos_order_items(item_name, quantity, unit_price)')
+      .eq('lodge_id', requireLodgeContext());
+    if (startDate) q = q.gte('created_at', startDate);
+    if (endDate) q = q.lte('created_at', endDate + 'T23:59:59.999Z');
+    const { data: orders, error } = await q.order('created_at', { ascending: false }).limit(state.lowResource.exportMaxRows);
+    if (error) throw new Error(error.message);
+    const rowsToExport = Array.isArray(orders) ? orders : [];
+    const financialStatuses = new Set(['completed', 'settled', 'returned', 'refunded']);
+    const incomplete = rowsToExport.filter((order) => {
+      if (!financialStatuses.has(String(order?.status || '').toLowerCase())) return false;
+      const total = Number(order?.total);
+      const breakdown = Array.isArray(order?.payment_breakdown) ? order.payment_breakdown : [];
+      const tenderTotal = breakdown.reduce((sum, payment) => sum + Number(payment?.amount), 0);
+      return !Number.isFinite(total)
+        || breakdown.length === 0
+        || breakdown.some((payment) => !payment?.method || !Number.isFinite(Number(payment?.amount)))
+        || Math.abs(tenderTotal - Math.abs(total)) > 0.005;
+    });
+    if (incomplete.length > 0) {
+      throw new Error(`History export is unavailable: ${incomplete.length} financial order${incomplete.length === 1 ? '' : 's'} lack a complete recorded tender envelope.`);
+    }
     const rows = [['Order ID', 'Date', 'Guest', 'Items', 'Total', 'Payment', 'Cashier', 'Status']];
-    for (const o of orders) {
+    for (const o of rowsToExport) {
       const items = Array.isArray(o.pos_order_items) ? o.pos_order_items.map((i) => `${i.item_name} x${i.quantity}`).join('; ') : '';
-      rows.push([String(o.id).slice(0, 8), o.created_at || '', o.walk_in_name || '', items, String(o.total || 0), o.payment_method || 'cash', o.cashier_name || '', o.status || '']);
+      const breakdown = Array.isArray(o.payment_breakdown) ? o.payment_breakdown : [];
+      const paymentLabel = breakdown.length === 1
+        ? String(breakdown[0]?.method || 'Tender unavailable')
+        : breakdown.length > 1
+          ? 'Split tender'
+          : 'Tender unavailable';
+      rows.push([String(o.id).slice(0, 8), o.created_at || '', o.walk_in_name || '', items, Number.isFinite(Number(o.total)) ? String(o.total) : 'Amount unavailable', paymentLabel, o.cashier_name || '', o.status || '']);
     }
     return rows.map((r) => r.join(',')).join('\n');
   });
@@ -2787,7 +2859,13 @@ function registerIpcHandlers() {
 
         try {
           const replayPayload = resolveLegacyQueuePayload(item.payload);
-          const { data: result, error } = await state.supabase.rpc(item.functionName, replayPayload);
+          const authoritativeReplayPayload = item.functionName === 'create_pos_order_v3'
+            ? {
+                ...replayPayload,
+                payload: adaptLegacyPosOrderFinancialPayload(replayPayload?.payload)
+              }
+            : replayPayload;
+          const { data: result, error } = await state.supabase.rpc(item.functionName, authoritativeReplayPayload);
           if (error) throw new Error(error.message);
           if (result?.success === false && result?.error) throw new Error(result.error);
 

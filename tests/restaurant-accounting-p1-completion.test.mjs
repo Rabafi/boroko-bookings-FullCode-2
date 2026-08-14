@@ -43,10 +43,11 @@ describe('Restaurant Accounting P1 completion', () => {
 
   it('keeps renderer, bridge, and AP RPC parameter contracts aligned', () => {
     assert.doesNotMatch(bankUi, /confirmBankMatch/)
-    assert.match(bankUi, /approveBankMatch\(proposal\.id, true\)/)
-    assert.match(bankUi, /await computeStatementHash\(csvText\)/)
-    assert.match(bankUi, /statementHash,\s+fileName,/)
-    assert.match(apUi, /idempotency_key: newOperationKey\(\)/)
+    assert.match(bankUi, /accountingInvoke\('reviewBankAllocation',id,approve,reason\)/)
+    assert.match(bankUi, /accountingInvoke\('proposeBankAllocation'/)
+    assert.match(bankUi, /runIdempotent\(`bank-import:/)
+    assert.match(bankUi, /statement evidence imported immutably/i)
+    assert.match(apUi, /runIdempotent\(`bill-payment:/)
     assert.match(apDomain, /p_idempotency_key: paymentData\.idempotency_key/)
   })
 })

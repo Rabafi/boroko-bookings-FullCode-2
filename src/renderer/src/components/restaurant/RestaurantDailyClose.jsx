@@ -49,14 +49,15 @@ export default function RestaurantDailyClose() {
       const unresolvedAlerts = Array.isArray(alerts.value) ? alerts.value.filter(a => !a.is_resolved).length : 0
       const lowStockCount = Array.isArray(lowStock.value) ? lowStock.value.length : 0
       const orders = Array.isArray(todayOrders.value) ? todayOrders.value : []
-      const todaySales = orders.reduce((sum, o) => sum + (o.total || o.amount || 0), 0)
+      const orderSnapshotReady = orders?._source === 'server' && orders?._complete === true
+      const todaySales = orderSnapshotReady ? orders.reduce((sum, o) => sum + Number(o.total || o.amount || 0), 0) : null
       setChecks({
         openTables, pendingTickets, drawerOpen, drawer: drawer.value,
         activeShifts, unresolvedAlerts, lowStock: lowStockCount,
-        todaySales, todayOrders: orders.length, checklistsComplete: true
+        todaySales, todayOrders: orderSnapshotReady ? orders.length : null, checklistsComplete: true
       })
-      setChecksVerified(failedChecks === 0)
-      if (failedChecks > 0) setError(`${failedChecks} end-of-day check(s) could not be verified. Refresh before treating the day as ready.`)
+      setChecksVerified(failedChecks === 0 && orderSnapshotReady)
+      if (failedChecks > 0 || !orderSnapshotReady) setError(`${failedChecks > 0 ? `${failedChecks} end-of-day check(s)` : 'The POS financial snapshot'} could not be verified. Refresh before treating the day as ready.`)
     } catch (err) {
       console.error('Failed to load daily close status:', err)
       setError(err.message || 'Could not load end-of-day checks.')
@@ -69,7 +70,8 @@ export default function RestaurantDailyClose() {
     try {
       setGenerating(true)
       const result = await window.api.pos.generateOwnerDigest()
-      setDigest(result)
+      if (result?.success === false) throw new Error(result.error || 'Could not generate the owner digest.')
+      setDigest(result?.digest || result?.summary || result)
     } catch (err) {
       console.error('Failed to generate digest:', err)
       setError(err.message || 'Could not generate the owner digest.')
@@ -135,17 +137,17 @@ export default function RestaurantDailyClose() {
             <div className="restaurant-native-kpis">
               <div className="bg-emerald-50 rounded-lg p-4 text-center">
                 <TrendingUp size={18} className="mx-auto mb-1 text-emerald-500" />
-                <div className="text-xl font-bold text-emerald-700">P {Number(checks.todaySales).toFixed(2)}</div>
+                <div className="text-xl font-bold text-emerald-700">{checks.todaySales == null ? 'Unavailable' : `P ${Number(checks.todaySales).toFixed(2)}`}</div>
                 <div className="text-xs text-gray-500">Total Revenue</div>
               </div>
               <div className="bg-blue-50 rounded-lg p-4 text-center">
                 <Wallet size={18} className="mx-auto mb-1 text-blue-500" />
-                <div className="text-xl font-bold text-blue-700">{checks.todayOrders}</div>
+                <div className="text-xl font-bold text-blue-700">{checks.todayOrders == null ? 'Unavailable' : checks.todayOrders}</div>
                 <div className="text-xs text-gray-500">Orders</div>
               </div>
               <div className="bg-purple-50 rounded-lg p-4 text-center">
                 <Users size={18} className="mx-auto mb-1 text-purple-500" />
-                <div className="text-xl font-bold text-purple-700">P {checks.todayOrders > 0 ? (checks.todaySales / checks.todayOrders).toFixed(2) : '0.00'}</div>
+                <div className="text-xl font-bold text-purple-700">{checks.todayOrders == null || checks.todaySales == null ? 'Unavailable' : `P ${checks.todayOrders > 0 ? (checks.todaySales / checks.todayOrders).toFixed(2) : '0.00'}`}</div>
                 <div className="text-xs text-gray-500">Avg Order</div>
               </div>
             </div>
@@ -205,26 +207,27 @@ export default function RestaurantDailyClose() {
                 {generating ? 'Generating...' : 'Generate Digest'}
               </button>
             </div>
-            {digest?.summary && (
+            {digest && (
               <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-3">
                 <div className="bg-gray-50 rounded-lg p-3 text-center">
-                  <div className="text-lg font-bold">P {Number(digest.summary.total_revenue || 0).toFixed(2)}</div>
+                  <div className="text-lg font-bold">{digest.financial_complete === true && Number.isFinite(Number(digest.total_revenue)) ? `P ${Number(digest.total_revenue).toFixed(2)}` : 'Unavailable'}</div>
                   <div className="text-[10px] text-gray-500">Revenue</div>
                 </div>
                 <div className="bg-gray-50 rounded-lg p-3 text-center">
-                  <div className="text-lg font-bold">{digest.summary.total_orders || 0}</div>
+                  <div className="text-lg font-bold">{digest.financial_complete === true ? digest.total_orders : 'Unavailable'}</div>
                   <div className="text-[10px] text-gray-500">Orders</div>
                 </div>
                 <div className="bg-gray-50 rounded-lg p-3 text-center">
-                  <div className="text-lg font-bold">{digest.summary.active_alerts || 0}</div>
+                  <div className="text-lg font-bold">{digest.active_alerts ?? 'Unavailable'}</div>
                   <div className="text-[10px] text-gray-500">Alerts</div>
                 </div>
                 <div className="bg-gray-50 rounded-lg p-3 text-center">
-                  <div className="text-lg font-bold">{digest.summary.low_stock_items || 0}</div>
+                  <div className="text-lg font-bold">{digest.low_stock_items ?? 'Unavailable'}</div>
                   <div className="text-[10px] text-gray-500">Low Stock</div>
                 </div>
               </div>
             )}
+            {digest && digest.financial_complete !== true && <p className="mt-3 text-sm text-amber-700">Revenue and order totals remain unavailable until the server certifies a complete POS source.</p>}
           </div>
           <p className="restaurant-native-financial-warning">This page verifies operational readiness and generates a digest. It does not silently post a financial period close; drawer and shift actions remain explicit and audited in their own tabs.</p>
         </div>

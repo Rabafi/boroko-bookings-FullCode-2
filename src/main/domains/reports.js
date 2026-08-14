@@ -36,18 +36,28 @@ async function getAllPoolDayUse() {
 
 let dashboardSnapshotWarningShown = false;
 
+function withReportMetadata(rows, source, complete) {
+  const result = Array.isArray(rows) ? rows : [];
+  Object.defineProperties(result, {
+    _source: { value: source, enumerable: true, configurable: true },
+    _complete: { value: complete === true, enumerable: true, configurable: true }
+  });
+  return result;
+}
+
 // ─── REPORTS ──────────────────────────────────────────────────────────────────
 
 export async function getOccupancyReport(startDate, endDate) {
   const rooms = await getAllRooms().catch((error) => {
     const cached = readCache('rooms');
-    if (cached.length > 0) return cached;
+    if (cached.length > 0) return withReportMetadata(cached, 'cache', false);
     throw error;
   });
   const cachedBookingsInRange = readCache('bookings').filter(
     (b) => b.status !== 'cancelled' && b.status !== 'pending' && b.check_in <= endDate && b.check_out > startDate
   );
   let bookings = [];
+  let bookingsSource = 'server';
   try {
     const { data, error } = await state.supabase.
     from('bookings').
@@ -57,11 +67,11 @@ export async function getOccupancyReport(startDate, endDate) {
     lte('check_in', endDate).
     gt('check_out', startDate);
     if (error) throw error;
-    bookings = (data || []).length === 0 && cachedBookingsInRange.length > 0 ?
-    cachedBookingsInRange :
-    data || [];
+    bookings = (data || []).length === 0 && cachedBookingsInRange.length > 0 ? cachedBookingsInRange : data || [];
+    if ((data || []).length === 0 && cachedBookingsInRange.length > 0) bookingsSource = 'cache';
   } catch {
     bookings = cachedBookingsInRange;
+    bookingsSource = 'cache';
   }
 
   // +1 for inclusive end-date: Jan 1–Jan 7 = 7 days, not 6
@@ -69,7 +79,7 @@ export async function getOccupancyReport(startDate, endDate) {
     (new Date(endDate) - new Date(startDate)) / (1000 * 60 * 60 * 24)
   ) + 1);
 
-  return rooms.map((room) => {
+  const rows = rooms.map((room) => {
     const roomBookings = bookings.filter((b) => b.room_id === room.id);
     let nights = 0;
     for (const b of roomBookings) {
@@ -87,6 +97,8 @@ export async function getOccupancyReport(startDate, endDate) {
       has_event: hasEvent
     };
   });
+  const bookingsComplete = bookings.every((booking) => [booking.total_amount, booking.charges_total].every((value) => value !== null && value !== undefined && value !== ''));
+  return withReportMetadata(rows, bookingsSource === 'server' && rooms?._source !== 'cache' ? 'server' : 'cache', bookingsSource === 'server' && rooms?._complete !== false && bookingsComplete);
 }
 
 async function getRevenueReportLocal(startDate, endDate) {
@@ -293,7 +305,13 @@ export async function getRevenueReport(startDate, endDate) {
         p_end_date: endDate
       });
       if (error) throw error;
-      if (data && typeof data === 'object') return { ...data, source: 'server', as_of_range: { start: startDate, end: endDate } };
+      if (data && typeof data === 'object') return {
+        ...data,
+        source: 'server',
+        _source: 'server',
+        _complete: data.complete === true || data._complete === true,
+        as_of_range: { start: startDate, end: endDate }
+      };
       throw new Error('Revenue report summary was empty.');
     } catch (error) {
       recordCriticalError('reports.revenue', error, {
@@ -308,6 +326,8 @@ export async function getRevenueReport(startDate, endDate) {
     return {
       ...(await getRevenueReportLocal(startDate, endDate)),
       source: 'local',
+      _source: 'derived-estimate',
+      _complete: false,
       as_of_range: { start: startDate, end: endDate }
     };
   } catch (error) {
@@ -530,6 +550,8 @@ export async function getProfitLoss(start, end) {
         return {
           ...finalizeProfitLossSummary(normalized, retainedRevenue),
           source: 'server',
+          _source: 'server',
+          _complete: data.complete === true || data._complete === true,
           as_of_range: { start, end }
         };
       }
@@ -547,6 +569,8 @@ export async function getProfitLoss(start, end) {
     return {
       ...(await getProfitLossLocal(start, end)),
       source: 'local',
+      _source: 'derived-estimate',
+      _complete: false,
       as_of_range: { start, end }
     };
   } catch (error) {
@@ -567,7 +591,14 @@ export async function getReportsSnapshot(today = getLocalDateKey(new Date(), LOC
         p_today: today
       });
       if (error) throw error;
-      if (data && typeof data === 'object') return { ...data, source: 'server', as_of: today, last_synced_at: lastSyncedAt };
+      if (data && typeof data === 'object') return {
+        ...data,
+        source: 'server',
+        _source: 'server',
+        _complete: data.complete === true || data._complete === true,
+        as_of: today,
+        last_synced_at: lastSyncedAt
+      };
       throw new Error('Reports snapshot was empty.');
     } catch (error) {
       console.warn('[Reports] Shared snapshot unavailable, using local fallback:', error?.message || error);
@@ -1204,12 +1235,16 @@ export async function getRoomProfitabilityReport(startDate, endDate) {
         p_end_date: endDate
       });
       if (error) throw error;
-      if (Array.isArray(data)) {
-        return data.map((row) => ({
+      const rows = Array.isArray(data) ? data : Array.isArray(data?.rows) ? data.rows : null;
+      if (rows) {
+        const serverComplete = data?.complete === true || data?._complete === true || rows.every((row) => row?.complete === true || row?._complete === true);
+        return withReportMetadata(rows.map((row) => ({
           ...row,
           source: 'server',
+          _source: 'server',
+          _complete: serverComplete,
           as_of_range: { start: startDate, end: endDate }
-        }));
+        })), 'server', serverComplete);
       }
       throw new Error('Room profitability summary was empty.');
     } catch (error) {
@@ -1284,13 +1319,15 @@ export async function getRoomProfitabilityReport(startDate, endDate) {
     };
   });
 
-  return result.
+  return withReportMetadata(result.
   sort((a, b) => b.contribution - a.contribution).
   map((row) => ({
     ...row,
     source: 'local',
+    _source: 'derived-estimate',
+    _complete: false,
     as_of_range: { start: startDate, end: endDate }
-  }));
+  })), 'derived-estimate', false);
 }
 
 async function getConferenceRevenueSummary(startDate, endDate) {

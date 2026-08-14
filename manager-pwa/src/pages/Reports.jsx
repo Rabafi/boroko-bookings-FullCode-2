@@ -1,13 +1,38 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { useFeatures } from '../contexts/FeaturesContext'
-import { getReportsSnapshot, getDashboardSnapshot, listBookings, listRooms, listStaff } from '../lib/api'
+import { getReportsSnapshot, getDashboardSnapshot, listBookings, listRooms, listStaff, getManagerPosSnapshot } from '../lib/api'
 import { RefreshCw, Lock } from 'lucide-react'
 import { format } from 'date-fns'
 import { readCacheEntry } from '../lib/runtime'
 import { shortDateTime } from '../lib/format'
 import { MONTHLY_USAGE_RESET_COPY, countMonthlyUsageBookings, getPlanRecommendation, getPlanUsageLimits, getUsageLimitStatus } from '@shared/subscriptionPlans'
 import { isRestaurantProductFamily } from '../lib/productShell'
+
+function BarReports({ lodgeId }) {
+  const [snapshot, setSnapshot] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [updatedAt, setUpdatedAt] = useState(null)
+  const load = useCallback(async () => {
+    setLoading(true)
+    setError('')
+    try {
+      const result = await getManagerPosSnapshot(lodgeId, { forceFresh: true })
+      setSnapshot(result)
+      setUpdatedAt(result?.as_of || new Date().toISOString())
+    } catch (loadError) {
+      setSnapshot(null)
+      setError(loadError?.message || 'Bar sales report could not load from the server.')
+    } finally {
+      setLoading(false)
+    }
+  }, [lodgeId])
+  useEffect(() => { load() }, [load])
+  const complete = snapshot?.complete === true
+  const fmt = (value) => `P ${Number(value || 0).toLocaleString('en-BW', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  return <div className="flex min-h-screen flex-col bg-gray-950 pb-24"><div className="bg-gray-900 px-4 pb-4 pt-12"><div className="flex items-start justify-between gap-3"><div><h1 className="text-lg font-bold text-white">Bar sales report</h1><p className="text-xs text-gray-400">Server-confirmed sales, returns and tender controls</p><p className="mt-1 text-[11px] text-gray-500">{updatedAt ? `As of ${new Date(updatedAt).toLocaleString('en-GB')}` : 'Not refreshed'}</p></div><button type="button" onClick={load} className="rounded-full bg-white/5 p-2 text-gray-300" aria-label="Refresh Bar sales report"><RefreshCw size={18} className={loading ? 'animate-spin' : ''} /></button></div></div><div className="space-y-3 px-4 py-4">{error && <div className="rounded-2xl border border-rose-900 bg-rose-950/40 px-4 py-3 text-sm text-rose-200">{error}</div>}{snapshot && !complete && <div className="rounded-2xl border border-amber-900 bg-amber-950/40 px-4 py-3 text-sm text-amber-100">This report is incomplete ({snapshot.unresolved_count || 0} unresolved source rows). Monetary totals and decisions are withheld.</div>}<section className="grid grid-cols-2 gap-3"><div className="rounded-2xl bg-gray-800 p-4"><p className="text-xs text-gray-400">Net sales</p><p className="mt-1 text-xl font-bold text-emerald-200">{complete ? fmt(snapshot.net_sales) : 'Unavailable'}</p></div><div className="rounded-2xl bg-gray-800 p-4"><p className="text-xs text-gray-400">Completed sales</p><p className="mt-1 text-xl font-bold text-white">{complete ? snapshot.sale_count : 'Unavailable'}</p></div><div className="rounded-2xl bg-gray-800 p-4"><p className="text-xs text-gray-400">Returns</p><p className="mt-1 text-xl font-bold text-rose-200">{complete ? fmt(snapshot.returns_total) : 'Unavailable'}</p></div><div className="rounded-2xl bg-gray-800 p-4"><p className="text-xs text-gray-400">Open tabs</p><p className="mt-1 text-xl font-bold text-amber-200">{complete ? snapshot.open_count : 'Unavailable'}</p></div></section><section className="rounded-2xl bg-gray-800 p-4"><h2 className="text-sm font-semibold text-white">Tender controls</h2>{complete && Array.isArray(snapshot.by_payment) && snapshot.by_payment.length ? <div className="mt-3 space-y-2">{snapshot.by_payment.map((row) => <div key={row.method} className="flex justify-between text-sm"><span className="capitalize text-gray-400">{String(row.method).replace(/_/g, ' ')}</span><span className="font-semibold text-white">{fmt(row.amount)}</span></div>)}</div> : <p className="mt-2 text-sm text-gray-500">{complete ? 'No posted tenders in this period.' : 'Unavailable until the report is complete.'}</p>}</section><p className="text-xs text-gray-500">Detailed transaction exports and corrections remain in the desktop Bar app. This mobile report never mixes lodging payments with POS sales.</p></div></div>
+}
 
 function StatRow({ label, value, sub, color = 'text-white' }) {
   return (
@@ -110,6 +135,12 @@ function RevenueMixBar({ segments, total }) {
 
 export default function Reports() {
   const { user } = useAuth()
+  if (isRestaurantProductFamily(user?.product_family) && String(user?.hospitality_mode || '').toLowerCase() === 'bar_only') return <BarReports lodgeId={user?.lodge_id} />
+  return <LodgingReports />
+}
+
+function LodgingReports() {
+  const { user } = useAuth()
   const { isEnabled } = useFeatures()
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -150,7 +181,7 @@ export default function Reports() {
     } finally {
       setLoading(false)
     }
-  }, [user.lodge_id, user?.plan, user?.product_family])
+  }, [user.lodge_id, user?.plan])
 
   useEffect(() => { load() }, [load])
 
@@ -176,7 +207,6 @@ export default function Reports() {
   const usageStatus = getUsageLimitStatus({ used: usage.monthlyBookings, limit: usageLimits.monthlyBookings, grace: usageLimits.monthlyBookingsGrace })
   const usageRecommendation = getPlanRecommendation({ plan: usage.plan, usage, limits: usageLimits })
   const totalRevenue = (data?.monthRev || 0) + (data?.posRevenue || 0) + (data?.conferenceRevenue || 0) + (data?.poolRevenue || 0)
-  const totalLastMonthRevenue = (data?.lastMonthRev || 0)
 
   return (
     <div className="flex flex-col min-h-screen bg-gray-950 pb-24">

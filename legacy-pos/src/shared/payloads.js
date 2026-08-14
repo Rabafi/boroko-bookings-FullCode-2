@@ -16,7 +16,10 @@ export function normalizePaymentBreakdown(payments = [], fallbackMethod = 'cash'
     .map((row) => ({
       method: String(row?.method || fallbackMethod || 'cash').trim() || 'cash',
       amount: normalizeMoney(row?.amount),
-      reference: String(row?.reference || '').trim() || null
+      reference: String(row?.reference || '').trim() || null,
+      ...(row?.customer_id ? { customer_id: row.customer_id } : {}),
+      ...(row?.voucher_id ? { voucher_id: row.voucher_id } : {}),
+      ...(row?.code ? { code: String(row.code).trim().toUpperCase() } : {})
     }))
     .filter((row) => row.amount !== 0);
   if (normalized.length === 0 && normalizeMoney(total) !== 0) {
@@ -117,6 +120,8 @@ export function buildCreatePosOrderPayloadV3(input = {}) {
     booking_id: legacy.booking_id,
     event_booking_id: legacy.event_booking_id,
     walk_in_name: legacy.walk_in_name,
+    customer_id: input.customer_id || null,
+    customer_account_charge: input.customer_account_charge || null,
     notes: legacy.notes,
     payment_method: legacy.payment_method,
     payment_breakdown: legacy.payment_breakdown,
@@ -140,6 +145,30 @@ export function buildCreatePosOrderPayloadV3(input = {}) {
           .filter(Boolean),
       item_notes: item.item_notes || null
     }))
+  };
+}
+
+// Compatibility adapter for queued v3 orders created before account identity
+// was part of payment_breakdown.  It is deliberately narrow: new envelopes
+// and non-account tenders are left untouched, while an old account intent is
+// promoted to the authoritative tender row before replay.
+export function adaptLegacyPosOrderFinancialPayload(payload = {}) {
+  if (!payload || typeof payload !== 'object') return payload;
+  const legacyCharge = payload.customer_account_charge;
+  if (!legacyCharge?.customer_id) return payload;
+  const breakdown = Array.isArray(payload.payment_breakdown) ? payload.payment_breakdown : [];
+  if (breakdown.some((row) => String(row?.method || '').trim().toLowerCase() === 'account')) return payload;
+  const amount = Number(legacyCharge.amount ?? payload.total ?? 0);
+  if (!Number.isFinite(amount) || amount <= 0) return payload;
+  return {
+    ...payload,
+    payment_method: 'account',
+    payment_breakdown: [{
+      method: 'account',
+      amount: Math.round(amount * 100) / 100,
+      customer_id: legacyCharge.customer_id,
+      reference: null
+    }]
   };
 }
 

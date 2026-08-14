@@ -50,7 +50,7 @@ async function run() {
   assert.match(database, /writeCache\(name, mergeRemoteInventoryWithLocalState\(liveRows\), \{ source: 'remote' \}\)/)
   assert.match(database, /writeCache\(name, mergeRemotePosOrdersWithLocalState\(data \|\| \[\]\), \{ source: 'remote' \}\)/)
   assert.match(database, /const mergedLiveRows = mergeRemotePosOrdersWithLocalState\(data \|\| \[\], cachedOrders\)/)
-  assert.match(database, /return applyPosOrderFilters\(mergedLiveRows, startDate, endDate, outletFilter\)/)
+  assert.match(database, /const filteredLiveRows = applyPosOrderFilters\(mergedLiveRows, startDate, endDate, outletFilter\)[\s\S]*return withPosReadMetadata\(\s*filteredLiveRows,\s*'server',\s*!hasUnresolvedPosRows\(filteredLiveRows\)/)
 
   // Replay payload carries selections only; catalog snapshot resolves price and stock links.
   assert.match(database, /modifier_option_ids: Array\.isArray\(item\.modifier_option_ids\)/)

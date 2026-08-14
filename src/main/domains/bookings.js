@@ -28,6 +28,15 @@ import { computeStayTotal, isCampsiteUnit, normalizeRateMode } from '../../share
 
 // ─── BOOKINGS ─────────────────────────────────────────────────────────────────
 
+function withReadMetadata(rows, source, complete) {
+  const result = Array.isArray(rows) ? rows : []
+  Object.defineProperties(result, {
+    _source: { value: source, enumerable: true, configurable: true },
+    _complete: { value: complete === true, enumerable: true, configurable: true }
+  })
+  return result
+}
+
 function buildLocalPendingInvoiceNumber(bookingId) {
   const suffix = String(bookingId || randomUUID()).replace(/-/g, '').slice(0, 8).toUpperCase();
   return `PENDING-${suffix}`;
@@ -500,7 +509,7 @@ async function _getAllBookings() {
       if (DEBUG_CACHE_FALLBACKS) {
         console.warn('getAllBookings received empty live result; using cached bookings instead');
       }
-      return cached;
+      return withReadMetadata(cached, 'cache', false);
     }
 
     const localRowsForMerge = cached;
@@ -518,7 +527,11 @@ async function _getAllBookings() {
     const mergedLiveRows = mergeRemoteBookingsWithLocalState(mappedWithRefundState, localRowsForMerge);
     const annotatedRows = annotateRowsWithLocalRefundRequests(mergedLiveRows);
     writeCache('bookings', annotatedRows);
-    return annotatedRows;
+    return withReadMetadata(
+      annotatedRows,
+      'server',
+      annotatedRows.every((row) => row?._pending_sync !== true && row?._sync_state !== 'pending')
+    );
   } catch (error) {
     if (state.isOnline) {
       const cached = readCache('bookings');
@@ -548,8 +561,12 @@ async function _getAllBookings() {
     };
   });
 
-  return annotateRowsWithLocalRefundRequests(mappedBookings).
-  sort((a, b) => new Date(b.check_in) - new Date(a.check_in));
+  return withReadMetadata(
+    annotateRowsWithLocalRefundRequests(mappedBookings).
+    sort((a, b) => new Date(b.check_in) - new Date(a.check_in)),
+    state.isOnline ? 'cache' : 'offline-cache',
+    false
+  );
 }
 
 export function getAllBookings() {
@@ -2482,48 +2499,54 @@ async function getNextBookingInvoiceNumber() {
 
 export async function getBookingInvoices() {
   const bookings = await getAllBookings();
+  let authoritative = state.isOnline && bookings?._complete === true;
   let invoiceRows = [];
   let groupRows = readCache('booking-invoice-groups') || [];
   let groupLineRows = readCache('booking-invoice-group-lines') || [];
 
   if (state.isOnline) {
-    let { data, error } = await state.supabase.
-    from('invoices').
-    select('id, booking_id, lodge_id, invoice_number, issued_at, due_date, notes, created_at').
-    eq('lodge_id', state.lodgeId).
-    not('booking_id', 'is', null).
-    order('issued_at', { ascending: false });
+    const loadRows = async (table, select, orderColumn, configure = null) => {
+      const rows = [];
+      for (let from = 0; from < 100000; from += 500) {
+        let query = state.supabase.from(table).select(select).eq('lodge_id', state.lodgeId);
+        if (configure) query = configure(query);
+        const { data, error } = await query.order(orderColumn, { ascending: false }).range(from, from + 499);
+        if (error) return { data: null, error };
+        const page = data || [];
+        rows.push(...page);
+        if (page.length < 500) break;
+      }
+      return { data: rows, error: null };
+    };
 
-    if (error) {
-      const fallback = await state.supabase.
-      from('invoices').
-      select('id, booking_id, lodge_id, invoice_number, issued_at').
-      eq('lodge_id', state.lodgeId).
-      not('booking_id', 'is', null).
-      order('issued_at', { ascending: false });
-      data = fallback.data;
-      error = fallback.error;
+    let invoiceResult = await loadRows(
+      'invoices',
+      'id, booking_id, lodge_id, invoice_number, issued_at, due_date, notes, created_at',
+      'issued_at',
+      (query) => query.not('booking_id', 'is', null)
+    );
+    if (invoiceResult.error) {
+      invoiceResult = await loadRows(
+        'invoices',
+        'id, booking_id, lodge_id, invoice_number, issued_at',
+        'issued_at',
+        (query) => query.not('booking_id', 'is', null)
+      );
     }
 
-    if (error) {
-      console.warn('getBookingInvoices using booking-only fallback:', error.message);
+    if (invoiceResult.error) {
+      console.warn('getBookingInvoices using booking-only fallback:', invoiceResult.error.message);
+      authoritative = false;
       invoiceRows = [];
     } else {
-      invoiceRows = data || [];
+      invoiceRows = invoiceResult.data || [];
     }
 
     const [groupsResult, linesResult] = await Promise.all([
-      state.supabase.
-      from('booking_invoice_groups').
-      select('id, lodge_id, group_key, customer_id, invoice_number, issued_at, due_date, notes, created_at, updated_at').
-      eq('lodge_id', state.lodgeId).
-      order('issued_at', { ascending: false }),
-      state.supabase.
-      from('booking_invoice_group_lines').
-      select('group_id, booking_id, lodge_id, line_order, created_at').
-      eq('lodge_id', state.lodgeId).
-      order('line_order', { ascending: true })
+      loadRows('booking_invoice_groups', 'id, lodge_id, group_key, customer_id, invoice_number, issued_at, due_date, notes, created_at, updated_at', 'issued_at'),
+      loadRows('booking_invoice_group_lines', 'group_id, booking_id, lodge_id, line_order, created_at', 'line_order')
     ]);
+    if (groupsResult.error || linesResult.error) authoritative = false;
     if (!groupsResult.error && Array.isArray(groupsResult.data)) {
       groupRows = groupsResult.data;
       writeCache('booking-invoice-groups', groupRows, { source: 'remote' });
@@ -2671,12 +2694,16 @@ export async function getBookingInvoices() {
     }
   }
 
-  return [...ungroupedRegularRows, ...accommodationGroups.values(), ...eventGroups.values()].
-  sort((a, b) => {
+  return withReadMetadata(
+    [...ungroupedRegularRows, ...accommodationGroups.values(), ...eventGroups.values()].
+    sort((a, b) => {
     const left = String(a.issued_at || a.created_at || a.check_in || '');
     const right = String(b.issued_at || b.created_at || b.check_in || '');
     return right.localeCompare(left);
-  });
+    }),
+    authoritative ? 'server' : 'cache',
+    authoritative
+  );
 }
 
 async function getNextQuotationNumber() {

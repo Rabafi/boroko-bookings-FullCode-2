@@ -18,6 +18,11 @@ const CORE_SHARED = Object.freeze([
   'ai'
 ])
 
+// The hospitality POS binary is a restaurant/bar product. Hotel booking AI is
+// intentionally not part of its route boundary; the main process also scopes
+// the AI capability separately so a deep link cannot cross product domains.
+const CORE_SHARED_HOSPITALITY_POS = Object.freeze(CORE_SHARED.filter((route) => route !== 'ai'))
+
 const ACCOMMODATION_OPS = Object.freeze([
   'rooms',
   'bookings',
@@ -166,7 +171,7 @@ export const PRODUCT_DEFINITIONS = Object.freeze({
       accent: 'terracotta',
       gradient: 'from-[#6f8061] via-[#d08a64] to-[#f1dfc6]'
     }),
-    allowedRoutePrefixes: freezeRoutes(CORE_PREAUTH, CORE_SHARED, RESTAURANT_OPS),
+    allowedRoutePrefixes: freezeRoutes(CORE_PREAUTH, CORE_SHARED_HOSPITALITY_POS, RESTAURANT_OPS),
     // Land on the sell terminal — not a bare /hpos prefix that can fail route resolution.
     defaultHome: '/hpos/pos',
     releaseRepo: 'boroko-hospitality-pos-releases'

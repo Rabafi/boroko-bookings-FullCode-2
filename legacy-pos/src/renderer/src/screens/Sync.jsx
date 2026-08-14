@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { RefreshCw, Wifi, WifiOff, AlertTriangle, CheckCircle, Clock, ChevronDown, ChevronUp, Package, Download, Power } from 'lucide-react';
 
-export default function Sync({ user, isOnline, setIsOnline }) {
+export default function Sync({ user, isOnline, setIsOnline, barOnly = false }) {
   const [syncStatus, setSyncStatus] = useState(null);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
@@ -23,9 +23,9 @@ export default function Sync({ user, isOnline, setIsOnline }) {
       setQueueDetail(detail || []);
       const diag = await window.api.pos.getInventoryDiagnostics().catch(() => null);
       setInventoryDiag(diag);
-      const updates = await window.api.pos.updates?.getState?.().catch(() => null);
+      const updates = await Promise.resolve(window.api.pos.updates?.getState?.()).catch(() => null);
       if (updates) setUpdateInfo(updates);
-      const mesh = await window.api.pos.mesh?.getStatus?.().catch(() => null);
+      const mesh = await Promise.resolve(window.api.pos.mesh?.getStatus?.()).catch(() => null);
       if (mesh) setMeshStatus(mesh);
     } catch (e) {
       console.error('Failed to load sync status:', e);
@@ -206,7 +206,7 @@ export default function Sync({ user, isOnline, setIsOnline }) {
           <div className="rounded-xl border border-slate-200 bg-white p-6 lg:col-span-2">
             <div className="flex items-start justify-between gap-3">
               <div>
-                <h2 className="font-bold text-slate-800">Local Lodge Mesh</h2>
+                <h2 className="font-bold text-slate-800">{barOnly ? 'Local Bar Network' : 'Local Lodge Mesh'}</h2>
                 <p className="mt-1 text-sm text-slate-600">
                   {meshStatus?.running
                     ? `${meshStatus.peerCount || 0} nearby Tsa Bonno device${Number(meshStatus.peerCount || 0) === 1 ? '' : 's'} connected`
@@ -400,7 +400,7 @@ export default function Sync({ user, isOnline, setIsOnline }) {
               <p className="flex items-start gap-2"><CheckCircle className="mt-0.5 h-4 w-4 shrink-0 text-emerald-500" /> Sales made offline are queued locally and will sync when you reconnect.</p>
               <p className="flex items-start gap-2"><CheckCircle className="mt-0.5 h-4 w-4 shrink-0 text-emerald-500" /> Each sale uses an idempotency key to prevent duplicates on replay.</p>
               <p className="flex items-start gap-2"><CheckCircle className="mt-0.5 h-4 w-4 shrink-0 text-emerald-500" /> Voids, partial returns, shifts, and menu/table/tab changes all work offline and queue for sync.</p>
-              <p className="flex items-start gap-2"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" /> Room folio charges require the booking to be cached locally.</p>
+              {!barOnly && <p className="flex items-start gap-2"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" /> Room folio charges require the booking to be cached locally.</p>}
               <p className="flex items-start gap-2"><Clock className="mt-0.5 h-4 w-4 shrink-0 text-blue-500" /> Inventory is reserved locally when queued offline. Failed sync may require manual review.</p>
               <p className="flex items-start gap-2"><Clock className="mt-0.5 h-4 w-4 shrink-0 text-blue-500" /> Config changes (menu, tables, modifiers, promotions, floor layout) are cached locally and queue for replay.</p>
             </div>

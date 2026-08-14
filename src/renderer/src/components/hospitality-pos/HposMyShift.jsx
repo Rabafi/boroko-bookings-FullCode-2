@@ -76,7 +76,10 @@ export default function HposMyShift() {
     setError('')
     setNotice('')
     try {
-      const attendanceResult = await window.api?.pos?.clockInSelfForPos?.({ role: user?.role || (barOnly ? 'bar' : 'waiter'), idempotency_key: crypto.randomUUID() })
+      const attemptStorageKey = `hpos:pending-shift:${user?.id || 'current'}:${outletId}`
+      const attemptKey = localStorage.getItem(attemptStorageKey) || crypto.randomUUID()
+      localStorage.setItem(attemptStorageKey, attemptKey)
+      const attendanceResult = await window.api?.pos?.clockInSelfForPos?.({ role: user?.role || (barOnly ? 'bar' : 'waiter'), idempotency_key: `${attemptKey}:attendance` })
       if (attendanceResult?.success === false) throw new Error(attendanceResult.error || 'Could not start attendance.')
       const active = await window.api?.pos?.getActiveShifts?.() || []
       const activeAttendance = (Array.isArray(active) ? active : []).find((row) => row.staff_user_id === user?.id) || null
@@ -86,12 +89,13 @@ export default function HposMyShift() {
         cashier_id: user?.id || null,
         cashier_name: user?.name || user?.email || null,
         opening_float: Number(openingFloat || 0),
-        idempotency_key: crypto.randomUUID(),
+        idempotency_key: `${attemptKey}:pos-shift`,
       })
       if (result?.success === false) throw new Error(result.error || 'Could not start your shift.')
       const linked = await window.api?.pos?.linkMyShiftAttendance?.({ pos_shift_id: result?.shift?.id, attendance_shift_id: activeAttendance?.id })
       if (linked?.success === false) throw new Error(linked.error || 'Could not link your Till shift to attendance.')
       setShift(result?.shift || await window.api?.pos?.getCurrentShift?.(outletId, user?.id || null) || null)
+      localStorage.removeItem(attemptStorageKey)
       setOpeningFloat('')
       setNotice(result?.already_open ? 'Your shift was already open.' : 'Attendance and Till shift started. You can now take payments in Till.')
     } catch (saveError) {

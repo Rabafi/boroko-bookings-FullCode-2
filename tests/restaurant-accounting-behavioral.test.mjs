@@ -77,6 +77,31 @@ test('Restaurant Accounting disposable database behavioral suite',async t=>{
   await actor(c,{id:users.maker,lodge})
  })
 
+ await t.test('reconciles an evidence-bearing multi-line bill and approved credit note to AP control',async()=>{
+  const bill=(await result(c,'public.create_restaurant_bill_v3($1,null,$2,$3,$4,$5,null,$6::jsonb,$7,$8,1,$9,$10,$11)',[
+   lodge,'Test Supplier','INV-002','2026-07-12','2026-07-31',JSON.stringify([
+    {description:'Food line',quantity:2,unit_cost:40,tax_amount:8,tax_code:'VAT',expense_account_id:ids['5000']},
+    {description:'Packaging line',quantity:1,unit_cost:20,tax_amount:2,tax_code:'VAT',expense_account_id:ids['5000']}
+   ]),'bill-002','BWP','VAT','invoice-002.pdf','sha256:invoice-002'])).data.id
+  await result(c,'public.submit_restaurant_bill($1,$2)',[lodge,bill])
+  await actor(c,{id:users.checker,lodge});await result(c,'public.approve_restaurant_bill($1,$2,$3)',[lodge,bill,'bill-approve-002'])
+  await actor(c,{id:users.maker,lodge})
+  const note=(await result(c,'public.create_restaurant_ap_credit_note_v2($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9)',[
+   lodge,bill,'CN-002','2026-07-13','Returned packaging',JSON.stringify([
+    {description:'Packaging return',quantity:1,unit_cost:10,tax_amount:1,tax_code:'VAT',expense_account_id:ids['5000']}
+   ]),'credit-002.pdf','sha256:credit-002','credit-002'
+  ])).data.id
+  await result(c,'public.submit_restaurant_ap_credit_note_v2($1,$2)',[lodge,note])
+  await actor(c,{id:users.checker,lodge});await result(c,'public.approve_restaurant_ap_credit_note_v2($1,$2,$3)',[lodge,note,'credit-approve-002'])
+  const statement=(await result(c,'public.get_restaurant_supplier_statement_v2($1,$2,null,null)',[lodge,'Test Supplier'])).data
+  assert.equal(Number(statement.reconciliation.difference),0)
+  assert.equal(Number(statement.control_totals.credit_notes),11)
+  assert.equal(Number(statement.control_totals.outstanding),99)
+  const evidence=await one(c,'select count(*)::int n from public.restaurant_ap_document_evidence where lodge_id=$1 and (bill_id=$2 or credit_note_id=$3)',[lodge,bill,note])
+  assert.equal(evidence.n,2)
+  await actor(c,{id:users.maker,lodge})
+ })
+
  await t.test('builds immutable tax working papers with separated review approval and filing',async()=>{
   const cfg=(await result(c,'public.set_restaurant_tax_configuration($1,$2,$3,$4,null,$5,$6)',[lodge,'BW','BW-TEST-1','2026-01-01',ids['2100'],ids['1100']])).data.id
   const wp=(await result(c,'public.generate_restaurant_tax_working_paper($1,$2,$3,$4)',[lodge,'2026-07-01','2026-07-31',cfg])).data.id
@@ -124,7 +149,7 @@ test('Restaurant Accounting disposable database behavioral suite',async t=>{
   const count=await one(c,'select count(*)::int n from public.restaurant_journal_entries where lodge_id=$1 and is_posted',[lodge]);assert.ok(count.n>=5)
  })
 
- await t.test('matches bank evidence independently, reconciles to zero, and locks the period',async()=>{
+ await t.test('matches bank evidence independently, reconciles to zero, and closes the period through the close workflow',async()=>{
   const bank=(await result(c,'public.save_restaurant_bank_account_v2($1,null,$2,$3,$4,$5,$6,true)',[lodge,ids['1000'],'Operating bank','Test Bank','001','checking'])).data.id
   const imported=await result(c,'public.import_bank_statement_v2($1,$2,$3::jsonb,$4,$5)',[lodge,bank,JSON.stringify([{transaction_date:'2026-07-15',description:'Supplier payment',debit:100,credit:0,balance_after:260,reference_number:'PAY-A'}]),'statement.csv','statement-001'])
   const replay=await result(c,'public.import_bank_statement_v2($1,$2,$3::jsonb,$4,$5)',[lodge,bank,JSON.stringify([{transaction_date:'2026-07-15',description:'Supplier payment',debit:100,credit:0,balance_after:260,reference_number:'PAY-A'}]),'statement.csv','statement-001']);assert.equal(replay.data.replayed,true)
@@ -134,8 +159,12 @@ test('Restaurant Accounting disposable database behavioral suite',async t=>{
   const book=Number((await one(c,'select coalesce(sum(l.debit-l.credit),0) balance from public.restaurant_journal_lines l join public.restaurant_journal_entries e on e.id=l.entry_id where l.account_id=$1 and e.is_posted',[ids['1000']])).balance)
   await actor(c,{id:users.maker,lodge});const recon=await result(c,'public.create_bank_reconciliation_v2($1,$2,$3,$4,$5,$6::uuid[],$7::jsonb)',[lodge,bank,imported.data.id,book,'2026-07-15',[proposal.bank_transaction_id],JSON.stringify([])]);assert.equal(Number(recon.data.difference),0)
   await rejectsCode(()=>result(c,'public.complete_bank_reconciliation_v2($1,$2,null)',[lodge,recon.data.id]),'42501')
-  await actor(c,{id:users.checker,lodge});const completed=await result(c,'public.complete_bank_reconciliation_v2($1,$2,$3)',[lodge,recon.data.id,'Checked']);assert.equal(completed.data.locked_through,'2026-07-15')
-  await actor(c,{id:users.maker,lodge});await rejectsCode(()=>result(c,'public.create_restaurant_journal_entry($1,$2,$3,$4,null,null,$5::jsonb,$6)',[lodge,'2026-07-14','Late journal','manual',JSON.stringify([{account_id:ids['1000'],debit:1,credit:0},{account_id:ids['3000'],debit:0,credit:1}]),'late-after-lock']),'55000')
+  await actor(c,{id:users.checker,lodge});const completed=await result(c,'public.complete_bank_reconciliation_v2($1,$2,$3)',[lodge,recon.data.id,'Checked']);assert.equal(completed.data.period_lock_created,false);assert.ok(completed.data.packet_id);assert.ok(completed.data.packet_hash)
+  await actor(c,{id:users.maker,lodge});const prepared=await result(c,'public.prepare_restaurant_period_close($1,$2,$3,$4)',[lodge,'2026-01-01','2026-12-31','close-2026']);assert.equal(prepared.data.status,'prepared')
+  await actor(c,{id:users.checker,lodge});const closed=await result(c,'public.approve_restaurant_period_close($1,$2)',[lodge,prepared.data.id]);assert.equal(closed.data.status,'closed')
+  await actor(c,{id:users.maker,lodge});await rejectsCode(()=>result(c,'public.create_restaurant_journal_entry($1,$2,$3,$4,null,null,$5::jsonb,$6)',[lodge,'2026-07-14','Late journal','manual',JSON.stringify([{account_id:ids['1000'],debit:1,credit:0},{account_id:ids['3000'],debit:0,credit:1}]),'late-after-close']),'55000')
+  const reopened=await result(c,'public.reopen_restaurant_period_close($1,$2,$3)',[lodge,prepared.data.id,'Controlled correction']);assert.equal(reopened.data.status,'reopened');assert.equal(reopened.data.affected_reports_invalidated,true)
+  const reopenedJournal=await result(c,'public.create_restaurant_journal_entry($1,$2,$3,$4,null,null,$5::jsonb,$6)',[lodge,'2026-07-14','Reopened correction','manual',JSON.stringify([{account_id:ids['1000'],debit:1,credit:0},{account_id:ids['3000'],debit:0,credit:1}]),'after-reopen']);assert.ok(reopenedJournal.data.entry_id)
  })
 
  await c.end()

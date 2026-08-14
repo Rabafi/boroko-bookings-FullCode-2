@@ -73,7 +73,7 @@ function NotifToggle({ label, description, icon: Icon, enabled, onChange }) {
 
 export default function More() {
   const { logout, user } = useAuth()
-  const { can, isEnabled } = useFeatures()
+  const { can, features, isEnabled } = useFeatures()
   const shell = getPwaShellConfig(user?.product_family)
   const isRestaurant = shell.restaurantModules === true
   const barOnly = isRestaurant && isBarHospitalityMode(user?.hospitality_mode)
@@ -116,7 +116,7 @@ export default function More() {
           {isAccommodation && <SectionCard to="/housekeeping" title="Housekeeping" sub="Room readiness and cleaning watch" icon={Wrench} />}
           {isAccommodation && can('maintenance.view') && <SectionCard to="/maintenance" title="Maintenance" sub="Tickets and new requests" icon={Wrench} />}
           {can('pos.reports') && isEnabled('pos') && <SectionCard to="/pos" title={isRestaurant ? 'Sales' : 'POS Sales'} sub="Live sales and transaction history" icon={ShoppingCart} />}
-          {isRestaurant && (!barOnly || isEnabled('owner_mobile_view')) && <SectionCard to="/restaurant-owner" title={barOnly ? 'Bar Owner View' : 'Owner View'} sub={barOnly ? "Today's bar overview" : "Today's restaurant overview"} icon={Briefcase} />}
+          {isRestaurant && (!barOnly || features?.owner_mobile_view === true) && <SectionCard to="/restaurant-owner" title={barOnly ? 'Bar Owner View' : 'Owner View'} sub={barOnly ? "Today's bar overview" : "Today's restaurant overview"} icon={Briefcase} />}
           {isRestaurant && <SectionCard to="/restaurant/service" title={barOnly ? 'Open Tabs' : 'Service Watch'} sub={barOnly ? 'Open bar tabs and live settlement flow' : 'Open tables, tabs, and live service flow'} icon={ShoppingCart} />}
           {isRestaurant && !barOnly && <SectionCard to="/restaurant/floor" title="Floor & Service" sub="Live table readiness and service status" icon={Building2} />}
           {isRestaurant && !barOnly && <SectionCard to="/restaurant/kitchen-workspace" title="Kitchen" sub="Live prep tickets and ticket status" icon={Package} />}
@@ -140,7 +140,7 @@ export default function More() {
           {isAccommodation && can('quotations.view') && <SectionCard to="/quotations" title="Quotations" sub="Review quotes and conversion status" icon={ClipboardCheck} />}
           {isAccommodation && can('invoices.view') && <SectionCard to="/invoices" title="Invoices" sub="Guest invoices, paid amounts, and balances" icon={ReceiptText} />}
           {can('expenses.view') && <SectionCard to="/expenses" title="Expenses" sub="Operating spend and maintenance costs" icon={WalletCards} />}
-          {can('audit.view') && <SectionCard to="/audit" title="Financial Audit" sub="Payment activity and validation signals" icon={Shield} />}
+          {can('audit.view') && !barOnly && <SectionCard to="/audit" title="Financial Audit" sub="Payment activity and validation signals" icon={Shield} />}
         </SectionGroup>
 
         <SectionGroup label={isRestaurant ? 'People' : 'People and property'}>

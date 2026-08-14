@@ -1,6 +1,24 @@
 # Ship-Ready Runbook
 
+Current financial-truth tip: `20260814080000_security_definer_search_path_hardening.sql`. Docker/Podman are not required to deploy this chain: the linked Supabase Management API path (`supabase db push --linked --yes`) has applied every local migration to the linked project, and `supabase migration list --linked` shows local/remote parity through this tip. Linked SQL lint and error-level security advisors pass. The release is still gated by local disposable PostgreSQL behavior/concurrency tests, authenticated outlet-isolation smoke, policy sign-off, and controlled cutover evidence.
+
 Use this checklist before publishing any Tsa Bonno HospitalityOS product to operators.
+
+## No-Docker migration path
+
+When the workstation cannot host Docker/Podman, use the linked Supabase project
+for migration application; this does not require a local Postgres container:
+
+1. `supabase projects list` — confirm the intended linked project.
+2. `supabase migration list --linked` — record the local/remote boundary.
+3. `supabase db push --linked --yes` — apply the ordered migrations remotely.
+4. `supabase migration list --linked` — require every local ID to match remote.
+5. `supabase db push --linked --dry-run --yes` — require `Remote database is up to date.`
+6. `supabase db lint --linked --level error --fail-on error` — require zero linked SQL errors.
+
+Never run destructive behavioral fixtures against the linked production project.
+They still require a disposable PostgreSQL environment (a hosted preview/branch
+or a machine with Postgres) and must be separately authorized and isolated.
 
 ## Desktop and shared-contract gate
 
@@ -19,8 +37,26 @@ Run these checks from the repository root:
 - `npm run test:web-surfaces`
 - `npm run audit:prod`
 - `npm run build`
+- `npm run test:financial-truth`
+- `npm run test:bar`
+- `npm run build:hospitality-pos`
+- `npm run manager:lint`
 
 Do not publish if any required check is red.
+
+## Bar and Accounting financial-truth gate
+
+The remediation plan is a nine-phase, forward-only migration chain. Before enabling any Accounting or Bar financial-truth change:
+
+- Apply and verify the ordered migrations through the current repository tip (`20260814080000` in this worktree). The no-Docker deployment path is `supabase db push --linked --yes`, followed by `supabase migration list --linked`, `supabase db lint --linked --level error --fail-on error`, `supabase db advisors --linked --level error --fail-on error`, and read-only schema/grant smoke. Migration parity is evidence of database application, not a substitute for behavioral or authenticated authorization sign-off. Exercise account/voucher POS tenders, return/refund reversal, source coverage, signed bank import/match allocation, page-specific exports, payroll statutory approval, source-population completeness, statement cash-flow finality, and AP bill/credit-note/payment flows online and through applicable queue replay only after the new corrections are deployed.
+- Run `npm run test:restaurant:disposable` after setting `RESTAURANT_ACCOUNTING_DISPOSABLE_DB=1`; the harness starts Supabase, resets the disposable database, applies the ordered migrations, runs `npm run test:restaurant`, and stops the stack. A missing CLI/Docker runtime, migration failure, or connection failure is a hard no-ship result, not a waiver. Use `RESTAURANT_ACCOUNTING_KEEP_DB=1` only for local debugging, never as release evidence.
+- Run authenticated two-lodge/two-outlet behavioral fixtures covering source transaction → subledger → GL → report → export, conflicting idempotency payloads, concurrent mutation, rollback, authorization, RLS, offline replay, cash-up variance, settlements, payroll settlement, tax amendments, bank packets, and period close/reopen.
+- Verify `get_restaurant_accounting_readiness` and `get_restaurant_financial_source_coverage` for the target lodge and effective date. No blocking requirement, posting exception, unresolved queue ambiguity, stale tax pack, incomplete report section, or pre-cutover row may be silently treated as zero.
+- Exercise every Accounting page's JSON, XLSX, CSV, and PDF export. The first three must contain the complete server dataset; a PDF is acceptable only with its retained detailed companion file and matching report-run/dataset hash. POS history Excel/PDF must fail while orders or voids are cached, pending, failed, or otherwise incomplete.
+- Verify the linked database's grants, RLS, functions, triggers, migration history, lint/advisors, and source coverage after deployment. Do not infer live state from local SQL or static tests.
+- Obtain recorded policy sign-off for chart mappings, VAT/tax treatment, inventory valuation, vouchers/tips, payroll statutory configuration, cash over/short, settlement fees, period close, and historical cutover.
+
+No-ship conditions include any missing source posting, duplicate or ambiguous financial operation, failed required export section, offline statutory statement, unsigned release artifact, unverified migration deployment, unavailable disposable database, non-zero linked SQL lint error in the affected schema, or missing authenticated production smoke evidence. The operator-facing UI must remain gated and explicitly mark financial data unavailable until these conditions are cleared.
 
 ## Product release-feed gate
 

@@ -990,7 +990,7 @@ export default function DayUse() {
                         {entry.resource_name ? ` • ${entry.resource_name}` : ''}
                       </p>
                       <p className="text-sm text-gray-500 mt-1">
-                        {entry.payment_method || 'Cash'}
+                        {entry.payment_method || 'Tender unavailable'}
                         {Number(entry.deposit_amount || 0) > 0 ? ` • Deposit ${currency}${Number(entry.deposit_amount || 0).toFixed(2)}` : ''}
                       </p>
                       {entry.service_notes && <p className="text-sm text-gray-600 mt-2">{entry.service_notes}</p>}
@@ -1395,7 +1395,7 @@ export default function DayUse() {
                     </div>
                     <div className="mt-2 flex items-center justify-between">
                       <span className="text-sm text-cyan-800">Payment Method</span>
-                      <span className="font-semibold text-cyan-900">{slipEntry.payment_method || 'Cash'}</span>
+                      <span className="font-semibold text-cyan-900">{slipEntry.payment_method || 'Tender unavailable'}</span>
                     </div>
                     <div className="mt-2 flex items-center justify-between">
                       <span className="text-sm text-cyan-800">Status</span>

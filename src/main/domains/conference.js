@@ -12,19 +12,35 @@ import {
 
 // ─── CONFERENCE BOOKINGS ───────────────────────────────────────────────────────
 
+function withReadMetadata(rows, source, complete) {
+  const result = Array.isArray(rows) ? rows : []
+  Object.defineProperties(result, {
+    _source: { value: source, enumerable: true, configurable: true },
+    _complete: { value: complete === true, enumerable: true, configurable: true }
+  })
+  return result
+}
+
 export async function getConferenceBookings(start, end) {
   const cached = readCache('conference-bookings');
   if (!state.isOnline) {
-    return cached.
-    filter((row) => (!start || String(row.booking_date || '') >= start) && (!end || String(row.booking_date || '') <= end)).
-    sort((a, b) => String(b.booking_date || '').localeCompare(String(a.booking_date || '')) || String(a.start_time || '').localeCompare(String(b.start_time || '')));
+    return withReadMetadata(cached.
+      filter((row) => (!start || String(row.booking_date || '') >= start) && (!end || String(row.booking_date || '') <= end)).
+      sort((a, b) => String(b.booking_date || '').localeCompare(String(a.booking_date || '')) || String(a.start_time || '').localeCompare(String(b.start_time || ''))), 'offline-cache', false);
   }
-  let q = state.supabase.from('conference_bookings').select('id, booking_date, start_time, end_time, client_name, company, attendees, setup_type, room_name, includes_catering, catering_notes, total_amount, deposit_paid, payment_status, payment_method, notes, created_at, updated_at, lodge_id').eq('lodge_id', state.lodgeId);
-  if (start) q = q.gte('booking_date', start);
-  if (end) q = q.lte('booking_date', end);
-  const { data } = await q.order('booking_date', { ascending: false }).order('start_time', { ascending: true }).limit(200);
-  if (data) writeCache('conference-bookings', data, { source: 'remote' });
-  return data || [];
+  const rows = [];
+  for (let from = 0; from < 100000; from += 500) {
+    let q = state.supabase.from('conference_bookings').select('id, booking_date, start_time, end_time, client_name, company, attendees, setup_type, room_name, includes_catering, catering_notes, total_amount, deposit_paid, payment_status, payment_method, notes, created_at, updated_at, lodge_id').eq('lodge_id', state.lodgeId);
+    if (start) q = q.gte('booking_date', start);
+    if (end) q = q.lte('booking_date', end);
+    const { data, error } = await q.order('booking_date', { ascending: false }).order('start_time', { ascending: true }).range(from, from + 499);
+    if (error) throw new Error(error.message);
+    const page = data || [];
+    rows.push(...page);
+    if (page.length < 500) break;
+  }
+  writeCache('conference-bookings', rows, { source: 'remote' });
+  return withReadMetadata(rows, 'server', rows.length < 100000);
 }
 
 export async function getConferenceBookingById(id) {

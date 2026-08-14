@@ -1,13 +1,16 @@
 import { readFileSync } from 'fs'
 import { describe, it } from 'node:test'
 import assert from 'node:assert'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const migrationPath = 'C:/Users/26772/Desktop/Boroko Bookings/supabase/migrations/20260714210000_staff_scheduling_and_attendance.sql'
-const migration = readFileSync(migrationPath, 'utf8')
+const root = fileURLToPath(new URL('..', import.meta.url))
+const read = (path) => readFileSync(join(root, path), 'utf8')
+const migration = read('supabase/migrations/20260714210000_staff_scheduling_and_attendance.sql')
 
-const indexJs = readFileSync('C:/Users/26772/Desktop/Boroko Bookings/src/main/index.js', 'utf8')
-const preloadJs = readFileSync('C:/Users/26772/Desktop/Boroko Bookings/src/preload/index.js', 'utf8')
-const databaseJs = readFileSync('C:/Users/26772/Desktop/Boroko Bookings/src/main/database.js', 'utf8')
+const indexJs = read('src/main/index.js')
+const preloadJs = read('src/preload/index.js')
+const databaseJs = read('src/main/database.js')
 
 describe('Staff Scheduling & Attendance', () => {
   describe('SQL Migration', () => {
@@ -177,7 +180,7 @@ describe('Staff Scheduling & Attendance', () => {
   describe('Domain Module', () => {
     it('staffScheduling domain file exists', () => {
       try {
-        readFileSync('C:/Users/26772/Desktop/Boroko Bookings/src/main/domains/staffScheduling.js', 'utf8')
+        read('src/main/domains/staffScheduling.js')
         assert.ok(true)
       } catch {
         assert.ok(false, 'staffScheduling.js not found')

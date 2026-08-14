@@ -1061,7 +1061,7 @@ function AuthenticatedApp({ alertCount, dark, setAlertCount, notificationCount, 
           <Route path="/quotations" element={<ProductRouteGuard path="/quotations" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><Guard capability="quotations.view"><Quotations /></Guard></Suspense></ProductRouteGuard>} />
           <Route path="/invoices" element={<ProductRouteGuard path="/invoices" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><Guard capability="invoices.view"><Invoices /></Guard></Suspense></ProductRouteGuard>} />
           <Route path="/expenses" element={<Suspense fallback={<PageLoader />}><Guard capability="expenses.view"><Expenses /></Guard></Suspense>} />
-          <Route path="/audit" element={<Suspense fallback={<PageLoader />}><Guard capability="audit.view"><Audit /></Guard></Suspense>} />
+          <Route path="/audit" element={<ProductRouteGuard path="/audit" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><Guard capability="audit.view"><Audit /></Guard></Suspense></ProductRouteGuard>} />
           <Route path="/guests" element={<ProductRouteGuard path="/guests" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><Guard capability="guests.view"><Guests /></Guard></Suspense></ProductRouteGuard>} />
           <Route path="/staff" element={<Suspense fallback={<PageLoader />}><Guard capability="staff.view"><Staff /></Guard></Suspense>} />
           <Route path="/conference" element={<ProductRouteGuard path="/conference" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><Guard capability="conference.view"><Conference /></Guard></Suspense></ProductRouteGuard>} />

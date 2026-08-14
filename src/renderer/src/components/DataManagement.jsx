@@ -3,7 +3,7 @@ import { useLocation } from 'react-router'
 import { Database, Upload, Download, FileSpreadsheet, Users, BedDouble, Receipt, ShoppingCart, CheckCircle2, AlertCircle, Loader2, HardDrive, ShieldCheck, Clock, Wallet, ClipboardCheck, AlertTriangle } from 'lucide-react'
 import DataImport from './DataImport'
 import { useSettings } from '../app-context'
-import { isRestaurantOnly } from '../../../shared/propertyTypes'
+import { isBarOnlyMode, isRestaurantOnly } from '../../../shared/propertyTypes'
 
 const LODGE_TABS = ['Import Bookings', 'Export Data', 'Backups']
 const RESTAURANT_TABS = ['Import Data', 'Export Data', 'Backups']
@@ -54,11 +54,18 @@ const RESTAURANT_EXPORT_SECTIONS = [
 function ExportTab({ restaurantMode, EXPORT_PRESETS, EXPORT_SECTIONS }) {
   const [loading, setLoading] = useState(false)
   const [result, setResult]   = useState(null) // { success, filePath, error, canceled }
-  const [preset, setPreset] = useState('full')
+  const [preset, setPreset] = useState(restaurantMode ? 'restaurant_full' : 'full')
   const [startDate, setStartDate] = useState('')
   const [endDate, setEndDate] = useState('')
   const [privacyMode, setPrivacyMode] = useState(false)
   const [progress, setProgress] = useState(null)
+
+  useEffect(() => {
+    const expectedPrefix = restaurantMode ? 'restaurant_' : ''
+    if (!String(preset).startsWith(expectedPrefix)) {
+      setPreset(restaurantMode ? 'restaurant_full' : 'full')
+    }
+  }, [restaurantMode, preset])
 
   useEffect(() => {
     if (!window.api.data.onExportProgress) return undefined
@@ -166,13 +173,20 @@ function ExportTab({ restaurantMode, EXPORT_PRESETS, EXPORT_SECTIONS }) {
 
       {/* Result feedback */}
       {result?.success && (
-        <div className="flex items-start gap-3 bg-green-50 border border-green-200 rounded-lg px-4 py-3 mb-4">
-          <CheckCircle2 size={18} className="text-green-600 shrink-0 mt-0.5" />
+        <div className={`flex items-start gap-3 rounded-lg px-4 py-3 mb-4 ${result.complete === false ? 'bg-amber-50 border border-amber-200' : 'bg-green-50 border border-green-200'}`}>
+          {result.complete === false
+            ? <AlertTriangle size={18} className="text-amber-600 shrink-0 mt-0.5" />
+            : <CheckCircle2 size={18} className="text-green-600 shrink-0 mt-0.5" />}
           <div>
-            <p className="text-sm font-medium text-green-800">Export complete</p>
-            <p className="text-xs text-green-600 mt-0.5 break-all">{result.filePath}</p>
+            <p className={`text-sm font-medium ${result.complete === false ? 'text-amber-800' : 'text-green-800'}`}>
+              {result.complete === false ? 'Export incomplete — review the Export Manifest sheet' : 'Export complete'}
+            </p>
+            <p className={`text-xs mt-0.5 break-all ${result.complete === false ? 'text-amber-700' : 'text-green-600'}`}>{result.filePath}</p>
             {Array.isArray(result.sections) && (
-              <p className="mt-1 text-xs text-green-700">{result.sections.length} workbook section{result.sections.length === 1 ? '' : 's'} exported.</p>
+              <p className={`mt-1 text-xs ${result.complete === false ? 'text-amber-700' : 'text-green-700'}`}>
+                {result.sections.length} workbook section{result.sections.length === 1 ? '' : 's'} exported.
+                {result.exportManifest?.errors?.length ? ` ${result.exportManifest.errors.length} source issue${result.exportManifest.errors.length === 1 ? '' : 's'} recorded.` : ''}
+              </p>
             )}
           </div>
         </div>
@@ -452,7 +466,8 @@ export default function DataManagement() {
   const [tab, setTab] = useState(0)
   const { settings } = useSettings()
   const propertyType = settings?.property_type || settings?.business_type || 'lodge'
-  const restaurantMode = isRestaurantOnly(propertyType)
+  const normalizedPropertyType = String(propertyType || '').trim().toLowerCase()
+  const restaurantMode = isRestaurantOnly(propertyType) || ['bar', 'bar_only'].includes(normalizedPropertyType) || isBarOnlyMode(settings)
   const TABS = restaurantMode ? RESTAURANT_TABS : LODGE_TABS
   const EXPORT_PRESETS = restaurantMode ? RESTAURANT_EXPORT_PRESETS : LODGE_EXPORT_PRESETS
   const EXPORT_SECTIONS = restaurantMode ? RESTAURANT_EXPORT_SECTIONS : LODGE_EXPORT_SECTIONS

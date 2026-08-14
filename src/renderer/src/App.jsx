@@ -378,6 +378,14 @@ function RestaurantAccountingRoute({ payroll = false, children }) {
   }
   return <UpgradeWall feature="restaurant_accounting">{children}</UpgradeWall>
 }
+
+function CapabilityRoute({ capability, children }) {
+  const access = useContext(AccessContext)
+  if (!canAccessCapability(access, capability)) {
+    return <div className="flex min-h-[420px] items-center justify-center p-8"><div className="max-w-lg rounded-2xl border border-rose-200 bg-rose-50 p-8 text-center"><h1 className="text-2xl font-bold text-rose-950">Access required</h1><p className="mt-3 text-sm leading-6 text-rose-800">Your current role does not include this Restaurant &amp; Bar workflow.</p></div></div>
+  }
+  return children
+}
 // ── Update Banner ─────────────────────────────────────────────────────────────
 function UpdateBanner() {
   const UPDATE_SNOOZE_KEY = 'bb_update_snooze_until'
@@ -1831,7 +1839,7 @@ export default function App() {
                 <Route path="guests"      element={<Lazy><Guests /></Lazy>} />
                 <Route path="housekeeping" element={<Lazy><Housekeeping /></Lazy>} />
                 <Route path="maintenance" element={<Lazy><Maintenance /></Lazy>} />
-                <Route path="settings"    element={<Lazy><Settings /></Lazy>} />
+                <Route path="settings"    element={<CapabilityRoute capability="settings.view"><Lazy><Settings /></Lazy></CapabilityRoute>} />
                 {/* Standard tier — lazy (UpgradeWall outside Lazy so wall renders without loading) */}
                 <Route path="reports"    element={<UpgradeWall feature="reports">   <RestaurantReportsEntry />    </UpgradeWall>} />
                 <Route path="expenses"   element={<UpgradeWall feature="expenses">  <RestaurantExpensesEntry />   </UpgradeWall>} />
@@ -1853,7 +1861,7 @@ export default function App() {
                 />
                 <Route path="inventory"  element={<UpgradeWall feature="inventory"> <Lazy><Inventory /></Lazy>  </UpgradeWall>} />
                 <Route path="supplies"   element={<UpgradeWall feature="supplies">  <Lazy><RoomSupplies /></Lazy></UpgradeWall>} />
-                <Route path="ai"         element={<Lazy><OpsAi /></Lazy>} />
+                <Route path="ai"         element={IS_HPOS_PRODUCT ? <Navigate to="/hpos/pos" replace /> : <Lazy><OpsAi /></Lazy>} />
 
                 {/* Hotel / Enterprise — consolidated redirects */}
                 <Route path="hotel-dashboard" element={IS_HOTEL_PRODUCT ? <Lazy><HotelHome /></Lazy> : <UpgradeWall feature="front_desk_dashboard"><Lazy><HotelDashboard /></Lazy></UpgradeWall>} />
@@ -1951,7 +1959,7 @@ export default function App() {
                 <Route path="hpos/kitchen" element={<RestaurantOnlyRoute><UpgradeWall feature="kitchen_tickets"><Lazy><HposKitchen /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
                 <Route path="hpos/menu" element={<RestaurantOnlyRoute><Lazy><HposMenu /></Lazy></RestaurantOnlyRoute>} />
                 <Route path="hpos/stock" element={<RestaurantOnlyRoute><UpgradeWall feature="inventory"><Lazy><HposStock /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
-                <Route path="hpos/team" element={<RestaurantOnlyRoute><Lazy><HposTeam /></Lazy></RestaurantOnlyRoute>} />
+                <Route path="hpos/team" element={<RestaurantOnlyRoute><CapabilityRoute capability="staff.view"><Lazy><HposTeam /></Lazy></CapabilityRoute></RestaurantOnlyRoute>} />
                 <Route path="hpos/my-shift" element={<RestaurantOnlyRoute><Lazy><HposMyShift /></Lazy></RestaurantOnlyRoute>} />
                 <Route path="hpos/my-sales" element={<RestaurantOnlyRoute><Lazy><HposMySales /></Lazy></RestaurantOnlyRoute>} />
                 <Route path="hpos/sale-correction" element={<RestaurantOnlyRoute><Lazy><HposReports correctionMode /></Lazy></RestaurantOnlyRoute>} />
@@ -1959,7 +1967,7 @@ export default function App() {
                 <Route path="hpos/attendance" element={<RestaurantOnlyRoute><Lazy><HposAttendanceKiosk /></Lazy></RestaurantOnlyRoute>} />
                 <Route path="hpos/shared-cashup" element={<RestaurantOnlyRoute><Lazy><HposSharedCashup /></Lazy></RestaurantOnlyRoute>} />
                 <Route path="hpos/cash" element={<RestaurantOnlyRoute><Lazy><HposCashClose /></Lazy></RestaurantOnlyRoute>} />
-                <Route path="hpos/reports" element={<RestaurantOnlyRoute><UpgradeWall feature="reports"><Lazy><HposReports /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
+                <Route path="hpos/reports" element={<RestaurantOnlyRoute><CapabilityRoute capability="pos.reports"><UpgradeWall feature="reports"><Lazy><HposReports /></Lazy></UpgradeWall></CapabilityRoute></RestaurantOnlyRoute>} />
                 <Route path="hpos/expenses" element={<RestaurantOnlyRoute><BarAddonFeatureRoute feature="expenses"><UpgradeWall feature="expenses"><Lazy><HposExpenses /></Lazy></UpgradeWall></BarAddonFeatureRoute></RestaurantOnlyRoute>} />
                 <Route path="hpos/customers" element={<RestaurantOnlyRoute><UpgradeWall feature="customer_accounts"><Lazy><HposCustomers /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
                 <Route path="hpos/growth-tools" element={<RestaurantOnlyRoute><BarAddonFeatureRoute feature="vouchers"><Lazy><RestaurantGrowthControls tabKey="growth" /></Lazy></BarAddonFeatureRoute></RestaurantOnlyRoute>} />
@@ -1968,8 +1976,8 @@ export default function App() {
                 <Route path="hpos/setup-readiness" element={<RestaurantOnlyRoute><Lazy><HposSetupReadiness /></Lazy></RestaurantOnlyRoute>} />
                 <Route path="hpos/pos" element={<RestaurantOnlyRoute><Lazy><HposTerminal /></Lazy></RestaurantOnlyRoute>} />
                 <Route path="hpos/checks" element={<RestaurantOnlyRoute><Lazy><HposOpenChecks /></Lazy></RestaurantOnlyRoute>} />
-                <Route path="hpos/system-health" element={<RestaurantOnlyRoute><Lazy><HposSystemHealth /></Lazy></RestaurantOnlyRoute>} />
-                <Route path="hpos/business-control" element={<RestaurantOnlyRoute><BarAddonFeatureRoute feature="advanced_reports"><Lazy><HposBusinessControl /></Lazy></BarAddonFeatureRoute></RestaurantOnlyRoute>} />
+                <Route path="hpos/system-health" element={<RestaurantOnlyRoute><CapabilityRoute capability="system.health"><Lazy><HposSystemHealth /></Lazy></CapabilityRoute></RestaurantOnlyRoute>} />
+                <Route path="hpos/business-control" element={<RestaurantOnlyRoute><CapabilityRoute capability="advanced_reports.view"><BarAddonFeatureRoute feature="advanced_reports"><Lazy><HposBusinessControl /></Lazy></BarAddonFeatureRoute></CapabilityRoute></RestaurantOnlyRoute>} />
               </Route>
               <Route
                 path="/pos/customer-display"

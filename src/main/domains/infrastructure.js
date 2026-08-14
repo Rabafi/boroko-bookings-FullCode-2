@@ -29,6 +29,7 @@ import {
   isInventoryAdjustmentQueueItem,
   isInventoryItemQueueItem,
   isPosCreateOrderQueueItem,
+  adaptLegacyPosOrderFinancialPayload,
   isPosVoidQueueItem,
   normalizeQueuedSyncItemForReplay
 } from './syncShared.js';
@@ -129,6 +130,7 @@ export {
   isInventoryAdjustmentQueueItem,
   isInventoryItemQueueItem,
   isPosCreateOrderQueueItem,
+  adaptLegacyPosOrderFinancialPayload,
   isPosVoidQueueItem,
   normalizeQueuedSyncItemForReplay
 } from './syncShared.js';

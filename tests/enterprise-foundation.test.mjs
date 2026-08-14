@@ -1260,6 +1260,7 @@ const advancedHousekeepingSource = readFileSync(resolve(__dirname, '../src/rende
 const subscriptionRequestsDomainSource = readFileSync(resolve(__dirname, '../src/main/domains/subscriptionRequests.js'), 'utf8')
 const subscriptionRequestsUiSource = readFileSync(resolve(__dirname, '../src/renderer/src/components/SubscriptionRequests.jsx'), 'utf8')
 const subscriptionRequestsHardeningSQL = readFileSync(resolve(__dirname, '../supabase/migrations/20260704001000_subscription_requests_activation_hardening.sql'), 'utf8')
+const subscriptionRequestsActivationSQL = readFileSync(resolve(__dirname, '../supabase/migrations/20260721161000_governed_subscription_request_activation.sql'), 'utf8')
 
 test('migration SQL uses payload->amenities (jsonb) not payload->>amenities (text) in create_room_type', () => {
   const fnBlock = migrationSQL.slice(migrationSQL.indexOf('create_room_type'))
@@ -1930,9 +1931,9 @@ test('subscription request admin actions are service-role only and do not expose
 
 test('subscription request domain activates actual plan and addon entitlements', () => {
   assert.ok(subscriptionRequestsDomainSource.includes('requireAdmin()'), 'admin request operations must use service-role client')
-  assert.ok(subscriptionRequestsDomainSource.includes("rpc('update_subscription_contract'"), 'activation must update the selected license contract')
-  assert.ok(subscriptionRequestsDomainSource.includes("from('licenses').update"), 'activation must have a direct license fallback for older schemas')
-  assert.ok(subscriptionRequestsDomainSource.includes("from('lodge_features').upsert"), 'activation must enable selected add-on features')
+  assert.ok(subscriptionRequestsDomainSource.includes("rpc('admin_governed_activate_subscription_request'"), 'activation must use the governed server activation RPC')
+  assert.ok(subscriptionRequestsActivationSQL.includes('public.update_subscription_contract'), 'governed activation must update the selected license contract server-side')
+  assert.ok(subscriptionRequestsActivationSQL.includes('public.activate_subscription_request'), 'governed activation must apply the catalog-backed plan and add-on entitlements server-side')
   assert.ok(subscriptionRequestsDomainSource.includes('Link this request to an existing license and lodge before activation'), 'public leads must be linked before activation')
   assert.ok(!subscriptionRequestsDomainSource.includes('JSON.stringify(request.requested_addons)'), 'JSONB requested_addons must be passed as JSON, not stringified text')
   assert.ok(!subscriptionRequestsDomainSource.includes('JSON.stringify(request.pricing_snapshot)'), 'JSONB pricing_snapshot must be passed as JSON, not stringified text')

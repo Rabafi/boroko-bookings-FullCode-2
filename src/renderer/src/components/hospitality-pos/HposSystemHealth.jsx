@@ -36,7 +36,7 @@ export default function HposSystemHealth() {
   const { settings } = useSettings();
   const barOnly = isBarOnlyMode(settings);
   const canSync = canAccessCapability(access, 'sync.manage');
-  const canManagePos = canAccessCapability(access, 'pos.manage');
+  const canManagePos = canAccessCapability(access, 'settings.manage_general');
   const canAudit = canAccessCapability(access, 'audit.view');
   const [activeTab, setActiveTab] = useState(() => searchParams.get('tab') === 'audit' ? 'audit' : 'sync');
   const [status, setStatus] = useState(null);

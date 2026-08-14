@@ -34,6 +34,7 @@ export default function HposStock() {
     : null
   const outletScoped = Array.isArray(allowedOutletIds)
   const [items, setItems] = useState([])
+  const [itemsRead, setItemsRead] = useState({ source: 'unknown', complete: false })
   const [aging, setAging] = useState([])
   const [outlets, setOutlets] = useState([])
   const [outletId, setOutletId] = useState('')
@@ -114,7 +115,11 @@ export default function HposStock() {
       window.api?.inventory?.getItems?.() ?? [],
       agingPromise
     ])
-    if (itemsResult.status === 'fulfilled') setItems(Array.isArray(itemsResult.value) ? itemsResult.value : [])
+    if (itemsResult.status === 'fulfilled') {
+      const rows = Array.isArray(itemsResult.value) ? itemsResult.value : []
+      setItems(rows)
+      setItemsRead({ source: itemsResult.value?._source || 'unknown', complete: itemsResult.value?._complete === true })
+    }
     else setError(itemsResult.reason?.message || 'Stock could not be refreshed.')
     if (agingResult.status === 'fulfilled') setAging(Array.isArray(agingResult.value) ? agingResult.value : [])
     else setAgingError(agingResult.reason?.message || 'Stock aging could not be refreshed.')
@@ -129,6 +134,7 @@ export default function HposStock() {
     [String(item.name || ''), String(item.barcode || '')].some((value) => value.toLowerCase().includes(search.trim().toLowerCase()))), [items, search, outletId, outletScoped])
   const lowStock = filtered.filter(isLow)
   const healthyStock = filtered.filter((item) => !isLow(item))
+  const stockCountsReady = itemsRead.complete
   const agingByItem = useMemo(() => new Map(aging.map((row) => [row.item_id, row])), [aging])
 
   const openCreate = () => {
@@ -206,6 +212,10 @@ export default function HposStock() {
 
   const recordStockAction = async () => {
     if (!stockAction?.item) return
+    if (stockAction.mode === 'count' && !stockCountsReady) {
+      setError('Reconnect and refresh the server stock list before recording a physical count. A cached quantity cannot be used to calculate an audited adjustment.')
+      return
+    }
     const entered = Number(actionForm.quantity)
     if (!Number.isFinite(entered) || entered < 0) { setError('Enter a valid quantity of zero or more.'); return }
     if (!actionForm.reason.trim()) { setError('Enter the delivery reference or count reason.'); return }
@@ -252,9 +262,9 @@ export default function HposStock() {
         </div>
         <div style={{ position: 'relative', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(145px, 1fr))', gap: 10, marginTop: 22 }}>
           {[
-            ['Tracked items', filtered.length, Boxes, outletScoped ? 'Assigned outlet stock' : outletId ? 'Selected outlet stock' : 'All inventory records'],
-            ['Need attention', lowStock.length, AlertTriangle, lowStock.length ? 'Below reorder level' : 'Nothing below reorder level'],
-            ['Available', healthyStock.length, PackageCheck, 'Not below reorder level']
+            ['Tracked items', stockCountsReady ? filtered.length : '—', Boxes, outletScoped ? 'Assigned outlet stock' : outletId ? 'Selected outlet stock' : 'All inventory records'],
+            ['Need attention', stockCountsReady ? lowStock.length : '—', AlertTriangle, stockCountsReady ? (lowStock.length ? 'Below reorder level' : 'Nothing below reorder level') : 'Server confirmation required'],
+            ['Available', stockCountsReady ? healthyStock.length : '—', PackageCheck, stockCountsReady ? 'Not below reorder level' : 'Server confirmation required']
           ].map(([label, value, Icon, description]) => <div key={label} style={{ padding: '13px 14px', borderRadius: 13, border: '1px solid rgba(255,255,255,.13)', background: 'rgba(16,10,16,.22)' }}><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: 'rgba(255,255,255,.75)', fontSize: 11, fontWeight: 800 }}><span>{label}</span><Icon size={15} /></div><strong style={{ display: 'block', marginTop: 5, fontSize: 24 }}>{value}</strong><small style={{ color: 'rgba(255,255,255,.64)', fontSize: 10 }}>{description}</small></div>)}
         </div>
       </section>
@@ -277,7 +287,7 @@ export default function HposStock() {
         </div>
         {error && <div role="alert" style={{ margin: 16, padding: '10px 12px', borderRadius: 10, color: '#9a3027', background: '#fff1ef', fontSize: 12 }}>{error}</div>}
         {notice && <div role="status" style={{ margin: 16, padding: '10px 12px', borderRadius: 10, color: '#215e47', background: '#e9f6ef', fontSize: 12 }}>{notice}</div>}
-        {agingError && <div role="status" style={{ margin: 16, padding: '10px 12px', borderRadius: 10, color: '#79551e', background: '#fff6df', fontSize: 12 }}>Stock age is unavailable until the device reconnects and the server ledger can be read. Current on-hand quantities remain visible.</div>}
+        {(!stockCountsReady || agingError) && <div role="status" style={{ margin: 16, padding: '10px 12px', borderRadius: 10, color: '#79551e', background: '#fff6df', fontSize: 12 }}>Server stock confirmation is unavailable ({itemsRead.source || 'unknown'}). Current on-hand quantities remain visible as last-known only; refresh online before making count decisions.{agingError ? ` ${agingError}` : ''}</div>}
         {loading ? <div aria-live="polite" style={{ padding: 52, textAlign: 'center', color: '#806f76', fontSize: 13 }}>Loading stock…</div> : <div style={{ overflowX: 'auto' }}><table aria-label="Service stock list" style={{ width: '100%', minWidth: 980, borderCollapse: 'collapse', fontSize: 13 }}><thead><tr style={{ background: 'rgba(74,44,56,.045)' }}>{['Item', 'Barcode', 'Status', 'On hand', 'Reorder point', 'Unit cost', 'Stock age', 'Actions'].map((heading) => <th key={heading} style={{ padding: '11px 18px', textAlign: 'left', color: '#806f76', fontSize: 10, fontWeight: 800, letterSpacing: '.08em', textTransform: 'uppercase' }}>{heading}</th>)}</tr></thead><tbody>{filtered.map((item) => {
           const attention = isLow(item)
           const age = agingByItem.get(item.id)

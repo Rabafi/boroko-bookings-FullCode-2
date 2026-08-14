@@ -1,0 +1,130 @@
+name: Daily Supabase Backup
+
+on:
+  schedule:
+    # 02:30 Africa/Gaborone (UTC+2). GitHub schedules use UTC.
+    - cron: '30 0 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: daily-supabase-backup
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      BACKUP_FILE_PREFIX: tsa-bonno-supabase-
+      BACKUP_DAILY_RETENTION_DAYS: '14'
+      BACKUP_WEEKLY_RETENTION_DAYS: '90'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Verify backup secrets
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_BACKUP_DB_URL }}
+          BACKUP_PUBLIC_KEY_B64: ${{ secrets.BACKUP_ENCRYPTION_PUBLIC_KEY_B64 }}
+          GOOGLE_DRIVE_CLIENT_ID: ${{ secrets.GOOGLE_DRIVE_CLIENT_ID }}
+          GOOGLE_DRIVE_CLIENT_SECRET: ${{ secrets.GOOGLE_DRIVE_CLIENT_SECRET }}
+          GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
+          GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          required=(
+            SUPABASE_DB_URL
+            BACKUP_PUBLIC_KEY_B64
+            GOOGLE_DRIVE_CLIENT_ID
+            GOOGLE_DRIVE_CLIENT_SECRET
+            GOOGLE_DRIVE_REFRESH_TOKEN
+            GOOGLE_DRIVE_FOLDER_ID
+          )
+          for name in "${required[@]}"; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::Missing required GitHub Actions secret: ${name}"
+              exit 1
+            fi
+          done
+
+      - name: Create authoritative Supabase SQL dumps
+        id: dump
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_BACKUP_DB_URL }}
+          BACKUP_PUBLIC_KEY_B64: ${{ secrets.BACKUP_ENCRYPTION_PUBLIC_KEY_B64 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          stamp="$(date -u +'%Y-%m-%dT%H-%M-%SZ')"
+          backup_dir="${RUNNER_TEMP}/supabase-backup-${stamp}"
+          archive_path="${RUNNER_TEMP}/tsa-bonno-supabase-${stamp}-${GITHUB_RUN_ID}.tar.gz"
+          encrypted_path="${archive_path}.tbbackup"
+          public_key_path="${RUNNER_TEMP}/backup-public.pem"
+          mkdir -p "${backup_dir}"
+
+          npx --yes supabase@2.96.0 db dump --db-url "${SUPABASE_DB_URL}" -f "${backup_dir}/roles.sql" --role-only
+          npx --yes supabase@2.96.0 db dump --db-url "${SUPABASE_DB_URL}" -f "${backup_dir}/schema.sql"
+          npx --yes supabase@2.96.0 db dump --db-url "${SUPABASE_DB_URL}" -f "${backup_dir}/data.sql" --use-copy --data-only -x "storage.buckets_vectors" -x "storage.vector_indexes"
+
+          test -s "${backup_dir}/roles.sql"
+          test -s "${backup_dir}/schema.sql"
+          test -s "${backup_dir}/data.sql"
+
+          jq -n \
+            --arg created_at "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+            --arg repository "${GITHUB_REPOSITORY}" \
+            --arg commit "${GITHUB_SHA}" \
+            --arg run_id "${GITHUB_RUN_ID}" \
+            '{format_version: 1, created_at: $created_at, repository: $repository, commit: $commit, github_run_id: $run_id, contents: ["roles.sql", "schema.sql", "data.sql"]}' \
+            > "${backup_dir}/metadata.json"
+          (
+            cd "${backup_dir}"
+            sha256sum roles.sql schema.sql data.sql metadata.json > SHA256SUMS
+          )
+          tar -C "${backup_dir}" -czf "${archive_path}" .
+
+          printf '%s' "${BACKUP_PUBLIC_KEY_B64}" | base64 --decode > "${public_key_path}"
+          node scripts/backup-crypto.mjs encrypt \
+            --input "${archive_path}" \
+            --output "${encrypted_path}" \
+            --public-key "${public_key_path}"
+          test -s "${encrypted_path}"
+
+          rm -rf "${backup_dir}" "${archive_path}" "${public_key_path}"
+          echo "encrypted_path=${encrypted_path}" >> "${GITHUB_OUTPUT}"
+          echo "encrypted_name=$(basename "${encrypted_path}")" >> "${GITHUB_OUTPUT}"
+
+      - name: Retain encrypted GitHub recovery artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.dump.outputs.encrypted_name }}
+          path: ${{ steps.dump.outputs.encrypted_path }}
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Upload encrypted backup to Google Drive
+        env:
+          GOOGLE_DRIVE_CLIENT_ID: ${{ secrets.GOOGLE_DRIVE_CLIENT_ID }}
+          GOOGLE_DRIVE_CLIENT_SECRET: ${{ secrets.GOOGLE_DRIVE_CLIENT_SECRET }}
+          GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
+          GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
+        run: node scripts/google-drive-backup.mjs "${{ steps.dump.outputs.encrypted_path }}"
+
+      - name: Remove runner backup material
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "${RUNNER_TEMP}"/supabase-backup-* \
+            "${RUNNER_TEMP}"/tsa-bonno-supabase-* \
+            "${RUNNER_TEMP}"/backup-public.pem

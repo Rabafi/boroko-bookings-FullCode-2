@@ -19,6 +19,7 @@ const entitlementIdentityMigration = readFileSync(resolve('supabase/migrations/2
 const quoteFunction = readFileSync(resolve('marketing-site/netlify/functions/quote-download.js'), 'utf8')
 const accessPanel = readFileSync(resolve('src/renderer/src/components/SubscriptionAccessPanel.jsx'), 'utf8')
 const upgradePrompt = readFileSync(resolve('src/renderer/src/components/shared/UsageUpgradePrompt.jsx'), 'utf8')
+const mainIndex = readFileSync(resolve('src/main/index.js'), 'utf8')
 
 test('commercial catalog exposes the approved product offers', () => {
   assert.deepEqual(getCommercialOffers(COMMERCIAL_PRODUCT_IDS.LODGE_CAMP).map((offer) => offer.commercialPackageKey), ['starter', 'standard', 'pro'])
@@ -80,6 +81,12 @@ test('POS package boundaries block higher workflows at runtime', () => {
   assert.equal(serviceAccess.capabilities['pos.view'], true)
   assert.equal(serviceAccess.capabilities['inventory.view'], false)
   assert.equal(controlAccess.capabilities['inventory.view'], true)
+})
+
+test('desktop main capability snapshot preserves add-ons and user overrides', () => {
+  assert.match(mainIndex, /commercialAddonKeys:\s*entitlement\?\.enterprise_addons\s*\|\|\s*\[\]/)
+  assert.match(mainIndex, /capabilityOverrides:\s*user\?\.capability_overrides\s*\|\|\s*\{\}/)
+  assert.match(mainIndex, /isCommercialFeatureIncluded\(productId, commercialPackageKey, featureKey, commercialAddonKeys\)/)
 })
 
 test('POS operating profiles and invalid package/add-on combinations are enforced locally', () => {

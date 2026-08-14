@@ -1,3 +1,5 @@
+import { normalizeTillOperatorPolicy, tillOperatorPolicyToProfileValue } from './tillOperatorPolicy.js'
+
 export const PROPERTY_TYPES = {
   guest_house: 'guest_house',
   bnb: 'bnb',
@@ -290,6 +292,9 @@ export function buildOperatingProfile(propertyType, subscriptionPlan = 'Starter'
   const hospitalityMode = options.hospitalityMode != null
     ? normalizeHospitalityMode(options.hospitalityMode)
     : (options.hospitality_mode != null ? normalizeHospitalityMode(options.hospitality_mode) : null)
+  const tillOperatorPolicy = options.tillOperatorPolicy == null
+    ? null
+    : normalizeTillOperatorPolicy(options.tillOperatorPolicy)
 
   return {
     property_type: normalized,
@@ -300,6 +305,7 @@ export function buildOperatingProfile(propertyType, subscriptionPlan = 'Starter'
     subscription_plan: subscriptionPlan,
     enterprise_addons: enterpriseAddons,
     ...(hospitalityMode ? { hospitality_mode: hospitalityMode } : {}),
+    ...(tillOperatorPolicy ? { till_operator_policy: tillOperatorPolicyToProfileValue(tillOperatorPolicy) } : {}),
     accommodation_mix: {
       rooms_or_units: options.roomsOrUnits !== false,
       campsites: campsitesEnabled,

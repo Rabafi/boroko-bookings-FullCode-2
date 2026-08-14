@@ -168,6 +168,10 @@ export const CAPABILITY_LABELS = {
   'revenue_manager.view': 'View revenue manager',
   'advanced_reports.view': 'View advanced reports',
   'reports.export': 'Export reports',
+  'accounting.export': 'Export restaurant accounting reports',
+  'accounting.close': 'Prepare, approve, or reopen accounting periods',
+  'accounting.payroll_export': 'Export private payroll reports',
+  'hardware.configure': 'Configure POS hardware and devices',
   'advanced_rates.manage': 'Manage advanced rates',
   'guest_portal.view': 'View guest portal',
   'multi_outlet_pos.view': 'View multi-outlet POS',
@@ -309,7 +313,8 @@ const ROLE_CAPABILITIES = {
     'pos.discount',
     'pos.price_override',
     'pos.cashup',
-    'pos.reports'
+    'pos.reports',
+    'reports.export'
   ],
   receptionist: [
     'dashboard.view',
@@ -356,6 +361,7 @@ const ROLE_CAPABILITIES = {
     'invoices.send',
     'guests.view',
     'reports.view',
+    'reports.export',
     'expenses.view',
     'expenses.manage',
     'audit.view',
@@ -366,6 +372,8 @@ const ROLE_CAPABILITIES = {
     'accounting.ap_pay',
     'accounting.bank_approve',
     'accounting.tax_file',
+    'accounting.export',
+    'accounting.close',
     'system.health'
   ],
   manager: [
@@ -389,6 +397,7 @@ const ROLE_CAPABILITIES = {
     'maintenance.preventive',
     'maintenance.ooo',
     'reports.view',
+    'reports.export',
     'expenses.view',
     'expenses.manage',
     'audit.view',
@@ -405,6 +414,7 @@ const ROLE_CAPABILITIES = {
     'settings.manage_general',
     'system.health',
     'accounting.read',
+    'accounting.export',
     'pos.view',
     'pos.service',
     'pos.manage',
@@ -520,6 +530,9 @@ const CAPABILITY_FEATURE_REQUIREMENTS = {
   'revenue_manager.view': 'revenue_manager',
   'advanced_reports.view': 'advanced_reports',
   'reports.export': 'reports',
+  'accounting.export': 'restaurant_accounting',
+  'accounting.close': 'restaurant_accounting',
+  'accounting.payroll_export': 'restaurant_accounting',
   'advanced_rates.view': 'advanced_rates',
   'advanced_rates.manage': 'advanced_rates',
   'guest_portal.view': 'guest_portal',

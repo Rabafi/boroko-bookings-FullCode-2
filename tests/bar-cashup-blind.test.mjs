@@ -27,3 +27,12 @@ test('operator cash-up screens do not render expected drawer or live variance', 
   assert.doesNotMatch(sharedCashup, /Expected cash to hand over/)
   assert.doesNotMatch(sharedCashup, /expected_cash_drawer/)
 })
+
+test('cash-up submissions reuse a stable per-shift idempotency key so retries replay instead of hard-failing', () => {
+  assert.match(myCashup, /getCashupSubmissionRound/, 'my cash-up must persist one submission round')
+  assert.match(sharedCashup, /getCashupSubmissionRound/, 'shared-terminal cash-up must persist one submission round')
+  assert.match(myCashup, /clearCashupSubmissionRound/, 'my cash-up clears only after server confirmation')
+  assert.match(sharedCashup, /clearCashupSubmissionRound/, 'shared-terminal cash-up clears only after server confirmation')
+  assert.doesNotMatch(myCashup, /submitCashup\?\.\(\{[^}]*idempotency_key: crypto\.randomUUID\(\)/, 'no fresh random key per click')
+  assert.doesNotMatch(sharedCashup, /submitCashupWithAttendancePin\?\.\(\{[^}]*idempotency_key: crypto\.randomUUID\(\)/, 'no fresh random key per click')
+})

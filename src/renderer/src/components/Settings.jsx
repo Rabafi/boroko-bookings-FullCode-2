@@ -17,6 +17,12 @@ import {
 } from '../../../shared/propertyTypes'
 import { getProductDefinition, getRuntimeProductId } from '../../../shared/productIdentity'
 import { getUiVocabulary } from '../../../shared/uiVocabulary'
+import {
+  DEFAULT_TILL_OPERATOR_INACTIVITY_MINUTES,
+  TILL_OPERATOR_MODES,
+  getTillOperatorPolicy,
+  normalizeTillOperatorInactivityMinutes
+} from '../../../shared/tillOperatorPolicy'
 
 const BUILD_PRODUCT = getProductDefinition(getRuntimeProductId())
 const IS_HOTEL_PRODUCT = BUILD_PRODUCT.id === 'hotel'
@@ -596,6 +602,18 @@ export default function Settings() {
 
   const set = (field, value) => setForm((f) => ({ ...f, [field]: value }))
 
+  const tillOperatorPolicy = getTillOperatorPolicy(form || globalSettings || {})
+  const setTillOperatorPolicy = (field, value) => setForm((current) => ({
+    ...current,
+    operating_profile: {
+      ...(current?.operating_profile || {}),
+      till_operator_policy: {
+        ...(current?.operating_profile?.till_operator_policy || {}),
+        [field]: value
+      }
+    }
+  }))
+
   const toggleAssistant = () => {
     const nextEnabled = form?.assistant_enabled !== true
     set('assistant_enabled', nextEnabled)
@@ -684,7 +702,11 @@ export default function Settings() {
             hospitalityMode: existingProfile.hospitality_mode || form?.hospitality_mode || null,
             campsitesEnabled: existingProfile?.campsite_profile?.enabled === true,
             roomsOrUnits: existingProfile?.accommodation_mix?.rooms_or_units !== false,
-            wholeProperty: existingProfile?.accommodation_mix?.whole_property_exclusive_use === true
+            wholeProperty: existingProfile?.accommodation_mix?.whole_property_exclusive_use === true,
+            tillOperatorPolicy: existingProfile?.till_operator_policy || {
+              mode: TILL_OPERATOR_MODES.STRICT,
+              inactivity_minutes: DEFAULT_TILL_OPERATOR_INACTIVITY_MINUTES
+            }
           }
         )
       }
@@ -932,6 +954,53 @@ export default function Settings() {
               })}
             </div>
           </div>
+
+          {restaurantMode && (
+            <div className="bg-white rounded-xl shadow-sm p-5 mb-6">
+              <div className="flex items-start gap-3">
+                <div className="w-9 h-9 bg-amber-50 rounded-lg flex items-center justify-center">
+                  <ShieldCheck size={17} className="text-amber-700" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-semibold text-gray-800">Till operator verification</p>
+                  <p className="mt-1 text-xs leading-5 text-gray-500">
+                    New companies use Strict mode. Shift mode is an explicit shared-terminal exception for a staffed bar Till;
+                    the active operator remains recorded on every sale and cash-up.
+                  </p>
+                </div>
+              </div>
+              <div className="mt-4 grid gap-4 md:grid-cols-[minmax(0,1fr)_220px]">
+                <label className="text-xs font-semibold text-gray-700">
+                  Verification mode
+                  <select
+                    value={tillOperatorPolicy.mode}
+                    onChange={(event) => setTillOperatorPolicy('mode', event.target.value)}
+                    className="mt-1 block w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-800"
+                  >
+                    <option value={TILL_OPERATOR_MODES.STRICT}>Strict — PIN for every order (default)</option>
+                    <option value={TILL_OPERATOR_MODES.SHIFT}>Shift — PIN once, then stay unlocked</option>
+                  </select>
+                </label>
+                <label className="text-xs font-semibold text-gray-700">
+                  Inactivity lock (minutes)
+                  <input
+                    type="number"
+                    min="5"
+                    max="240"
+                    step="1"
+                    value={tillOperatorPolicy.inactivityMinutes}
+                    onChange={(event) => setTillOperatorPolicy('inactivity_minutes', normalizeTillOperatorInactivityMinutes(event.target.value))}
+                    disabled={tillOperatorPolicy.mode !== TILL_OPERATOR_MODES.SHIFT}
+                    className="mt-1 block w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-800 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
+                  />
+                </label>
+              </div>
+              <p className="mt-3 text-xs text-gray-500">
+                Shift mode locks after inactivity, app restart, outlet change, shift close, or manual operator switch.
+                Sensitive corrections still require manager approval.
+              </p>
+            </div>
+          )}
 
           {/* ── App Updates ─────────────────────────────────────────────── */}
           <div className="bg-white rounded-xl shadow-sm p-5 mb-6">

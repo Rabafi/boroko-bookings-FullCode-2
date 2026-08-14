@@ -1,7 +1,36 @@
 import { state } from '../state.js'
 import { recordCriticalError } from './operationalLog.js'
+import { createHash } from 'node:crypto'
 
 export const EXPORT_VERSION = '2.0'
+export const FINANCIAL_EXPORT_VERSION = 'bar-accounting-financial-truth-v1'
+
+export function hashReportPayload(payload) {
+  return createHash('sha256').update(JSON.stringify(payload)).digest('hex')
+}
+
+export function buildReportExportManifest({ lodgeId, startDate, endDate, outletSelector = null, sections = {}, asOf, reconciliationStatus = null }) {
+  const sectionManifest = REQUIRED_RPCS.map(({ key, fn, label }) => ({
+    key,
+    rpc: fn,
+    label,
+    row_count: Array.isArray(sections[key]) ? sections[key].length : 0,
+    source: 'server-authoritative-rpc',
+    complete: Array.isArray(sections[key])
+  }))
+  const body = { lodge_id: lodgeId, period: { start_date: startDate, end_date: endDate }, outlet: outletSelector, as_of: asOf, sections: sectionManifest, dataset: sections }
+  return {
+    manifest_version: FINANCIAL_EXPORT_VERSION,
+    completeness: sectionManifest.every((section) => section.complete) ? 'COMPLETE' : 'INCOMPLETE',
+    source: 'server-authoritative-rpc',
+    generated_at: new Date().toISOString(),
+    as_of: asOf,
+    reconciliation_status: reconciliationStatus,
+    sections: sectionManifest,
+    data_hash: hashReportPayload(body),
+    canonical_dataset_hash: hashReportPayload(sections)
+  }
+}
 
 // ─── Formula Injection Protection ────────────────────────────────────────────
 export function sanitizeCellValue(value) {
@@ -92,7 +121,7 @@ export async function loadDetailedReportData(lodgeId, startDate, endDate, outlet
     sources[key] = 'server'
   }
 
-  return {
+  const output = {
     bookings: results.bookings || [],
     payments: results.payments || [],
     cancelled: results.cancelled || [],
@@ -105,6 +134,18 @@ export async function loadDetailedReportData(lodgeId, startDate, endDate, outlet
     asOf,
     sources
   }
+  const reconciliation = computeReconciliation(output)
+  output.exportManifest = buildReportExportManifest({
+    lodgeId,
+    startDate,
+    endDate,
+    outletSelector,
+    sections: output,
+    asOf,
+    reconciliationStatus: reconciliation.reconciliationStatus
+  })
+  output.controlTotals = reconciliation.controls
+  return output
 }
 
 // ─── Reconciliation (server-authoritative from RPC) ──────────────────────────
@@ -177,7 +218,7 @@ export function computeReconciliation(data) {
 }
 
 // ─── Workbook Meta Rows ──────────────────────────────────────────────────────
-export function buildExportMetaRows({ lodgeName, companyName, periodLabel, currency, outletLabel, generatedAt, asOf, reconciliationStatus, exportVersion }) {
+export function buildExportMetaRows({ lodgeName, companyName, periodLabel, currency, outletLabel, generatedAt, asOf, reconciliationStatus, exportVersion, exportManifest }) {
   const rows = []
   rows.push(['Lodge', lodgeName || 'Tsa Bonno LodgingOS'])
   if (companyName && companyName !== lodgeName) rows.push(['Company', companyName])
@@ -188,6 +229,10 @@ export function buildExportMetaRows({ lodgeName, companyName, periodLabel, curre
   if (asOf) rows.push(['Server As-Of', asOf])
   if (exportVersion) rows.push(['Export Version', exportVersion])
   if (reconciliationStatus) rows.push(['Reconciliation', reconciliationStatus])
+  if (exportManifest) {
+    rows.push(['Completeness', exportManifest.completeness || 'INCOMPLETE'])
+    rows.push(['Source Manifest Hash', exportManifest.data_hash || ''])
+  }
   rows.push(['Data Source', 'Server-authoritative (RPC)'])
   rows.push([])
   return rows

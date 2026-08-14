@@ -77,7 +77,7 @@ export const HPOS_DOCK_ITEMS_BAR = Object.freeze([
   { route: '/hpos/menu', label: 'Products', iconKey: 'menu', capability: 'pos.view' },
   { route: '/hpos/stock', label: 'Stock', iconKey: 'stock', capability: 'inventory.view' },
   { route: '/hpos/cash', label: 'Cash & close', iconKey: 'cash', capability: 'pos.cashup' },
-  { route: '/hpos/reports', label: 'Sales', iconKey: 'reports', capability: 'reports.view' }
+  { route: '/hpos/reports', label: 'Sales', iconKey: 'reports', capability: 'pos.reports' }
 ])
 
 /** HPOS dock items for restaurant service — floor and kitchen remain primary. */
@@ -109,11 +109,11 @@ export const HPOS_MORE_ITEMS_RESTAURANT = Object.freeze([
   { route: '/restaurant/control-workspace', label: 'Controls & guest policy', capability: 'pos.manage' },
   { route: '/staff', label: 'Staff management', capability: 'staff.manage' },
   { route: '/hpos/customers', label: 'Customers', capability: 'pos.view' },
-  { route: '/hpos/business-control', label: 'Business overview', capability: 'pos.manage' },
+  { route: '/hpos/business-control', label: 'Business overview', capability: 'advanced_reports.view' },
   { route: '/restaurant/outlet-control', label: 'Outlet control', capability: 'pos.manage' },
   { route: '/pos/customer-display', label: 'Customer display', capability: 'pos.view' },
   { route: '/settings', label: 'Settings', capability: 'settings.view' },
-  { route: '/hpos/system-health', label: 'System Health', capability: 'settings.view' },
+  { route: '/hpos/system-health', label: 'System Health', capability: 'system.health' },
   { route: '/settings?tab=license', label: 'Subscription', capability: 'settings.view' },
   { route: '/data-management', label: 'Data & backup', capability: 'data.import' }
 ])
@@ -122,9 +122,9 @@ export const HPOS_MORE_ITEMS_BAR = Object.freeze([
   { route: '/hpos/menu', label: 'Products', capability: 'pos.menu_manage' },
   { route: '/hpos/stock', label: 'Stock counts', capability: 'inventory.view' },
   { route: '/hpos/cash', label: 'Cash & close', capability: 'pos.cashup' },
-  { route: '/hpos/reports', label: 'Sales report', capability: 'reports.view' },
+  { route: '/hpos/reports', label: 'Sales report', capability: 'pos.reports' },
   { route: '/staff', label: 'Staff accounts', capability: 'staff.manage' },
-  { route: '/hpos/team', label: 'Shifts & cashiers', capability: 'pos.manage' },
+  { route: '/hpos/team', label: 'Shifts & cashiers', capability: 'staff.view' },
   { route: '/hpos/system-health?tab=audit', label: 'Audit trail', capability: 'audit.view' },
   { route: '/hpos/control', label: 'Bar checklists', capability: 'pos.manage' },
   { route: '/restaurant/inventory', label: 'Stock & Purchasing Pro', capability: 'inventory.view', feature: 'inventory_advanced' },
@@ -142,11 +142,11 @@ export const HPOS_MORE_ITEMS_BAR = Object.freeze([
   { route: '/hpos/customers', label: 'Customers & loyalty', capability: 'pos.view', feature: 'customer_accounts' },
   { route: '/hpos/growth-tools', label: 'Vouchers', capability: 'pos.manage', feature: 'vouchers' },
   { route: '/restaurant/outlet-control', label: 'Multi-outlet control', capability: 'pos.manage', feature: 'multi_outlet_controls' },
-  { route: '/hpos/business-control', label: 'Growth analytics', capability: 'pos.manage', feature: 'advanced_reports' },
+  { route: '/hpos/business-control', label: 'Growth analytics', capability: 'advanced_reports.view', feature: 'advanced_reports' },
   { route: '/pos/bar-display', label: 'Bar board', capability: 'pos.view' },
   { route: '/pos/customer-display', label: 'Customer display', capability: 'pos.view' },
   { route: '/settings', label: 'Settings', capability: 'settings.view' },
-  { route: '/hpos/system-health', label: 'System Health', capability: 'settings.view' },
+  { route: '/hpos/system-health', label: 'System Health', capability: 'system.health' },
   { route: '/settings?tab=license', label: 'Subscription', capability: 'settings.view' },
   { route: '/data-management', label: 'Data & backup', capability: 'data.import' }
 ])

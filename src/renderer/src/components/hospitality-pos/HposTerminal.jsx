@@ -37,6 +37,10 @@ import {
   normalizeBarcode,
   isScannerEditableTarget,
 } from "../../../../shared/barcodeScanner";
+import {
+  TILL_OPERATOR_MODES,
+  getTillOperatorPolicy,
+} from "../../../../shared/tillOperatorPolicy";
 
 const TERMINAL_OUTLET_STORAGE_PREFIX = "hpos-terminal-outlet:";
 
@@ -432,6 +436,7 @@ export default function HposTerminal() {
   const currency = settings?.currency || "P";
   const barOnly = isBarOnlyMode(settings);
   const barProfile = useMemo(() => getBarModeProfile(settings), [settings]);
+  const tillOperatorPolicy = useMemo(() => getTillOperatorPolicy(settings), [settings]);
   const serviceModeOptions = useMemo(
     () => getHposServiceModes(barOnly),
     [barOnly],
@@ -492,6 +497,9 @@ export default function HposTerminal() {
   const [operatorStaffId, setOperatorStaffId] = useState("");
   const [operatorPin, setOperatorPin] = useState("");
   const [verifiedOperator, setVerifiedOperator] = useState(null);
+  const [operatorLastActivityAt, setOperatorLastActivityAt] = useState(null);
+  const [tillSessionOutletId, setTillSessionOutletId] = useState(null);
+  const [tillSessionExpiresAt, setTillSessionExpiresAt] = useState(null);
   const [operatorBusy, setOperatorBusy] = useState(false);
   const [showOperatorUnlock, setShowOperatorUnlock] = useState(false);
   const searchRef = useRef(null);
@@ -499,6 +507,10 @@ export default function HposTerminal() {
   const [scannerSettings, setScannerSettings] = useState({});
   const scannerIdleTimerRef = useRef(null);
   const scannerFeedbackTimerRef = useRef(null);
+  const tillActivityLastSentAtRef = useRef(0);
+  const submitEnvelopeRef = useRef(null);
+  const [recoveredAttempt, setRecoveredAttempt] = useState(null);
+  const [submitNotice, setSubmitNotice] = useState("");
   if (!barcodeDecoderRef.current)
     barcodeDecoderRef.current = createBarcodeScannerDecoder();
 
@@ -507,6 +519,35 @@ export default function HposTerminal() {
     window.api?.pos?.getHardwareSettings?.().then((settings) => {
       if (active && settings && typeof settings === "object") setScannerSettings(settings);
     }).catch(() => {});
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    window.api?.pos?.getPendingPosSubmitAttempt?.()
+      .then((attempt) => {
+        if (!active) return;
+        if (attempt?.success === false) {
+          setSubmitError(attempt.error || "Sale recovery is unavailable. Do not create a new sale; contact a manager to reconcile the original attempt.");
+          return;
+        }
+        if (attempt?.resolved) {
+          setSubmitNotice(attempt.message || "The original sale was already recorded and has been safely recovered.");
+          return;
+        }
+        if (!attempt?.submitIntentId) return;
+        submitEnvelopeRef.current = {
+          status: "pending",
+          submitIntentId: attempt.submitIntentId,
+          orderId: attempt.orderId,
+          createdAtClient: attempt.createdAtClient,
+          payload: attempt.payload,
+        };
+        setRecoveredAttempt(attempt);
+      })
+      .catch((error) => {
+        if (active) setSubmitError(error?.message || "Sale recovery is unavailable. Do not create a new sale; contact a manager to reconcile the original attempt.");
+      });
     return () => { active = false; };
   }, []);
 
@@ -553,6 +594,76 @@ export default function HposTerminal() {
     [],
   );
 
+  const clearTillOperatorState = useCallback(
+    ({ showUnlock = false, message = "", notifyMain = true } = {}) => {
+      if (notifyMain) void window.api?.pos?.lockSharedTillOperator?.();
+      setVerifiedOperator(null);
+      setOperatorStaffId("");
+      setOperatorPin("");
+      setCurrentShift(null);
+      setOperatorLastActivityAt(null);
+      setTillSessionOutletId(null);
+      setTillSessionExpiresAt(null);
+      tillActivityLastSentAtRef.current = 0;
+      if (message) setSubmitError(message);
+      if (showUnlock) setShowOperatorUnlock(true);
+    },
+    [],
+  );
+
+  const registerTillActivity = useCallback(() => {
+    if (
+      !sharedTerminalMode ||
+      !verifiedOperator?.id ||
+      tillOperatorPolicy.mode !== TILL_OPERATOR_MODES.SHIFT ||
+      showOperatorUnlock ||
+      !selectedOutlet?.id
+    ) return;
+    const timestamp = Date.now();
+    if (timestamp - tillActivityLastSentAtRef.current < 10000) return;
+    tillActivityLastSentAtRef.current = timestamp;
+    void Promise.resolve(window.api?.pos?.touchSharedTillOperator?.({
+      outlet_id: selectedOutlet.id,
+    })).then((result) => {
+      if (result?.success && result.session) {
+        setOperatorLastActivityAt(result.session.lastActivityAt || timestamp);
+        setTillSessionExpiresAt(result.session.expiresAt || null);
+        return;
+      }
+      clearTillOperatorState({
+        showUnlock: true,
+        message: result?.error || "Till locked. Verify the operator PIN to continue.",
+      });
+    }).catch((error) => {
+      clearTillOperatorState({
+        showUnlock: true,
+        message: error?.message || "Till activity could not be confirmed. Verify the operator PIN again.",
+      });
+    });
+  }, [clearTillOperatorState, selectedOutlet?.id, sharedTerminalMode, showOperatorUnlock, tillOperatorPolicy.mode, verifiedOperator?.id]);
+
+  useEffect(() => {
+    if (
+      !sharedTerminalMode ||
+      !verifiedOperator?.id ||
+      tillOperatorPolicy.mode !== TILL_OPERATOR_MODES.SHIFT
+    ) return undefined;
+    const onActivity = () => registerTillActivity();
+    const onVisibilityChange = () => {
+      if (!document.hidden) registerTillActivity();
+    };
+    window.addEventListener("pointerdown", onActivity, true);
+    window.addEventListener("touchstart", onActivity, true);
+    window.addEventListener("keydown", onActivity, true);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.removeEventListener("pointerdown", onActivity, true);
+      window.removeEventListener("touchstart", onActivity, true);
+      window.removeEventListener("keydown", onActivity, true);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [registerTillActivity, sharedTerminalMode, tillOperatorPolicy.mode, verifiedOperator?.id]);
+
   const chooseTerminalOutlet = useCallback(
     (outletId) => {
       if (outletId && !outletIsAllowed(outletId)) {
@@ -570,10 +681,15 @@ export default function HposTerminal() {
             row.is_active !== false &&
             row.active !== false,
         ) || null;
+      if (selectedOutlet?.id && selectedOutlet.id !== outlet?.id && verifiedOperator?.id) {
+        clearTillOperatorState({
+          message: "Outlet changed. Verify the operator PIN again for the new outlet.",
+        });
+      }
       setSelectedOutlet(outlet);
       writeTerminalOutletPreference(lodgeId, outlet?.id || null);
     },
-    [lodgeId, outletIsAllowed, outlets, reportScanner],
+    [clearTillOperatorState, lodgeId, outletIsAllowed, outlets, reportScanner, selectedOutlet?.id, verifiedOperator?.id],
   );
 
   // Keep service mode valid when hospitality mode flips (e.g. settings change).
@@ -704,9 +820,12 @@ export default function HposTerminal() {
       return;
     }
     let active = true;
+    const shiftCashierId = sharedTerminalMode && verifiedOperator?.id
+      ? verifiedOperator.id
+      : user?.id || null;
     Promise.all([
       window.api?.pos?.getTablesWithStatus?.(selectedOutlet.id) ?? [],
-      window.api?.pos?.getCurrentShift?.(selectedOutlet.id, user?.id || null) ??
+      window.api?.pos?.getCurrentShift?.(selectedOutlet.id, shiftCashierId) ??
         null,
     ])
       .then(([tableRows, shift]) => {
@@ -723,7 +842,32 @@ export default function HposTerminal() {
     return () => {
       active = false;
     };
-  }, [selectedOutlet?.id, user?.id]);
+  }, [selectedOutlet?.id, sharedTerminalMode, user?.id, verifiedOperator?.id]);
+
+  useEffect(() => {
+    if (!sharedTerminalMode || !verifiedOperator?.id || tillOperatorPolicy.mode !== TILL_OPERATOR_MODES.SHIFT || !tillSessionExpiresAt) return undefined;
+    const remainingMs = Math.max(0, Number(tillSessionExpiresAt) - Date.now());
+    const timer = window.setTimeout(() => {
+      clearTillOperatorState({
+        showUnlock: true,
+        message: `Till locked after ${tillOperatorPolicy.inactivityMinutes} minutes of inactivity. Verify the operator PIN to continue.`,
+      });
+    }, remainingMs);
+    return () => window.clearTimeout(timer);
+  }, [clearTillOperatorState, sharedTerminalMode, tillOperatorPolicy.inactivityMinutes, tillOperatorPolicy.mode, tillSessionExpiresAt, verifiedOperator?.id]);
+
+  useEffect(() => {
+    if (
+      verifiedOperator?.id &&
+      tillSessionOutletId &&
+      selectedOutlet?.id &&
+      tillSessionOutletId !== selectedOutlet.id
+    ) {
+      clearTillOperatorState({
+        message: "Outlet changed. Verify the operator PIN again for the new outlet.",
+      });
+    }
+  }, [clearTillOperatorState, selectedOutlet?.id, tillSessionOutletId, verifiedOperator?.id]);
 
   const verifySharedOperator = async () => {
     if (!operatorStaffId || !operatorPin || !selectedOutlet?.id || operatorBusy)
@@ -750,16 +894,22 @@ export default function HposTerminal() {
         throw new Error(
           "The staff Till shift could not be confirmed. Refresh Till and try again.",
         );
+      const session = activated.session || {};
       setVerifiedOperator(operator);
       setCurrentShift(shift);
+      setTillSessionOutletId(session.outletId || session.outlet_id || selectedOutlet.id);
+      setTillSessionExpiresAt(session.expiresAt || session.expires_at || null);
+      setOperatorLastActivityAt(session.lastActivityAt || session.last_activity_at || Date.now());
+      tillActivityLastSentAtRef.current = 0;
       setOperatorPin("");
       setShowOperatorUnlock(false);
       setSuccessMessage(
-        `${operator?.name || "Staff member"} is verified and ready to use Till for the next order.`,
+        tillOperatorPolicy.mode === TILL_OPERATOR_MODES.SHIFT
+          ? `${operator?.name || "Staff member"} is verified for this shift. Till will lock after ${tillOperatorPolicy.inactivityMinutes} minutes of inactivity.`
+          : `${operator?.name || "Staff member"} is verified and ready to use Till for the next order.`,
       );
     } catch (error) {
-      setVerifiedOperator(null);
-      setCurrentShift(null);
+      clearTillOperatorState({ notifyMain: false });
       setSubmitError(error?.message || "Could not activate this staff member.");
     } finally {
       setOperatorBusy(false);
@@ -804,6 +954,7 @@ export default function HposTerminal() {
   const addToCart = useCallback(
     (item) => {
       // A completed sale is acknowledged until the operator begins the next one.
+      registerTillActivity();
       setSuccessMessage("");
       setCart((prev) => {
         const existing = prev.find((c) => c.menu_item_id === item.id);
@@ -832,7 +983,7 @@ export default function HposTerminal() {
         ];
       });
     },
-    [lodgeId, location.state?.tabId],
+    [location.state?.tabId, registerTillActivity],
   );
 
   const outletName = useCallback(
@@ -907,6 +1058,7 @@ export default function HposTerminal() {
 
   const handleCompletedScan = useCallback(
     (result) => {
+      registerTillActivity();
       if (!result?.success) {
         if (result?.code === "scan_too_short") return;
         reportScanner({
@@ -937,7 +1089,7 @@ export default function HposTerminal() {
       });
       setSearch("");
     },
-    [addToCart, reportScanner, resolveBarcodeScan],
+    [addToCart, registerTillActivity, reportScanner, resolveBarcodeScan],
   );
 
   // A wedge scanner is a keyboard, so capture fast keystrokes at page level
@@ -1042,6 +1194,7 @@ export default function HposTerminal() {
   );
 
   const updateQty = useCallback((id, qty) => {
+    registerTillActivity();
     if (qty <= 0) {
       setCart((prev) => prev.filter((c) => c.id !== id));
     } else {
@@ -1049,13 +1202,15 @@ export default function HposTerminal() {
         prev.map((c) => (c.id === id ? { ...c, quantity: qty } : c)),
       );
     }
-  }, []);
+  }, [registerTillActivity]);
 
   const removeLine = useCallback((id) => {
+    registerTillActivity();
     setCart((prev) => prev.filter((c) => c.id !== id));
-  }, []);
+  }, [registerTillActivity]);
 
   const toggleModifier = (line, option, group) => {
+    registerTillActivity();
     setCart((previous) =>
       previous.map((entry) => {
         if (entry.id !== line.id) return entry;
@@ -1103,6 +1258,7 @@ export default function HposTerminal() {
   };
 
   const updateLineNotes = (lineId, value) => {
+    registerTillActivity();
     setCart((previous) =>
       previous.map((entry) =>
         entry.id === lineId ? { ...entry, item_notes: value } : entry,
@@ -1290,6 +1446,7 @@ export default function HposTerminal() {
     try {
       const result = await window.api?.pos?.saveTab?.({
         id: location.state?.tabId || selectedOpenTab?.id || undefined,
+        expected_version: location.state?.tabVersion ?? selectedOpenTab?.tab_version ?? undefined,
         outlet_id: selectedOutlet.id,
         table_name: serviceMode === "table" ? tableName.trim() || null : null,
         service_mode: servicePayload.service_mode,
@@ -1323,10 +1480,23 @@ export default function HposTerminal() {
           result.error ||
             "That table already has a running check. Resume it from Open Checks.",
         );
-      if (!result?.success)
+      if (!result?.success) {
+        if (String(result?.code || "").startsWith("till_operator_") || result?.code === "till_shift_closed" || result?.code === "shift_not_open") {
+          clearTillOperatorState({ showUnlock: true, message: result?.error || "Verify the operator PIN again." });
+        }
         throw new Error(result?.error || "Could not hold this check.");
+      }
       setCart([]);
       setShowPayment(false);
+      if (sharedTerminalMode) {
+        if (tillOperatorPolicy.mode === TILL_OPERATOR_MODES.STRICT) {
+          clearTillOperatorState({ notifyMain: true });
+        } else {
+          const session = result?.till_session;
+          setOperatorLastActivityAt(session?.lastActivityAt || Date.now());
+          setTillSessionExpiresAt(session?.expiresAt || tillSessionExpiresAt);
+        }
+      }
       setSuccessMessage(
         `${tableName || tabName || "Check"} held. Resume it from Open Checks.`,
       );
@@ -1369,33 +1539,55 @@ export default function HposTerminal() {
   }, [cart.length]);
 
   const completeOrder = useCallback(async () => {
-    if (cart.length === 0 || submitting) return;
-    if (!selectedOutlet?.id) {
-      setSubmitError("Select an outlet before taking payment.");
-      return;
-    }
-    if (sharedTerminalMode && !verifiedOperator?.id) {
-      setSubmitError(
-        `Choose the ${barOnly ? "bartender or cashier" : "waiter or bartender"} and verify their Staff PIN before taking payment.`,
-      );
-      return;
-    }
-    if (!currentShift?.id) {
-      setSubmitError(
-        "Start your shift before taking payment so this sale is included in cash-up.",
-      );
-      setShowShiftStart(true);
-      return;
+    const pendingEnvelope = submitEnvelopeRef.current;
+    const retryingSubmit = pendingEnvelope?.status === "pending";
+    if (submitting) return;
+    if (cart.length === 0 && !retryingSubmit) return;
+    if (retryingSubmit && !pendingEnvelope?.payload) return;
+    if (!retryingSubmit) {
+      if (!selectedOutlet?.id) {
+        setSubmitError("Select an outlet before taking payment.");
+        return;
+      }
+      if (sharedTerminalMode && !verifiedOperator?.id) {
+        setSubmitError(
+          `Choose the ${barOnly ? "bartender or cashier" : "waiter or bartender"} and verify their Staff PIN before taking payment.`,
+        );
+        return;
+      }
+      if (!currentShift?.id) {
+        setSubmitError(
+          "Start your shift before taking payment so this sale is included in cash-up.",
+        );
+        setShowShiftStart(true);
+        return;
+      }
     }
     const splitCash = Number(splitCashAmount || 0);
-    if (paymentMethod === "split" && (!(splitCash > 0) || !(splitCash < total))) {
+    if (!retryingSubmit && paymentMethod === "split" && (!(splitCash > 0) || !(splitCash < total))) {
       setSubmitError(`Enter a cash amount above zero and below ${currency} ${fmt(total)}. The balance will be assigned to ${splitRemainderMethod === "card" ? "card" : "mobile money"}.`);
       return;
     }
     const tenderReference = (method) =>
       String(paymentReferences[method] || "").trim() || null;
+    const voucherValue = Number(voucherAmount || 0);
+    if (!retryingSubmit && voucherValue < 0) {
+      setSubmitError("Voucher amount cannot be negative.");
+      return;
+    }
+    if (!retryingSubmit && voucherValue > total) {
+      setSubmitError("Voucher amount cannot exceed the order total.");
+      return;
+    }
     const paymentBreakdown = chargeToAccount
-      ? [{ method: "account", amount: total, reference: null }]
+      ? [{ method: "account", amount: total, customer_id: selectedCustomerId || null, reference: null }]
+      : voucherCode.trim() && voucherValue > 0
+        ? [
+            { method: "voucher", amount: voucherValue, code: voucherCode.trim().toUpperCase(), reference: null },
+            ...(total - voucherValue > 0.005
+              ? [{ method: paymentMethod === "split" ? splitRemainderMethod : paymentMethod, amount: Number((total - voucherValue).toFixed(2)), reference: tenderReference(paymentMethod === "split" ? splitRemainderMethod : paymentMethod) }]
+              : []),
+          ]
       : paymentMethod === "split"
         ? [
             { method: "cash", amount: splitCash, reference: null },
@@ -1417,7 +1609,7 @@ export default function HposTerminal() {
         ["card", "mobile_money"].includes(tender.method) &&
         !tender.reference,
     );
-    if (missingReferences.length > 0) {
+    if (!retryingSubmit && missingReferences.length > 0) {
       const methodLabels = missingReferences
         .map((tender) =>
           tender.method === "mobile_money" ? "mobile money" : "card",
@@ -1433,7 +1625,7 @@ export default function HposTerminal() {
       tableName,
       tabName,
     });
-    if (servicePayload.requiresTableOrTab && !servicePayload.table_name) {
+    if (!retryingSubmit && servicePayload.requiresTableOrTab && !servicePayload.table_name) {
       setSubmitError(
         serviceMode === "tab"
           ? "Enter a tab name before taking payment."
@@ -1445,147 +1637,195 @@ export default function HposTerminal() {
     setSubmitting(true);
     setSubmitError("");
     setSuccessMessage("");
-    const submitIntentId = crypto.randomUUID();
-    let postOrderNotice = "";
-    const orderItems = cart.map((line) => ({
-      menu_item_id: line.menu_item_id,
-      item_name: line.item_name,
-      category: line.category,
-      unit_price:
-        Number(line.unit_price || 0) + Number(line.modifier_total || 0),
-      base_unit_price: Number(line.unit_price || 0),
-      quantity: Number(line.quantity || 0),
-      modifiers: line.modifiers || [],
-      item_notes: line.item_notes?.trim() || null,
-      inventory_item_id: line.inventory_item_id,
-      depletion_qty: line.depletion_qty,
-      kitchen_station_id: line.kitchen_station_id,
-    }));
+    setSubmitNotice("");
+    let orderPayload = null;
+    let orderItems = [];
+    if (retryingSubmit) {
+      // Reuse the exact original sale attempt. The outcome of the previous
+      // submission is uncertain (timeout, lost response or interruption), so
+      // retrying must never mint a new id or timestamp or honour a changed
+      // cart: the server idempotency contract replays the original sale.
+      orderPayload = pendingEnvelope.payload;
+      orderItems = Array.isArray(orderPayload.items) ? orderPayload.items : [];
+      setSubmitNotice(
+        "The result is uncertain; retrying will check the original sale and will not create another.",
+      );
+    } else {
+      orderItems = cart.map((line) => ({
+        menu_item_id: line.menu_item_id,
+        item_name: line.item_name,
+        category: line.category,
+        unit_price:
+          Number(line.unit_price || 0) + Number(line.modifier_total || 0),
+        base_unit_price: Number(line.unit_price || 0),
+        quantity: Number(line.quantity || 0),
+        modifiers: line.modifiers || [],
+        item_notes: line.item_notes?.trim() || null,
+        inventory_item_id: line.inventory_item_id,
+        depletion_qty: line.depletion_qty,
+        kitchen_station_id: line.kitchen_station_id,
+      }));
+    }
 
     try {
-      let tabId = null;
-      let resolvedTabName = servicePayload.tab_name;
-      if (servicePayload.openSession) {
-        const session = await window.api.pos.openTableSession({
-          outlet_id: selectedOutlet.id,
-          table_name: servicePayload.table_name,
-          tab_name: servicePayload.tab_name,
-          waiter_name: user?.name || user?.email || null,
-          waiter_id: user?.id || null,
-          items: orderItems,
-        });
-        if (!session?.success)
-          throw new Error(
-            session?.error ||
-              (serviceMode === "tab"
-                ? "Could not open the tab."
-                : "Could not open the table."),
-          );
-        tabId = session.tab?.id || null;
-        resolvedTabName = session.tab?.tab_name || servicePayload.tab_name;
-      }
+      let postOrderNotice = "";
+      if (!retryingSubmit) {
+        let tabId = null;
+        let resolvedTabName = servicePayload.tab_name;
+        if (servicePayload.openSession) {
+          const session = await window.api.pos.openTableSession({
+            outlet_id: selectedOutlet.id,
+            table_name: servicePayload.table_name,
+            tab_name: servicePayload.tab_name,
+            waiter_name: user?.name || user?.email || null,
+            waiter_id: user?.id || null,
+            items: orderItems,
+          });
+          if (!session?.success) {
+            if (String(session?.code || "").startsWith("till_operator_") || session?.code === "till_shift_closed" || session?.code === "shift_not_open") {
+              clearTillOperatorState({ showUnlock: true, message: session?.error || "Verify the operator PIN again." });
+            }
+            throw new Error(
+              session?.error ||
+                (serviceMode === "tab"
+                  ? "Could not open the tab."
+                  : "Could not open the table."),
+            );
+          }
+          tabId = session.tab?.id || null;
+          resolvedTabName = session.tab?.tab_name || servicePayload.tab_name;
+        }
 
-      const walkInName =
-        selectedCustomer?.name ||
-        (servicePayload.service_mode === "delivery"
-          ? "Delivery"
-          : servicePayload.service_mode === "takeaway"
-            ? "Takeaway"
-            : servicePayload.service_mode === "counter"
-              ? "Counter"
-              : serviceMode === "tab"
-                ? resolvedTabName || "Tab"
-                : "Walk-in");
+        const walkInName =
+          selectedCustomer?.name ||
+          (servicePayload.service_mode === "delivery"
+            ? "Delivery"
+            : servicePayload.service_mode === "takeaway"
+              ? "Takeaway"
+              : servicePayload.service_mode === "counter"
+                ? "Counter"
+                : serviceMode === "tab"
+                  ? resolvedTabName || "Tab"
+                  : "Walk-in");
 
-      const result = await window.api.pos.createOrder({
-        id: submitIntentId,
-        submit_intent_id: submitIntentId,
-        room_id: null,
-        booking_id: null,
-        event_booking_id: null,
-        walk_in_name: walkInName,
-        customer_id: selectedCustomerId || null,
-        items: orderItems,
-        notes: null,
-        payment_method: chargeToAccount ? "account" : paymentMethod,
-        payment_breakdown: paymentBreakdown,
-        gross_total: subtotal,
-        discount_total: 0,
-        tax_rate: taxRate * 100,
-        tax_total: tax,
-        tip_total: tipTotal,
-        total,
-        service_mode: servicePayload.service_mode,
-        table_name: servicePayload.table_name,
-        delivery_address:
-          serviceMode === "delivery" ? deliveryAddress.trim() || null : null,
-        delivery_notes:
-          serviceMode === "delivery" ? deliveryNotes.trim() || null : null,
-        customer_account_charge:
-          chargeToAccount && selectedCustomerId
-            ? { customer_id: selectedCustomerId, amount: total }
-            : null,
-        tab_name: resolvedTabName,
-        waiter_name: servicePayload.openSession
-          ? (verifiedOperator || user)?.name ||
-            (verifiedOperator || user)?.email ||
-            null
-          : null,
-        waiter_id: servicePayload.openSession
-          ? (verifiedOperator || user)?.id || null
-          : null,
-        cashier_id: (verifiedOperator || user)?.id || null,
-        cashier_name:
-          (verifiedOperator || user)?.name ||
-          (verifiedOperator || user)?.email ||
-          null,
-        tab_id: tabId,
-        shift_id: currentShift?.id || null,
-        outlet_id: selectedOutlet.id,
-        outlet_name: selectedOutlet.name,
-        promotion_id: selectedPromotion?.id || null,
-        customer_segment:
-          selectedCustomer?.segment ||
-          selectedCustomer?.customer_segment ||
-          null,
-        manual_discount: null,
-      });
-      if (!result?.success)
-        throw new Error(result?.error || "The order was not accepted.");
-      const hardware = await window.api?.pos
-        ?.getHardwareSettings?.()
-        .catch(() => null);
-      setCompletedReceipt({
-        order: {
-          ...result,
-          id: result.id || submitIntentId,
-          receipt_number:
-            result.receipt_number ||
-            `POS-${String(result.id || submitIntentId)
-              .slice(0, 8)
-              .toUpperCase()}`,
-          created_at: result.created_at || new Date().toISOString(),
+        const submitIntentId = crypto.randomUUID();
+        const createdAtClient = new Date().toISOString();
+        orderPayload = {
+          id: submitIntentId,
+          submit_intent_id: submitIntentId,
+          created_at_client: createdAtClient,
+          room_id: null,
+          booking_id: null,
+          event_booking_id: null,
           walk_in_name: walkInName,
-          outlet_name: selectedOutlet.name,
+          customer_id: selectedCustomerId || null,
+          items: orderItems,
+          notes: null,
+          payment_method: chargeToAccount ? "account" : paymentMethod,
+          payment_breakdown: paymentBreakdown,
+          gross_total: subtotal,
+          discount_total: 0,
+          tax_rate: taxRate * 100,
+          tax_total: tax,
+          tip_total: tipTotal,
+          total,
+          service_mode: servicePayload.service_mode,
+          table_name: servicePayload.table_name,
+          delivery_address:
+            serviceMode === "delivery" ? deliveryAddress.trim() || null : null,
+          delivery_notes:
+            serviceMode === "delivery" ? deliveryNotes.trim() || null : null,
+          customer_account_charge:
+            chargeToAccount && selectedCustomerId
+              ? { customer_id: selectedCustomerId, amount: total }
+              : null,
+          tab_name: resolvedTabName,
+          waiter_name: servicePayload.openSession
+            ? (verifiedOperator || user)?.name ||
+              (verifiedOperator || user)?.email ||
+              null
+            : null,
+          waiter_id: servicePayload.openSession
+            ? (verifiedOperator || user)?.id || null
+            : null,
+          cashier_id: (verifiedOperator || user)?.id || null,
           cashier_name:
             (verifiedOperator || user)?.name ||
             (verifiedOperator || user)?.email ||
             null,
-          payment_method: chargeToAccount ? "account" : paymentMethod,
-          payment_breakdown: paymentBreakdown,
-          pos_order_items: orderItems,
-          gross_total: subtotal,
-          tax_total: tax,
-          tip_total: tipTotal,
-          total,
+          tab_id: tabId,
+          shift_id: currentShift?.id || null,
+          outlet_id: selectedOutlet.id,
+          outlet_name: selectedOutlet.name,
+          promotion_id: selectedPromotion?.id || null,
+          customer_segment:
+            selectedCustomer?.segment ||
+            selectedCustomer?.customer_segment ||
+            null,
+          manual_discount: null,
+        };
+        submitEnvelopeRef.current = {
+          status: "pending",
+          submitIntentId,
+          orderId: submitIntentId,
+          createdAtClient,
+          payload: orderPayload,
+        };
+      }
+      const result = await window.api.pos.createOrder(orderPayload);
+      if (!result?.success) {
+        if (String(result?.code || "").startsWith("till_operator_") || result?.code === "till_shift_closed" || result?.code === "shift_not_open") {
+          // Till/PIN gates must not settle the attempt: the sale may already
+          // be recorded server-side. Keep the envelope so the retry after PIN
+          // re-verification checks the original sale instead of opening a new
+          // one with fresh keys.
+          clearTillOperatorState({ showUnlock: true, message: result?.error || "Verify the operator PIN again." });
+          setSubmitError(result?.error || "The order was not accepted.");
+          return;
+        }
+        // The server answered definitively, so the outcome is no longer
+        // uncertain. A corrected cart is a new sale and must get a new
+        // envelope; the old attempt must not be replayed with new keys.
+        submitEnvelopeRef.current = null;
+        setRecoveredAttempt(null);
+        setSubmitNotice("");
+        setSubmitError(result?.error || "The order was not accepted.");
+        return;
+      }
+      submitEnvelopeRef.current = null;
+      setRecoveredAttempt(null);
+      setSubmitNotice("");
+      const hardware = await window.api?.pos
+        ?.getHardwareSettings?.()
+        .catch(() => null);
+      const provisional = result.offline === true || result.provisional === true;
+      const receiptOrder = provisional
+        ? {
+            ...orderPayload,
+            _pending_sync: true,
+            provisional: true,
+            pos_order_items: orderItems,
+          }
+        : {
+            ...result,
+            receipt_number: result.receipt_number || null,
+            created_at: result.server_received_at || result.created_at,
+            pos_order_items: Array.isArray(result.items) ? result.items : [],
+          };
+      setCompletedReceipt({
+        order: {
+          ...receiptOrder,
           _open_drawer_on_print:
-            paymentBreakdown.some((row) => row.method === "cash") &&
+            Array.isArray(receiptOrder.payment_breakdown) &&
+            receiptOrder.payment_breakdown.some((row) => row.method === "cash") &&
             hardware?.cash_drawer_open_on_cash === true,
         },
         autoPrint: hardware?.auto_print_receipts === true,
       });
-      if (selectedCustomerId && !result.offline) {
-        const points = Math.floor(Number(result.total || total) / 10);
+      if (!retryingSubmit && selectedCustomerId && !result.offline) {
+        // Loyalty is a post-sale repair path, so it may only use the
+        // server-confirmed sale total. Never derive points from the client cart.
+        const points = Number.isFinite(Number(result.total)) ? Math.floor(Number(result.total) / 10) : 0;
         if (points > 0) {
           const loyaltyResult = await Promise.resolve(
             window.api?.pos?.awardLoyalty?.({
@@ -1595,19 +1835,19 @@ export default function HposTerminal() {
               description: `Order ${result.receipt_number || result.id || ""}`,
             }),
           ).catch((error) => ({ success: false, error: error.message }));
-          if (loyaltyResult?.success === false)
-            postOrderNotice = ` Order recorded; loyalty needs follow-up: ${loyaltyResult.error || "award failed."}`;
+          if (loyaltyResult?.success === false) {
+            const repair = await window.api?.pos?.queueLoyaltyRepair?.({
+              customerId: selectedCustomerId,
+              orderId: result.id,
+              points,
+              operationId: `loyalty:${result.id}:${selectedCustomerId}`,
+              description: `Repair loyalty award for ${result.receipt_number || result.id}`,
+            }).catch((repairError) => ({ success: false, error: repairError?.message || "repair queue unavailable" }));
+            postOrderNotice = repair?.success
+              ? ` Order recorded; loyalty repair ${repair.repair_id || "queued"} is pending.`
+              : ` Order recorded; loyalty needs follow-up and was not queued: ${repair?.error || loyaltyResult.error || "award failed."}`;
+          }
         }
-      }
-      if (voucherCode && voucherAmount && !result.offline) {
-        const voucherResult = await Promise.resolve(
-          window.api?.pos?.redeemVoucher?.(
-            voucherCode.trim().toUpperCase(),
-            Number(voucherAmount),
-          ),
-        ).catch((error) => ({ success: false, error: error.message }));
-        if (voucherResult?.success === false)
-          postOrderNotice = ` Order recorded; voucher needs follow-up: ${voucherResult.error || "redemption failed."}`;
       }
       setCart([]);
       setSelectedCustomerId("");
@@ -1621,16 +1861,20 @@ export default function HposTerminal() {
       setPaymentReferences({ card: "", mobile_money: "" });
       setShowPayment(false);
       if (sharedTerminalMode) {
-        void window.api?.pos?.lockSharedTillOperator?.();
-        setVerifiedOperator(null);
-        setOperatorStaffId("");
-        setOperatorPin("");
-        setCurrentShift(null);
+        if (tillOperatorPolicy.mode === TILL_OPERATOR_MODES.STRICT) {
+          clearTillOperatorState({ notifyMain: true });
+        } else {
+          const session = result?.till_session;
+          setOperatorLastActivityAt(session?.lastActivityAt || Date.now());
+          setTillSessionExpiresAt(session?.expiresAt || tillSessionExpiresAt);
+        }
       }
       setSuccessMessage(
-        (result.offline === true
-          ? "Order saved locally and waiting to sync."
-          : "Order sent and payment recorded.") + postOrderNotice,
+        (retryingSubmit
+          ? "The original sale was recorded and no duplicate was created."
+          : result.offline === true
+            ? "Order saved locally and waiting to sync."
+            : "Order sent and payment recorded.") + postOrderNotice,
       );
       const latestTables = await Promise.resolve(
         window.api?.pos?.getTablesWithStatus?.(selectedOutlet.id),
@@ -1646,6 +1890,7 @@ export default function HposTerminal() {
   }, [
     cart,
     chargeToAccount,
+    clearTillOperatorState,
     currentShift?.id,
     deliveryAddress,
     deliveryNotes,
@@ -1654,6 +1899,7 @@ export default function HposTerminal() {
     splitCashAmount,
     splitRemainderMethod,
     sharedTerminalMode,
+    tillOperatorPolicy,
     tipTotal,
     selectedCustomer?.name,
     selectedCustomerId,
@@ -1666,6 +1912,7 @@ export default function HposTerminal() {
     tabName,
     tax,
     taxRate,
+    tillSessionExpiresAt,
     total,
     user?.email,
     user?.id,
@@ -1978,12 +2225,10 @@ export default function HposTerminal() {
                     : "hpos-till-operator-trigger"
                 }
                 onClick={() => {
-                  setShowOperatorUnlock(true);
                   if (verifiedOperator) {
-                    void window.api?.pos?.lockSharedTillOperator?.();
-                    setVerifiedOperator(null);
-                    setCurrentShift(null);
-                    setOperatorPin("");
+                    clearTillOperatorState({ showUnlock: true });
+                  } else {
+                    setShowOperatorUnlock(true);
                   }
                 }}
               >
@@ -2345,6 +2590,59 @@ export default function HposTerminal() {
             )}
           </div>
 
+          {(submitNotice || recoveredAttempt) && (
+            <div
+              role="status"
+              aria-live="polite"
+              style={{
+                margin: "10px 16px 0",
+                minHeight: 52,
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+                padding: "12px 14px",
+                borderRadius: "12px",
+                background: "linear-gradient(135deg, #fdf3e3, #fffaf0)",
+                border: "1px solid rgba(166, 118, 42, 0.35)",
+                color: "#7a5710",
+                fontSize: "14px",
+                fontWeight: 700,
+                lineHeight: 1.35,
+              }}
+            >
+              <AlertCircle size={21} aria-hidden="true" />
+              {recoveredAttempt ? (
+                <div style={{ flex: 1 }}>
+                  <span>
+                    An earlier sale submission was interrupted on this
+                    terminal. The result is uncertain; retrying will check the
+                    original sale and will not create another.
+                  </span>
+                  <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                    <button
+                      type="button"
+                      onClick={completeOrder}
+                      disabled={submitting}
+                      style={{
+                        padding: "8px 14px",
+                        borderRadius: 10,
+                        border: "1px solid rgba(166, 118, 42, 0.45)",
+                        background: "#fff8ea",
+                        color: "#6b4a0b",
+                        fontWeight: 800,
+                        cursor: submitting ? "wait" : "pointer",
+                      }}
+                    >
+                      Retry original sale
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <span>{submitNotice}</span>
+              )}
+            </div>
+          )}
+
           {(submitError || successMessage) && (
             <div
               role={submitError ? "alert" : "status"}
@@ -2512,7 +2810,8 @@ export default function HposTerminal() {
                   }}
                 >
                   {selectedCustomer &&
-                    Number(selectedCustomer.account_balance || 0) > 0 && (
+                    selectedCustomer.account_status === "active" &&
+                    Number(selectedCustomer.available_credit || 0) >= Number(total || 0) && (
                       <button
                         onClick={() => {
                           setChargeToAccount(true);
@@ -2533,8 +2832,9 @@ export default function HposTerminal() {
                       >
                         Charge {currency} {fmt(total)} to{" "}
                         {selectedCustomer.name}
-                        's account · available {currency}{" "}
-                        {fmt(selectedCustomer.account_balance)}
+                        's account · outstanding {currency}{" "}
+                        {fmt(selectedCustomer.outstanding_balance)} · available {currency}{" "}
+                        {fmt(selectedCustomer.available_credit)}
                       </button>
                     )}
                   {[
@@ -3056,6 +3356,7 @@ export default function HposTerminal() {
             error={submitError}
             busy={operatorBusy}
             onStaff={(id) => {
+              if (verifiedOperator?.id) clearTillOperatorState({ notifyMain: true });
               setOperatorStaffId(id);
               setVerifiedOperator(null);
               setCurrentShift(null);

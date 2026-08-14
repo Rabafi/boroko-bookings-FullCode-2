@@ -3,6 +3,15 @@ import { Monitor, RefreshCw } from 'lucide-react';
 
 const CURRENCY = 'P';
 const fmt = (v) => Number(v || 0).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const recordedLineAmount = (item = {}) => {
+  const value = item.line_total ?? item.net_subtotal ?? item.subtotal ?? item.gross_subtotal;
+  return value === null || value === undefined || value === '' || !Number.isFinite(Number(value)) ? null : Number(value);
+};
+const estimatedLineAmount = (item = {}) => {
+  const quantity = Number(item.quantity);
+  const unitPrice = Number(item.unit_price);
+  return Number.isFinite(quantity) && Number.isFinite(unitPrice) ? quantity * unitPrice : null;
+};
 
 export default function CustomerDisplay() {
   const [display, setDisplay] = useState(null);
@@ -81,7 +90,9 @@ export default function CustomerDisplay() {
                         <div className="shrink-0 text-right">
                           <p className="text-xl font-bold">x{Number(item.quantity || 0)}</p>
                           <p className="mt-1 text-lg text-slate-300">
-                            {CURRENCY} {fmt(Number(item.quantity || 0) * Number(item.unit_price || 0))}
+                            {recordedLineAmount(item) === null
+                              ? estimatedLineAmount(item) === null ? 'Estimate unavailable' : `Estimated ${CURRENCY} ${fmt(estimatedLineAmount(item))}`
+                              : `${CURRENCY} ${fmt(recordedLineAmount(item))}`}
                           </p>
                         </div>
                       </div>
@@ -106,8 +117,8 @@ export default function CustomerDisplay() {
                   )}
                 </div>
                 <div className="mt-8 border-t border-white/10 pt-6">
-                  <p className="text-lg font-bold uppercase tracking-[0.18em] text-emerald-200">Total Due</p>
-                  <p className="mt-2 text-6xl font-black">{CURRENCY} {fmt(display?.total)}</p>
+                  <p className="text-lg font-bold uppercase tracking-[0.18em] text-emerald-200">{display?._financial_complete === true ? 'Total due' : 'Estimated total'}</p>
+                  <p className="mt-2 text-6xl font-black">{display?._financial_complete === true && Number.isFinite(Number(display?.total)) ? `${CURRENCY} ${fmt(display.total)}` : Number.isFinite(Number(display?.totals?.total ?? display?.total)) ? `${CURRENCY} ${fmt(display?.totals?.total ?? display?.total)}` : 'Estimate unavailable'}</p>
                 </div>
               </aside>
             </div>

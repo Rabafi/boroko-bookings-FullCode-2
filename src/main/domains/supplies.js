@@ -10,6 +10,15 @@ import {
 
 // ─── ROOM SUPPLIES ────────────────────────────────────────────────────────────
 
+function withReadMetadata(rows, source, complete) {
+  const result = Array.isArray(rows) ? rows : []
+  Object.defineProperties(result, {
+    _source: { value: source, enumerable: true, configurable: true },
+    _complete: { value: complete === true, enumerable: true, configurable: true }
+  })
+  return result
+}
+
 function supplyQueueId(prefix, id) {
   return `${prefix}-${id}-${Date.now()}`
 }
@@ -160,36 +169,46 @@ function buildRoomSupplyStocktakeLines(stocktakeId) {
     }))
 }
 
-async function _getSupplyItems() {
+async function _getSupplyItems(options = {}) {
+  const exportAll = options?.export_all === true || options?.exportAll === true;
+  const pageSize = exportAll ? 1000 : 500;
+  const maxRows = exportAll ? 100000 : pageSize;
+  if (!state.isOnline) return withReadMetadata(readCache('supply-items').filter((row) => row?._deleted_offline !== true), 'offline-cache', false);
   try {
-    const { data, error } = await state.supabase.
-    from('supply_items').
-    select('id, name, category, unit, current_stock, reorder_level, latest_unit_cost, lodge_id, created_at, updated_at, is_active').
-    eq('lodge_id', state.lodgeId).
-    order('category').
-    order('name').
-    limit(500);
-    if (error) throw error;
-    const cached = readCache('supply-items');
-    if ((data || []).length === 0 && cached.length > 0) {
-      console.warn('getSupplyItems received empty live result; using cached supply items instead');
-      return cached.filter((row) => row?._deleted_offline !== true);
+    const rows = [];
+    for (let from = 0; from < maxRows; from += pageSize) {
+      const { data, error } = await state.supabase.
+      from('supply_items').
+      select('id, name, category, unit, current_stock, reorder_level, latest_unit_cost, lodge_id, created_at, updated_at, is_active').
+      eq('lodge_id', state.lodgeId).
+      order('category').
+      order('name').
+      range(from, from + pageSize - 1);
+      if (error) throw error;
+      const page = data || [];
+      rows.push(...page);
+      if (!exportAll || page.length < pageSize) break;
     }
-    writeCache('supply-items', data || []);
-    return data || [];
+    const cached = readCache('supply-items');
+    if (rows.length === 0 && cached.length > 0) {
+      console.warn('getSupplyItems received empty live result; using cached supply items instead');
+      return withReadMetadata(cached.filter((row) => row?._deleted_offline !== true), 'cache', false);
+    }
+    writeCache('supply-items', rows);
+    return withReadMetadata(rows, 'server', rows.length < maxRows);
   } catch (error) {
     const cached = readCache('supply-items');
     if (cached.length > 0) {
       console.warn('getSupplyItems falling back to cache:', error?.message || error);
-      return cached.filter((row) => row?._deleted_offline !== true);
+      return withReadMetadata(cached.filter((row) => row?._deleted_offline !== true), 'cache', false);
     }
-    if (!state.isOnline) return [];
     throw new Error(error?.message || 'Failed to load supply items');
   }
 }
 
-export function getSupplyItems() {
-  return dedupePromise('getSupplyItems', _getSupplyItems);
+export function getSupplyItems(options = {}) {
+  const exportAll = options?.export_all === true || options?.exportAll === true;
+  return dedupePromise(`getSupplyItems:${exportAll ? 'export' : 'screen'}`, () => _getSupplyItems(options));
 }
 
 export async function getSupplyItemById(id) {
@@ -423,27 +442,33 @@ export async function getSupplyPurchases(itemId) {
 export async function getAllSupplyPurchases() {
   const cached = readCache('supply-purchases');
   if (!state.isOnline) {
-    return cached.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
+    return withReadMetadata(cached.sort((a, b) => String(b.date || '').localeCompare(String(a.date || ''))), 'offline-cache', false);
   }
 
   try {
-    const { data, error } = await state.supabase.
-    from('supply_purchases').
-    select('*').
-    eq('lodge_id', state.lodgeId).
-    order('date', { ascending: false });
-    if (error) throw error;
-    const liveRows = Array.isArray(data) ? data : [];
+    const liveRows = [];
+    for (let from = 0; from < 100000; from += 500) {
+      const { data, error } = await state.supabase.
+      from('supply_purchases').
+      select('*').
+      eq('lodge_id', state.lodgeId).
+      order('date', { ascending: false }).
+      range(from, from + 499);
+      if (error) throw error;
+      const page = Array.isArray(data) ? data : [];
+      liveRows.push(...page);
+      if (page.length < 500) break;
+    }
     if (liveRows.length === 0 && cached.length > 0) {
       console.warn('getAllSupplyPurchases received empty live result; using cached purchases instead');
-      return cached.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
+      return withReadMetadata(cached.sort((a, b) => String(b.date || '').localeCompare(String(a.date || ''))), 'cache', false);
     }
     writeCache('supply-purchases', liveRows);
-    return liveRows;
+    return withReadMetadata(liveRows, 'server', true);
   } catch (error) {
     if (cached.length > 0) {
       console.warn('getAllSupplyPurchases falling back to cache:', error?.message || error);
-      return cached.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
+      return withReadMetadata(cached.sort((a, b) => String(b.date || '').localeCompare(String(a.date || ''))), 'cache', false);
     }
     throw new Error(error?.message || 'Failed to load supply purchases');
   }
@@ -1261,6 +1286,8 @@ export async function getSupplySpend(startDate, endDate) {
         return {
           ...data,
           source: 'server',
+          _source: 'server',
+          _complete: data.complete === true || data._complete === true,
           as_of_range: { start: startDate, end: endDate }
         };
       }

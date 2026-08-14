@@ -29,7 +29,7 @@ function LedgerSheet({ lodgeId, invoice, onClose }) {
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <p className="text-sm font-semibold text-white">{titleCase(payment.type || 'payment')}</p>
-                  <p className="text-xs text-gray-400 mt-1">{shortDateTime(payment.paid_at || payment.created_at)} • {titleCase(payment.method || 'cash')}</p>
+                  <p className="text-xs text-gray-400 mt-1">{shortDateTime(payment.paid_at || payment.created_at)} • {titleCase(payment.method || 'tender unavailable')}</p>
                 </div>
                 <p className={`text-sm font-bold ${Number(payment.amount || 0) < 0 ? 'text-red-300' : 'text-green-300'}`}>{money(payment.amount)}</p>
               </div>

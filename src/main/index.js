@@ -33,7 +33,7 @@ for (const method of ['warn', 'error', 'log', 'info']) {
 import { state } from './state.js'
 import { readCache } from './domains/cacheStore.js'
 import { createAiOrchestrator, writeAiAuditLog } from './ai/aiOrchestrator.js'
-import { buildCapabilitySnapshot, normalizeAppRole } from '../shared/accessControl.js'
+import { buildCapabilitySnapshot, isPosOutletScopedRole, normalizeAppRole } from '../shared/accessControl.js'
 import { isCommercialFeatureIncluded } from '../shared/commercialAccess.js'
 import { normalizeDayUseReportRow } from '../shared/dayUseReporting.js'
 import {
@@ -66,6 +66,11 @@ import {
   testPosHardwareDevice
 } from './hardware/posHardwareAdapter.js'
 import { getProductDefinition, getRuntimeProductId } from '../shared/productIdentity.js'
+import { getTillOperatorPolicy, TILL_OPERATOR_MODES } from '../shared/tillOperatorPolicy.js'
+import { createTillOperatorSessionStore, TILL_OPERATOR_SESSION_CODES } from './domains/tillOperatorSession.js'
+import { resolveSharedTillHistoryAccess } from './domains/tillOperatorHistory.js'
+import { calculatePosFinancialTruth, hasRecordedPosTenderEnvelope } from '../shared/posFinancialTruth.js'
+import { writePosHistoryExcelArtifact, writePosHistoryJsonArtifact, writePosHistoryPdfArtifact } from './posHistoryExportArtifacts.js'
 
 const currentDir = dirname(fileURLToPath(import.meta.url))
 const BUILD_PRODUCT_ID = getRuntimeProductId()
@@ -91,27 +96,20 @@ const APP_LOGO_STEM = PRODUCT_LOGO_STEMS[BUILD_PRODUCT_ID] || 'tsa-bonno-hospita
 const APP_LOGO_FILENAME = `${APP_LOGO_STEM}-logo-color.png`
 const APP_DARK_LOGO_FILENAME = `${APP_LOGO_STEM}-logo-light.png`
 let activeSplashWindow = null
-const SHARED_TILL_OPERATOR_SESSION_MS = 10 * 60 * 1000
-const sharedTillOperatorSessions = new Map()
+const sharedTillOperatorSessions = createTillOperatorSessionStore()
 
-function setSharedTillOperatorSession(webContents, staff, outletId) {
+function setSharedTillOperatorSession(webContents, staff, outletId, shiftId, policy = null) {
   if (!webContents?.id || !staff?.id) return
-  sharedTillOperatorSessions.set(webContents.id, {
+  const normalizedPolicy = getTillOperatorPolicy({ operating_profile: { till_operator_policy: policy || {} } })
+  return sharedTillOperatorSessions.create({
+    webContentsId: webContents.id,
     staffId: staff.id,
     staffName: staff.name || staff.email || 'Till operator',
-    outletId: outletId || null,
-    expiresAt: Date.now() + SHARED_TILL_OPERATOR_SESSION_MS,
+    outletId,
+    shiftId: shiftId || staff.shift_id || staff.shiftId || null,
+    mode: normalizedPolicy.mode,
+    inactivityMinutes: normalizedPolicy.inactivityMinutes
   })
-}
-
-function getSharedTillOperatorSession(webContents) {
-  const session = sharedTillOperatorSessions.get(webContents?.id)
-  if (!session || session.expiresAt <= Date.now()) {
-    if (webContents?.id) sharedTillOperatorSessions.delete(webContents.id)
-    return null
-  }
-  session.expiresAt = Date.now() + SHARED_TILL_OPERATOR_SESSION_MS
-  return session
 }
 
 function readStartupJson(filePath, fallback = null) {
@@ -680,7 +678,43 @@ function escapeHtml(value) {
 }
 
 function formatReportMoney(currency, value) {
-  return `${currency} ${Number(value || 0).toFixed(2)}`
+  if (value === null || value === undefined || value === '' || !Number.isFinite(Number(value))) return `${currency} unavailable`
+  return `${currency} ${Number(value).toFixed(2)}`
+}
+
+function resolveCertifiedPosExportOutletId() {
+  const outletFilter = db.getUserPosOutletFilter()
+  const user = db.getCurrentUser?.()
+  if (isPosOutletScopedRole(user?.role)) {
+    if (!Array.isArray(outletFilter) || outletFilter.length !== 1 || !outletFilter[0]) {
+      throw new Error('Select exactly one assigned outlet before exporting POS history.')
+    }
+    return outletFilter[0]
+  }
+  return Array.isArray(outletFilter) && outletFilter.length === 1 ? outletFilter[0] : null
+}
+
+function recordedReportAmount(row = {}, keys = ['total_cost', 'total', 'amount']) {
+  for (const key of keys) {
+    const raw = row?.[key]
+    if (raw === null || raw === undefined || raw === '') continue
+    const value = Number(raw)
+    if (Number.isFinite(value)) return value
+  }
+  return null
+}
+
+function reportRowsComplete(rows = [], amountKeys = ['total_cost', 'total', 'amount']) {
+  return Array.isArray(rows) && rows.every((row) => recordedReportAmount(row, amountKeys) !== null)
+}
+
+function requireCompleteReportRead(value, label, { rows = false, amountKeys } = {}) {
+  const complete = value?._complete === true || value?.complete === true
+  const source = value?._source || value?.source
+  if (source && !['server', 'server-authoritative'].includes(source)) throw new Error(`${label} is not server-authoritative.`)
+  if (complete !== true) throw new Error(`${label} is incomplete or lacks an explicit server-complete certificate.`)
+  if (rows && !reportRowsComplete(value, amountKeys)) throw new Error(`${label} contains rows without recorded amounts.`)
+  return value
 }
 
 function delay(ms) {
@@ -754,6 +788,188 @@ async function renderHtmlToPdfBuffer(html, pdfOptions = {}, waitOptions = {}) {
   } finally {
     if (!pdfWindow.isDestroyed()) pdfWindow.destroy()
   }
+}
+
+const ACCOUNTING_EXPORT_FILE_FORMATS = Object.freeze(['json', 'xlsx', 'csv', 'pdf'])
+const ACCOUNTING_FILE_EXPORT_OPERATIONS = new Set([
+  'exportChart',
+  'exportLedgerReport',
+  'exportAp',
+  'exportBank',
+  'exportTax',
+  'exportBudgets',
+  'exportStatements',
+  'exportPayrollRegister'
+])
+
+function unwrapAccountingExportResponse(result) {
+  return result?.data && typeof result.data === 'object' ? result.data : result
+}
+
+function assertCompleteAccountingExport(source) {
+  if (!source || source.complete !== true || source.export_manifest?.completeness === 'INCOMPLETE' || source.exportManifest?.completeness === 'INCOMPLETE') {
+    throw new Error('Accounting export is INCOMPLETE: the server did not certify every required source and reconciliation.')
+  }
+  if (source.dataset_status === 'certified' && source.export_id && source.dataset_hash) return source
+  const manifest = source.export_manifest || source.exportManifest
+  if (!manifest || manifest.completeness !== 'COMPLETE' || !source.report_run_id || !source.data_hash) {
+    throw new Error('Accounting export is missing its complete report-run identity or dataset hash.')
+  }
+  return source
+}
+
+function accountingExportIdentity(source) {
+  return {
+    exportId: source?.export_id || source?.exportId || null,
+    reportRunId: source?.report_run_id || source?.reportRunId || null,
+    datasetHash: source?.dataset_hash || source?.data_hash || null
+  }
+}
+
+async function recordAccountingArtifact(source, artifact) {
+  const identity = accountingExportIdentity(source)
+  if (identity.exportId && db.recordAccountingExportArtifactV3) {
+    await db.recordAccountingExportArtifactV3({ exportId: identity.exportId, ...artifact })
+    return
+  }
+  if (identity.reportRunId && db.recordReportArtifactResult) {
+    await db.recordReportArtifactResult({ reportRunId: identity.reportRunId, ...artifact })
+  }
+}
+
+function verifyAccountingExportFile(filePath, format) {
+  const saved = fs.statSync(filePath)
+  if (!saved.isFile() || saved.size <= 0) throw new Error('The accounting export file was not written or is empty.')
+  if (format === 'xlsx') {
+    const reopened = XLSX.read(fs.readFileSync(filePath), { type: 'buffer' })
+    if (!Array.isArray(reopened.SheetNames) || reopened.SheetNames.length === 0) throw new Error('The accounting XLSX file could not be reopened.')
+  } else if (format === 'json') {
+    JSON.parse(fs.readFileSync(filePath, 'utf8'))
+  } else if (format === 'csv') {
+    if (!fs.readFileSync(filePath, 'utf8').trim()) throw new Error('The accounting CSV file could not be reopened.')
+  } else if (format === 'pdf') {
+    const header = fs.readFileSync(filePath).subarray(0, 4).toString()
+    if (header !== '%PDF') throw new Error('The accounting PDF file could not be reopened.')
+  }
+  return saved
+}
+
+function flattenAccountingExportValue(value, path = '', rows = []) {
+  if (Array.isArray(value)) {
+    if (value.length === 0) rows.push({ path, value: '[]' })
+    value.forEach((item, index) => flattenAccountingExportValue(item, `${path}[${index}]`, rows))
+    return rows
+  }
+  if (value && typeof value === 'object') {
+    const keys = Object.keys(value)
+    if (keys.length === 0) rows.push({ path, value: '{}' })
+    keys.forEach((key) => flattenAccountingExportValue(value[key], path ? `${path}.${key}` : key, rows))
+    return rows
+  }
+  rows.push({ path, value: value == null ? '' : String(value) })
+  return rows
+}
+
+function accountingExportRows(source) {
+  const payload = Object.prototype.hasOwnProperty.call(source, 'data')
+    ? source.data
+    : Object.prototype.hasOwnProperty.call(source, 'rows')
+      ? source.rows
+      : source
+  const metadata = Object.fromEntries(Object.entries(source).filter(([key]) => key !== 'data'))
+  return [
+    ...flattenAccountingExportValue(metadata, 'metadata'),
+    ...flattenAccountingExportValue(payload, 'data')
+  ]
+}
+
+function csvCell(value) {
+  const text = String(value ?? '')
+  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
+}
+
+function buildAccountingExportCsv(source) {
+  const lines = [['record_type', 'path', 'value']]
+  const metadataRows = flattenAccountingExportValue(Object.fromEntries(Object.entries(source).filter(([key]) => key !== 'data')), 'metadata')
+  const payload = Object.prototype.hasOwnProperty.call(source, 'data') ? source.data : source.rows ?? source
+  const dataRows = flattenAccountingExportValue(payload, 'data')
+  for (const row of metadataRows) lines.push(['metadata', row.path, row.value])
+  for (const row of dataRows) lines.push(['data', row.path, row.value])
+  return `${lines.map((row) => row.map(csvCell).join(',')).join('\r\n')}\r\n`
+}
+
+function buildAccountingExportPdfHtml(source, { fileName, companionFilePath }) {
+  const manifest = source.export_manifest || source.exportManifest || {}
+  const controls = source.control_totals || {}
+  const reconciliations = source.reconciliations || {}
+  const metadata = [
+    ['Report type', source.report_type],
+    ['Report run', source.report_run_id],
+    ['Lodge', source.lodge_name || source.parameters?.lodge_id],
+    ['Filters', JSON.stringify(source.parameters || {})],
+    ['Generated', source.generated_at],
+    ['Data cutoff', source.data_cutoff],
+    ['Business timezone', source.business_timezone],
+    ['Currency', source.currency],
+    ['Row count', source.row_count],
+    ['Dataset hash', source.dataset_hash || source.data_hash],
+    ['Completeness', manifest.completeness],
+    ['Control totals', JSON.stringify(controls)],
+    ['Reconciliations', JSON.stringify(reconciliations)],
+    ['Companion detailed file', companionFilePath]
+  ]
+  const rows = metadata.map(([label, value]) => `<tr><th>${escapeHtml(label)}</th><td>${escapeHtml(value)}</td></tr>`).join('')
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(fileName || 'Accounting export')}</title><style>
+    @page{size:A4;margin:16mm}body{font-family:Arial,sans-serif;color:#172033;font-size:12px}h1{font-size:22px;margin:0 0 6px}h2{font-size:14px;margin:22px 0 8px}.notice{padding:10px;background:#ecfdf5;border:1px solid #a7f3d0;border-radius:8px;margin:16px 0}table{border-collapse:collapse;width:100%}th,td{border:1px solid #dbe3ec;padding:7px;text-align:left;vertical-align:top}th{background:#f8fafc;width:30%}.muted{color:#64748b}</style></head><body>
+    <h1>Accounting report summary</h1><div class="muted">${escapeHtml(fileName || '')}</div>
+    <div class="notice"><strong>COMPLETE server-authoritative report.</strong> This PDF is a summary. The companion detailed file contains every exported value and must be retained with this PDF.</div>
+    <h2>Report identity and controls</h2><table>${rows}</table>
+    <p class="muted">Schema: ${escapeHtml(source.schema_version || 'financial-report-v1')} · Export version: ${escapeHtml(source.export_version || '')}</p>
+  </body></html>`
+}
+
+function buildAccountingExportEnvelope(source, format, companionFilePath = null) {
+  const canonical = JSON.stringify(source)
+  return {
+    ...source,
+    file_format: format,
+    file_generated_at: new Date().toISOString(),
+    dataset_hash: source.dataset_hash || (source.data_hash ? `sha256:${source.data_hash}` : null),
+    companion_file_path: companionFilePath,
+    canonical_source_hash: crypto.createHash('sha256').update(canonical).digest('hex')
+  }
+}
+
+function writeAccountingExportFile(filePath, format, source, companionFilePath = null) {
+  const envelope = buildAccountingExportEnvelope(source, format, companionFilePath)
+  if (format === 'json') {
+    const bytes = Buffer.from(JSON.stringify(envelope, null, 2), 'utf8')
+    fs.writeFileSync(filePath, bytes)
+    return { bytes, rowCount: Number(source.row_count || 0) }
+  }
+  if (format === 'csv') {
+    const bytes = Buffer.from(buildAccountingExportCsv(envelope), 'utf8')
+    fs.writeFileSync(filePath, bytes)
+    return { bytes, rowCount: Number(source.row_count || 0) }
+  }
+  if (format === 'xlsx') {
+    const wb = XLSX.utils.book_new()
+    const metadata = flattenAccountingExportValue(Object.fromEntries(Object.entries(envelope).filter(([key]) => key !== 'data')), 'metadata')
+    const payload = Object.prototype.hasOwnProperty.call(envelope, 'data') ? envelope.data : envelope.rows ?? envelope
+    const dataRows = flattenAccountingExportValue(payload, 'data')
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
+      ['Report metadata', 'Value'],
+      ...metadata.map((row) => [row.path, row.value])
+    ]), 'Metadata')
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
+      ['Record type', 'Path', 'Value'],
+      ...dataRows.map((row) => ['data', row.path, row.value])
+    ]), 'Data')
+    const bytes = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' })
+    fs.writeFileSync(filePath, bytes)
+    return { bytes, rowCount: Number(source.row_count || 0) }
+  }
+  throw new Error(`Unsupported accounting export format: ${format}`)
 }
 
 function buildPrepaymentReceiptPdfHtml(receipt = {}) {
@@ -906,7 +1122,7 @@ function buildDetailedReportPdfHtml({ lodgeName, companyName, reportType, startD
     pl: 'Profit & Loss Statement'
   }[reportType] || 'Detailed Report'
 
-  function money(v) { return `${sym} ${Number(v || 0).toFixed(2)}` }
+  function money(v) { return formatReportMoney(sym, v) }
 
   function table(headers, rows) {
     const ths = headers.map((h) => `<th style="padding:6px 10px;text-align:left;border-bottom:2px solid #333;font-size:11px;white-space:nowrap;background:#f8fafc">${escapeHtml(h)}</th>`).join('')
@@ -1285,8 +1501,12 @@ function buildDetailedReportPdfHtml({ lodgeName, companyName, reportType, startD
   } else if (reportType === 'expenses') {
     const expenses = extraData.expenses || []
     const maintenanceRows = extraData.maintenanceRows || []
-    const totalExpenses = expenses.reduce((s, e) => s + Number(e.amount || 0), 0)
-    const totalMaintenance = maintenanceRows.reduce((s, m) => s + Number(m.actual_cost || m.total_cost || 0), 0)
+    const totalExpenses = expenses.every((e) => recordedReportAmount(e, ['amount']) !== null)
+      ? expenses.reduce((s, e) => s + recordedReportAmount(e, ['amount']), 0)
+      : null
+    const totalMaintenance = maintenanceRows.every((m) => recordedReportAmount(m, ['actual_cost', 'total_cost']) !== null)
+      ? maintenanceRows.reduce((s, m) => s + recordedReportAmount(m, ['actual_cost', 'total_cost']), 0)
+      : null
     
     // Summary cards
     if (expenses.length > 0 || maintenanceRows.length > 0) {
@@ -1294,9 +1514,9 @@ function buildDetailedReportPdfHtml({ lodgeName, companyName, reportType, startD
         <div style="margin:0 0 16px">
           <h2 style="font-size:13px;font-weight:700;color:#166534;margin:0 0 8px">Expenses Summary</h2>
           <div style="display:flex;flex-wrap:wrap;gap:8px">
-            ${summaryCard('Operating Expenses', `${sym} ${totalExpenses.toFixed(2)}`, `${expenses.length} entries`)}
-            ${summaryCard('Maintenance Costs', `${sym} ${totalMaintenance.toFixed(2)}`, `${maintenanceRows.length} tickets`)}
-            ${summaryCard('Total', `${sym} ${(totalExpenses + totalMaintenance).toFixed(2)}`)}
+            ${summaryCard('Operating Expenses', money(totalExpenses), `${expenses.length} entries`)}
+            ${summaryCard('Maintenance Costs', money(totalMaintenance), `${maintenanceRows.length} tickets`)}
+            ${summaryCard('Total', totalExpenses === null || totalMaintenance === null ? `${sym} unavailable` : money(totalExpenses + totalMaintenance))}
           </div>
         </div>`
     }
@@ -1304,7 +1524,11 @@ function buildDetailedReportPdfHtml({ lodgeName, companyName, reportType, startD
     // By category breakdown
     if (expenses.length > 0) {
       const byCategory = {}
-      expenses.forEach((e) => { byCategory[e.category || 'Other'] = (byCategory[e.category || 'Other'] || 0) + Number(e.amount || 0) })
+      expenses.forEach((e) => {
+        const amount = recordedReportAmount(e, ['amount'])
+        if (amount === null) return
+        byCategory[e.category || 'Other'] = (byCategory[e.category || 'Other'] || 0) + amount
+      })
       const sortedCats = Object.entries(byCategory).sort((a, b) => b[1] - a[1])
       let catRows = ''
       for (const [cat, amt] of sortedCats) {
@@ -1329,7 +1553,7 @@ function buildDetailedReportPdfHtml({ lodgeName, companyName, reportType, startD
       bodyContent += '<h2 style="font-size:14px;color:#166534;margin:0 0 8px">Expenses</h2>'
       bodyContent += table(
         ['Date', 'Category', 'Description', `Amount (${sym})`],
-        [...expenses.map((e) => [e.date || '', e.category || '', e.description || '', Number(e.amount || 0)]),
+        [...expenses.map((e) => [e.date || '', e.category || '', e.description || '', recordedReportAmount(e, ['amount'])]),
          ['TOTAL', '', '', totalExpenses]]
       )
     }
@@ -1337,7 +1561,7 @@ function buildDetailedReportPdfHtml({ lodgeName, companyName, reportType, startD
       bodyContent += '<h2 style="font-size:14px;color:#166534;margin:16px 0 8px">Maintenance Costs</h2>'
       bodyContent += table(
         ['Date', 'Title', 'Description', 'Room', 'Status', `Cost (${sym})`],
-        [...maintenanceRows.map((m) => [m.reported_date || m.date || '', m.title || '', m.description || '', m.room_number || '', m.status || '', Number(m.actual_cost || m.total_cost || 0)]),
+        [...maintenanceRows.map((m) => [m.reported_date || m.date || '', m.title || '', m.description || '', m.room_number || '', m.status || '', recordedReportAmount(m, ['actual_cost', 'total_cost'])]),
          ['TOTAL', '', '', '', '', totalMaintenance]]
       )
     }
@@ -1447,8 +1671,12 @@ function buildDetailedReportPdfHtml({ lodgeName, companyName, reportType, startD
   } else if (reportType === 'costs') {
     const invPurchases = extraData.inventoryPurchases || []
     const supPurchases = extraData.supplyPurchases || []
-    const totalInv = invPurchases.reduce((s, p) => s + Number(p.total_cost || p.quantity_purchased * p.unit_cost || 0), 0)
-    const totalSup = supPurchases.reduce((s, p) => s + Number(p.total_cost || p.quantity_purchased * p.unit_cost || 0), 0)
+    const totalInv = invPurchases.every((p) => recordedReportAmount(p, ['total_cost']) !== null)
+      ? invPurchases.reduce((s, p) => s + recordedReportAmount(p, ['total_cost']), 0)
+      : null
+    const totalSup = supPurchases.every((p) => recordedReportAmount(p, ['total_cost']) !== null)
+      ? supPurchases.reduce((s, p) => s + recordedReportAmount(p, ['total_cost']), 0)
+      : null
     
     // Summary cards
     if (invPurchases.length > 0 || supPurchases.length > 0) {
@@ -1456,9 +1684,9 @@ function buildDetailedReportPdfHtml({ lodgeName, companyName, reportType, startD
         <div style="margin:0 0 16px">
           <h2 style="font-size:13px;font-weight:700;color:#166534;margin:0 0 8px">Stock Costs Summary</h2>
           <div style="display:flex;flex-wrap:wrap;gap:8px">
-            ${summaryCard('Inventory Purchases', `${sym} ${totalInv.toFixed(2)}`, `${invPurchases.length} entries`)}
-            ${summaryCard('Room Supplies', `${sym} ${totalSup.toFixed(2)}`, `${supPurchases.length} entries`)}
-            ${summaryCard('Total Stock Costs', `${sym} ${(totalInv + totalSup).toFixed(2)}`)}
+            ${summaryCard('Inventory Purchases', money(totalInv), `${invPurchases.length} entries`)}
+            ${summaryCard('Room Supplies', money(totalSup), `${supPurchases.length} entries`)}
+            ${summaryCard('Total Stock Costs', totalInv === null || totalSup === null ? `${sym} unavailable` : money(totalInv + totalSup))}
           </div>
         </div>`
     }
@@ -1467,7 +1695,7 @@ function buildDetailedReportPdfHtml({ lodgeName, companyName, reportType, startD
       bodyContent += '<h2 style="font-size:14px;color:#166534;margin:0 0 8px">Inventory Purchases</h2>'
       bodyContent += table(
         ['Date', 'Item', 'Category', 'Qty', `Unit Cost (${sym})`, `Total (${sym})`],
-        [...invPurchases.map((p) => [p.date || p.purchased_at || '', p.item_name || p.inventory_items?.name || '', p.category || p.inventory_items?.category || '', p.quantity_purchased || 0, Number(p.unit_cost || 0), Number(p.total_cost || p.quantity_purchased * p.unit_cost || 0)]),
+        [...invPurchases.map((p) => [p.date || p.purchased_at || '', p.item_name || p.inventory_items?.name || '', p.category || p.inventory_items?.category || '', p.quantity_purchased ?? '', p.unit_cost ?? '', recordedReportAmount(p, ['total_cost'])]),
          ['TOTAL', '', '', '', '', totalInv]]
       )
     }
@@ -1475,7 +1703,7 @@ function buildDetailedReportPdfHtml({ lodgeName, companyName, reportType, startD
       bodyContent += '<h2 style="font-size:14px;color:#166534;margin:16px 0 8px">Room Supply Purchases</h2>'
       bodyContent += table(
         ['Date', 'Item', 'Qty', `Unit Cost (${sym})`, `Total (${sym})`],
-        [...supPurchases.map((p) => [p.date || p.purchased_at || '', p.item_name || p.supply_items?.name || '', p.quantity_purchased || 0, Number(p.unit_cost || 0), Number(p.total_cost || p.quantity_purchased * p.unit_cost || 0)]),
+        [...supPurchases.map((p) => [p.date || p.purchased_at || '', p.item_name || p.supply_items?.name || '', p.quantity_purchased ?? '', p.unit_cost ?? '', recordedReportAmount(p, ['total_cost'])]),
          ['TOTAL', '', '', '', totalSup]]
       )
     }
@@ -1593,8 +1821,9 @@ function getPosOrderItems(order = {}) {
 
 function getPosOrderPayments(order = {}) {
   const payments = parseMaybeJsonArray(order.payment_breakdown)
-  if (payments.length) return payments
-  return order.payment_method ? [{ method: order.payment_method, amount: Number(order.total || 0), reference: '' }] : []
+  // A payment-method label is not a tender allocation. Never synthesize a
+  // payment row from the order total in an accounting export.
+  return payments
 }
 
 function getPosOrderCustomer(order = {}) {
@@ -1616,26 +1845,86 @@ function getPosOrderSyncState(order = {}) {
 }
 
 function getPosHistorySummary(orders = []) {
-  const activeOrders = orders.filter((order) => order.status !== 'voided')
-  const voidedOrders = orders.filter((order) => order.status === 'voided')
-  const paymentTotals = {}
-  for (const order of activeOrders) {
-    for (const payment of getPosOrderPayments(order)) {
-      const method = payment.method || order.payment_method || 'unknown'
-      paymentTotals[method] = (paymentTotals[method] || 0) + Number(payment.amount || 0)
-    }
-  }
+  const { controls } = calculatePosFinancialTruth(orders)
   return {
     orderCount: orders.length,
-    activeCount: activeOrders.length,
-    voidedCount: voidedOrders.length,
-    grossTotal: activeOrders.reduce((sum, order) => sum + Number(order.gross_total || order.total || 0), 0),
-    discountTotal: activeOrders.reduce((sum, order) => sum + Number(order.discount_total || 0), 0),
-    taxTotal: activeOrders.reduce((sum, order) => sum + Number(order.tax_total || 0), 0),
-    tipTotal: activeOrders.reduce((sum, order) => sum + Number(order.tip_total || 0), 0),
-    netTotal: activeOrders.reduce((sum, order) => sum + Number(order.total || 0), 0),
-    paymentTotals
+    activeCount: controls.completed_sale_count,
+    voidedCount: controls.void_count,
+    grossTotal: controls.gross_sales,
+    discountTotal: controls.discounts,
+    taxTotal: controls.tax,
+    tipTotal: controls.tips,
+    netTotal: controls.net_recorded_sales,
+    returnTotal: controls.returns,
+    returnCount: controls.return_count,
+    cancelledCount: controls.cancelled_count,
+    paymentTotals: controls.tender_totals
   }
+}
+
+function getRecordedPosItemAmount(item = {}, keys = ['gross_subtotal', 'gross', 'subtotal']) {
+  for (const key of keys) {
+    const raw = item?.[key]
+    if (raw === null || raw === undefined || raw === '') continue
+    const value = Number(raw)
+    if (Number.isFinite(value)) return value
+  }
+  return null
+}
+
+async function loadAuthoritativePosHistoryExport({ startDate, endDate, outletId = null } = {}) {
+  const response = await db.getPosFinancialReportExportV2({
+    startDate: startDate || '1970-01-01',
+    endDate: endDate || '2999-12-31',
+    outletId
+  })
+  const envelope = response?.data || response
+  if (!envelope || envelope.dataset_status !== 'certified' || !envelope.report_run_id || !envelope.dataset_hash) {
+    throw new Error('The server did not certify a complete POS dataset for this export.')
+  }
+  const rows = (Array.isArray(envelope.rows) ? envelope.rows : []).map((row) => ({
+    ...row,
+    pos_order_items: Array.isArray(row.items) ? row.items : [],
+    payment_breakdown: Array.isArray(row.tenders) ? row.tenders : row.payment_breakdown
+  }))
+  rows._source = 'server'
+  rows._complete = true
+  const localTruth = calculatePosFinancialTruth(rows, { dataset_complete: true })
+  const serverControls = envelope.control_totals || {}
+  return {
+    orders: rows,
+    controls: { ...localTruth.controls, ...serverControls },
+    reportRunId: envelope.report_run_id,
+    dataHash: envelope.dataset_hash,
+    databaseCutoff: envelope.database_cutoff_at,
+    filters: envelope.filters || {}
+  }
+}
+
+function assertCompletePosHistoryExport(orders, voidHistory, localOrders = []) {
+  if (!Array.isArray(orders) || orders._source !== 'server' || orders._complete !== true) {
+    throw new Error('POS history export is blocked because the order source is not server-complete. Reconnect and refresh before exporting.')
+  }
+  if (!Array.isArray(voidHistory)) throw new Error('POS history export is blocked because the void source could not be loaded.')
+  const pendingOrders = [...orders, ...(Array.isArray(localOrders) ? localOrders : [])]
+    .filter((row) => row?._pending_sync || ['pending', 'failed', 'manual_review_required'].includes(row?._sync_state))
+  const pendingVoids = voidHistory.filter((row) => row?._pending_sync || ['pending', 'failed', 'manual_review_required'].includes(row?._sync_state))
+  if (pendingOrders.length || pendingVoids.length) {
+    throw new Error(`POS history export is blocked while ${pendingOrders.length + pendingVoids.length} financial operation(s) await sync or resolution.`)
+  }
+  const incompleteItems = orders.flatMap((order) => getPosOrderItems(order).map((item) => ({ order, item })))
+    .filter(({ item }) => getRecordedPosItemAmount(item) === null || getRecordedPosItemAmount(item, ['net_subtotal', 'net', 'subtotal']) === null)
+  if (incompleteItems.length) {
+    throw new Error(`POS history export is blocked because ${incompleteItems.length} server order line(s) have no recorded line amount.`)
+  }
+  const incompleteTenders = orders.filter((order) =>
+    ['sale', 'return'].includes(String(order.classification || '').toLowerCase())
+    && !hasRecordedPosTenderEnvelope(order)
+  )
+  if (incompleteTenders.length) {
+    throw new Error(`POS history export is blocked because ${incompleteTenders.length} server transaction(s) have no reconciled recorded tender envelope.`)
+  }
+  return true
 }
 
 function buildPosHistoryPdfHtml({
@@ -1646,7 +1935,10 @@ function buildPosHistoryPdfHtml({
   generatedAt = new Date().toLocaleString(),
   currency = 'P',
   orders = [],
-  voidHistory = []
+  voidHistory = [],
+  reportRunId = '',
+  dataHash = '',
+  companionFilePath = ''
 } = {}) {
   const resolvedLodge = lodgeName || companyName || APP_BRAND_NAME
   const summary = getPosHistorySummary(orders)
@@ -1659,12 +1951,12 @@ function buildPosHistoryPdfHtml({
         <td>${escapeHtml(getPosOrderOutletName(order))}</td>
         <td>${escapeHtml(order.payment_method || '')}</td>
         <td>${escapeHtml(order.status || '')}</td>
-        <td class="num">${escapeHtml(fmt(order.total || 0))}</td>
+              <td class="num">${escapeHtml(fmt(order.total))}</td>
         <td class="num">${escapeHtml(getPosOrderItems(order).length)}</td>
       </tr>
     `).join('')
     : '<tr><td colspan="7" class="empty">No POS orders in this period.</td></tr>'
-  const itemRows = orders.flatMap((order) => getPosOrderItems(order).map((item) => ({ order, item }))).slice(0, 250)
+  const itemRows = orders.flatMap((order) => getPosOrderItems(order).map((item) => ({ order, item })))
   const itemTableRows = itemRows.length
     ? itemRows.map(({ order, item }) => `
       <tr>
@@ -1673,7 +1965,7 @@ function buildPosHistoryPdfHtml({
         <td>${escapeHtml(item.item_name || item.name || '')}</td>
         <td class="num">${escapeHtml(Number(item.quantity || 0))}</td>
         <td class="num">${escapeHtml(fmt(item.unit_price || item.price || 0))}</td>
-        <td class="num">${escapeHtml(fmt(item.subtotal || (Number(item.quantity || 0) * Number(item.unit_price || item.price || 0))))}</td>
+        <td class="num">${escapeHtml(fmt(getRecordedPosItemAmount(item)))}</td>
       </tr>
     `).join('')
     : '<tr><td colspan="6" class="empty">No item lines.</td></tr>'
@@ -1723,6 +2015,10 @@ function buildPosHistoryPdfHtml({
           ${companyName && companyName !== resolvedLodge ? `<div>${escapeHtml(companyName)}</div>` : ''}
           <div>Period: ${escapeHtml(periodLabel)}</div>
           <div>Generated: ${escapeHtml(generatedAt)}</div>
+          <div>Report run: ${escapeHtml(reportRunId)}</div>
+          <div>Dataset hash: ${escapeHtml(dataHash)}</div>
+          <div>Completeness: COMPLETE · Source: server-authoritative</div>
+          <div>Detailed companion: ${escapeHtml(companionFilePath || 'not available')}</div>
         </div>
       </header>
       <div class="cards">
@@ -2774,6 +3070,24 @@ const EXPORT_PRESETS = {
   restaurant_customers: ['customers', 'activityLog']
 }
 
+// These sections can assert financial, stock, payroll-supporting, or cash
+// truth.  A workbook containing any of them must never silently substitute a
+// cache or an empty fallback for a failed authoritative read.
+const FINANCIAL_EXPORT_SECTIONS = new Set([
+  'bookings',
+  'expenses',
+  'posOrders',
+  'bookingInvoices',
+  'inventoryPurchases',
+  'supplyPurchases',
+  'conferenceBookings',
+  'dayUseEntries',
+  'purchaseOrders',
+  'stockMovements',
+  'shifts',
+  'cashDrawerSessions'
+])
+
 function normalizeExportOptions(options = {}) {
   const preset = Object.hasOwn(EXPORT_PRESETS, options?.preset) ? options.preset : 'full'
   const selected = Array.isArray(options?.sections) && options.sections.length > 0
@@ -2784,7 +3098,8 @@ function normalizeExportOptions(options = {}) {
     sections: [...new Set(selected)],
     startDate: /^\d{4}-\d{2}-\d{2}$/.test(String(options?.startDate || '')) ? options.startDate : '2000-01-01',
     endDate: /^\d{4}-\d{2}-\d{2}$/.test(String(options?.endDate || '')) ? options.endDate : '2099-12-31',
-    privacyMode: options?.privacyMode === true
+    privacyMode: options?.privacyMode === true,
+    requiresComplete: [...new Set(selected)].some((section) => FINANCIAL_EXPORT_SECTIONS.has(section))
   }
 }
 
@@ -2795,14 +3110,54 @@ function includesSection(options, key) {
 async function collectFullExportData(options = {}) {
   const normalized = normalizeExportOptions(options)
   const onProgress = typeof options?.onProgress === 'function' ? options.onProgress : null
+  const sectionStatus = new Map()
+  const sectionFailures = []
+  const rowCount = (value) => Array.isArray(value)
+    ? value.length
+    : Number(value?.row_count ?? value?.rowCount ?? 0)
+  const sourceState = (value) => {
+    if (value?._complete === false || value?.complete === false) return 'local-cache'
+    if (value?._complete === true || value?.source === 'server') return 'server'
+    if (state.isOnline === false) return 'local-cache'
+    return 'unknown'
+  }
+  const callDb = (method, ...args) => {
+    if (typeof db[method] !== 'function') throw new Error(`Database method ${method} is unavailable; authoritative export cannot continue.`)
+    return db[method](...args)
+  }
   const progress = (stage, current = null, total = null) => {
     if (onProgress) onProgress({ stage, current, total })
   }
-  const safe = async (label, loader, fallback) => {
+  const safe = async (section, loader, fallback) => {
+    const label = EXPORT_SECTION_LABELS[section] || section
     try {
       progress(label)
-      return await loader()
+      const value = await loader()
+      const source = sourceState(value)
+      const complete = source !== 'local-cache'
+      sectionStatus.set(section, {
+        section,
+        label,
+        status: complete ? 'COMPLETE' : 'INCOMPLETE',
+        source,
+        row_count: rowCount(value),
+        error: complete ? null : 'The source returned local or offline data instead of a server-authoritative snapshot.'
+      })
+      if (!complete) {
+        sectionFailures.push(sectionStatus.get(section))
+      }
+      return value
     } catch (error) {
+      const failure = {
+        section,
+        label,
+        status: 'FAILED',
+        source: 'unavailable',
+        row_count: 0,
+        error: error?.message || String(error)
+      }
+      sectionStatus.set(section, failure)
+      sectionFailures.push(failure)
       console.error(`[EXPORT] ${label} failed:`, error?.message || error)
       return fallback
     }
@@ -2817,56 +3172,77 @@ async function collectFullExportData(options = {}) {
     includesSection(normalized, 'quotations') ? safe('quotations', () => db.getAllQuotations(), []) : [],
     includesSection(normalized, 'bookingInvoices') ? safe('bookingInvoices', () => db.getBookingInvoices(), []) : [],
     includesSection(normalized, 'maintenance') ? safe('maintenance', () => db.getMaintenanceTickets(), []) : [],
-    includesSection(normalized, 'inventoryItems') || includesSection(normalized, 'inventoryPurchases') ? safe('inventoryItems', () => db.getInventoryItems(), []) : [],
-    includesSection(normalized, 'supplyItems') || includesSection(normalized, 'supplyPurchases') ? safe('supplyItems', () => db.getSupplyItems(), []) : [],
+    includesSection(normalized, 'inventoryItems') || includesSection(normalized, 'inventoryPurchases') ? safe('inventoryItems', () => callDb('getInventoryItems', { export_all: true }), []) : [],
+    includesSection(normalized, 'supplyItems') || includesSection(normalized, 'supplyPurchases') ? safe('supplyItems', () => callDb('getSupplyItems', { export_all: true }), []) : [],
     includesSection(normalized, 'conferenceBookings') ? safe('conferenceBookings', () => db.getConferenceBookings(normalized.startDate, normalized.endDate), []) : [],
     includesSection(normalized, 'dayUseEntries') ? safe('dayUseEntries', () => db.getPoolDayUse(normalized.startDate, normalized.endDate), []) : [],
-    includesSection(normalized, 'users') ? safe('users', () => db.getUsers?.() || [], []) : [],
-    includesSection(normalized, 'activityLog') ? safe('activityLog', () => db.getActivityLog?.(5000) || [], []) : []
+    includesSection(normalized, 'users') ? safe('users', () => callDb('getUsers'), []) : [],
+    includesSection(normalized, 'activityLog') ? safe('activityLog', () => callDb('getActivityLog', 5000), []) : []
   ])
 
   const inventoryNameMap = new Map((inventoryItems || []).map((item) => [item.id, item.name || item.item_name || '']))
   const supplyNameMap = new Map((supplyItems || []).map((item) => [item.id, item.name || item.item_name || '']))
   const inventoryPurchases = includesSection(normalized, 'inventoryPurchases')
-    ? (await safe('inventory purchases', () => db.getAllInventoryPurchases(), [])).map((purchase) => ({
+    ? (await safe('inventoryPurchases', () => db.getAllInventoryPurchases(), [])).map((purchase) => ({
         ...purchase,
         item_name: purchase.item_name || inventoryNameMap.get(purchase.item_id) || ''
       }))
     : []
   const supplyPurchases = includesSection(normalized, 'supplyPurchases')
-    ? (await safe('supply purchases', () => db.getAllSupplyPurchases(), [])).map((purchase) => ({
+    ? (await safe('supplyPurchases', () => db.getAllSupplyPurchases(), [])).map((purchase) => ({
         ...purchase,
         item_name: purchase.item_name || supplyNameMap.get(purchase.item_id) || ''
       }))
     : []
 
   const menuItems = includesSection(normalized, 'menuItems')
-    ? (await safe('menu items', () => db.getPosMenuItems?.() || [], []) || [])
+    ? (await safe('menuItems', () => callDb('getPosMenuItems'), []) || [])
     : []
   const recipes = includesSection(normalized, 'recipes')
-    ? (await safe('recipes', () => db.getPosRecipes?.() || [], []) || [])
+    ? (await safe('recipes', () => callDb('getPosRecipes'), []) || [])
     : []
   const suppliers = includesSection(normalized, 'suppliers')
-    ? (await safe('suppliers', () => db.getPosSuppliers?.() || [], []) || [])
+    ? (await safe('suppliers', () => callDb('getPosSuppliers'), []) || [])
     : []
   const purchaseOrders = includesSection(normalized, 'purchaseOrders')
-    ? (await safe('purchase orders', () => db.getPosPurchaseOrders?.(normalized.startDate, normalized.endDate) || [], []) || [])
+    ? (await safe('purchaseOrders', () => callDb('getPosPurchaseOrders', normalized.startDate, normalized.endDate), []) || [])
     : []
   const stockMovements = includesSection(normalized, 'stockMovements')
-    ? (await safe('stock movements', () => db.getInventoryMovements?.(normalized.startDate, normalized.endDate) || [], []) || [])
+    ? (await safe('stockMovements', () => callDb('getInventoryMovements', { start_date: normalized.startDate, end_date: normalized.endDate, export_all: true }), []) || [])
     : []
   const shifts = includesSection(normalized, 'shifts')
-    ? (await safe('shifts', () => db.getShiftHistory?.(normalized.startDate, normalized.endDate) || [], []) || [])
+    ? (await safe('shifts', () => callDb('getShiftHistory', normalized.startDate, normalized.endDate), []) || [])
     : []
   const cashDrawerSessions = includesSection(normalized, 'cashDrawerSessions')
-    ? (await safe('cash drawer sessions', () => db.getCashDrawerSessions?.(normalized.startDate, normalized.endDate) || [], []) || [])
+    ? (await safe('cashDrawerSessions', () => callDb('getCashDrawerSessions', normalized.startDate, normalized.endDate), []) || [])
     : []
   const checklists = includesSection(normalized, 'checklists')
-    ? (await safe('checklists', () => db.getChecklists?.() || [], []) || [])
+    ? (await safe('checklists', () => callDb('getChecklists'), []) || [])
     : []
   const alerts = includesSection(normalized, 'alerts')
-    ? (await safe('alerts', () => db.getExceptionAlerts?.() || [], []) || [])
+    ? (await safe('alerts', () => callDb('getExceptionAlerts'), []) || [])
     : []
+
+  const selectedSections = normalized.sections.map((section) => sectionStatus.get(section) || {
+    section,
+    label: EXPORT_SECTION_LABELS[section] || section,
+    status: 'FAILED',
+    source: 'not-loaded',
+    row_count: 0,
+    error: 'The selected section was not loaded.'
+  })
+  const completeness = selectedSections.every((section) => section.status === 'COMPLETE') ? 'COMPLETE' : 'INCOMPLETE'
+  const exportManifest = {
+    schema_version: 'data-export-manifest-v1',
+    generated_at: new Date().toISOString(),
+    data_cutoff: { start_date: normalized.startDate, end_date: normalized.endDate },
+    source_mode: completeness === 'COMPLETE' ? 'server-authoritative' : 'partial-or-unavailable',
+    completeness,
+    requires_complete: normalized.requiresComplete,
+    financial_claim: normalized.requiresComplete,
+    sections: selectedSections,
+    errors: sectionFailures.filter((failure) => normalized.sections.includes(failure.section))
+  }
 
   return {
     options: normalized,
@@ -2894,7 +3270,8 @@ async function collectFullExportData(options = {}) {
     shifts,
     cashDrawerSessions,
     checklists,
-    alerts
+    alerts,
+    exportManifest
   }
 }
 
@@ -2902,6 +3279,31 @@ function buildFullExportWorkbook(data) {
   const wb = XLSX.utils.book_new()
   const hasSection = (key) => !data.options || data.options.sections.includes(key)
   const hidePrivate = data.options?.privacyMode === true
+  const exportManifest = data.exportManifest || {
+    schema_version: 'data-export-manifest-v1',
+    completeness: 'INCOMPLETE',
+    source_mode: 'unknown',
+    requires_complete: true,
+    sections: [],
+    errors: [{ error: 'No completeness manifest was produced.' }]
+  }
+  const manifestRows = [
+    { Field: 'Schema version', Value: exportManifest.schema_version || 'data-export-manifest-v1' },
+    { Field: 'Completeness', Value: exportManifest.completeness || 'INCOMPLETE' },
+    { Field: 'Source mode', Value: exportManifest.source_mode || 'unknown' },
+    { Field: 'Financial export', Value: exportManifest.financial_claim === true ? 'YES — server-complete required' : 'NO' },
+    { Field: 'Generated at', Value: exportManifest.generated_at || '' },
+    { Field: 'Data cutoff', Value: `${exportManifest.data_cutoff?.start_date || ''} to ${exportManifest.data_cutoff?.end_date || ''}` },
+    ...(exportManifest.sections || []).map((section) => ({
+      Field: `Section: ${section.label || section.section}`,
+      Value: `${section.status || 'UNKNOWN'} | ${section.source || 'unknown'} | ${section.row_count || 0} rows${section.error ? ` | ${section.error}` : ''}`
+    })),
+    ...(exportManifest.errors || []).map((failure) => ({
+      Field: `Error: ${failure.label || failure.section || 'unknown'}`,
+      Value: failure.error || 'Source failed'
+    }))
+  ]
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(manifestRows), 'Export Manifest')
 
   if (hasSection('bookings')) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
     (data.bookings || []).map(b => ({
@@ -3277,11 +3679,22 @@ function writeWorkbookFile(wb, filePath) {
 
 async function exportAllDataWorkbookToPath(filePath, options = {}) {
   const data = await collectFullExportData(options)
+  if (data.exportManifest?.requires_complete === true && data.exportManifest.completeness !== 'COMPLETE') {
+    const failed = (data.exportManifest.errors || []).map((failure) => failure.label || failure.section).filter(Boolean)
+    const suffix = failed.length > 0 ? ` Failed sections: ${failed.join(', ')}.` : ''
+    throw new Error(`Financial export blocked: the authoritative snapshot is INCOMPLETE. Resolve the source errors and retry.${suffix}`)
+  }
   if (typeof options?.onProgress === 'function') options.onProgress({ stage: 'writing workbook' })
   const wb = buildFullExportWorkbook(data)
   writeWorkbookFile(wb, filePath)
   if (typeof options?.onProgress === 'function') options.onProgress({ stage: 'complete' })
-  return { success: true, filePath, sections: data.options.sections }
+  return {
+    success: true,
+    complete: data.exportManifest?.completeness === 'COMPLETE',
+    filePath,
+    sections: data.options.sections,
+    exportManifest: data.exportManifest
+  }
 }
 
 function emailAutomationEnabled(key) {
@@ -3687,7 +4100,9 @@ app.whenReady().then(async () => {
         role: normalizeAppRole(user.role),
         features: entitlement?.effective_features || {},
         productId: entitlement?.product_id || null,
-        commercialPackageKey: entitlement?.commercial_package_key || null
+        commercialPackageKey: entitlement?.commercial_package_key || null,
+        commercialAddonKeys: entitlement?.enterprise_addons || [],
+        capabilityOverrides: user?.capability_overrides || {}
       }),
       entitlement
     }
@@ -3697,7 +4112,8 @@ app.whenReady().then(async () => {
     const snapshot = await getAccessSnapshot()
     const productId = snapshot?.entitlement?.product_id || snapshot?.productId || null
     const commercialPackageKey = snapshot?.entitlement?.commercial_package_key || snapshot?.commercialPackageKey || null
-    if (productId && commercialPackageKey && !isCommercialFeatureIncluded(productId, commercialPackageKey, featureKey)) {
+    const commercialAddonKeys = snapshot?.entitlement?.enterprise_addons || snapshot?.commercialAddonKeys || []
+    if (productId && commercialPackageKey && !isCommercialFeatureIncluded(productId, commercialPackageKey, featureKey, commercialAddonKeys)) {
       throw new Error(errorMessage || 'This feature is not included in the current commercial package.')
     }
     return snapshot
@@ -3731,6 +4147,90 @@ app.whenReady().then(async () => {
     }
 
     throw new Error(errorMessage || 'Your role does not have access to this action.')
+  }
+
+  // Read-only POS panels must be able to distinguish an empty result from a
+  // source that was unavailable or not entitled.  Keep the IPC value
+  // structured-clone safe and non-array so existing operational callers still
+  // fail closed to an empty list, while certified dashboards can surface the
+  // unavailable state instead of saying "none".
+  function unavailablePosRead(error, label) {
+    return {
+      _available: false,
+      _source: 'unavailable',
+      _label: label || 'POS data',
+      _error: error?.message || String(error || 'The source could not be loaded.'),
+      rows: []
+    }
+  }
+
+  const SHARED_TILL_ROLES = new Set(['manager', 'admin', 'supervisor', 'super_admin'])
+
+  async function getSharedTillPolicy() {
+    const settings = await db.getSettings().catch(() => ({}))
+    return getTillOperatorPolicy(settings)
+  }
+
+  async function getSharedTillActionContext(event, data = {}) {
+    const user = getCurrentUserOrRestore()
+    if (!SHARED_TILL_ROLES.has(normalizeAppRole(user?.role))) {
+      return { shared: false, session: null, policy: null }
+    }
+
+    const policy = await getSharedTillPolicy()
+    const requestedOperatorId = data?.cashier_id || data?.cashierId || data?.waiter_id || data?.waiterId || null
+    const outletId = data?.outlet_id || data?.outletId || null
+    const shiftId = data?.shift_id || data?.shiftId || null
+    const authorized = sharedTillOperatorSessions.authorize(event?.sender?.id, {
+      outletId,
+      operatorId: requestedOperatorId,
+      shiftId
+    })
+    if (!authorized.success) {
+      return { shared: true, session: null, policy, code: authorized.code, error: authorized.error }
+    }
+    const activeSession = authorized.session
+    if (activeSession.mode !== policy.mode || activeSession.inactivityMinutes !== policy.inactivityMinutes) {
+      sharedTillOperatorSessions.clear(event?.sender?.id)
+      return {
+        shared: true,
+        session: null,
+        policy,
+        code: TILL_OPERATOR_SESSION_CODES.EXPIRED,
+        error: 'Till settings changed. Verify the operator PIN again.'
+      }
+    }
+    if (state.isOnline && activeSession.shiftId) {
+      const openShift = await db.getStaffOpenPosShift(activeSession.staffId).catch(() => null)
+      if (!openShift?.id || openShift.id !== activeSession.shiftId || String(openShift.status || 'open').toLowerCase() !== 'open') {
+        sharedTillOperatorSessions.clear(event?.sender?.id)
+        return {
+          shared: true,
+          session: null,
+          policy,
+          code: 'till_shift_closed',
+          error: 'The operator shift is closed. Start or select an open shift before continuing.'
+        }
+      }
+    }
+    return { shared: true, session: activeSession, policy }
+  }
+
+  function buildAuthoritativeTillPayload(data, tillContext, kind = 'order') {
+    if (!tillContext?.shared || !tillContext.session) return data
+    const session = tillContext.session
+    const payload = {
+      ...(data || {}),
+      outlet_id: session.outletId,
+      shift_id: session.shiftId,
+      cashier_id: session.staffId,
+      cashier_name: session.staffName
+    }
+    if (kind === 'tab' || Object.prototype.hasOwnProperty.call(data || {}, 'waiter_id')) {
+      payload.waiter_id = session.staffId
+      payload.waiter_name = session.staffName
+    }
+    return payload
   }
 
   const DEV_ENTERPRISE_PREVIEW_CAPABILITIES = new Set([
@@ -4861,7 +5361,8 @@ app.whenReady().then(async () => {
   })
 
   // -- Email Notifications ---------------------------------------------------
-  ipcMain.handle('email:getConfig', () => {
+  ipcMain.handle('email:getConfig', async () => {
+    await requireCapability('settings.manage_general')
     const config = getEmailConfig()
     if (!config) return null
     // Mask password before sending to renderer
@@ -5881,8 +6382,9 @@ app.whenReady().then(async () => {
       const sym = currency || 'P'
       const resolvedLodge = lodgeName || companyName || APP_BRAND_NAME
       const wb = XLSX.utils.book_new()
+      const supplementalFailures = []
 
-      const sharedMeta = { lodgeName: resolvedLodge, companyName, periodLabel: `${startDate} to ${endDate}`, currency: sym, outletLabel, generatedAt, asOf: reconciliation.asOf, reconciliationStatus: reconciliation.reconciliationStatus, exportVersion: db.EXPORT_VERSION }
+      const sharedMeta = { lodgeName: resolvedLodge, companyName, periodLabel: `${startDate} to ${endDate}`, currency: sym, outletLabel, generatedAt, asOf: reconciliation.asOf, reconciliationStatus: reconciliation.reconciliationStatus, exportVersion: db.EXPORT_VERSION, exportManifest: data.exportManifest }
 
       function addSheetWithFormatting(sheetName, aoa, opts = {}) {
         const sheet = XLSX.utils.aoa_to_sheet(aoa)
@@ -6159,12 +6661,18 @@ app.whenReady().then(async () => {
             ['Combined Total', money(totalExpenses + totalMaintenance)]
           ]
           addSheetWithFormatting('Summary', summaryAoa, { filter: false })
-        } catch {}
+        } catch (error) {
+          supplementalFailures.push({ section: 'expenses', message: error?.message || String(error) })
+        }
       }
 
       if (activeTab === 'pos') {
         try {
-          const posRevenue = await db.getPosRevenueSummary(startDate, endDate, outletLabel || 'all')
+          const [posRevenue, posOrders] = await Promise.all([
+            db.getPosRevenueSummary(startDate, endDate, outletLabel || 'all'),
+            db.getPosOrders(startDate, endDate, outletLabel || null)
+          ])
+          if (posOrders?._complete !== true || posOrders?._source !== 'server' || posRevenue?.complete !== true || posRevenue?.financial_truth !== 'server_confirmed') throw new Error('POS order source is not server-certified and complete.')
           if (posRevenue) {
             const posSummaryAoa = [
               ...db.buildExportMetaRows(sharedMeta),
@@ -6204,7 +6712,9 @@ app.whenReady().then(async () => {
               addSheetWithFormatting('Daily Sales', [...db.buildExportMetaRows(sharedMeta), ['Date', `Total (${sym})`], ...dailyRows.map(db.sanitizeRow)])
             }
           }
-        } catch {}
+        } catch (error) {
+          supplementalFailures.push({ section: 'pos', message: error?.message || String(error) })
+        }
       }
 
       if (activeTab === 'costs') {
@@ -6213,11 +6723,13 @@ app.whenReady().then(async () => {
             db.getInventorySpend(startDate, endDate, outletLabel || 'all'),
             db.getSupplySpend(startDate, endDate)
           ])
+          requireCompleteReportRead(invSpend, 'Inventory spend source')
+          requireCompleteReportRead(supSpend, 'Supply spend source')
           if (invSpend && invSpend.purchases) {
             const invRows = invSpend.purchases.map((p) => [
               p.date || p.purchased_at || '', p.inventory_items?.name || p.item_name || '',
-              p.inventory_items?.category || p.category || '', p.quantity_purchased || 0,
-              Number(p.unit_cost || 0), Number(p.total_cost || 0)
+              p.inventory_items?.category || p.category || '', p.quantity_purchased ?? '',
+              p.unit_cost ?? '', recordedReportAmount(p, ['total_cost'])
             ])
             addSheetWithFormatting('Inventory Purchases', [...db.buildExportMetaRows(sharedMeta), ['Date', 'Item', 'Category', 'Qty', `Unit Cost (${sym})`, `Total (${sym})`], ...invRows.map(db.sanitizeRow)])
 
@@ -6230,14 +6742,16 @@ app.whenReady().then(async () => {
           if (supSpend && supSpend.purchases) {
             const supRows = supSpend.purchases.map((p) => [
               p.date || p.purchased_at || '', p.supply_items?.name || p.item_name || '',
-              p.quantity_purchased || 0, Number(p.unit_cost || 0), Number(p.total_cost || 0)
+              p.quantity_purchased ?? '', p.unit_cost ?? '', recordedReportAmount(p, ['total_cost'])
             ])
             addSheetWithFormatting('Room Supplies', [...db.buildExportMetaRows(sharedMeta), ['Date', 'Item', 'Qty', `Unit Cost (${sym})`, `Total (${sym})`], ...supRows.map(db.sanitizeRow)])
           }
           const totalInv = invSpend?.total || 0
           const totalSup = supSpend?.total || 0
           addSheetWithFormatting('Costs Summary', [...db.buildExportMetaRows(sharedMeta), ['STOCK COSTS SUMMARY'], ['Inventory Purchases', money(totalInv)], ['Room Supplies', money(totalSup)], ['Total Stock Costs', money(totalInv + totalSup)]], { filter: false })
-        } catch {}
+        } catch (error) {
+          supplementalFailures.push({ section: 'costs', message: error?.message || String(error) })
+        }
       }
 
       if (activeTab === 'pl') {
@@ -6296,7 +6810,9 @@ app.whenReady().then(async () => {
             }
             addSheetWithFormatting('P&L', [...db.buildExportMetaRows(sharedMeta), ...plRows.map(db.sanitizeRow)])
           }
-        } catch {}
+        } catch (error) {
+          supplementalFailures.push({ section: 'pl', message: error?.message || String(error) })
+        }
       }
 
       if (activeTab === 'prepayments') {
@@ -6313,7 +6829,13 @@ app.whenReady().then(async () => {
           } else {
             addSheetWithFormatting('Customer Credit', [...db.buildExportMetaRows(sharedMeta), ['Customer', `Received (${sym})`, `Allocated (${sym})`, `Refunded (${sym})`, `Balance (${sym})`, 'Last Activity'], ['No customer credit records for this period']], { filter: false })
           }
-        } catch {}
+        } catch (error) {
+          supplementalFailures.push({ section: 'prepayments', message: error?.message || String(error) })
+        }
+      }
+
+      if (supplementalFailures.length > 0) {
+        throw new Error(`Detailed Excel export is incomplete: ${supplementalFailures.map((failure) => `${failure.section}: ${failure.message}`).join('; ')}`)
       }
 
       const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' })
@@ -6336,7 +6858,8 @@ app.whenReady().then(async () => {
         if (verifyErr.message?.includes('verification failed')) throw verifyErr
       }
 
-      return { success: true, filePath, size: fs.statSync(filePath).size, reconciliationStatus: reconciliation.reconciliationStatus }
+      const outputHash = crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex')
+      return { success: true, filePath, size: fs.statSync(filePath).size, reconciliationStatus: reconciliation.reconciliationStatus, exportManifest: data.exportManifest, outputHash }
     } catch (e) {
       if (e.code === 'EBUSY' || e.code === 'EACCES') {
         return { success: false, error: `Cannot save file: ${e.code === 'EBUSY' ? 'the destination file is open or locked' : 'permission denied'}. Please close the file and try again.` }
@@ -6375,51 +6898,73 @@ app.whenReady().then(async () => {
 
       // For tabs that need additional data, load it from existing report functions
       let extraData = {}
+      const supplementalFailures = []
       if (reportType === 'bookings') {
         try {
           const [revenueData, occupancyData, profitData] = await Promise.all([
-            db.getRevenueReport(startDate, endDate).catch(() => null),
-            db.getOccupancyReport(startDate, endDate).catch(() => []),
-            db.getRoomProfitabilityReport(startDate, endDate).catch(() => [])
+            db.getRevenueReport(startDate, endDate),
+            db.getOccupancyReport(startDate, endDate),
+            db.getRoomProfitabilityReport(startDate, endDate)
           ])
           extraData = { revenue: revenueData || null, occupancy: occupancyData || [], profitability: profitData || [] }
-        } catch {}
+        } catch (error) {
+          supplementalFailures.push({ section: 'bookings', message: error?.message || String(error) })
+        }
       } else if (reportType === 'expenses') {
         try {
           const [expenses, maintenanceRows] = await Promise.all([
             db.getExpenses(startDate, endDate, outletLabel || 'all'),
             db.getMaintenanceRowsForPeriod(startDate, endDate)
           ])
+          requireCompleteReportRead(expenses, 'Expense source', { rows: true, amountKeys: ['amount'] })
+          requireCompleteReportRead(maintenanceRows, 'Maintenance cost source', { rows: true, amountKeys: ['total_cost'] })
           extraData = { expenses: expenses || [], maintenanceRows: maintenanceRows || [] }
-        } catch {}
+        } catch (error) {
+          supplementalFailures.push({ section: 'expenses', message: error?.message || String(error) })
+        }
       } else if (reportType === 'pos') {
         try {
           const [posOrders, posRevenue] = await Promise.all([
             db.getPosOrders(startDate, endDate, outletLabel || null),
             db.getPosRevenueSummary(startDate, endDate, outletLabel || 'all')
           ])
+          if (posOrders?._complete !== true || posOrders?._source !== 'server' || posRevenue?.complete !== true || posRevenue?.financial_truth !== 'server_confirmed') throw new Error('POS order source is not server-certified and complete.')
           extraData = { posOrders: posOrders || [], posRevenue: posRevenue || null }
-        } catch {}
+        } catch (error) {
+          supplementalFailures.push({ section: 'pos', message: error?.message || String(error) })
+        }
       } else if (reportType === 'costs') {
         try {
           const [invPurchases, supPurchases] = await Promise.all([
-            db.getAllInventoryPurchases().catch(() => []),
-            db.getAllSupplyPurchases().catch(() => [])
+            db.getAllInventoryPurchases(),
+            db.getAllSupplyPurchases()
           ])
           const invFiltered = (invPurchases || []).filter((p) => p.date >= startDate && p.date <= endDate)
           const supFiltered = (supPurchases || []).filter((p) => p.date >= startDate && p.date <= endDate)
+          requireCompleteReportRead(invPurchases, 'Inventory purchase source', { rows: true, amountKeys: ['total_cost'] })
+          requireCompleteReportRead(supPurchases, 'Supply purchase source', { rows: true, amountKeys: ['total_cost'] })
           extraData = { inventoryPurchases: invFiltered, supplyPurchases: supFiltered }
-        } catch {}
+        } catch (error) {
+          supplementalFailures.push({ section: 'costs', message: error?.message || String(error) })
+        }
       } else if (reportType === 'pl') {
         try {
           const profitLoss = await db.getProfitLoss(startDate, endDate)
           extraData = { profitLoss: profitLoss || null }
-        } catch {}
+        } catch (error) {
+          supplementalFailures.push({ section: 'pl', message: error?.message || String(error) })
+        }
       } else if (reportType === 'prepayments') {
         try {
           const credits = await db.getCustomerCreditSummary(null, 500, 0)
           extraData = { credits: credits || [] }
-        } catch {}
+        } catch (error) {
+          supplementalFailures.push({ section: 'prepayments', message: error?.message || String(error) })
+        }
+      }
+
+      if (supplementalFailures.length > 0) {
+        throw new Error(`Detailed PDF export is incomplete: ${supplementalFailures.map((failure) => `${failure.section}: ${failure.message}`).join('; ')}`)
       }
 
       const html = buildDetailedReportPdfHtml({
@@ -6451,7 +6996,8 @@ app.whenReady().then(async () => {
       if (!fs.existsSync(result.filePath) || fs.statSync(result.filePath).size === 0) {
         throw new Error('PDF was not written successfully')
       }
-      return { success: true, filePath: result.filePath, reconciliationStatus: reconciliation.reconciliationStatus }
+      const outputHash = crypto.createHash('sha256').update(fs.readFileSync(result.filePath)).digest('hex')
+      return { success: true, filePath: result.filePath, reconciliationStatus: reconciliation.reconciliationStatus, outputHash, exportManifest: data.exportManifest }
     } catch (e) {
       if (e.code === 'EBUSY' || e.code === 'EACCES') {
         return { success: false, error: `Cannot save PDF: ${e.code === 'EBUSY' ? 'the destination file is open or locked' : 'permission denied'}. Please close the file and try again.` }
@@ -6467,6 +7013,12 @@ app.whenReady().then(async () => {
     try {
       const today = new Date().toISOString().split('T')[0]
       const normalized = normalizeExportOptions(options)
+      const activeSettings = await db.getSettings().catch(() => ({}))
+      const restaurantMode = ['restaurant', 'bar', 'bar_only'].includes(String(activeSettings?.property_type || activeSettings?.business_type || '').toLowerCase())
+        || String(activeSettings?.hospitality_mode || activeSettings?.operating_profile || '').toLowerCase() === 'bar_only'
+      if (restaurantMode && !String(normalized.preset).startsWith('restaurant_')) {
+        return { success: false, error: 'This Bar/restaurant workspace can only export a restaurant-scoped preset. Choose Data & backups → Export Data and select a restaurant preset.' }
+      }
       const presetLabel = String(normalized.preset || 'full').replace(/[^a-z0-9]+/gi, '-').toLowerCase()
       const rangeLabel = normalized.startDate === '2000-01-01' && normalized.endDate === '2099-12-31'
         ? 'all-dates'
@@ -6684,11 +7236,53 @@ app.whenReady().then(async () => {
       return await db.updateExpense(id, data)
     } catch (e) { return { success: false, error: e.message } }
   })
-  ipcMain.handle('expenses:delete', async (_, id) => {
+  ipcMain.handle('expenses:delete', async (_, id, operationId) => {
     try {
       await requireCapability('expenses.manage')
       await assertResourceBelongsToCurrentLodge('Expense', id, db.getExpenseById)
-      return await db.deleteExpense(id)
+      return await db.deleteExpense(id, operationId)
+    } catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('expenses:submit', async (_, id, payload, operationId) => {
+    try {
+      await requireCapability('expenses.manage')
+      await assertResourceBelongsToCurrentLodge('Expense', id, db.getExpenseById)
+      return await db.submitExpense(id, payload || {}, operationId)
+    } catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('expenses:approve', async (_, id, payload, operationId) => {
+    try {
+      await requireCapability('accounting.manage')
+      await assertResourceBelongsToCurrentLodge('Expense', id, db.getExpenseById)
+      return await db.approveExpense(id, payload || {}, operationId)
+    } catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('expenses:post', async (_, id, payload, operationId) => {
+    try {
+      await requireCapability('accounting.manage')
+      await assertResourceBelongsToCurrentLodge('Expense', id, db.getExpenseById)
+      return await db.postExpense(id, payload || {}, operationId)
+    } catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('expenses:pay', async (_, id, payload, operationId) => {
+    try {
+      await requireCapability('accounting.manage')
+      await assertResourceBelongsToCurrentLodge('Expense', id, db.getExpenseById)
+      return await db.payExpense(id, payload || {}, operationId)
+    } catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('expenses:void', async (_, id, payload, operationId) => {
+    try {
+      await requireCapability('expenses.manage')
+      await assertResourceBelongsToCurrentLodge('Expense', id, db.getExpenseById)
+      return await db.voidExpense(id, payload || {}, operationId)
+    } catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('expenses:reverse', async (_, id, payload, operationId) => {
+    try {
+      await requireCapability('accounting.manage')
+      await assertResourceBelongsToCurrentLodge('Expense', id, db.getExpenseById)
+      return await db.reverseExpense(id, payload || {}, operationId)
     } catch (e) { return { success: false, error: e.message } }
   })
 
@@ -6804,6 +7398,9 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('receipts:printCurrent', async (event, options = {}) => {
     const win = BrowserWindow.fromWebContents(event.sender)
+    if (options?.order && !options.order.receipt_number && options.order._pending_sync !== true) {
+      return { success: false, error: 'Printing is blocked until the server-issued receipt number is available.' }
+    }
     const hardware = normalizePosHardwareSettings(await db.getPosHardwareSettings().catch(() => ({})))
     const business = await getReceiptBusinessSettings(options?.business || {})
     if ((options?.mode === 'escpos' || hardware.receipt_print_mode === 'escpos') && options?.order) {
@@ -6885,8 +7482,8 @@ app.whenReady().then(async () => {
     try {
       await requireCapability('pos.view')
       const outletFilter = db.getUserPosOutletFilter()
-      return await db.getPosMenuItems(outletFilter).catch(() => [])
-    } catch { return [] }
+      return await db.getPosMenuItems(outletFilter)
+    } catch (e) { return unavailablePosRead(e, 'Menu') }
   })
   ipcMain.handle('pos:createMenuItem', async (_, data) => {
     try {
@@ -6916,7 +7513,7 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('pos:getOrders', async (_, start, end) => {
     try {
-      await requireCapability('pos.view')
+      await requireCapability('pos.reports')
       const outletFilter = db.getUserPosOutletFilter()
       return await db.getPosOrders(start, end, outletFilter)
     } catch (e) {
@@ -6925,7 +7522,7 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('pos:getVoidHistory', async (_, start, end) => {
     try {
-      await requireCapability('pos.view')
+      await requireCapability('pos.reports')
       const outletFilter = db.getUserPosOutletFilter()
       return await db.getPosVoidHistory(start, end, outletFilter)
     } catch (e) {
@@ -6933,8 +7530,10 @@ app.whenReady().then(async () => {
     }
   })
   ipcMain.handle('pos:exportHistoryExcel', async (event, payload = {}) => {
+    let reportRunId = null
     try {
-      await requireCapability('pos.view')
+      await requireCapability('reports.export')
+      const certifiedOutletId = resolveCertifiedPosExportOutletId()
       const parentWin = BrowserWindow.fromWebContents(event.sender)
       const start = payload.start || ''
       const end = payload.end || ''
@@ -6946,17 +7545,38 @@ app.whenReady().then(async () => {
       })
       if (canceled || !filePath) return { success: false }
 
-      const outletFilter = db.getUserPosOutletFilter()
-      const [orders, voidHistory, settings] = await Promise.all([
-        db.getPosOrders(start, end, outletFilter),
-        db.getPosVoidHistory(start, end, outletFilter).catch(() => []),
-        db.getSettings().catch(() => ({}))
-      ])
+       const outletFilter = db.getUserPosOutletFilter()
+       const outletId = certifiedOutletId
+       const [authoritative, voidHistory, localOrders, settings] = await Promise.all([
+         loadAuthoritativePosHistoryExport({ startDate: start, endDate: end, outletId }),
+         db.getPosVoidHistory(start, end, outletFilter),
+         db.getPosOrders(start, end, outletFilter),
+         db.getSettings().catch(() => ({}))
+       ])
+       const orders = authoritative.orders
+       reportRunId = authoritative.reportRunId
+       assertCompletePosHistoryExport(orders, voidHistory, localOrders)
       const currency = settings?.currency || 'P'
       const resolvedLodge = settings?.lodge_name || settings?.company_name || APP_BRAND_NAME
       const periodLabel = start && end ? `${start} to ${end}` : 'All dates'
       const generatedAt = new Date().toLocaleString()
-      const summary = getPosHistorySummary(orders || [])
+       const summary = getPosHistorySummary(orders || [])
+       Object.assign(summary, {
+         ...authoritative.controls,
+         orderCount: orders.length,
+         activeCount: authoritative.controls.completed_sale_count,
+         voidedCount: authoritative.controls.void_count,
+         grossTotal: authoritative.controls.gross_sales,
+         discountTotal: authoritative.controls.discounts,
+         taxTotal: authoritative.controls.tax,
+         tipTotal: authoritative.controls.tips,
+         netTotal: authoritative.controls.net_recorded_sales,
+         returnTotal: authoritative.controls.returns,
+         returnCount: authoritative.controls.return_count,
+         cancelledCount: authoritative.controls.cancelled_count,
+         paymentTotals: authoritative.controls.tender_totals
+       })
+       const dataHash = authoritative.dataHash
 
       const wb = XLSX.utils.book_new()
       XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
@@ -6967,6 +7587,10 @@ app.whenReady().then(async () => {
           periodLabel,
           generatedAt
         }),
+        ['Report run', reportRunId],
+        ['Dataset hash', dataHash],
+        ['Completeness', 'COMPLETE'],
+        ['Source', 'server-authoritative; no pending or cached financial rows'],
         ['Metric', 'Value'],
         ['Orders', summary.orderCount],
         ['Active Orders', summary.activeCount],
@@ -6984,7 +7608,12 @@ app.whenReady().then(async () => {
       XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet((orders || []).map((order) => ({
         'Order ID': order.id || '',
         'Receipt Number': order.receipt_number || '',
+        'Business Date': order.business_date || '',
         'Created At': order.created_at || '',
+        'Classification': order.classification || '',
+        'Transaction Type': order.transaction_type || '',
+        'Original Order ID': order.original_order_id || '',
+        'Shift ID': order.shift_id || '',
         'Customer': getPosOrderCustomer(order),
         'Room ID': order.room_id || '',
         'Booking ID': order.booking_id || '',
@@ -7007,13 +7636,19 @@ app.whenReady().then(async () => {
       XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet((orders || []).flatMap((order) => (
         getPosOrderItems(order).map((item) => ({
           'Order ID': order.id || '',
+          'Business Date': order.business_date || '',
           'Created At': order.created_at || '',
+          'Classification': order.classification || '',
           'Outlet': getPosOrderOutletName(order),
           'Customer': getPosOrderCustomer(order),
           'Item': item.item_name || item.name || '',
           'Quantity': Number(item.quantity || 0),
           [`Unit Price (${currency})`]: Number(item.unit_price || item.price || 0),
-          [`Subtotal (${currency})`]: Number(item.subtotal || (Number(item.quantity || 0) * Number(item.unit_price || item.price || 0))),
+           [`Gross (${currency})`]: getRecordedPosItemAmount(item),
+          [`Discount (${currency})`]: Number(item.discount_allocated ?? item.discount ?? 0),
+          [`Tax (${currency})`]: Number(item.tax_allocated ?? item.tax ?? 0),
+           [`Net (${currency})`]: getRecordedPosItemAmount(item, ['net_subtotal', 'net', 'subtotal']),
+          [`Cost (${currency})`]: Number(item.cost_snapshot ?? item.cost ?? item.total_cost ?? 0),
           'Notes': item.item_notes || ''
         }))
       ))), 'Item Lines')
@@ -7021,10 +7656,14 @@ app.whenReady().then(async () => {
       XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet((orders || []).flatMap((order) => (
         getPosOrderPayments(order).map((payment) => ({
           'Order ID': order.id || '',
+          'Business Date': order.business_date || '',
           'Created At': order.created_at || '',
+          'Classification': order.classification || '',
           'Outlet': getPosOrderOutletName(order),
           'Customer': getPosOrderCustomer(order),
           'Method': payment.method || order.payment_method || '',
+          'Tender ID': payment.tender_id || payment.id || '',
+          'Tender Index': Number(payment.tender_index ?? 0),
           [`Amount (${currency})`]: Number(payment.amount || 0),
           'Reference': payment.reference || payment.approval_code || ''
         }))
@@ -7040,15 +7679,20 @@ app.whenReady().then(async () => {
         'Reason': row.reason || ''
       }))), 'Voids')
 
-      XLSX.writeFile(wb, filePath)
-      return { success: true, filePath, rows: (orders || []).length }
+       const saved = writePosHistoryExcelArtifact(filePath, wb)
+       const fileHash = saved.fileHash
+       await db.recordReportArtifactResult({ reportRunId, artifactType: 'xlsx', filePath, fileHash, byteCount: saved.byteCount }).catch(() => {})
+       return { success: true, filePath, rows: (orders || []).length, reportRunId, dataHash, fileHash }
     } catch (e) {
+       if (reportRunId) await db.recordReportArtifactResult({ reportRunId, artifactType: 'xlsx', artifactError: e?.message || 'POS history export failed' }).catch(() => {})
       return { success: false, error: e?.message || 'Could not export POS history.' }
     }
   })
   ipcMain.handle('pos:exportHistoryPdf', async (event, payload = {}) => {
+    let reportRunId = null
     try {
-      await requireCapability('pos.view')
+      await requireCapability('reports.export')
+      const certifiedOutletId = resolveCertifiedPosExportOutletId()
       const parentWin = BrowserWindow.fromWebContents(event.sender)
       const start = payload.start || ''
       const end = payload.end || ''
@@ -7060,12 +7704,45 @@ app.whenReady().then(async () => {
       })
       if (canceled || !filePath) return { success: false }
 
-      const outletFilter = db.getUserPosOutletFilter()
-      const [orders, voidHistory, settings] = await Promise.all([
-        db.getPosOrders(start, end, outletFilter),
-        db.getPosVoidHistory(start, end, outletFilter).catch(() => []),
-        db.getSettings().catch(() => ({}))
-      ])
+       const outletFilter = db.getUserPosOutletFilter()
+       const outletId = certifiedOutletId
+       const [authoritative, voidHistory, localOrders, settings] = await Promise.all([
+         loadAuthoritativePosHistoryExport({ startDate: start, endDate: end, outletId }),
+         db.getPosVoidHistory(start, end, outletFilter),
+         db.getPosOrders(start, end, outletFilter),
+         db.getSettings().catch(() => ({}))
+       ])
+       const orders = authoritative.orders
+       reportRunId = authoritative.reportRunId
+       assertCompletePosHistoryExport(orders, voidHistory, localOrders)
+       const summary = getPosHistorySummary(orders || [])
+       Object.assign(summary, {
+         ...authoritative.controls,
+         orderCount: orders.length,
+         activeCount: authoritative.controls.completed_sale_count,
+         voidedCount: authoritative.controls.void_count,
+         grossTotal: authoritative.controls.gross_sales,
+         discountTotal: authoritative.controls.discounts,
+         taxTotal: authoritative.controls.tax,
+         tipTotal: authoritative.controls.tips,
+         netTotal: authoritative.controls.net_recorded_sales,
+         returnTotal: authoritative.controls.returns,
+         returnCount: authoritative.controls.return_count,
+         cancelledCount: authoritative.controls.cancelled_count,
+         paymentTotals: authoritative.controls.tender_totals
+       })
+       const dataHash = authoritative.dataHash
+      const companionFilePath = filePath.replace(/\.pdf$/i, '.json')
+      const companion = writePosHistoryJsonArtifact(companionFilePath, {
+        schema_version: 'pos-history-detail-v2',
+        report_run_id: reportRunId,
+        dataset_hash: dataHash,
+        database_cutoff_at: authoritative.databaseCutoff,
+        orders,
+        void_history: voidHistory,
+        control_totals: authoritative.controls
+      })
+      await db.recordReportArtifactResult({ reportRunId, artifactType: 'json', filePath: companionFilePath, fileHash: companion.fileHash, byteCount: companion.byteCount })
       const html = buildPosHistoryPdfHtml({
         reportTitle: 'POS History',
         lodgeName: settings?.lodge_name || '',
@@ -7074,20 +7751,26 @@ app.whenReady().then(async () => {
         generatedAt: new Date().toLocaleString(),
         currency: settings?.currency || 'P',
         orders: orders || [],
-        voidHistory: voidHistory || []
+        voidHistory: voidHistory || [],
+        reportRunId,
+        dataHash,
+        companionFilePath
       })
       const pdfBuffer = await renderHtmlToPdfBuffer(html, {
         pageSize: 'A4',
         printBackground: true,
         margins: { marginType: 'default' }
       }, { minTextLength: 20 })
-      fs.writeFileSync(filePath, pdfBuffer)
-      return { success: true, filePath, rows: (orders || []).length }
+       const saved = writePosHistoryPdfArtifact(filePath, pdfBuffer)
+       const fileHash = saved.fileHash
+       await db.recordReportArtifactResult({ reportRunId, artifactType: 'pdf', filePath, fileHash, byteCount: saved.byteCount }).catch(() => {})
+       return { success: true, filePath, companionFilePath, rows: (orders || []).length, reportRunId, dataHash, fileHash }
     } catch (e) {
+       if (reportRunId) await db.recordReportArtifactResult({ reportRunId, artifactType: 'pdf', artifactError: e?.message || 'POS history PDF export failed' }).catch(() => {})
       return { success: false, error: e?.message || 'Could not export POS history PDF.' }
     }
   })
-  ipcMain.handle('pos:createOrder', async (_, data) => {
+  ipcMain.handle('pos:createOrder', async (event, data) => {
     try {
       await requireCapability('pos.manage')
       // Enforce outlet access - cashier/supervisor can only create orders for their assigned outlets
@@ -7095,9 +7778,34 @@ app.whenReady().then(async () => {
       if (outletFilter !== null && data.outlet_id && !outletFilter.includes(data.outlet_id)) {
         return { success: false, error: 'Access denied: you do not have access to this outlet.' }
       }
+      const tillContext = await getSharedTillActionContext(event, data || {})
+      if (tillContext.shared && tillContext.error) {
+        return { success: false, code: tillContext.code || 'till_operator_session_expired', error: tillContext.error }
+      }
       if (data?.booking_id) await assertResourceBelongsToCurrentLodge('Booking', data.booking_id, db.getBookingById)
       if (data?.room_id) await assertResourceBelongsToCurrentLodge('Room', data.room_id, db.getRoomById)
-      return await db.createPosOrder(data)
+      const result = await db.createPosOrder(buildAuthoritativeTillPayload(data, tillContext, 'order'))
+      if (result?.success && tillContext.shared && (tillContext.session?.mode || tillContext.policy?.mode) === TILL_OPERATOR_MODES.STRICT) {
+        sharedTillOperatorSessions.consumeStrict(event?.sender?.id)
+      }
+      return result?.success && tillContext.shared && tillContext.session?.mode === TILL_OPERATOR_MODES.SHIFT
+        ? { ...result, till_session: tillContext.session }
+        : result
+    } catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:getPendingPosSubmitAttempt', async () => {
+    try {
+      await requireCapability('pos.view')
+      const user = getCurrentUserOrRestore()
+      return await db.getPendingPosSubmitAttempt({ lodgeId: db.getActiveProfile?.()?.lodge_id || null, userId: user?.id || null })
+    } catch (e) {
+      return { success: false, code: e?.code || 'pos_submit_recovery_unavailable', error: e?.message || 'POS sale recovery is unavailable. Do not create a new sale.' }
+    }
+  })
+  ipcMain.handle('pos:saveBarProductWithPacks', async (_, data) => {
+    try {
+      await requireCapability('pos.menu_manage')
+      return await db.saveBarPosProductWithPacks(data)
     } catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('pos:voidOrder', async (_, id) => {
@@ -7158,9 +7866,7 @@ app.whenReady().then(async () => {
     try {
       await requireCapability('pos.view')
       return await db.getPosCashups(limit, db.getUserPosOutletFilter(), filters || {})
-    } catch {
-      return []
-    }
+    } catch (e) { return unavailablePosRead(e, 'Cash-up history') }
   })
   ipcMain.handle('pos:createCashup', async (_, data) => {
     try {
@@ -7175,17 +7881,45 @@ app.whenReady().then(async () => {
     }
   })
   ipcMain.handle('pos:getTabs', async (_, filters) => {
-    try { await requireCapability('pos.view'); return await db.getPosTabs(filters) }
-    catch { return [] }
+    try {
+      await requireCapability('pos.view')
+      const requested = filters && typeof filters === 'object' ? { ...filters } : {}
+      const user = db.getCurrentUser?.()
+      if (isPosOutletScopedRole(user?.role)) {
+        const outletFilter = db.getUserPosOutletFilter()
+        if (!Array.isArray(outletFilter) || outletFilter.length === 0) {
+          throw new Error('Assign this POS operator to an outlet before loading open checks.')
+        }
+        const requestedOutlet = requested.outletId || requested.outlet_id || null
+        if (requestedOutlet && !outletFilter.includes(requestedOutlet)) {
+          throw new Error('Access denied: this operator is not assigned to that outlet.')
+        }
+        const outletId = requestedOutlet || outletFilter[0]
+        requested.outletId = outletId
+        requested.outlet_id = outletId
+      }
+      return await db.getPosTabs(requested)
+    }
+    catch (e) { return unavailablePosRead(e, 'Open checks') }
   })
-  ipcMain.handle('pos:saveTab', async (_, data) => {
+  ipcMain.handle('pos:saveTab', async (event, data) => {
     try {
       await requireCapability('pos.manage')
       const outletFilter = db.getUserPosOutletFilter()
       if (outletFilter !== null && data?.outlet_id && !outletFilter.includes(data.outlet_id)) {
         return { success: false, error: 'Access denied: you do not have access to this outlet.' }
       }
-      return await db.savePosTab(data || {})
+      const tillContext = await getSharedTillActionContext(event, data || {})
+      if (tillContext.shared && tillContext.error) {
+        return { success: false, code: tillContext.code || 'till_operator_session_expired', error: tillContext.error }
+      }
+      const result = await db.savePosTab(buildAuthoritativeTillPayload(data, tillContext, 'tab'))
+      if (result?.success && tillContext.shared && (tillContext.session?.mode || tillContext.policy?.mode) === TILL_OPERATOR_MODES.STRICT) {
+        sharedTillOperatorSessions.consumeStrict(event?.sender?.id)
+      }
+      return result?.success && tillContext.shared && tillContext.session?.mode === TILL_OPERATOR_MODES.SHIFT
+        ? { ...result, till_session: tillContext.session }
+        : result
     } catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('pos:closeTab', async (_, id) => {
@@ -7216,7 +7950,7 @@ app.whenReady().then(async () => {
     try { await requireCapability('pos.view'); await requireCommercialFeature('tables'); return await db.getActivePosTableTab(tableName, outletId || null) }
     catch { return null }
   })
-  ipcMain.handle('pos:openTableSession', async (_, data) => {
+  ipcMain.handle('pos:openTableSession', async (event, data) => {
     try {
       await requireCapability('pos.manage')
       await requireCommercialFeature('tables')
@@ -7224,7 +7958,11 @@ app.whenReady().then(async () => {
       if (outletFilter !== null && data?.outlet_id && !outletFilter.includes(data.outlet_id)) {
         return { success: false, error: 'Access denied: you do not have access to this outlet.' }
       }
-      return await db.openPosTableSession(data || {})
+      const tillContext = await getSharedTillActionContext(event, data || {})
+      if (tillContext.shared && tillContext.error) {
+        return { success: false, code: tillContext.code || 'till_operator_session_expired', error: tillContext.error }
+      }
+      return await db.openPosTableSession(buildAuthoritativeTillPayload(data, tillContext, 'tab'))
     } catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('pos:getTables', async () => {
@@ -7275,20 +8013,32 @@ app.whenReady().then(async () => {
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('pos:closeShift', async (_, data) => {
-    try { await requireCapability('pos.view'); return await db.closePosShift(data || {}) }
+    try {
+      await requireCapability('pos.cashup')
+      const result = await db.closePosShift(data || {})
+      if (result?.success) {
+        const closedShift = result.shift || data || {}
+        sharedTillOperatorSessions.clearMatching({
+          staffId: closedShift.cashier_id || data?.cashier_id,
+          outletId: closedShift.outlet_id || data?.outlet_id,
+          shiftId: closedShift.id || data?.shift_id,
+        })
+      }
+      return result
+    }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('pos:getHardwareSettings', async () => {
-    try { await requireCapability('pos.view'); return await db.getPosHardwareSettings() }
+    try { await requireCapability('system.health'); return await db.getPosHardwareSettings() }
     catch { return {} }
   })
   ipcMain.handle('pos:saveHardwareSettings', async (_, data) => {
-    try { await requireCapability('pos.view'); return await db.savePosHardwareSettings(data || {}) }
+    try { await requireCapability('settings.manage_general'); return await db.savePosHardwareSettings(data || {}) }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('pos:testHardware', async (_, kind) => {
     try {
-      await requireCapability('pos.view')
+      await requireCapability('settings.manage_general')
       const settings = await db.getPosHardwareSettings()
       const business = await getReceiptBusinessSettings()
       const result = await testPosHardwareDevice(kind || 'receipt', settings, business)
@@ -7331,7 +8081,7 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('pos:getPromotions', async () => {
     try { await requireCapability('pos.view'); return await db.getPosPromotions() }
-    catch { return [] }
+    catch (e) { return unavailablePosRead(e, 'Promotions') }
   })
   ipcMain.handle('pos:savePromotion', async (_, data) => {
     try { await requireCapability('pos.discount'); return await db.savePosPromotion(data || {}) }
@@ -7347,7 +8097,7 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('pos:getRecipes', async () => {
     try { await requireCapability('pos.view'); await requireCommercialFeature('recipes'); return await db.getPosRecipes() }
-    catch { return [] }
+    catch (e) { return unavailablePosRead(e, 'Recipes') }
   })
   ipcMain.handle('pos:saveRecipe', async (_, data) => {
     try { await requireCapability('pos.manage'); await requireCommercialFeature('recipes'); return await db.savePosRecipe(data || {}) }
@@ -7367,6 +8117,10 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('pos:awardLoyalty', async (_, data) => {
     try { await requireCapability('pos.manage'); await requireCommercialFeature('loyalty'); return await db.awardLoyaltyPoints(data || {}) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:queueLoyaltyRepair', async (_, data) => {
+    try { await requireCapability('pos.manage'); await requireCommercialFeature('loyalty'); return await db.queueLoyaltyRepair(data || {}) }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('pos:redeemLoyalty', async (_, data) => {
@@ -7397,13 +8151,18 @@ app.whenReady().then(async () => {
     try { await requireCapability('pos.manage'); return await db.clockInStaffWithAttendancePin(data || {}) }
     catch (e) { return { success: false, error: e.message } }
   })
-  ipcMain.handle('pos:getSharedTillHistory', async (event, start, end, options = {}) => {
-    try {
+  ipcMain.handle('pos:getSharedTillHistory', async (event, start, end, options = {}) => {    try {
       await requireCapability('pos.view')
-      const operator = getSharedTillOperatorSession(event.sender)
-      if (!operator) throw new Error('Unlock Till with your Staff PIN to view your sales history.')
+      const access = await resolveSharedTillHistoryAccess({
+        sessions: sharedTillOperatorSessions,
+        webContentsId: event?.sender?.id,
+        policy: await getSharedTillPolicy(),
+        isOnline: state.isOnline,
+        getOpenShift: (staffId) => db.getStaffOpenPosShift(staffId).catch(() => null)
+      })
+      if (!access.session) throw new Error(access.error || 'Unlock Till with your Staff PIN to view your sales history.')
       const outletFilter = db.getUserPosOutletFilter()
-      return await db.getSharedTillOperatorOrders(start, end, outletFilter, operator.staffId, {
+      return await db.getSharedTillOperatorOrders(start, end, outletFilter, access.session.staffId, {
         refresh: options?.refresh === true,
       })
     } catch (e) {
@@ -7417,7 +8176,14 @@ app.whenReady().then(async () => {
       if (!currentUser?.id) throw new Error('Sign in again before requesting a sale correction.')
       const outletFilter = db.getUserPosOutletFilter()
       const rows = await db.getPosOrders(start, end, outletFilter)
-      return (rows || []).filter((order) => order.cashier_id === currentUser.id)
+      const filtered = (rows || []).filter((order) => order.cashier_id === currentUser.id)
+      Object.defineProperties(filtered, {
+        _source: { value: rows?._source || 'unknown', enumerable: true, configurable: true },
+        _complete: { value: rows?._complete === true, enumerable: true, configurable: true },
+        _tender_complete: { value: rows?._tender_complete === true, enumerable: true, configurable: true },
+        _item_detail_complete: { value: rows?._item_detail_complete === true, enumerable: true, configurable: true }
+      })
+      return filtered
     } catch (e) {
       throw new Error(e?.message || 'Failed to load your Till sales')
     }
@@ -7434,13 +8200,32 @@ app.whenReady().then(async () => {
     try {
       await requireCapability('pos.manage')
       const result = await db.activateSharedTillOperator(data || {})
-      if (result?.success && result?.staff?.id) setSharedTillOperatorSession(event.sender, result.staff, data?.outlet_id || data?.outletId)
-      return result
+      const policy = await getSharedTillPolicy()
+      if (result?.success && result?.staff?.id) {
+        const shift = result.shift || await db.getStaffOpenPosShift(result.staff.id).catch(() => null)
+        if (!shift?.id) return { success: false, error: 'The staff Till shift could not be confirmed. Refresh Till and try again.' }
+        const session = setSharedTillOperatorSession(event.sender, result.staff, data?.outlet_id || data?.outletId, shift.id, policy)
+        return { ...result, shift, session, till_operator_policy: policy }
+      }
+      return result?.success ? { ...result, till_operator_policy: policy } : result
     }
     catch (e) { return { success: false, error: e.message } }
   })
+  ipcMain.handle('pos:touchSharedTillOperator', async (event, data) => {
+    try {
+      await requireCapability('pos.manage')
+      const user = getCurrentUserOrRestore()
+      if (!SHARED_TILL_ROLES.has(normalizeAppRole(user?.role))) {
+        return { success: false, code: TILL_OPERATOR_SESSION_CODES.REQUIRED, error: 'Shared Till activity is not available for this account.' }
+      }
+      const result = sharedTillOperatorSessions.touch(event.sender?.id, { outletId: data?.outlet_id || data?.outletId })
+      return result.success
+        ? { success: true, session: result.session }
+        : { success: false, code: result.code, error: result.error }
+    } catch (e) { return { success: false, error: e.message } }
+  })
   ipcMain.handle('pos:lockSharedTillOperator', async (event) => {
-    sharedTillOperatorSessions.delete(event.sender?.id)
+    sharedTillOperatorSessions.clear(event.sender?.id)
     return { success: true }
   })
   ipcMain.handle('pos:linkMyShiftAttendance', async (_, data) => { try { await requireCapability('pos.manage'); return await db.linkMyPosShiftToAttendance(data || {}) } catch (e) { return { success:false,error:e.message } } })
@@ -7470,7 +8255,7 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('pos:getSuppliers', async () => {
     try { await requireCapability('pos.view'); await requireCommercialFeature('suppliers'); return await db.getPosSuppliers() }
-    catch { return [] }
+    catch (e) { return unavailablePosRead(e, 'Suppliers') }
   })
   ipcMain.handle('pos:createSupplier', async (_, data) => {
     try { await requireCapability('pos.manage'); await requireCommercialFeature('suppliers'); return await db.createPosSupplier(data || {}) }
@@ -7566,7 +8351,7 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('pos:getActiveAlerts', async () => {
     try { await requireCapability('pos.view'); await requireCommercialFeature('alerts'); return await db.getActiveAlerts() }
-    catch { return [] }
+    catch (e) { return unavailablePosRead(e, 'Alerts') }
   })
   ipcMain.handle('pos:recordAlert', async (_, data) => {
     try { await requireCapability('pos.manage'); await requireCommercialFeature('alerts'); return await db.recordExceptionAlert(data || {}) }
@@ -7578,7 +8363,7 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('pos:getPurchaseOrders', async (_, startDate, endDate) => {
     try { await requireCapability('pos.view'); await requireCommercialFeature('purchasing'); return await db.getPosPurchaseOrders(startDate, endDate) }
-    catch { return [] }
+    catch (e) { return unavailablePosRead(e, 'Purchase orders') }
   })
   ipcMain.handle('pos:getPurchasingSnapshot', async () => {
     try {
@@ -7605,26 +8390,26 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('pos:getShiftHistory', async (_, startDate, endDate) => {
     try { await requireCapability('pos.view'); return await db.getShiftHistory(startDate, endDate) }
-    catch { return [] }
+    catch (e) { return unavailablePosRead(e, 'Shift history') }
   })
   ipcMain.handle('pos:getCashDrawerSessions', async (_, startDate, endDate) => {
     try { await requireCapability('pos.view'); return await db.getCashDrawerSessions(startDate, endDate) }
-    catch { return [] }
+    catch (e) { return unavailablePosRead(e, 'Cash drawer sessions') }
   })
   ipcMain.handle('pos:getChecklists', async () => {
     try { await requireCapability('pos.view'); await requireCommercialFeature('checklists'); return await db.getChecklists() }
-    catch { return [] }
+    catch (e) { return unavailablePosRead(e, 'Checklists') }
   })
   ipcMain.handle('pos:getExceptionAlerts', async () => {
     try { await requireCapability('pos.view'); await requireCommercialFeature('alerts'); return await db.getExceptionAlerts() }
-    catch { return [] }
+    catch (e) { return unavailablePosRead(e, 'Exception alerts') }
   })
   ipcMain.handle('pos:generateOwnerDigest', async () => {
     try { await requireCapability('pos.manage'); await requireCommercialFeature('owner_digest'); return await db.generateOwnerDigest() }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('pos:getRestaurantShiftPlans', async (_, startDate, endDate) => {
-    try { await requireCapability('pos.view'); return await db.getRestaurantShiftPlans(startDate, endDate) } catch { return [] }
+    try { await requireCapability('pos.view'); return await db.getRestaurantShiftPlans(startDate, endDate) } catch (e) { return unavailablePosRead(e, 'Shift plans') }
   })
   ipcMain.handle('pos:saveRestaurantShiftPlan', async (_, data) => {
     try { await requireCapability('pos.manage'); return await db.saveRestaurantShiftPlan(data || {}) } catch (e) { return { success: false, error: e.message } }
@@ -7697,15 +8482,15 @@ app.whenReady().then(async () => {
   // ── Phase 6.3: Recipe Variance ───────────────────────────────────────────
   ipcMain.handle('pos:getRecipeVarianceReport', async (_, startDate, endDate, outletId) => {
     try { await requireCapability('reports.view'); await requireCommercialFeature('variance'); return await db.getRecipeVarianceReport(startDate, endDate, outletId) }
-    catch { return [] }
+    catch (e) { return unavailablePosRead(e, 'Recipe variance') }
   })
   ipcMain.handle('pos:getRecipePreparationLosses', async (_, startDate, endDate, outletId) => {
     try { await requireCapability('reports.view'); await requireCommercialFeature('variance'); return await db.getRecipePreparationLosses(startDate, endDate, outletId) }
-    catch { return [] }
+    catch (e) { return unavailablePosRead(e, 'Preparation losses') }
   })
   ipcMain.handle('pos:getRecipePreparationLossIngredientSummary', async (_, startDate, endDate, outletId) => {
     try { await requireCapability('reports.view'); await requireCommercialFeature('variance'); return await db.getRecipePreparationLossIngredientSummary(startDate, endDate, outletId) }
-    catch { return [] }
+    catch (e) { return unavailablePosRead(e, 'Preparation-loss ingredients') }
   })
   // ── Phase 6.5: Prep Batches ──────────────────────────────────────────────
   ipcMain.handle('pos:getRestaurantPrepItems', async () => {
@@ -7740,7 +8525,7 @@ app.whenReady().then(async () => {
   // ── Phase 6.7: Purchase Suggestions ──────────────────────────────────────
   ipcMain.handle('pos:getLowStockPurchaseSuggestions', async (_, outletId) => {
     try { await requireCapability('inventory.view'); await requireCommercialFeature('stock_control'); return await db.getLowStockPurchaseSuggestions(outletId) }
-    catch { return [] }
+    catch (e) { return unavailablePosRead(e, 'Stock suggestions') }
   })
   ipcMain.handle('pos:setPreferredSupplierForInventoryItem', async (_, inventoryItemId, supplierId, lastUnitCost) => {
     try { await requireCapability('inventory.manage'); await requireCommercialFeature('purchasing'); return await db.setPreferredSupplierForInventoryItem(inventoryItemId, supplierId, lastUnitCost) }
@@ -7754,9 +8539,13 @@ app.whenReady().then(async () => {
     try { await requireCapability('pos.manage'); return await db.recordRestaurantSettlement(data || {}) }
     catch (e) { return { success: false, error: e.message } }
   })
+  ipcMain.handle('pos:getSettlementBankAccounts', async () => {
+    try { await requireCapability('pos.manage'); return await db.getRestaurantSettlementBankAccounts() }
+    catch (e) { return [] }
+  })
   ipcMain.handle('pos:getSettlements', async (_, businessDate) => {
     try { await requireCapability('reports.view'); return await db.getRestaurantSettlements(businessDate) }
-    catch { return [] }
+    catch (e) { return unavailablePosRead(e, 'Settlements') }
   })
   ipcMain.handle('pos:recordReservationDeposit', async (_, data) => {
     try { await requireCapability('pos.manage'); return await db.recordRestaurantReservationDeposit(data || {}) }
@@ -7768,7 +8557,7 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('pos:getReservationDeposits', async (_, days) => {
     try { await requireCapability('pos.manage'); return await db.getRestaurantReservationDeposits(days) }
-    catch { return [] }
+    catch (e) { return unavailablePosRead(e, 'Reservation deposits') }
   })
   ipcMain.handle('pos:getRestaurantOutletControls', async () => {
     try { await requireCapability('pos.manage'); return await db.getRestaurantOutletControls() }
@@ -7829,12 +8618,12 @@ app.whenReady().then(async () => {
   ipcMain.handle('pos:createGiftCard', async (_, data) => { try { await requireCapability('pos.manage'); return await db.createRestaurantGiftCard(data || {}) } catch (e) { return { success: false, error: e.message } } })
   ipcMain.handle('pos:recordTipPayout', async (_, data) => { try { await requireCapability('pos.manage'); return await db.recordRestaurantTipPayout(data || {}) } catch (e) { return { success: false, error: e.message } } })
   ipcMain.handle('pos:getTipPayouts', async (_, days) => { try { await requireCapability('pos.manage'); return await db.getRestaurantTipPayouts(days) } catch (e) { return [] } })
-  ipcMain.handle('pos:getTipBalances', async (_, days) => { try { await requireCapability('pos.manage'); return await db.getRestaurantTipBalances(days) } catch (e) { return [] } })
+  ipcMain.handle('pos:getTipBalances', async (_, days) => { try { await requireCapability('pos.manage'); return await db.getRestaurantTipBalances(days) } catch (e) { return unavailablePosRead(e, 'Tip balances') } })
   ipcMain.handle('pos:saveReservationPolicy', async (_, data) => { try { await requireCapability('pos.manage'); return await db.saveRestaurantReservationPolicy(data || {}) } catch (e) { return { success: false, error: e.message } } })
   ipcMain.handle('pos:recordInventoryLot', async (_, data) => { try { await requireCapability('inventory.manage'); await requireCommercialFeature('stock_control'); return await db.recordRestaurantInventoryLot(data || {}) } catch (e) { return { success: false, error: e.message } } })
   ipcMain.handle('pos:updateInventoryLotExpiry', async (_, lotId, data) => { try { await requireCapability('inventory.manage'); await requireCommercialFeature('stock_control'); return await db.updateRestaurantInventoryLotExpiry(lotId, data || {}) } catch (e) { return { success: false, error: e.message } } })
   ipcMain.handle('pos:writeOffExpiredInventoryLot', async (_, lotId, data) => { try { await requireCapability('inventory.manage'); await requireCommercialFeature('stock_control'); return await db.writeOffExpiredRestaurantInventoryLot(lotId, data || {}) } catch (e) { return { success: false, error: e.message } } })
-  ipcMain.handle('pos:getExpiryLots', async (_, days) => { try { await requireCapability('inventory.view'); await requireCommercialFeature('stock_control'); return await db.getRestaurantExpiryLots(days) } catch { return [] } })
+  ipcMain.handle('pos:getExpiryLots', async (_, days) => { try { await requireCapability('inventory.view'); await requireCommercialFeature('stock_control'); return await db.getRestaurantExpiryLots(days) } catch (e) { return unavailablePosRead(e, 'Expiry lots') } })
   ipcMain.handle('pos:updateCustomerDisplay', async (_, data) => {
     try { await requireCapability('pos.view'); return await db.updatePosCustomerDisplay(data || {}) }
     catch (e) { return { success: false, error: e.message } }
@@ -7853,7 +8642,14 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('pos:openCashDrawer', async (_, data = {}) => {
     try {
-      await requireCapability('pos.view')
+      // Sale-triggered opening is part of an already-authorized POS sale.
+      // Manual/no-sale opening is a controlled cash action and needs cash-up
+      // authority plus an auditable reason.
+      if (data?.order_id) await requireCapability('pos.view')
+      else {
+        await requireCapability('pos.cashup')
+        if (!String(data?.reason || '').trim()) throw new Error('A reason is required to open the cash drawer without a sale.')
+      }
       const settings = await db.getPosHardwareSettings()
       const result = await openCashDrawer(settings)
       await db.recordPosHardwareEvent?.('cash_drawer_open', {
@@ -7907,7 +8703,7 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('pos:getAuditLog', async (_, limit) => {
     try { await requireCapability('pos.view'); return await db.getPosAuditLog(limit || 100) }
-    catch { return [] }
+    catch (e) { return unavailablePosRead(e, 'Audit log') }
   })
   ipcMain.handle('pos:getActiveBookingForRoom', async (_, roomId) => {
     try { await requireCapability('pos.view'); await assertResourceBelongsToCurrentLodge('Room', roomId, db.getRoomById); return await db.getActiveBookingForRoom(roomId).catch(() => null) }
@@ -8740,17 +9536,50 @@ app.whenReady().then(async () => {
 
   // -- Settings --------------------------------------------------------------
   ipcMain.handle('settings:get', async () => {
-    try { return await db.getSettings() }
+    try { await requireCapability('settings.view'); return await db.getSettings() }
     catch { return null }
   })
   ipcMain.handle('settings:save', async (_, data) => {
     try {
       await requireCapability('settings.manage_general')
-      return { success: true, data: await db.saveSettings(data) }
+      const previousPolicy = getTillOperatorPolicy(await db.getSettings().catch(() => ({})))
+      const saved = await db.saveSettings(data)
+      const nextPolicy = getTillOperatorPolicy(saved || data || {})
+      if (previousPolicy.mode !== nextPolicy.mode || previousPolicy.inactivityMinutes !== nextPolicy.inactivityMinutes) {
+        sharedTillOperatorSessions.clearAll()
+        await db.recordPosAudit?.('till_operator_policy_changed', {
+          entity_type: 'settings',
+          entity_id: saved?.lodge_id || data?.lodge_id || null,
+          details: {
+            before: previousPolicy,
+            after: nextPolicy,
+            source: 'settings'
+          }
+        })
+      }
+      return { success: true, data: saved }
     } catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('settings:updateOperatingProfile', async (_, profile) => {
-    try { return { success: true, data: await db.updateOperatingProfile(profile) } }
+    try {
+      const requestedProfile = profile && typeof profile === 'object' ? { ...profile } : {}
+      await requireCapability('settings.manage_general')
+      if (Object.prototype.hasOwnProperty.call(requestedProfile, 'till_operator_policy')) {
+        const previousPolicy = getTillOperatorPolicy(await db.getSettings().catch(() => ({})))
+        const savedProfile = await db.updateOperatingProfile(requestedProfile)
+        const nextPolicy = getTillOperatorPolicy(savedProfile || requestedProfile)
+        if (previousPolicy.mode !== nextPolicy.mode || previousPolicy.inactivityMinutes !== nextPolicy.inactivityMinutes) {
+          sharedTillOperatorSessions.clearAll()
+          await db.recordPosAudit?.('till_operator_policy_changed', {
+            entity_type: 'settings',
+            entity_id: state.lodgeId || null,
+            details: { before: previousPolicy, after: nextPolicy, source: 'operating_profile' }
+          })
+        }
+        return { success: true, data: savedProfile }
+      }
+      return { success: true, data: await db.updateOperatingProfile(requestedProfile) }
+    }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('auth:status', async (_, email) => {
@@ -12094,6 +12923,7 @@ app.whenReady().then(async () => {
 
   const restaurantAccountingV2Operations = {
     getAccounts: ['accounting.read', db.getRestaurantAccountsV2],
+    exportChart: ['accounting.export', db.getRestaurantChartExportV3],
     createAccount: ['accounting.manage', db.createRestaurantAccountV2],
     updateAccount: ['accounting.manage', db.updateRestaurantAccountV2],
     setCashFlow: ['accounting.manage', db.setRestaurantAccountCashFlowV2],
@@ -12101,38 +12931,67 @@ app.whenReady().then(async () => {
     seedAccounts: ['accounting.manage', db.seedRestaurantAccountsV2],
     postOpeningBalance: ['accounting.manage', db.postRestaurantOpeningBalanceV2],
     getLedger: ['accounting.read', db.getRestaurantLedgerWorkspaceV2],
+    getLedgerPage: ['accounting.read', db.getRestaurantLedgerPageV2],
+    exportLedger: ['accounting.export', db.getRestaurantLedgerExportV2],
+    exportLedgerReport: ['accounting.export', db.getRestaurantLedgerExportV3],
     createJournal: ['accounting.manage', db.createRestaurantJournalV2],
+    createManualJournalDraft: ['accounting.manage', db.createRestaurantManualJournalDraftV2],
+    submitManualJournal: ['accounting.manage', db.submitRestaurantManualJournalV2],
+    approveManualJournal: ['accounting.manage', db.approveRestaurantManualJournalV2],
+    postManualJournal: ['accounting.manage', db.postRestaurantManualJournalV2],
     reverseJournal: ['accounting.manage', db.reverseRestaurantJournalV2],
     getPosMappings: ['accounting.read', db.getRestaurantPosMappingsV2],
     setPosMapping: ['accounting.manage', db.setRestaurantPosMappingV2],
+    setEffectivePosMapping: ['accounting.manage', db.setRestaurantPosMappingEffectiveV2],
     postPosOrder: ['accounting.manage', db.postRestaurantPosOrderV2],
     getAp: ['accounting.read', db.getRestaurantApWorkspaceV2],
+    exportAp: ['accounting.export', db.getRestaurantApExportV3],
+    getApSupplierStatement: ['accounting.read', db.getRestaurantApSupplierStatementV2],
     setApSettings: ['accounting.manage', db.setRestaurantApGlSettingsV2],
     createBill: ['accounting.manage', db.createRestaurantBillV2],
     submitBill: ['accounting.manage', db.submitRestaurantBillV2],
     approveBill: ['accounting.manage', db.approveRestaurantBillV2],
     payBill: ['accounting.ap_pay', db.payRestaurantBillV2],
+    createCreditNote: ['accounting.manage', db.createRestaurantApCreditNoteV2],
+    submitCreditNote: ['accounting.manage', db.submitRestaurantApCreditNoteV2],
+    approveCreditNote: ['accounting.manage', db.approveRestaurantApCreditNoteV2],
     saveBankAccount: ['accounting.manage', db.saveRestaurantBankAccountV2],
     getBank: ['accounting.read', db.getRestaurantBankWorkspaceV2],
-    importBank: ['accounting.manage', db.importRestaurantBankStatementV2],
-    proposeBank: ['accounting.manage', db.proposeRestaurantBankMatchesV2],
-    reviewBank: ['accounting.bank_approve', db.reviewRestaurantBankMatchV2],
+    exportBank: ['accounting.export', db.getRestaurantBankExportV3],
+    importBank: ['accounting.manage', db.importRestaurantBankStatementV3],
+    getBankCandidates: ['accounting.read', db.getRestaurantBankMatchCandidatesV1],
+    proposeBankAllocation: ['accounting.bank_approve', db.proposeRestaurantBankMatchAllocationV1],
+    reviewBankAllocation: ['accounting.bank_approve', db.reviewRestaurantBankMatchAllocationV1],
     exceptBank: ['accounting.manage', db.exceptRestaurantBankTransactionV2],
     createReconciliation: ['accounting.manage', db.createRestaurantBankReconciliationV2],
     completeReconciliation: ['accounting.bank_approve', db.completeRestaurantBankReconciliationV2],
+    getBankPacket: ['accounting.read', db.getRestaurantBankReconciliationPacketV2],
+    matchSettlementToBank: ['accounting.manage', db.matchRestaurantSettlementToBankTransactionV2],
     getTax: ['accounting.read', db.getRestaurantTaxWorkspaceV2],
+    getTaxAdjustments: ['accounting.read', db.getRestaurantTaxAdjustmentsV2],
+    exportTax: ['accounting.export', db.getRestaurantTaxExportV3],
     setTaxConfig: ['accounting.manage', db.setRestaurantTaxConfigurationV2],
     generateTax: ['accounting.manage', db.generateRestaurantTaxWorkingPaperV2],
+    createTaxAmendment: ['accounting.manage', db.createRestaurantTaxAmendmentV2],
+    generateTaxAmendment: ['accounting.manage', db.generateRestaurantTaxAmendmentWorkingPaperV2],
+    recordTaxAdjustment: ['accounting.manage', db.recordRestaurantTaxAdjustmentV2],
+    approveTaxAdjustment: ['accounting.tax_file', db.approveRestaurantTaxAdjustmentV2],
     reviewTax: ['accounting.manage', db.reviewRestaurantTaxWorkingPaperV2],
     approveTax: ['accounting.tax_file', db.approveRestaurantTaxWorkingPaperV2],
     fileTax: ['accounting.tax_file', db.fileRestaurantTaxWorkingPaperV2],
+    getTaxPacket: ['accounting.read', db.getRestaurantTaxFilingPacketV2],
     getBudgets: ['accounting.read', db.getRestaurantBudgetMatrixV2],
+    exportBudgets: ['accounting.export', db.getRestaurantBudgetExportV3],
     saveBudgets: ['accounting.manage', db.saveRestaurantBudgetMatrixV2],
+    approveBudgetVersion: ['accounting.manage', db.approveRestaurantBudgetVersionV2],
     createBudgetTemplate: ['accounting.manage', db.createRestaurantBudgetTemplateV2],
     applyBudgetTemplate: ['accounting.manage', db.applyRestaurantBudgetTemplateV2],
     getStatements: ['accounting.read', db.getRestaurantFinancialStatementsV2],
+    exportStatements: ['accounting.export', db.getRestaurantStatementsExportV3],
     getPayroll: ['accounting.payroll_view', db.getRestaurantPayrollWorkspaceV2],
+    exportPayrollRegister: ['accounting.payroll_export', db.getRestaurantPayrollExportV3],
     getPayrollRecords: ['accounting.payroll_view', db.getRestaurantPayrollRecordsV2],
+    getPayrollReadiness: ['accounting.payroll_manage', db.getRestaurantPayrollReadinessV2],
     setPayrollTerms: ['accounting.payroll_manage', db.setRestaurantPayrollTermsV2],
     setPayrollConfig: ['accounting.payroll_manage', db.setRestaurantPayrollConfigurationV2],
     createPayPeriod: ['accounting.payroll_manage', db.createRestaurantPayPeriodV2],
@@ -12142,7 +13001,21 @@ app.whenReady().then(async () => {
     approvePayroll: ['accounting.payroll_manage', db.approveRestaurantPayrollV2],
     exportPayroll: ['accounting.payroll_manage', db.exportRestaurantPayrollPaymentsV2],
     setPayrollGl: ['accounting.payroll_manage', db.setRestaurantPayrollGlSettingsV2],
-    postPayroll: ['accounting.payroll_manage', db.postRestaurantPayrollV2]
+    postPayroll: ['accounting.payroll_manage', db.postRestaurantPayrollV2],
+    settlePayroll: ['accounting.payroll_manage', db.settleRestaurantPayrollV2],
+    reconcilePayrollSettlement: ['accounting.bank_approve', db.reconcileRestaurantPayrollSettlementV2],
+    closePayroll: ['accounting.payroll_manage', db.closeRestaurantPayrollV2],
+    setPayrollAttendanceDisposition: ['accounting.payroll_manage', db.setRestaurantPayrollAttendanceDispositionV2],
+    getPayrollAttendanceReconciliation: ['accounting.payroll_view', db.getRestaurantPayrollAttendanceReconciliationV2],
+    getReadiness: ['accounting.read', db.getRestaurantAccountingReadinessV2],
+    prepareHistoricalCutover: ['accounting.manage', db.prepareRestaurantHistoricalCutoverV2],
+    activateAccounting: ['accounting.manage', db.activateRestaurantAccountingV2],
+    suspendAccounting: ['accounting.manage', db.suspendRestaurantAccountingV2],
+    getSourceCoverage: ['accounting.read', db.getRestaurantFinancialSourceCoverageV2],
+    getPeriodClose: ['accounting.read', db.getRestaurantPeriodCloseV2],
+    preparePeriodClose: ['accounting.close', db.prepareRestaurantPeriodCloseV2],
+    approvePeriodClose: ['accounting.close', db.approveRestaurantPeriodCloseV2],
+    reopenPeriodClose: ['accounting.close', db.reopenRestaurantPeriodCloseV2]
   }
   ipcMain.handle('restaurantAccountingV2:invoke', async (_, operation, args = []) => {
     const contract = restaurantAccountingV2Operations[operation]
@@ -12153,6 +13026,93 @@ app.whenReady().then(async () => {
       return await handler(...(Array.isArray(args) ? args : []))
     } catch (error) {
       throw new Error(error?.message || `Restaurant Accounting ${operation} failed`)
+    }
+  })
+  ipcMain.handle('restaurantAccountingV2:exportFile', async (event, payload = {}) => {
+    const operation = String(payload?.operation || '')
+    const format = String(payload?.format || '').toLowerCase()
+    if (!ACCOUNTING_FILE_EXPORT_OPERATIONS.has(operation)) throw new Error('Unsupported Accounting export operation')
+    if (!ACCOUNTING_EXPORT_FILE_FORMATS.includes(format)) throw new Error('Unsupported Accounting export format')
+    const contract = restaurantAccountingV2Operations[operation]
+    if (!contract) throw new Error('Accounting export contract is unavailable')
+    const [capability, handler] = contract
+    await requireCapability(capability)
+    const parentWin = BrowserWindow.fromWebContents(event.sender)
+    const extension = format === 'xlsx' ? 'xlsx' : format
+    const baseName = String(payload?.fileName || `accounting-${operation}`).replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '') || `accounting-${operation}`
+    const { filePath, canceled } = await dialog.showSaveDialog(parentWin, {
+      title: `Export Accounting ${format.toUpperCase()}`,
+      defaultPath: buildReportExportFilename({ prefix: APP_EXPORT_PREFIX, reportTitle: baseName, extension }),
+      filters: [{ name: `${format.toUpperCase()} Files`, extensions: [extension] }]
+    })
+    if (canceled || !filePath) return { success: false, canceled: true }
+
+    let source = null
+    let exportSource = null
+    let companionFilePath = null
+    try {
+      const response = await handler(...(Array.isArray(payload?.args) ? payload.args : []))
+      source = assertCompleteAccountingExport(unwrapAccountingExportResponse(response))
+      const settings = await db.getSettings().catch(() => ({}))
+      exportSource = {
+        ...source,
+        lodge_name: source.lodge_name || settings?.lodge_name || settings?.company_name || source.parameters?.lodge_id || 'Lodge',
+        company_name: source.company_name || settings?.company_name || null
+      }
+      companionFilePath = format === 'pdf' ? filePath.replace(/\.pdf$/i, '.json') : null
+      let companionFileHash = null
+      if (companionFilePath) {
+        const companion = writeAccountingExportFile(companionFilePath, 'json', exportSource, null)
+        const companionStats = verifyAccountingExportFile(companionFilePath, 'json')
+        companionFileHash = crypto.createHash('sha256').update(fs.readFileSync(companionFilePath)).digest('hex')
+        if (companionStats.size !== companion.bytes.length) throw new Error('The accounting detailed companion was not written completely.')
+      }
+
+      let rows
+      if (format === 'pdf') {
+        const envelope = buildAccountingExportEnvelope(exportSource, format, companionFilePath)
+        const html = buildAccountingExportPdfHtml(envelope, { fileName: baseName, companionFilePath })
+        const pdfBytes = await renderHtmlToPdfBuffer(html, { pageSize: 'A4', printBackground: true, margins: { marginType: 'default' } }, { minTextLength: 40 })
+        fs.writeFileSync(filePath, pdfBytes)
+        rows = Number(exportSource.row_count || 0)
+      } else {
+        const output = writeAccountingExportFile(filePath, format, exportSource, null)
+        rows = output.rowCount
+      }
+      const saved = verifyAccountingExportFile(filePath, format)
+      const fileHash = crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex')
+      const identity = accountingExportIdentity(exportSource)
+      await recordAccountingArtifact(exportSource, {
+        artifactType: format,
+        filePath,
+        fileHash,
+        byteCount: saved.size,
+        detailedCompanionPath: companionFilePath,
+        detailedCompanionHash: companionFilePath ? crypto.createHash('sha256').update(fs.readFileSync(companionFilePath)).digest('hex') : null
+      })
+      return {
+        success: true,
+        filePath,
+        companionFilePath,
+        format,
+        rows,
+        dataHash: identity.datasetHash,
+        exportId: identity.exportId,
+        reportRunId: identity.reportRunId,
+        fileHash,
+        byteCount: saved.size,
+        artifactStatus: 'complete'
+      }
+    } catch (error) {
+      if (source) {
+        await recordAccountingArtifact(source, {
+          artifactType: format,
+          filePath: filePath || null,
+          detailedCompanionPath: companionFilePath,
+          artifactError: error?.message || 'Accounting export artifact failed'
+        }).catch(() => {})
+      }
+      return { success: false, error: error?.message || 'Accounting export failed', filePath: filePath || null, companionFilePath }
     }
   })
 

@@ -1479,7 +1479,7 @@ export default function Dashboard() {
                     </span>
                   </div>
                   <p className="mt-1 text-xs text-slate-500">
-                    {entry.check_in} · {entry.resource_name || 'No resource'} · {entry.payment_method || 'Cash'}
+                    {entry.check_in} · {entry.resource_name || 'No resource'} · {entry.payment_method || 'Tender unavailable'}
                   </p>
                 </div>
                 <button

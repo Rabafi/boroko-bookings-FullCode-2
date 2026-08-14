@@ -71,10 +71,13 @@ const MANAGER_MANAGED_ROLES = new Set(['cashier', 'supervisor', 'receptionist', 
 const RESTAURANT_CAPABILITY_KEYS = new Set([
   'pos.view', 'pos.manage', 'pos.void', 'pos.discount', 'pos.price_override',
   'pos.menu_manage', 'pos.cashup', 'pos.reports', 'pos.combined_reports',
+  'reports.export',
   'inventory.view', 'inventory.manage', 'staff.view', 'staff.manage',
   'staff.permissions', 'reports.view', 'expenses.view', 'expenses.manage',
   'settings.view', 'settings.manage_general', 'system.health', 'sync.manage',
-  'data.export'
+  'data.export', 'accounting.read', 'accounting.manage', 'accounting.export',
+  'accounting.ap_pay', 'accounting.bank_approve', 'accounting.tax_file',
+  'accounting.payroll_view', 'accounting.payroll_manage', 'accounting.close'
 ])
 
 function staffRoleLabel(role, restaurantMode = false) {

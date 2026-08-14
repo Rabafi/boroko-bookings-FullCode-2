@@ -43,7 +43,7 @@ export default function DayUse() {
                 <p className="text-sm font-semibold text-white">{row.guest}</p>
                 <p className="text-xs text-gray-400 mt-1">{row.templateName || row.activityLabel}</p>
                 <p className="text-xs text-gray-400 mt-1">{row.statusLabel} • {row.adults} adults • {row.children} children</p>
-                <p className="text-xs text-gray-500 mt-1">{row.paymentMethod || 'Cash'}{row.resourceName ? ` • ${row.resourceName}` : ''}</p>
+                <p className="text-xs text-gray-500 mt-1">{row.paymentMethod || 'Tender unavailable'}{row.resourceName ? ` • ${row.resourceName}` : ''}</p>
                 {Array.isArray(entry.extras) && entry.extras.length > 0 && (
                   <p className="text-xs text-amber-300 mt-1">
                     Extras: {entry.extras.map((extra) => `${extra.name} x${Number(extra.quantity || 0)}`).join(', ')}

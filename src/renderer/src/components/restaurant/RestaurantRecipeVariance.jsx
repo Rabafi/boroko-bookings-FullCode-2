@@ -17,6 +17,7 @@ export default function RestaurantRecipeVariance() {
   const [preparationLosses, setPreparationLosses] = useState([])
   const [preparationLossIngredients, setPreparationLossIngredients] = useState([])
   const [loading, setLoading] = useState(true)
+  const [sourceComplete, setSourceComplete] = useState(false)
   const [startDate, setStartDate] = useState(new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10))
   const [endDate, setEndDate] = useState(new Date().toISOString().slice(0, 10))
   const [search, setSearch] = useState('')
@@ -41,9 +42,14 @@ export default function RestaurantRecipeVariance() {
         pos.getRecipePreparationLosses(startDate, endDate),
         pos.getRecipePreparationLossIngredientSummary(startDate, endDate)
       ])
+      const reportReady = Array.isArray(data) && data._source === 'server' && data._complete === true
+      const lossesReady = Array.isArray(losses) && losses._source === 'server' && losses._complete === true
+      const ingredientsReady = Array.isArray(ingredients) && ingredients._source === 'server' && ingredients._complete === true
+      setSourceComplete(reportReady && lossesReady && ingredientsReady)
       setReport(Array.isArray(data) ? data : [])
       setPreparationLosses(Array.isArray(losses) ? losses : [])
       setPreparationLossIngredients(Array.isArray(ingredients) ? ingredients : [])
+      if (!(reportReady && lossesReady && ingredientsReady)) setError('Variance evidence is unavailable until the server confirms complete report sources. No cached or estimated cost is shown as financial truth.')
     } catch (err) {
       console.error('Failed to load variance report:', err)
       setError(err.message || 'Could not load recipe variance.')
@@ -93,7 +99,7 @@ export default function RestaurantRecipeVariance() {
           {/* Summary cards */}
           <div className="restaurant-native-kpis">
             <div className="bb-card p-4 text-center">
-              <div className="text-2xl font-bold text-gray-800">P {totalVarianceValue.toFixed(2)}</div>
+              <div className="text-2xl font-bold text-gray-800">{sourceComplete ? `P ${totalVarianceValue.toFixed(2)}` : 'Unavailable'}</div>
               <div className="text-xs text-gray-500">Total Variance Value</div>
             </div>
             <div className="bb-card p-4 text-center">
@@ -118,8 +124,8 @@ export default function RestaurantRecipeVariance() {
                   <p className="mt-1 text-xs text-amber-800">Cancelled food and cocktails whose ingredients were already prepared. The sale revenue is voided, but the ingredients remain consumed. This is operational waste, not financial revenue.</p>
                 </div>
                 <div className="text-right">
-                  <div className="text-lg font-bold text-amber-900">P {totalPreparationLoss.toFixed(2)}</div>
-                  <div className="text-xs text-amber-800">{preparationLosses.length} cancellation{preparationLosses.length === 1 ? '' : 's'}</div>
+              <div className="text-lg font-bold text-amber-900">{sourceComplete ? `P ${totalPreparationLoss.toFixed(2)}` : 'Unavailable'}</div>
+                  <div className="text-xs text-amber-800">{sourceComplete ? `${preparationLosses.length} cancellation${preparationLosses.length === 1 ? '' : 's'}` : 'Unavailable'}</div>
                 </div>
               </div>
             </div>
@@ -144,7 +150,7 @@ export default function RestaurantRecipeVariance() {
                         <td className="px-4 py-3 font-medium text-gray-800">{loss.item_names}</td>
                         <td className="px-4 py-3 text-gray-600">{loss.reason}</td>
                         <td className="px-4 py-3 text-gray-600"><div>{loss.operator_name}</div><div className="text-xs text-gray-500">Approved by {loss.approved_by_name}</div></td>
-                        <td className="px-4 py-3 text-right font-semibold text-amber-800">P {(Number(loss.preparation_loss_cost) || 0).toFixed(2)}</td>
+                        <td className="px-4 py-3 text-right font-semibold text-amber-800">{sourceComplete && Number.isFinite(Number(loss.preparation_loss_cost)) ? `P ${Number(loss.preparation_loss_cost).toFixed(2)}` : 'Unavailable'}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -174,9 +180,9 @@ export default function RestaurantRecipeVariance() {
                     {preparationLossIngredients.map((ingredient, index) => (
                       <tr key={`${ingredient.inventory_item_name}-${ingredient.unit}-${index}`} className="hover:bg-gray-50">
                         <td className="px-4 py-3 font-medium text-gray-800">{ingredient.inventory_item_name}</td>
-                        <td className="px-4 py-3 text-right text-amber-800">{Number(ingredient.preparation_loss_quantity || 0).toFixed(2)} {ingredient.unit}</td>
-                        <td className="px-4 py-3 text-right text-gray-700">{Number(ingredient.total_recipe_quantity || 0).toFixed(2)} {ingredient.unit}</td>
-                        <td className="px-4 py-3 text-right font-semibold text-amber-800">{Number(ingredient.loss_percentage || 0).toFixed(2)}%</td>
+                        <td className="px-4 py-3 text-right text-amber-800">{sourceComplete && Number.isFinite(Number(ingredient.preparation_loss_quantity)) ? `${Number(ingredient.preparation_loss_quantity).toFixed(2)} ${ingredient.unit}` : 'Unavailable'}</td>
+                        <td className="px-4 py-3 text-right text-gray-700">{sourceComplete && Number.isFinite(Number(ingredient.total_recipe_quantity)) ? `${Number(ingredient.total_recipe_quantity).toFixed(2)} ${ingredient.unit}` : 'Unavailable'}</td>
+                        <td className="px-4 py-3 text-right font-semibold text-amber-800">{sourceComplete && Number.isFinite(Number(ingredient.loss_percentage)) ? `${Number(ingredient.loss_percentage).toFixed(2)}%` : 'Unavailable'}</td>
                       </tr>
                     ))}
                   </tbody>

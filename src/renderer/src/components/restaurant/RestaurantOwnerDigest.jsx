@@ -11,7 +11,8 @@ export default function RestaurantOwnerDigest() {
       setLoading(true)
       setError(null)
       const result = await window.api.pos.generateOwnerDigest()
-      setDigest(result)
+      if (result?.success === false) throw new Error(result.error || 'Failed to generate digest')
+      setDigest(result?.digest || result?.summary || result)
     } catch (err) {
       console.error('Failed to generate digest:', err)
       setError(err.message || 'Failed to generate digest')
@@ -21,6 +22,8 @@ export default function RestaurantOwnerDigest() {
   }
 
   const s = digest?.summary || digest || {}
+  const financialReady = s.financial_complete === true && [s.total_revenue, s.total_orders, s.avg_order]
+    .every((value) => Number.isFinite(Number(value)))
 
   return (
     <div className="restaurant-native-page max-w-5xl">
@@ -68,11 +71,12 @@ export default function RestaurantOwnerDigest() {
 
           {/* Revenue metrics */}
           <div className="restaurant-native-kpis">
-            <MetricCard icon={Wallet} label="Revenue" value={`P ${Number(s.total_revenue || 0).toFixed(2)}`} color="emerald" />
-            <MetricCard icon={ShoppingCart} label="Orders" value={s.total_orders || 0} color="blue" />
-            <MetricCard icon={TrendingUp} label="Avg Order" value={`P ${Number(s.avg_order || 0).toFixed(2)}`} color="purple" />
-            <MetricCard icon={Users} label="Customers" value={s.total_customers || 0} color="indigo" />
+            <MetricCard icon={Wallet} label="Revenue" value={financialReady ? `P ${Number(s.total_revenue).toFixed(2)}` : 'Unavailable'} color="emerald" />
+            <MetricCard icon={ShoppingCart} label="Orders" value={financialReady ? s.total_orders : 'Unavailable'} color="blue" />
+            <MetricCard icon={TrendingUp} label="Avg Order" value={financialReady ? `P ${Number(s.avg_order).toFixed(2)}` : 'Unavailable'} color="purple" />
+            <MetricCard icon={Users} label="Customers" value={s.total_customers == null ? 'Unavailable' : s.total_customers} color="indigo" />
           </div>
+          {!financialReady && <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">Revenue and order totals are unavailable until the server certifies a complete POS source. This digest is not a financial statement.</div>}
 
           {/* Operational status */}
           <div className="restaurant-native-kpis">
@@ -83,18 +87,18 @@ export default function RestaurantOwnerDigest() {
           </div>
 
           {/* Expense summary */}
-          {s.total_expenses != null && (
+          {s.expenses_complete === true && Number.isFinite(Number(s.total_expenses)) && (
             <div className="bb-card p-5">
               <h3 className="font-semibold text-sm text-gray-700 mb-3">Expenses</h3>
               <div className="flex items-center justify-between">
                 <span className="text-sm text-gray-500">Total Expenses</span>
-                <span className="text-lg font-bold text-red-600">P {Number(s.total_expenses || 0).toFixed(2)}</span>
+                <span className="text-lg font-bold text-red-600">P {Number(s.total_expenses).toFixed(2)}</span>
               </div>
-              {s.total_revenue > 0 && (
+              {financialReady && Number(s.total_revenue) > 0 && (
                 <div className="flex items-center justify-between mt-2 pt-2 border-t">
                   <span className="text-sm text-gray-500">Net (Revenue - Expenses)</span>
-                  <span className={`text-lg font-bold ${(Number(s.total_revenue || 0) - Number(s.total_expenses || 0)) >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
-                    P {(Number(s.total_revenue || 0) - Number(s.total_expenses || 0)).toFixed(2)}
+                  <span className={`text-lg font-bold ${(Number(s.total_revenue) - Number(s.total_expenses)) >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                    P {(Number(s.total_revenue) - Number(s.total_expenses)).toFixed(2)}
                   </span>
                 </div>
               )}

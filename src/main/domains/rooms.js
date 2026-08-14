@@ -10,9 +10,18 @@ import {
   dedupePromise
 } from './infrastructure.js';
 
+function withReadMetadata(rows, source, complete) {
+  const result = Array.isArray(rows) ? rows : [];
+  Object.defineProperties(result, {
+    _source: { value: source, enumerable: true, configurable: true },
+    _complete: { value: complete === true, enumerable: true, configurable: true }
+  });
+  return result;
+}
+
 async function _getAllRooms() {
   if (!state.isOnline) {
-    return readCache('rooms');
+    return withReadMetadata(readCache('rooms'), 'offline-cache', false);
   }
 
   try {
@@ -26,17 +35,17 @@ async function _getAllRooms() {
     const cached = readCache('rooms');
     if ((data || []).length === 0 && cached.length > 0) {
       console.warn('getAllRooms received empty live result; using cached rooms instead');
-      return cached;
+      return withReadMetadata(cached, 'cache', false);
     }
     writeCache('rooms', data || []);
-    return data || [];
+    return withReadMetadata(data || [], 'server', true);
   } catch (error) {
     const cached = readCache('rooms');
     if (cached.length > 0) {
       console.warn('getAllRooms falling back to cache:', error?.message || error);
-      return cached;
+      return withReadMetadata(cached, 'cache', false);
     }
-    if (!state.isOnline) return [];
+    if (!state.isOnline) return withReadMetadata([], 'offline-cache', false);
     throw new Error(error?.message || 'Failed to load rooms');
   }
 }

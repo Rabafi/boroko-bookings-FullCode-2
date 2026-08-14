@@ -21,13 +21,13 @@ const age = (value) => {
   return mins < 60 ? `${mins}m` : `${Math.floor(mins / 60)}h ${mins % 60}m`;
 };
 
-const tabValue = (tab) =>
-  (tab.items || []).reduce(
-    (sum, item) =>
-      sum +
-      Number(item.unit_price || item.price || 0) * Number(item.quantity || 1),
-    0,
-  );
+const tabValue = (tab) => {
+  const financialComplete = tab?.financial_complete === true || tab?._financial_complete === true || tab?.financial_snapshot?.financial_complete === true;
+  if (!financialComplete) return null;
+  if (tab?.total === null || tab?.total === undefined || tab?.total === "") return null;
+  const value = Number(tab.total);
+  return Number.isFinite(value) ? value : null;
+};
 
 export default function HposOpenChecks() {
   const navigate = useNavigate();
@@ -88,7 +88,8 @@ export default function HposOpenChecks() {
       ),
     [tabs, query],
   );
-  const total = tabs.reduce((sum, tab) => sum + tabValue(tab), 0);
+  const tabTotalsComplete = tabs.every((tab) => tabValue(tab) !== null);
+  const total = tabTotalsComplete ? tabs.reduce((sum, tab) => sum + tabValue(tab), 0) : null;
   const resume = (tab) =>
     navigate("/hpos/pos", {
       state: {
@@ -103,18 +104,29 @@ export default function HposOpenChecks() {
     setSplitError("");
   };
   const runSplit = async () => {
-    if (!splitTab?.id || splitBusy) return;
+    if (!splitTab?.id || splitBusy || tabValue(splitTab) === null) return;
     setSplitBusy(true);
     setSplitError("");
     try {
+      const keyName = `hpos:pending-split:${splitTab.id}`;
+      const payloadFingerprint = JSON.stringify({ split_count: Number(splitCount), source_tab_version: splitTab.tab_version ?? splitTab.version ?? 1 });
+      const saved = localStorage.getItem(keyName);
+      const savedEnvelope = saved ? JSON.parse(saved) : null;
+      if (savedEnvelope?.payloadFingerprint && savedEnvelope.payloadFingerprint !== payloadFingerprint) {
+        throw new Error('A previous split attempt for this tab is unresolved. Refresh and resolve it before changing the split count.');
+      }
+      const operationKey = savedEnvelope?.operationKey || crypto.randomUUID();
+      localStorage.setItem(keyName, JSON.stringify({ operationKey, payloadFingerprint }));
       const result = await window.api?.pos?.splitBillEvenly?.({
         source_tab_id: splitTab.id,
         split_count: Number(splitCount),
         target_table_names: [],
-        idempotency_key: crypto.randomUUID(),
+        source_tab_version: splitTab.tab_version ?? splitTab.version ?? 1,
+        idempotency_key: operationKey,
       });
       if (!result?.success)
         throw new Error(result?.error || "Could not split this check.");
+      localStorage.removeItem(keyName);
       setSplitTab(null);
       await load({ quiet: true });
     } catch (splitFailure) {
@@ -148,8 +160,7 @@ export default function HposOpenChecks() {
         <div>
           <span>Value on open tabs</span>
           <strong>
-            {currency}{" "}
-            {total.toLocaleString("en-GB", { minimumFractionDigits: 2 })}
+            {total === null ? 'Unavailable' : `${currency} ${total.toLocaleString("en-GB", { minimumFractionDigits: 2 })}`}
           </strong>
         </div>
         <label>
@@ -178,7 +189,7 @@ export default function HposOpenChecks() {
               <div className="hpos-check-card-head">
                 <span>{tab.table_name || tab.tab_name || "Open tab"}</span>
                 <strong>
-                  {currency} {tabValue(tab).toFixed(2)}
+                  {tabValue(tab) === null ? 'Unavailable' : `${currency} ${tabValue(tab).toFixed(2)}`}
                 </strong>
               </div>
               <p>
@@ -204,7 +215,7 @@ export default function HposOpenChecks() {
                 <button
                   type="button"
                   onClick={() => openSplit(tab)}
-                  disabled={(tab.items || []).length < 2}
+                  disabled={(tab.items || []).length < 2 || tabValue(tab) === null}
                 >
                   <Scissors size={14} />
                   Split
@@ -273,9 +284,9 @@ export default function HposOpenChecks() {
                 }
               />
               <small>
-                {currency}{" "}
-                {(tabValue(splitTab) / Number(splitCount || 2)).toFixed(2)} per
-                check before rounding
+                {tabValue(splitTab) === null
+                  ? "Authoritative total unavailable; refresh before splitting."
+                  : `${currency} ${(tabValue(splitTab) / Number(splitCount || 2)).toFixed(2)} per check before rounding`}
               </small>
             </label>
             {splitError && <HposNotice tone="error">{splitError}</HposNotice>}
@@ -290,7 +301,7 @@ export default function HposOpenChecks() {
                 tone="primary"
                 icon={Scissors}
                 onClick={runSplit}
-                disabled={splitBusy}
+                disabled={splitBusy || tabValue(splitTab) === null}
               >
                 {splitBusy ? "Splitting…" : "Split checks"}
               </HposButton>

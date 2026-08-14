@@ -1,8 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router'
 import { AlertTriangle, BarChart3, Clock, Package, RefreshCw, ShoppingCart, Users, Utensils } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
-import { useFeatures } from '../contexts/FeaturesContext'
 import { getManagerPosSnapshot, getManagerPosTransactions, listInventory } from '../lib/api'
 import { isBarHospitalityMode, isRestaurantProductFamily } from '../lib/productShell'
 import { money } from '../lib/format'
@@ -25,67 +24,67 @@ const KpiCard = ({ icon: Icon, label, value, sub, color = 'slate', to }) => {
 
 export default function RestaurantOwner() {
   const { user } = useAuth()
-  const { can, isEnabled } = useFeatures()
   const [loading, setLoading] = useState(true)
   const [lastUpdated, setLastUpdated] = useState(null)
   const [posSnapshot, setPosSnapshot] = useState(null)
   const [posTransactions, setPosTransactions] = useState([])
   const [lowStockCount, setLowStockCount] = useState(0)
-  const [activeAlerts, setActiveAlerts] = useState([])
+  const [loadError, setLoadError] = useState('')
 
   // Server product_family on the session is authoritative — not client settings inference.
   const restaurantMode = isRestaurantProductFamily(user?.product_family)
   const barOnly = restaurantMode && isBarHospitalityMode(user?.hospitality_mode)
 
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     if (!user?.lodge_id) return
     setLoading(true)
+    setLoadError('')
     try {
       const [posSnap, transactions, inventory] = await Promise.all([
-        getManagerPosSnapshot(user.lodge_id).catch(() => null),
-        getManagerPosTransactions(user.lodge_id, { limit: 20 }).catch(() => []),
-        listInventory(user.lodge_id).catch(() => [])
+        getManagerPosSnapshot(user.lodge_id),
+        getManagerPosTransactions(user.lodge_id, { limit: 20 }),
+        listInventory(user.lodge_id)
       ])
 
       setPosSnapshot(posSnap)
-      setPosTransactions(Array.isArray(transactions) ? transactions : [])
-      setLowStockCount(
-        Array.isArray(inventory)
-          ? inventory.filter((i) => (i.current_stock || 0) <= (i.reorder_level || 0) && (i.reorder_level || 0) > 0).length
-          : 0
-      )
+      setPosTransactions(Array.isArray(transactions?.transactions) ? transactions.transactions : [])
+      setLowStockCount(Array.isArray(inventory) ? inventory.filter((i) => (i.current_stock || 0) <= (i.reorder_level || 0) && (i.reorder_level || 0) > 0).length : null)
       setLastUpdated(new Date().toISOString())
+    } catch (error) {
+      setPosSnapshot(null)
+      setPosTransactions([])
+      setLowStockCount(null)
+      setLoadError(error?.message || 'Bar owner data could not be loaded from the server.')
     } finally {
       setLoading(false)
     }
-  }
+  }, [user?.lodge_id])
 
-  useEffect(() => { loadData() }, [user?.lodge_id])
+  useEffect(() => { loadData() }, [loadData])
 
   useEffect(() => {
     const onVis = () => { if (document.visibilityState === 'visible') loadData() }
     document.addEventListener('visibilitychange', onVis)
     return () => document.removeEventListener('visibilitychange', onVis)
-  }, [user?.lodge_id])
+  }, [loadData])
 
   const kpis = useMemo(() => {
-    const todaySales = posSnapshot?.today_sales ?? 0
-    const todayOrders = posSnapshot?.today_orders ?? 0
+    const todaySales = posSnapshot?.net_sales
+    const todayOrders = posSnapshot?.sale_count
     const avgOrder = todayOrders > 0 ? todaySales / todayOrders : 0
-    const outstanding = posSnapshot?.outstanding ?? 0
-    return { todaySales, todayOrders, avgOrder, outstanding }
+    return { todaySales, todayOrders, avgOrder }
   }, [posSnapshot])
 
+  const snapshotReady = posSnapshot?.complete === true
   const paymentMix = useMemo(() => {
     if (!Array.isArray(posTransactions) || posTransactions.length === 0) return []
     const counts = {}
-    posTransactions.forEach((t) => {
-      const m = t.payment_method || 'unknown'
+    posTransactions.filter((t) => snapshotReady && t.financial_complete === true && t.tender_detail_complete === true).forEach((t) => {
+      const m = t.payment_breakdown?.[0]?.method || 'tender unavailable'
       counts[m] = (counts[m] || 0) + 1
     })
     return Object.entries(counts).sort((a, b) => b[1] - a[1])
-  }, [posTransactions])
-
+  }, [posTransactions, snapshotReady])
   if (!restaurantMode) {
     return (
       <div className="flex flex-col items-center justify-center gap-3 p-8 text-center">
@@ -111,11 +110,14 @@ export default function RestaurantOwner() {
         </div>
       </div>
 
+      {loadError && <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">{loadError} Monetary totals remain unavailable until the live source reconnects.</div>}
+      {posSnapshot && !snapshotReady && <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">The server returned an incomplete POS snapshot. Financial totals are withheld until all source rows are resolved.</div>}
+
       <div className="grid grid-cols-2 gap-3">
-        <KpiCard icon={ShoppingCart} label="POS Sales" value={money(kpis.todaySales)} color="green" to="/pos" />
-        <KpiCard icon={BarChart3} label="Orders" value={kpis.todayOrders} sub={`Avg ${money(kpis.avgOrder)}`} color="blue" to="/pos" />
-        <KpiCard icon={AlertTriangle} label="Outstanding" value={money(kpis.outstanding)} color="amber" />
-        <KpiCard icon={Package} label="Low Stock" value={lowStockCount} color={lowStockCount > 0 ? 'red' : 'slate'} to="/inventory" />
+        <KpiCard icon={ShoppingCart} label="POS Sales" value={snapshotReady ? money(kpis.todaySales) : 'Unavailable'} color="green" to="/pos" />
+        <KpiCard icon={BarChart3} label="Completed sales" value={snapshotReady ? kpis.todayOrders : 'Unavailable'} sub={snapshotReady ? `Avg ${money(kpis.avgOrder)}` : 'Server confirmation required'} color="blue" to="/pos" />
+        <KpiCard icon={AlertTriangle} label="Outstanding" value="Not in Bar view" sub="Lodging receivables are outside this workspace" color="amber" />
+        <KpiCard icon={Package} label="Low Stock" value={lowStockCount === null ? 'Unavailable' : lowStockCount} color={lowStockCount > 0 ? 'red' : 'slate'} to="/inventory" />
       </div>
 
       {paymentMix.length > 0 && (
@@ -139,7 +141,7 @@ export default function RestaurantOwner() {
             {posTransactions.slice(0, 10).map((t) => (
               <div key={t.id} className="flex items-center justify-between text-xs">
                 <span className="text-slate-600">{t.items_count || '?'} items</span>
-                <span className="font-semibold text-slate-900">{money(t.total)}</span>
+                <span className="font-semibold text-slate-900">{snapshotReady && t.financial_complete === true ? money(t.total) : 'Unavailable'}</span>
               </div>
             ))}
           </div>

@@ -1,15 +1,53 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router'
 import { ArrowRight, FileText, HandCoins, ReceiptText, RefreshCw, ScrollText, X } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
-import { getNightAudit, getRefundHistory, listExpenses, listInvoices, listQuotations, getCustomerCreditSummaryPwa } from '../lib/api'
-import { money, shortDate, shortDateTime } from '../lib/format'
+import { getNightAudit, getRefundHistory, listExpenses, listInvoices, listQuotations, getCustomerCreditSummaryPwa, getManagerPosSnapshot } from '../lib/api'
+import { businessDate, money, shortDate, shortDateTime } from '../lib/format'
 import { sendFrontDeskRequest } from '../lib/frontDeskRequests'
 import { readCacheEntry } from '../lib/runtime'
 import DataFreshness from '../components/DataFreshness'
 import EmptyState from '../components/EmptyState'
 import MobileBoundaryNotice from '../components/MobileBoundaryNotice'
 import { useToast } from '../App'
+import { isBarHospitalityMode } from '../lib/productShell'
+
+function BarMoney({ lodgeId }) {
+  const [snapshot, setSnapshot] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [updatedAt, setUpdatedAt] = useState(null)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    setError('')
+    try {
+      const result = await getManagerPosSnapshot(lodgeId, { forceFresh: true })
+      setSnapshot(result)
+      setUpdatedAt(result?.as_of || new Date().toISOString())
+    } catch (loadError) {
+      setSnapshot(null)
+      setError(loadError?.message || 'Bar money data could not be loaded from the server.')
+    } finally {
+      setLoading(false)
+    }
+  }, [lodgeId])
+
+  useEffect(() => { load() }, [load])
+  const confirmed = snapshot?.complete === true
+  const currency = 'P'
+
+  return <div className="min-h-screen bg-gray-950 pb-24">
+    <header className="bg-gray-900 px-4 pb-4 pt-12"><div className="flex items-start justify-between gap-3"><div><h1 className="text-lg font-bold text-white">Bar money</h1><p className="mt-1 text-xs text-gray-400">Server-confirmed POS sales, tenders and close readiness</p><DataFreshness updatedAt={updatedAt} loading={loading} error={error} className="mt-1" /></div><button type="button" onClick={load} className="rounded-full bg-white/5 p-2 text-gray-300" aria-label="Refresh Bar money"><RefreshCw size={18} className={loading ? 'animate-spin' : ''} /></button></div></header>
+    <main className="space-y-4 px-4 py-4">
+      {error && <div className="rounded-2xl border border-rose-900 bg-rose-950/40 px-4 py-3 text-sm text-rose-200">{error}</div>}
+      {snapshot && !confirmed && <div className="rounded-2xl border border-amber-800 bg-amber-950/30 px-4 py-3 text-sm text-amber-100">The POS source is incomplete. Monetary totals remain unavailable until unresolved transactions are cleared.</div>}
+      <section className="grid grid-cols-2 gap-3"><div className="rounded-2xl bg-gray-800 p-4"><p className="text-xs text-gray-400">Net sales</p><p className="mt-1 text-xl font-bold text-emerald-200">{confirmed ? money(snapshot.net_sales, currency) : 'Unavailable'}</p></div><div className="rounded-2xl bg-gray-800 p-4"><p className="text-xs text-gray-400">Completed sales</p><p className="mt-1 text-xl font-bold text-white">{confirmed ? snapshot.sale_count : 'Unavailable'}</p></div><div className="rounded-2xl bg-gray-800 p-4"><p className="text-xs text-gray-400">Open tabs</p><p className="mt-1 text-xl font-bold text-amber-200">{confirmed ? snapshot.open_count : 'Unavailable'}</p></div><div className="rounded-2xl bg-gray-800 p-4"><p className="text-xs text-gray-400">Returns</p><p className="mt-1 text-xl font-bold text-rose-200">{confirmed ? money(snapshot.returns_total, currency) : 'Unavailable'}</p></div></section>
+      <section className="rounded-2xl bg-gray-800 p-4"><h2 className="text-sm font-semibold text-white">Tender totals</h2>{confirmed && Array.isArray(snapshot.by_payment) && snapshot.by_payment.length > 0 ? <div className="mt-3 space-y-2">{snapshot.by_payment.map((row) => <div key={row.method} className="flex justify-between text-sm"><span className="capitalize text-gray-400">{String(row.method).replace(/_/g, ' ')}</span><span className="font-semibold text-white">{money(row.amount, currency)}</span></div>)}</div> : <p className="mt-2 text-sm text-gray-500">{confirmed ? 'No posted tenders in this period.' : 'Unavailable until the POS report is complete.'}</p>}</section>
+      <p className="text-xs text-gray-500">Cash-up approval, returns, voids and corrections remain in the desktop Bar workflow. This mobile page is read-only.</p>
+    </main>
+  </div>
+}
 
 function RouteLink({ to, title, value, sub, icon: Icon }) {
   return (
@@ -44,6 +82,12 @@ function Sheet({ title, onClose, children }) {
 
 export default function Money() {
   const { user } = useAuth()
+  if (isBarHospitalityMode(user?.hospitality_mode)) return <BarMoney lodgeId={user?.lodge_id} />
+  return <LodgingMoney />
+}
+
+function LodgingMoney() {
+  const { user } = useAuth()
   const { showToast } = useToast()
   const [searchParams] = useSearchParams()
   const [loading, setLoading] = useState(true)
@@ -66,19 +110,21 @@ export default function Money() {
     async function load(silent = false) {
       if (!silent) setLoading(true)
       if (!silent) setLoadError('')
-      const today = new Date().toISOString().slice(0, 10)
+      const today = businessDate()
       const monthStart = `${today.slice(0, 7)}-01`
       try {
         const [quotations, invoices, expenses, refunds, audit, customerCredits] = await Promise.all([
           listQuotations(user.lodge_id).catch(() => []),
           listInvoices(user.lodge_id, { forceFresh: true }),
-          listExpenses(user.lodge_id, monthStart, today, { forceFresh: true }).catch(() => []),
+          listExpenses(user.lodge_id, monthStart, today, { forceFresh: true }).catch((error) => ({ error })),
           getRefundHistory(user.lodge_id, 6).catch(() => []),
           getNightAudit(user.lodge_id, today).catch(() => null),
           getCustomerCreditSummaryPwa(user.lodge_id).catch(() => [])
         ])
         if (cancelled) return
-        setSnapshot({ quotations, invoices, expenses, refunds, audit, customerCredits })
+        const expenseReadError = expenses?.error
+        setSnapshot({ quotations, invoices, expenses: expenseReadError ? [] : expenses, refunds, audit, customerCredits })
+        if (expenseReadError) setLoadError(expenseReadError.message || 'Expenses could not be loaded from the server; no estimate was included.')
         const expenseCacheKey = `expenses:${monthStart}:${today}`
         const cacheTimes = [
           readCacheEntry(user.lodge_id, 'invoice_summary_v2', null)?.updatedAt,
@@ -162,16 +208,18 @@ export default function Money() {
             onClick={async () => {
               try {
                 setLoading(true)
-                const today = new Date().toISOString().slice(0, 10)
+                const today = businessDate()
                 const monthStart = `${today.slice(0, 7)}-01`
                 const [quotations, invoices, expenses, refunds, audit] = await Promise.all([
                   listQuotations(user.lodge_id).catch(() => []),
                   listInvoices(user.lodge_id, { forceFresh: true }),
-                  listExpenses(user.lodge_id, monthStart, today, { forceFresh: true }).catch(() => []),
+                  listExpenses(user.lodge_id, monthStart, today, { forceFresh: true }).catch((error) => ({ error })),
                   getRefundHistory(user.lodge_id, 6).catch(() => []),
                   getNightAudit(user.lodge_id, today).catch(() => null)
                 ])
-                setSnapshot({ quotations, invoices, expenses, refunds, audit })
+                const expenseReadError = expenses?.error
+                setSnapshot((current) => ({ ...current, quotations, invoices, expenses: expenseReadError ? [] : expenses, refunds, audit }))
+                if (expenseReadError) setLoadError(expenseReadError.message || 'Expenses could not be loaded from the server; no estimate was included.')
                 const expenseCacheKey = `expenses:${monthStart}:${today}`
                 const cacheTimes = [
                   readCacheEntry(user.lodge_id, 'invoice_summary_v2', null)?.updatedAt,

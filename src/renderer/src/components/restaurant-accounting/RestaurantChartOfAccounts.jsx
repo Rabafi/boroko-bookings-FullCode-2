@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Plus, RefreshCw, Scale, Sparkles } from 'lucide-react'
 import { useAccess } from '../../app-context'
 import { canAccessCapability } from '../../../../shared/accessControl'
-import { AccountingButton, AccountingError, AccountingLoading, AccountingNotice, AccountingPage, AccountingPanel, EmptyState, accountingInvoke, inputClass, labelClass, money, runIdempotent, today, unwrap } from './RestaurantAccountingUi'
+import { AccountingButton, AccountingError, AccountingExportButton, AccountingLoading, AccountingNotice, AccountingPage, AccountingPanel, EmptyState, accountingInvoke, inputClass, labelClass, money, runIdempotent, today, unwrap } from './RestaurantAccountingUi'
 
 const blankAccount = { code: '', name: '', accountType: 'asset', parentId: '', description: '' }
 const blankOpening = { accountId: '', equityAccountId: '', entryDate: today(), amount: '' }
@@ -20,7 +20,7 @@ export default function RestaurantChartOfAccounts() {
 
   const load = useCallback(async () => {
     setLoading(true); setError('')
-    try { setAccounts(unwrap(await accountingInvoke('getAccounts'), [])) }
+    try { setAccounts(unwrap(await accountingInvoke('getAccounts'), []).map(row => ({ ...row, balance: row.balance ?? row.ledger_balance ?? 0 }))) }
     catch (e) { setError(e.message) }
     finally { setLoading(false) }
   }, [])
@@ -59,7 +59,7 @@ export default function RestaurantChartOfAccounts() {
     try { await accountingInvoke('deleteAccount', item.id); await load() } catch (e) { setError(e.message) } finally { setBusy('') }
   }
 
-  return <AccountingPage title="Chart of accounts" description="Create the business-scoped account structure used by every accounting workflow. Posted history remains immutable when an account is deactivated." actions={<AccountingButton tone="secondary" onClick={load}><RefreshCw size={15}/>Refresh</AccountingButton>}>
+  return <AccountingPage title="Chart of accounts" description="Create the business-scoped account structure used by every accounting workflow. Posted history remains immutable when an account is deactivated." actions={<><AccountingExportButton fileName="chart-of-accounts" exportOperation="exportChart" onError={setError}/><AccountingButton tone="secondary" onClick={load}><RefreshCw size={15}/>Refresh</AccountingButton></>}>
     <AccountingNotice>Balances shown here are ledger-derived. Opening balances require an account, an equity offset, a date, and a retry-safe journal posting.</AccountingNotice>
     {error && <AccountingNotice type="error">{error}</AccountingNotice>}{notice && <AccountingNotice type="success">{notice}</AccountingNotice>}
     {loading ? <AccountingLoading/> : <>

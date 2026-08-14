@@ -50,6 +50,7 @@ export default function App() {
   const [isFullscreen, setIsFullscreen] = useState(false);
 
   const displayLodgeName = settings?.lodge_name || settings?.company_name || user?.lodge_name || '';
+  const barOnly = String(settings?.hospitality_mode || settings?.operating_profile || '').toLowerCase() === 'bar_only';
 
   const tryRestore = useCallback(async () => {
     try {
@@ -132,9 +133,9 @@ export default function App() {
   if (window.location.hash === '#/kitchen-display') return <Suspense fallback={<LoadingFallback />}><KitchenDisplay /></Suspense>;
   if (!user) return <Login onLogin={handleLogin} onOfflineUnlock={handleOfflineUnlock} />;
 
-  const visibleTabs = lowResource?.enabled !== false
+  const visibleTabs = (lowResource?.enabled !== false
     ? (showAdvanced ? [...CORE_TABS, ...ADVANCED_TABS] : CORE_TABS)
-    : [...CORE_TABS, ...ADVANCED_TABS];
+    : [...CORE_TABS, ...ADVANCED_TABS]).filter((tab) => !barOnly || !['/tickets', '/tables'].includes(tab.to));
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-slate-50">
@@ -184,15 +185,15 @@ export default function App() {
           <Suspense fallback={<LoadingFallback />}>
             <Routes>
               <Route path="/" element={<Navigate to="/terminal" replace />} />
-              <Route path="/terminal" element={<POSTerminal user={user} settings={settings} isOnline={isOnline} lowResource={lowResource} />} />
-              <Route path="/orders" element={<Orders user={user} settings={settings} isOnline={isOnline} />} />
+              <Route path="/terminal" element={<POSTerminal user={user} settings={settings} isOnline={isOnline} lowResource={lowResource} barOnly={barOnly} />} />
+              <Route path="/orders" element={<Orders user={user} settings={settings} isOnline={isOnline} barOnly={barOnly} />} />
               <Route path="/cashup" element={<CashUp user={user} settings={settings} isOnline={isOnline} />} />
-              <Route path="/tickets" element={<Tickets user={user} settings={settings} isOnline={isOnline} />} />
+              <Route path="/tickets" element={barOnly ? <Navigate to="/terminal" replace /> : <Tickets user={user} settings={settings} isOnline={isOnline} />} />
               <Route path="/menu" element={<MenuManagement user={user} settings={settings} isOnline={isOnline} />} />
-              <Route path="/tables" element={<Tables user={user} settings={settings} isOnline={isOnline} />} />
+              <Route path="/tables" element={barOnly ? <Navigate to="/terminal" replace /> : <Tables user={user} settings={settings} isOnline={isOnline} />} />
               <Route path="/shifts" element={<Shifts user={user} settings={settings} isOnline={isOnline} />} />
               <Route path="/hardware" element={<Hardware user={user} settings={settings} isOnline={isOnline} />} />
-              <Route path="/sync" element={<Sync user={user} isOnline={isOnline} setIsOnline={setIsOnline} />} />
+              <Route path="/sync" element={<Sync user={user} isOnline={isOnline} setIsOnline={setIsOnline} barOnly={barOnly} />} />
             </Routes>
           </Suspense>
         </HashRouter>

@@ -1,30 +1,42 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { RefreshCw } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { listExpenses, listMaintenanceTickets } from '../lib/api'
-import { money, shortDate } from '../lib/format'
+import { businessDate, money, shortDate } from '../lib/format'
+import { isBarHospitalityMode, isRestaurantProductFamily } from '../lib/productShell'
 
 export default function Expenses() {
   const { user } = useAuth()
+  const barOnly = isRestaurantProductFamily(user?.product_family) && isBarHospitalityMode(user?.hospitality_mode)
   const [expenses, setExpenses] = useState([])
   const [maintenance, setMaintenance] = useState([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
+  const [expenseSourceComplete, setExpenseSourceComplete] = useState(true)
   const [search, setSearch] = useState('')
-  const today = new Date().toISOString().slice(0, 10)
+  const today = businessDate()
   const monthStart = `${today.slice(0, 7)}-01`
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true)
+    setLoadError('')
     const [expenseData, maintenanceData] = await Promise.all([
-      listExpenses(user.lodge_id, monthStart, today).catch(() => []),
-      listMaintenanceTickets(user.lodge_id).catch(() => [])
+      listExpenses(user.lodge_id, monthStart, today).catch((error) => ({ error })),
+      barOnly ? Promise.resolve([]) : listMaintenanceTickets(user.lodge_id).catch(() => [])
     ])
-    setExpenses(expenseData)
+    if (expenseData?.error) {
+      setExpenses([])
+      setExpenseSourceComplete(false)
+      setLoadError(expenseData.error?.message || 'Expenses could not be loaded from the server.')
+    } else {
+      setExpenses(expenseData)
+      setExpenseSourceComplete(expenseData?._complete === true)
+    }
     setMaintenance(maintenanceData)
     setLoading(false)
-  }
+  }, [barOnly, monthStart, today, user.lodge_id])
 
-  useEffect(() => { load() }, [user.lodge_id])
+  useEffect(() => { load() }, [load])
 
   const filtered = expenses.filter((expense) => {
     const query = search.toLowerCase()
@@ -60,7 +72,7 @@ export default function Expenses() {
         <div className="flex items-center justify-between gap-3">
           <div>
             <h1 className="text-lg font-bold text-white">Expenses</h1>
-            <p className="text-xs text-gray-400">This month • {money(total)}</p>
+            <p className="text-xs text-gray-400">This month • {expenseSourceComplete ? money(total) : 'Unavailable'}</p>
           </div>
           <button onClick={load} className="p-2 text-gray-400"><RefreshCw size={18} className={loading ? 'animate-spin' : ''} /></button>
         </div>
@@ -69,31 +81,33 @@ export default function Expenses() {
 
       <div className="px-4 py-4 space-y-3">
         <div className="rounded-2xl border border-blue-900 bg-blue-950/30 px-4 py-3 text-sm text-blue-100">
-          Expenses and maintenance are view-only in the manager mobile app. Use the front desk or desktop to add or edit entries.
+          {barOnly ? 'Bar operating expenses are view-only in the manager mobile app. Use the desktop Bar app to add or edit entries.' : 'Expenses and maintenance are view-only in the manager mobile app. Use the front desk or desktop to add or edit entries.'}
         </div>
+        {!expenseSourceComplete && <div className="rounded-2xl border border-amber-800 bg-amber-950/30 px-4 py-3 text-sm text-amber-100">Expense totals are unavailable until the server source reconnects. No cached estimate is included.</div>}
+        {loadError && <div className="rounded-2xl border border-red-900 bg-red-950/40 px-4 py-3 text-sm text-red-200">{loadError}</div>}
         {filtered.map((expense) => (
           <div key={expense.id} className="bg-gray-800 rounded-2xl p-4">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <p className="text-sm font-semibold text-white">{expense.description}</p>
-                <p className="text-xs text-gray-400 mt-1">{expense.category} • {shortDate(expense.date)}</p>
+                <p className="text-xs text-gray-400 mt-1">{expense.category} • {shortDate(expense.date)} • {expense.status || 'draft'}</p>
                 {expense.notes && <p className="text-xs text-gray-500 mt-2">{expense.notes}</p>}
               </div>
               <div className="text-right">
-                <p className="text-sm font-bold text-white">{money(expense.amount)}</p>
+                <p className="text-sm font-bold text-white">{expenseSourceComplete ? money(expense.amount) : 'Unavailable'}</p>
               </div>
             </div>
           </div>
         ))}
         {!loading && filtered.length === 0 && <p className="text-sm text-gray-500">No manual expenses found.</p>}
 
-        <div className="rounded-2xl border border-gray-800 bg-gray-900 p-4">
+        {!barOnly && <div className="rounded-2xl border border-gray-800 bg-gray-900 p-4">
           <div className="flex items-center justify-between gap-3">
             <div>
               <p className="text-sm font-semibold text-white">Maintenance repairs</p>
               <p className="text-xs text-gray-500 mt-1">Read-only repair costs that are included in reporting.</p>
             </div>
-            <p className="text-sm font-bold text-white">{money(maintenanceTotal)}</p>
+            <p className="text-sm font-bold text-white">{expenseSourceComplete ? money(maintenanceTotal) : 'Unavailable'}</p>
           </div>
           <div className="mt-4 space-y-3">
             {filteredMaintenance.map((entry) => (
@@ -109,14 +123,14 @@ export default function Expenses() {
                     {entry.description && <p className="text-xs text-gray-500 mt-2">{entry.description}</p>}
                   </div>
                   <div className="text-right">
-                    <p className="text-sm font-bold text-white">{money(entry.total_cost)}</p>
+                    <p className="text-sm font-bold text-white">{expenseSourceComplete ? money(entry.total_cost) : 'Unavailable'}</p>
                   </div>
                 </div>
               </div>
             ))}
             {!loading && filteredMaintenance.length === 0 && <p className="text-sm text-gray-500">No maintenance repairs found.</p>}
           </div>
-        </div>
+        </div>}
       </div>
     </div>
   )

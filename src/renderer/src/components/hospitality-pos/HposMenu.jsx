@@ -234,6 +234,7 @@ export default function HposMenu() {
   const [activeCategory, setActiveCategory] = useState("all");
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [editing, setEditing] = useState(null);
   const [draft, setDraft] = useState(emptyDraft());
   const [saveError, setSaveError] = useState("");
@@ -296,12 +297,15 @@ export default function HposMenu() {
   }, [editing, barcodeCaptureActive, barcodeCaptureTarget]);
 
   const loadMenu = async () => {
-    const menuData = (await window.api?.pos?.getMenuItems?.()) ?? [];
-    const rows = Array.isArray(menuData) ? menuData : [];
-    setItems(rows);
-    setCategories([
-      ...new Set(rows.map((item) => item.category).filter(Boolean)),
-    ]);
+    try {
+      const menuData = (await window.api?.pos?.getMenuItems?.()) ?? [];
+      const rows = Array.isArray(menuData) ? menuData : [];
+      setItems(rows);
+      setLoadError("");
+      setCategories([...new Set(rows.map((item) => item.category).filter(Boolean))]);
+    } catch (error) {
+      setLoadError(error?.message || "The catalogue could not be verified. Refresh before selling.");
+    }
   };
 
   useEffect(() => {
@@ -339,7 +343,9 @@ export default function HposMenu() {
               .filter(Boolean),
           ),
         ]);
-      } catch {}
+      } catch (error) {
+        if (active) setLoadError(error?.message || "The catalogue could not be verified. Refresh before selling.");
+      }
       if (active) setLoading(false);
     };
     load();
@@ -448,13 +454,34 @@ export default function HposMenu() {
       if (isDirect && draft.inventory_item_id)
         payload.inventory_item_id = draft.inventory_item_id;
 
-      const saved = editing === "new"
-        ? await window.api.pos.createMenuItem(payload)
-        : await window.api.pos.updateMenuItem(editing.id, payload);
+      let saved;
+      const invId = isDirect ? (draft.inventory_item_id || editing?.inventory_item_id) : null;
+      if (isDirect && barOnly && window.api?.pos?.saveBarProductWithPacks) {
+        const operationStorageKey = `hpos:pending-bar-product:${editing === "new" ? "new" : editing.id}`;
+        const operationKey = localStorage.getItem(operationStorageKey) || crypto.randomUUID();
+        localStorage.setItem(operationStorageKey, operationKey);
+        saved = await window.api.pos.saveBarProductWithPacks({
+          ...payload,
+          menu_item_id: editing === "new" ? null : editing.id,
+          inventory_item_id: invId,
+          operation_key: operationKey,
+          pack6: draft.pack6 === true,
+          pack12: draft.pack12 === true,
+          pack24: draft.pack24 === true,
+          pack6Barcode: draft.pack6Barcode || null,
+          pack12Barcode: draft.pack12Barcode || null,
+          pack24Barcode: draft.pack24Barcode || null,
+        });
+        if (!saved?.success) throw new Error(saved?.error || "Could not save this Bar product.");
+        localStorage.removeItem(operationStorageKey);
+      } else {
+        saved = editing === "new"
+          ? await window.api.pos.createMenuItem(payload)
+          : await window.api.pos.updateMenuItem(editing.id, payload);
+      }
       const menuItemId = editing === "new" ? saved?.id : editing.id;
 
-      const invId = isDirect ? (draft.inventory_item_id || editing?.inventory_item_id) : null;
-      if (invId && barOnly) {
+      if (invId && barOnly && !(isDirect && window.api?.pos?.saveBarProductWithPacks)) {
         await applyPackTemplates(invId, draft);
       }
 
@@ -679,6 +706,8 @@ export default function HposMenu() {
           </div>
         </div>
       </header>
+
+      {loadError && <div className="hpos-inline-error" role="alert">{loadError} No catalogue read is treated as an empty or sellable catalogue.</div>}
 
       <section className="hpos-service-catalogue-tools">
         <label className="hpos-service-search">

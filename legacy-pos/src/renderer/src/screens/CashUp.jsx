@@ -19,6 +19,7 @@ export default function CashUp({ user, settings, isOnline }) {
   const currency = settings?.currency || CURRENCY;
   const canFinalize = ['supervisor', 'manager', 'admin', 'super_admin', 'administrator', 'superadmin']
     .includes(String(user?.role || '').toLowerCase());
+  const summaryReady = summary?.complete === true && summary?.financial_truth === 'server_confirmed';
 
   const loadOrders = useCallback(async () => {
     setLoading(true);
@@ -60,7 +61,7 @@ export default function CashUp({ user, settings, isOnline }) {
   }, [summary?.by_method]);
 
   const varianceByMethod = useMemo(() => {
-    if (!summary) return {};
+    if (!summaryReady) return {};
     const result = {};
     for (const m of PAYMENT_METHODS) {
       const expected = m === 'cash'
@@ -70,7 +71,7 @@ export default function CashUp({ user, settings, isOnline }) {
       result[m] = counted - expected;
     }
     return result;
-  }, [summary, countedMethods, openingFloat]);
+  }, [summary, summaryReady, countedMethods, openingFloat]);
 
   const totalVariance = useMemo(() => {
     return Object.values(varianceByMethod).reduce((sum, v) => sum + v, 0);
@@ -87,6 +88,10 @@ export default function CashUp({ user, settings, isOnline }) {
     }
     if (!isOnline) {
       alert('Reconnect and sync all sales before finalizing the cash-up.');
+      return;
+    }
+    if (!summaryReady) {
+      alert('The server has not certified a complete cash-up preview. Refresh while online and resolve incomplete tenders before finalizing.');
       return;
     }
     setSubmitting(true);
@@ -166,6 +171,9 @@ export default function CashUp({ user, settings, isOnline }) {
         {!isOnline && (
           <p className="mt-2 text-xs font-semibold text-red-600">Cash-up cannot close a shift offline. Reconnect and sync first.</p>
         )}
+        {!summaryReady && isOnline && (
+          <p className="mt-2 text-xs font-semibold text-amber-700">Financial expectations are unavailable until the server confirms every posted tender and amount.</p>
+        )}
       </div>
 
       {loading ? (
@@ -198,22 +206,23 @@ export default function CashUp({ user, settings, isOnline }) {
                 <div className="flex justify-between"><span className="text-slate-500">Voids</span><span className="font-semibold text-red-600">{summary?.void_count || 0}</span></div>
                 <div className="flex justify-between"><span className="text-slate-500">Pending Sync</span><span className="font-semibold text-amber-600">{summary?.pending_count || 0}</span></div>
                 <hr className="border-slate-100" />
-                <div className="flex justify-between"><span className="text-slate-500">Gross Sales</span><span className="font-semibold">{currency} {fmt(summary?.gross_sales)}</span></div>
-                <div className="flex justify-between"><span className="text-slate-500">Returns</span><span className="font-semibold text-red-600">-{currency} {fmt(summary?.returns_total)}</span></div>
-                <div className="flex justify-between border-t border-slate-200 pt-2"><span className="font-bold">Net Sales</span><span className="font-bold text-emerald-700">{currency} {fmt(summary?.net_sales)}</span></div>
+                <div className="flex justify-between"><span className="text-slate-500">Gross Sales</span><span className="font-semibold">{summaryReady ? `${currency} ${fmt(summary?.gross_sales)}` : 'Unavailable'}</span></div>
+                <div className="flex justify-between"><span className="text-slate-500">Returns</span><span className="font-semibold text-red-600">{summaryReady ? `-${currency} ${fmt(summary?.returns_total)}` : 'Unavailable'}</span></div>
+                <div className="flex justify-between border-t border-slate-200 pt-2"><span className="font-bold">Net Sales</span><span className="font-bold text-emerald-700">{summaryReady ? `${currency} ${fmt(summary?.net_sales)}` : 'Unavailable'}</span></div>
               </div>
             </div>
 
             <div className="rounded-xl border border-slate-200 bg-white p-5">
               <h2 className="mb-4 font-bold text-slate-800">By Payment Method (Expected)</h2>
               <div className="space-y-2 text-sm">
-                {PAYMENT_METHODS.filter((m) => (summary?.by_method?.[m] || 0) > 0).map((m) => (
+                {summaryReady && PAYMENT_METHODS.filter((m) => (summary?.by_method?.[m] || 0) > 0).map((m) => (
                   <div key={m} className="flex justify-between">
                     <span className="text-slate-500 capitalize">{m.replace(/_/g, ' ')}</span>
                     <span className="font-semibold">{currency} {fmt(summary?.by_method?.[m])}</span>
                   </div>
                 ))}
-                {PAYMENT_METHODS.every((m) => !(summary?.by_method?.[m] > 0)) && (
+                {!summaryReady && <p className="text-xs font-semibold text-amber-700">Unavailable until the server confirms a complete recorded tender envelope.</p>}
+                {summaryReady && PAYMENT_METHODS.every((m) => !(summary?.by_method?.[m] > 0)) && (
                   <p className="text-xs text-slate-400">No sales for this date</p>
                 )}
               </div>
@@ -232,10 +241,10 @@ export default function CashUp({ user, settings, isOnline }) {
                   </p>
                 </div>
                 {PAYMENT_METHODS.map((m) => {
-                  const expected = m === 'cash'
+                    const expected = m === 'cash'
                     ? (Number(summary?.by_method?.cash || 0) + (Number(openingFloat) || 0))
                     : Number(summary?.by_method?.[m] || 0);
-                  if (expected <= 0 && m !== 'cash') return null;
+                  if (!summaryReady || (expected <= 0 && m !== 'cash')) return null;
                   return (
                     <div key={m} className="grid grid-cols-3 gap-2 items-end">
                       <div>
@@ -282,7 +291,7 @@ export default function CashUp({ user, settings, isOnline }) {
                 </div>
                 <button
                   onClick={handleSubmitCashup}
-                  disabled={submitting || !currentShift || !canFinalize || !isOnline}
+                  disabled={submitting || !currentShift || !canFinalize || !isOnline || !summaryReady}
                   className="w-full rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-emerald-700 disabled:opacity-50"
                 >
                   {submitting ? 'Saving...' : 'Submit Cash-Up'}
@@ -300,7 +309,7 @@ export default function CashUp({ user, settings, isOnline }) {
                   {cashups.slice(0, 5).map((c) => (
                     <div key={c.id} className="flex justify-between rounded-lg bg-slate-50 px-3 py-2 text-xs">
                       <span className="text-slate-500">{c.date || c.created_at?.slice(0, 10)}</span>
-                      <span className="font-semibold">{currency} {fmt(c.net_sales)}</span>
+                      <span className="font-semibold">{c.complete === true && c.financial_truth === 'server_confirmed' ? `${currency} ${fmt(c.net_sales)}` : 'Unavailable'}</span>
                       {c._pending_sync && <span className="text-amber-600">Pending</span>}
                     </div>
                   ))}

@@ -169,24 +169,39 @@ test('Phase 3 recipe stock depletion is wired into order creation', () => {
   assert.match(posDomain, /record_recipe_stock_depletion/)
 })
 
-test('Phase 3 recipe depletion is synchronous on online path', () => {
-  // Depletion must be awaited, not fire-and-forget
+test('Phase 3 recipe depletion is server-atomic on the online path', () => {
+  // Depletion must not be a separate client call anymore: create_pos_order_v3
+  // writes recipe movements atomically via a server trigger.
   const orderCreateBody = posDomain.slice(
     posDomain.indexOf('export async function createPosOrder'),
     posDomain.indexOf('export async function voidPosOrder')
   )
-  assert.match(orderCreateBody, /await recordRecipeStockDepletion/, 'online depletion must be awaited')
+  assert.doesNotMatch(orderCreateBody, /await recordRecipeStockDepletion/, 'online depletion must not be a separate client call')
   assert.doesNotMatch(orderCreateBody, /recordRecipeStockDepletion\(.*\)\.catch/, 'must not be fire-and-forget')
 })
 
-test('Phase 3 recipe depletion is queued for offline with depends_on', () => {
-  // Offline path must queue recipe depletion as dependent on order
+test('Phase 3 offline orders no longer queue a separate depletion operation', () => {
+  // The server trigger covers offline replay inside create_pos_order_v3, so
+  // new orders must not queue a dependent record_recipe_stock_depletion op.
   const orderCreateBody = posDomain.slice(
     posDomain.indexOf('export async function createPosOrder'),
     posDomain.indexOf('export async function voidPosOrder')
   )
-  assert.match(orderCreateBody, /pos-recipe-depletion-\$\{id\}/, 'offline queue id must include order id')
-  assert.match(orderCreateBody, /_depends_on: `pos-order-\$\{id\}`/, 'must depend on order completion')
+  assert.doesNotMatch(orderCreateBody, /pos-recipe-depletion/, 'must not queue a depletion operation for new orders')
+  assert.doesNotMatch(orderCreateBody, /queueOperation\('rpc', 'record_recipe_stock_depletion'/, 'depletion is not a queued client operation anymore')
+})
+
+test('Phase 3 server-atomic recipe depletion migration is installed', async () => {
+  const sql = await readFile(new URL('../supabase/migrations/20260805090000_pos_recipe_stock_depletion_server_atomic.sql', import.meta.url), 'utf8')
+  assert.match(sql, /create or replace function public\.restaurant_apply_recipe_sale_depletion/)
+  assert.match(sql, /create trigger trg_restaurant_recipe_sale_depletion[\s\S]*after insert on public\.pos_order_items/)
+  assert.match(sql, /new\.inventory_item_id is not null or coalesce\(new\.quantity, 0\) <= 0/, 'must never touch direct-stock or return lines')
+  assert.match(sql, /coalesce\(v_parent_type, 'sale'\) <> 'sale'/, 'must skip non-sale orders')
+  assert.match(sql, /restaurant_recipe_quantity_in_inventory_unit[\s\S]*new\.quantity/, 'must deplete from the authoritative line quantity')
+  assert.match(sql, /for update of ii/, 'must lock inventory rows')
+  assert.match(sql, /raise exception 'Insufficient stock/, 'must fail closed on insufficient recipe stock')
+  assert.match(sql, /create or replace function public\.record_recipe_stock_depletion[\s\S]*from public\.pos_order_items/, 'legacy replay must derive quantities from authoritative order lines')
+  assert.match(sql, /create or replace function public\.get_pos_orders_missing_recipe_movements/, 'reconciliation report must exist')
 })
 
 test('Phase 3 recipe depletion throws on failure', () => {

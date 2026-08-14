@@ -16,7 +16,7 @@ function futureDateKey(days) {
   return localDateKey(date)
 }
 
-const newSettlement = () => ({ channel: 'card', provider: '', settled_amount: '', reference: '', notes: '', idempotency_key: crypto.randomUUID() })
+const newSettlement = () => ({ channel: 'card', provider: '', settled_amount: '', fee_amount: '', bank_account_id: '', reference: '', notes: '', idempotency_key: crypto.randomUUID() })
 const newDeposit = () => ({ reservation_id: '', amount: '', method: 'card', reference: '', idempotency_key: crypto.randomUUID() })
 const EMPTY_FEEDBACK = { rating: '5', channel: 'in_store', message: '' }
 
@@ -29,8 +29,11 @@ export default function RestaurantCommercialControl({ section = 'all' }) {
   const showFeedback = section === 'all' || section === 'feedback'
   const [date, setDate] = useState(localDateKey())
   const [settlements, setSettlements] = useState([])
+  const [settlementsAvailable, setSettlementsAvailable] = useState(false)
+  const [settlementBankAccounts, setSettlementBankAccounts] = useState([])
   const [reservations, setReservations] = useState([])
   const [depositRows, setDepositRows] = useState([])
+  const [depositsAvailable, setDepositsAvailable] = useState(false)
   const [notice, setNotice] = useState('')
   const [error, setError] = useState('')
   const [busyForm, setBusyForm] = useState(null)
@@ -48,16 +51,23 @@ export default function RestaurantCommercialControl({ section = 'all' }) {
     try {
       setLoading(true)
       setError('')
-      const [settlementRows, reservationRows, feedbackResult, depositsResult] = await Promise.all([
+      const [settlementRows, settlementBanks, reservationRows, feedbackResult, depositsResult] = await Promise.all([
         showSettlements ? window.api.pos.getSettlements(date) : Promise.resolve([]),
+        showSettlements ? window.api.pos.getSettlementBankAccounts() : Promise.resolve([]),
         showDeposits ? window.api.pos.getRestaurantReservations(localDateKey(), futureDateKey(90)) : Promise.resolve([]),
         showFeedback ? window.api.pos.getFeedback(30) : Promise.resolve([]),
         showDeposits ? window.api.pos.getReservationDeposits(90) : Promise.resolve([])
       ])
+      const settlementsReady = Array.isArray(settlementRows) && settlementRows._source === 'server' && settlementRows._complete === true
+      const depositsReady = Array.isArray(depositsResult) && depositsResult._source === 'server' && depositsResult._complete === true
+      setSettlementsAvailable(settlementsReady)
+      setDepositsAvailable(depositsReady)
       setSettlements(Array.isArray(settlementRows) ? settlementRows : [])
+      setSettlementBankAccounts(Array.isArray(settlementBanks) ? settlementBanks : [])
       setReservations(Array.isArray(reservationRows) ? reservationRows : [])
       setFeedbackRows(Array.isArray(feedbackResult) ? feedbackResult : [])
       setDepositRows(Array.isArray(depositsResult) ? depositsResult : [])
+      if ((showSettlements && !settlementsReady) || (showDeposits && !depositsReady)) setError('Settlement or reservation-deposit evidence is unavailable. Refresh before relying on totals or recording a reconciliation.')
     } catch (err) {
       setError(err.message || 'Could not load commercial controls.')
     } finally {
@@ -127,7 +137,7 @@ export default function RestaurantCommercialControl({ section = 'all' }) {
     )
   }
 
-  const variance = useMemo(() => settlements.reduce((sum, row) => sum + Number(row.variance_amount || 0), 0), [settlements])
+  const variance = useMemo(() => settlementsAvailable ? settlements.reduce((sum, row) => sum + Number(row.variance_amount || 0), 0) : null, [settlements, settlementsAvailable])
   const input = 'bb-input mt-1 w-full'
 
   const pageTitle = showSettlements && !showDeposits && !showFeedback
@@ -167,7 +177,7 @@ export default function RestaurantCommercialControl({ section = 'all' }) {
 
           <div className="mb-4 flex flex-wrap items-end gap-3">
             <label className="text-xs font-medium text-slate-600">Recorded date<input type="date" value={date} onChange={event => setDate(event.target.value)} className={input} /></label>
-            <span className={`rounded-full px-3 py-2 text-xs font-semibold ${variance === 0 ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-800'}`}>{variance === 0 ? 'No recorded variance' : `Variance P ${variance.toFixed(2)}`}</span>
+            <span className={`rounded-full px-3 py-2 text-xs font-semibold ${variance == null || variance !== 0 ? 'bg-amber-50 text-amber-800' : 'bg-emerald-50 text-emerald-700'}`}>{variance == null ? 'Variance unavailable' : variance === 0 ? 'No recorded variance' : `Variance P ${variance.toFixed(2)}`}</span>
           </div>
 
           {!canViewReports && <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">Your role does not include settlement reporting. Ask a manager, finance user, or administrator for access.</div>}
@@ -178,6 +188,8 @@ export default function RestaurantCommercialControl({ section = 'all' }) {
             <label className="text-xs">To date *<input required min={settlementStart} type="date" value={settlementEnd} onChange={event => setSettlementEnd(event.target.value)} className={input} /></label>
             <div className="col-span-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-900"><strong>Expected POS total</strong><p className="mt-1">{expectedLoading ? 'Calculating from completed POS payments…' : expectedSettlement === null ? 'Choose a valid date range and channel.' : `P ${expectedSettlement.toFixed(2)} · calculated from POS ${settlement.channel.replaceAll('_', ' ')} payments`}</p></div>
             <label className="text-xs">Settled amount (P) *<input required min="0" step="0.01" type="number" value={settlement.settled_amount} onChange={event => setSettlement({ ...settlement, settled_amount: event.target.value })} className={input} /></label>
+            <label className="text-xs">Provider fee (P)<input min="0" step="0.01" type="number" value={settlement.fee_amount} onChange={event => setSettlement({ ...settlement, fee_amount: event.target.value })} className={input} placeholder="0.00" /></label>
+            <label className="col-span-2 text-xs">Deposit bank account {settlementBankAccounts.length > 0 && '*'}<select required={settlementBankAccounts.length > 0} value={settlement.bank_account_id} onChange={event => setSettlement({ ...settlement, bank_account_id: event.target.value })} className={input}><option value="">{settlementBankAccounts.length > 0 ? 'Choose the bank destination…' : 'No active bank destination configured'}</option>{settlementBankAccounts.map(account => <option key={account.id} value={account.id}>{account.name}{account.bank_name ? ` · ${account.bank_name}` : ''}{account.account_number_masked ? ` · ${account.account_number_masked}` : ''}</option>)}</select></label>
             <label className="col-span-2 text-xs">Settlement reference *<input required value={settlement.reference} onChange={event => setSettlement({ ...settlement, reference: event.target.value })} className={input} placeholder="Provider batch or transfer reference" /></label>
             <label className="col-span-2 text-xs">Notes<textarea value={settlement.notes} onChange={event => setSettlement({ ...settlement, notes: event.target.value })} className={input} rows={2} placeholder="Evidence or variance explanation" /></label>
             <button disabled={!canManagePos || busyForm !== null || expectedLoading || expectedSettlement === null} className="bb-btn-primary col-span-2"><ShieldCheck size={15} className="mr-1 inline" />{busyForm === 'settlement' ? 'Recording…' : 'Record reconciliation'}</button>
@@ -186,10 +198,10 @@ export default function RestaurantCommercialControl({ section = 'all' }) {
 
           <div className="mt-5 border-t border-slate-100 pt-4">
             <h3 className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">Recorded for {date}</h3>
-            {settlements.length === 0 ? <div className="rounded-xl bg-slate-50 p-4 text-center text-xs text-slate-500">No settlements recorded for this date.</div> : settlements.slice(0, 8).map(row => (
+            {!settlementsAvailable ? <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-center text-xs text-amber-800">Settlement evidence is unavailable until the server confirms a complete read.</div> : settlements.length === 0 ? <div className="rounded-xl bg-slate-50 p-4 text-center text-xs text-slate-500">No settlements recorded for this date.</div> : settlements.slice(0, 8).map(row => (
               <div key={row.id} className="flex justify-between gap-3 border-t border-slate-100 py-2 text-xs first:border-0">
                 <span className="capitalize">{row.channel?.replaceAll('_', ' ')} {row.provider && `· ${row.provider}`}</span>
-                <span className={Number(row.variance_amount) === 0 ? 'text-emerald-700' : 'font-bold text-amber-700'}>P {Number(row.expected_amount).toFixed(2)} → P {Number(row.settled_amount).toFixed(2)}</span>
+                <span className={Number(row.variance_amount) === 0 ? 'text-emerald-700' : 'font-bold text-amber-700'}>P {Number(row.expected_amount).toFixed(2)} → P {Number(row.settled_amount).toFixed(2)} + fee P {Number(row.fee_amount || 0).toFixed(2)}</span>
               </div>
             ))}
           </div>
@@ -209,7 +221,7 @@ export default function RestaurantCommercialControl({ section = 'all' }) {
             {reservations.length === 0 && <p className="restaurant-native-financial-warning mt-3">No upcoming reservation is available to attach a deposit to.</p>}
             <div className="mt-5 border-t border-slate-100 pt-4">
               <h3 className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">Held deposit ledger · last 90 days</h3>
-              {depositRows.length === 0 ? <p className="rounded-xl bg-slate-50 p-3 text-xs text-slate-500">No reservation deposits are held.</p> : depositRows.slice(0, 10).map(row => <div key={row.id} className="border-t border-slate-100 py-3 text-xs first:border-0"><div className="flex items-center justify-between gap-3"><strong className="text-slate-700">{row.customer_name} · P {Number(row.amount || 0).toFixed(2)}</strong><span className="rounded-full bg-amber-50 px-2 py-1 font-semibold capitalize text-amber-800">{row.status}</span></div><p className="mt-1 text-slate-600">{row.reservation_date} {row.reservation_time?.slice(0, 5)} · {row.party_size} guests · {row.method?.replaceAll('_', ' ')}</p><small className="text-slate-400">Reference {row.reference} · received by {row.received_by_name} · {row.created_at ? new Date(row.created_at).toLocaleDateString('en-GB') : ''}</small></div>)}
+              {!depositsAvailable ? <p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">Reservation-deposit evidence is unavailable until the server confirms a complete read.</p> : depositRows.length === 0 ? <p className="rounded-xl bg-slate-50 p-3 text-xs text-slate-500">No reservation deposits are held.</p> : depositRows.slice(0, 10).map(row => <div key={row.id} className="border-t border-slate-100 py-3 text-xs first:border-0"><div className="flex items-center justify-between gap-3"><strong className="text-slate-700">{row.customer_name} · P {Number(row.amount || 0).toFixed(2)}</strong><span className="rounded-full bg-amber-50 px-2 py-1 font-semibold capitalize text-amber-800">{row.status}</span></div><p className="mt-1 text-slate-600">{row.reservation_date} {row.reservation_time?.slice(0, 5)} · {row.party_size} guests · {row.method?.replaceAll('_', ' ')}</p><small className="text-slate-400">Reference {row.reference} · received by {row.received_by_name} · {row.created_at ? new Date(row.created_at).toLocaleDateString('en-GB') : ''}</small></div>)}
             </div>
           </section>}
 

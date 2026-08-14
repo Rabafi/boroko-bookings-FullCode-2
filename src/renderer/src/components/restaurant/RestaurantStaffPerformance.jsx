@@ -5,6 +5,8 @@ export default function RestaurantStaffPerformance() {
   const [shifts, setShifts] = useState([])
   const [orders, setOrders] = useState([])
   const [alerts, setAlerts] = useState([])
+  const [ordersComplete, setOrdersComplete] = useState(false)
+  const [shiftsAvailable, setShiftsAvailable] = useState(false)
   const [loading, setLoading] = useState(true)
   const [startDate, setStartDate] = useState(new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10))
   const [endDate, setEndDate] = useState(new Date().toISOString().slice(0, 10))
@@ -25,10 +27,18 @@ export default function RestaurantStaffPerformance() {
         window.api.pos.getOrders(startDate, endDate),
         window.api.pos.getActiveAlerts()
       ])
-      setShifts(Array.isArray(s.value) ? s.value : [])
-      setOrders(Array.isArray(o.value) ? o.value : [])
+      const shiftRows = Array.isArray(s.value) ? s.value : []
+      const orderRows = Array.isArray(o.value) ? o.value : []
+      const shiftReadAvailable = s.status === 'fulfilled' && s.value?._available !== false && s.value?._source === 'server' && s.value?._complete === true
+      const orderReadComplete = o.status === 'fulfilled' && o.value?._available !== false && o.value?._source === 'server' && o.value?._complete === true
+      setShifts(shiftRows)
+      setOrders(orderRows)
+      setShiftsAvailable(shiftReadAvailable)
+      setOrdersComplete(orderReadComplete)
       setAlerts(Array.isArray(a.value) ? a.value : [])
-      if ([s, o, a].some(result => result.status === 'rejected')) setError('Some staff performance information could not be loaded.')
+      if ([s, o, a].some(result => result.status === 'rejected') || !orderReadComplete || !shiftReadAvailable) {
+        setError('Staff sales and/or shift evidence is unavailable until the server confirms complete sources. Refresh before relying on this view.')
+      }
     } catch (err) {
       console.error('Failed to load staff performance:', err)
       setError(err.message || 'Could not load staff performance.')
@@ -39,7 +49,7 @@ export default function RestaurantStaffPerformance() {
 
   // Aggregate staff metrics from orders
   const staffMetrics = {}
-  orders.forEach(order => {
+  if (ordersComplete) orders.forEach(order => {
     const staff = order.staff_name || order.waiter_name || order.waiter || order.cashier_name || order.cashier || 'Unassigned'
     if (!staffMetrics[staff]) {
       staffMetrics[staff] = { name: staff, orders: 0, sales: 0, voids: 0, discounts: 0 }
@@ -67,19 +77,19 @@ export default function RestaurantStaffPerformance() {
   const allStaff = new Set([...Object.keys(staffMetrics), ...Object.keys(shiftMetrics)])
   const staffList = Array.from(allStaff).map(name => ({
     name,
-    orders: staffMetrics[name]?.orders || 0,
-    sales: staffMetrics[name]?.sales || 0,
-    voids: staffMetrics[name]?.voids || 0,
-    discounts: staffMetrics[name]?.discounts || 0,
-    shifts: shiftMetrics[name]?.shifts || 0,
-    hours: shiftMetrics[name]?.hours || 0,
-    avgOrder: staffMetrics[name]?.orders > 0 ? (staffMetrics[name].sales / staffMetrics[name].orders) : 0
-  })).sort((a, b) => b.sales - a.sales)
+    orders: ordersComplete ? (staffMetrics[name]?.orders || 0) : null,
+    sales: ordersComplete ? (staffMetrics[name]?.sales || 0) : null,
+    voids: ordersComplete ? (staffMetrics[name]?.voids || 0) : null,
+    discounts: ordersComplete ? (staffMetrics[name]?.discounts || 0) : null,
+    shifts: shiftsAvailable ? (shiftMetrics[name]?.shifts || 0) : null,
+    hours: shiftsAvailable ? (shiftMetrics[name]?.hours || 0) : null,
+    avgOrder: ordersComplete && staffMetrics[name]?.orders > 0 ? (staffMetrics[name].sales / staffMetrics[name].orders) : null
+  })).sort((a, b) => (b.sales ?? -Infinity) - (a.sales ?? -Infinity))
 
   const topSeller = staffList[0]
-  const highVoidStaff = staffList.filter(s => s.voids > 2)
-  const totalSales = staffList.reduce((s, st) => s + st.sales, 0)
-  const totalOrders = staffList.reduce((s, st) => s + st.orders, 0)
+  const highVoidStaff = ordersComplete ? staffList.filter(s => s.voids > 2) : []
+  const totalSales = ordersComplete ? staffList.reduce((s, st) => s + (st.sales || 0), 0) : null
+  const totalOrders = ordersComplete ? staffList.reduce((s, st) => s + (st.orders || 0), 0) : null
 
   return (
     <div className="restaurant-native-page">
@@ -113,17 +123,17 @@ export default function RestaurantStaffPerformance() {
           <div className="restaurant-native-kpis">
             <div className="bb-card p-4 text-center">
               <Award size={20} className="mx-auto mb-1 text-amber-500" />
-              <div className="text-lg font-bold">{topSeller?.name || '-'}</div>
-              <div className="text-xs text-gray-500">Top Seller (P {topSeller?.sales?.toFixed(2) || '0'})</div>
+              <div className="text-lg font-bold">{ordersComplete ? (topSeller?.name || '-') : 'Unavailable'}</div>
+              <div className="text-xs text-gray-500">Top Seller {ordersComplete && topSeller ? `(P ${topSeller.sales.toFixed(2)})` : '(Unavailable)'}</div>
             </div>
             <div className="bb-card p-4 text-center">
               <TrendingUp size={20} className="mx-auto mb-1 text-emerald-500" />
-              <div className="text-xl font-bold">P {totalSales.toFixed(2)}</div>
+              <div className="text-xl font-bold">{totalSales == null ? 'Unavailable' : `P ${totalSales.toFixed(2)}`}</div>
               <div className="text-xs text-gray-500">Total Sales ({staffList.length} staff)</div>
             </div>
             <div className="bb-card p-4 text-center">
               <Users size={20} className="mx-auto mb-1 text-blue-500" />
-              <div className="text-xl font-bold">{totalOrders}</div>
+              <div className="text-xl font-bold">{totalOrders == null ? 'Unavailable' : totalOrders}</div>
               <div className="text-xs text-gray-500">Total Orders</div>
             </div>
             <div className="bb-card p-4 text-center">
@@ -177,19 +187,19 @@ export default function RestaurantStaffPerformance() {
                 ) : staffList.map((staff, i) => (
                   <tr key={i} className="hover:bg-gray-50">
                     <td className="px-4 py-3 font-medium">{staff.name}</td>
-                    <td className="px-4 py-3 text-right text-gray-600">{staff.shifts}</td>
-                    <td className="px-4 py-3 text-right text-gray-600">{staff.hours.toFixed(1)}h</td>
-                    <td className="px-4 py-3 text-right text-gray-600">{staff.orders}</td>
-                    <td className="px-4 py-3 text-right font-medium">P {staff.sales.toFixed(2)}</td>
-                    <td className="px-4 py-3 text-right text-gray-600">P {staff.avgOrder.toFixed(2)}</td>
-                    <td className={`px-4 py-3 text-right ${staff.voids > 2 ? 'text-red-600 font-medium' : 'text-gray-600'}`}>{staff.voids}</td>
-                    <td className={`px-4 py-3 text-right ${staff.discounts > 3 ? 'text-amber-600 font-medium' : 'text-gray-600'}`}>{staff.discounts}</td>
+                    <td className="px-4 py-3 text-right text-gray-600">{staff.shifts == null ? 'Unavailable' : staff.shifts}</td>
+                    <td className="px-4 py-3 text-right text-gray-600">{staff.hours == null ? 'Unavailable' : `${staff.hours.toFixed(1)}h`}</td>
+                    <td className="px-4 py-3 text-right text-gray-600">{staff.orders == null ? 'Unavailable' : staff.orders}</td>
+                    <td className="px-4 py-3 text-right font-medium">{staff.sales == null ? 'Unavailable' : `P ${staff.sales.toFixed(2)}`}</td>
+                    <td className="px-4 py-3 text-right text-gray-600">{staff.avgOrder == null ? 'Unavailable' : `P ${staff.avgOrder.toFixed(2)}`}</td>
+                    <td className={`px-4 py-3 text-right ${staff.voids != null && staff.voids > 2 ? 'text-red-600 font-medium' : 'text-gray-600'}`}>{staff.voids == null ? 'Unavailable' : staff.voids}</td>
+                    <td className={`px-4 py-3 text-right ${staff.discounts != null && staff.discounts > 3 ? 'text-amber-600 font-medium' : 'text-gray-600'}`}>{staff.discounts == null ? 'Unavailable' : staff.discounts}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-          <p className="restaurant-native-financial-warning">Use this view for coaching and exception review. “Unassigned” means an order did not carry a recognised operator name; correct it at the source rather than attributing it by assumption.</p>
+          <p className="restaurant-native-financial-warning">Use this view for coaching and exception review. Sales, order, void and discount figures are withheld until the server confirms a complete POS source. “Unassigned” means an order did not carry a recognised operator name; correct it at the source rather than attributing it by assumption.</p>
         </div>
       )}
     </div>

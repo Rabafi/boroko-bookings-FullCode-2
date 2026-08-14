@@ -25,6 +25,10 @@ export function shortDateTime(value) {
   })
 }
 
+export function businessDate(value = new Date()) {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Gaborone' }).format(value)
+}
+
 export function bookingStatusClass(status) {
   return {
     confirmed: 'bg-blue-900/40 text-blue-300',

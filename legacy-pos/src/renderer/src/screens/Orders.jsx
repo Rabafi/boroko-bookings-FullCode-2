@@ -24,6 +24,35 @@ function formatOrderItems(order = {}) {
   }).join(', ');
 }
 
+function getDisplayOrderTotal(order = {}) {
+  const status = String(order.status || '').trim().toLowerCase();
+  if (order._pending_sync || ['pending', 'failed', 'manual_review_required'].includes(String(order._sync_state || '').toLowerCase())) return null;
+  if (!['completed', 'settled', 'voided', 'returned', 'refunded', 'cancelled'].includes(status)) return null;
+  if (['completed', 'settled'].includes(status) && order._financial_complete !== true) return null;
+  const total = Number(order.total);
+  return Number.isFinite(total) ? total : null;
+}
+
+function getOrderTenderLabel(order = {}) {
+  let rows = Array.isArray(order.payment_breakdown) ? order.payment_breakdown : [];
+  if (typeof order.payment_breakdown === 'string') {
+    try { const parsed = JSON.parse(order.payment_breakdown); rows = Array.isArray(parsed) ? parsed : []; } catch { rows = []; }
+  }
+  if (!rows.length || rows.some((row) => !String(row?.method || row?.type || '').trim() || !Number.isFinite(Number(row?.amount)))) return 'tender unavailable';
+  const methods = [...new Set(rows.map((row) => String(row.method || row.type).trim()).filter(Boolean))];
+  return methods.length > 1 ? 'Split tender' : methods[0] || 'tender unavailable';
+}
+
+function getOrderStatusLabel(order = {}) {
+  const status = String(order.status || '').trim().toLowerCase();
+  if (order._pending_sync || status === 'pending' || order._sync_state === 'pending') return 'Syncing';
+  if (status === 'voided') return 'Voided';
+  if (status === 'completed' || status === 'settled') return 'Done';
+  if (status === 'returned' || status === 'refunded') return 'Corrected';
+  if (status === 'cancelled') return 'Cancelled';
+  return 'Needs review';
+}
+
 function PinInput({ value, onChange, autoFocus = false }) {
   const [showPin, setShowPin] = useState(false);
   return (
@@ -107,7 +136,7 @@ function ReturnModal({ order, onClose, onConfirm, submitting }) {
                 <p className="text-xs text-slate-500">Qty: {item.quantity} x {currency} {fmt(item.unit_price)}</p>
               </div>
               {item.returnQty > 0 && (
-                <span className="text-xs font-semibold text-red-600">-{currency} {fmt(item.returnQty * item.unit_price)}</span>
+                <span className="text-xs font-semibold text-amber-700">Server calculates return</span>
               )}
             </div>
           ))}
@@ -136,7 +165,7 @@ function ReturnModal({ order, onClose, onConfirm, submitting }) {
   );
 }
 
-export default function Orders({ user, settings, isOnline }) {
+export default function Orders({ user, settings, isOnline, barOnly = false }) {
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -258,7 +287,7 @@ export default function Orders({ user, settings, isOnline }) {
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search by ID, guest, table, cashier..."
+            placeholder={`Search by ID, ${barOnly ? 'customer, tab' : 'guest, table'}, cashier...`}
             className="w-full rounded-lg border border-slate-200 bg-white py-2 pl-9 pr-3 text-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
           />
         </div>
@@ -288,7 +317,7 @@ export default function Orders({ user, settings, isOnline }) {
               <tr>
                 <th className="px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-slate-400">Order</th>
                 <th className="px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-slate-400">Time</th>
-                <th className="px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-slate-400">Guest</th>
+                <th className="px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-slate-400">{barOnly ? 'Customer' : 'Guest'}</th>
                 <th className="min-w-[220px] px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-slate-400">Items</th>
                 <th className="px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-slate-400">Method</th>
                 <th className="px-4 py-2.5 text-right text-[11px] font-semibold uppercase tracking-wider text-slate-400">Total</th>
@@ -324,10 +353,12 @@ export default function Orders({ user, settings, isOnline }) {
                   </td>
                   <td className="px-4 py-3">
                     <span className="inline-flex items-center rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-slate-500">
-                      {order.payment_method || 'cash'}
+                      {getOrderTenderLabel(order)}
                     </span>
                   </td>
-                  <td className="px-4 py-3 text-right text-xs font-bold text-slate-800">{currency} {fmt(order.total)}</td>
+                  <td className="px-4 py-3 text-right text-xs font-bold text-slate-800" title={getDisplayOrderTotal(order) === null ? 'Server-confirmed total unavailable for this transaction state.' : undefined}>
+                    {getDisplayOrderTotal(order) === null ? 'Unavailable' : `${currency} ${fmt(getDisplayOrderTotal(order))}`}
+                  </td>
                   <td className="px-4 py-3 text-center">
                     <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold ${
                       order.status === 'voided'
@@ -336,7 +367,7 @@ export default function Orders({ user, settings, isOnline }) {
                           ? 'bg-amber-100 text-amber-600'
                           : 'bg-emerald-50 text-emerald-600'
                     }`}>
-                      {order.status === 'voided' ? 'Voided' : order._pending_sync ? 'Syncing' : 'Done'}
+                      {getOrderStatusLabel(order)}
                     </span>
                   </td>
                   <td className="px-4 py-3 text-center">

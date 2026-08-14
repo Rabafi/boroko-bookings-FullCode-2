@@ -15,6 +15,7 @@ import {
 import { useAccess, useAuth, useSettings } from '../../app-context';
 import { canAccessCapability } from '../../../../shared/accessControl';
 import { isBarOnlyMode } from '../../../../shared/propertyTypes';
+import { calculatePosFinancialTruth, classifyPosTransaction, hasRecordedPosTenderEnvelope, posTenderRows } from '../../../../shared/posFinancialTruth';
 
 const dateKeyInTimeZone = (date, timeZone) => {
   const parts = new Intl.DateTimeFormat('en', {
@@ -24,17 +25,27 @@ const dateKeyInTimeZone = (date, timeZone) => {
 };
 const money = (value, currency) =>
   `${currency} ${Number(value || 0).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const hasRecordedMoney = (value) => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
 const orderDate = (order) =>
   String(order.business_date || order.created_at || order.order_date || '').slice(0, 10);
 const orderLabel = (order) => order.order_number ? `Order #${order.order_number}` : `Legacy order ${String(order.id).slice(0, 8)}`;
 const receiptLabel = (order) => order.receipt_number || orderLabel(order);
 const transactionLabel = (order) => String(order.transaction_type || 'sale').replaceAll('_', ' ');
 const statusTone = (order) => {
-  if (order?._pending_sync) return 'pending';
-  const status = String(order?.status || 'completed').toLowerCase();
-  if (status === 'voided' || status === 'cancelled') return 'voided';
-  if (status === 'completed' || status === 'settled') return 'completed';
+  const state = classifyPosTransaction(order);
+  if (state === 'pending') return 'pending';
+  if (state === 'void' || state === 'cancelled') return 'voided';
+  if (state === 'sale' || state === 'return') return 'completed';
   return 'neutral';
+};
+const statusLabel = (order) => {
+  const state = classifyPosTransaction(order);
+  return state === 'sale' ? 'Completed sale' : state === 'return' ? 'Return' : state === 'void' ? 'Voided' : state === 'cancelled' ? 'Cancelled' : state === 'pending' ? 'Pending sync' : 'Needs review';
+};
+const tenderLabel = (order) => {
+  if (!hasRecordedPosTenderEnvelope(order)) return 'Tender unavailable';
+  const methods = [...new Set(posTenderRows(order).map((tender) => tender.method).filter(Boolean))];
+  return methods.length > 1 ? 'Split tender' : methods[0] || 'Tender unavailable';
 };
 
 export default function HposReports({ correctionMode = false, sharedTillHistoryMode = false }) {
@@ -45,6 +56,7 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
   const businessTimeZone = settings?.timezone || 'Africa/Gaborone';
   const barOnly = isBarOnlyMode(settings);
   const canRequestVoid = canAccessCapability(access, 'pos.view');
+  const canExport = canAccessCapability(access, 'reports.export');
   const now = new Date();
   const [start, setStart] = useState(
     sharedTillHistoryMode
@@ -67,6 +79,7 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
   const [voiding, setVoiding] = useState(false);
   const [voidError, setVoidError] = useState('');
   const [historySource, setHistorySource] = useState('');
+  const [readCompleteness, setReadCompleteness] = useState({ source: 'unknown', complete: false });
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -75,11 +88,13 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
       try {
         const cached = await window.api?.pos?.getSharedTillHistory?.(start, end, { refresh: false });
         setOrders(cached?.orders || []);
+        setReadCompleteness({ source: cached?.source || 'local_cache', complete: cached?.complete === true, tenderComplete: cached?.tender_complete === true, itemDetailComplete: cached?.item_detail_complete === true });
         setVoidHistory([]);
         setHistorySource(cached?.source === 'local_cache' ? 'Showing this terminal’s saved history. Checking for updates…' : 'Loading PIN-verified sales…');
         setLoading(false);
         const refreshed = await window.api?.pos?.getSharedTillHistory?.(start, end, { refresh: true });
         setOrders(refreshed?.orders || []);
+        setReadCompleteness({ source: refreshed?.source || 'server', complete: refreshed?.complete === true, tenderComplete: refreshed?.tender_complete === true, itemDetailComplete: refreshed?.item_detail_complete === true });
         setHistorySource(refreshed?.refreshed ? 'Updated from the server.' : 'Showing this terminal’s saved history while offline.');
       } catch (loadError) {
         setOrders([]);
@@ -97,6 +112,7 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
         correctionMode ? Promise.resolve([]) : window.api?.pos?.getVoidHistory?.(start, end),
       ]);
       setOrders(loadedOrders || []);
+      setReadCompleteness({ source: loadedOrders?._source || 'unknown', complete: loadedOrders?._complete === true, tenderComplete: loadedOrders?._tender_complete === true, itemDetailComplete: loadedOrders?._item_detail_complete === true });
       setVoidHistory(loadedVoids || []);
     } catch (loadError) {
       setOrders([]);
@@ -122,36 +138,25 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
   const visibleRows = useMemo(() => {
     const term = query.trim().toLowerCase();
     return rows.filter((order) => {
-      const status = String(order.status || 'completed').toLowerCase();
-      const statusMatches = statusFilter === 'all' || status === statusFilter || (statusFilter === 'attention' && (order._pending_sync || order._sync_state === 'failed' || ['voided', 'cancelled'].includes(status)));
+      const classification = classifyPosTransaction(order);
+      const status = classification === 'void' ? 'voided' : classification === 'failed/manual review' ? 'failed' : classification;
+      const statusMatches = statusFilter === 'all' || status === statusFilter || (statusFilter === 'attention' && ['pending', 'failed', 'voided', 'cancelled'].includes(status));
       const textMatches = !term || `${order.receipt_number || ''} ${order.order_number || ''} ${transactionLabel(order)} ${order.table_name || ''} ${order.service_mode || ''} ${order.payment_method || ''}`.toLowerCase().includes(term);
       return statusMatches && textMatches;
     });
   }, [query, rows, statusFilter]);
   const metrics = useMemo(() => {
-    const completed = rows.filter(
-      (o) =>
-        !['voided', 'cancelled'].includes(String(o.status || '').toLowerCase()),
-    );
-    const sales = completed.reduce(
-      (sum, o) => sum + Number(o.total || o.total_amount || 0),
-      0,
-    );
-    const discounts = completed.reduce(
-      (sum, o) => sum + Number(o.discount_amount || o.discount || 0),
-      0,
-    );
+    const truth = calculatePosFinancialTruth(rows, { dataset_complete: readCompleteness.complete });
+    const completed = truth.rows.filter((o) => o.classification === 'sale');
+    const sales = truth.controls.net_recorded_sales;
+    const discounts = truth.controls.discounts;
     const attention = rows.filter(
       (o) =>
         o._sync_state === 'failed' ||
         o._pending_sync ||
         ['voided', 'cancelled'].includes(String(o.status || '').toLowerCase()),
     ).length;
-    const payment = completed.reduce((acc, o) => {
-      const key = o.payment_method || 'Unspecified';
-      acc[key] = (acc[key] || 0) + Number(o.total || o.total_amount || 0);
-      return acc;
-    }, {});
+    const payment = truth.controls.tender_totals;
     const service = completed.reduce((acc, o) => {
       const key = o.service_mode || 'counter';
       acc[key] = (acc[key] || 0) + 1;
@@ -164,9 +169,13 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
       attention,
       payment,
       service,
-      average: completed.length ? sales / completed.length : 0,
+      average: truth.controls.average_completed_sale,
+      controls: truth.controls,
     };
-  }, [rows]);
+  }, [readCompleteness.complete, rows]);
+  const financialReady = readCompleteness.complete && metrics.controls.dataset_complete === true;
+  const tenderReady = financialReady && readCompleteness.tenderComplete === true && rows.filter((order) => ['sale', 'return'].includes(classifyPosTransaction(order))).every(hasRecordedPosTenderEnvelope);
+  const itemDetailReady = financialReady && readCompleteness.itemDetailComplete === true;
 
   const exportReport = async (format) => {
     setExporting(format);
@@ -199,12 +208,12 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
       try { breakdown = JSON.parse(breakdown); } catch { breakdown = null; }
     }
     if (Array.isArray(breakdown)) {
-      return breakdown
+      return posTenderRows(selectedOrder)
         .filter((row) => Number(row?.amount || 0) !== 0)
-        .map((row) => [row.method || 'Unspecified', Number(row.amount || 0), row.reference || null]);
+        .map((row) => [row.method || 'Unspecified', Number(row.amount || 0), row.reference || null, row.tender_id]);
     }
     if (!breakdown || typeof breakdown !== 'object') return [];
-    return Object.entries(breakdown).filter(([, value]) => Number(value || 0) !== 0).map(([method, value]) => [method, Number(value || 0), null]);
+    return Object.entries(breakdown).filter(([, value]) => Number(value || 0) !== 0).map(([method, value]) => [method, Number(value || 0), null, `${selectedOrder?.id || 'order'}:${method}`]);
   }, [selectedOrder]);
   const closeDetail = (force = false) => {
     if (voiding && !force) return;
@@ -263,7 +272,7 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
               : correctionMode
               ? 'Only your own Till sales appear here. A supervisor, manager or admin must confirm the final action with their PIN.'
               : (barOnly
-              ? 'Decision-ready sales, tender, counter-versus-tab, discount, and exception detail for your selected period.'
+              ? (financialReady ? 'Server-confirmed sales, tender, counter-versus-tab, discount, and exception detail for your selected period.' : 'Review sales and exceptions for your selected period. Financial totals remain provisional until the server confirms the complete source.')
               : 'Decision-ready sales, tender, service-mode, and exception detail for your selected period.')}
           </p>
         </div>
@@ -284,11 +293,11 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
               onChange={(e) => setEnd(e.target.value)}
             />
           </label>
-          {!correctionMode && !sharedTillHistoryMode && <button onClick={() => exportReport('excel')} disabled={!!exporting}>
+          {!correctionMode && !sharedTillHistoryMode && canExport && <button onClick={() => exportReport('excel')} disabled={!!exporting || !readCompleteness.complete} title={!readCompleteness.complete ? 'Reconnect and refresh before exporting complete financial history.' : undefined}>
             <FileSpreadsheet size={16} />
             {exporting === 'excel' ? 'Building…' : 'Excel'}
           </button>}
-          {!correctionMode && !sharedTillHistoryMode && <button onClick={() => exportReport('pdf')} disabled={!!exporting}>
+          {!correctionMode && !sharedTillHistoryMode && canExport && <button onClick={() => exportReport('pdf')} disabled={!!exporting || !readCompleteness.complete} title={!readCompleteness.complete ? 'Reconnect and refresh before exporting complete financial history.' : undefined}>
             <Download size={16} />
             {exporting === 'pdf' ? 'Building…' : 'PDF'}
           </button>}
@@ -305,6 +314,7 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
         </div>
       )}
       {sharedTillHistoryMode && <div className="hpos-inline-notice" role="status">{historySource || 'Loading your PIN-verified Till history…'}</div>}
+      {!correctionMode && !sharedTillHistoryMode && !readCompleteness.complete && <div className="hpos-inline-notice" role="status">This transaction view is provisional ({readCompleteness.source || 'source unavailable'}). Refresh online before treating totals or exports as complete.</div>}
       {!correctionMode && !sharedTillHistoryMode && <div className="hpos-money-kpis">
         {[
           [
@@ -341,28 +351,29 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
               <Icon size={18} />
             </span>
             <small>{label}</small>
-            <strong>{loading ? '—' : value}</strong>
+            <strong>{loading ? '—' : financialReady ? value : 'Unavailable'}</strong>
           </div>
         ))}
       </div>}
       {!correctionMode && !sharedTillHistoryMode && <div className="hpos-report-grid">
         <section className="hpos-insight-card">
           <h2>Payment mix</h2>
-          {Object.entries(metrics.payment)
+          {tenderReady ? Object.entries(metrics.payment)
             .sort((a, b) => b[1] - a[1])
             .map(([label, value]) => (
               <div className="hpos-insight-row" key={label}>
                 <span>{label}</span>
                 <strong>{money(value, currency)}</strong>
               </div>
-            ))}
-          {!loading && !Object.keys(metrics.payment).length && (
-            <p>No payments in this period.</p>
+            )) : <p>Unavailable until the server confirms a complete POS source.</p>}
+          {tenderReady && !loading && !Object.keys(metrics.payment).length && (
+            <p>No posted payments in this period.</p>
           )}
+          {!tenderReady && <p>Tender allocation is unavailable until the server confirms complete recorded payment envelopes.</p>}
         </section>
         <section className="hpos-insight-card">
           <h2>{barOnly ? 'Counter & tab mix' : 'Service mix'}</h2>
-          {Object.entries(metrics.service)
+          {financialReady && Object.entries(metrics.service)
             .sort((a, b) => b[1] - a[1])
             .map(([label, value]) => (
               <div className="hpos-insight-row" key={label}>
@@ -370,10 +381,11 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
                 <strong>{value} orders</strong>
               </div>
             ))}
-          <div className="hpos-insight-row">
+          {financialReady && <div className="hpos-insight-row">
             <span>Recorded discounts</span>
-            <strong>{money(metrics.discounts, currency)}</strong>
-          </div>
+            <strong>{financialReady ? money(metrics.discounts, currency) : 'Unavailable'}</strong>
+          </div>}
+          {!financialReady && <p>Service mix and discounts are unavailable until the server confirms a complete POS source.</p>}
         </section>
       </div>}
       <section className="hpos-money-ledger">
@@ -390,7 +402,7 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
           <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} aria-label="Transaction status"><option value="all">All statuses</option><option value="completed">Completed</option><option value="attention">Needs attention</option><option value="voided">Voided</option><option value="cancelled">Cancelled</option></select>
         </div>
         <div className="hpos-report-ledger-head" aria-hidden="true"><span>Receipt</span><span>Date</span><span>Type</span><span>Service</span><span>Tender</span><span>Status</span><span>Total</span></div>
-        {visibleRows.slice(0, 100).map((order) => (
+        {visibleRows.map((order) => (
           <button key={order.id} type="button" className="hpos-report-ledger-row hpos-report-ledger-row--typed" onClick={() => { setSelectedOrder(order); setVoidError(''); }} aria-label={`Open receipt ${receiptLabel(order)}`}>
             <strong>
               {receiptLabel(order)}
@@ -398,15 +410,11 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
             <span>{orderDate(order) || '—'}</span>
             <span>{transactionLabel(order)}</span>
             <span>{order.table_name || order.service_mode || 'Counter'}</span>
-            <span>{order.payment_method || 'Unspecified'}</span>
+            <span>{tenderReady ? (posTenderRows(order).map((tender) => `${tender.method}: ${money(tender.amount, currency)}`).join(' · ') || 'Tender unavailable') : 'Unavailable'}</span>
             <span className={`hpos-transaction-status is-${statusTone(order)}`}>
-              {order._pending_sync
-                ? 'Pending sync'
-                : order.status || 'Completed'}
+              {statusLabel(order)}
             </span>
-            <strong>
-              {money(order.total || order.total_amount, currency)}
-            </strong>
+            <strong>{financialReady && hasRecordedMoney(order.total ?? order.total_amount) ? money(order.total ?? order.total_amount, currency) : 'Unavailable'}</strong>
           </button>
         ))}
         {!loading && visibleRows.length === 0 && (
@@ -422,17 +430,17 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
               <button type="button" onClick={closeDetail} disabled={voiding} aria-label="Close receipt details"><X size={20} /></button>
             </header>
             <div className="hpos-money-kpis">
-              <div className="hpos-money-kpi"><small>Tender</small><strong>{selectedOrder.payment_method || 'Unspecified'}</strong></div>
-              <div className="hpos-money-kpi"><small>Recorded total</small><strong>{money(selectedOrder.total || selectedOrder.total_amount, currency)}</strong></div>
+              <div className="hpos-money-kpi"><small>Tender</small><strong>{tenderLabel(selectedOrder)}</strong></div>
+               <div className="hpos-money-kpi"><small>Recorded total</small><strong>{financialReady && hasRecordedMoney(selectedOrder.total ?? selectedOrder.total_amount) ? money(selectedOrder.total ?? selectedOrder.total_amount, currency) : 'Unavailable'}</strong></div>
               <div className="hpos-money-kpi"><small>Status</small><strong>{selectedOrder._pending_sync ? 'Pending sync' : selectedOrder.status || 'Completed'}</strong></div>
             </div>
             <div className="hpos-report-detail-grid">
-              <div><h3>Receipt detail</h3><p>{orderDate(selectedOrder) || '—'} · {selectedOrder.table_name || selectedOrder.service_mode || 'Counter'}</p><p>{selectedOrder.waiter_name || selectedOrder.cashier_name || 'Operator not recorded'}</p><p>{selectedOrder.notes || 'No receipt note.'}</p></div>
-              <div><h3>Payment information</h3>{selectedPaymentBreakdown.length ? selectedPaymentBreakdown.map(([method, value, reference], index) => <p key={`${method}-${index}`}>{method}: <strong>{money(value, currency)}</strong>{reference && <small className="ml-2 text-slate-500">Ref {reference}</small>}</p>) : <p>{selectedOrder.payment_method || 'Unspecified'}: <strong>{money(selectedOrder.total || selectedOrder.total_amount, currency)}</strong></p>}</div>
+              <div><h3>Receipt detail</h3><p>Business date: {orderDate(selectedOrder) || '—'} · Created: {selectedOrder.created_at ? new Date(selectedOrder.created_at).toLocaleString() : '—'}</p><p>{selectedOrder.table_name || selectedOrder.service_mode || 'Counter'} · Outlet {selectedOrder.outlet_id || '—'} · Shift {selectedOrder.shift_id || '—'}</p><p>{selectedOrder.waiter_name || selectedOrder.cashier_name || 'Operator not recorded'} · Sync {selectedOrder._sync_state || 'synced'}</p><p>{selectedOrder.notes || 'No receipt note.'}</p></div>
+               <div><h3>Payment information</h3>{tenderReady && selectedPaymentBreakdown.length ? selectedPaymentBreakdown.map(([method, value, reference], index) => <p key={`${method}-${index}`}>{method}: <strong>{hasRecordedMoney(value) ? money(value, currency) : 'Unavailable'}</strong>{reference && <small className="ml-2 text-slate-500">Ref {reference}</small>}</p>) : <p>Tender allocation is unavailable until the server confirms a complete recorded payment envelope.</p>}</div>
             </div>
-            <div className="hpos-report-detail-items"><h3>Items</h3>{(selectedOrder.pos_order_items || []).length ? selectedOrder.pos_order_items.map((item) => <p key={item.id || `${item.item_name}-${item.quantity}`}>{item.quantity} × {item.item_name} <strong>{money(item.subtotal, currency)}</strong></p>) : <p>Item detail is unavailable for this receipt.</p>}</div>
+             <div className="hpos-report-detail-items"><h3>Items</h3>{itemDetailReady && (selectedOrder.pos_order_items || []).length ? selectedOrder.pos_order_items.map((item) => { const lineAmount = item.net_subtotal ?? item.subtotal ?? item.gross_subtotal; return <p key={item.id || `${item.item_name}-${item.quantity}`}>{item.quantity} × {item.item_name} <strong>{hasRecordedMoney(lineAmount) ? money(lineAmount, currency) : 'Unavailable'}</strong></p> }) : <p>Item detail is unavailable until the server confirms recorded line amounts.</p>}</div>
             {selectedVoid && <div className="hpos-inline-notice"><CheckCircle2 size={17} /> <span><strong>Void audit reference</strong><br />{selectedVoid.reason} · approved by {selectedVoid.approver_name || 'authorised PIN holder'} · {new Date(selectedVoid.created_at).toLocaleString()}</span></div>}
-            {!sharedTillHistoryMode && !selectedVoid && !['voided', 'cancelled'].includes(String(selectedOrder.status || '').toLowerCase()) && canRequestVoid && (
+            {!sharedTillHistoryMode && !selectedVoid && classifyPosTransaction(selectedOrder) === 'sale' && canRequestVoid && (
               <form onSubmit={submitVoid} className="hpos-report-void-form">
                 <h3><LockKeyhole size={18} /> {correctionMode ? 'Request supervisor correction' : 'Void this sale'}</h3>
                 <p>{correctionMode ? 'You can request a correction for your own sale. A supervisor, manager or admin must enter their PIN; you cannot approve it yourself.' : 'This is irreversible. An authorised supervisor, manager, or admin must supply their PIN.'} Packaged stock is restored only when returned unopened. Food, cocktails and recipe items remain consumed.</p>

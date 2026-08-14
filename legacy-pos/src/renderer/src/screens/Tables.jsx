@@ -41,12 +41,19 @@ export default function Tables({ user, settings, isOnline }) {
     }
   };
 
-  const statusColor = (status) => {
+const statusColor = (status) => {
     const s = String(status || 'available').toLowerCase();
     if (s === 'running' || s === 'open') return 'bg-amber-100 text-amber-700 border-amber-300';
     if (s === 'ready') return 'bg-blue-100 text-blue-700 border-blue-300';
     return 'bg-emerald-50 text-emerald-700 border-emerald-200';
-  };
+};
+
+const tabTotalLabel = (tab) => {
+  const snapshot = tab?.financial_snapshot && typeof tab.financial_snapshot === 'object' ? tab.financial_snapshot : null;
+  const certified = tab?.financial_complete === true || tab?._financial_complete === true || snapshot?.financial_complete === true;
+  const value = Number(tab?.total ?? snapshot?.total);
+  return certified && Number.isFinite(value) ? `P ${value.toFixed(2)}` : 'Amount unavailable';
+};
 
   return (
     <div className="p-6">
@@ -100,7 +107,7 @@ export default function Tables({ user, settings, isOnline }) {
                   <div key={tab.id} className="rounded-xl border border-slate-200 bg-white p-4">
                     <p className="font-bold text-slate-800">{tab.name || tab.tab_name || 'Tab'}</p>
                     {tab.waiter_name && <p className="text-xs text-slate-500">Waiter: {tab.waiter_name}</p>}
-                    {tab.total && <p className="mt-1 text-sm font-bold text-emerald-700">P {Number(tab.total || 0).toFixed(2)}</p>}
+                    <p className="mt-1 text-sm font-bold text-emerald-700">{tabTotalLabel(tab)}</p>
                   </div>
                 ))}
               </div>

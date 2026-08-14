@@ -1,6 +1,6 @@
 {
   "name": "tsa-bonno-hospitalityos",
-  "version": "1.5.5",
+  "version": "1.5.6",
   "private": true,
   "type": "module",
   "description": "Tsa Bonno HospitalityOS desktop product workspace",
@@ -21,6 +21,7 @@
     "test:offline-pos-critical": "node .\\tests\\offline-pos-regression.test.mjs",
     "test:offline-queue-critical": "node .\\tests\\offline-queue-regression.test.mjs",
     "test:financial-integrity": "node .\\tests\\financial-integrity-regression.test.mjs",
+    "test:financial-truth": "node --test tests/financial-truth-control-plane.test.mjs tests/restaurant-accounting-p1-completion.test.mjs tests/restaurant-accounting-p3-full-shutdown.test.mjs tests/restaurant-accounting-contract.test.mjs tests/financial-truth-gap-closure.test.mjs tests/financial-truth-cutover-audit.test.mjs tests/financial-truth-finality-contract.test.mjs tests/financial-truth-remediation-followup.test.mjs tests/pos-return-financial-reversal.test.mjs tests/pos-financial-truth.test.mjs tests/pos-history-artifact-handlers.test.mjs tests/ap-supplier-controls.test.mjs",
     "test:customer-credit-reschedule": "node .\\tests\\customer-credit-reschedule-regression.test.mjs",
     "test:inventory-offline-sync": "node .\\tests\\inventory-offline-sync-regression.test.mjs",
     "test:import-critical": "node .\\tests\\import-system-regression.test.mjs",
@@ -30,12 +31,15 @@
     "test:enterprise": "node .\\tests\\run-enterprise-suite.mjs",
     "test:commercial": "node .\\tests\\commercial-catalog-authority.test.mjs",
     "test:restaurant": "node .\\tests\\run-restaurant-suite.mjs",
+    "test:restaurant:disposable": "node .\\scripts\\run-disposable-restaurant-tests.mjs",
+    "test:pos-financial-truth": "node --test tests/pos-financial-truth.test.mjs",
+    "test:financial-truth-followup": "node --test tests/financial-truth-remediation-followup.test.mjs",
     "test:marketing-site": "node .\\tests\\marketing-site-contract.test.mjs",
     "test:brand-migration": "node .\\tests\\tsa-bonno-brand-migration.test.mjs",
     "audit:brand": "node .\\scripts\\audit-brand-migration.mjs",
     "audit:brand:strict": "node .\\scripts\\audit-brand-migration.mjs --strict",
     "test:pos-hardware-adapter": "node .\\tests\\pos-hardware-adapter.test.mjs",
-    "test:bar": "node --test tests/bar-base-product.test.mjs tests/bar-mode-curation.test.mjs tests/bar-addon-bundles.test.mjs tests/bar-cashup-blind.test.mjs tests/bar-cashup-idempotency.test.mjs tests/bar-stock-aging.test.mjs tests/bar-stock-cost-safety.test.mjs tests/bar-payment-references.test.mjs tests/bar-barcode-db-guardrails.test.mjs tests/bar-barcode-scanner.test.mjs tests/bar-stock-barcode.test.mjs",
+    "test:bar": "node --test tests/bar-base-product.test.mjs tests/bar-mode-curation.test.mjs tests/bar-addon-bundles.test.mjs tests/bar-cashup-blind.test.mjs tests/bar-cashup-idempotency.test.mjs tests/bar-stock-aging.test.mjs tests/bar-stock-cost-safety.test.mjs tests/bar-payment-references.test.mjs tests/bar-barcode-db-guardrails.test.mjs tests/bar-barcode-scanner.test.mjs tests/bar-stock-barcode.test.mjs tests/bar-till-operator-policy.test.mjs tests/bar-financial-ui-regression.test.mjs",
     "build:hospitality-pos": "node ./scripts/product-app.mjs hospitality-pos build",
     "test:pos-rush": "node .\\tests\\pos-rush-simulation.test.mjs",
     "products:list": "node .\\scripts\\list-products.mjs",
@@ -74,6 +78,7 @@
     "marketing:brochure": "node ./scripts/build-marketing-brochure.mjs",
     "postinstall": "electron-builder install-app-deps",
     "db:push": "node ./scripts/db-push.mjs",
+    "audit:financial-truth-cutover": "node ./scripts/financial-truth-cutover-audit.mjs",
     "db:lint": "node ./scratch/run-db-lint.mjs lint",
     "legacy-pos:install": "npm --prefix legacy-pos ci",
     "legacy-pos:dev": "npm --prefix legacy-pos run dev",
@@ -110,7 +115,7 @@
     "@playwright/test": "^1.59.1",
     "@vitejs/plugin-react": "^5.2.0",
     "autoprefixer": "^10.4.18",
-    "electron": "^42.2.0",
+    "electron": "^42.8.0",
     "electron-builder": "^26.8.1",
     "electron-vite": "^5.0.0",
     "madge": "^8.0.0",
@@ -123,8 +128,8 @@
     "vite": "^7.3.3"
   },
   "overrides": {
-    "js-yaml": "4.3.0",
-    "undici": "7.28.0"
+    "js-yaml": "4.3.1",
+    "undici": "7.29.0"
   },
   "build": {
     "appId": "com.boroko.bookings",

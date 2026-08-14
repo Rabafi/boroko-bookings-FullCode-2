@@ -11,6 +11,7 @@ import { DESKTOP_PAYMENT_METHODS, formatPaymentMethod } from '../constants/payme
 import { useSettings, useAccess, useAuth } from '../app-context'
 import { canAccessCapability } from '../../../shared/accessControl'
 import { isRestaurantOnly } from '../../../shared/propertyTypes'
+import { hasRecordedPosTenderEnvelope } from '../../../shared/posFinancialTruth'
 import { formatLocalDate } from '../utils/localDate'
 
 const MENU_CATEGORIES = ['Food', 'Drinks', 'Other']
@@ -35,6 +36,12 @@ const formatIsoTimestamp = (value = new Date()) => {
 
 const currency = 'P'
 const fmt = (v) => Number(v || 0).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+const recordedLineAmount = (item = {}) => {
+  const value = item.net_subtotal ?? item.line_subtotal ?? item.subtotal ?? item.line_total ?? item.total
+  if (value === null || value === undefined || value === '') return null
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? numeric : null
+}
 const ACTIVE_TABLE_STATUSES = new Set(['open', 'running', 'ready', 'delivered'])
 
 function normalizeTableStatus(status) {
@@ -100,6 +107,25 @@ function paymentBreakdownHasCash(payments = []) {
   return Array.isArray(payments) && payments.some((payment) => (
     String(payment.method || '').toLowerCase() === 'cash' && Number(payment.amount || 0) > 0
   ))
+}
+
+function historyTenderLabel(order = {}) {
+  if (!hasRecordedPosTenderEnvelope(order)) return 'Tender unavailable'
+  const rows = Array.isArray(order.payment_breakdown) ? order.payment_breakdown : (() => {
+    try { const parsed = JSON.parse(order.payment_breakdown || '[]'); return Array.isArray(parsed) ? parsed : [] } catch { return [] }
+  })()
+  const methods = [...new Set(rows.map((row) => String(row?.method || row?.type || '').trim()).filter(Boolean))]
+  if (methods.length !== 1) return 'Split tender'
+  return formatPaymentMethod(methods[0], { plain: true })
+}
+
+function recordedSingleTenderMethod(order = {}) {
+  if (!hasRecordedPosTenderEnvelope(order)) return ''
+  const rows = Array.isArray(order.payment_breakdown) ? order.payment_breakdown : (() => {
+    try { const parsed = JSON.parse(order.payment_breakdown || '[]'); return Array.isArray(parsed) ? parsed : [] } catch { return [] }
+  })()
+  const methods = [...new Set(rows.map((row) => String(row?.method || row?.type || '').trim()).filter(Boolean))]
+  return methods.length === 1 ? methods[0] : ''
 }
 
 function isSyncOffline(status) {
@@ -302,6 +328,7 @@ export default function POS() {
   const [currentShift, setCurrentShift] = useState(null)
   const [shiftFloat, setShiftFloat] = useState('')
   const [shiftCloseCash, setShiftCloseCash] = useState('')
+  const [shiftCloseMessage, setShiftCloseMessage] = useState('')
   const [hardwareSettings, setHardwareSettings] = useState(null)
   const [hardwareMsg, setHardwareMsg] = useState('')
   const [receiptPrinters, setReceiptPrinters] = useState([])
@@ -338,7 +365,6 @@ export default function POS() {
   const [loyaltyPointsEarned, setLoyaltyPointsEarned] = useState(0)
   const [voucherCode, setVoucherCode] = useState('')
   const [voucherAmount, setVoucherAmount] = useState('')
-  const [voucherRedeemed, setVoucherRedeemed] = useState(null)
   const [deliveryAddress, setDeliveryAddress] = useState('')
   const [deliveryNotes, setDeliveryNotes] = useState('')
   const [customerAccountCharge, setCustomerAccountCharge] = useState(false)
@@ -402,6 +428,7 @@ export default function POS() {
   const [orders, setOrders] = useState([])
   const [voidHistory, setVoidHistory] = useState([])
   const [ordersError, setOrdersError] = useState(null)
+  const [orderReadCompleteness, setOrderReadCompleteness] = useState({ source: 'unknown', complete: false, tenderComplete: false })
   const [histStart, setHistStart] = useState(() => toLocalDateInput(new Date(Date.now() - 48 * 60 * 60 * 1000)))
   const [histEnd, setHistEnd] = useState(() => toLocalDateInput(new Date()))
   const [historyExporting, setHistoryExporting] = useState('')
@@ -421,7 +448,7 @@ export default function POS() {
   const [returnLines, setReturnLines] = useState({})
   const [returnPin, setReturnPin] = useState('')
   const [returnReason, setReturnReason] = useState('')
-  const [returnPaymentMethod, setReturnPaymentMethod] = useState('cash')
+  const [returnPaymentMethod, setReturnPaymentMethod] = useState('')
   const [returnError, setReturnError] = useState('')
   const [returnLoading, setReturnLoading] = useState(false)
   const [showReturnPin, setShowReturnPin] = useState(false)
@@ -635,9 +662,15 @@ export default function POS() {
         window.api.pos.getVoidHistory(histStart, histEnd).catch(() => [])
       ])
       setOrders(data || [])
+      setOrderReadCompleteness({
+        source: data?._source || 'unknown',
+        complete: data?._source === 'server' && data?._complete === true,
+        tenderComplete: data?._tender_complete === true
+      })
       setVoidHistory(voids || [])
     } catch (err) {
       setOrders([])
+      setOrderReadCompleteness({ source: 'error', complete: false, tenderComplete: false })
       setVoidHistory([])
       setOrdersError(err?.message || 'Failed to load orders')
     }
@@ -654,6 +687,10 @@ export default function POS() {
         setHistoryExportMsg('POS history export is not available in this app build. Please restart after updating.')
         return
       }
+      if (!(orderReadCompleteness.complete && orderReadCompleteness.tenderComplete)) {
+        setHistoryExportMsg('POS history export is unavailable until the server confirms a complete, reconciled source.')
+        return
+      }
       const result = await exporter?.({ start: histStart, end: histEnd })
       if (result?.success) {
         setHistoryExportMsg(`${format === 'pdf' ? 'PDF' : 'Excel'} exported${result.filePath ? `: ${result.filePath}` : '.'}`)
@@ -666,7 +703,7 @@ export default function POS() {
       setHistoryExporting('')
       window.setTimeout(() => setHistoryExportMsg(''), 7000)
     }
-  }, [histEnd, histStart])
+  }, [histEnd, histStart, orderReadCompleteness.complete, orderReadCompleteness.tenderComplete])
 
   const loadCashup = useCallback(async () => {
     setCashupLoading(true)
@@ -681,14 +718,19 @@ export default function POS() {
           cashier_id: currentOperator.id || null,
           cashier_name: currentOperator.name || null
         }),
-        window.api.pos.getCashups(12, { cashier_id: currentOperator.id || null }).catch(() => [])
+        window.api.pos.getCashups(12, { cashier_id: currentOperator.id || null })
       ])
       if (summary?.success === false) {
         setCashupError(summary.error || 'Could not load cash-up summary.')
       } else {
         setCashupSummary(summary || null)
       }
-      setCashupHistory(Array.isArray(history) ? history : [])
+      if (history?._available === false) {
+        setCashupHistory([])
+        setCashupError(history._error || 'Cash-up history is unavailable. Do not treat the history as empty.')
+      } else {
+        setCashupHistory(Array.isArray(history) ? history : [])
+      }
     } catch (err) {
       setCashupError(err?.message || 'Could not load cash-up summary.')
     } finally {
@@ -1111,13 +1153,34 @@ export default function POS() {
   const orderTaxTotal = taxEnabled ? Math.round((taxableSubtotal * Number(taxRate || 0) / 100) * 100) / 100 : 0
   const orderTipTotal = Math.max(0, Number(tipAmount || 0))
   const orderTotal = Math.max(0, taxableSubtotal + orderTaxTotal + orderTipTotal)
+  const voucherTenderAmount = Math.round(Number(voucherAmount || 0) * 100) / 100
+  const voucherTenderCode = String(voucherCode || '').trim().toUpperCase()
+  const accountTenderSelected = Boolean(customerAccountCharge && selectedCustomerId)
+  const effectivePaymentMethod = (customerType === 'room' || customerType === 'event')
+    ? 'folio'
+    : accountTenderSelected
+      ? 'account'
+      : paymentMethod
   const normalizedPaymentBreakdown = splitPaymentsEnabled
     ? paymentSplits.map((row) => ({
         method: row.method || 'cash',
         amount: Number(row.amount || 0),
         reference: row.reference || null
       })).filter((row) => row.amount > 0)
-    : [{ method: (customerType === 'room' || customerType === 'event') ? 'folio' : paymentMethod, amount: orderTotal, reference: paymentReference || null }]
+    : [
+        ...(voucherTenderAmount > 0 ? [{
+          method: 'voucher',
+          amount: voucherTenderAmount,
+          code: voucherTenderCode,
+          reference: null
+        }] : []),
+        ...(orderTotal - voucherTenderAmount > 0 ? [{
+          method: effectivePaymentMethod,
+          amount: Math.round((orderTotal - voucherTenderAmount) * 100) / 100,
+          reference: paymentReference || null,
+          ...(accountTenderSelected ? { customer_id: selectedCustomerId } : {})
+        }] : [])
+      ]
   const splitPaidTotal = normalizedPaymentBreakdown.reduce((sum, row) => sum + Number(row.amount || 0), 0)
   const splitBalance = Math.round((orderTotal - splitPaidTotal) * 100) / 100
   const menuMutationsDisabled = offlineMode || menuSaving || !!barTemplateSavingKey
@@ -1136,6 +1199,9 @@ export default function POS() {
     }).filter(Boolean)
   }, [inventoryById, orderItems])
   const currentOpenTab = useMemo(() => openTabs.find((row) => row.id === activeTabId) || null, [activeTabId, openTabs])
+  const currentOpenTabTotal = currentOpenTab && currentOpenTab.total !== null && currentOpenTab.total !== undefined && currentOpenTab.total !== ''
+    ? (Number.isFinite(Number(currentOpenTab.total)) ? Number(currentOpenTab.total) : null)
+    : null
   const visibleTables = useMemo(() => {
     return posTables.filter((table) => table.active !== false && (!selectedOutlet?.id || !table.outlet_id || table.outlet_id === selectedOutlet.id))
   }, [posTables, selectedOutlet?.id])
@@ -1165,6 +1231,17 @@ export default function POS() {
     if (outletsError || !selectedOutlet) { alert('No outlet is selected. Select Kitchen or Bar before completing the order.'); return }
     if (customerType === 'room' && !selectedRoom) { alert('Select a room first.'); return }
     if (customerType === 'event' && !selectedEventId) { alert('Select an event first.'); return }
+    if (voucherTenderCode && voucherTenderAmount <= 0) { alert('Enter a voucher amount before completing the sale.'); return }
+    if (voucherTenderAmount > 0 && !voucherTenderCode) { alert('Enter a voucher code before completing the sale.'); return }
+    if (voucherTenderAmount > orderTotal) { alert('Voucher amount cannot exceed the order total.'); return }
+    if (voucherTenderAmount > 0 && (splitPaymentsEnabled || accountTenderSelected || customerType === 'room' || customerType === 'event')) {
+      alert('Voucher tenders must be recorded as a non-split payment and cannot be combined with an account or folio charge.')
+      return
+    }
+    if (accountTenderSelected && splitPaymentsEnabled) {
+      alert('Customer-account tenders cannot be combined with split payment rows.')
+      return
+    }
     if (serviceMode === 'table') {
       if (!tableName.trim()) { alert('Select a table first.'); return }
       if (tableServiceMode === 'waiter' && !selectedWaiterStaff?.id && !waiterName.trim()) { alert('Select the waiter for this table.'); return }
@@ -1203,7 +1280,7 @@ export default function POS() {
         selectedEventId,
         walkInName,
         orderNotes,
-        paymentMethod,
+        paymentMethod: effectivePaymentMethod,
         paymentBreakdown: normalizedPaymentBreakdown,
         taxTotal: orderTaxTotal,
         tipTotal: orderTipTotal,
@@ -1265,7 +1342,7 @@ export default function POS() {
         customer_id: customerType === 'walkin' && selectedCustomerId ? selectedCustomerId : null,
         items: orderItemsForSubmit,
         notes: orderNotes.trim() || null,
-        payment_method: (customerType === 'room' || customerType === 'event') ? 'folio' : splitPaymentsEnabled ? 'split' : paymentMethod,
+        payment_method: (customerType === 'room' || customerType === 'event') ? 'folio' : splitPaymentsEnabled ? 'split' : effectivePaymentMethod,
         payment_breakdown: normalizedPaymentBreakdown,
         gross_total: orderSubtotal,
         discount_total: orderDiscountAmount,
@@ -1277,7 +1354,9 @@ export default function POS() {
         table_name: serviceMode === 'table' ? tableName.trim() || null : null,
         delivery_address: serviceMode === 'delivery' ? deliveryAddress.trim() || null : null,
         delivery_notes: serviceMode === 'delivery' ? deliveryNotes.trim() || null : null,
-        customer_account_charge: customerAccountCharge && selectedCustomerId ? {
+        // Compatibility metadata for old queue records; the server trusts the
+        // account identity on payment_breakdown, not this side-channel field.
+        customer_account_charge: accountTenderSelected ? {
           customer_id: selectedCustomerId,
           amount: orderTotal
         } : null,
@@ -1311,19 +1390,24 @@ export default function POS() {
           walk_in_name: customerType === 'walkin' ? (walkInName.trim() || 'Walk-in') : null,
           pos_order_items: authoritativeItems.map((item, idx) => ({
             id: item.id || `${submitIntentId}-${idx}`,
+            ...item,
             item_name: item.item_name,
             quantity: Number(item.quantity || 0),
             unit_price: Number(item.unit_price || 0),
+            subtotal: item.subtotal ?? item.net_subtotal ?? item.gross_subtotal ?? item.line_total ?? null,
+            line_total: item.line_total ?? item.total ?? null,
             modifiers: item.modifiers || [],
             item_notes: item.item_notes || null
           })),
-          payment_method: result.payment_method || (customerType === 'room' ? 'folio' : splitPaymentsEnabled ? 'split' : paymentMethod),
-          payment_breakdown: result.payment_breakdown || normalizedPaymentBreakdown,
-          gross_total: result.offline === true ? orderSubtotal : Number(result.gross_total || 0),
-          discount_total: result.offline === true ? orderDiscountAmount : Number(result.discount_total || 0),
-          tax_total: result.offline === true ? orderTaxTotal : Number(result.tax_total || 0),
-          tip_total: result.offline === true ? orderTipTotal : Number(result.tip_total || 0),
-          total: result.offline === true ? orderTotal : Number(result.total || 0),
+          payment_method: result.offline === true
+            ? (result.payment_method || (customerType === 'room' ? 'folio' : splitPaymentsEnabled ? 'split' : effectivePaymentMethod))
+            : (result.payment_method ?? null),
+          payment_breakdown: result.offline === true ? (result.payment_breakdown || normalizedPaymentBreakdown) : (result.payment_breakdown ?? null),
+          gross_total: result.offline === true ? orderSubtotal : (Number.isFinite(Number(result.gross_total)) ? Number(result.gross_total) : null),
+          discount_total: result.offline === true ? orderDiscountAmount : (Number.isFinite(Number(result.discount_total)) ? Number(result.discount_total) : null),
+          tax_total: result.offline === true ? orderTaxTotal : (Number.isFinite(Number(result.tax_total)) ? Number(result.tax_total) : null),
+          tip_total: result.offline === true ? orderTipTotal : (Number.isFinite(Number(result.tip_total)) ? Number(result.tip_total) : null),
+          total: result.offline === true ? orderTotal : (Number.isFinite(Number(result.total)) ? Number(result.total) : null),
           table_name: serviceMode === 'table' ? tableName.trim() || null : null,
           waiter_name: serviceMode === 'table' ? tableWaiterName || null : null,
           cashier_name: currentOperator.name || currentOperator.email || null,
@@ -1360,7 +1444,7 @@ export default function POS() {
 
         // Phase 4: Award loyalty points for registered customers
         if (selectedCustomerId && !result.offline) {
-          const points = Math.floor(Number(result.total || orderTotal) / 10)
+          const points = Number.isFinite(Number(result.total)) ? Math.floor(Number(result.total) / 10) : 0
           if (points > 0) {
             window.api.pos.awardLoyalty({
               customerId: selectedCustomerId,
@@ -1369,13 +1453,6 @@ export default function POS() {
               description: `Order #${(result.receipt_number || result.id || '').slice(0, 8)}`
             }).then((r) => { if (r?.success && !r?.duplicate) setLoyaltyPointsEarned(points) }).catch(() => {})
           }
-        }
-
-        // Phase 4: Redeem voucher if code was entered
-        if (voucherCode && voucherAmount && !result.offline) {
-          window.api.pos.redeemVoucher(voucherCode, Number(voucherAmount))
-            .then((r) => { if (r?.success) setVoucherRedeemed({ code: voucherCode, amount: Number(voucherAmount) }) })
-            .catch((e) => { alert(e?.message || 'Voucher redemption failed') })
         }
 
         setSelectedCustomerId('')
@@ -1388,7 +1465,7 @@ export default function POS() {
 
         const shouldOpenDrawer = hardwareSettings?.cash_drawer_enabled === true
           && hardwareSettings?.cash_drawer_open_on_cash === true
-          && (receiptOrder.payment_method === 'cash' || paymentBreakdownHasCash(receiptOrder.payment_breakdown))
+          && paymentBreakdownHasCash(receiptOrder.payment_breakdown)
         const shouldKickDrawerWithReceipt = shouldOpenDrawer
           && receiptOrder._auto_print === true
           && hardwareSettings?.receipt_print_mode === 'escpos'
@@ -1731,7 +1808,7 @@ export default function POS() {
     setReturnLines(lines)
     setReturnPin('')
     setReturnReason('')
-    setReturnPaymentMethod(order.payment_method || 'cash')
+    setReturnPaymentMethod(order.payment_method === 'folio' ? 'folio' : recordedSingleTenderMethod(order))
     setReturnError('')
     setShowReturnPin(false)
     setReturnModal(true)
@@ -1760,6 +1837,10 @@ export default function POS() {
     }
     if (!returnReason.trim()) {
       setReturnError('Reason is required')
+      return
+    }
+    if (returnTarget.payment_method !== 'folio' && !returnPaymentMethod) {
+      setReturnError('Choose the refund tender. The original order does not contain a single confirmed tender.')
       return
     }
     const selectedLines = Object.entries(returnLines)
@@ -2104,7 +2185,10 @@ export default function POS() {
   }
 
   const openSplitModal = () => {
-    if (!currentOpenTab) return
+    if (!currentOpenTab || currentOpenTabTotal === null) {
+      alert('The server has not returned a confirmed tab total. Refresh the open check before splitting it.')
+      return
+    }
     setSplitItemIndices([])
     setSplitTargetTable('')
     setSplitMode('items')
@@ -2120,7 +2204,10 @@ export default function POS() {
   }
 
   const executeSplitBill = async () => {
-    if (!currentOpenTab?.id) return
+    if (!currentOpenTab?.id || currentOpenTabTotal === null) {
+      setSplitError('The server has not returned a confirmed tab total. Refresh the open check before splitting it.')
+      return
+    }
     if (splitMode === 'items' && splitItemIndices.length === 0) return
     if (splitMode === 'even' && (splitEvenCount < 2 || splitEvenCount > 10)) return
     setSplitLoading(true)
@@ -2204,6 +2291,7 @@ export default function POS() {
   }
 
   const closeShift = async () => {
+    setShiftCloseMessage('Close is pending server confirmation. Keep this shift open until the result is resolved.')
     const res = await window.api.pos.closeShift?.({
       shift_id: currentShift?.id || null,
       outlet_id: selectedOutlet?.id || null,
@@ -2212,9 +2300,10 @@ export default function POS() {
       closing_cash: Number(shiftCloseCash || 0)
     })
     if (!res?.success) {
-      alert(res?.error || 'Could not close shift.')
+      setShiftCloseMessage(res?.error || 'Could not close shift. The local shift remains open; retry the same close or ask a manager to reconcile it.')
       return
     }
+    setShiftCloseMessage(res.already_closed ? 'The server had already finalized this shift. The local cache was reconciled from matching cash-up evidence.' : 'Shift closed and cash-up confirmed by the server.')
     setShiftCloseCash('')
     await loadPosOperations()
   }
@@ -3623,7 +3712,7 @@ export default function POS() {
               <button
                 type="button"
                 onClick={() => exportPosHistory('excel')}
-                disabled={historyExporting !== ''}
+                        disabled={historyExporting !== '' || !orderReadCompleteness.complete || !orderReadCompleteness.tenderComplete}
                 className="btn-secondary text-sm disabled:cursor-not-allowed disabled:opacity-60"
               >
                 <FileSpreadsheet size={14} /> {historyExporting === 'excel' ? 'Exporting...' : 'Excel'}
@@ -3631,7 +3720,7 @@ export default function POS() {
               <button
                 type="button"
                 onClick={() => exportPosHistory('pdf')}
-                disabled={historyExporting !== ''}
+                disabled={historyExporting !== '' || !orderReadCompleteness.complete || !orderReadCompleteness.tenderComplete}
                 className="btn-secondary text-sm disabled:cursor-not-allowed disabled:opacity-60"
               >
                 <FileDown size={14} /> {historyExporting === 'pdf' ? 'Saving...' : 'PDF'}
@@ -3712,9 +3801,7 @@ export default function POS() {
                           )}
                         </td>
                         <td className="px-5 py-3">
-                          {o.payment_method && o.payment_method !== 'folio' && <span className="text-xs text-slate-600">{formatPaymentMethod(o.payment_method, { plain: true })}</span>}
-                          {o.payment_method === 'folio' && <span className="text-xs text-green-600">📋 Folio</span>}
-                          {!o.payment_method && <span className="text-xs text-slate-400">—</span>}
+                          <span className="text-xs text-slate-600">{historyTenderLabel(o)}</span>
                         </td>
                         <td className="px-5 py-3">
                           <div className="flex flex-wrap items-center gap-2">
@@ -3747,7 +3834,7 @@ export default function POS() {
                           </div>
                         </td>
                         <td className="px-5 py-3 text-right font-semibold text-slate-800">
-                          {currency} {fmt(o.total)}
+                          {orderReadCompleteness.complete && Number.isFinite(Number(o.total)) ? `${currency} ${fmt(o.total)}` : 'Unavailable'}
                         </td>
                         <td className="px-5 py-3 text-center">
                           <div className="flex items-center justify-center gap-2">
@@ -3928,10 +4015,10 @@ export default function POS() {
 
             <div className="mt-4 grid gap-3 sm:grid-cols-4">
               {[
-                ['Orders', cashupSummary?.orders_count || 0],
-                ['Voids', cashupSummary?.void_count || 0],
-                ['Returns', `${currency} ${fmt(cashupSummary?.returns_total || 0)}`],
-                ['Net Sales', `${currency} ${fmt(cashupSummary?.net_sales || 0)}`]
+                ['Orders', cashupSummary?.complete === false ? 'Unavailable' : (cashupSummary?.orders_count || 0)],
+                ['Voids', cashupSummary?.complete === false ? 'Unavailable' : (cashupSummary?.void_count || 0)],
+                ['Returns', cashupSummary?.complete === false ? 'Unavailable' : `${currency} ${fmt(cashupSummary?.returns_total || 0)}`],
+                ['Net Sales', cashupSummary?.complete === false ? 'Unavailable' : `${currency} ${fmt(cashupSummary?.net_sales || 0)}`]
               ].map(([label, value]) => (
                 <div key={label} className="rounded-xl bg-slate-50 px-3 py-3">
                   <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">{label}</p>
@@ -3939,6 +4026,12 @@ export default function POS() {
                 </div>
               ))}
             </div>
+
+            {cashupSummary?.complete === false && (
+              <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                Financial expectations are unavailable until the server confirms every sale and recorded tender in this cash-up. You may still enter the physical count; finalization remains server-controlled.
+              </div>
+            )}
 
             {cashupSummary?.pending_count > 0 && (
               <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
@@ -3960,11 +4053,13 @@ export default function POS() {
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       {cashupMethodRows.map((method) => {
-                        const expected = method.value === 'cash'
-                          ? Number(cashupSummary?.expected_cash_drawer || 0)
-                          : Number(cashupSummary?.by_method?.[method.value] || 0)
+                        const expected = cashupSummary?.complete === false
+                          ? null
+                          : method.value === 'cash'
+                            ? Number(cashupSummary?.expected_cash_drawer || 0)
+                            : Number(cashupSummary?.by_method?.[method.value] || 0)
                         const counted = Number(cashupCounted[method.value] || 0)
-                        const variance = counted - expected
+                        const variance = expected === null ? null : counted - expected
                         return (
                           <tr key={method.value} className="hover:bg-slate-50">
                             <td className="px-4 py-3 font-medium text-slate-800">
@@ -3973,7 +4068,7 @@ export default function POS() {
                                 <p className="mt-0.5 text-xs text-slate-400">Includes opening float</p>
                               )}
                             </td>
-                            <td className="px-4 py-3 text-right font-semibold text-slate-700">{currency} {fmt(expected)}</td>
+                            <td className="px-4 py-3 text-right font-semibold text-slate-700">{expected === null ? 'Unavailable' : `${currency} ${fmt(expected)}`}</td>
                             <td className="px-4 py-3 text-right">
                               <input
                                 type="number"
@@ -3985,8 +4080,8 @@ export default function POS() {
                                 placeholder="0.00"
                               />
                             </td>
-                            <td className={`px-4 py-3 text-right font-semibold ${Math.abs(variance) < 0.005 ? 'text-slate-500' : variance > 0 ? 'text-emerald-700' : 'text-red-600'}`}>
-                              {currency} {fmt(variance)}
+                            <td className={`px-4 py-3 text-right font-semibold ${variance === null ? 'text-slate-500' : Math.abs(variance) < 0.005 ? 'text-slate-500' : variance > 0 ? 'text-emerald-700' : 'text-red-600'}`}>
+                              {variance === null ? 'Unavailable' : `${currency} ${fmt(variance)}`}
                             </td>
                           </tr>
                         )
@@ -4169,6 +4264,10 @@ export default function POS() {
                   <input className="input" type="number" step="0.01" min="0" value={shiftCloseCash} onChange={(e) => setShiftCloseCash(e.target.value)} placeholder="Closing cash" />
                   <button className="btn-primary" onClick={closeShift}>Close</button>
                 </div>
+                <p className="mt-2 text-xs text-emerald-800">
+                  Closing reconciles and settles this shift on the server and requires supervisor or manager access. The cash count you enter becomes the shift's recorded cash-up.
+                </p>
+                {shiftCloseMessage && <p className="mt-2 text-xs font-semibold text-amber-800" role="status">{shiftCloseMessage}</p>}
               </div>
             ) : (
               <div className="mt-4 flex gap-2">
@@ -5432,6 +5531,7 @@ export default function POS() {
                   </div>
                 ) : (
                   <select className="input" value={returnPaymentMethod} onChange={(e) => setReturnPaymentMethod(e.target.value)}>
+                    <option value="">Choose confirmed refund tender</option>
                     {DESKTOP_PAYMENT_METHODS.filter((method) => method.value !== 'bank_transfer' || returnTarget.payment_method === 'bank_transfer').map((method) => (
                       <option key={method.value} value={method.value}>{method.label}</option>
                     ))}
@@ -5529,7 +5629,9 @@ export default function POS() {
                         </span>
                         <span className="flex-1 truncate font-medium text-slate-800">{item.item_name}</span>
                         <span className="text-slate-500">×{item.quantity}</span>
-                        <span className="font-semibold text-slate-700">{currency} {fmt(item.quantity * item.unit_price)}</span>
+                        <span className="font-semibold text-slate-700">
+                          {recordedLineAmount(item) === null ? 'Amount unavailable' : `${currency} ${fmt(recordedLineAmount(item))}`}
+                        </span>
                       </button>
                     )
                   })}
@@ -5557,7 +5659,7 @@ export default function POS() {
                 </div>
                 <div className="rounded-xl bg-amber-50 p-3 text-center">
                   <p className="text-xs text-amber-600">Total</p>
-                  <p className="text-lg font-bold text-amber-800">{currency} {fmt((Array.isArray(currentOpenTab.items) ? currentOpenTab.items : []).reduce((s, i) => s + i.quantity * i.unit_price, 0))}</p>
+                  <p className="text-lg font-bold text-amber-800">{currentOpenTabTotal === null ? 'Amount unavailable' : `${currency} ${fmt(currentOpenTabTotal)}`}</p>
                 </div>
                 <div>
                   <label className="mb-1 block text-sm font-medium text-slate-700">Number of splits (2–10)</label>
@@ -5565,7 +5667,7 @@ export default function POS() {
                     <button type="button" onClick={() => setSplitEvenCount((c) => Math.max(2, c - 1))} className="h-10 w-10 rounded-xl border border-slate-200 bg-white text-lg font-bold text-slate-600 hover:bg-slate-50">−</button>
                     <span className="min-w-[3rem] text-center text-xl font-bold text-slate-900">{splitEvenCount}</span>
                     <button type="button" onClick={() => setSplitEvenCount((c) => Math.min(10, c + 1))} className="h-10 w-10 rounded-xl border border-slate-200 bg-white text-lg font-bold text-slate-600 hover:bg-slate-50">+</button>
-                    <span className="ml-2 text-sm text-slate-500">= {currency} {fmt((Array.isArray(currentOpenTab.items) ? currentOpenTab.items : []).reduce((s, i) => s + i.quantity * i.unit_price, 0) / splitEvenCount)} each</span>
+                    <span className="ml-2 text-sm text-slate-500">{currentOpenTabTotal === null ? 'Each amount unavailable' : `= ${currency} ${fmt(currentOpenTabTotal / splitEvenCount)} each`}</span>
                   </div>
                 </div>
                 <div className="space-y-2">
@@ -5600,7 +5702,7 @@ export default function POS() {
               <button
                 type="button"
                 onClick={executeSplitBill}
-                disabled={splitLoading || (splitMode === 'items' && splitItemIndices.length === 0) || (splitMode === 'even' && (splitEvenCount < 2 || splitEvenCount > 10))}
+                disabled={splitLoading || currentOpenTabTotal === null || (splitMode === 'items' && splitItemIndices.length === 0) || (splitMode === 'even' && (splitEvenCount < 2 || splitEvenCount > 10))}
                 className="flex-1 rounded-xl bg-amber-600 py-2 text-sm font-medium text-white hover:bg-amber-700 disabled:opacity-50"
               >
                 {splitLoading ? 'Splitting...' : splitMode === 'even' ? `Split into ${splitEvenCount} Equal Parts` : `Split ${splitItemIndices.length} Item(s)`}

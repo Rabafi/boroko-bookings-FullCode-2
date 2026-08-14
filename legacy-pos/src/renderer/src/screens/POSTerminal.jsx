@@ -19,6 +19,15 @@ const PAYMENT_METHODS = [
 ];
 const QUICK_PAYMENT_METHODS = PAYMENT_METHODS.filter((m) => m.value !== 'folio' && m.value !== 'other');
 const money = (v) => Math.round((Number(v) || 0) * 100) / 100;
+const orderTenderLabel = (order = {}) => {
+  let rows = Array.isArray(order.payment_breakdown) ? order.payment_breakdown : [];
+  if (typeof order.payment_breakdown === 'string') {
+    try { const parsed = JSON.parse(order.payment_breakdown); rows = Array.isArray(parsed) ? parsed : []; } catch { rows = []; }
+  }
+  if (!rows.length || rows.some((row) => !String(row?.method || row?.type || '').trim() || !Number.isFinite(Number(row?.amount)))) return 'Tender unavailable';
+  const methods = [...new Set(rows.map((row) => String(row.method || row.type).trim()).filter(Boolean))];
+  return methods.length > 1 ? 'Split tender' : methods[0];
+};
 const modifierTotal = (item) => (item.modifiers || []).reduce((sum, mod) => sum + Number(mod?.price || 0), 0);
 const lineUnitPrice = (item) => money(Number(item.unit_price || 0) + modifierTotal(item));
 const normalizeStockValue = (value) => {
@@ -72,7 +81,7 @@ const buildSubmitSignature = ({ cart, customerType, selectedRoom, selectedEventI
 });
 const createIntentId = () => globalThis.crypto?.randomUUID?.() || `pos-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
-export default function POSTerminal({ user, settings, isOnline, lowResource }) {
+export default function POSTerminal({ user, settings, isOnline, lowResource, barOnly = false }) {
   const [menuItems, setMenuItems] = useState([]);
   const [inventoryItems, setInventoryItems] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -704,19 +713,23 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
           : (Array.isArray(result.items) ? result.items : cartForTotals);
         const orderData = {
           id: result.id || submitIntentId,
-          total: result.offline ? cartTotals.total : Number(result.total || 0),
-          gross_total: result.offline ? cartTotals.gross_total : Number(result.gross_total || 0),
-          discount_total: result.offline ? cartTotals.discount_total : Number(result.discount_total || 0),
-          tax_rate: result.offline ? cartTotals.tax_rate : Number(result.tax_rate || 0),
-          tax_total: result.offline ? cartTotals.tax_total : Number(result.tax_total || 0),
-          tip_total: result.offline ? cartTotals.tip_total : Number(result.tip_total || 0),
+          total: result.offline ? cartTotals.total : (Number.isFinite(Number(result.total)) ? Number(result.total) : null),
+          gross_total: result.offline ? cartTotals.gross_total : (Number.isFinite(Number(result.gross_total)) ? Number(result.gross_total) : null),
+          discount_total: result.offline ? cartTotals.discount_total : (Number.isFinite(Number(result.discount_total)) ? Number(result.discount_total) : null),
+          tax_rate: result.offline ? cartTotals.tax_rate : (Number.isFinite(Number(result.tax_rate)) ? Number(result.tax_rate) : null),
+          tax_total: result.offline ? cartTotals.tax_total : (Number.isFinite(Number(result.tax_total)) ? Number(result.tax_total) : null),
+          tip_total: result.offline ? cartTotals.tip_total : (Number.isFinite(Number(result.tip_total)) ? Number(result.tip_total) : null),
           status: result.offline ? 'pending' : 'completed', created_at: new Date().toISOString(),
-          payment_method: result.payment_method || effectivePaymentMethod,
-          payment_breakdown: result.payment_breakdown || paymentBreakdown,
+          payment_method: result.offline ? (result.payment_method || effectivePaymentMethod) : (result.payment_method ?? null),
+          payment_breakdown: result.offline ? (result.payment_breakdown || paymentBreakdown) : (result.payment_breakdown ?? null),
           walk_in_name: customerType === 'walkin' ? walkInName : null,
           table_name: tableName || null, waiter_name: selectedWaiter?.name || null,
           cashier_name: selectedStaff.name || selectedStaff.email,
-          pos_order_items: authoritativeItems.map((item, idx) => ({ id: `local-${idx}`, ...item, subtotal: item.subtotal ?? item.quantity * item.unit_price })),
+          pos_order_items: authoritativeItems.map((item, idx) => ({
+            id: `local-${idx}`,
+            ...item,
+            subtotal: item.subtotal ?? item.net_subtotal ?? item.gross_subtotal ?? null
+          })),
           _pending_sync: result.offline || false
         };
         submitIntentRef.current = { signature: null, intentId: null };
@@ -916,15 +929,15 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
         {/* Order Config - scrolls with items */}
         <div className="touch-scroll-y max-h-[46vh] overflow-y-auto border-t border-slate-200 bg-white px-4 py-3 space-y-2">
           <div className="flex gap-2">
-            <select value={customerType} onChange={(e) => setCustomerType(e.target.value)} className="min-h-11 flex-1 rounded-lg border border-slate-200 px-3 text-sm font-semibold">
+            <select value={barOnly ? 'walkin' : customerType} onChange={(e) => setCustomerType(e.target.value)} className="min-h-11 flex-1 rounded-lg border border-slate-200 px-3 text-sm font-semibold">
               <option value="walkin">Walk-in</option>
-              <option value="room">Room Folio</option>
-              <option value="event">Event Folio</option>
+              {!barOnly && <option value="room">Room Folio</option>}
+              {!barOnly && <option value="event">Event Folio</option>}
             </select>
             <select value={serviceMode} onChange={(e) => setServiceMode(e.target.value)} className="min-h-11 flex-1 rounded-lg border border-slate-200 px-3 text-sm font-semibold">
               <option value="takeaway">Takeaway</option>
               <option value="table">Table</option>
-              <option value="room">Room Service</option>
+              {!barOnly && <option value="room">Room Service</option>}
             </select>
           </div>
           <button
@@ -940,7 +953,7 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
           {detailsExpanded && customerType === 'walkin' && (
             <input type="text" value={walkInName} onChange={(e) => setWalkInName(e.target.value)} placeholder="Guest name (optional)" className="min-h-10 w-full rounded-lg border border-slate-200 px-3 text-sm" />
           )}
-          {customerType === 'room' && (
+          {!barOnly && customerType === 'room' && (
             <select value={selectedRoom} onChange={(e) => setSelectedRoom(e.target.value)} className="min-h-11 w-full rounded-lg border border-slate-200 px-3 text-sm">
               <option value="">Select room...</option>
               {rooms.map((room) => {
@@ -949,7 +962,7 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
               })}
             </select>
           )}
-          {customerType === 'event' && (
+          {!barOnly && customerType === 'event' && (
             <select value={selectedEventId} onChange={(e) => setSelectedEventId(e.target.value)} className="min-h-11 w-full rounded-lg border border-slate-200 px-3 text-sm">
               <option value="">Select event...</option>
               {events.map((event) => (
@@ -1143,8 +1156,7 @@ export default function POSTerminal({ user, settings, isOnline, lowResource }) {
 function ReceiptModal({ order, settings, currency, onClose }) {
   const handlePrint = async () => {
     const hw = await window.api.pos.getHardwareSettings().catch(() => null);
-    const shouldOpenDrawer = order.payment_method === 'cash' ||
-      (order.payment_breakdown || []).some((p) => String(p.method || '').toLowerCase() === 'cash' && Number(p.amount || 0) > 0);
+    const shouldOpenDrawer = (order.payment_breakdown || []).some((p) => String(p.method || '').toLowerCase() === 'cash' && Number(p.amount || 0) > 0);
     await window.api.pos.printReceipt({ order, business: settings || {}, settings: hw || settings || {}, openDrawer: shouldOpenDrawer })
       .catch((e) => alert(e?.message || 'Print failed'));
   };
@@ -1165,8 +1177,8 @@ function ReceiptModal({ order, settings, currency, onClose }) {
           <div className="rounded-lg bg-slate-50 p-4 text-sm space-y-1">
             <div className="flex justify-between"><span className="text-slate-500">Order ID</span><span className="font-mono text-xs">{String(order.id).slice(0, 8)}</span></div>
             <div className="flex justify-between"><span className="text-slate-500">Items</span><span>{order.pos_order_items?.length || 0}</span></div>
-            <div className="flex justify-between font-bold"><span>Total</span><span>{currency} {fmt(order.total)}</span></div>
-            <div className="flex justify-between"><span className="text-slate-500">Payment</span><span className="uppercase">{order.payment_method}</span></div>
+            <div className="flex justify-between font-bold"><span>Total</span><span>{order._pending_sync ? 'Pending server total' : Number.isFinite(Number(order.total)) ? `${currency} ${fmt(order.total)}` : 'Unavailable'}</span></div>
+            <div className="flex justify-between"><span className="text-slate-500">Payment</span><span className="uppercase">{orderTenderLabel(order)}</span></div>
             {order.waiter_name && <div className="flex justify-between"><span className="text-slate-500">Waiter</span><span>{order.waiter_name}</span></div>}
           </div>
         </div>

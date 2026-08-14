@@ -25,6 +25,7 @@ import {
 import { useAccess, useSettings } from '../../app-context';
 import { canAccessCapability } from '../../../../shared/accessControl';
 import { isBarOnlyMode } from '../../../../shared/propertyTypes';
+import { calculatePosFinancialTruth } from '../../../../shared/posFinancialTruth';
 import {
   HposButton,
   HposEmptyState,
@@ -63,9 +64,21 @@ const tabs = [
     capability: 'incident_log.view',
   },
 ];
-const dateKey = (date) => date.toISOString().slice(0, 10);
+const dateKey = (date, timeZone = 'Africa/Gaborone') => {
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(date).reduce((result, part) => ({ ...result, [part.type]: part.value }), {});
+  return `${parts.year}-${parts.month}-${parts.day}`;
+};
 const money = (value, currency) =>
   `${currency} ${Number(value || 0).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const recordedItemAmount = (item = {}) => {
+  for (const key of ['net_subtotal', 'subtotal', 'gross_subtotal', 'gross', 'net']) {
+    const raw = item?.[key];
+    if (raw === null || raw === undefined || raw === '') continue;
+    const value = Number(raw);
+    if (Number.isFinite(value)) return value;
+  }
+  return null;
+};
 
 export default function HposBusinessControl() {
   const { settings } = useSettings();
@@ -77,6 +90,7 @@ export default function HposBusinessControl() {
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
+  const [sourceWarnings, setSourceWarnings] = useState([]);
   const [data, setData] = useState({
     orders: [],
     menu: [],
@@ -97,6 +111,7 @@ export default function HposBusinessControl() {
     voids: [],
   });
   const [showVariance, setShowVariance] = useState(false);
+  const posFinancialReady = data.orders?._complete === true && data.orders?._source === 'server' && !sourceWarnings.includes('POS orders');
   const visibleTabs = tabs.filter(
     (tab) =>
       (!tab.barOnly || barOnly) &&
@@ -108,8 +123,9 @@ export default function HposBusinessControl() {
     setError('');
     const end = new Date();
     const start = new Date(Date.now() - 30 * 86400000);
-    const from = dateKey(start);
-    const to = dateKey(end);
+    const businessTimeZone = settings?.timezone || 'Africa/Gaborone';
+    const from = dateKey(start, businessTimeZone);
+    const to = dateKey(end, businessTimeZone);
     const calls = await Promise.allSettled([
       window.api?.pos?.getOrders?.(from, to),
       window.api?.pos?.getMenuItems?.(),
@@ -133,12 +149,35 @@ export default function HposBusinessControl() {
       window.api?.pos?.getVoidHistory?.(from, to),
       window.api?.pos?.getRestaurantShiftPlans?.(
         from,
-        new Date(Date.now() + 14 * 86400000).toISOString().slice(0, 10),
+        dateKey(new Date(Date.now() + 14 * 86400000), businessTimeZone),
       ),
     ]);
+    const sourceLabels = [
+      'POS orders', 'menu', 'recipes', 'shifts', 'stock suggestions',
+      'purchase orders', 'promotions', 'reservations', 'waitlist', 'alerts',
+      'checklists', 'audit log', 'expiry lots', 'incidents', 'owner digest',
+      'void history', 'shift plans'
+    ];
+    const rejectedSources = calls
+      .map((call, index) => call.status === 'rejected' ? sourceLabels[index] : null)
+      .filter(Boolean);
+    const incompleteSources = calls
+      .map((call, index) => {
+        if (call.status !== 'fulfilled') return null;
+        const result = call.value;
+        if (result == null || result?._available === false) return sourceLabels[index];
+        if (index === 0 && (!Array.isArray(result) || result._complete !== true || result._source !== 'server')) return sourceLabels[index];
+        if (index === 14) {
+          const digest = result?.digest || result?.summary || result;
+          if (result?.success === false || digest?.financial_complete !== true) return sourceLabels[index];
+        }
+        return null;
+      })
+      .filter(Boolean);
+    setSourceWarnings([...new Set([...rejectedSources, ...incompleteSources])]);
     const value = (index, fallback = []) =>
-      calls[index]?.status === 'fulfilled'
-        ? (calls[index].value ?? fallback)
+      calls[index]?.status === 'fulfilled' && Array.isArray(calls[index].value)
+        ? calls[index].value
         : fallback;
     setData({
       orders: value(0),
@@ -155,7 +194,9 @@ export default function HposBusinessControl() {
       audit: value(11),
       expiry: value(12),
       incidents: value(13),
-      digest: calls[14]?.status === 'fulfilled' ? calls[14].value : null,
+      digest: calls[14]?.status === 'fulfilled' && calls[14].value?._available !== false
+        ? (calls[14].value?.digest || calls[14].value?.summary || calls[14].value)
+        : null,
       voids: value(15),
       plans: value(16),
     });
@@ -164,35 +205,34 @@ export default function HposBusinessControl() {
         'Business control data could not be loaded. Check the connection and retry.',
       );
     setLoading(false);
-  }, [barOnly]);
+  }, [barOnly, settings?.timezone]);
   useEffect(() => {
     load();
   }, [load]);
 
   const metrics = useMemo(() => {
-    const completed = data.orders.filter(
-      (order) =>
-        !['voided', 'cancelled'].includes(
-          String(order.status || '').toLowerCase(),
-        ),
-    );
+    const truth = calculatePosFinancialTruth(data.orders, { dataset_complete: posFinancialReady });
+    const completed = truth.rows.filter((order) => order.classification === 'sale');
     const sales = completed.reduce(
       (sum, order) => sum + Number(order.total || order.total_amount || 0),
       0,
     );
     const itemMap = {};
+    let itemDetailComplete = true;
     completed.forEach((order) =>
       (order.pos_order_items || order.items || []).forEach((item) => {
         const name = item.item_name || item.name || 'Unlabelled item';
         const row = itemMap[name] || { name, units: 0, sales: 0 };
         row.units += Number(item.quantity || 1);
-        row.sales +=
-          Number(item.quantity || 1) *
-          Number(item.unit_price || item.price || 0);
+        const lineAmount = recordedItemAmount(item);
+        if (lineAmount === null) itemDetailComplete = false;
+        else row.sales += lineAmount;
         itemMap[name] = row;
       }),
     );
-    const topItems = Object.values(itemMap).sort((a, b) => b.sales - a.sales);
+    const topItems = itemDetailComplete
+      ? Object.values(itemMap).sort((a, b) => b.sales - a.sales)
+      : [];
     const byDay = {};
     completed.forEach((order) => {
       const day = String(order.created_at || '').slice(0, 10) || 'unknown';
@@ -220,6 +260,7 @@ export default function HposBusinessControl() {
       sales,
       orders: completed.length,
       topItems,
+      itemDetailComplete,
       averageDay,
       forecast7: weightedDaily * 7,
       forecastTrend:
@@ -232,7 +273,7 @@ export default function HposBusinessControl() {
           Number(order.discount_total || order.discount_amount || 0) > 0,
       ).length,
     };
-  }, [data.orders, data.voids]);
+  }, [data.orders, data.voids, posFinancialReady]);
 
   const statusTone = (count) => (count > 0 ? 'warning' : 'success');
   return (
@@ -258,6 +299,7 @@ export default function HposBusinessControl() {
       />
       {error && <HposNotice tone="error">{error}</HposNotice>}
       {notice && <HposNotice>{notice}</HposNotice>}
+      {sourceWarnings.length > 0 && <HposNotice tone="warning">Some live sources are unavailable ({sourceWarnings.join(', ')}). Financial and operational totals are incomplete until the sources reconnect.</HposNotice>}
       <nav className="hpos-control-tabs" aria-label="Business control sections">
         {visibleTabs.map((tab) => {
           const Icon = tab.icon;
@@ -284,6 +326,8 @@ export default function HposBusinessControl() {
           data={data}
           currency={currency}
           loading={loading}
+          sourceComplete={sourceWarnings.length === 0}
+          financialReady={posFinancialReady}
           onGenerate={async () => {
             setNotice('Owner brief refreshed from live operational data.');
             await load();
@@ -294,16 +338,18 @@ export default function HposBusinessControl() {
         <BarControl
           data={data}
           currency={currency}
+          sourceWarnings={sourceWarnings}
           onVariance={() => setShowVariance(true)}
           onNotice={setNotice}
         />
       )}
       {active === 'margin' && (
         <MenuMargin
-          data={data}
           currency={currency}
           metrics={metrics}
           barOnly={barOnly}
+          financialReady={posFinancialReady}
+          sourceWarnings={sourceWarnings}
         />
       )}
       {active === 'labour' && (
@@ -313,6 +359,7 @@ export default function HposBusinessControl() {
           metrics={metrics}
           onReload={load}
           barOnly={barOnly}
+          financialReady={posFinancialReady}
         />
       )}
       {active === 'procurement' && (
@@ -321,6 +368,7 @@ export default function HposBusinessControl() {
           currency={currency}
           onNotice={setNotice}
           onReload={load}
+          sourceWarnings={sourceWarnings}
         />
       )}
       {active === 'revenue' && (
@@ -347,18 +395,27 @@ export default function HposBusinessControl() {
   );
 }
 
-function OwnerBrief({ metrics, data, currency, loading, onGenerate }) {
+function OwnerBrief({ metrics, data, currency, loading, sourceComplete, financialReady, onGenerate }) {
   const digest = data.digest?.summary || data.digest || {};
+  const recordedExpenses = digest.expenses_complete === true && Number.isFinite(Number(digest.total_expenses))
+    ? Number(digest.total_expenses)
+    : null;
+  const operatingMovement = financialReady && sourceComplete && recordedExpenses !== null
+    ? metrics.sales - recordedExpenses
+    : null;
+  const certifiedMoney = (value) => sourceComplete ? money(value, currency) : 'Unavailable';
+  const readyMoney = (value) => financialReady ? certifiedMoney(value) : 'Unavailable';
+  const recordedExpenseDisplay = recordedExpenses === null ? 'Unavailable' : (!sourceComplete ? 'Unavailable' : certifiedMoney(recordedExpenses));
   return (
     <div className="hpos-control-section">
       <div className="hpos-control-kpis">
         {[
-          ['30-day sales', money(metrics.sales, currency), TrendingUp],
-          ['Orders', metrics.orders, ShoppingCart],
-          ['Average day', money(metrics.averageDay, currency), Clock3],
+          ['30-day sales', readyMoney(metrics.sales), TrendingUp],
+          ['Orders', financialReady ? metrics.orders : 'Unavailable', ShoppingCart],
+          ['Average day', readyMoney(metrics.averageDay), Clock3],
           [
             '7-day weighted forecast',
-            money(metrics.forecast7, currency),
+            readyMoney(metrics.forecast7),
             Sparkles,
           ],
         ].map(([label, value, Icon]) => (
@@ -370,12 +427,9 @@ function OwnerBrief({ metrics, data, currency, loading, onGenerate }) {
         ))}
       </div>
       <p className="hpos-control-copy">
-        Forecast confidence: {metrics.forecastConfidence}. Recent seven-day
-        trend:{' '}
-        {metrics.forecastTrend == null
+        {financialReady ? `Forecast confidence: ${metrics.forecastConfidence}. Recent seven-day trend: ${metrics.forecastTrend == null
           ? 'not enough prior data'
-          : `${metrics.forecastTrend >= 0 ? '+' : ''}${metrics.forecastTrend.toFixed(1)}%`}
-        .
+          : `${metrics.forecastTrend >= 0 ? '+' : ''}${metrics.forecastTrend.toFixed(1)}%`}.` : 'Forecast and sales trend are unavailable until the server confirms a complete POS source.'}
       </p>
       <div className="hpos-control-grid">
         <section className="hpos-control-card">
@@ -430,17 +484,13 @@ function OwnerBrief({ metrics, data, currency, loading, onGenerate }) {
           </p>
           <div className="hpos-brief-lines">
             <div>
-              <span>Expenses</span>
-              <strong>{money(digest.total_expenses, currency)}</strong>
+                <span>Recorded expenses</span>
+              <strong>{recordedExpenseDisplay}</strong>
             </div>
             <div>
-              <span>Net after expenses</span>
+              <span>Operating movement (certified sources only)</span>
               <strong>
-                {money(
-                  Number(digest.total_revenue || metrics.sales) -
-                    Number(digest.total_expenses || 0),
-                  currency,
-                )}
+                {operatingMovement === null ? 'Unavailable' : money(operatingMovement, currency)}
               </strong>
             </div>
             <div>
@@ -471,7 +521,7 @@ function Signal({ icon: Icon, label, value, detail }) {
   );
 }
 
-function BarControl({ data, currency, onVariance }) {
+function BarControl({ data, currency, sourceWarnings = [], onVariance }) {
   const barItems = data.menu.filter((item) =>
     /beer|spirit|wine|cocktail|bar|drink|soft/i.test(
       `${item.category || ''} ${item.template_kind || ''} ${item.name || ''}`,
@@ -541,7 +591,8 @@ function BarControl({ data, currency, onVariance }) {
                 : 'No due lots'}
             </HposStatusBadge>
           </div>
-          {data.expiry.slice(0, 8).map((lot) => (
+          {sourceWarnings.includes('expiry lots') && <HposNotice tone="warning">Expiry data is unavailable. Reconnect before treating this as a clear stock check.</HposNotice>}
+          {!sourceWarnings.includes('expiry lots') && data.expiry.slice(0, 8).map((lot) => (
             <div className="hpos-list-row" key={lot.id}>
               <span>
                 <strong>
@@ -554,7 +605,7 @@ function BarControl({ data, currency, onVariance }) {
               <HposStatusBadge tone="warning">Review</HposStatusBadge>
             </div>
           ))}
-          {!data.expiry.length && (
+          {!sourceWarnings.includes('expiry lots') && !data.expiry.length && (
             <p className="hpos-control-copy">
               No inventory lots are due within the next 30 days.
             </p>
@@ -730,13 +781,7 @@ function VarianceModal({ data, onClose, onNotice, onReload }) {
   );
 }
 
-function MenuMargin({ data, currency, metrics, barOnly }) {
-  const recipesByMenu = new Map(
-    (data.recipes || []).map((recipe) => [recipe.menu_item_id, recipe]),
-  );
-  const menuByName = new Map(
-    (data.menu || []).map((item) => [item.name, item]),
-  );
+function MenuMargin({ currency, metrics, barOnly, financialReady, sourceWarnings = [] }) {
   return (
     <div className="hpos-control-section">
       <section className="hpos-control-card">
@@ -747,7 +792,7 @@ function MenuMargin({ data, currency, metrics, barOnly }) {
             </p>
             <h2>
               {barOnly
-                ? 'Product margin and sales contribution'
+                ? 'Product margin and sales contribution (cost snapshots required)'
                 : 'Popularity, cost and contribution'}
             </h2>
           </div>
@@ -755,9 +800,13 @@ function MenuMargin({ data, currency, metrics, barOnly }) {
         </div>
         <p className="hpos-control-copy">
           {barOnly
-            ? 'See which drinks and bar products drive revenue, which have weak margins, and where pricing or supplier costs need attention.'
+            ? 'Sales contribution is shown from recorded order lines. Historical margin stays unavailable until each sale records a transaction-time cost snapshot.'
             : 'Hero items earn attention and margin; review items sell but leave too little contribution. Recipe-linked costs include ingredient waste where available.'}
         </p>
+        {sourceWarnings.includes('menu') && <HposNotice tone="warning">Menu data is unavailable. Reconnect before treating this as a complete product view.</HposNotice>}
+        {!financialReady && <HposNotice tone="warning">Sales contribution and margin are unavailable until the server confirms a complete POS source.</HposNotice>}
+        {financialReady && !metrics.itemDetailComplete && <HposNotice tone="warning">Item sales and margin are unavailable because one or more server order lines has no recorded line amount.</HposNotice>}
+        {financialReady && metrics.itemDetailComplete && <HposNotice tone="warning">Historical margin is unavailable until transaction-time cost snapshots are present. Current menu or recipe cost is not substituted.</HposNotice>}
         <div className="hpos-margin-table">
           <div className="hpos-margin-head">
             <span>Item</span>
@@ -765,24 +814,7 @@ function MenuMargin({ data, currency, metrics, barOnly }) {
             <span>Sales</span>
             <span>Margin</span>
           </div>
-          {metrics.topItems.slice(0, 20).map((item, index) => {
-            const menu = menuByName.get(item.name);
-            const recipe = menu && recipesByMenu.get(menu.id);
-            const cost = recipe
-              ? (recipe.ingredients || []).reduce(
-                  (sum, ing) =>
-                    sum +
-                    Number(ing.quantity || 0) *
-                      Number(ing.unit_cost || 0) *
-                      (1 +
-                        Number(ing.wastage_pct || ing.waste_percent || 0) /
-                          100),
-                  0,
-                )
-              : Number(menu?.cost_price || 0);
-            const margin = item.sales
-              ? ((item.sales - cost * item.units) / item.sales) * 100
-              : null;
+          {financialReady && metrics.topItems.slice(0, 20).map((item, index) => {
             return (
               <div key={item.name}>
                 <strong>
@@ -790,21 +822,11 @@ function MenuMargin({ data, currency, metrics, barOnly }) {
                 </strong>
                 <span>{item.units}</span>
                 <span>{money(item.sales, currency)}</span>
-                <HposStatusBadge
-                  tone={
-                    margin == null
-                      ? 'neutral'
-                      : margin < 30
-                        ? 'warning'
-                        : 'success'
-                  }
-                >
-                  {margin == null ? 'Cost missing' : `${margin.toFixed(0)}%`}
-                </HposStatusBadge>
+                <HposStatusBadge tone="neutral">Cost snapshot unavailable</HposStatusBadge>
               </div>
             );
           })}
-          {!metrics.topItems.length && (
+          {financialReady && !metrics.topItems.length && (
             <HposEmptyState
               icon={BarChart3}
               title="No item sales yet"
@@ -820,9 +842,10 @@ function MenuMargin({ data, currency, metrics, barOnly }) {
     </div>
   );
 }
-function Labour({ data, currency, metrics, onReload, barOnly }) {
+function Labour({ data, currency, metrics, onReload, barOnly, financialReady }) {
   const staff = {};
-  data.orders.forEach((order) => {
+  (financialReady ? data.orders : []).forEach((order) => {
+    if (String(order.status || '').toLowerCase() !== 'completed' && String(order.status || '').toLowerCase() !== 'settled') return;
     const name = order.cashier_name || order.waiter_name || 'Unassigned';
     staff[name] ??= { name, sales: 0, orders: 0 };
     staff[name].sales += Number(order.total || 0);
@@ -886,7 +909,7 @@ function Labour({ data, currency, metrics, onReload, barOnly }) {
           <article key={l}>
             <I size={18} />
             <small>{l}</small>
-            <strong>{v}</strong>
+            <strong>{l === 'Sales per order' && !financialReady ? 'Unavailable' : v}</strong>
           </article>
         ))}
       </div>
@@ -971,11 +994,12 @@ function Labour({ data, currency, metrics, onReload, barOnly }) {
         <section className="hpos-control-card">
           <div className="hpos-section-title">
             <div>
-              <p className="hpos-eyebrow">Labour versus sales</p>
+              <p className="hpos-eyebrow">Operator sales (labour cost not included)</p>
               <h2>Coverage and accountability</h2>
             </div>
             <HposStatusBadge tone="neutral">30 days</HposStatusBadge>
           </div>
+          <p className="hpos-control-copy">This view attributes recorded sales to operators. It does not calculate hours, wages or labour cost.</p>
           <div className="hpos-margin-table">
             <div className="hpos-margin-head">
               <span>Operator</span>
@@ -983,7 +1007,7 @@ function Labour({ data, currency, metrics, onReload, barOnly }) {
               <span>Sales</span>
               <span>Sales / order</span>
             </div>
-            {Object.values(staff)
+            {financialReady && Object.values(staff)
               .sort((a, b) => b.sales - a.sales)
               .map((row) => (
                 <div key={row.name}>
@@ -995,7 +1019,7 @@ function Labour({ data, currency, metrics, onReload, barOnly }) {
                   </span>
                 </div>
               ))}
-            {!Object.keys(staff).length && (
+            {!financialReady ? <p className="hpos-control-copy">Operator sales are unavailable until the server confirms a complete POS source.</p> : !Object.keys(staff).length && (
               <HposEmptyState
                 icon={Users}
                 title="No labour data yet"
@@ -1008,7 +1032,7 @@ function Labour({ data, currency, metrics, onReload, barOnly }) {
     </div>
   );
 }
-function Procurement({ data, currency, onNotice, onReload }) {
+function Procurement({ data, currency, onNotice, onReload, sourceWarnings = [] }) {
   const [selected, setSelected] = useState([]);
   const toggle = (i) =>
     setSelected((current) =>
@@ -1021,6 +1045,7 @@ function Procurement({ data, currency, onNotice, onReload }) {
         Number(data.suggestions[i]?.last_unit_cost || 0),
     0,
   );
+  const reorderUnavailable = sourceWarnings.includes('stock suggestions') || sourceWarnings.includes('purchase orders');
   const convert = async () => {
     const rows = selected.map((i) => data.suggestions[i]);
     const supplier = rows[0]?.supplier_id;
@@ -1066,7 +1091,7 @@ function Procurement({ data, currency, onNotice, onReload }) {
             ).length,
             ShoppingCart,
           ],
-          ['Selected value', money(total, currency), DollarSign],
+          ['Selected value', reorderUnavailable ? 'Unavailable' : money(total, currency), DollarSign],
         ].map(([l, v, I]) => (
           <article key={l}>
             <I size={18} />
@@ -1087,7 +1112,8 @@ function Procurement({ data, currency, onNotice, onReload }) {
             </HposButton>
           )}
         </div>
-        {data.suggestions.map((row, index) => (
+        {reorderUnavailable && <HposNotice tone="warning">Reorder data is unavailable. No reorder decision is certified until inventory and purchase-order sources reconnect.</HposNotice>}
+        {!reorderUnavailable && data.suggestions.map((row, index) => (
           <label className="hpos-list-row" key={row.id || index}>
             <input
               type="checkbox"
@@ -1111,7 +1137,7 @@ function Procurement({ data, currency, onNotice, onReload }) {
             </b>
           </label>
         ))}
-        {!data.suggestions.length && (
+        {!reorderUnavailable && !data.suggestions.length && (
           <HposEmptyState
             icon={PackageCheck}
             title="No reorder decisions"

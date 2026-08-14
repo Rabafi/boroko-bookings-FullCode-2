@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Printer, X, Download, ShoppingBag } from 'lucide-react'
 import { useSettings } from '../../app-context'
+import { hasRecordedPosTenderEnvelope, posTenderRows } from '../../../../shared/posFinancialTruth'
 
 function formatDateTime(value) {
   if (!value) return ''
@@ -15,6 +16,23 @@ function formatDateTime(value) {
   })
 }
 
+function itemLineTotal(item = {}) {
+  const authoritative = item.net_subtotal ?? item.subtotal ?? item.gross_subtotal
+  if (authoritative !== null && authoritative !== undefined && Number.isFinite(Number(authoritative))) {
+    return Number(authoritative)
+  }
+  // Quantity × unit price is only an estimate. A receipt must never present
+  // that estimate as a posted line amount when the server did not persist a
+  // subtotal (for example, on an older/incomplete order row).
+  return null
+}
+
+function recordedMoney(value) {
+  if (value === null || value === undefined || value === '') return null
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
 export function POSReceipt({ order, onClose, autoPrint = false }) {
   const { settings } = useSettings()
   const [saving, setSaving] = useState(false)
@@ -22,8 +40,10 @@ export function POSReceipt({ order, onClose, autoPrint = false }) {
 
   const currency = settings?.currency || 'P'
   const logo = settings?.logo || ''
-  const lodgeName = settings?.lodge_name || 'Lodge'
-  const companyName = settings?.company_name || ''
+  const lodgeName = settings?.company_name || settings?.lodge_name || settings?.property_name || 'Bar'
+  const companyName = settings?.company_name && settings?.lodge_name && settings.company_name !== settings.lodge_name
+    ? settings.lodge_name
+    : ''
   const address = [settings?.address, settings?.city, settings?.country].filter(Boolean).join(', ')
   const phone = settings?.phone || ''
   const email = settings?.email || ''
@@ -36,32 +56,59 @@ export function POSReceipt({ order, onClose, autoPrint = false }) {
     : typeof order.payment_breakdown === 'string'
       ? (() => { try { return JSON.parse(order.payment_breakdown) } catch { return [] } })()
       : []
+  const recordedOrderTotal = recordedMoney(order.total)
+  const tenderLabel = hasRecordedPosTenderEnvelope(order)
+    ? (() => {
+      const methods = [...new Set(posTenderRows(order).map((row) => row.method).filter(Boolean))]
+      return methods.length > 1 ? 'Split tender' : methods[0] || 'Tender unavailable'
+    })()
+    : 'Tender unavailable'
   
-  const receiptNo = order.receipt_number
-    || (order.id ? `POS-${String(order.id).slice(0, 8).toUpperCase()}` : 'DRAFT')
+  const receiptNo = order.receipt_number || (order?._pending_sync === true ? 'PROVISIONAL — PENDING SERVER NUMBER' : 'RECEIPT NUMBER UNAVAILABLE')
   const guestLabel = order.walk_in_name || (order.room_id ? `Room Guest` : 'Walk-in')
 
   const handlePrint = async () => {
-    const hardware = await window.api?.pos?.getHardwareSettings?.().catch(() => null)
+    if (!order?.receipt_number && order?._pending_sync !== true) {
+      window.alert?.('This sale has no server-issued receipt number. Printing is blocked until the sale is refreshed or resolved.')
+      return
+    }
+    let hardware = {}
+    try {
+      hardware = await window.api?.pos?.getHardwareSettings?.() || {}
+    } catch {
+      hardware = {}
+    }
     const printerName = hardware?.receipt_printer_name || ''
-    const result = await window.api?.receipts?.printCurrent?.({
-      mode: hardware?.receipt_print_mode || 'windows',
-      order,
-      business: settings || {},
-      deviceName: printerName,
-      silent: Boolean(printerName),
-      openDrawer: order?._open_drawer_on_print === true
-    }).catch(() => null)
+    let result = null
+    try {
+      result = await window.api?.receipts?.printCurrent?.({
+        mode: hardware?.receipt_print_mode || 'windows',
+        order,
+        business: settings || {},
+        deviceName: printerName,
+        silent: Boolean(printerName),
+        openDrawer: order?._open_drawer_on_print === true
+      })
+    } catch (error) {
+      result = { success: false, error: error?.message || 'Print could not be started.' }
+    }
     if (!result?.success) window.alert?.(result?.error || 'Print could not be started.')
   }
 
   const handleSavePDF = async () => {
+    if (!order?.receipt_number && order?._pending_sync !== true) {
+      window.alert?.('This sale has no server-issued receipt number. Save is blocked until the sale is refreshed or resolved.')
+      return
+    }
     setSaving(true)
     try {
-      await window.api.receipts.savePDF({
+      const result = await window.api?.receipts?.savePDF?.({
         guestName: guestLabel,
         invoiceNumber: receiptNo
       })
+      if (result?.success === false) throw new Error(result.error || 'The receipt PDF could not be saved.')
+    } catch (error) {
+      window.alert?.(error?.message || 'The receipt PDF could not be saved.')
     } finally {
       setSaving(false)
     }
@@ -71,7 +118,7 @@ export function POSReceipt({ order, onClose, autoPrint = false }) {
     if (!autoPrint || autoPrintDoneRef.current) return undefined
     autoPrintDoneRef.current = true
     const timer = window.setTimeout(() => {
-      handlePrint().catch(() => {})
+      handlePrint().catch((error) => window.alert?.(error?.message || 'Print could not be started.'))
     }, 450)
     return () => window.clearTimeout(timer)
   }, [autoPrint])
@@ -116,11 +163,11 @@ export function POSReceipt({ order, onClose, autoPrint = false }) {
           <div id="receipt-content" className="max-w-md mx-auto space-y-8">
             {order?._pending_sync === true && (
               <div className="border-2 border-dashed border-amber-500 bg-amber-50 px-4 py-3 text-center text-xs font-black uppercase tracking-widest text-amber-800">
-                Provisional receipt — pending server confirmation
+                PROVISIONAL — PENDING SERVER CONFIRMATION
               </div>
             )}
             
-            {/* Lodge Identity */}
+            {/* Bar/business identity */}
             <div className="text-center space-y-2">
               {logo && <img src={logo} alt="Logo" className="h-16 mx-auto mb-4 object-contain" />}
               <h1 className="text-2xl font-black text-slate-900 tracking-tight">{lodgeName}</h1>
@@ -148,7 +195,7 @@ export function POSReceipt({ order, onClose, autoPrint = false }) {
               </div>
               <div className="space-y-1 text-right">
                 <p className="text-slate-400 font-semibold uppercase tracking-wider text-[10px]">Method</p>
-                <p className="font-bold text-slate-800 uppercase tracking-tight">{order.payment_method || 'Cash'}</p>
+                <p className="font-bold text-slate-800 uppercase tracking-tight">{tenderLabel}</p>
               </div>
             </div>
 
@@ -166,7 +213,9 @@ export function POSReceipt({ order, onClose, autoPrint = false }) {
                   <tr key={idx}>
                     <td className="py-3 pr-4">
                       <p className="font-bold text-slate-800">{item.item_name}</p>
-                      <p className="text-xs text-slate-400 font-medium">{currency} {Number(item.unit_price || 0).toFixed(2)} ea</p>
+                      <p className="text-xs text-slate-400 font-medium">
+                        {recordedMoney(item.unit_price) === null ? 'Unit price unavailable' : `${currency} ${recordedMoney(item.unit_price).toFixed(2)} ea`}
+                      </p>
                       {(item.modifiers?.length > 0 || item.item_notes) && (
                         <p className="mt-1 text-xs font-semibold text-slate-500">
                           {[...(item.modifiers || []).map((mod) => mod.name), item.item_notes].filter(Boolean).join(' · ')}
@@ -177,7 +226,7 @@ export function POSReceipt({ order, onClose, autoPrint = false }) {
                       {item.quantity}
                     </td>
                     <td className="py-3 text-right font-black text-slate-900">
-                      {currency} {(Number(item.quantity || 0) * Number(item.unit_price || 0)).toFixed(2)}
+                      {itemLineTotal(item) === null ? 'Amount unavailable' : `${currency} ${itemLineTotal(item).toFixed(2)}`}
                     </td>
                   </tr>
                 ))}
@@ -212,7 +261,9 @@ export function POSReceipt({ order, onClose, autoPrint = false }) {
               )}
               <div className="flex justify-between items-center">
                 <span className="text-slate-500 font-bold uppercase tracking-widest text-xs">Total Amount</span>
-                <span className="text-2xl font-black text-slate-950">{currency} {Number(order.total || 0).toFixed(2)}</span>
+                <span className="text-2xl font-black text-slate-950">
+                  {recordedOrderTotal === null ? 'Amount unavailable' : `${currency} ${recordedOrderTotal.toFixed(2)}`}
+                </span>
               </div>
               {payments.length > 0 && (
                 <div className="border-t border-slate-100 pt-3">
@@ -223,7 +274,7 @@ export function POSReceipt({ order, onClose, autoPrint = false }) {
                         {payment.method}
                         {payment.reference && <span className="ml-2 text-[10px] font-medium text-slate-400">Ref {payment.reference}</span>}
                       </span>
-                      <span>{currency} {Number(payment.amount || 0).toFixed(2)}</span>
+                      <span>{recordedMoney(payment.amount) === null ? 'Amount unavailable' : `${currency} ${recordedMoney(payment.amount).toFixed(2)}`}</span>
                     </div>
                   ))}
                 </div>

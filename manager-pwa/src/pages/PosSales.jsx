@@ -15,15 +15,14 @@ import {
 } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { getManagerPosSnapshot, getManagerPosTransactions } from '../lib/api'
-import { money, shortDateTime, titleCase } from '../lib/format'
+import { businessDate, money, shortDateTime, titleCase } from '../lib/format'
 import DataFreshness from '../components/DataFreshness'
 import EmptyState from '../components/EmptyState'
 
 const PAGE_SIZE = 30
 
 function localDate(value = new Date()) {
-  const date = new Date(value)
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+  return businessDate(value)
 }
 
 function dateBefore(days) {
@@ -49,8 +48,9 @@ function Kpi({ label, value, sub, icon: Icon, tone = 'text-white' }) {
 
 function paymentLabel(transaction) {
   const rows = Array.isArray(transaction?.payment_breakdown) ? transaction.payment_breakdown : []
+  if (transaction?.tender_detail_complete !== true) return 'Tender unavailable'
   if (rows.length > 1) return 'Split payment'
-  return titleCase(rows[0]?.method || transaction?.payment_method || 'cash')
+  return titleCase(rows[0]?.method || 'tender unavailable')
 }
 
 function transactionLabel(transaction) {
@@ -58,13 +58,18 @@ function transactionLabel(transaction) {
     || `TX-${String(transaction?.id || '').slice(0, 8).toUpperCase()}`
 }
 
-function TransactionDetail({ transaction, onClose }) {
+function hasRecordedMoney(value) {
+  return value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value))
+}
+
+function TransactionDetail({ transaction, onClose, financialReady }) {
   if (!transaction) return null
+  const transactionReady = financialReady && transaction.financial_complete === true
   const isReturn = transaction.transaction_type === 'return'
   const items = Array.isArray(transaction.items) ? transaction.items : []
   const payments = Array.isArray(transaction.payment_breakdown) && transaction.payment_breakdown.length > 0
     ? transaction.payment_breakdown
-    : [{ method: transaction.payment_method || 'cash', amount: transaction.total }]
+    : []
 
   return (
     <div className="fixed inset-0 z-[80] flex items-end bg-black/60 backdrop-blur-sm" onClick={onClose}>
@@ -111,9 +116,9 @@ function TransactionDetail({ transaction, onClose }) {
               <div key={item.id} className="flex items-start justify-between gap-3 border-b border-white/5 pb-3 last:border-0 last:pb-0">
                 <div>
                   <p className="text-sm font-medium text-white">{item.item_name}</p>
-                  <p className="mt-1 text-xs text-gray-500">{Number(item.quantity || 0)} × {money(item.unit_price)}</p>
+                  <p className="mt-1 text-xs text-gray-500">{transactionReady && hasRecordedMoney(item.unit_price) ? `${Number(item.quantity || 0)} × ${money(item.unit_price)}` : 'Quantity and unit price unavailable until the server confirms this transaction.'}</p>
                 </div>
-                <p className="text-sm font-semibold text-white">{money(item.net_subtotal)}</p>
+                <p className="text-sm font-semibold text-white">{transactionReady && hasRecordedMoney(item.net_subtotal ?? item.subtotal ?? item.gross_subtotal) ? money(item.net_subtotal ?? item.subtotal ?? item.gross_subtotal) : 'Unavailable'}</p>
               </div>
             ))}
             {items.length === 0 ? <p className="text-sm text-gray-500">No item detail was stored for this transaction.</p> : null}
@@ -121,25 +126,27 @@ function TransactionDetail({ transaction, onClose }) {
         </div>
 
         <div className="mt-3 rounded-2xl bg-gray-900 p-4 text-sm">
-          <div className="flex justify-between py-1 text-gray-400"><span>Gross</span><span>{money(transaction.gross_total)}</span></div>
-          <div className="flex justify-between py-1 text-gray-400"><span>Discount</span><span>-{money(transaction.discount_total)}</span></div>
-          <div className="flex justify-between py-1 text-gray-400"><span>Tax</span><span>{money(transaction.tax_total)}</span></div>
-          {Number(transaction.tip_total || 0) !== 0 ? <div className="flex justify-between py-1 text-gray-400"><span>Tips</span><span>{money(transaction.tip_total)}</span></div> : null}
+          <div className="flex justify-between py-1 text-gray-400"><span>Gross</span><span>{transactionReady && hasRecordedMoney(transaction.gross_total) ? money(transaction.gross_total) : 'Unavailable'}</span></div>
+          <div className="flex justify-between py-1 text-gray-400"><span>Discount</span><span>{transactionReady && hasRecordedMoney(transaction.discount_total) ? `-${money(transaction.discount_total)}` : 'Unavailable'}</span></div>
+          <div className="flex justify-between py-1 text-gray-400"><span>Tax</span><span>{transactionReady && hasRecordedMoney(transaction.tax_total) ? money(transaction.tax_total) : 'Unavailable'}</span></div>
+          {Number(transaction.tip_total || 0) !== 0 ? <div className="flex justify-between py-1 text-gray-400"><span>Tips</span><span>{transactionReady && hasRecordedMoney(transaction.tip_total) ? money(transaction.tip_total) : 'Unavailable'}</span></div> : null}
           <div className="mt-2 flex justify-between border-t border-white/10 pt-3 text-base font-bold text-white">
             <span>{isReturn ? 'Returned' : 'Total'}</span>
-            <span className={isReturn ? 'text-rose-300' : 'text-green-300'}>{money(Math.abs(Number(transaction.total || 0)))}</span>
+            <span className={isReturn ? 'text-rose-300' : 'text-green-300'}>{transactionReady && hasRecordedMoney(transaction.total) ? money(Math.abs(Number(transaction.total))) : 'Unavailable'}</span>
           </div>
         </div>
 
         <div className="mt-3 rounded-2xl bg-gray-900 p-4">
           <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Payment allocation</p>
           <div className="mt-2 space-y-2">
-            {payments.map((payment, index) => (
+            {transactionReady && payments.map((payment, index) => (
               <div key={`${payment.method}-${index}`} className="flex justify-between text-sm">
-                <span className="text-gray-400">{titleCase(payment.method || 'cash')}</span>
+                <span className="text-gray-400">{titleCase(payment.method || 'tender unavailable')}</span>
                 <span className="text-white">{money(payment.amount)}</span>
               </div>
             ))}
+            {transactionReady && payments.length === 0 ? <p className="text-sm text-gray-500">Tender allocation is unavailable for this transaction.</p> : null}
+            {!transactionReady ? <p className="text-sm text-gray-500">Tender amounts are unavailable until the server confirms this transaction.</p> : null}
           </div>
         </div>
       </div>
@@ -173,10 +180,17 @@ export default function PosSales() {
     transactionType,
     search: appliedSearch
   }), [appliedSearch, endDate, outletId, startDate, status, transactionType])
+  const snapshotReady = snapshot?.complete === true
+  const rowReady = (transaction) => snapshotReady && transaction?.financial_complete === true
 
   const load = useCallback(async ({ append = false, silent = false } = {}) => {
     if (append) setLoadingMore(true)
-    else if (!silent) setLoading(true)
+    else {
+      if (!silent) setLoading(true)
+      setSnapshot(null)
+      setTransactions([])
+      setTotalCount(0)
+    }
     if (!append) setError('')
     try {
       const offset = append ? transactions.length : 0
@@ -252,28 +266,30 @@ export default function PosSales() {
 
       <div className="space-y-4 px-4 py-4">
         {error ? <div className="rounded-2xl border border-red-900 bg-red-950/40 px-4 py-3 text-sm text-red-200">{error}</div> : null}
+        {snapshot && !snapshotReady ? <div className="rounded-2xl border border-amber-900 bg-amber-950/40 px-4 py-3 text-sm text-amber-100">The POS source is incomplete ({snapshot.unresolved_count || 0} unresolved rows). Summary totals, tender totals and ranking views are withheld until the source is resolved.</div> : null}
 
         <div className="grid grid-cols-2 gap-3">
-          <Kpi label="Net sales" value={money(snapshot?.net_sales)} sub={`${Number(snapshot?.sale_count || 0)} sales`} icon={TrendingUp} tone="text-green-300" />
-          <Kpi label="Gross sales" value={money(snapshot?.gross_sales)} sub={`Avg ${money(snapshot?.average_sale)}`} icon={CircleDollarSign} />
-          <Kpi label="Returns" value={money(snapshot?.returns_total)} sub={`${Number(snapshot?.return_count || 0)} returns`} icon={RotateCcw} tone="text-rose-300" />
-          <Kpi label="Discounts" value={money(snapshot?.discount_total)} sub={`${Number(snapshot?.void_count || 0)} voided`} icon={ReceiptText} tone="text-amber-300" />
+          <Kpi label="Net sales" value={snapshotReady ? money(snapshot.net_sales) : 'Unavailable'} sub={snapshotReady ? `${Number(snapshot.sale_count || 0)} sales` : 'Server confirmation required'} icon={TrendingUp} tone="text-green-300" />
+          <Kpi label="Gross sales" value={snapshotReady ? money(snapshot.gross_sales) : 'Unavailable'} sub={snapshotReady ? `Avg ${money(snapshot.average_sale)}` : 'Server confirmation required'} icon={CircleDollarSign} />
+          <Kpi label="Returns" value={snapshotReady ? money(snapshot.returns_total) : 'Unavailable'} sub={snapshotReady ? `${Number(snapshot.return_count || 0)} returns` : 'Server confirmation required'} icon={RotateCcw} tone="text-rose-300" />
+          <Kpi label="Discounts" value={snapshotReady ? money(snapshot.discount_total) : 'Unavailable'} sub={snapshotReady ? `${Number(snapshot.void_count || 0)} voided` : 'Server confirmation required'} icon={ReceiptText} tone="text-amber-300" />
         </div>
 
         <section className="rounded-2xl bg-gray-800 p-4">
           <p className="text-sm font-semibold text-white">Payment methods</p>
           <div className="mt-3 space-y-2">
-            {(snapshot?.by_payment || []).map((row) => (
+            {snapshotReady && (snapshot?.by_payment || []).map((row) => (
               <div key={row.method} className="flex items-center justify-between rounded-xl bg-gray-900 px-3 py-3">
                 <span className="flex items-center gap-2 text-sm text-gray-300">{row.method === 'cash' ? <Banknote size={15} /> : <CreditCard size={15} />}{titleCase(row.method)}</span>
                 <span className="text-sm font-semibold text-white">{money(row.amount)}</span>
               </div>
             ))}
-            {!loading && (snapshot?.by_payment || []).length === 0 ? <p className="text-sm text-gray-500">No posted payments in this period.</p> : null}
+            {!snapshotReady ? <p className="text-sm text-gray-500">Unavailable until the report is complete.</p> : null}
+            {snapshotReady && !loading && (snapshot?.by_payment || []).length === 0 ? <p className="text-sm text-gray-500">No posted payments in this period.</p> : null}
           </div>
         </section>
 
-        {(snapshot?.by_outlet || []).length > 0 ? (
+        {snapshotReady && (snapshot?.by_outlet || []).length > 0 ? (
           <section className="rounded-2xl bg-gray-800 p-4">
             <p className="text-sm font-semibold text-white">Sales by outlet</p>
             <div className="mt-3 space-y-2">
@@ -287,7 +303,7 @@ export default function PosSales() {
           </section>
         ) : null}
 
-        {(snapshot?.top_items || []).length > 0 ? (
+        {snapshotReady && (snapshot?.top_items || []).length > 0 ? (
           <section className="rounded-2xl bg-gray-800 p-4">
             <p className="text-sm font-semibold text-white">Top items</p>
             <div className="mt-3 space-y-2">
@@ -346,7 +362,7 @@ export default function PosSales() {
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center justify-between gap-2">
                       <p className="truncate text-sm font-semibold text-white">{transactionLabel(transaction)}</p>
-                      <p className={`shrink-0 text-sm font-bold ${isReturn ? 'text-rose-300' : 'text-green-300'}`}>{money(transaction.total)}</p>
+                      <p className={`shrink-0 text-sm font-bold ${isReturn ? 'text-rose-300' : 'text-green-300'}`}>{rowReady(transaction) ? money(transaction.total) : 'Unavailable'}</p>
                     </div>
                     <p className="mt-1 truncate text-xs text-gray-500">{transaction.outlet_name} · {paymentLabel(transaction)} · {shortDateTime(transaction.completed_at || transaction.created_at)}</p>
                   </div>
@@ -365,7 +381,7 @@ export default function PosSales() {
         </section>
       </div>
 
-      <TransactionDetail transaction={selected} onClose={() => setSelected(null)} />
+      <TransactionDetail transaction={selected} financialReady={snapshotReady} onClose={() => setSelected(null)} />
     </div>
   )
 }

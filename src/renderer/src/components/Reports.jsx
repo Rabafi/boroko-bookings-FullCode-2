@@ -37,6 +37,20 @@ const PAYMENT_LABELS = {
   folio: 'Room Folio'
 }
 
+function recordedAmount(row = {}, keys = ['total_cost', 'amount']) {
+  for (const key of keys) {
+    const raw = row?.[key]
+    if (raw === null || raw === undefined || raw === '') continue
+    const value = Number(raw)
+    if (Number.isFinite(value)) return value
+  }
+  return null
+}
+
+function reportMoney(value) {
+  return value === null || value === undefined || !Number.isFinite(Number(value)) ? 'Unavailable' : Number(value).toFixed(2)
+}
+
 function getEventGroupId(booking) {
   if (!booking?.is_exclusive_event && !String(booking?.notes || '').includes('[GROUP:')) return null
   const match = String(booking?.notes || '').match(/\[GROUP:([^\]]+)\]/)
@@ -117,7 +131,7 @@ function normalizeMaintenanceExpense(row = {}) {
     description: title,
     category: 'Maintenance & Repairs',
     notes: details.join(' · '),
-    amount: Number(row.total_cost || 0),
+    amount: recordedAmount(row, ['total_cost']),
     outlet_id: null,
     source: 'Maintenance'
   }
@@ -217,6 +231,13 @@ export default function Reports() {
     if (selectedOutlet === 'unassigned') return 'Others'
     return outlets.find((outlet) => String(outlet.id) === String(selectedOutlet))?.name || 'Selected Outlet'
   }, [outlets, selectedOutlet])
+  const costsReady = invSpend?.source === 'server' && invSpend?._complete === true
+    && supSpend?.source === 'server' && supSpend?._complete === true
+    && Number.isFinite(Number(invSpend?.total))
+    && Number.isFinite(Number(supSpend?.total))
+    && (invSpend?.purchases || []).every((row) => recordedAmount(row, ['total_cost']) !== null)
+    && (supSpend?.purchases || []).every((row) => recordedAmount(row, ['total_cost']) !== null)
+  const expensesReady = expenses?._complete === true && expenses.every((row) => recordedAmount(row, ['amount']) !== null)
   const dayUseInsights = useMemo(() => {
     const templateMap = new Map()
     const resourceMap = new Map()
@@ -291,6 +312,10 @@ export default function Reports() {
             ...(expenseData || []),
             ...(maintenanceData || []).map(normalizeMaintenanceExpense)
           ].sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
+          Object.defineProperties(combinedExpenses, {
+            _source: { value: expenseData?._source === 'server' && (maintenanceData?._source === 'server' || !showPropertyWideCosts) ? 'server' : 'cache', enumerable: true, configurable: true },
+            _complete: { value: expenseData?._complete === true && (maintenanceData?._complete === true || !showPropertyWideCosts), enumerable: true, configurable: true }
+          })
           setExpenses(combinedExpenses)
         } catch (err) {
           setExpenses([])
@@ -410,6 +435,26 @@ export default function Reports() {
   }
 
   const exportCSV = () => {
+    if (activeTab === 'pos' && !posSalesReady) {
+      setError('Cannot export POS sales while the server source is incomplete or uncertified. Refresh online and resolve the reported gaps first.')
+      return
+    }
+    if (activeTab === 'costs' && !costsReady) {
+      setError('Cannot export stock costs while the server source is incomplete or uncertified. Refresh online and resolve the reported gaps first.')
+      return
+    }
+    if (activeTab === 'expenses' && !expensesReady) {
+      setError('Cannot export expenses while the server source is incomplete or uncertified. Refresh online and resolve the reported gaps first.')
+      return
+    }
+    if (activeTab === 'bookings' && !revenueReady) {
+      setError('Cannot export booking revenue while the server source is incomplete or uncertified. Refresh online and resolve the reported gaps first.')
+      return
+    }
+    if (activeTab === 'pl' && !profitLossReady) {
+      setError('Cannot export P&L while the server source is incomplete or uncertified. Refresh online and resolve the reported gaps first.')
+      return
+    }
     const csvStamp = formatFilenameStamp()
     const rows = []
     const pushRow = (...r) => rows.push(r)
@@ -441,12 +486,13 @@ export default function Reports() {
       pushRow('EXPENSES')
       pushRow('Date', 'Category', 'Description', `Amount (${currency})`)
       let total = 0
-      for (const e of combinedExpenses) {
-        pushRow(e.date || '', e.category || '', e.description || '', Number(e.amount || 0).toFixed(2))
-        total += Number(e.amount || 0)
+      for (const e of expenses) {
+        const amount = recordedAmount(e, ['amount'])
+        pushRow(e.date || '', e.category || '', e.description || '', reportMoney(amount))
+        total += amount
       }
       pushBlank()
-      pushRow('TOTAL', '', '', total.toFixed(2))
+      pushRow('TOTAL', '', '', reportMoney(total))
     } else if (activeTab === 'pos') {
       if (posSales) {
         pushRow('POS REVENUE SUMMARY')
@@ -472,13 +518,13 @@ export default function Reports() {
       pushRow('STOCK COSTS')
       pushRow('Date', 'Item', 'Category', 'Qty', `Unit Cost (${currency})`, `Total (${currency})`)
       for (const p of (invSpend?.purchases || [])) {
-        pushRow(p.date || p.purchased_at || '', p.inventory_items?.name || p.item_name || '', p.inventory_items?.category || '', p.quantity_purchased || 0, Number(p.unit_cost || 0).toFixed(2), Number(p.total_cost || 0).toFixed(2))
+        pushRow(p.date || p.purchased_at || '', p.inventory_items?.name || p.item_name || '', p.inventory_items?.category || '', p.quantity_purchased ?? '', reportMoney(p.unit_cost), reportMoney(recordedAmount(p, ['total_cost'])))
       }
       pushBlank()
       pushRow('ROOM SUPPLIES')
       pushRow('Date', 'Item', 'Qty', `Unit Cost (${currency})`, `Total (${currency})`)
       for (const p of (supSpend?.purchases || [])) {
-        pushRow(p.date || p.purchased_at || '', p.supply_items?.name || p.item_name || '', p.quantity_purchased || 0, Number(p.unit_cost || 0).toFixed(2), Number(p.total_cost || 0).toFixed(2))
+        pushRow(p.date || p.purchased_at || '', p.supply_items?.name || p.item_name || '', p.quantity_purchased ?? '', reportMoney(p.unit_cost), reportMoney(recordedAmount(p, ['total_cost'])))
       }
     } else if (activeTab === 'pl' && pl) {
       pushRow('PROFIT & LOSS')
@@ -512,7 +558,11 @@ export default function Reports() {
   }
 
   const handleSaveExcel = async () => {
-    if (revenue?.source === 'local') {
+    if (activeTab === 'pos' && !posSalesReady) {
+      setError('Cannot export POS sales while the server source is incomplete or uncertified. Refresh online and resolve the reported gaps first.')
+      return
+    }
+    if (revenue?.source === 'local' || (activeTab === 'bookings' && !revenueReady) || (activeTab === 'costs' && !costsReady) || (activeTab === 'expenses' && !expensesReady) || (activeTab === 'pl' && !profitLossReady)) {
       setError('Cannot export reports while using local fallback data. Please restore internet connection and refresh the report.')
       return
     }
@@ -542,7 +592,11 @@ export default function Reports() {
   }
 
   const handleSavePDF = async () => {
-    if (revenue?.source === 'local') {
+    if (activeTab === 'pos' && !posSalesReady) {
+      setError('Cannot export POS sales while the server source is incomplete or uncertified. Refresh online and resolve the reported gaps first.')
+      return
+    }
+    if (revenue?.source === 'local' || (activeTab === 'bookings' && !revenueReady) || (activeTab === 'costs' && !costsReady) || (activeTab === 'expenses' && !expensesReady) || (activeTab === 'pl' && !profitLossReady)) {
       setError('Cannot export reports while using local fallback data. Please restore internet connection and refresh the report.')
       return
     }
@@ -569,7 +623,11 @@ export default function Reports() {
   }
 
   const handlePrint = async () => {
-    if (revenue?.source !== 'server') {
+    if (activeTab === 'pos' && !posSalesReady) {
+      setError('Cannot print POS sales while the server source is incomplete or uncertified. Refresh online and resolve the reported gaps first.')
+      return
+    }
+    if (revenue?.source !== 'server' || (activeTab === 'bookings' && !revenueReady) || (activeTab === 'costs' && !costsReady) || (activeTab === 'expenses' && !expensesReady) || (activeTab === 'pl' && !profitLossReady)) {
       setError('Cannot print reports while using local fallback data. Please restore internet connection and refresh the report.')
       return
     }
@@ -620,12 +678,23 @@ export default function Reports() {
   const summaryRooms = Number(summarySnapshot?.totalRooms ?? occupancy.length)
   const summaryCheckedIn = Number(summarySnapshot?.currentOcc ?? revenue?.checked_in_count ?? 0)
   const revenueSource = revenue?.source === 'server' ? 'server-authoritative' : revenue?.source === 'local' ? 'local fallback' : ''
-  const profitLossSource = pl?.source === 'server' ? 'server-authoritative' : pl?.source === 'local' ? 'local fallback' : ''
-  const outletProfitLossSource = outletPL?.source === 'server' ? 'server-authoritative' : outletPL?.source === 'local' ? 'local fallback' : ''
   const roomProfitabilitySource = roomProfitability[0]?.source === 'server' ? 'server-authoritative' : roomProfitability[0]?.source === 'local' ? 'local fallback' : ''
+  const roomProfitabilityReady = roomProfitability?._complete === true
+  const revenueReady = revenue?.source === 'server' && revenue?._complete === true
+    && occupancy?._source === 'server' && occupancy?._complete === true
+    && roomProfitabilityReady
+  const profitLossSource = pl?.source === 'server' ? 'server-authoritative' : pl?.source === 'local' ? 'local fallback' : ''
+  const profitLossReady = pl?.source === 'server' && pl?._complete === true
+  const outletProfitLossSource = outletPL?.source === 'server' ? 'server-authoritative' : outletPL?.source === 'local' ? 'local fallback' : ''
   const posSalesSource = posSales?.source === 'server' ? 'server-authoritative' : posSales?.source === 'local' ? 'local fallback' : ''
+  const posSalesReady = posSales?.source === 'server'
+    && posSales?.complete === true
+    && posSales?.financial_truth === 'server_confirmed'
   const inventorySpendSource = invSpend?.source === 'server' ? 'server-authoritative' : invSpend?.source === 'local' ? 'local fallback' : ''
   const supplySpendSource = supSpend?.source === 'server' ? 'server-authoritative' : supSpend?.source === 'local' ? 'local fallback' : ''
+  const inventorySpendReady = invSpend?.source === 'server' && invSpend?._complete === true
+  const supplySpendReady = supSpend?.source === 'server' && supSpend?._complete === true
+  const expenseRowsReady = Array.isArray(expenses) && expenses.every((row) => recordedAmount(row, ['amount']) !== null)
   const exportPeriod = `${start} to ${end}`
   const formatSyncTs = (value) => {
     if (!value) return 'unknown'
@@ -633,7 +702,7 @@ export default function Reports() {
   }
   const activeTabUsesOfflineData = (
     syncStatus?.isOnline === false
-    || (activeTab === 'bookings' && (revenue?.source && revenue.source !== 'server' || summarySnapshot?.source && summarySnapshot.source !== 'server'))
+    || (activeTab === 'bookings' && (!revenueReady || (summarySnapshot?.source && summarySnapshot.source !== 'server')))
     || (activeTab === 'expenses' && syncStatus?.isOnline === false)
     || (activeTab === 'pos' && posSales?.source && posSales.source !== 'server')
     || (activeTab === 'costs' && (
@@ -641,7 +710,8 @@ export default function Reports() {
       || (supSpend?.source && supSpend.source !== 'server')
     ))
     || (activeTab === 'pl' && (
-      (pl?.source && pl.source !== 'server')
+      !profitLossReady
+      || (pl?.source && pl.source !== 'server')
       || (canViewCombinedReports && outletPL?.source && outletPL.source !== 'server')
     ))
   )
@@ -667,7 +737,7 @@ export default function Reports() {
         key: 'revenue',
         label: 'Revenue',
         value: revenueSource.replace('-authoritative', ''),
-        tone: revenue?.source === 'server' ? 'green' : 'amber',
+        tone: revenueReady ? 'green' : 'amber',
         title: `Revenue source: ${revenueSource} for ${start} to ${end}.`
       })
     }
@@ -685,7 +755,7 @@ export default function Reports() {
         key: 'pl',
         label: 'P&L',
         value: profitLossSource.replace('-authoritative', ''),
-        tone: pl?.source === 'server' ? 'green' : 'amber',
+        tone: profitLossReady ? 'green' : 'amber',
         title: `Profit and loss source: ${profitLossSource} for ${start} to ${end}.`
       })
     }
@@ -727,9 +797,11 @@ export default function Reports() {
     pl?.source,
     posSales?.source,
     posSalesSource,
+    profitLossReady,
     profitLossSource,
     revenue?.source,
     revenueSource,
+    revenueReady,
     roomProfitabilitySource,
     roomProfitability,
     start,
@@ -764,22 +836,22 @@ export default function Reports() {
 
 <div className="flex flex-wrap gap-2">
           {/* Disable all exports when data is from local fallback — money numbers must be authoritative */}
-          <button onClick={exportCSV} disabled={!revenue || loading || revenue?.source !== 'server'}
+          <button onClick={exportCSV} disabled={!revenue || loading || revenue?.source !== 'server' || (activeTab === 'bookings' && !revenueReady) || (activeTab === 'pos' && !posSalesReady) || (activeTab === 'costs' && !costsReady) || (activeTab === 'expenses' && !expensesReady) || (activeTab === 'pl' && !profitLossReady)}
             className="btn-secondary disabled:opacity-40"
             title={revenue?.source !== 'server' ? 'Export blocked: report is using local fallback data, not server-authoritative data' : 'CSV export for the bookings report'}>
             <Download size={14} /> CSV
           </button>
-          <button onClick={handleSaveExcel} disabled={!revenue || loading || savingXLSX || revenue?.source !== 'server'}
+          <button onClick={handleSaveExcel} disabled={!revenue || loading || savingXLSX || revenue?.source !== 'server' || (activeTab === 'bookings' && !revenueReady) || (activeTab === 'pos' && !posSalesReady) || (activeTab === 'costs' && !costsReady) || (activeTab === 'expenses' && !expensesReady) || (activeTab === 'pl' && !profitLossReady)}
             className="inline-flex items-center gap-2 rounded-2xl border border-emerald-300 bg-emerald-50 px-4 py-2.5 text-sm font-medium text-emerald-700 transition-colors hover:bg-emerald-100 disabled:opacity-40"
             title={revenue?.source !== 'server' ? 'Export blocked: report is using local fallback data, not server-authoritative data' : 'Excel workbook exports the full report pack in separate sheets'}>
             <Table size={14} /> {savingXLSX ? 'Saving…' : 'Excel Workbook'}
           </button>
-          <button onClick={handlePrint} disabled={!revenue || loading || revenue?.source !== 'server'}
+          <button onClick={handlePrint} disabled={!revenue || loading || revenue?.source !== 'server' || (activeTab === 'bookings' && !revenueReady) || (activeTab === 'pos' && !posSalesReady) || (activeTab === 'costs' && !costsReady) || (activeTab === 'expenses' && !expensesReady) || (activeTab === 'pl' && !profitLossReady)}
             className="btn-secondary disabled:opacity-40"
             title={revenue?.source !== 'server' ? 'Print blocked: report is using local fallback data, not server-authoritative data' : ''}>
             <Printer size={14} /> Print
           </button>
-          <button onClick={handleSavePDF} disabled={!revenue || loading || savingPDF || revenue?.source !== 'server'}
+          <button onClick={handleSavePDF} disabled={!revenue || loading || savingPDF || revenue?.source !== 'server' || (activeTab === 'bookings' && !revenueReady) || (activeTab === 'pos' && !posSalesReady) || (activeTab === 'costs' && !costsReady) || (activeTab === 'expenses' && !expensesReady) || (activeTab === 'pl' && !profitLossReady)}
             className="btn-primary disabled:opacity-40"
             title={revenue?.source !== 'server' ? 'Export blocked: report is using local fallback data, not server-authoritative data' : ''}>
             <FileDown size={14} /> {savingPDF ? 'Saving…' : 'Save PDF'}
@@ -984,6 +1056,12 @@ export default function Reports() {
               <ShoppingCart size={32} className="mx-auto mb-2 opacity-30" />
               <p className="text-sm">No completed POS orders were recorded in this period.</p>
             </div>
+          ) : !posSalesReady ? (
+            <div className="bb-empty-state min-h-[220px]">
+              <ShoppingCart size={32} className="mx-auto mb-2 opacity-30" />
+              <p className="text-sm font-semibold text-amber-700">POS money is unavailable until the server certifies a complete source.</p>
+              <p className="mt-2 max-w-lg text-xs text-slate-500">This period is still incomplete or uses a local estimate. Refresh online after resolving pending, unknown, amount, tender, or item-detail rows.</p>
+            </div>
           ) : (
             <>
               {/* Summary cards */}
@@ -1130,6 +1208,12 @@ export default function Reports() {
             <div className="bb-empty-state min-h-[220px]">
               <p className="text-sm font-medium text-slate-500">Loading cost data…</p>
             </div>
+          ) : !costsReady ? (
+            <div className="bb-empty-state min-h-[220px]">
+              <Package size={32} className="mx-auto mb-2 opacity-30" />
+              <p className="text-sm font-semibold text-amber-700">Stock costs are unavailable until the server confirms a complete source.</p>
+              <p className="mt-2 max-w-lg text-xs text-slate-500">Cached or legacy purchase rows are visible only for operational recovery; they cannot be used as a financial total or exported.</p>
+            </div>
           ) : (
             <>
               {/* Summary cards */}
@@ -1206,10 +1290,10 @@ export default function Reports() {
                           </td>
                           <td className="px-5 py-2.5 text-right text-slate-600">{p.quantity_purchased}</td>
                           <td className="px-5 py-2.5 text-right text-slate-600">
-                            {currency} {Number(p.unit_cost || 0).toFixed(2)}
+                            {p.unit_cost == null ? 'Unavailable' : `${currency} ${reportMoney(p.unit_cost)}`}
                           </td>
                           <td className="px-5 py-2.5 text-right font-semibold text-slate-800">
-                            {currency} {Number(p.total_cost || 0).toFixed(2)}
+                            {recordedAmount(p, ['total_cost']) === null ? 'Unavailable' : `${currency} ${reportMoney(recordedAmount(p, ['total_cost']))}`}
                           </td>
                         </tr>
                       ))}
@@ -1250,10 +1334,10 @@ export default function Reports() {
                           </td>
                           <td className="px-5 py-2.5 text-right text-slate-600">{p.quantity_purchased}</td>
                           <td className="px-5 py-2.5 text-right text-slate-600">
-                            {currency} {Number(p.unit_cost || 0).toFixed(2)}
+                            {p.unit_cost == null ? 'Unavailable' : `${currency} ${reportMoney(p.unit_cost)}`}
                           </td>
                           <td className="px-5 py-2.5 text-right font-semibold text-slate-800">
-                            {currency} {Number(p.total_cost || 0).toFixed(2)}
+                            {recordedAmount(p, ['total_cost']) === null ? 'Unavailable' : `${currency} ${reportMoney(recordedAmount(p, ['total_cost']))}`}
                           </td>
                         </tr>
                       ))}
@@ -1286,6 +1370,11 @@ export default function Reports() {
             {expLoading ? (
               <div className="bb-empty-state min-h-[220px]">
                 <p className="text-sm font-medium text-slate-500">Loading expense analysis…</p>
+              </div>
+            ) : !expensesReady ? (
+              <div className="bb-empty-state min-h-[220px]">
+                <p className="text-sm font-semibold text-amber-700">Expense totals are unavailable until the server confirms every source row.</p>
+                <p className="mt-2 text-xs text-slate-500">Refresh online and resolve pending or incomplete expense/maintenance records before making a financial decision.</p>
               </div>
             ) : (
               <>
@@ -1327,7 +1416,7 @@ export default function Reports() {
                             <span className="rounded-full bg-blue-50 px-2 py-0.5 text-xs text-blue-700">{e.category}</span>
                           </td>
                           <td className="px-5 py-2.5 text-right font-semibold text-slate-800">
-                            {currency} {Number(e.amount).toFixed(2)}
+                            {currency} {reportMoney(recordedAmount(e, ['amount']))}
                           </td>
                         </tr>
                       ))}
@@ -1361,7 +1450,7 @@ export default function Reports() {
                               <div className="bg-blue-500 h-2.5 rounded-full transition-all" style={{ width: `${pct}%` }} />
                             </div>
                             <span className="w-24 text-right text-xs font-semibold text-slate-700">
-                              {currency} {Number(amt).toFixed(2)}
+                              {currency} {reportMoney(amt)}
                             </span>
                             <span className="w-10 text-xs text-slate-400">{Math.round(pct)}%</span>
                           </div>
@@ -1377,7 +1466,14 @@ export default function Reports() {
       })()}
 
       {/* ── BOOKINGS TAB ─────────────────────────────────────────────────────── */}
-      {activeTab === 'bookings' && <>
+      {activeTab === 'bookings' && !revenueReady && (
+        <div className="bb-empty-state min-h-[220px]">
+          <DollarSign size={32} className="mx-auto mb-2 opacity-30" />
+          <p className="text-sm font-semibold text-amber-700">Booking revenue is unavailable until the server certifies a complete source.</p>
+          <p className="mt-2 max-w-lg text-xs text-slate-500">Cached or legacy booking values remain operational context only; they cannot be used as financial totals or exported.</p>
+        </div>
+      )}
+      {activeTab === 'bookings' && revenueReady && <>
       {revenue && (
         <div className="grid grid-cols-2 lg:grid-cols-6 gap-4 mb-6">
           <SummaryCard icon={DollarSign}  label="Total Revenue"
@@ -1915,7 +2011,14 @@ export default function Reports() {
       </>}
 
       {/* ── P&L TAB ──────────────────────────────────────────────────────────── */}
-      {activeTab === 'pl' && (
+      {activeTab === 'pl' && !profitLossReady && (
+        <div className="bb-empty-state min-h-[220px]">
+          <DollarSign size={32} className="mx-auto mb-2 opacity-30" />
+          <p className="text-sm font-semibold text-amber-700">Profit &amp; Loss is unavailable until the server certifies a complete source.</p>
+          <p className="mt-2 max-w-lg text-xs text-slate-500">The report will return after its revenue, expense, stock, and maintenance sources reconcile.</p>
+        </div>
+      )}
+      {activeTab === 'pl' && profitLossReady && (
         <div>
           {plLoading ? (
             <div className="bb-empty-state min-h-[220px]">

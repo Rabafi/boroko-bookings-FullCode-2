@@ -30,3 +30,6 @@ run-pw-tests.bat
 .tmp/
 .env*.local
 .env*
+/.backup-keys/
+/backup-output/
+/.supabase-cli-home/

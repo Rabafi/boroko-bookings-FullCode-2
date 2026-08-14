@@ -92,6 +92,25 @@ export function writeLocalJson(key, value) {
   writeStorage(window.localStorage, key, value)
 }
 
+// Financial/support write-ahead records use a strict path. The general cache
+// helpers remain best-effort, but a queue item is not safe to send until the
+// browser confirms that the exact serialized envelope can be read back.
+export function writeLocalJsonVerified(key, value) {
+  const area = typeof window !== 'undefined' ? window.localStorage : null
+  if (!area) throw new Error('Durable local storage is unavailable.')
+  const serialized = JSON.stringify(value)
+  area.setItem(key, serialized)
+  if (area.getItem(key) !== serialized) throw new Error('Durable local storage did not retain the queue envelope.')
+  return true
+}
+
+export function readLocalJsonVerified(key) {
+  const area = typeof window !== 'undefined' ? window.localStorage : null
+  if (!area) throw new Error('Durable local storage is unavailable.')
+  const raw = area.getItem(key)
+  return raw ? JSON.parse(raw) : null
+}
+
 function removeLocalJson(key) {
   removeStorage(window.localStorage, key)
 }
@@ -149,7 +168,7 @@ function cacheAgeMs(entry) {
   return Number.isFinite(updatedAtMs) ? Date.now() - updatedAtMs : Infinity
 }
 
-export async function queryWithCache({ lodgeId, key, fetcher, fallback = [], forceFresh = false, maxAgeMs = DEFAULT_ONLINE_CACHE_MAX_AGE_MS }) {
+export async function queryWithCache({ lodgeId, key, fetcher, fallback = [], forceFresh = false, maxAgeMs = DEFAULT_ONLINE_CACHE_MAX_AGE_MS, allowStaleOnError = true }) {
   const cached = readCacheEntry(lodgeId, key, null)
   const onlineCacheMs = Math.max(Number(maxAgeMs) || 0, 0)
   const requestKey = scoped(CACHE_PREFIX, lodgeId, key)
@@ -172,7 +191,7 @@ export async function queryWithCache({ lodgeId, key, fetcher, fallback = [], for
       writeCacheEntry(lodgeId, key, data)
       return data
     } catch (error) {
-      if (cached) return cached.data
+      if (cached && allowStaleOnError) return cached.data
       throw error
     } finally {
       if (inFlightQueries.get(requestKey) === request) {
@@ -190,15 +209,75 @@ export function getOfflineQueue(lodgeId) {
 }
 
 export function setOfflineQueue(lodgeId, items) {
-  writeLocalJson(scoped(QUEUE_PREFIX, lodgeId, 'items'), items)
-  emit('boroko:pwa-queue', { lodgeId, count: items.length })
+  const normalized = deduplicateQueueItems(items)
+  writeLocalJson(scoped(QUEUE_PREFIX, lodgeId, 'items'), normalized)
+  emit('boroko:pwa-queue', { lodgeId, count: normalized.length })
+  return normalized
 }
 
 export function enqueueOfflineOperation(lodgeId, item) {
   const current = getOfflineQueue(lodgeId)
+  const existing = current.find((entry) => entry?.id === item?.id)
+  if (existing) {
+    if (JSON.stringify(existing.payload) !== JSON.stringify(item.payload)) {
+      const error = new Error('This queued operation was already used with different details.')
+      error.code = 'idempotency_conflict'
+      throw error
+    }
+    return existing
+  }
   const next = [...current, item]
   setOfflineQueue(lodgeId, next)
   return item
+}
+
+function deduplicateQueueItems(items) {
+  const byId = new Map()
+  for (const item of Array.isArray(items) ? items : []) {
+    if (!item?.id) continue
+    const existing = byId.get(item.id)
+    if (existing && JSON.stringify(existing.payload) !== JSON.stringify(item.payload)) {
+      const error = new Error('The queue contains two different envelopes for one operation ID.')
+      error.code = 'idempotency_conflict'
+      throw error
+    }
+    if (!existing) byId.set(item.id, item)
+  }
+  return [...byId.values()]
+}
+
+export function enqueueOfflineOperationVerified(lodgeId, item) {
+  const key = scoped(QUEUE_PREFIX, lodgeId, 'items')
+  const current = readLocalJsonVerified(key)
+  const existing = Array.isArray(current) ? current.find((entry) => entry?.id === item?.id) : null
+  if (existing) {
+    if (JSON.stringify(existing.payload) !== JSON.stringify(item.payload)) {
+      const error = new Error('This queued operation was already used with different details.')
+      error.code = 'idempotency_conflict'
+      throw error
+    }
+    return existing
+  }
+  const next = [...(Array.isArray(current) ? current : []), item]
+  const normalized = deduplicateQueueItems(next)
+  writeLocalJsonVerified(key, normalized)
+  const stored = readLocalJsonVerified(key)
+  if (!Array.isArray(stored) || !stored.some((entry) => entry?.id === item?.id && JSON.stringify(entry) === JSON.stringify(item))) {
+    throw new Error('The support operation was not durably persisted. The server call was not sent.')
+  }
+  emit('boroko:pwa-queue', { lodgeId, count: stored.length })
+  return item
+}
+
+export function removeOfflineOperation(lodgeId, operationId) {
+  const key = scoped(QUEUE_PREFIX, lodgeId, 'items')
+  const current = readLocalJsonVerified(key)
+  const next = (Array.isArray(current) ? current : []).filter((item) => item?.id !== operationId)
+  writeLocalJsonVerified(key, next)
+  const stored = readLocalJsonVerified(key)
+  if (stored.some((item) => item?.id === operationId)) throw new Error('The completed support operation could not be removed from local recovery storage.')
+  emit('boroko:pwa-queue', { lodgeId, count: stored.length })
+  return true
 }
 
 export function setRuntimeMeta(lodgeId, key, value) {

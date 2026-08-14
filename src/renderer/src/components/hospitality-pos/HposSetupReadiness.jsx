@@ -56,7 +56,7 @@ export default function HposSetupReadiness() {
     try {
       const [result, hardware] = await Promise.all([
         window.api?.pos?.getSetupProgress?.(),
-        window.api?.pos?.getHardwareSettings?.().catch(() => ({})),
+        Promise.resolve(window.api?.pos?.getHardwareSettings?.()).catch(() => ({})),
       ]);
       const detectedRows = Array.isArray(result) ? result : [];
       const hasHardware = Boolean(hardware?.receipt_printer_name || hardware?.cash_drawer_enabled || hardware?.payment_terminal_bridge_url);

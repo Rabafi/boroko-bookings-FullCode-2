@@ -80,8 +80,7 @@ const HOTEL_MODULES = [
   { route: 'guest-portal', feature: 'guest_portal' },
   { route: 'multi-property', feature: 'multi_property' },
   { route: 'guest-crm', feature: 'guest_crm' },
-  { route: 'operations-compliance', feature: 'operations_compliance' },
-  { route: 'multi-outlet-pos', feature: 'multi_outlet_pos' }
+  { route: 'operations-compliance', feature: 'operations_compliance' }
 ]
 
 for (const { route, feature } of HOTEL_MODULES) {
@@ -90,6 +89,11 @@ for (const { route, feature } of HOTEL_MODULES) {
     assert.ok(appJsx.includes(pattern), `Route /${route} should gate on feature="${feature}"`)
   })
 }
+
+test('multi-outlet POS legacy route redirects to the guarded outlet-control surface', () => {
+  assert.ok(appJsx.includes('path="multi-outlet-pos" element={<Navigate to="/restaurant/outlet-control" replace />}'))
+  assert.ok(appJsx.includes('path="restaurant/outlet-control" element={<RestaurantOnlyRoute><BarAddonFeatureRoute feature="multi_outlet_controls"'))
+})
 
 // All redirect target features should be present in entitlement map
 const ALL_REDIRECT_FEATURES = [

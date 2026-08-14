@@ -9,7 +9,8 @@ export default function RestaurantCashDrawer() {
   const [closingTotal, setClosingTotal] = useState('')
   const [declaredTotal, setDeclaredTotal] = useState('')
   const [notes, setNotes] = useState('')
-  const [todaySales, setTodaySales] = useState({ cash: 0, card: 0, other: 0, total: 0 })
+  const [todaySales, setTodaySales] = useState({ cash: null, card: null, other: null, total: null })
+  const [salesReady, setSalesReady] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [saving, setSaving] = useState(false)
@@ -26,16 +27,29 @@ export default function RestaurantCashDrawer() {
         window.api.pos.getOrders(new Date().toISOString().slice(0, 10), new Date().toISOString().slice(0, 10))
       ])
       setDrawer(d.value || null)
-      setHistory(Array.isArray(h.value) ? h.value : [])
+      const historyUnavailable = h.status === 'fulfilled' && h.value?._available === false
+      setHistory(historyUnavailable ? [] : (Array.isArray(h.value) ? h.value : []))
 
       const todayOrders = Array.isArray(orders.value) ? orders.value : []
-      const cash = todayOrders.filter(o => (o.payment_method || '').toLowerCase() === 'cash').reduce((s, o) => s + (o.total || o.amount || 0), 0)
-      const card = todayOrders.filter(o => (o.payment_method || '').toLowerCase() === 'card').reduce((s, o) => s + (o.total || o.amount || 0), 0)
-      const other = todayOrders.filter(o => !['cash', 'card'].includes((o.payment_method || '').toLowerCase())).reduce((s, o) => s + (o.total || o.amount || 0), 0)
-      setTodaySales({ cash, card, other, total: cash + card + other })
-      setClosingTotal(current => current || cash.toFixed(2))
+      const orderSnapshotReady = todayOrders._source === 'server' && todayOrders._complete === true && todayOrders._tender_complete === true
+      const completed = todayOrders.filter(o => ['completed', 'settled'].includes(String(o.status || '').toLowerCase()))
+      const tenderRows = (value) => {
+        if (Array.isArray(value)) return value
+        if (typeof value !== 'string' || !value.trim()) return []
+        try { const parsed = JSON.parse(value); return Array.isArray(parsed) ? parsed : [] } catch { return [] }
+      }
+      const tenderTotal = (method) => completed.reduce((sum, order) => sum + tenderRows(order.payment_breakdown)
+        .filter(row => String(row?.method || row?.type || '').toLowerCase() === method)
+        .reduce((rowSum, row) => rowSum + Number(row.amount || 0), 0), 0)
+      const cash = orderSnapshotReady ? tenderTotal('cash') : null
+      const card = orderSnapshotReady ? tenderTotal('card') : null
+      const total = orderSnapshotReady ? completed.reduce((sum, order) => sum + Number(order.total || order.amount || 0), 0) : null
+      const other = orderSnapshotReady ? total - cash - card : null
+      setSalesReady(orderSnapshotReady)
+      setTodaySales({ cash, card, other, total })
+      setClosingTotal(current => current || (orderSnapshotReady ? cash.toFixed(2) : ''))
       const failures = [d, h, orders].filter(result => result.status === 'rejected')
-      if (failures.length > 0) setError('Some cash-up information could not be refreshed. Do not close the drawer until all totals are visible.')
+      if (failures.length > 0 || historyUnavailable) setError('Some cash-up information could not be refreshed. Do not close the drawer until all totals are visible.')
     } catch (err) {
       console.error('Failed to load cash drawer:', err)
       setError(err.message || 'Could not load the cash drawer.')
@@ -97,8 +111,8 @@ export default function RestaurantCashDrawer() {
     }
   }
 
-  const expectedCash = (Number(drawer?.opening_float || 0) + Number(closingTotal || todaySales.cash || 0)).toFixed(2)
-  const variance = declaredTotal ? (Number(declaredTotal) - Number(expectedCash)).toFixed(2) : null
+  const expectedCash = salesReady ? (Number(drawer?.opening_float || 0) + Number(closingTotal || todaySales.cash || 0)).toFixed(2) : null
+  const variance = declaredTotal !== '' && expectedCash != null ? (Number(declaredTotal) - Number(expectedCash)).toFixed(2) : null
 
   return (
     <div className="restaurant-native-page">
@@ -145,7 +159,7 @@ export default function RestaurantCashDrawer() {
                   </div>
                   <div>
                     <div className="text-xs text-gray-500">Expected Cash</div>
-                    <div className="font-bold text-emerald-600">P {expectedCash}</div>
+                    <div className="font-bold text-emerald-600">{expectedCash == null ? 'Unavailable' : `P ${expectedCash}`}</div>
                   </div>
                 </div>
 
@@ -159,19 +173,19 @@ export default function RestaurantCashDrawer() {
                     </div>
                     <div>
                       <span className="text-gray-500">+ POS cash movement: </span>
-                      <span className="font-medium">P {todaySales.cash.toFixed(2)}</span>
+                      <span className="font-medium">{todaySales.cash == null ? 'Unavailable' : `P ${todaySales.cash.toFixed(2)}`}</span>
                     </div>
                     <div>
                       <span className="text-gray-500">= Expected: </span>
-                      <span className="font-bold">P {expectedCash}</span>
+                      <span className="font-bold">{expectedCash == null ? 'Unavailable' : `P ${expectedCash}`}</span>
                     </div>
                   </div>
                   <div className="grid grid-cols-3 gap-4 text-xs text-gray-400 mt-2">
-                    <div>Card: P {todaySales.card.toFixed(2)}</div>
-                    <div>Other: P {todaySales.other.toFixed(2)}</div>
-                    <div>Total Sales: P {todaySales.total.toFixed(2)}</div>
+                    <div>Card: {todaySales.card == null ? 'Unavailable' : `P ${todaySales.card.toFixed(2)}`}</div>
+                    <div>Other: {todaySales.other == null ? 'Unavailable' : `P ${todaySales.other.toFixed(2)}`}</div>
+                    <div>Total Sales: {todaySales.total == null ? 'Unavailable' : `P ${todaySales.total.toFixed(2)}`}</div>
                   </div>
-                  <p className="restaurant-native-financial-warning mt-3">This is an on-screen estimate from loaded POS orders. The cash-up saved by the server uses the cash movement and physical count entered below.</p>
+                  <p className="restaurant-native-financial-warning mt-3">{salesReady ? 'This is an on-screen estimate from a server-confirmed POS snapshot. The cash-up saved by the server uses the cash movement and physical count entered below.' : 'POS expectations are unavailable until the server confirms a complete tender snapshot. Enter only a physically verified cash movement below.'}</p>
                 </div>
 
                 <div className="border-t pt-4">

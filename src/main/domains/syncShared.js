@@ -123,9 +123,41 @@ export function getSyncItemScope(item) {
   return item?.table || 'unknown';
 }
 
+// Before the financial-truth tender contract existed, some queued desktop
+// orders carried customer_account_charge beside a cash-only breakdown.  The
+// server cannot infer that intent safely.  Adapt only that legacy envelope,
+// preserving the v3 RPC name and stable order/idempotency key.  New callers
+// must put customer_id/code directly on payment_breakdown.
+export function adaptLegacyPosOrderFinancialPayload(payload = {}) {
+  if (!payload || typeof payload !== 'object') return payload;
+  const legacyCharge = payload.customer_account_charge;
+  if (!legacyCharge?.customer_id) return payload;
+
+  const breakdown = Array.isArray(payload.payment_breakdown) ? payload.payment_breakdown : [];
+  if (breakdown.some((row) => String(row?.method || '').trim().toLowerCase() === 'account')) return payload;
+
+  const amount = Number(legacyCharge.amount ?? payload.total ?? 0);
+  if (!Number.isFinite(amount) || amount <= 0) return payload;
+
+  return {
+    ...payload,
+    payment_method: 'account',
+    payment_breakdown: [{
+      method: 'account',
+      amount: Math.round(amount * 100) / 100,
+      customer_id: legacyCharge.customer_id,
+      reference: null
+    }]
+  };
+}
+
 export function normalizeQueuedSyncItemForReplay(item = {}) {
   if (!item) return item;
   const next = { ...item, data: { ...(item.data || {}) } };
+
+  if (next.type === 'rpc' && ['create_pos_order', 'create_pos_order_v3'].includes(next.table) && next.data?.payload) {
+    next.data.payload = adaptLegacyPosOrderFinancialPayload(next.data.payload);
+  }
 
   if (next.type === 'rpc' &&
   ['update_booking', 'update_booking_status'].includes(next.table) &&

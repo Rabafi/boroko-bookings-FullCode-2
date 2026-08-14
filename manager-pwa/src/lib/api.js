@@ -7,12 +7,14 @@ import {
   appendIssueLog,
   createQueuedOperation,
   enqueueOfflineOperation,
+  enqueueOfflineOperationVerified,
   getOfflineQueue,
   readIssueLog,
   getRuntimeMeta,
   mutateCachedList,
   queryWithCache,
   setOfflineQueue,
+  removeOfflineOperation,
   setRuntimeMeta
 } from './runtime'
 
@@ -139,7 +141,13 @@ function addDays(base, days) {
 }
 
 function formatDate(value) {
-  return new Date(value).toISOString().slice(0, 10)
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Africa/Gaborone',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).formatToParts(new Date(value)).reduce((result, part) => ({ ...result, [part.type]: part.value }), {})
+  return `${parts.year}-${parts.month}-${parts.day}`
 }
 
 function upsertById(list, record) {
@@ -447,7 +455,9 @@ async function buildDashboardSnapshotLegacy(lodgeId, today = formatDate(new Date
         balance: Math.max(0, Number(booking.total_amount || 0) + Number(booking.charges_total || 0) - Number(booking.amount_paid || 0))
       }))
       .sort((left, right) => right.balance - left.balance)
-      .slice(0, 5)
+      .slice(0, 5),
+    source: 'legacy_estimate',
+    financial_truth: 'estimated_until_server_reconciled'
   }
 }
 
@@ -563,7 +573,9 @@ async function buildReportsSnapshotLegacy(lodgeId, today = formatDate(new Date()
       .filter((order) => String(order.payment_method || '').toLowerCase() !== 'folio')
       .reduce((sum, order) => sum + Number(order.total || 0), 0),
     conferenceRevenue: conferenceBookings.reduce((sum, booking) => sum + Number(booking.total_amount || 0), 0),
-    poolRevenue: poolDayUse.reduce((sum, entry) => sum + Number(entry.total || 0), 0)
+    poolRevenue: poolDayUse.reduce((sum, entry) => sum + Number(entry.total || 0), 0),
+    source: 'legacy_estimate',
+    financial_truth: 'estimated_until_server_reconciled'
   }
 }
 
@@ -802,7 +814,7 @@ async function executeInventory(mode, payload) {
   return data
 }
 
-async function executeSupport(payload) {
+async function executeSupport(payload, operationId = null) {
   const { data, error } = await supabase.rpc('create_support_ticket', {
     payload: {
       lodge_id: payload.lodge_id,
@@ -819,14 +831,15 @@ async function executeSupport(payload) {
       sender_surface: payload.sender_surface || payload.requester_surface || 'manager_pwa',
       requester_name: payload.requester_name || payload.sender_name || '',
       requester_role: payload.requester_role || payload.sender_role || '',
-      requester_user_id: payload.requester_user_id || payload.sender_user_id || ''
+      requester_user_id: payload.requester_user_id || payload.sender_user_id || '',
+      operation_id: operationId || payload.client_operation_id || payload.operation_id || null
     }
   })
   ensureSuccess(data, error, 'Could not create support request')
   return data
 }
 
-async function executeSupportMessage(payload) {
+async function executeSupportMessage(payload, operationId = null) {
   const { data, error } = await supabase.rpc('add_lodge_support_ticket_message', {
     p_ticket_id: payload.ticket_id,
     p_lodge_id: payload.lodge_id,
@@ -837,13 +850,41 @@ async function executeSupportMessage(payload) {
     p_sender_user_id: payload.sender_user_id || '',
     p_sender_surface: payload.sender_surface || 'manager_pwa',
     p_metadata: payload.metadata || {},
-    p_status: payload.status || null
+    p_status: payload.status || null,
+    p_operation_id: operationId || payload.client_operation_id || payload.operation_id || null
   })
   ensureSuccess(data, error, 'Could not add request message')
   return data
 }
 
+function isSupportOperation(type) {
+  return type === 'support/create' || type === 'support/message'
+}
+
+function isTransportFailure(error) {
+  const message = friendlyErrorMessage(error, '').toLowerCase()
+  return /failed to fetch|network|timeout|timed out|connection reset|econn|err_connection|503|502|504/.test(message)
+}
+
 async function queueOrRun({ lodgeId, type, label, payload, execute, optimistic }) {
+  const supportOperation = isSupportOperation(type)
+  const queueItem = createQueuedOperation(type, label, payload)
+  const operationId = supportOperation
+    ? payload?.client_operation_id || payload?.operation_id || queueItem.id
+    : null
+  const executionPayload = supportOperation
+    ? { ...payload, client_operation_id: operationId }
+    : payload
+  if (supportOperation) {
+    // The PWA queue ID is the idempotency key. If a caller supplied an
+    // operation ID, preserve it as the queue ID so offline and online paths
+    // use the same server operation.
+    queueItem.id = operationId
+    queueItem.payload = executionPayload
+    // Write-ahead persistence is part of the support mutation contract. A
+    // storage failure throws before the RPC is even attempted.
+    enqueueOfflineOperationVerified(lodgeId, queueItem)
+  }
   if (isOfflineMode()) {
     if (BLOCKED_PWA_MUTATION_TYPES.has(type)) {
       appendIssueLog(lodgeId, {
@@ -856,10 +897,22 @@ async function queueOrRun({ lodgeId, type, label, payload, execute, optimistic }
       throw new Error(`${label} requires an internet connection and cannot be saved offline. Use Front Desk when back online.`)
     }
     if (optimistic) optimistic()
-    enqueueOfflineOperation(lodgeId, createQueuedOperation(type, label, payload))
-    return { success: true, queued: true }
+    if (!supportOperation) enqueueOfflineOperation(lodgeId, queueItem)
+    return { success: true, queued: true, operation_id: operationId }
   }
-  return execute()
+  try {
+    const result = await execute(executionPayload, operationId)
+    if (supportOperation) removeOfflineOperation(lodgeId, operationId)
+    return result
+  } catch (error) {
+    // A support RPC is safe to retain after an ambiguous transport failure:
+    // the same queue item ID will replay the exact request and the server
+    // returns the original ticket/message rather than creating another row.
+    if (supportOperation && isTransportFailure(error)) {
+      return { success: true, queued: true, operation_id: operationId, transport_recovered: true }
+    }
+    throw error
+  }
 }
 
 async function getSettings(lodgeId) {
@@ -995,23 +1048,40 @@ export async function getManagerPosSnapshot(lodgeId, options = {}) {
   const startDate = options.startDate || today
   const endDate = options.endDate || today
   const outletId = options.outletId || null
-  return queryWithCache({
+  const snapshot = await queryWithCache({
     lodgeId,
     key: `pos_snapshot:${startDate}:${endDate}:${outletId || 'all'}`,
     fallback: null,
     forceFresh: options.forceFresh === true,
     maxAgeMs: 30_000,
-    fetcher: () => readRpcJson(
-      'get_manager_pos_snapshot',
-      {
-        p_lodge_id: lodgeId,
-        p_start_date: startDate,
-        p_end_date: endDate,
-        p_outlet_id: outletId
-      },
-      'Could not load the POS sales snapshot.'
-    )
+    allowStaleOnError: false,
+    fetcher: async () => {
+      const snapshot = await readRpcJson(
+        'get_manager_pos_snapshot',
+        {
+          p_lodge_id: lodgeId,
+          p_start_date: startDate,
+          p_end_date: endDate,
+          p_outlet_id: outletId
+        },
+        'Could not load the POS sales snapshot.'
+      )
+      return snapshot
+    }
   })
+  const datasetStatus = String(snapshot?.dataset_status || '').toLowerCase()
+  const offline = isOfflineMode()
+  const serverComplete = !offline
+    && snapshot?.complete === true
+    && (snapshot?.source_coverage_complete === undefined || snapshot.source_coverage_complete === true)
+    && (!datasetStatus || datasetStatus === 'certified')
+  return {
+    ...snapshot,
+    source: offline ? 'server_cache' : 'server',
+    financial_truth: serverComplete ? 'server_confirmed' : offline ? 'server_stale' : 'server_incomplete',
+    complete: serverComplete,
+    dataset_status: datasetStatus || (serverComplete ? 'certified' : offline ? 'stale' : 'incomplete')
+  }
 }
 
 export async function getManagerPosTransactions(lodgeId, options = {}) {
@@ -1149,20 +1219,22 @@ export async function listQuotations(lodgeId) {
   })
 }
 
-export async function listExpenses(lodgeId, start, end, options = {}) {
+export async function listExpenses(lodgeId, start, end) {
   assertCapability('expenses.view')
-  return queryWithCache({
-    lodgeId,
-    key: `expenses:${start || 'all'}:${end || 'all'}`,
-    fallback: [],
-    forceFresh: options.forceFresh === true,
-    fetcher: async () => {
-      let query = supabase.from('expenses').select('id, date, category, description, amount, outlet_id, created_at, updated_at').eq('lodge_id', lodgeId)
-      if (start) query = query.gte('date', start)
-      if (end) query = query.lte('date', end)
-      return safeSelect(query.order('date', { ascending: false }).limit(500), [])
-    }
+  // Expenses are a financial source read. Do not silently turn a failed server
+  // read into a stale local estimate; the caller must show the operator that
+  // the source is unavailable and keep the value out of a financial total.
+  const rows = await safeSelectPaged(() => {
+    let query = supabase.from('expenses').select('id, date, category, description, amount, outlet_id, created_at, updated_at, status, operation_id, journal_entry_id').eq('lodge_id', lodgeId)
+    if (start) query = query.gte('date', start)
+    if (end) query = query.lte('date', end)
+    return query.order('date', { ascending: false }).order('id', { ascending: false })
+  }, [])
+  Object.defineProperties(rows, {
+    _source: { value: 'server', enumerable: false, configurable: true },
+    _complete: { value: true, enumerable: false, configurable: true }
   })
+  return rows
 }
 
 export async function listGuests(lodgeId) {
@@ -1602,31 +1674,29 @@ export async function markSupportRequestRead(lodgeId, ticketId, audience = 'mana
 }
 
 export async function createSupportTicket(lodgeId, payload) {
+  const carriedPayload = { ...payload, lodge_id: lodgeId }
   return queueOrRun({
     lodgeId,
     type: 'support/create',
     label: 'Create support request',
-    payload: { ...payload, lodge_id: lodgeId },
-    execute: () => executeSupport({ ...payload, lodge_id: lodgeId }),
+    payload: carriedPayload,
+    execute: (executionPayload, operationId) => executeSupport(executionPayload, operationId),
     optimistic: null
   })
 }
 
 export async function addSupportTicketMessage(lodgeId, ticketId, payload = {}) {
+  const carriedPayload = {
+    ...payload,
+    ticket_id: ticketId,
+    lodge_id: lodgeId
+  }
   return queueOrRun({
     lodgeId,
     type: 'support/message',
     label: 'Send request message',
-    payload: {
-      ...payload,
-      ticket_id: ticketId,
-      lodge_id: lodgeId
-    },
-    execute: () => executeSupportMessage({
-      ...payload,
-      ticket_id: ticketId,
-      lodge_id: lodgeId
-    }),
+    payload: carriedPayload,
+    execute: (executionPayload, operationId) => executeSupportMessage(executionPayload, operationId),
     optimistic: null
   })
 }
@@ -1645,7 +1715,7 @@ async function performOfflineQueueFlush(lodgeId) {
   }
 
   const queue = [...getOfflineQueue(lodgeId)]
-  const queuedIds = new Set(queue.map((item) => item.id))
+  const snapshotById = new Map(queue.map((item) => [item.id, item]))
   let processed = 0
   const remaining = []
 
@@ -1704,10 +1774,10 @@ async function performOfflineQueueFlush(lodgeId) {
           })
           break
         case 'support/create':
-          await executeSupport(item.payload)
+          await executeSupport(item.payload, item.id)
           break
         case 'support/message':
-          await executeSupportMessage(item.payload)
+          await executeSupportMessage(item.payload, item.id)
           break
         default:
           remaining.push(item)
@@ -1720,8 +1790,13 @@ async function performOfflineQueueFlush(lodgeId) {
   }
 
   const latestQueue = getOfflineQueue(lodgeId)
-  const enqueuedDuringFlush = latestQueue.filter((item) => !queuedIds.has(item.id))
-  const nextQueue = [...remaining, ...enqueuedDuringFlush]
+  const changedDuringFlush = latestQueue.filter((item) => {
+    const before = snapshotById.get(item.id)
+    return !before || JSON.stringify(before) !== JSON.stringify(item)
+  })
+  const mergedById = new Map(remaining.map((item) => [item.id, item]))
+  for (const item of changedDuringFlush) mergedById.set(item.id, item)
+  const nextQueue = [...mergedById.values()]
 
   setOfflineQueue(lodgeId, nextQueue)
   setRuntimeMeta(lodgeId, 'last-sync', { processed, remaining: nextQueue.length, updatedAt: new Date().toISOString() })

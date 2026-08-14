@@ -113,7 +113,13 @@ const api = {
     getAll: (start, end, outletId) => ipcRenderer.invoke('expenses:getAll', start, end, outletId),
     create: (data) => ipcRenderer.invoke('expenses:create', data),
     update: (id, data) => ipcRenderer.invoke('expenses:update', id, data),
-    delete: (id) => ipcRenderer.invoke('expenses:delete', id)
+    delete: (id, operationId) => ipcRenderer.invoke('expenses:delete', id, operationId),
+    submit: (id, payload, operationId) => ipcRenderer.invoke('expenses:submit', id, payload, operationId),
+    approve: (id, payload, operationId) => ipcRenderer.invoke('expenses:approve', id, payload, operationId),
+    post: (id, payload, operationId) => ipcRenderer.invoke('expenses:post', id, payload, operationId),
+    pay: (id, payload, operationId) => ipcRenderer.invoke('expenses:pay', id, payload, operationId),
+    void: (id, payload, operationId) => ipcRenderer.invoke('expenses:void', id, payload, operationId),
+    reverse: (id, payload, operationId) => ipcRenderer.invoke('expenses:reverse', id, payload, operationId)
   },
   maintenance: {
     getAll: () => ipcRenderer.invoke('maintenance:getAll'),
@@ -322,12 +328,14 @@ const api = {
     updateMenuItem: (id, data) => ipcRenderer.invoke('pos:updateMenuItem', id, data),
     deleteMenuItem: (id) => ipcRenderer.invoke('pos:deleteMenuItem', id),
     setBarPackTemplate: (data) => ipcRenderer.invoke('pos:setBarPackTemplate', data),
+    saveBarProductWithPacks: (data) => ipcRenderer.invoke('pos:saveBarProductWithPacks', data),
     getOrders: (start, end) => ipcRenderer.invoke('pos:getOrders', start, end),
     getMyOrders: (start, end) => ipcRenderer.invoke('pos:getMyOrders', start, end),
     getVoidHistory: (start, end) => ipcRenderer.invoke('pos:getVoidHistory', start, end),
     exportHistoryExcel: (filters) => ipcRenderer.invoke('pos:exportHistoryExcel', filters),
     exportHistoryPdf: (filters) => ipcRenderer.invoke('pos:exportHistoryPdf', filters),
     createOrder: (data) => ipcRenderer.invoke('pos:createOrder', data),
+    getPendingPosSubmitAttempt: () => ipcRenderer.invoke('pos:getPendingPosSubmitAttempt'),
     voidOrder: (id) => ipcRenderer.invoke('pos:voidOrder', id),
     approveVoidWithPin: (data) => ipcRenderer.invoke('pos:approveVoidWithPin', data),
     approveDiscountWithPin: (data) => ipcRenderer.invoke('pos:approveDiscountWithPin', data),
@@ -362,6 +370,7 @@ const api = {
     getStaffOpenShift: (staffId) => ipcRenderer.invoke('pos:getStaffOpenShift', staffId),
     getStaffCashupSubmission: (shiftId) => ipcRenderer.invoke('pos:getStaffCashupSubmission', shiftId),
     activateSharedTillOperator: (data) => ipcRenderer.invoke('pos:activateSharedTillOperator', data),
+    touchSharedTillOperator: (data) => ipcRenderer.invoke('pos:touchSharedTillOperator', data),
     getSharedTillHistory: (start, end, options) => ipcRenderer.invoke('pos:getSharedTillHistory', start, end, options),
     lockSharedTillOperator: () => ipcRenderer.invoke('pos:lockSharedTillOperator'),
     linkMyShiftAttendance: (data) => ipcRenderer.invoke('pos:linkMyShiftAttendance', data),
@@ -394,6 +403,7 @@ const api = {
     getCustomers: () => ipcRenderer.invoke('pos:getCustomers'),
     saveCustomer: (data) => ipcRenderer.invoke('pos:saveCustomer', data),
     awardLoyalty: (data) => ipcRenderer.invoke('pos:awardLoyalty', data),
+    queueLoyaltyRepair: (data) => ipcRenderer.invoke('pos:queueLoyaltyRepair', data),
     redeemLoyalty: (data) => ipcRenderer.invoke('pos:redeemLoyalty', data),
     chargeCustomerAccount: (data) => ipcRenderer.invoke('pos:chargeCustomerAccount', data),
     redeemVoucher: (code, amount) => ipcRenderer.invoke('pos:redeemVoucher', code, amount),
@@ -467,6 +477,7 @@ const api = {
     setPreferredSupplierForInventoryItem: (inventoryItemId, supplierId, lastUnitCost) => ipcRenderer.invoke('pos:setPreferredSupplierForInventoryItem', inventoryItemId, supplierId, lastUnitCost),
     convertPurchaseSuggestionsToPo: (supplierId, suggestions, notes) => ipcRenderer.invoke('pos:convertPurchaseSuggestionsToPo', supplierId, suggestions, notes),
     recordSettlement: (data) => ipcRenderer.invoke('pos:recordSettlement', data),
+    getSettlementBankAccounts: () => ipcRenderer.invoke('pos:getSettlementBankAccounts'),
     getSettlements: (businessDate) => ipcRenderer.invoke('pos:getSettlements', businessDate),
     getSettlementExpectedTotal: (startDate, endDate, channel) => ipcRenderer.invoke('pos:getSettlementExpectedTotal', startDate, endDate, channel),
     recordReservationDeposit: (data) => ipcRenderer.invoke('pos:recordReservationDeposit', data),
@@ -1241,7 +1252,8 @@ const api = {
     deleteUpsell: (id) => ipcRenderer.invoke('bookingEngine:deleteUpsell', id)
   },
   restaurantAccountingV2: {
-    invoke: (operation, ...args) => ipcRenderer.invoke('restaurantAccountingV2:invoke', operation, args)
+    invoke: (operation, ...args) => ipcRenderer.invoke('restaurantAccountingV2:invoke', operation, args),
+    exportFile: (payload) => ipcRenderer.invoke('restaurantAccountingV2:exportFile', payload)
   },
   abandonedPayments: {
     logSession: (bookingId, amount, provider, sessionToken, expiresAt) =>

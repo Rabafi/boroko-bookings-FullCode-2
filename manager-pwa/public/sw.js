@@ -98,8 +98,11 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(
       fetch(event.request)
         .then((response) => {
-          const clone = response.clone()
-          caches.open(CACHE).then((cache) => cache.put(event.request, clone))
+          const url = event.request.url
+          if (url.startsWith('http://') || url.startsWith('https://')) {
+            const clone = response.clone()
+            caches.open(CACHE).then((cache) => cache.put(event.request, clone)).catch(() => {})
+          }
           return response
         })
         .catch(() => caches.match(event.request))

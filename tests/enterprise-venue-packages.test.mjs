@@ -1,13 +1,16 @@
 import { readFileSync } from 'fs'
 import { describe, it } from 'node:test'
 import assert from 'node:assert'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const migrationPath = 'C:/Users/26772/Desktop/Boroko Bookings/supabase/migrations/20260714230000_venue_packages.sql'
-const migration = readFileSync(migrationPath, 'utf8')
+const root = fileURLToPath(new URL('..', import.meta.url))
+const read = (path) => readFileSync(join(root, path), 'utf8')
+const migration = read('supabase/migrations/20260714230000_venue_packages.sql')
 
-const indexJs = readFileSync('C:/Users/26772/Desktop/Boroko Bookings/src/main/index.js', 'utf8')
-const preloadJs = readFileSync('C:/Users/26772/Desktop/Boroko Bookings/src/preload/index.js', 'utf8')
-const databaseJs = readFileSync('C:/Users/26772/Desktop/Boroko Bookings/src/main/database.js', 'utf8')
+const indexJs = read('src/main/index.js')
+const preloadJs = read('src/preload/index.js')
+const databaseJs = read('src/main/database.js')
 
 describe('Venue Packages', () => {
   describe('SQL Migration', () => {
@@ -70,7 +73,7 @@ describe('Venue Packages', () => {
 
   describe('Domain Module', () => {
     it('venue package functions exist in events.js', () => {
-      const eventsJs = readFileSync('C:/Users/26772/Desktop/Boroko Bookings/src/main/domains/events.js', 'utf8')
+      const eventsJs = read('src/main/domains/events.js')
       assert.match(eventsJs, /export async function createVenuePackage/)
       assert.match(eventsJs, /export async function updateVenuePackage/)
       assert.match(eventsJs, /export async function deleteVenuePackage/)

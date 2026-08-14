@@ -29,19 +29,29 @@ const INVENTORY_MOVEMENTS_CACHE = 'inventory-movements';
 const INVENTORY_ITEM_SELECT = 'id, name, category, unit, current_stock, reorder_level, selling_price, outlet_id, latest_unit_cost, lodge_id, created_at, updated_at, sku, barcode, is_active';
 const INVENTORY_ITEM_LEGACY_SELECT = 'id, name, category, unit, current_stock, reorder_level, selling_price, outlet_id, latest_unit_cost, lodge_id, created_at';
 const INVENTORY_PURCHASE_SELECT = 'id, item_id, quantity_purchased, unit_cost, total_cost, supplier, date, notes, lodge_id, created_at, updated_at';
+const INVENTORY_PURCHASE_EVIDENCE_SELECT = `${INVENTORY_PURCHASE_SELECT}, operation_id, payload_hash, source_document_type, source_document_id, lot_id, valuation_method, evidence_ref`;
+
+function withReadMetadata(rows, source, complete) {
+  const result = Array.isArray(rows) ? rows : [];
+  Object.defineProperties(result, {
+    _source: { value: source, enumerable: true, configurable: true },
+    _complete: { value: complete === true, enumerable: true, configurable: true }
+  });
+  return result;
+}
 
 function isMissingInventoryCompatibilityColumnError(error) {
   return /column\s+inventory_items\.(barcode|is_active|sku|updated_at)\s+does\s+not\s+exist/i.test(String(error?.message || ''));
 }
 
-async function selectInventoryItems(selectColumns = INVENTORY_ITEM_SELECT) {
+async function selectInventoryItems(selectColumns = INVENTORY_ITEM_SELECT, from = 0, pageSize = 500) {
   return state.supabase.
   from('inventory_items').
   select(selectColumns).
   eq('lodge_id', state.lodgeId).
   order('category').
   order('name').
-  limit(500);
+  range(from, from + pageSize - 1);
 }
 
 function normalizeStockNumber(value, fallback = 0) {
@@ -137,6 +147,11 @@ function upsertLocalInventoryMovement(entry = {}) {
     notes: entry.notes || null,
     reference_type: entry.reference_type || null,
     reference_id: entry.reference_id || null,
+    operation_id: entry.operation_id || entry.id || null,
+    source_document_type: entry.source_document_type || entry.reference_type || null,
+    source_document_id: entry.source_document_id || entry.reference_id || null,
+    valuation_method: entry.valuation_method || 'unknown_legacy',
+    payload_hash: entry.payload_hash || null,
     source: entry.source || 'local',
     created_by: entry.created_by || state.currentUser?.id || null,
     created_by_name: entry.created_by_name || state.currentUser?.name || null,
@@ -156,47 +171,65 @@ function upsertLocalInventoryMovement(entry = {}) {
   return row;
 }
 
-async function _getInventoryItems() {
+async function _getInventoryItems(options = {}) {
+  const exportAll = options?.export_all === true || options?.exportAll === true;
+  const pageSize = exportAll ? 1000 : 500;
+  const maxRows = exportAll ? 100000 : pageSize;
   if (state.isOnline) {
-    let { data, error } = await selectInventoryItems();
-    if (error && isMissingInventoryCompatibilityColumnError(error)) {
-      console.warn('inventory_items compatibility columns are missing in the remote schema; loading inventory with defaults until the migration is applied');
-      const legacyResult = await selectInventoryItems(INVENTORY_ITEM_LEGACY_SELECT);
-      data = (legacyResult.data || []).map((row) => ({
+    const liveRows = [];
+    let error = null;
+    let legacyShape = false;
+    for (let from = 0; from < maxRows; from += pageSize) {
+      let result = await selectInventoryItems(legacyShape ? INVENTORY_ITEM_LEGACY_SELECT : INVENTORY_ITEM_SELECT, from, pageSize);
+      if (result.error && !legacyShape && isMissingInventoryCompatibilityColumnError(result.error)) {
+        console.warn('inventory_items compatibility columns are missing in the remote schema; loading inventory with defaults until the migration is applied');
+        legacyShape = true;
+        result = await selectInventoryItems(INVENTORY_ITEM_LEGACY_SELECT, from, pageSize);
+      }
+      error = result.error;
+      if (error) break;
+      const page = result.data || [];
+      liveRows.push(...page.map((row) => legacyShape ? {
         ...row,
         updated_at: row.updated_at || row.created_at || null,
         sku: null,
         barcode: null,
         is_active: true
-      }));
-      error = legacyResult.error;
+      } : row));
+      if (!exportAll || page.length < pageSize) break;
     }
+    const data = liveRows;
     if (!error) {
       if (!data || data.length === 0) {
         const cached = readCache('inventory-items');
         if (cached.length > 0) {
           console.warn('getInventoryItems received empty live result; using cached inventory items instead');
-          return cached.filter((row) => row?._deleted_offline !== true);
+          return withReadMetadata(cached.filter((row) => row?._deleted_offline !== true), 'cache', false);
         }
       }
       const liveRows = applyQueuedDayUseInventoryReservations(applyQueuedPosInventoryReservations(data || []));
       // Merge with local state to preserve any pending-sync or failed items
       const merged = mergeRemoteInventoryWithLocalState(liveRows);
       writeCache('inventory-items', merged);
-      return merged;
+      return withReadMetadata(
+        merged,
+        'server',
+        liveRows.length < maxRows && !legacyShape && merged.every((row) => row?._pending_sync !== true && row?._sync_state !== 'pending')
+      );
     }
     const cached = readCache('inventory-items');
     if (cached.length > 0) {
       console.warn('getInventoryItems falling back to cache:', error.message);
-      return cached.filter((row) => row?._deleted_offline !== true);
+      return withReadMetadata(cached.filter((row) => row?._deleted_offline !== true), 'cache', false);
     }
     throw new Error(error.message);
   }
-  return readCache('inventory-items').filter((row) => row?._deleted_offline !== true);
+  return withReadMetadata(readCache('inventory-items').filter((row) => row?._deleted_offline !== true), 'offline-cache', false);
 }
 
-export function getInventoryItems() {
-  return dedupePromise('getInventoryItems', _getInventoryItems);
+export function getInventoryItems(options = {}) {
+  const exportAll = options?.export_all === true || options?.exportAll === true;
+  return dedupePromise(`getInventoryItems:${exportAll ? 'export' : 'screen'}`, () => _getInventoryItems(options));
 }
 
 /**
@@ -422,7 +455,13 @@ export async function addInventoryPurchase(data) {
     quantity_purchased: qty,
     total_cost: cost,
     unit_cost: unitCost,
-    notes: data.notes || null
+    notes: data.notes || null,
+    source_document_type: data.source_document_type || 'inventory_purchase',
+    source_document_id: data.source_document_id || id,
+    evidence_ref: data.evidence_ref || data.receipt_reference || null,
+    lot_id: data.lot_id || null,
+    valuation_method: data.valuation_method || 'weighted_average',
+    operation_id: id
   };
   if (!state.isOnline) {
     const items = readCache('inventory-items');
@@ -456,6 +495,10 @@ export async function addInventoryPurchase(data) {
       reference_type: 'inventory_purchase',
       reference_id: id,
       source: 'purchase',
+      operation_id: id,
+      source_document_type: purchase.source_document_type,
+      source_document_id: purchase.source_document_id,
+      valuation_method: purchase.valuation_method,
       created_at: purchase.date ? `${purchase.date}T12:00:00.000Z` : new Date().toISOString(),
       _pending_sync: true,
       _sync_state: 'pending'
@@ -484,6 +527,7 @@ export async function addInventoryPurchase(data) {
   ...cachedPurchases]
   );
   upsertLocalInventoryMovement({
+    id: result?.id || id,
     item_id: data.item_id,
     movement_type: 'purchase',
     quantity: qty,
@@ -493,6 +537,10 @@ export async function addInventoryPurchase(data) {
     reference_type: 'inventory_purchase',
     reference_id: result?.id || null,
     source: 'purchase',
+    operation_id: purchase.operation_id,
+    source_document_type: purchase.source_document_type,
+    source_document_id: purchase.source_document_id,
+    valuation_method: purchase.valuation_method,
     created_at: purchase.date ? `${purchase.date}T12:00:00.000Z` : new Date().toISOString()
   });
   return { success: true };
@@ -501,32 +549,37 @@ export async function addInventoryPurchase(data) {
 export async function getInventoryPurchases(itemId) {
   const cached = readCache('inventory-purchases').filter((row) => row.item_id === itemId && row?._deleted_offline !== true);
   if (!state.isOnline) {
-    return cached.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
+    return withReadMetadata(cached.sort((a, b) => String(b.date || '').localeCompare(String(a.date || ''))), 'cache', false);
   }
 
   try {
-    const { data, error } = await state.supabase.
+    let { data, error } = await state.supabase.
     from('inventory_purchases').
-    select(INVENTORY_PURCHASE_SELECT).
+    select(INVENTORY_PURCHASE_EVIDENCE_SELECT).
     eq('lodge_id', state.lodgeId).
     eq('item_id', itemId).
     order('date', { ascending: false }).
     limit(200);
+    if (error && /column|schema cache|PGRST/i.test(String(error.message || error))) {
+      const legacyResult = await state.supabase.from('inventory_purchases').select(INVENTORY_PURCHASE_SELECT).eq('lodge_id', state.lodgeId).eq('item_id', itemId).order('date', { ascending: false }).limit(200);
+      data = legacyResult.data;
+      error = legacyResult.error;
+    }
     if (error) throw error;
 
     const liveRows = Array.isArray(data) ? data : [];
     const otherCachedRows = readCache('inventory-purchases').filter((row) => row.item_id !== itemId);
     if (liveRows.length === 0 && cached.length > 0) {
       console.warn('getInventoryPurchases received empty live result; using cached purchases instead');
-      return cached.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
+      return withReadMetadata(cached.sort((a, b) => String(b.date || '').localeCompare(String(a.date || ''))), 'cache', false);
     }
 
     writeCache('inventory-purchases', [...liveRows, ...otherCachedRows]);
-    return liveRows;
+    return withReadMetadata(liveRows, 'server', liveRows.every((row) => row.operation_id && row.source_document_type && row.payload_hash && row.valuation_method !== 'unknown_legacy'));
   } catch (error) {
     if (cached.length > 0) {
       console.warn('getInventoryPurchases falling back to cache:', error.message);
-      return cached.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
+      return withReadMetadata(cached.sort((a, b) => String(b.date || '').localeCompare(String(a.date || ''))), 'cache', false);
     }
     throw new Error(error.message);
   }
@@ -535,28 +588,45 @@ export async function getInventoryPurchases(itemId) {
 export async function getAllInventoryPurchases() {
   const cached = readCache('inventory-purchases').filter((row) => row?._deleted_offline !== true);
   if (!state.isOnline) {
-    return cached.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
+    return withReadMetadata(cached.sort((a, b) => String(b.date || '').localeCompare(String(a.date || ''))), 'cache', false);
   }
 
   try {
-    const { data, error } = await state.supabase.
-    from('inventory_purchases').
-    select(INVENTORY_PURCHASE_SELECT).
-    eq('lodge_id', state.lodgeId).
-    order('date', { ascending: false }).
-    limit(500);
-    if (error) throw error;
-    const liveRows = Array.isArray(data) ? data : [];
+    const liveRows = [];
+    let legacyShape = false;
+    for (let from = 0; from < 100000; from += 500) {
+      let query = state.supabase.
+      from('inventory_purchases').
+      select(legacyShape ? INVENTORY_PURCHASE_SELECT : INVENTORY_PURCHASE_EVIDENCE_SELECT).
+      eq('lodge_id', state.lodgeId).
+      order('date', { ascending: false }).
+      range(from, from + 499);
+      let { data, error } = await query;
+      if (error && !legacyShape && /column|schema cache|PGRST/i.test(String(error.message || error))) {
+        legacyShape = true;
+        const legacyResult = await state.supabase.from('inventory_purchases').select(INVENTORY_PURCHASE_SELECT).eq('lodge_id', state.lodgeId).order('date', { ascending: false }).range(from, from + 499);
+        data = legacyResult.data;
+        error = legacyResult.error;
+      }
+      if (error) throw error;
+      const page = Array.isArray(data) ? data : [];
+      liveRows.push(...page);
+      if (page.length < 500) break;
+    }
     if (liveRows.length === 0 && cached.length > 0) {
       console.warn('getAllInventoryPurchases received empty live result; using cached purchases instead');
-      return cached.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
+      return withReadMetadata(cached.sort((a, b) => String(b.date || '').localeCompare(String(a.date || ''))), 'cache', false);
     }
     writeCache('inventory-purchases', liveRows);
-    return liveRows;
+    return withReadMetadata(
+      liveRows,
+      'server',
+      liveRows.length < 100000 && !legacyShape && liveRows.every((row) => row.operation_id && row.source_document_type && row.payload_hash && row.valuation_method !== 'unknown_legacy')
+    );
   } catch (error) {
     if (cached.length > 0) {
       console.warn('getAllInventoryPurchases falling back to cache:', error?.message || error);
-      return cached.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
+      return withReadMetadata(cached.sort((a, b) => String(b.date || '').localeCompare(String(a.date || ''))), 'cache', false);
     }
     throw new Error(error?.message || 'Failed to load inventory purchases');
   }
@@ -746,24 +816,36 @@ export async function getInventoryMovements(filters = {}) {
   const startDate = filters?.start_date || filters?.startDate || null;
   const endDate = filters?.end_date || filters?.endDate || startDate || null;
   const limit = Math.max(1, Math.min(500, Number(filters?.limit || 200)));
+  const exportAll = filters?.export_all === true || filters?.exportAll === true;
+  const pageSize = exportAll ? 1000 : limit;
+  const maxRows = exportAll ? 100000 : limit;
   if (state.isOnline) {
     try {
-      let query = state.supabase.
-      from('inventory_movements').
-      select('*, inventory_items(name, unit, category, outlet_id)').
-      eq('lodge_id', state.lodgeId).
-      order('created_at', { ascending: false }).
-      limit(limit);
-      if (itemId) query = query.eq('item_id', itemId);
-      const startBoundary = localDateBoundary(startDate);
-      const endBoundary = localDateBoundary(endDate, true);
-      if (startBoundary) query = query.gte('created_at', startBoundary);
-      if (endBoundary) query = query.lt('created_at', endBoundary);
-      const { data, error } = await query;
-      if (error) throw error;
-      const liveRows = decorateMovementRows(data || []);
+      const liveRows = [];
+      for (let from = 0; from < maxRows; from += pageSize) {
+        let query = state.supabase.
+        from('inventory_movements').
+        select('*, inventory_items(name, unit, category, outlet_id)').
+        eq('lodge_id', state.lodgeId).
+        order('created_at', { ascending: false });
+        if (itemId) query = query.eq('item_id', itemId);
+        const startBoundary = localDateBoundary(startDate);
+        const endBoundary = localDateBoundary(endDate, true);
+        if (startBoundary) query = query.gte('created_at', startBoundary);
+        if (endBoundary) query = query.lt('created_at', endBoundary);
+        const { data, error } = await query.range(from, from + pageSize - 1);
+        if (error) throw error;
+        const page = data || [];
+        liveRows.push(...page);
+        if (!exportAll || page.length < pageSize) break;
+      }
+      const decoratedRows = decorateMovementRows(liveRows);
       if (!itemId) writeInventoryMovementsCache(liveRows);
-      return liveRows;
+      return withReadMetadata(
+        decoratedRows,
+        'server',
+        liveRows.length < maxRows && decoratedRows.every((row) => row.operation_id && row.source_document_type && row.payload_hash && row.valuation_method !== 'unknown_legacy')
+      );
     } catch (error) {
       if (!/inventory_movements|does not exist|schema cache|PGRST/i.test(String(error?.message || error))) {
         console.warn('[INVENTORY] Movement ledger query failed; using derived history:', error?.message || error);
@@ -771,10 +853,15 @@ export async function getInventoryMovements(filters = {}) {
     }
   }
 
-  return buildDerivedInventoryMovements().
+  return withReadMetadata(buildDerivedInventoryMovements().
   filter((row) => !itemId || row.item_id === itemId).
   filter((row) => filterMovementsByDate([row], startDate, endDate).length > 0).
-  slice(0, limit);
+  slice(0, maxRows).map((row) => ({
+    ...row,
+    _source: 'derived-estimate',
+    _complete: false,
+    valuation_method: row.valuation_method || 'unknown_legacy'
+  })), 'derived-estimate', false);
 }
 
 function readInventoryStocktakeHeaders() {
@@ -1062,6 +1149,8 @@ export async function getInventorySpend(startDate, endDate, outletId = 'all') {
         return {
           ...data,
           source: 'server',
+          _source: 'server',
+          _complete: data.complete === true || data._complete === true,
           as_of_range: { start: startDate, end: endDate },
           outlet_selector: outletId || 'all'
         };
@@ -1127,6 +1216,8 @@ export async function getInventorySpend(startDate, endDate, outletId = 'all') {
     by_category,
     purchases,
     source: 'local',
+    _source: 'derived-estimate',
+    _complete: false,
     as_of_range: { start: startDate, end: endDate },
     outlet_selector: outletId || 'all'
   };

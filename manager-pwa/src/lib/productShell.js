@@ -169,6 +169,9 @@ export function isPwaRouteAllowed(pathname, productFamily, hospitalityMode = nul
   const barOnly = String(hospitalityMode || '').toLowerCase() === 'bar_only'
 
   if (barOnly && ['/restaurant/floor', '/restaurant/kitchen-workspace'].includes(path)) return false
+  // The generic Financial Audit is a lodging/night-audit surface. Bar managers
+  // use the POS report and server-certified cash controls instead.
+  if (barOnly && path === '/audit') return false
   if (barOnly && path === '/restaurant-owner' && enabledFeatures?.owner_mobile_view !== true) return false
 
   if (ACCOMMODATION_ONLY_ROUTES.has(path)) return shell.accommodationModules === true

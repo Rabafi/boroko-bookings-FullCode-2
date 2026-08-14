@@ -22,6 +22,15 @@ import {
 
 const POOL_DAY_USE_LIST_SELECT = 'id, date, resource_key, resource_name, start_time, end_time, status, total, adults, children, notes, created_at, updated_at, deposit_amount, balance_due, fee_per_adult, fee_per_child, flat_fee, hourly_rate, package_fee, pricing_mode, created_by';
 
+function withReadMetadata(rows, source, complete) {
+  const result = Array.isArray(rows) ? rows : []
+  Object.defineProperties(result, {
+    _source: { value: source, enumerable: true, configurable: true },
+    _complete: { value: complete === true, enumerable: true, configurable: true }
+  })
+  return result
+}
+
 function adjustLocalInventoryExtras(extras = [], direction = -1) {
   const usage = new Map();
   for (const entry of extras || []) {
@@ -170,16 +179,23 @@ async function updatePoolDayUseEntryFields(id, update = {}) {
 export async function getPoolDayUse(start, end) {
   const cached = readCache('pool-day-use');
   if (!state.isOnline) {
-    return cached.
-    filter((row) => (!start || String(row.date || '') >= start) && (!end || String(row.date || '') <= end)).
-    sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')) || String(b.created_at || '').localeCompare(String(a.created_at || '')));
+    return withReadMetadata(cached.
+      filter((row) => (!start || String(row.date || '') >= start) && (!end || String(row.date || '') <= end)).
+      sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')) || String(b.created_at || '').localeCompare(String(a.created_at || ''))), 'offline-cache', false);
   }
-  let q = state.supabase.from('pool_day_use').select(POOL_DAY_USE_LIST_SELECT).eq('lodge_id', state.lodgeId);
-  if (start) q = q.gte('date', start);
-  if (end) q = q.lte('date', end);
-  const { data } = await q.order('date', { ascending: false }).order('created_at', { ascending: false }).limit(500);
-  if (data) writeCache('pool-day-use', data, { source: 'remote' });
-  return data || [];
+  const rows = [];
+  for (let from = 0; from < 100000; from += 500) {
+    let q = state.supabase.from('pool_day_use').select(POOL_DAY_USE_LIST_SELECT).eq('lodge_id', state.lodgeId);
+    if (start) q = q.gte('date', start);
+    if (end) q = q.lte('date', end);
+    const { data, error } = await q.order('date', { ascending: false }).order('created_at', { ascending: false }).range(from, from + 499);
+    if (error) throw new Error(error.message);
+    const page = data || [];
+    rows.push(...page);
+    if (page.length < 500) break;
+  }
+  writeCache('pool-day-use', rows, { source: 'remote' });
+  return withReadMetadata(rows, 'server', rows.length < 100000);
 }
 
 export async function getPoolDayUseById(id) {

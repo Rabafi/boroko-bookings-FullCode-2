@@ -38,6 +38,7 @@ const FULL_CACHE_NAMES = Object.freeze([
   'event-line-items',
   'pool-day-use',
   'pos-orders',
+  'pos-shifts',
   'pos-menu-items',
   'outlets',
   'expenses',
@@ -59,6 +60,7 @@ const RESTAURANT_CACHE_NAMES = Object.freeze([
   'inventory-purchases',
   'inventory-stocktakes',
   'pos-orders',
+  'pos-shifts',
   'pos-menu-items',
   'outlets',
   'expenses',
@@ -272,6 +274,7 @@ async function refreshCacheStrict(...names) {
     eq('lodge_id', state.lodgeId).
     order('created_at', { ascending: false }).
     limit(500),
+    'pos-shifts': () => state.supabase.from('pos_shifts').select('*').eq('lodge_id', state.lodgeId).order('opened_at', { ascending: false }).limit(200),
     'pos-menu-items': () => state.supabase.from('pos_menu_items').select('id, name, category, price, is_available, archived_at, barcode, inventory_item_id, depletion_qty, outlet_id, template_kind, lodge_id, created_at, updated_at, kitchen_station_id').eq('lodge_id', state.lodgeId).order('category').order('name').limit(500),
     outlets: () => state.supabase.from('outlets').select('id, name, type, sort_order, is_active').eq('lodge_id', state.lodgeId).order('sort_order').limit(100)
   };

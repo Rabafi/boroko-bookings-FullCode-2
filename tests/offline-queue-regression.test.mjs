@@ -408,7 +408,7 @@ async function run() {
   assert.match(database, /writeCache\(name, mergeRemoteInventoryWithLocalState\(liveRows\), \{ source: 'remote' \}\)/)
   assert.match(database, /writeCache\(name, mergeRemotePosOrdersWithLocalState\(data \|\| \[\]\), \{ source: 'remote' \}\)/)
   assert.match(database, /const mergedLiveRows = mergeRemotePosOrdersWithLocalState\(data \|\| \[\], cachedOrders\)/)
-  assert.match(database, /return applyPosOrderFilters\(mergedLiveRows, startDate, endDate, outletFilter\)/)
+  assert.match(database, /const filteredLiveRows = applyPosOrderFilters\(mergedLiveRows, startDate, endDate, outletFilter\)[\s\S]*return withPosReadMetadata\(\s*filteredLiveRows,\s*'server',\s*!hasUnresolvedPosRows\(filteredLiveRows\)/)
   assert.match(database, /queueOperation\('rpc', 'create_pos_order_v3', \{/)
   assert.match(database, /queueOperation\('rpc', 'approve_pos_void_with_pin', \{/)
   assert.match(database, /_queue_id:\s*`pos-order-\$\{id\}`/)

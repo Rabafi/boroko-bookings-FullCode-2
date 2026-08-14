@@ -7,6 +7,15 @@ import { queueOperation, readCache, refreshCache, writeCache, dedupePromise } fr
 const MAINTENANCE_TICKET_SELECT = 'id, room_id, title, issue, description, status, priority, reported_date, labour_cost, parts_cost, total_cost, vendor_name, cost_notes, completed_at, created_at, updated_at, rooms(room_number, room_type)';
 const MAINTENANCE_TICKET_LEGACY_SELECT = 'id, room_id, title, description, status, priority, reported_date, labour_cost, parts_cost, total_cost, vendor_name, cost_notes, created_at, rooms(room_number, room_type)';
 
+function withReadMetadata(rows, source, complete) {
+  const result = Array.isArray(rows) ? rows : []
+  Object.defineProperties(result, {
+    _source: { value: source, enumerable: true, configurable: true },
+    _complete: { value: complete === true, enumerable: true, configurable: true }
+  })
+  return result
+}
+
 function isMaintenanceTicketSchemaCompatibilityError(error) {
   return /column maintenance_tickets\.(issue|completed_at|updated_at) does not exist/i.test(String(error?.message || ''));
 }
@@ -228,11 +237,11 @@ export async function getMaintenanceRowsForPeriod(startDate, endDate) {
     description: row.description || row.notes || '',
     status: row.status || 'open',
     reported_date: row.reported_date || null,
-    total_cost: Number(row.total_cost || 0)
+    total_cost: row.total_cost === null || row.total_cost === undefined || row.total_cost === '' ? null : Number(row.total_cost)
   })).
   sort((a, b) => String(b.reported_date || '').localeCompare(String(a.reported_date || '')));
 
-  if (!startDate || !endDate || !state.lodgeId || !state.isOnline) return cachedRows;
+  if (!startDate || !endDate || !state.lodgeId || !state.isOnline) return withReadMetadata(cachedRows, state.isOnline ? 'cache' : 'offline-cache', false);
 
   try {
     const { data, error } = await state.supabase.
@@ -252,11 +261,11 @@ export async function getMaintenanceRowsForPeriod(startDate, endDate) {
       description: row.description || row.notes || '',
       status: row.status || 'open',
       reported_date: row.reported_date || null,
-      total_cost: Number(row.total_cost || 0)
+      total_cost: row.total_cost === null || row.total_cost === undefined || row.total_cost === '' ? null : Number(row.total_cost)
     })) :
     [];
-    return liveRows.length > 0 ? liveRows : cachedRows;
+    return withReadMetadata(liveRows.length > 0 ? liveRows : cachedRows, liveRows.length > 0 ? 'server' : 'cache', liveRows.length > 0);
   } catch {
-    return cachedRows;
+    return withReadMetadata(cachedRows, 'cache', false);
   }
 }
