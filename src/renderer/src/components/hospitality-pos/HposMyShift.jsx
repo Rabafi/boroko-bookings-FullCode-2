@@ -97,7 +97,7 @@ export default function HposMyShift() {
       setShift(result?.shift || await window.api?.pos?.getCurrentShift?.(outletId, user?.id || null) || null)
       localStorage.removeItem(attemptStorageKey)
       setOpeningFloat('')
-      setNotice(result?.already_open ? 'Your shift was already open.' : 'Attendance and Till shift started. You can now take payments in Till.')
+      setNotice(result?.already_open ? 'Your shift was already open.' : result?.offline ? 'Attendance and Till shift are saved on this device. You can take payments offline; they remain provisional until sync.' : 'Attendance and Till shift started. You can now take payments in Till.')
     } catch (saveError) {
       setError(saveError?.message || 'Could not start your shift.')
     } finally {

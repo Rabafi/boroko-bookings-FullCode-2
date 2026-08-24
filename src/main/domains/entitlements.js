@@ -258,7 +258,7 @@ async function getLegacyEntitlement(targetLodgeId) {
 
   const cachedSettings = readCache('settings')[0] || null;
   if (cachedSettings?.trial_started_at) {
-    return buildTrialEntitlement(cachedSettings.trial_started_at);
+    return buildTrialEntitlement(cachedSettings.trial_started_at, targetLodgeId);
   }
 
   const { data: settings, error: settingsError } = await state.supabase.
@@ -267,7 +267,7 @@ async function getLegacyEntitlement(targetLodgeId) {
   eq('lodge_id', targetLodgeId).
   maybeSingle();
   if (settingsError) throw new Error(settingsError.message);
-  return buildTrialEntitlement(settings?.trial_started_at || null);
+  return buildTrialEntitlement(settings?.trial_started_at || null, targetLodgeId);
 }
 
 export async function getTrialStatus(lodgeId, options = {}) {

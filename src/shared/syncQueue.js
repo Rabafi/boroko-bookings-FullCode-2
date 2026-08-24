@@ -24,7 +24,11 @@ export const FINANCIAL_SYNC_TABLES = new Set([
   'void_pos_order',
   'approve_pos_void_with_pin',
   'upsert_pos_cashup',
+  'submit_pos_shift_cashup',
+  'submit_pos_shift_cashup_with_attendance_pin',
+  'review_pos_cashup_submission_offline',
   'finalize_pos_shift_cashup_v2',
+  'transfer_pos_tab_waiter',
   'create_conference_booking',
   'update_conference_booking',
   'update_conference_booking_payment',
@@ -46,6 +50,8 @@ export const FINANCIAL_SYNC_TABLES = new Set([
   'create_inventory_stocktake_session',
   'save_inventory_stocktake_counts',
   'post_inventory_stocktake_session',
+  'post_bar_physical_count',
+  'post_bar_simple_delivery',
   'create_supply_item',
   'update_supply_item',
   'delete_supply_item',
@@ -77,15 +83,19 @@ export function pickNextReadySyncItemIndex(
 ) {
   const pendingIds = new Set(pending.map((item) => item?._queue_id).filter(Boolean))
   return pending.findIndex((item) => {
-    const dependencyId = String(item?._depends_on || '').trim()
-    if (!dependencyId) return true
-    if (failedQueueIds.has(dependencyId)) return true
-    if (completedQueueIds.has(dependencyId)) return true
-    if (pendingIds.has(dependencyId)) return false
-    // Parent absent from all tracking sets (pending, completed, failed).
-    // Consumed in a prior sync run — treat dependency as resolved.
-    // Server-side RPC enforces correctness; no need to gate on cache state.
-    return true
+    const dependencyIds = [...new Set([
+      item?._depends_on,
+      ...(Array.isArray(item?._depends_on_all) ? item._depends_on_all : [])
+    ].map((value) => String(value || '').trim()).filter(Boolean))]
+    if (dependencyIds.length === 0) return true
+    return dependencyIds.every((dependencyId) => {
+      if (failedQueueIds.has(dependencyId)) return true
+      if (completedQueueIds.has(dependencyId)) return true
+      if (pendingIds.has(dependencyId)) return false
+      // Parent absent from all tracking sets (pending, completed, failed).
+      // Consumed in a prior sync run — treat dependency as resolved.
+      return true
+    })
   })
 }
 

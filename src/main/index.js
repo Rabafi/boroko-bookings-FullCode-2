@@ -9,6 +9,58 @@ import autoUpdaterPkg from 'electron-updater'
 const { autoUpdater } = autoUpdaterPkg
 import * as db from './database.js'
 
+// Electron IPC serializes arrays by elements only: own properties attached to
+// arrays (report/read metadata such as `_source`, `_complete`) are silently
+// dropped before the renderer sees them. Transport such arrays as plain
+// envelopes at the IPC boundary and rebuild the array in the renderer.
+// Only channels whose metadata the renderer consumes are enveloped; every
+// other channel keeps its historical bare-array behaviour.
+const IPC_META_KEYS = ['_source', '_complete', '_tender_complete', '_item_detail_complete', '_available']
+const TRANSPORT_ENVELOPE_CHANNELS = new Set([
+  'reports:occupancy',
+  'reports:roomProfitability',
+  'reports:maintenanceRows',
+  'pos:getOrders',
+  'pos:getCashups',
+  'pos:getSettlements',
+  'pos:getReservationDeposits',
+  'pos:getTipBalances',
+  'pos:getShiftHistory',
+  'pos:getMyOrders',
+  'pos:getCertifiedReportHistory',
+  'pos:getRecipeVarianceReport',
+  'pos:getRecipePreparationLosses',
+  'pos:getRecipePreparationLossIngredientSummary',
+  'inventory:getItemsWithReadStatus'
+])
+function toTransport(value) {
+  if (Array.isArray(value)) {
+    if (IPC_META_KEYS.some((k) => value[k] !== undefined)) {
+      const envelope = { __rowsTransport: true, rows: value.map(toTransport) }
+      for (const k of IPC_META_KEYS) if (value[k] !== undefined) envelope[k] = value[k]
+      return envelope
+    }
+    return value.map(toTransport)
+  }
+  if (value && typeof value === 'object') {
+    const proto = Object.getPrototypeOf(value)
+    if (proto === Object.prototype || proto === null) {
+      const out = {}
+      for (const k of Object.keys(value)) out[k] = toTransport(value[k])
+      return out
+    }
+  }
+  return value
+}
+const __ipcMainHandle = ipcMain.handle.bind(ipcMain)
+ipcMain.handle = (channel, listener) => {
+  const wrap = TRANSPORT_ENVELOPE_CHANNELS.has(channel)
+  return __ipcMainHandle(channel, async (event, ...args) => {
+    const result = await listener(event, ...args)
+    return wrap ? toTransport(result) : result
+  })
+}
+
 // A development terminal (or a parent process) can disappear while Electron is
 // still running. Node reports that as an asynchronous EPIPE event on stdout or
 // stderr, which a try/catch around console.log cannot intercept. Logging must
@@ -62,11 +114,13 @@ import {
   normalizePosHardwareSettings,
   openCashDrawer,
   printEscPosReceipt,
+  printBarcodeLabels,
   sendPaymentTerminalTotal as sendPaymentTerminalToDevice,
   testPosHardwareDevice
 } from './hardware/posHardwareAdapter.js'
 import { getProductDefinition, getRuntimeProductId } from '../shared/productIdentity.js'
 import { getTillOperatorPolicy, TILL_OPERATOR_MODES } from '../shared/tillOperatorPolicy.js'
+import { isBarOnlyMode } from '../shared/propertyTypes.js'
 import { createTillOperatorSessionStore, TILL_OPERATOR_SESSION_CODES } from './domains/tillOperatorSession.js'
 import { resolveSharedTillHistoryAccess } from './domains/tillOperatorHistory.js'
 import { calculatePosFinancialTruth, hasRecordedPosTenderEnvelope } from '../shared/posFinancialTruth.js'
@@ -98,7 +152,7 @@ const APP_DARK_LOGO_FILENAME = `${APP_LOGO_STEM}-logo-light.png`
 let activeSplashWindow = null
 const sharedTillOperatorSessions = createTillOperatorSessionStore()
 
-function setSharedTillOperatorSession(webContents, staff, outletId, shiftId, policy = null) {
+function setSharedTillOperatorSession(webContents, staff, outletId, shiftId, policy = null, operatorProof = null) {
   if (!webContents?.id || !staff?.id) return
   const normalizedPolicy = getTillOperatorPolicy({ operating_profile: { till_operator_policy: policy || {} } })
   return sharedTillOperatorSessions.create({
@@ -107,6 +161,7 @@ function setSharedTillOperatorSession(webContents, staff, outletId, shiftId, pol
     staffName: staff.name || staff.email || 'Till operator',
     outletId,
     shiftId: shiftId || staff.shift_id || staff.shiftId || null,
+    operatorProof,
     mode: normalizedPolicy.mode,
     inactivityMinutes: normalizedPolicy.inactivityMinutes
   })
@@ -1033,6 +1088,7 @@ function buildPurchaseOrderPdfHtml({ purchaseOrder, business = {}, currency = 'P
 function buildSubscriptionRequestDocumentPdfHtml(documentPayload = {}) {
   const customer = documentPayload.customer || {}
   const packageInfo = documentPayload.package || {}
+  const pricing = documentPayload.pricing || {}
   const totals = documentPayload.totals || {}
   const addons = Array.isArray(packageInfo.requested_addons) ? packageInfo.requested_addons : []
   const documentType = documentPayload.document_type === 'invoice' ? 'Pro-forma Invoice' : 'Subscription Quote'
@@ -1040,6 +1096,15 @@ function buildSubscriptionRequestDocumentPdfHtml(documentPayload = {}) {
   const addonList = addons.length
     ? addons.map((addon) => `<li>${escapeHtml(String(addon).replaceAll('_', ' '))}</li>`).join('')
     : '<li>No add-ons selected</li>'
+  const lineItems = Array.isArray(pricing.lines) ? pricing.lines : []
+  const lineRows = lineItems.length
+    ? lineItems.map((line) => `<tr>
+        <td>${escapeHtml(line.label || line.key || 'Commercial item')}</td>
+        <td>${escapeHtml(String(line.billing_basis || 'commercial').replaceAll('_', ' '))}</td>
+        <td class="number">${money(line.amount_due_now)}</td>
+        <td class="number">${money(line.recurring_amount)}</td>
+      </tr>`).join('')
+    : `<tr><td>${escapeHtml(packageInfo.package_name || packageInfo.requested_plan || 'Subscription package')}</td><td>Commercial package</td><td class="number">${money(totals.total_due_now)}</td><td class="number">${money(totals.recurring_amount)}</td></tr>`
 
   return `<!doctype html><html><head><meta charset="utf-8"><style>
     @page { size: A4; margin: 16mm; }
@@ -1058,6 +1123,7 @@ function buildSubscriptionRequestDocumentPdfHtml(documentPayload = {}) {
     table { width: 100%; border-collapse: collapse; margin-top: 10px; }
     th, td { padding: 10px; border-bottom: 1px solid #e2e8f0; text-align: left; }
     th { background: #f1f5f9; color: #475569; font-size: 11px; text-transform: uppercase; }
+    .number { text-align: right; white-space: nowrap; }
     .total { margin-top: 22px; padding: 18px; border-radius: 12px; background: #ecfdf5; border: 1px solid #a7f3d0; text-align: right; }
     .total strong { display: block; color: #047857; font-size: 30px; }
     .warning { margin-top: 24px; padding: 14px; color: #92400e; background: #fffbeb; border: 1px solid #fcd34d; border-radius: 10px; font-weight: 700; }
@@ -1087,16 +1153,14 @@ function buildSubscriptionRequestDocumentPdfHtml(documentPayload = {}) {
         <p class="muted">${escapeHtml(String(packageInfo.room_count || '-'))} rooms, ${escapeHtml(String(packageInfo.user_count || '-'))} users</p>
       </div>
     </div>
+    <h2>Itemised Commercial Charges</h2>
+    <table>
+      <thead><tr><th>Item</th><th>Billing basis</th><th class="number">Due now</th><th class="number">Annual renewal</th></tr></thead>
+      <tbody>${lineRows}</tbody>
+    </table>
+    <p class="muted">“Due now” follows the product’s pricing policy. Bar POS annual bundles include their first annual term; annual renewal shows recurring annual amounts and one-time charges do not recur.</p>
     <h2>Selected Add-ons</h2>
     <div class="box"><ul>${addonList}</ul></div>
-    <h2>Commercial Summary</h2>
-    <table>
-      <thead><tr><th>Item</th><th>Amount</th></tr></thead>
-      <tbody>
-        <tr><td>Recurring package estimate</td><td>${money(totals.recurring_amount)}</td></tr>
-        <tr><td>Setup / onboarding estimate</td><td>${money(totals.setup_amount)}</td></tr>
-      </tbody>
-    </table>
     <div class="total"><span>Total due now</span><strong>${money(totals.total_due_now)}</strong></div>
     <div class="warning">${escapeHtml(documentPayload.notes || 'Final pricing must be confirmed by Tsa Bonno before payment activation.')}</div>
     ${documentPayload.payment_instructions ? `<div class="box" style="margin-top:18px"><div class="label">Payment instructions</div><p>${escapeHtml(documentPayload.payment_instructions)}</p></div>` : ''}
@@ -3070,6 +3134,13 @@ const EXPORT_PRESETS = {
   restaurant_customers: ['customers', 'activityLog']
 }
 
+function buildDailyCloseSummaryPdfHtml({ lodgeName = '', companyName = '', date = '', currency = 'P', controls = {}, reportRunId = '', dataHash = '', generatedAt = new Date().toLocaleString() } = {}) {
+  const resolvedLodge = lodgeName || companyName || APP_BRAND_NAME
+  const money = (value) => formatReportMoney(currency, value)
+  const tenderRows = Object.entries(controls.tender_totals || {}).map(([method, value]) => `<tr><td>${escapeHtml(method)}</td><td class="num">${escapeHtml(money(value))}</td></tr>`).join('') || '<tr><td colspan="2">No certified tenders.</td></tr>'
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(resolvedLodge)} - Daily close ${escapeHtml(date)}</title><style>@page{size:A4;margin:16mm}body{font:12px Arial;color:#172033}header{border-bottom:2px solid #172033;padding-bottom:12px}h1{font-size:22px;margin:0 0 5px}h2{font-size:14px;margin:22px 0 8px}.meta{color:#64748b;display:flex;gap:14px;flex-wrap:wrap}.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:16px 0}.card{border:1px solid #dbe3ec;border-radius:8px;padding:10px;background:#f8fafc}.label{color:#64748b;font-size:9px;text-transform:uppercase;font-weight:700}.value{font-size:18px;font-weight:800;margin-top:4px}table{border-collapse:collapse;width:100%}th,td{border-bottom:1px solid #e2e8f0;padding:7px;text-align:left}th{background:#f1f5f9}.num{text-align:right}.notice{padding:10px;border:1px solid #a7f3d0;background:#ecfdf5;border-radius:8px;margin-top:18px}</style></head><body><header><h1>${escapeHtml(resolvedLodge)} — Daily close summary</h1><div class="meta"><span>Business date: ${escapeHtml(date)}</span><span>Generated: ${escapeHtml(generatedAt)}</span><span>Report run: ${escapeHtml(reportRunId)}</span><span>Dataset hash: ${escapeHtml(dataHash)}</span></div></header><div class="notice"><strong>COMPLETE server-authoritative summary.</strong> Cash-up remains blind to operators; this document contains only the certified close controls available to the authorised report viewer.</div><div class="cards"><div class="card"><div class="label">Completed sales</div><div class="value">${escapeHtml(controls.completed_sale_count || 0)}</div></div><div class="card"><div class="label">Gross sales</div><div class="value">${escapeHtml(money(controls.gross_sales))}</div></div><div class="card"><div class="label">Net recorded sales</div><div class="value">${escapeHtml(money(controls.net_recorded_sales))}</div></div><div class="card"><div class="label">Returns</div><div class="value">${escapeHtml(money(controls.returns))}</div></div><div class="card"><div class="label">Voids</div><div class="value">${escapeHtml(controls.void_count || 0)}</div></div><div class="card"><div class="label">Tips</div><div class="value">${escapeHtml(money(controls.tips))}</div></div></div><h2>Certified tender totals</h2><table><thead><tr><th>Method</th><th class="num">Amount</th></tr></thead><tbody>${tenderRows}</tbody></table><p style="color:#64748b">This printout does not expose expected drawer cash or variance to the operator. Those remain manager-only controls in the cash-up review workflow.</p></body></html>`
+}
+
 // These sections can assert financial, stock, payroll-supporting, or cash
 // truth.  A workbook containing any of them must never silently substitute a
 // cache or an empty fallback for a failed authoritative read.
@@ -3914,8 +3985,16 @@ app.whenReady().then(async () => {
         db.clearBackendSession()
         db.setCurrentUser(masterAdmin)
         db.runScheduledFinancialValidation('startup').catch(() => {})
-        db.createSessionNonce(masterAdmin, password)
-        return { ok: true, code: null, user: masterAdmin, mode: 'online' }
+        const savedSessionNonce = db.createSessionNonce(masterAdmin, password)
+        return {
+          ok: true,
+          code: null,
+          user: masterAdmin,
+          mode: 'online',
+          warning: savedSessionNonce
+            ? null
+            : 'Signed in, but this computer could not save a secure offline session. Enable OS secure storage and sign in again.'
+        }
       }
 
       // Regular user login
@@ -3926,14 +4005,19 @@ app.whenReady().then(async () => {
         console.log('[AUTH] SUCCESS')
         db.setCurrentUser(result.user)
         db.runScheduledFinancialValidation('startup').catch(() => {})
-        db.createSessionNonce(result.user, password)
+        const savedSessionNonce = db.createSessionNonce(result.user, password)
 
         return {
           ok: true,
           code: null,
           user: result.user,
           mode: result.mode,
-          warning: result.warning
+          warning: savedSessionNonce
+            ? result.warning
+            : [
+              result.warning,
+              'Signed in, but this computer could not save a secure offline session. Enable OS secure storage and sign in again.'
+            ].filter(Boolean).join(' ')
         }
       }
 
@@ -4119,6 +4203,34 @@ app.whenReady().then(async () => {
     return snapshot
   }
 
+  // Bar Base must not accept tender fields that are only available through a
+  // commercial add-on. This is deliberately stricter than the generic helper:
+  // an unknown Bar entitlement fails closed, while restaurant and explicitly
+  // entitled add-on contexts retain their existing behavior.
+  async function enforceBarTenderEntitlements(payload = {}) {
+    const settings = await db.getSettings()
+    if (!isBarOnlyMode(settings)) return
+    const breakdown = Array.isArray(payload?.payment_breakdown) ? payload.payment_breakdown : []
+    const hasVoucher = String(payload?.payment_method || '').trim().toLowerCase() === 'voucher'
+      || breakdown.some((tender) => String(tender?.method || '').trim().toLowerCase() === 'voucher')
+    const rawTip = payload?.tip_total
+    const tip = rawTip === null || rawTip === undefined || rawTip === '' ? 0 : Number(rawTip)
+    if (!Number.isFinite(tip)) throw new Error('Tip tender is invalid and has been blocked.')
+    if (!hasVoucher && tip === 0) return
+    const snapshot = await getAccessSnapshot()
+    const entitlement = snapshot?.entitlement || {}
+    const productId = entitlement.product_id || snapshot?.productId || null
+    const packageKey = entitlement.commercial_package_key || snapshot?.commercialPackageKey || null
+    const addonKeys = entitlement.enterprise_addons || snapshot?.commercialAddonKeys || []
+    if (!productId || !packageKey) throw new Error('Bar POS commercial entitlement could not be verified. Tender is blocked until the package context is available.')
+    if (hasVoucher && !isCommercialFeatureIncluded(productId, packageKey, 'vouchers', addonKeys)) {
+      throw new Error('Voucher tender is not included in the current Bar POS commercial entitlement.')
+    }
+    if (tip !== 0 && !isCommercialFeatureIncluded(productId, packageKey, 'tips_payouts', addonKeys)) {
+      throw new Error('Tip tender is not included in the current Bar POS commercial entitlement.')
+    }
+  }
+
   async function requireFeature(featureName) {
     const user = getCurrentUserOrRestore()
     if (!user) throw new Error('Not authenticated')
@@ -4213,7 +4325,43 @@ app.whenReady().then(async () => {
         }
       }
     }
-    return { shared: true, session: activeSession, policy }
+    return { shared: true, session: activeSession, policy, operatorProof: sharedTillOperatorSessions.getOperatorProof(event?.sender?.id) }
+  }
+
+  // Revalidate the live shared-Till session immediately before any tab
+  // mutation. The opaque proof stays in the main process and is attached only
+  // to the final RPC payload by the domain layer.
+  async function getTabMutationTillContext(event, data = {}) {
+    const session = sharedTillOperatorSessions.get(event?.sender?.id)
+    if (!session) return { shared: false, session: null, policy: null, operatorProof: null }
+    const context = await getSharedTillActionContext(event, {
+      ...(data || {}),
+      outlet_id: session.outletId,
+      cashier_id: session.staffId,
+      waiter_id: session.staffId,
+      shift_id: session.shiftId
+    })
+    if (context.shared && context.error) return context
+    if (context.shared && !context.operatorProof) {
+      return {
+        ...context,
+        code: 'till_operator_proof_missing',
+        error: 'Unlock Till again before changing this Bar tab.'
+      }
+    }
+    return context
+  }
+
+  async function getBarOfflineTabProofError(event) {
+    if (state.isOnline) return null
+    const settings = await db.getSettings().catch(() => ({}))
+    if (!isBarOnlyMode(settings)) return null
+    if (sharedTillOperatorSessions.getOperatorProof(event?.sender?.id)) return null
+    return {
+      success: false,
+      code: 'operator_proof_required',
+      error: 'Bar tabs require a live shared-Till operator proof. Reconnect before opening or changing a tab.'
+    }
   }
 
   function buildAuthoritativeTillPayload(data, tillContext, kind = 'order') {
@@ -4226,11 +4374,20 @@ app.whenReady().then(async () => {
       cashier_id: session.staffId,
       cashier_name: session.staffName
     }
+    if (tillContext.operatorProof) payload._operator_proof = tillContext.operatorProof
     if (kind === 'tab' || Object.prototype.hasOwnProperty.call(data || {}, 'waiter_id')) {
       payload.waiter_id = session.staffId
       payload.waiter_name = session.staffName
     }
     return payload
+  }
+
+  function finalizeSharedTillMutation(event, result) {
+    if (result?.success) {
+      const session = sharedTillOperatorSessions.get(event?.sender?.id)
+      if (session?.mode === TILL_OPERATOR_MODES.STRICT) sharedTillOperatorSessions.consumeStrict(event?.sender?.id)
+    }
+    return result
   }
 
   const DEV_ENTERPRISE_PREVIEW_CAPABILITIES = new Set([
@@ -4690,7 +4847,15 @@ app.whenReady().then(async () => {
   const legacyLicenseMutationRefusal = 'Direct license mutation is disabled. Use the Command Central commercial subscription assignment workflow.'
   ipcMain.handle('admin:createLicense', async () => ({ success: false, error: legacyLicenseMutationRefusal }))
   ipcMain.handle('admin:assignCommercialSubscription', async (_, payload) => {
-    try { requireFreshCommandCentralReauth(); return await db.assignCommercialSubscription(payload || {}) }
+    try {
+      const admin = requireFreshCommandCentralReauth()
+      return await db.assignCommercialSubscription({
+        ...(payload || {}),
+        actor_id: admin.id,
+        actor_email: admin.email,
+        activated_by: admin.email
+      })
+    }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('admin:issueSubscriptionContract', async () => ({ success: false, error: legacyLicenseMutationRefusal }))
@@ -7520,6 +7685,50 @@ app.whenReady().then(async () => {
       throw new Error(e?.message || 'Failed to load POS orders')
     }
   })
+  // The report workspace must render the same database-certified dataset as
+  // its PDF/XLSX exports. A raw order list is useful for operational history,
+  // but it cannot certify financial totals after it crosses process/cache
+  // boundaries. Keep pending local operations visible as provisional instead
+  // of letting server controls silently exclude them.
+  ipcMain.handle('pos:getCertifiedReportHistory', async (_, start, end) => {
+    await requireCapability('pos.reports')
+    const outletFilter = db.getUserPosOutletFilter()
+    try {
+      const outletId = resolveCertifiedPosExportOutletId()
+      const [authoritative, voidHistory, localOrders] = await Promise.all([
+        loadAuthoritativePosHistoryExport({ startDate: start, endDate: end, outletId }),
+        db.getPosVoidHistory(start, end, outletFilter),
+        db.getPosOrders(start, end, outletFilter)
+      ])
+      assertCompletePosHistoryExport(authoritative.orders, voidHistory, localOrders)
+      return {
+        success: true,
+        orders: authoritative.orders,
+        source: 'server',
+        complete: true,
+        tender_complete: true,
+        item_detail_complete: true,
+        control_totals: authoritative.controls,
+        report_run_id: authoritative.reportRunId,
+        dataset_hash: authoritative.dataHash,
+        database_cutoff_at: authoritative.databaseCutoff
+      }
+    } catch (error) {
+      // Preserve an operational transaction list for investigation, but make
+      // its financial state explicitly provisional. This is deliberately not
+      // an export fallback and cannot turn cached numbers into report truth.
+      const provisionalOrders = await db.getPosOrders(start, end, outletFilter).catch(() => [])
+      return {
+        success: false,
+        orders: Array.isArray(provisionalOrders) ? provisionalOrders : [],
+        source: provisionalOrders?._source || 'unavailable',
+        complete: false,
+        tender_complete: false,
+        item_detail_complete: false,
+        error: error?.message || 'The server did not certify a complete POS dataset for this report.'
+      }
+    }
+  })
   ipcMain.handle('pos:getVoidHistory', async (_, start, end) => {
     try {
       await requireCapability('pos.reports')
@@ -7770,6 +7979,53 @@ app.whenReady().then(async () => {
       return { success: false, error: e?.message || 'Could not export POS history PDF.' }
     }
   })
+  ipcMain.handle('pos:exportDailyCloseSummaryPdf', async (event, payload = {}) => {
+    let reportRunId = null
+    try {
+      await requireCapability('reports.export')
+      const date = String(payload.date || '').trim()
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { success: false, error: 'A valid business date is required.' }
+      const outletId = resolveCertifiedPosExportOutletId()
+      const outletFilter = db.getUserPosOutletFilter()
+      const [authoritative, voidHistory, localOrders, settings] = await Promise.all([
+        loadAuthoritativePosHistoryExport({ startDate: date, endDate: date, outletId }),
+        db.getPosVoidHistory(date, date, outletFilter),
+        db.getPosOrders(date, date, outletFilter),
+        db.getSettings().catch(() => ({}))
+      ])
+      assertCompletePosHistoryExport(authoritative.orders, voidHistory, localOrders)
+      reportRunId = authoritative.reportRunId
+      const parentWin = BrowserWindow.fromWebContents(event.sender)
+      const wantsPrint = payload.print === true
+      let filePath = null
+      if (!wantsPrint) {
+        const result = await dialog.showSaveDialog(parentWin, {
+          title: 'Save certified daily-close summary',
+          defaultPath: buildReportExportFilename({ prefix: APP_EXPORT_PREFIX, reportTitle: 'daily-close-summary', period: date, extension: 'pdf' }),
+          filters: [{ name: 'PDF Files', extensions: ['pdf'] }]
+        })
+        if (result.canceled || !result.filePath) return { success: false }
+        filePath = result.filePath
+      }
+      const html = buildDailyCloseSummaryPdfHtml({ lodgeName: settings?.lodge_name || '', companyName: settings?.company_name || '', date, currency: settings?.currency || 'P', controls: authoritative.controls, reportRunId, dataHash: authoritative.dataHash })
+      if (wantsPrint) {
+        const printWindow = new BrowserWindow({ show: false, width: 900, height: 1200, webPreferences: { sandbox: false, contextIsolation: true, nodeIntegration: false } })
+        try {
+          await printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
+          const result = await printWebContentsSafely(printWindow.webContents, { silent: false, printBackground: true }, { minTextLength: 20 })
+          if (!result?.success) throw new Error(result?.error || 'Daily-close summary print failed.')
+        } finally { if (!printWindow.isDestroyed()) printWindow.destroy() }
+        return { success: true, printed: true, reportRunId, dataHash: authoritative.dataHash }
+      }
+      const pdfBuffer = await renderHtmlToPdfBuffer(html, { pageSize: 'A4', printBackground: true, margins: { marginType: 'default' } }, { minTextLength: 20 })
+      const saved = writePosHistoryPdfArtifact(filePath, pdfBuffer)
+      await db.recordReportArtifactResult({ reportRunId, artifactType: 'pdf', filePath, fileHash: saved.fileHash, byteCount: saved.byteCount })
+      return { success: true, filePath, reportRunId, dataHash: authoritative.dataHash, fileHash: saved.fileHash }
+    } catch (error) {
+      if (reportRunId) await db.recordReportArtifactResult({ reportRunId, artifactType: 'pdf', artifactError: error?.message || 'Daily-close summary failed' }).catch(() => {})
+      return { success: false, error: error?.message || 'Could not create the certified daily-close summary.' }
+    }
+  })
   ipcMain.handle('pos:createOrder', async (event, data) => {
     try {
       await requireCapability('pos.manage')
@@ -7782,6 +8038,11 @@ app.whenReady().then(async () => {
       if (tillContext.shared && tillContext.error) {
         return { success: false, code: tillContext.code || 'till_operator_session_expired', error: tillContext.error }
       }
+      if (String(data?.service_mode || '').toLowerCase() === 'tab' || data?.tab_id || data?.tab_name) {
+        const tabProofError = await getBarOfflineTabProofError(event)
+        if (tabProofError) return tabProofError
+      }
+      await enforceBarTenderEntitlements(data || {})
       if (data?.booking_id) await assertResourceBelongsToCurrentLodge('Booking', data.booking_id, db.getBookingById)
       if (data?.room_id) await assertResourceBelongsToCurrentLodge('Room', data.room_id, db.getRoomById)
       const result = await db.createPosOrder(buildAuthoritativeTillPayload(data, tillContext, 'order'))
@@ -7909,7 +8170,9 @@ app.whenReady().then(async () => {
       if (outletFilter !== null && data?.outlet_id && !outletFilter.includes(data.outlet_id)) {
         return { success: false, error: 'Access denied: you do not have access to this outlet.' }
       }
-      const tillContext = await getSharedTillActionContext(event, data || {})
+      const offlineTabProofError = await getBarOfflineTabProofError(event)
+      if (offlineTabProofError) return offlineTabProofError
+      const tillContext = await getTabMutationTillContext(event, data || {})
       if (tillContext.shared && tillContext.error) {
         return { success: false, code: tillContext.code || 'till_operator_session_expired', error: tillContext.error }
       }
@@ -7922,24 +8185,69 @@ app.whenReady().then(async () => {
         : result
     } catch (e) { return { success: false, error: e.message } }
   })
-  ipcMain.handle('pos:closeTab', async (_, id) => {
-    try { await requireCapability('pos.manage'); return await db.closePosTab(id) }
+  ipcMain.handle('pos:closeTab', async (event, id) => {
+    try {
+      await requireCapability('pos.manage')
+      const offlineTabProofError = await getBarOfflineTabProofError(event)
+      if (offlineTabProofError) return offlineTabProofError
+      const tillContext = await getTabMutationTillContext(event)
+      if (tillContext.shared && tillContext.error) return { success: false, code: tillContext.code || 'till_operator_session_expired', error: tillContext.error }
+      return finalizeSharedTillMutation(event, await db.closePosTab(id, 'closed', { _operator_proof: tillContext.operatorProof }))
+    }
     catch (e) { return { success: false, error: e.message } }
   })
-  ipcMain.handle('pos:updateTabStatus', async (_, id, status) => {
-    try { await requireCapability('pos.manage'); return await db.updatePosTabStatus(id, status) }
+  ipcMain.handle('pos:updateTabStatus', async (event, id, status) => {
+    try {
+      await requireCapability('pos.manage')
+      const offlineTabProofError = await getBarOfflineTabProofError(event)
+      if (offlineTabProofError) return offlineTabProofError
+      const tillContext = await getTabMutationTillContext(event)
+      if (tillContext.shared && tillContext.error) return { success: false, code: tillContext.code || 'till_operator_session_expired', error: tillContext.error }
+      return finalizeSharedTillMutation(event, await db.updatePosTabStatus(id, status, { _operator_proof: tillContext.operatorProof }))
+    }
     catch (e) { return { success: false, error: e.message } }
   })
-  ipcMain.handle('pos:overrideTableTab', async (_, data) => {
-    try { await requireCapability('pos.manage'); return await db.overridePosTableTab(data || {}) }
+  ipcMain.handle('pos:transferTabWaiter', async (event, data) => {
+    try {
+      await requireCapability('pos.manage')
+      const offlineTabProofError = await getBarOfflineTabProofError(event)
+      if (offlineTabProofError) return offlineTabProofError
+      const tillContext = await getTabMutationTillContext(event, data || {})
+      if (tillContext.shared && tillContext.error) return { success: false, code: tillContext.code || 'till_operator_session_expired', error: tillContext.error }
+      return finalizeSharedTillMutation(event, await db.transferPosTabWaiter({ ...(data || {}), _operator_proof: tillContext.operatorProof }))
+    } catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:overrideTableTab', async (event, data) => {
+    try {
+      await requireCapability('pos.manage')
+      const offlineTabProofError = await getBarOfflineTabProofError(event)
+      if (offlineTabProofError) return offlineTabProofError
+      const tillContext = await getTabMutationTillContext(event, data || {})
+      if (tillContext.shared && tillContext.error) return { success: false, code: tillContext.code || 'till_operator_session_expired', error: tillContext.error }
+      return finalizeSharedTillMutation(event, await db.overridePosTableTab(buildAuthoritativeTillPayload(data || {}, tillContext, 'tab')))
+    }
     catch (e) { return { success: false, error: e.message } }
   })
-  ipcMain.handle('pos:splitBillByItems', async (_, data) => {
-    try { await requireCapability('pos.manage'); return await db.splitBillByItems(data || {}) }
+  ipcMain.handle('pos:splitBillByItems', async (event, data) => {
+    try {
+      await requireCapability('pos.manage')
+      const offlineTabProofError = await getBarOfflineTabProofError(event)
+      if (offlineTabProofError) return offlineTabProofError
+      const tillContext = await getTabMutationTillContext(event, data || {})
+      if (tillContext.shared && tillContext.error) return { success: false, code: tillContext.code || 'till_operator_session_expired', error: tillContext.error }
+      return finalizeSharedTillMutation(event, await db.splitBillByItems(buildAuthoritativeTillPayload(data || {}, tillContext)))
+    }
     catch (e) { return { success: false, error: e.message } }
   })
-  ipcMain.handle('pos:splitBillEvenly', async (_, data) => {
-    try { await requireCapability('pos.manage'); return await db.splitBillEvenly(data || {}) }
+  ipcMain.handle('pos:splitBillEvenly', async (event, data) => {
+    try {
+      await requireCapability('pos.manage')
+      const offlineTabProofError = await getBarOfflineTabProofError(event)
+      if (offlineTabProofError) return offlineTabProofError
+      const tillContext = await getTabMutationTillContext(event, data || {})
+      if (tillContext.shared && tillContext.error) return { success: false, code: tillContext.code || 'till_operator_session_expired', error: tillContext.error }
+      return finalizeSharedTillMutation(event, await db.splitBillEvenly({ ...(data || {}), _operator_proof: tillContext.operatorProof || null }))
+    }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('pos:getTablesWithStatus', async (_, outletId) => {
@@ -7958,11 +8266,13 @@ app.whenReady().then(async () => {
       if (outletFilter !== null && data?.outlet_id && !outletFilter.includes(data.outlet_id)) {
         return { success: false, error: 'Access denied: you do not have access to this outlet.' }
       }
+      const offlineTabProofError = await getBarOfflineTabProofError(event)
+      if (offlineTabProofError) return offlineTabProofError
       const tillContext = await getSharedTillActionContext(event, data || {})
       if (tillContext.shared && tillContext.error) {
         return { success: false, code: tillContext.code || 'till_operator_session_expired', error: tillContext.error }
       }
-      return await db.openPosTableSession(buildAuthoritativeTillPayload(data, tillContext, 'tab'))
+      return finalizeSharedTillMutation(event, await db.openPosTableSession(buildAuthoritativeTillPayload(data, tillContext, 'tab')))
     } catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('pos:getTables', async () => {
@@ -8002,6 +8312,46 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('pos:updateTicketStatus', async (_, id, status) => {
     try { await requireCapability('pos.manage'); await requireCommercialFeature('kitchen_tickets'); return await db.updatePosTicketStatus(id, status) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:updateTicketStatusWithOperation', async (_, id, status, operationId) => {
+    try { await requireCapability('pos.manage'); await requireCommercialFeature('kitchen_tickets'); return await db.updatePosTicketStatusWithOperation(id, status, operationId) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:getVoidReasonTemplates', async () => {
+    try { await requireCapability('pos.view'); return await db.getPosVoidReasonTemplates() }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:saveVoidReasonTemplate', async (_, data) => {
+    try { await requireCapability('pos.manage'); return await db.savePosVoidReasonTemplate(data || {}) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:getShiftHandoverNotes', async (_, shiftId) => {
+    try { await requireCapability('pos.view'); return await db.getPosShiftHandoverNotes(shiftId || null) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:saveShiftHandoverNote', async (_, data) => {
+    try { await requireCapability('pos.manage'); return await db.savePosShiftHandoverNote(data || {}) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:attachCashupProof', async (_, data) => {
+    try {
+      // The server RPC distinguishes an operator attaching their own submitted
+      // cash-up from a supervisor attaching within an authorized outlet.
+      await requireCapability('pos.view')
+      const bytes = data?.file_bytes || data?.bytes || data?.file_buffer
+      const byteLength = bytes instanceof ArrayBuffer ? bytes.byteLength : ArrayBuffer.isView(bytes) ? bytes.byteLength : 0
+      if (!byteLength || byteLength > 8 * 1024 * 1024) return { success: false, error: 'Proof files must be between 1 byte and 8 MB.' }
+      return await db.attachPosCashupProof({ ...(data || {}), file_bytes: bytes })
+    }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:getCashupProofAttachments', async (_, submissionId) => {
+    try { await requireCapability('pos.view'); return await db.getPosCashupProofAttachments(submissionId) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:createCashupProofSignedUrl', async (_, submissionId, attachmentId) => {
+    try { await requireCapability('pos.view'); return await db.createPosCashupProofSignedUrl(submissionId, attachmentId) }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('pos:getCurrentShift', async (_, outletId, cashierId) => {
@@ -8044,7 +8394,8 @@ app.whenReady().then(async () => {
       const result = await testPosHardwareDevice(kind || 'receipt', settings, business)
       await db.recordPosHardwareEvent?.('hardware_test', {
         kind: kind || 'receipt',
-        success: result.success === true,
+        success: result.success === true && result.verified === true,
+        verified: result.verified === true,
         error: result.error || null,
         message: result.message || null,
         transport: result.transport || null,
@@ -8202,14 +8553,57 @@ app.whenReady().then(async () => {
       const result = await db.activateSharedTillOperator(data || {})
       const policy = await getSharedTillPolicy()
       if (result?.success && result?.staff?.id) {
+        const operatorProof = result.operator_proof || null
+        const provisionalOfflineUnlock = result.offline === true || result.provisional === true || result.queued === true
+        if (!operatorProof && !provisionalOfflineUnlock) return { success: false, code: 'operator_proof_missing', error: 'The server did not issue a shared Till operator proof. Do not take payments; unlock Till again.' }
         const shift = result.shift || await db.getStaffOpenPosShift(result.staff.id).catch(() => null)
         if (!shift?.id) return { success: false, error: 'The staff Till shift could not be confirmed. Refresh Till and try again.' }
-        const session = setSharedTillOperatorSession(event.sender, result.staff, data?.outlet_id || data?.outletId, shift.id, policy)
-        return { ...result, shift, session, till_operator_policy: policy }
+        const session = setSharedTillOperatorSession(event.sender, result.staff, data?.outlet_id || data?.outletId, shift.id, policy, operatorProof)
+        const { operator_proof: _operatorProof, ...safeResult } = result
+        return { ...safeResult, shift, session, till_operator_policy: policy }
       }
       return result?.success ? { ...result, till_operator_policy: policy } : result
     }
     catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:getSharedTillOperatorSession', async (event, data = {}) => {
+    try {
+      await requireCapability('pos.manage')
+      const user = getCurrentUserOrRestore()
+      if (!SHARED_TILL_ROLES.has(normalizeAppRole(user?.role))) {
+        return { success: false, code: TILL_OPERATOR_SESSION_CODES.REQUIRED, error: 'Shared Till activity is not available for this account.', session: null }
+      }
+      const policy = await getSharedTillPolicy()
+      const webContentsId = event.sender?.id
+      const session = sharedTillOperatorSessions.get(webContentsId)
+      if (!session) {
+        return { success: false, code: TILL_OPERATOR_SESSION_CODES.REQUIRED, error: 'Unlock Till with the Staff PIN before continuing.', session: null, till_operator_policy: policy }
+      }
+      if (session.mode !== TILL_OPERATOR_MODES.SHIFT || policy.mode !== TILL_OPERATOR_MODES.SHIFT) {
+        return { success: false, code: TILL_OPERATOR_SESSION_CODES.STRICT, error: 'Strict mode requires a Staff PIN for each order.', session: null, till_operator_policy: policy }
+      }
+      if (session.inactivityMinutes !== policy.inactivityMinutes) {
+        sharedTillOperatorSessions.clear(webContentsId)
+        return { success: false, code: TILL_OPERATOR_SESSION_CODES.EXPIRED, error: 'Till settings changed. Verify the operator PIN again.', session: null, till_operator_policy: policy }
+      }
+      const requestedOutlet = data?.outlet_id || data?.outletId || session.outletId
+      const authorized = sharedTillOperatorSessions.authorize(webContentsId, {
+        outletId: requestedOutlet,
+        operatorId: session.staffId,
+        shiftId: session.shiftId,
+        renew: false
+      })
+      if (!authorized.success) return { ...authorized, till_operator_policy: policy }
+      let shift = null
+      if (state.isOnline && session.shiftId) {
+        shift = await db.getStaffOpenPosShift(session.staffId).catch(() => null)
+        if (!shift?.id || shift.id !== session.shiftId || String(shift.status || 'open').toLowerCase() !== 'open') {
+          sharedTillOperatorSessions.clear(webContentsId)
+          return { success: false, code: 'till_shift_closed', error: 'The operator shift is closed. Start or select an open shift before continuing.', session: null, till_operator_policy: policy }
+        }
+      }
+      return { success: true, session: authorized.session, shift, till_operator_policy: policy }
+    } catch (e) { return { success: false, error: e.message, session: null } }
   })
   ipcMain.handle('pos:touchSharedTillOperator', async (event, data) => {
     try {
@@ -8218,7 +8612,26 @@ app.whenReady().then(async () => {
       if (!SHARED_TILL_ROLES.has(normalizeAppRole(user?.role))) {
         return { success: false, code: TILL_OPERATOR_SESSION_CODES.REQUIRED, error: 'Shared Till activity is not available for this account.' }
       }
-      const result = sharedTillOperatorSessions.touch(event.sender?.id, { outletId: data?.outlet_id || data?.outletId })
+      const session = sharedTillOperatorSessions.get(event.sender?.id)
+      if (!session) return { success: false, code: TILL_OPERATOR_SESSION_CODES.EXPIRED, error: 'Till has locked. Verify the operator PIN to continue.' }
+      if (state.isOnline && session.mode === TILL_OPERATOR_MODES.SHIFT) {
+        const operatorProof = sharedTillOperatorSessions.getOperatorProof(event.sender?.id)
+        const proofResult = await db.touchSharedTillOperatorProof({
+          outlet_id: data?.outlet_id || data?.outletId,
+          staff_id: data?.staff_id || data?.staffId,
+          shift_id: data?.shift_id || data?.shiftId,
+          operator_proof: operatorProof
+        })
+        if (!proofResult?.success) {
+          sharedTillOperatorSessions.clear(event.sender?.id)
+          return { success: false, code: proofResult?.code || TILL_OPERATOR_SESSION_CODES.EXPIRED, error: proofResult?.error || 'Till proof renewal failed. Verify the operator PIN again.' }
+        }
+      }
+      const result = sharedTillOperatorSessions.touch(event.sender?.id, {
+        outletId: data?.outlet_id || data?.outletId,
+        operatorId: data?.staff_id || data?.staffId,
+        shiftId: data?.shift_id || data?.shiftId
+      })
       return result.success
         ? { success: true, session: result.session }
         : { success: false, code: result.code, error: result.error }
@@ -8239,6 +8652,10 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('pos:getActiveShifts', async () => {
     try { await requireCapability('pos.view'); return await db.getActiveShifts() }
+    catch { return [] }
+  })
+  ipcMain.handle('pos:getBarActiveShifts', async () => {
+    try { await requireCapability('pos.view'); return await db.getPosBarActiveShifts() }
     catch { return [] }
   })
   ipcMain.handle('pos:openCashDrawerSession', async (_, data) => {
@@ -8349,16 +8766,36 @@ app.whenReady().then(async () => {
     try { await requireCapability('pos.manage'); await requireCommercialFeature('checklists'); return await db.completeChecklistItem(data || {}) }
     catch (e) { return { success: false, error: e.message } }
   })
-  ipcMain.handle('pos:getActiveAlerts', async () => {
-    try { await requireCapability('pos.view'); await requireCommercialFeature('alerts'); return await db.getActiveAlerts() }
+  ipcMain.handle('pos:getActiveAlerts', async (_, filters) => {
+    try { await requireCapability('pos.view'); await requireCommercialFeature('alerts'); return await db.getActiveAlerts(filters || {}) }
     catch (e) { return unavailablePosRead(e, 'Alerts') }
+  })
+  ipcMain.handle('pos:getAlertHistory', async (_, filters) => {
+    try { await requireCapability('pos.view'); await requireCommercialFeature('alerts'); return await db.getAlertHistory(filters || {}) }
+    catch (e) { return unavailablePosRead(e, 'Alert history') }
   })
   ipcMain.handle('pos:recordAlert', async (_, data) => {
     try { await requireCapability('pos.manage'); await requireCommercialFeature('alerts'); return await db.recordExceptionAlert(data || {}) }
     catch (e) { return { success: false, error: e.message } }
   })
-  ipcMain.handle('pos:resolveAlert', async (_, alertId) => {
-    try { await requireCapability('pos.manage'); await requireCommercialFeature('alerts'); return await db.resolveExceptionAlert(alertId) }
+  ipcMain.handle('pos:acknowledgeAlert', async (_, alertId, reason, operationId) => {
+    try { await requireCapability('pos.manage'); await requireCommercialFeature('alerts'); return await db.acknowledgeExceptionAlert(alertId, reason, operationId) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:resolveAlert', async (_, alertId, reason, operationId) => {
+    try { await requireCapability('pos.manage'); await requireCommercialFeature('alerts'); return await db.resolveExceptionAlert(alertId, reason, operationId) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:seedBarChecklistTemplates', async () => {
+    try { await requireCapability('pos.manage'); await requireCommercialFeature('checklists'); return await db.seedBarChecklistTemplates() }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:getBarChecklistTemplates', async () => {
+    try { await requireCapability('pos.view'); await requireCommercialFeature('checklists'); return await db.getBarChecklistTemplates() }
+    catch (e) { return unavailablePosRead(e, 'Bar checklist templates') }
+  })
+  ipcMain.handle('pos:createBarChecklistFromTemplate', async (_, data) => {
+    try { await requireCapability('pos.manage'); await requireCommercialFeature('checklists'); return await db.createBarChecklistFromTemplate(data || {}) }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('pos:getPurchaseOrders', async (_, startDate, endDate) => {
@@ -8611,6 +9048,14 @@ app.whenReady().then(async () => {
     try { await requireCapability('pos.manage'); return await db.getRestaurantSetupProgress() }
     catch (e) { throw new Error(e.message || 'Could not load setup progress') }
   })
+  ipcMain.handle('pos:getSetupProgressWithReadStatus', async () => {
+    try {
+      await requireCapability('pos.manage');
+      return await db.getRestaurantSetupProgressWithReadStatus();
+    } catch (e) {
+      return { source: 'unavailable', complete: false, online: null, rows: [], error: e.message || 'Setup evidence could not be verified.' };
+    }
+  })
   ipcMain.handle('pos:setSetupStage', async (_, data) => {
     try { await requireCapability('pos.manage'); return await db.setRestaurantSetupStage(data || {}) }
     catch (e) { return { success: false, error: e.message } }
@@ -8740,6 +9185,24 @@ app.whenReady().then(async () => {
       throw new Error(e?.message || 'Could not load inventory items right now.')
     }
   })
+  // Array-owned metadata is not a reliable Electron IPC contract. Keep the
+  // legacy list endpoint for existing operational callers, while giving stock
+  // controls an explicit server-read envelope so they never promote a cache
+  // value to count/availability truth after structured cloning.
+  ipcMain.handle('inventory:getItemsWithReadStatus', async () => {
+    try {
+      await requireCapability('inventory.view')
+      const rows = await db.getInventoryItems()
+      return {
+        items: Array.isArray(rows) ? rows : [],
+        source: rows?._source || 'unknown',
+        complete: rows?._complete === true
+      }
+    } catch (e) {
+      console.error('inventory:getItemsWithReadStatus failed:', e)
+      throw new Error(e?.message || 'Could not load inventory items right now.')
+    }
+  })
   ipcMain.handle('inventory:getBarStockAging', async (_, outletId) => {
     try {
       await requireCapability('inventory.view')
@@ -8812,6 +9275,81 @@ app.whenReady().then(async () => {
     } catch (e) {
       console.error('inventory:getMovements failed:', e)
       return []
+    }
+  })
+  ipcMain.handle('inventory:postBarPhysicalCount', async (_, payload = {}) => {
+    try {
+      await requireCapability('inventory.manage')
+      return await db.postBarPhysicalCount(payload || {})
+    } catch (e) { return { success: false, error: e?.message || 'Could not post the physical count.' } }
+  })
+  ipcMain.handle('inventory:postBarSimpleDelivery', async (_, payload = {}) => {
+    try {
+      await requireCapability('inventory.manage')
+      return await db.postBarSimpleDelivery(payload || {})
+    } catch (e) { return { success: false, error: e?.message || 'Could not receive the delivery.' } }
+  })
+  ipcMain.handle('inventory:getBarStockCountHistory', async (_, outletId, limit) => {
+    try {
+      await requireCapability('inventory.view')
+      return await db.getBarStockCountHistory(outletId || null, limit)
+    } catch (e) { throw new Error(e?.message || 'Could not load the stock operation history.') }
+  })
+  ipcMain.handle('inventory:findByBarcode', async (_, barcode, outletId) => {
+    try {
+      await requireCapability('inventory.view')
+      return await db.findInventoryItemByBarcode(barcode, outletId || null)
+    } catch (e) { return { success: false, error: e?.message || 'Could not look up that barcode.' } }
+  })
+  ipcMain.handle('inventory:printBarcodeLabels', async (_, labels = []) => {
+    try {
+      await requireCapability('inventory.manage')
+      const hardware = await db.getPosHardwareSettings().catch(() => ({}))
+      // The renderer supplies identifiers only. Re-read canonical, lodge/outlet
+      // scoped item data in main so a renderer cannot print arbitrary text or
+      // another outlet's barcode.
+      const ids = (Array.isArray(labels) ? labels : [])
+        .map((entry) => typeof entry === 'string' ? entry : entry?.item_id || entry?.itemId || entry?.id)
+        .map((value) => String(value || '').trim())
+        .filter((value, index, values) => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value) && values.indexOf(value) === index)
+        .slice(0, 500)
+      const allowedOutlets = db.getUserPosOutletFilter()
+      const canonical = []
+      for (const id of ids) {
+        const item = await db.getInventoryItemById(id)
+        if (!item?.barcode) continue
+        if (allowedOutlets !== null && (!item.outlet_id || !allowedOutlets.map(String).includes(String(item.outlet_id)))) continue
+        canonical.push({ name: item.name, barcode: item.barcode })
+      }
+      if (!canonical.length) return { success: false, error: 'No selected stock item with a valid barcode is available in your outlet scope.' }
+      const result = await printBarcodeLabels({ labels: canonical, settings: hardware })
+      await db.recordPosHardwareEvent?.('barcode_label_print', {
+        success: result?.success === true,
+        printed: result?.printed || 0,
+        target: result?.target || hardware?.escpos_printer_path || null,
+        error: result?.error || null
+      }).catch(() => {})
+      return result
+    } catch (e) { return { success: false, error: e?.message || 'Could not print barcode labels.' } }
+  })
+  ipcMain.handle('inventory:getMovementsWithReadStatus', async (_, filters = {}) => {
+    try {
+      await requireCapability('inventory.view')
+      const itemId = filters?.item_id || filters?.itemId || null
+      if (!itemId) throw new Error('An inventory item is required for scoped movement history.')
+      const item = await assertResourceBelongsToCurrentLodge('Inventory item', itemId, db.getInventoryItemById)
+      const outletFilter = db.getUserPosOutletFilter()
+      if (outletFilter !== null && (!item?.outlet_id || !outletFilter.map(String).includes(String(item.outlet_id)))) {
+        throw new Error('Access denied: this inventory item is outside the operator outlet scope.')
+      }
+      return await db.getInventoryMovementsWithReadStatus({
+        ...(filters || {}),
+        item_id: itemId,
+        limit: Math.min(200, Math.max(1, Number(filters?.limit || 50)))
+      })
+    } catch (e) {
+      console.error('inventory:getMovementsWithReadStatus failed:', e)
+      throw new Error(e?.message || 'Could not load item movement history right now.')
     }
   })
   ipcMain.handle('inventory:getStocktakes', async (_, limit) => {
@@ -11041,18 +11579,21 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('subscriptionRequests:updateStatus', async (_, requestId, status, reviewedBy, rejectionReason) => {
     try {
-      requireMasterAdmin()
+      const admin = requireFreshCommandCentralReauth()
       await requireCapability('command_central.licensing.manage')
-      return await db.updateSubscriptionRequestStatus(requestId, status, reviewedBy, rejectionReason)
+      return await db.updateSubscriptionRequestStatus(requestId, status, admin.email, rejectionReason)
     } catch (error) {
       throw new Error(error?.message || 'Failed to update subscription request status')
     }
   })
   ipcMain.handle('subscriptionRequests:createDocument', async (_, requestId, type, documentInput) => {
     try {
-      requireMasterAdmin()
+      const admin = requireFreshCommandCentralReauth()
       await requireCapability('command_central.licensing.manage')
-      return await db.createSubscriptionRequestDocument(requestId, type, documentInput)
+      return await db.createSubscriptionRequestDocument(requestId, type, {
+        ...(documentInput || {}),
+        reviewed_by: admin.email
+      })
     } catch (error) {
       throw new Error(error?.message || 'Failed to create subscription request document')
     }
@@ -11082,9 +11623,14 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('subscriptionRequests:activate', async (_, requestId, activatedBy, activationPayload) => {
     try {
-      requireMasterAdmin()
+      const admin = requireFreshCommandCentralReauth()
       await requireCapability('command_central.licensing.manage')
-      return await db.activateSubscriptionRequest(requestId, activatedBy, activationPayload)
+      return await db.activateSubscriptionRequest(requestId, admin.email, {
+        ...(activationPayload || {}),
+        actor_id: admin.id,
+        actor_email: admin.email,
+        activated_by: admin.email
+      })
     } catch (error) {
       throw new Error(error?.message || 'Failed to activate subscription request')
     }

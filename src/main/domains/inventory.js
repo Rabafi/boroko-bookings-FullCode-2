@@ -152,6 +152,11 @@ function upsertLocalInventoryMovement(entry = {}) {
     source_document_id: entry.source_document_id || entry.reference_id || null,
     valuation_method: entry.valuation_method || 'unknown_legacy',
     payload_hash: entry.payload_hash || null,
+    quantity_before: entry.quantity_before == null ? null : normalizeStockNumber(entry.quantity_before),
+    quantity_after: entry.quantity_after == null ? null : normalizeStockNumber(entry.quantity_after),
+    expected_qty: entry.expected_qty == null ? null : normalizeStockNumber(entry.expected_qty),
+    actual_qty: entry.actual_qty == null ? null : normalizeStockNumber(entry.actual_qty),
+    reason_code: entry.reason_code || null,
     source: entry.source || 'local',
     created_by: entry.created_by || state.currentUser?.id || null,
     created_by_name: entry.created_by_name || state.currentUser?.name || null,
@@ -713,6 +718,195 @@ export async function adjustInventoryStock(itemId, delta, notes, operationId = n
   return { success: true, new_stock: result?.new_stock };
 }
 
+function normalizeBarStockBatchLines(lines = [], mode = 'count') {
+  if (!Array.isArray(lines) || lines.length === 0) throw new Error('At least one stock line is required.')
+  if (lines.length > 500) throw new Error('A stock operation cannot contain more than 500 lines.')
+  const seen = new Set()
+  return lines.map((line) => {
+    const itemId = String(line?.item_id || line?.itemId || '').trim()
+    if (!itemId || seen.has(itemId)) throw new Error('Stock lines must contain each item exactly once.')
+    seen.add(itemId)
+    const reason = String(line?.reason || line?.reason_detail || '').trim().slice(0, 300)
+    const reasonCode = String(line?.reason_code || (mode === 'count' ? 'routine_count' : 'delivery_received')).trim().slice(0, 64)
+    if (mode === 'count') {
+      const expectedUpdatedAt = String(line?.expected_updated_at || line?.expectedUpdatedAt || '').trim()
+      if (!expectedUpdatedAt) throw new Error('Every count line requires certified server version evidence. Refresh stock and recount.')
+      const expectedRaw = line?.expected_qty ?? line?.expectedQty
+      const actualRaw = line?.actual_qty ?? line?.actualQty ?? line?.counted_qty
+      if (expectedRaw == null || String(expectedRaw).trim() === '' || actualRaw == null || String(actualRaw).trim() === '') {
+        throw new Error('Count quantities are required for every stock line.')
+      }
+      const expected = Number(expectedRaw)
+      const actual = Number(actualRaw)
+      if (!Number.isFinite(expected) || expected < 0 || !Number.isFinite(actual) || actual < 0) {
+        throw new Error('Count quantities must be valid numbers of zero or more.')
+      }
+      return { item_id: itemId, expected_qty: expected, actual_qty: actual, expected_updated_at: expectedUpdatedAt, reason, reason_code: reasonCode }
+    }
+    const quantity = Number(line?.quantity)
+    if (!Number.isFinite(quantity) || quantity <= 0) throw new Error('Delivery quantities must be greater than zero.')
+    return { item_id: itemId, quantity, reason, reason_code: reasonCode }
+  }).sort((a, b) => a.item_id.localeCompare(b.item_id))
+}
+
+function markLocalBarBatchPending(operationId, mode, lines, outletId = null) {
+  const items = readCache('inventory-items') || []
+  const lineById = new Map(lines.map((line) => [line.item_id, line]))
+  const now = new Date().toISOString()
+  const nextItems = items.map((item) => {
+    const line = lineById.get(item?.id)
+    if (!line) return item
+    const current = normalizeStockNumber(item.current_stock)
+    const nextStock = mode === 'count' ? line.actual_qty : current + line.quantity
+    return {
+      ...item,
+      current_stock: nextStock,
+      updated_at: now,
+      _pending_sync: true,
+      _sync_state: 'pending',
+      _sync_error: null,
+      _bar_stock_operation_id: operationId,
+      ...(outletId ? { outlet_id: outletId } : {})
+    }
+  })
+  writeCache('inventory-items', nextItems)
+  for (const line of lines) {
+    const item = items.find((row) => row?.id === line.item_id)
+    if (!item) continue
+    const expected = mode === 'count' ? line.expected_qty : normalizeStockNumber(item.current_stock)
+    const actual = mode === 'count' ? line.actual_qty : expected + line.quantity
+    const delta = actual - expected
+    upsertLocalInventoryMovement({
+      id: `${operationId}:${line.item_id}`,
+      item_id: line.item_id,
+      movement_type: mode === 'count' ? 'physical_count' : 'simple_delivery',
+      quantity: delta,
+      unit_cost: mode === 'count' ? normalizeStockNumber(item.latest_unit_cost) : 0,
+      total_cost: mode === 'count' ? delta * normalizeStockNumber(item.latest_unit_cost) : 0,
+      notes: line.reason || null,
+      reference_type: mode === 'count' ? 'bar_physical_count' : 'bar_simple_delivery',
+      reference_id: operationId,
+      source: 'bar_base',
+      operation_id: operationId,
+      source_document_type: mode === 'count' ? 'bar_physical_count' : 'bar_simple_delivery',
+      source_document_id: operationId,
+      valuation_method: mode === 'count' ? 'manual_count' : 'unknown_legacy',
+      quantity_before: expected,
+      quantity_after: actual,
+      expected_qty: mode === 'count' ? expected : null,
+      actual_qty: actual,
+      reason_code: line.reason_code,
+      created_at: now,
+      _pending_sync: true,
+      _sync_state: 'pending'
+    })
+  }
+}
+
+function queuedBarBatchDependencies(lines = []) {
+  // A local cache row can be pending for many reasons. Only declare a
+  // predecessor when its actual create operation is present in the queue;
+  // otherwise a batch would wait forever on an invented dependency.
+  const queuedCreates = new Set(readSyncQueue()
+    .filter((item) => item?.type === 'rpc' && item?.table === 'create_inventory_item')
+    .map((item) => String(item?._queue_id || '').trim())
+    .filter(Boolean))
+  return lines
+    .map((line) => `inventory-item-${line.item_id}`)
+    .filter((dependency) => queuedCreates.has(dependency))
+}
+
+export async function postBarPhysicalCount({ outlet_id: outletId = null, operation_id: operationId = null, lines = [], notes = null } = {}) {
+  const stableOperationId = operationId || randomUUID()
+  const normalizedLines = normalizeBarStockBatchLines(lines, 'count')
+  const payload = {
+    p_lodge_id: state.lodgeId,
+    p_outlet_id: outletId || null,
+    p_operation_id: stableOperationId,
+    p_lines: normalizedLines,
+    p_notes: notes ? String(notes).trim().slice(0, 300) : null
+  }
+  if (!state.isOnline) {
+    const cached = readCache('inventory-items') || []
+    const missing = normalizedLines.find((line) => !cached.some((item) => item?.id === line.item_id))
+    if (missing) return { success: false, error: 'A counted stock item is not available on this computer. Refresh before counting.' }
+    const dependencies = queuedBarBatchDependencies(normalizedLines)
+    markLocalBarBatchPending(stableOperationId, 'count', normalizedLines, outletId)
+    queueOperation('rpc', 'post_bar_physical_count', payload, null, {
+      _queue_id: `bar-stock-count-${stableOperationId}`,
+      ...(dependencies.length ? { _depends_on_all: dependencies } : {})
+    })
+    return { success: true, operation_id: stableOperationId, offline: true, queued: true, server_complete: false }
+  }
+  const { data: result, error } = await state.supabase.rpc('post_bar_physical_count', payload)
+  if (error) throw new Error(error.message)
+  if (!result?.success) throw new Error(result?.error || 'Could not post the physical count.')
+  await getInventoryItems().catch(() => {})
+  return result
+}
+
+export async function postBarSimpleDelivery({ outlet_id: outletId = null, operation_id: operationId = null, lines = [], notes = null } = {}) {
+  const stableOperationId = operationId || randomUUID()
+  const normalizedLines = normalizeBarStockBatchLines(lines, 'delivery')
+  const payload = {
+    p_lodge_id: state.lodgeId,
+    p_outlet_id: outletId || null,
+    p_operation_id: stableOperationId,
+    p_lines: normalizedLines,
+    p_notes: notes ? String(notes).trim().slice(0, 300) : null
+  }
+  if (!state.isOnline) {
+    const cached = readCache('inventory-items') || []
+    const missing = normalizedLines.find((line) => !cached.some((item) => item?.id === line.item_id))
+    if (missing) return { success: false, error: 'A delivery stock item is not available on this computer. Refresh before receiving.' }
+    const dependencies = queuedBarBatchDependencies(normalizedLines)
+    markLocalBarBatchPending(stableOperationId, 'delivery', normalizedLines, outletId)
+    queueOperation('rpc', 'post_bar_simple_delivery', payload, null, {
+      _queue_id: `bar-stock-delivery-${stableOperationId}`,
+      ...(dependencies.length ? { _depends_on_all: dependencies } : {})
+    })
+    return { success: true, operation_id: stableOperationId, offline: true, queued: true, server_complete: false }
+  }
+  const { data: result, error } = await state.supabase.rpc('post_bar_simple_delivery', payload)
+  if (error) throw new Error(error.message)
+  if (!result?.success) throw new Error(result?.error || 'Could not receive the delivery.')
+  await getInventoryItems().catch(() => {})
+  return result
+}
+
+export async function getBarStockCountHistory(outletId = null, limit = 200) {
+  if (!state.isOnline) {
+    const rows = readInventoryMovementsCache().filter((row) => ['bar_physical_count', 'bar_simple_delivery'].includes(row?.reference_type))
+    return { rows: rows.slice(0, Math.max(1, Math.min(500, Number(limit || 200)))), source: 'cache', complete: false }
+  }
+  const { data, error } = await state.supabase.rpc('get_bar_stock_count_history', {
+    p_lodge_id: state.lodgeId,
+    p_outlet_id: outletId || null,
+    p_limit: Math.max(1, Math.min(500, Number(limit || 200)))
+  })
+  if (error) throw new Error(error.message)
+  return {
+    rows: Array.isArray(data?.rows) ? data.rows : [],
+    source: data?.source || 'server',
+    complete: data?.complete === true
+  }
+}
+
+export async function findInventoryItemByBarcode(barcode, outletId = null) {
+  const value = normalizeBarcode(String(barcode || '').trim())
+  if (!value) return null
+  if (state.isOnline) {
+    const { data, error } = await state.supabase.from('inventory_items').select(INVENTORY_ITEM_SELECT).eq('lodge_id', state.lodgeId).eq('barcode', value).limit(10)
+    if (error) throw new Error(error.message)
+    const rows = (data || []).filter((item) => !outletId || String(item.outlet_id || '') === String(outletId))
+    if (rows.length > 1) throw new Error('This barcode matches more than one stock item. Resolve the duplicate barcode before receiving.')
+    return rows[0] || null
+  }
+  const rows = (readCache('inventory-items') || []).filter((item) => String(item?.barcode || '') === value && (!outletId || String(item.outlet_id || '') === String(outletId)))
+  if (rows.length > 1) throw new Error('This barcode matches more than one cached stock item.')
+  return rows[0] || null
+}
+
 function decorateMovementRows(rows = []) {
   const itemMap = new Map((readCache('inventory-items') || []).map((item) => [item.id, item]));
   return (rows || []).map((row) => {
@@ -862,6 +1056,20 @@ export async function getInventoryMovements(filters = {}) {
     _complete: false,
     valuation_method: row.valuation_method || 'unknown_legacy'
   })), 'derived-estimate', false);
+}
+
+// The renderer needs an explicit envelope for item history because metadata
+// attached to an Array is not preserved reliably across Electron IPC's
+// structured-clone boundary.  Callers must be able to distinguish a live,
+// complete ledger read from a derived/cache estimate before presenting it as
+// operational evidence.
+export async function getInventoryMovementsWithReadStatus(filters = {}) {
+  const rows = await getInventoryMovements(filters)
+  return {
+    rows: Array.isArray(rows) ? rows : [],
+    source: rows?._source || 'unknown',
+    complete: rows?._complete === true
+  }
 }
 
 function readInventoryStocktakeHeaders() {

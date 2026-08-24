@@ -29,6 +29,7 @@ import {
   removeSecureJson,
   writeSecureJson
 } from './secureLocalStore.js';
+import { recordCriticalError } from './operationalLog.js';
 import {
   getRuntimeProductId,
   isProductCompatiblePropertyType
@@ -108,7 +109,19 @@ function readTrustedSessions() {
 }
 
 function writeTrustedSessions(sessions) {
-  writeSecureJson(getTrustedSessionsPath(), Array.isArray(sessions) ? sessions : []);
+  const written = writeSecureJson(
+    getTrustedSessionsPath(),
+    Array.isArray(sessions) ? sessions : []
+  );
+  if (!written) {
+    recordCriticalError(
+      'auth.secure_storage',
+      new Error('Secure storage is unavailable; the trusted offline session was not saved.'),
+      { operation: 'trusted_sessions_write' },
+      { limit: 120 }
+    );
+  }
+  return written;
 }
 
 export function pruneExpiredTrustedSessions(sessions = readTrustedSessions()) {
@@ -175,12 +188,21 @@ function buildTrustedSessionRecord(user, nonce, password = '') {
 
 export function writeSessionNonce(user, nonce, password = '') {
   const record = buildTrustedSessionRecord(user, nonce, password);
-  writeSecureJson(getSessionNoncePath(), record);
+  const nonceWritten = writeSecureJson(getSessionNoncePath(), record);
+  if (!nonceWritten) {
+    recordCriticalError(
+      'auth.secure_storage',
+      new Error('Secure storage is unavailable; the sign-in session was not saved for offline unlock.'),
+      { operation: 'session_nonce_write' },
+      { limit: 120 }
+    );
+    return false;
+  }
 
   const sessions = pruneExpiredTrustedSessions();
   const normalizedRecord = normalizeTrustedSessionRecord(record);
-  if (!normalizedRecord?.id && !normalizedRecord?.email) return;
-  if (normalizedRecord.isMasterAdmin) return;
+  if (!normalizedRecord?.id && !normalizedRecord?.email) return true;
+  if (normalizedRecord.isMasterAdmin) return true;
   const existing = sessions.find((session) => {
     const normalized = normalizeTrustedSessionRecord(session);
     return normalized && (
@@ -201,7 +223,7 @@ export function writeSessionNonce(user, nonce, password = '') {
 
   });
   next.push(nextRecord);
-  writeTrustedSessions(next);
+  return writeTrustedSessions(next);
 }
 
 export function clearSessionNonce() {
@@ -210,8 +232,7 @@ export function clearSessionNonce() {
 
 export function createSessionNonce(user, password = '') {
   const nonce = crypto.randomBytes(32).toString('hex');
-  writeSessionNonce(user, nonce, password);
-  return nonce;
+  return writeSessionNonce(user, nonce, password) ? nonce : null;
 }
 
 export function setCurrentUser(user) {
@@ -317,9 +338,16 @@ export function restoreUserSession(nonce, options = {}) {
   }
 
   if (stored.email && stored.role) {
+    const trustedSessionExpiresAt = options.trustedUnlock
+      ? new Date(new Date(stored.createdAt).getTime() + TRUSTED_SESSION_MAX_AGE_MS).toISOString()
+      : null;
     applyBackendSession({
       token: stored.session_token || null,
-      expires_at: stored.session_expires_at || null,
+      // Older desktop tokens were originally issued with a seven-day expiry.
+      // The forward migration extends eligible, non-revoked desktop sessions;
+      // use the same local trust boundary so a 60-day offline password unlock
+      // is not immediately rejected by stale stored expiry metadata.
+      expires_at: trustedSessionExpiresAt || stored.session_expires_at || null,
       session_type: stored.session_type || 'desktop'
     });
     const users = readCache('users').
@@ -552,7 +580,13 @@ export async function validateCurrentSession() {
 
     const stored = readSessionNonce();
     if (stored?.nonce) {
-      writeSessionNonce(refreshedUser, stored.nonce);
+      const persisted = writeSessionNonce(refreshedUser, stored.nonce);
+      if (!persisted) {
+        authTrace('validateCurrentSession secure persistence unavailable', {
+          userId: refreshedUser.id || null,
+          lodge_id: state.lodgeId
+        });
+      }
     }
 
     return refreshedUser;

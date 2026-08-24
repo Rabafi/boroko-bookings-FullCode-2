@@ -3,6 +3,7 @@ import { CheckCircle2, RefreshCw, ShieldCheck, WalletCards, XCircle } from 'luci
 import { useAccess, useSettings } from '../../app-context'
 import { canAccessCapability } from '../../../../shared/accessControl'
 import { HposButton, HposNotice, HposPageHero } from './HposUi'
+import HposCashupProofs from './HposCashupProofs'
 
 const amount = (value, currency) => `${currency} ${Number(value || 0).toLocaleString('en-BW', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
@@ -25,6 +26,14 @@ export default function HposCashClose() {
   const [reviewDraft, setReviewDraft] = useState(null)
   const [reviewNotes, setReviewNotes] = useState('')
   const [managerPin, setManagerPin] = useState('')
+  const [summaryDate, setSummaryDate] = useState(() => new Date().toLocaleDateString('en-CA'))
+  const [summaryBusy, setSummaryBusy] = useState(false)
+
+  const revealReviewActions = (event) => {
+    const actionBar = event.currentTarget?.closest('.hpos-cashup-review-card--decision')?.querySelector('.hpos-cashup-review-actions')
+    if (!actionBar) return
+    window.requestAnimationFrame(() => actionBar.scrollIntoView({ block: 'end', behavior: 'smooth' }))
+  }
 
   const refresh = useCallback(async () => {
     if (!canCloseCashup) {
@@ -89,6 +98,17 @@ export default function HposCashClose() {
     }
   }
 
+  const dailyCloseSummary = async (print = false) => {
+    if (summaryBusy) return
+    setSummaryBusy(true); setError(''); setNotice('')
+    try {
+      const result = await window.api?.pos?.exportDailyCloseSummaryPdf?.({ date: summaryDate, print })
+      if (!result?.success) throw new Error(result?.error || 'The certified daily-close summary could not be created.')
+      setNotice(print ? 'Certified daily-close summary sent to the printer.' : `Certified daily-close summary saved${result.filePath ? `: ${result.filePath}` : '.'}`)
+    } catch (summaryError) { setError(summaryError?.message || 'The certified daily-close summary could not be created.') }
+    finally { setSummaryBusy(false) }
+  }
+
   if (!canCloseCashup) {
     return <div className="hpos-page-frame hpos-service-cash">
       <HposPageHero eyebrow="Money control" title="Cash & close" description="Operators submit a physical cash count in My Cash-up. A supervisor or manager reviews the server-calculated result." />
@@ -101,19 +121,23 @@ export default function HposCashClose() {
       eyebrow="Money control"
       title="Cash & close"
       description="Review submitted physical cash counts against the server-confirmed Till totals. This page does not create a second drawer ledger."
-      actions={<HposButton icon={RefreshCw} onClick={refresh} disabled={loading}>{loading ? 'Refreshing…' : 'Refresh'}</HposButton>}
+      actions={<div className="hpos-service-hero-actions"><label>Business date<input type="date" value={summaryDate} onChange={(event) => setSummaryDate(event.target.value)} disabled={summaryBusy} /></label><HposButton icon={WalletCards} onClick={() => dailyCloseSummary(false)} disabled={summaryBusy}>{summaryBusy ? 'Building…' : 'Certified PDF'}</HposButton><HposButton icon={WalletCards} onClick={() => dailyCloseSummary(true)} disabled={summaryBusy}>Print summary</HposButton><HposButton icon={RefreshCw} onClick={refresh} disabled={loading}>{loading ? 'Refreshing…' : 'Refresh'}</HposButton></div>}
     />
+    <HposNotice tone="warning">
+      Private proof storage uses the same session-bound client as cash-up review. If the deployed Storage policy is unavailable, upload and read actions fail closed without storing a local file or changing the cash-up.
+    </HposNotice>
     {error && <HposNotice tone="error">{error}</HposNotice>}
     {notice && <HposNotice><CheckCircle2 size={17} />{notice}</HposNotice>}
     {reviewDraft && <section className="hpos-cashup-review">
       <div><p className="hpos-eyebrow">Manager decision</p><h2>{reviewDraft.decision === 'reject' ? 'Return cash-up for correction' : 'Approve and close shift'}</h2><p>{reviewDraft.submission.cashier_name || 'Till operator'} · {reviewDraft.submission.outlet_name || 'Service outlet'}</p></div>
-      <div className="hpos-cashup-review-list"><article>
+      <div className="hpos-cashup-review-list"><article className="hpos-cashup-review-card--decision">
         <div className="hpos-cashup-review-values"><span>Expected cash<strong>{amount(reviewDraft.submission.expected_cash_drawer, currency)}</strong></span><span>Counted cash<strong>{amount(reviewDraft.submission.counted_by_method?.cash, currency)}</strong></span><span>Variance<strong>{submissionVariance(reviewDraft.submission) === null ? 'Unavailable' : amount(submissionVariance(reviewDraft.submission), currency)}</strong></span></div>
+        <HposCashupProofs submissionId={reviewDraft.submission.id} canUpload={reviewDraft.submission.status === 'submitted'} />
         <label className="hpos-my-cashup-notes"><span>{reviewDraft.decision === 'reject' ? 'Correction note (required)' : 'Approval note (optional)'}</span><textarea rows="3" value={reviewNotes} onChange={(event) => setReviewNotes(event.target.value)} disabled={busy} /></label>
-        <label className="hpos-cashup-review-pin"><span><ShieldCheck size={17} /> Manager PIN</span><input type="password" inputMode="numeric" value={managerPin} onChange={(event) => setManagerPin(event.target.value.replace(/\D/g, '').slice(0, 6))} disabled={busy} /></label>
-        <footer><HposButton onClick={() => setReviewDraft(null)} disabled={busy}>Cancel</HposButton><HposButton tone="primary" icon={reviewDraft.decision === 'reject' ? XCircle : CheckCircle2} onClick={review} disabled={busy}>{busy ? 'Saving…' : reviewDraft.decision === 'reject' ? 'Return for correction' : 'Approve & close shift'}</HposButton></footer>
+        <label className="hpos-cashup-review-pin"><span><ShieldCheck size={17} /> Manager PIN</span><input type="password" inputMode="numeric" value={managerPin} onFocus={revealReviewActions} onChange={(event) => setManagerPin(event.target.value.replace(/\D/g, '').slice(0, 6))} disabled={busy} /></label>
+        <footer className="hpos-cashup-review-actions"><HposButton onClick={() => setReviewDraft(null)} disabled={busy}>Cancel</HposButton><HposButton tone="primary" icon={reviewDraft.decision === 'reject' ? XCircle : CheckCircle2} onClick={review} disabled={busy}>{busy ? 'Saving…' : reviewDraft.decision === 'reject' ? 'Return for correction' : 'Approve & close shift'}</HposButton></footer>
       </article></div>
     </section>}
-    {loading ? <div className="hpos-service-loading"><RefreshCw className="is-spinning" size={22} /><span>Loading submitted cash-ups…</span></div> : pendingCashups.length === 0 ? <section className="hpos-service-cash-open"><WalletCards size={28} /><p className="hpos-eyebrow">No pending handovers</p><h2>Cash-up review is clear</h2><p>No operator cash-ups are waiting for a manager decision. Completed reviews remain in the authoritative audit history.</p></section> : <section className="hpos-cashup-review"><div><p className="hpos-eyebrow">Supervisor review</p><h2>{pendingCashups.length} cash-up{pendingCashups.length === 1 ? '' : 's'} awaiting a decision</h2><p>Expected cash and variance are calculated by the server from posted tenders, returns and the configured tip policy.</p></div><div className="hpos-cashup-review-list">{pendingCashups.map((submission) => { const variance = submissionVariance(submission); return <article key={submission.id}><header><div><strong>{submission.cashier_name || 'Till operator'}</strong><span>{submission.outlet_name || 'Service outlet'} · {submission.submitted_at ? new Date(submission.submitted_at).toLocaleString('en-GB') : 'Submitted time unavailable'}</span></div><span className={variance !== null && Math.abs(variance) < 0.01 ? 'is-balanced' : 'is-variance'}>{variance === null ? 'Variance unavailable' : Math.abs(variance) < 0.01 ? 'Balanced' : `${variance > 0 ? 'Over' : 'Short'} ${amount(Math.abs(variance), currency)}`}</span></header><div className="hpos-cashup-review-values"><span>Expected cash<strong>{amount(submission.expected_cash_drawer, currency)}</strong></span><span>Counted cash<strong>{amount(submission.counted_by_method?.cash, currency)}</strong></span>{Number(submission.cash_tips_retained || 0) > 0 && <span>Cash tips retained<strong>{amount(submission.cash_tips_retained, currency)}</strong></span>}</div>{submission.notes && <p className="hpos-cashup-review-note">Operator note: {submission.notes}</p>}<footer><HposButton icon={XCircle} onClick={() => beginReview(submission, 'reject')} disabled={busy}>Return for correction</HposButton><HposButton tone="primary" icon={CheckCircle2} onClick={() => beginReview(submission, 'approve')} disabled={busy}>Approve & close shift</HposButton></footer></article> })}</div></section>}
+    {loading ? <div className="hpos-service-loading"><RefreshCw className="is-spinning" size={22} /><span>Loading submitted cash-ups…</span></div> : pendingCashups.length === 0 ? <section className="hpos-service-cash-open"><WalletCards size={28} /><p className="hpos-eyebrow">No pending handovers</p><h2>Cash-up review is clear</h2><p>No operator cash-ups are waiting for a manager decision. Completed reviews remain in the authoritative audit history.</p></section> : <section className="hpos-cashup-review"><div><p className="hpos-eyebrow">Supervisor review</p><h2>{pendingCashups.length} cash-up{pendingCashups.length === 1 ? '' : 's'} awaiting a decision</h2><p>Expected cash and variance are calculated by the server from posted tenders, returns and the configured tip policy.</p></div><div className="hpos-cashup-review-list">{pendingCashups.map((submission) => { const variance = submissionVariance(submission); return <article key={submission.id}><header><div><strong>{submission.cashier_name || 'Till operator'}</strong><span>{submission.outlet_name || 'Service outlet'} · {submission.submitted_at ? new Date(submission.submitted_at).toLocaleString('en-GB') : 'Submitted time unavailable'}</span></div><span className={variance !== null && Math.abs(variance) < 0.01 ? 'is-balanced' : 'is-variance'}>{variance === null ? 'Variance unavailable' : Math.abs(variance) < 0.01 ? 'Balanced' : `${variance > 0 ? 'Over' : 'Short'} ${amount(Math.abs(variance), currency)}`}</span></header><div className="hpos-cashup-review-values"><span>Expected cash<strong>{amount(submission.expected_cash_drawer, currency)}</strong></span><span>Counted cash<strong>{amount(submission.counted_by_method?.cash, currency)}</strong></span>{Number(submission.cash_tips_retained || 0) > 0 && <span>Cash tips retained<strong>{amount(submission.cash_tips_retained, currency)}</strong></span>}</div><HposCashupProofs submissionId={submission.id} canUpload={submission.status === 'submitted'} />{submission.notes && <p className="hpos-cashup-review-note">Operator note: {submission.notes}</p>}<footer><HposButton icon={XCircle} onClick={() => beginReview(submission, 'reject')} disabled={busy}>Return for correction</HposButton><HposButton tone="primary" icon={CheckCircle2} onClick={() => beginReview(submission, 'approve')} disabled={busy}>Approve & close shift</HposButton></footer></article> })}</div></section>}
   </div>
 }

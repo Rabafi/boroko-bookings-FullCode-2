@@ -108,7 +108,7 @@ export async function createMasterAdmin(name, email, password) {
 
 // ─── ADMIN: All Companies ──────────────────────────────────────────────────────
 
-const COMPANY_SETTINGS_SELECT = 'lodge_id, lodge_name, company_name, business_type, city, country, email, phone, updated_at, setup_complete, trial_started_at, deleted';
+const COMPANY_SETTINGS_SELECT = 'lodge_id, lodge_name, company_name, business_type, property_type, operating_profile, city, country, email, phone, updated_at, setup_complete, trial_started_at, deleted';
 const COMPANY_SETTINGS_LEGACY_SELECT = 'lodge_id, lodge_name, company_name, business_type, updated_at, trial_started_at';
 const COMPANY_SETTINGS_MINIMAL_SELECT = 'lodge_id, lodge_name, company_name';
 
@@ -122,6 +122,8 @@ function isSettingsColumnError(error) {
     message.includes('email') ||
     message.includes('phone') ||
     message.includes('business_type') ||
+    message.includes('property_type') ||
+    message.includes('operating_profile') ||
     message.includes('updated_at') ||
     message.includes('setup_complete') ||
     message.includes('trial_started_at') ||
@@ -135,10 +137,14 @@ function normalizeCompanySettingsRow(row = {}) {
     lodge_name: row.lodge_name || row.company_name || 'Unnamed company',
     company_name: row.company_name || row.lodge_name || 'Unnamed company',
     business_type: row.business_type || 'lodge',
+    property_type: row.property_type || row.business_type || 'lodge',
     city: row.city || '',
     country: row.country || '',
     email: row.email || '',
     phone: row.phone || '',
+    // Command Central needs this to present only the package and add-ons that
+    // the authoritative catalogue will accept for a Bar versus restaurant.
+    operating_profile: row.operating_profile && typeof row.operating_profile === 'object' ? row.operating_profile : {},
     updated_at: row.updated_at || row.trial_started_at || null,
     setup_complete: row.setup_complete !== false,
     trial_started_at: row.trial_started_at || null,

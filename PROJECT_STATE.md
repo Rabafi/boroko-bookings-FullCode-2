@@ -1,4 +1,458 @@
 # Tsa Bonno HospitalityOS Project State
+## 2026-08-24 — Consolidated main and Bar/POS source publication
+
+Repository history is consolidated onto `main`; redundant local and GitHub branch labels were removed only after their committed tips were preserved on `main`. The previously uncommitted Bar/POS operational tranche is now prepared for repository publication on that single branch, including the ordered forward migrations through `20260821040000`, guarded offline replay, authoritative financial/read completeness, Bar Base stock and Till controls, cash-up evidence, setup/read truth, secure local storage, Command Central subscription hardening, Manager PWA alignment, Legacy POS continuity, marketing copy, and the matching regression coverage.
+
+Current verification passes: production guardrails; Bar 171/171; focused offline/setup/open-tabs/security 17/17; Legacy POS 218/218; command-central 34/34; commercial 11/11; Manager PWA membership 17/17; restaurant workspace 22/22; marketing contract 1/1; LodgingOS, Hospitality POS, Legacy POS, and Manager PWA production builds; and Manager PWA lint with zero errors and 34 existing warnings. The known Vite mesh dynamic/static import warning remains. This source publication does not publish desktop installers, deploy the Manager PWA or marketing site, or independently change the already-recorded linked Supabase deployment state.
+
+## 2026-08-21 — Offline contract, secure-store, health-fault, and setup-read truth tranche (linked database applied; desktop publication pending)
+
+The desktop/POS offline contract now has stable idempotent wrappers for POS menu updates and staff clock-out, with legacy queue replay conversion preserving the original operation key. Direct `clock_out_staff` execution is revoked for the desktop client role; live anonymous probes confirmed both new wrappers are callable but fail closed with `Access denied for this lodge.`, while the direct RPC returns permission denied. The linked migration `20260821040000_offline_rpc_contracts_and_desktop_grants.sql` was successfully pushed, and `supabase migration list --linked` reports local/remote parity through `20260821040000`.
+
+Secure local storage now fails closed when encrypted storage is unavailable and propagates an actionable warning rather than silently writing sensitive session material in plaintext. Health-fault retention/deduplication now runs through the actual sync-store path with bounded, redacted, deterministic records. Setup progress now uses an authoritative read-status envelope and visibly labels offline/unavailable evidence; completion remains blocked until the server read is complete. Existing setup array callers remain supported.
+
+Combined focused coverage is 11/11, `npm run test:bar` is 171/171, changed JavaScript syntax checks pass, and `npm run build:hospitality-pos` exits 0 with the existing Vite mesh dynamic/static import warning. Linked SQL lint returned `results=[]`. The pre-deploy dry run identified only `20260821040000`. A later post-deploy dry run hit transient `LegacyDbConfigConnectTempRoleError`, and the advisors command stalled during login-role initialization and was interrupted; those checks are not claimed as passed. Desktop source/build evidence is local only: no installer, public desktop release, PWA publication, or operator smoke has been performed.
+
+## 2026-08-20 — Open-tab values restored from server-derived line facts (linked applied)
+
+Held POS tabs submit persisted `unit_price` and `quantity` snapshots, not
+renderer-authored line totals. Forward migration
+`20260820170000_pos_tab_server_derived_line_values.sql` adds an immutable,
+strictly validated server helper that derives line values for new writes and
+for existing active rows at read time. Invalid item shapes remain operationally
+visible but stay `financial_complete=false`; the operational read remains
+complete and the Open Tabs top-level amount fields are populated only for
+certified rows. Migration `20260820170000` is applied to the linked project;
+the follow-up dry run reports the remote database up to date, linked
+error-level SQL lint returns zero findings, and linked error-level advisors
+report no issues. Focused Open Tabs coverage passes 4/4 and the full Bar suite
+passes 155/155.
+
+## 2026-08-20 — Bar Base deferred service tranche (implementation; deployment performed elsewhere)
+
+The deferred Bar Base service tranche is implemented in repository source and
+covered by focused regressions. Migrations
+`20260820120000_bar_base_atomic_stock_operations.sql`,
+`20260820130000_bar_setup_alert_checklist_controls.sql`, and
+`20260820140000_bar_base_deferred_service_tranche.sql` are covered by this
+implementation. This delegated task performed no deployment; the current
+shared project state records the linked tranche through `20260820160000` as
+applied by separate work, without this entry independently asserting remote
+state. The tranche adds certified daily-close summary output,
+immutable/idempotent cash-up proof metadata and scoped signed reads, certified
+basic category/top-product reporting, controlled void-reason templates,
+authoritative handover notes, and Bar board controls while preserving Base/add-on
+boundaries and blind cash-up behavior.
+
+Cash-up proof upload/list/read now uses the session-bound Supabase client,
+structured-clone bytes, bounded MIME/size validation, SHA-256 and stable retry
+keys; no local path, base64 blob, service credential, delete path, or permanent
+URL is stored. The private Storage bucket/policies still require functional
+live verification to prove that the `x-boroko-session` request context is
+available to Storage policy evaluation. Until that verification, the UI fails
+closed with an actionable message rather than treating missing evidence as
+empty.
+
+Focused deferred coverage passes 4/4, the Bar suite passes 155/155 and includes
+onboarding, checklist, and deferred-service tests, and the Hospitality POS build passes
+with the existing mesh chunking warning only. No deployment, commit, or
+desktop publication has been performed.
+
+## 2026-08-20 — Named Bar tabs restored to Open Tabs (linked database applied; desktop publication pending)
+
+The Open Tabs desktop read now distinguishes an active POS tab from an active
+physical-table tab. Named Bar tabs intentionally have no `table_name`; they
+are included by the operational active-status filter, while floor occupancy
+continues to require a real table name. This fixes the local/cache path that
+previously hid a successfully held named tab.
+
+Forward migration
+`20260820150000_pos_open_tabs_operational_read_completeness.sql` separates a
+complete operational tab-row read from per-row financial certification. A
+server-confirmed tab remains visible when its line amounts are not certifiable,
+but its total stays unavailable; the UI does not promote an incomplete amount
+to financial truth. Migration `20260820150000` is applied to the linked project.
+The ordered push also exposed a PostgreSQL `42P10` lint error in the newly
+deployed checklist-template function: its conflict target omitted the predicate
+from a partial unique index. Forward migration `20260820160000` repairs that
+target without changing the nullable legacy table shape. Linked migration
+history is in parity through `20260820160000`; the follow-up dry run reports the
+remote database up to date, linked error-level SQL lint is clean, and linked
+error-level advisors report no issues. Focused Open Tabs coverage passes 2/2,
+focused checklist coverage passes 4/4, the complete Bar suite passes 144/144,
+and the Hospitality POS production build passes with the existing mesh chunking
+warning only. Updated desktop source still requires normal installer publication
+before operators receive it.
+
+## 2026-08-20 — Bar POS Base readiness, stock ergonomics, and commercial-copy alignment (linked database applied; desktop publication pending)
+
+Bar POS Base remains P4,500/year and now explicitly documents the counter
+essentials already supported in the product: modifiers, open tabs, and
+receipts. The three separate annual add-on boundaries remain intact:
+Stock & Purchasing Pro (P3,000), Accounting & Workforce (P6,000), and Growth
+& Multi-Outlet (P5,000); advanced Owner View, purchasing depth, accounting,
+workforce, and multi-outlet workflows are not included in Base.
+
+Bar onboarding now presents a 14-stage, evidence-backed staff/device/shift
+readiness path covering staff accounts, least-privilege roles, private PINs,
+device readiness, and a first completed shift. Receipt, scanner, and cash
+hardware readiness requires an explicitly observed successful test on the
+current POS computer; saved settings alone do not complete the stage.
+Attendance-PIN clock-out and manager-approved daily-close checklist evidence
+remain server-authoritative and cannot be satisfied by a client-side tick.
+
+Basic Bar stock now has category suggestions, a low-stock filter, structured
+adjustment reasons, read-only movement history with source-completeness
+status, a printable blank count sheet that never presents cached quantities as
+certified on-hand, and stable operation/retry keys. Atomic batch count posting
+and multi-line simple delivery are now implemented through the forward-only
+`20260820120000_bar_base_atomic_stock_operations.sql` migration: each operation
+uses one stable UUID/payload hash, deterministic row locks, explicit expected
+quantity/version evidence, outlet/manager authorization, immutable count or
+delivery movements, and replay-safe offline queue contracts. Count All is
+blocked unless the stock read is server-complete and versioned. Simple
+delivery remains supplier/PO/lot/expiry/valuation-free and fails closed to
+Purchase Receiving when Accounting is active. Bar stock history now exposes
+server actor, expected, actual, delta and reason. Barcode receiving lookup and
+verified ESC/POS output-path label printing are wired; label printing gives a
+recovery message when no configured output path exists.
+
+The ordered linked migration tranche from
+`20260820100000_bar_base_catalog_feature_alignment.sql` through
+`20260820160000_bar_checklist_operation_conflict_target_repair.sql` is applied.
+Remote history is in parity, a follow-up dry run is a no-op, linked error-level
+SQL lint is clean, and error-level advisors report no issues. Source changes
+remain uncommitted and no desktop installer has been published. Independent
+verification records `npm run test:bar` (144/144) and
+`npm run build:hospitality-pos` passing, with the existing mesh warning only;
+focused commercial, marketing, onboarding, stock, Open Tabs, and checklist
+tests also pass.
+
+## 2026-08-18 — Bar POS tab/digest anon grants repaired (linked applied)
+
+Live diagnosis on the Botswapelo Lodge bar desk exposed a production defect:
+the desktop application-session client executes RPCs as the `anon` role (anon
+key plus `x-boroko-session` header), but the 2026-08-14 Bar POS authorization
+hardening migration (`20260814010000`) revoked `anon` from `upsert_pos_tab`,
+`update_pos_tab_status`, and `generate_owner_digest`, and its tab read wrapper
+was never granted to `anon` in the first place. Every open-tab poll failed with
+`permission denied for function get_restaurant_pos_tabs_financial_truth`
+(repeated each refresh round), so the desktop fell back to device-local tabs
+marked uncertified and tab saves/transfers/owner digest would fail the same way
+at runtime. This is the same class as the 2026-08-17
+`app_current_lodge_id` repair and the follow-up "re-audit remaining
+authenticated-only functions the desktop (anon role) may call".
+
+Migration `20260818100000_bar_pos_tab_anon_session_grants.sql` restores EXECUTE
+to `anon` (plus `authenticated`, `service_role`) on
+`get_restaurant_pos_tabs_financial_truth(uuid,uuid,text)`,
+`upsert_pos_tab(jsonb)`, `update_pos_tab_status(uuid,text,text)`, and
+`generate_owner_digest(uuid)`. All remain SECURITY DEFINER with server-side
+app-session, lodge, role, and outlet enforcement (`app_require_pos_outlet_access`,
+`app_require_lodge_role`, `_restaurant_require_operational_report_access`), so
+the grants restore the client contract without opening table access or
+bypassing any guardrail. The unscoped implementations stay
+`service_role`-only. Applied to the linked project via `supabase db push` on
+2026-08-18. Live verification with the anon key and no session: the RPC is now
+callable past the permission layer and returns the intended fail-closed body
+guard `42501 "A valid app session is required."` instead of
+`permission denied for function get_restaurant_pos_tabs_financial_truth`;
+the desktop (anon key plus `x-boroko-session`) passes that guard. Restart the
+bar app so open-tab financial truth refreshes from the server again.
+
+The bar System Health page ("system health is empty") previously never loaded
+the desktop saved-issue log the top-right warning pill counts, so the pill could
+show N critical errors while the page showed nothing. Fixed in the renderer:
+`HposSystemHealth.jsx` now loads `reports.criticalErrors` (limit 12) and
+`app.getRendererErrors` (limit 6) with the rest of the health snapshot and
+renders them under a new "App issues" tab with a badge count matching the pill
+(danger/warning tone by financial/`db_init`/error level, message, scope label,
+time, and context JSON). "Clear saved issues" is gated by the `system.health`
+capability client-side and enforced by the existing
+`reports:clearCriticalErrors` IPC handler; the clear only touches the
+device-local `critical-errors.json` log, never database financial truth.
+Regression coverage added to `tests/bar-financial-ui-regression.test.mjs`.
+Verified: `npm run build:hospitality-pos` builds, and the compiled chunk
+contains the new section. The three errors currently counted on the bar desk
+are stale `pos.order.create` failures logged 2026-08-16 (two catalog-snapshot
+blocks and three insufficient-stock blocks at the same outlet, from the
+fresh-company smoke tests before that day's catalog/outlet fixes) and can be
+cleared from the new App issues tab.
+
+Repository verification: full `test:bar` suite 127/129 pass. The two failures
+are a working-tree caveat unrelated to this change: the in-progress uncommitted
+preload refactor (src/preload/index.js, `invoke(...)` helper instead of
+`ipcRenderer.invoke(...)` literals) no longer matches the literal assertions in
+`tests/bar-financial-ui-regression.test.mjs` and `tests/bar-stock-aging.test.mjs`;
+the refactored preload still exposes the same channels and contracts.
+
+## 2026-08-17 — Anon-role session-function grants repaired (linked applied)
+
+A live diagnosis (Botswapelo Lodge dev desk, The Hills View account switch)
+exposed a production defect: `public.app_current_lodge_id(text)` had never been
+granted EXECUTE to `anon`/`authenticated`. RLS policies on
+`event_booking_line_items`, `event_booking_resources`, `event_booking_rooms`,
+`room_types`, `floor_sections`, and venue tables call it directly, so every
+read of those tables failed for the desktop/PWA/public surfaces with
+`permission denied for function app_current_lodge_id` (reproduced via REST
+probes). The desktop's background cache refresh batch includes
+`event-line-items`, so each refresh round partially failed with
+`Cache refresh failed: ... app_current_lodge_id`, leaving caches stale, the
+health panel stuck retrying ("Fresh data is still retrying after a refresh
+problem"), and report refreshes intermittently stuck while a failing round was
+in flight. Report RPCs themselves (revenue, P&L, room profitability, snapshot,
+occupancy) were verified healthy end-to-end with the app's own session token.
+
+Migration `20260817090000_grant_anon_session_functions.sql` is linked and
+applied: it grants EXECUTE on `app_current_lodge_id(text)` to `anon,
+authenticated`, and EXECUTE on `submit_authenticated_commercial_quote_request(jsonb)`
+to `anon` (previously authenticated/service_role only; the desktop calls it as
+anon). Verification after deploy: `rpc/app_current_lodge_id` returns the
+correct lodge id; `event_booking_line_items`, `room_types`, and
+`floor_sections` reads return 200; the quote RPC now returns a business
+validation error (not 42501); the full cache fetcher batch is clean. The only
+remaining non-200 in the batch is `maintenance_tickets` selecting `issue`
+(42703, deployed schema is older), which the app already tolerates via its
+legacy-select fallback. `supabase db push` also applied the previously pending
+`20260816200000_bar_offline_continuity.sql` in the same ordered deployment.
+Follow-up: restart the desktop app so refresh rounds complete and the health
+panel clears; re-audit remaining authenticated-only functions the desktop
+(anon role) may call.
+
+## 2026-08-16 — Bar Mode 60-day offline continuity (repository implementation; deployment pending)
+
+Desktop Bar Mode now supports a device-local, dependency-ordered outage chain
+for attendance, personal/shared Till activation, shifts, POS sales, menu and Bar
+pack changes, immutable catalogue publication, blind cash-up submission, manager
+cash-up review, shift close, and attendance clock-out. Local financial results
+remain explicitly provisional; replay invokes the existing authoritative RPCs
+with stable operation/idempotency keys and does not create a second local
+financial model. Cash-up replay waits for the shift and every queued sale, and
+sale replay waits for locally-created shifts, catalogue snapshots, inventory,
+and booking dependencies as applicable. PIN and manager-PIN fields are
+encrypted with Electron safeStorage before entering the durable queue.
+
+The trusted desktop-session design now keeps a successful first online login
+locally unlockable by password for 60 days, and the forward migration aligns
+the authoritative desktop application-token lifetime to that same window. The trusted
+record is stored per local profile, the password remains a bcrypt hash, and the
+record uses Electron safeStorage encryption when the operating system makes it
+available. This does not turn external card processors or cloud sync into
+offline services; offline tenders and operational results are stored locally
+and reconciled when connectivity returns.
+
+Forward migration `20260816200000_bar_offline_continuity.sql` extends eligible,
+non-revoked desktop sessions created within the preceding 60 days and adds the
+client-identity replay wrappers needed by offline catalogue, attendance,
+shared-Till and cash-up-review operations, and raises Bar-only immutable
+catalogue eligibility to 1,440 hours (60 days). The migration is present in the
+repository but is not confirmed deployed. Updated desktop source likewise
+requires a normal production build and installer publication before operators
+receive it.
+
+Local verification passed on 2026-08-16: JavaScript syntax checks for the
+changed main-process domains; `tests/bar-offline-continuity.test.mjs` (6/6);
+`tests/offline-pos-regression.test.mjs`;
+`tests/offline-queue-regression.test.mjs` (combined 8/8); and
+`npm run test:bar` (128/128, including the new continuity coverage). The Hospitality POS
+production build could not be rerun in this session because the execution
+approval service rejected the build after its usage limit was reached; this is
+an unverified release gate, not a build failure.
+
+## 2026-08-16 — Bar product “Save & make available” session grant repair (linked applied)
+
+The fresh Bar setup smoke test exposed a real production defect: the atomic,
+idempotent `save_bar_pos_product_with_packs(jsonb)` RPC was callable only by
+the Supabase `authenticated` role, while the established desktop
+application-session client calls it as `anon`. Migration
+`20260816110000_bar_product_save_custom_session_grant.sql` is applied to the
+linked project and grants execution to `anon`, `authenticated`, and
+`service_role`, after removing the broader default grant. It does not grant
+table access or remove any guardrail: the RPC remains SECURITY DEFINER and
+requires the current application session, matching lodge, manager/admin role,
+stable operation key, payload-hash replay check, and catalog audit record.
+
+The prior `20260816100000_bar_base_manager_pwa.sql` entitlement alignment was
+applied in the same ordered deployment. Linked migration history confirms
+local/remote parity through `20260816130000`. A follow-up fresh-company smoke
+also found that the product RPC called the Bar pack helper to disable every
+unselected pack size; that could reject and roll back an ordinary product whose
+stock record was unassigned or not at a Bar outlet. Migration
+`20260816120000_bar_product_save_skip_unselected_pack_templates.sql` is linked
+and applied: it touches pack templates only when a pack is enabled or an
+existing pack needs disabling. The Bar UI now states that the underlying item
+can still be sold individually, displays pack choices only for stock assigned
+to an active Bar outlet, and lets the operator choose a stock location during
+stock creation/editing. Focused Bar product regression passes 10/10; the final
+live smoke is an authorised Bar manager retrying the exact “Save & make
+available” action. A later stock-location smoke showed the legacy virtual Bar
+fallback had no UUID, so its display text could be submitted as an inventory
+outlet ID and was correctly rejected by PostgreSQL. Migration
+`20260816130000_bar_mode_default_physical_outlet.sql` is linked and applied:
+it backfills exactly one active physical beverage outlet for each Bar-mode
+company without a physical Bar outlet, and installs the same provision-on-
+settings trigger for future Bar signups. It does not relabel historical stock
+or sales. The Bar Stock UI now filters virtual rows from all UUID controls and
+submits only a verified durable outlet ID.
+
+The same fresh-company smoke then found that the newly provisioned physical Bar
+outlet had no outlet-matched immutable POS catalogue snapshot. The v3 order
+contract correctly refused to trade rather than silently using a global or
+different-outlet catalogue. Migration
+`20260816140000_bar_outlet_initial_catalog_snapshot.sql` is linked and
+applied: its server-owned lifecycle helper builds the ordinary immutable
+catalogue payload for the physical Bar outlet, creates one only when none is
+active, and backfills existing Bar-mode companies. It retains the exact-outlet
+snapshot requirement for orders; subsequent catalogue changes continue to use
+the normal audited manager publication path. The focused Bar product/snapshot
+regression suite passes 12/12. The remaining live smoke is one authorised
+two-item Bar sale followed by receipt, stock, sales-report, and cash-up checks.
+
+That live sale then exposed a second fresh-company setup defect: `current_stock`
+held the opening 12 bottles, but the physical stock-location balance used by
+the POS line trigger was zero. Migration
+`20260816150000_bar_stock_location_opening_balance_repair.sql` is linked and
+applied. It maps each Bar outlet to its shared default stock location unless a
+manager already selected another mapping, reconciles only the previously
+unallocated remainder of existing Bar stock without changing business-wide
+stock or inventing a historical financial movement, and atomically creates
+matching location balances and opening-stock ledger entries for future items.
+The idempotent Receive/Count RPC now updates both balances and rejects an
+attempt to make either negative. Focused Bar product/snapshot regression passes
+13/13; the next live smoke remains one two-item sale followed by receipt,
+on-hand, sales-report, and cash-up checks.
+
+That live sale confirmed the financial transaction but exposed a receipt
+identity presentation defect: the daily POS insert trigger had assigned the
+immutable server receipt number, while `create_pos_order_v3(jsonb)` omitted it
+from both its initial response and stored idempotent result. Migration
+`20260816160000_pos_v3_server_receipt_identity.sql` is linked and applied. It
+returns the receipt number, order number, daily sequence, and business date
+from the committed same-lodge `pos_orders` row, and enriches only prior v3
+idempotency records that already map to a row with a server-issued receipt
+number. It neither changes a POS order nor its tender, stock, audit trail, or
+receipt assignment. The POS receipt UI continues to block print/save when a
+server number is genuinely absent rather than inventing one. The focused POS
+financial-truth suite passes 7/7 and the complete Bar suite passes 107/107.
+
+The same live sale revealed that the Reports screen was deriving its financial
+readiness from raw POS history metadata in the renderer, even though the
+server already publishes a certified, hash-bound POS financial-report dataset
+for exports. The desktop now has a `pos:getCertifiedReportHistory` IPC
+contract that uses that server dataset, its report run and control totals, and
+the existing local-pending-operation check. It returns an explicit complete
+envelope only after certification; otherwise it retains the order list but
+marks every aggregate as unavailable and gives the operator the server
+recovery reason. The reports screen uses those certified controls for normal
+history (correction mode remains separately scoped). The first live use
+correctly failed closed because the older authorization migration granted that
+SECURITY DEFINER report function only to `authenticated`, while the desktop
+uses the established application-session context with the PostgREST `anon`
+role. Migration
+`20260816170000_pos_financial_report_custom_session_grant.sql` is linked and
+applied. It grants only `anon`, `authenticated`, and `service_role` execute
+access after revoking the public default; it does not grant table access or
+weaken the report's app-actor, lodge, capability, or outlet-scope checks. The
+complete Bar suite passes 107/107, the focused financial-report regression
+passes 31/31, and the Hospitality POS production build passes.
+
+The first PDF-export smoke then exposed the matching application-session grant
+gap in `record_report_artifact_result(...)`: the detailed JSON companion was
+written locally, but its server audit record was denied before PDF rendering.
+Migration `20260816180000_pos_report_artifact_custom_session_grant.sql` is
+linked and applied. It restores execute access only to `anon`,
+`authenticated`, and `service_role`; the SECURITY DEFINER RPC still locks the
+same-lodge report run, requires the caller's current POS-report access, and
+allows a non-service caller only to record artifacts for the POS report run it
+created. Accounting-artifact access remains excluded. The focused
+financial-report regression passes 31/31; the outstanding live smoke is a
+successful PDF plus JSON companion export for the certified Bar sale.
+
+The subsequent Bar stock smoke found that `getInventoryItems()` correctly
+marked an online server-complete array, but the custom array properties were
+lost across Electron IPC and the UI therefore showed its safety warning and
+withheld availability cards. The desktop now exposes the additional
+`inventory:getItemsWithReadStatus` envelope (`items`, `source`, `complete`)
+for the Bar stock controls; the legacy list endpoint remains unchanged for
+other operational callers. The Bar page treats a missing envelope as
+unverified, while an online, complete server read now displays its truth
+explicitly. This alters no inventory record or database contract. Focused Bar
+stock/report tests pass 33/33 and the Hospitality POS production build passes.
+The remaining live smoke is a restarted Bar app showing the stock cards and
+the expected post-sale on-hand balance without an unavailable-source warning.
+
+The same manual smoke exposed a separate interrupted-sale recovery hazard.
+Read-only linked evidence for the test company shows two different v3 sale
+intents rather than one idempotency key being applied twice: R-0001
+(`773ff471-bd15-4b28-a97c-29ba2b3d5906`) was created on the client at
+13:44:06Z and committed at 13:44:12Z; the older unresolved intent later issued
+as R-0002 (`e08df12f-223f-4205-8323-4ff5643fdcc3`) was created on the client
+at 13:29:35Z but committed only when recovered at 14:40:57Z. Each receipt has
+exactly one matching `financial_operation_idempotency` record and its own
+`pos-order:<intent-id>` key. The server therefore preserved same-key
+idempotency, but the local submission journal previously allowed the same
+signed-in operator to start a different intent while an older one remained
+pending.
+
+The journal now permits only one unresolved intent per lodge and signed-in
+operator, while still allowing an exact payload/key replay. A different sale
+fails closed with `pos_submit_recovery_required`; a failed or unauthorized
+server reconciliation read no longer becomes a false “not found” result. The
+Till recovery card displays the original client timestamp, items, quantities,
+and tenders, warns that a retry can complete an older sale that was never
+recorded, and tells the operator to check Sales and not retry after entering a
+replacement. The submit-journal tests are now part of the normal Bar release
+gate. Verification: focused recovery/workspace/stock tests pass 36/36, the
+complete Bar suite passes 119/119, and the Hospitality POS production build
+passes. No database migration or direct data repair was made. R-0002 remains
+intact pending an explicit, audited manager void with stock returned; deleting
+the transaction would destroy the financial and inventory audit trail.
+
+Live correction verification: the manager voided R-0002 through the protected
+PIN workflow with the documented interrupted-test-sale reason and
+`return_to_stock`. A read-only linked database check confirms R-0001 remains
+the sole completed P40 sale, R-0002 is `voided`, `pos_override_log` contains
+the void approval, and `pos_audit_log` records an authoritative -P40 delta plus
+two restored Heineken 330ml units. Both `inventory_items.current_stock` and the
+mapped Bar stock-location balance are now 10. No row was deleted or edited
+outside the governed void RPC.
+
+The live shared-terminal cash-up smoke then found an analogous deployment
+grant gap: the staff cash-up submission succeeded, but its required
+attendance-PIN clock-out was denied before the manager review. Migration
+`20260816190000_attendance_pin_custom_session_grant.sql` is linked and
+applied. It grants execute only on the existing protected attendance-PIN
+clock-in and clock-out RPCs to `anon`, `authenticated`, and `service_role`
+after revoking the public default. Their SECURITY DEFINER implementations
+continue to require the current app actor's lodge/role, selected staff member,
+staff PIN, and existing attendance idempotency contract. Read-only linked
+verification confirms `anon` execute access for exactly both functions. The
+focused cash-up checks pass 7/7 and the complete Bar suite passes 120/120.
+
+The repaired attendance path then completed a live cash-up lifecycle for the
+fresh Bar company: the cashier submitted P60, attendance clock-out completed,
+and the manager approved the same P60 against P60 expected with zero variance.
+Linked read-only verification confirms one approved submission, one closed Till
+shift, and one reconciled cash-up session carrying the same server cash-up
+identity; it did not create a second close. Two final operator-UX corrections
+are in the desktop source: a successful staff clock-out notice is no longer
+cleared by the form reset, and focusing the manager-PIN input brings the
+Approve/return actions into view with an accessible scroll target. Focused
+cash-up tests now pass 8/8, the complete Bar suite passes 121/121, and
+`npm run build:hospitality-pos` passes on 2026-08-16. This is source/build and
+linked-database evidence; the desktop UI changes still require the normal
+desktop release/installer publication process before customer devices receive
+them.
+
+Bar Manage now includes an owner-facing package guide sourced from the same
+authoritative add-on catalogue used by commercial quoting. It accurately
+states that Base Bar POS records sales, simple delivery quantities, and
+physical counts, but does not create supplier bills, purchase history,
+cost-of-sales reporting, or a P&L. It shows each annual add-on's live
+entitlement state and price, and explains that both Stock & Purchasing Pro and
+Accounting & Workforce are required for a controlled purchases-to-P&L workflow.
+The guide is informational and routes only to governed package review; it does
+not alter any entitlement. The complete Bar suite passes 122/122.
 
 ## 2026-08-14 — Linked Supabase migration deployment without Docker
 
@@ -1127,6 +1581,23 @@ They remain regression-sensitive contracts. New work must verify and preserve th
 - Verification passed on 2026-07-08: `node .\tests\restaurant-mode-curation.test.mjs`, `node .\tests\restaurant-operations-foundation.test.mjs`, `node .\tests\restaurant-recipe-costing.test.mjs`, `node .\tests\restaurant-growth-foundation.test.mjs`, `npm test`, `npm run test:enterprise`, `npm run build`, and `npm run manager:build`.
 
 ## Updating this file
+
+### 2026-08-16 — Command Central subscription truth and activation hardening
+
+- Linked Supabase migration `20260816090000_command_central_subscription_truth_hardening.sql` is confirmed applied. It removes the obsolete one-argument `activate_subscription_request(uuid)` bypass, limits commercial activation to approved requests, validates activation payment-state input, and preserves the governing operation/audit workflow.
+- Bar POS annual bundles are now financially consistent across shared UI pricing, authoritative SQL quotes, and generated Command Central PDF documents: the initial annual invoice includes Bar POS plus selected annual bundles. A Bar POS quote with all three bundles is `P18,500` due now and `P18,500` annual renewal. Hotel recurring add-on timing was intentionally preserved.
+- Command Central now injects a freshly reauthenticated master-admin actor into commercial assignment and request activation; activation targets are filtered to the exact lodge and product; the operator sees a final confirmation and recovery guidance when an assignment must be created or corrected first.
+- Licensing Workbench now consumes persisted company operating profiles so it does not offer Bar-only packages/add-ons to a restaurant profile. Product-matched package and add-on eligibility remains server-enforced.
+- Deployment verification on 2026-08-16: remote migration history reports the migration applied, the legacy bypass overload count is zero, the live quote RPC returned the figures above, and the old `payment_under_review` activation path is absent. Local verification passed: `npm run test:bar` (100 tests), `npm test`, `npm run build:hospitality-pos`, and `npm run build`.
+
+The database migration is live. Updated desktop source still requires the normal desktop release/installer publication process before operators receive its UI and IPC changes.
+
+### 2026-08-16 — Bar POS Base includes Manager PWA (database deployed; web publication pending)
+
+- Bar POS Base now explicitly includes the browser-based Manager PWA in both the shared commercial catalogue and a new forward-only commercial migration. The PWA remains mobile read-only for Bar operations: sales, open tabs, basic stock, cash-close readiness, reports, staff visibility, alerts, and inbox. Desktop Bar POS remains the only sales, cash-up, return, void, correction, and stock-mutation surface.
+- Growth & Multi-Outlet remains the explicit gate for the advanced Bar Owner View (`owner_mobile_view`); Base Bar cannot discover or deep-link to it. Restaurant floor and kitchen remain blocked in `bar_only` sessions.
+- The migration updates only the active `bar_pos` catalogue, adds the matching authoritative package-entitlement row, and persists the PWA grant for active Bar licenses only when no existing lodge-level feature override exists. Existing manual PWA disablements remain authoritative, and automatic grants receive an activation-audit record. Historical price/quote snapshots are unchanged; Bar POS remains P4,500/year.
+- Production database verification on 2026-08-16: linked Supabase migration history records `20260816100000`, and linked error-level SQL lint returned zero findings. The Manager PWA production deployment was not published: the linked Vercel project `tsa-bonno-hospitalityos-manager` rejected its stored deployment token. Marketing-site and desktop package-copy changes also remain unpublished. Complete an authenticated Bar Base/Growth smoke after the PWA deployment succeeds before claiming end-to-end availability.
 
 Update this document when:
 

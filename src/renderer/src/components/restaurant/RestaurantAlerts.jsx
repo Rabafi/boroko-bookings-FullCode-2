@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { RefreshCw } from 'lucide-react'
 
 export default function RestaurantAlerts() {
@@ -7,6 +7,7 @@ export default function RestaurantAlerts() {
   const [filter, setFilter] = useState('active')
   const [error, setError] = useState('')
   const [resolvingId, setResolvingId] = useState(null)
+  const operationIdsRef = useRef(new Map())
 
   useEffect(() => { loadAlerts() }, [])
 
@@ -17,7 +18,7 @@ export default function RestaurantAlerts() {
       // The Active/Resolved/All filters need the complete, authorised history.
       // getActiveAlerts deliberately omits resolved rows and would make the
       // latter two filters appear broken after an operator resolves an alert.
-      const data = await window.api.pos.getExceptionAlerts()
+      const data = await window.api.pos.getAlertHistory({ includeResolved: true })
       setAlerts(Array.isArray(data) ? data : [])
     } catch (err) {
       console.error('Failed to load alerts:', err)
@@ -27,13 +28,20 @@ export default function RestaurantAlerts() {
     }
   }
 
-  async function resolveAlert(alertId) {
+  async function resolveAlert(alert) {
+    const alertId = alert?.id
+    if (!alertId) return
     if (!window.confirm('Mark this alert resolved? Confirm that the underlying issue has already been handled.')) return
+    const reason = window.prompt('Why is this alert being resolved?', alert.resolved_reason || '')
+    if (!reason || reason.trim().length < 3) return
     try {
       setResolvingId(alertId)
       setError('')
-      const result = await window.api.pos.resolveAlert(alertId)
-      if (result?.success === false) throw new Error(result.error || 'Could not resolve alert.')
+      const operationId = operationIdsRef.current.get(alertId) || `restaurant-alert-resolve:${alertId}`
+      operationIdsRef.current.set(alertId, operationId)
+      const result = await window.api.pos.resolveAlert(alertId, reason.trim(), operationId)
+      if (result?.success !== true || !result.resolved_at) throw new Error(result?.error || 'The server did not confirm alert resolution. Retry with the same reason.')
+      operationIdsRef.current.delete(alertId)
       await loadAlerts()
     } catch (err) {
       console.error('Failed to resolve alert:', err)
@@ -119,7 +127,7 @@ export default function RestaurantAlerts() {
                   </span>
                 </div>
                 {!alert.is_resolved && (
-                  <button onClick={() => resolveAlert(alert.id)} disabled={resolvingId === alert.id} className="bb-btn-outline text-xs ml-4">
+                  <button onClick={() => resolveAlert(alert)} disabled={resolvingId === alert.id} className="bb-btn-outline text-xs ml-4">
                     {resolvingId === alert.id ? 'Resolving…' : 'Resolve'}
                   </button>
                 )}

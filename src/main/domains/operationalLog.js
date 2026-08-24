@@ -1,10 +1,55 @@
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { state } from '../state.js';
 
 export const LOCAL_TIME_ZONE = 'Africa/Gaborone';
 export const CRITICAL_ERROR_LOG_FILE = 'critical-errors.json';
+export const CRITICAL_ERROR_DEDUPE_WINDOW_MS = 10 * 60 * 1000;
+const MAX_INCIDENT_MESSAGE_LENGTH = 1200;
+const MAX_INCIDENT_STRING_LENGTH = 500;
+const MAX_INCIDENT_KEYS = 40;
+const MAX_INCIDENT_ARRAY_ITEMS = 20;
+const MAX_INCIDENT_DEPTH = 4;
+
+const SENSITIVE_KEY_PATTERN = /(password|passphrase|token|secret|authorization|api[-_]?key|private[-_]?key|credential|cookie|nonce|pin|hash)/i;
+
+function redactIncidentText(value, maxLength = MAX_INCIDENT_STRING_LENGTH) {
+  const text = String(value ?? '');
+  const redacted = text
+    .replace(/Bearer\s+[^\s,;]+/gi, 'Bearer [REDACTED]')
+    .replace(/((?:password|passphrase|token|secret|authorization|api[-_]?key|private[-_]?key|credential|cookie|nonce|pin|hash)\s*[:=]\s*)[^\s,;]+/gi, '$1[REDACTED]');
+  return redacted.length > maxLength ? `${redacted.slice(0, maxLength)}…` : redacted;
+}
+
+function sanitizeIncidentValue(value, depth = 0) {
+  if (value === null || typeof value === 'boolean' || typeof value === 'number') return value;
+  if (typeof value === 'string') return redactIncidentText(value);
+  if (depth >= MAX_INCIDENT_DEPTH) return '[TRUNCATED]';
+  if (Array.isArray(value)) {
+    return value.slice(0, MAX_INCIDENT_ARRAY_ITEMS).map((entry) => sanitizeIncidentValue(entry, depth + 1));
+  }
+  if (typeof value === 'object') {
+    const output = {};
+    for (const key of Object.keys(value).sort().slice(0, MAX_INCIDENT_KEYS)) {
+      output[key] = SENSITIVE_KEY_PATTERN.test(key)
+        ? '[REDACTED]'
+        : sanitizeIncidentValue(value[key], depth + 1);
+    }
+    return output;
+  }
+  return redactIncidentText(value);
+}
+
+function stableIncidentJson(value) {
+  return JSON.stringify(sanitizeIncidentValue(value));
+}
+
+function buildIncidentFingerprint({ scope, level, message, details }) {
+  return createHash('sha256')
+    .update(`${scope}\n${level}\n${message}\n${stableIncidentJson(details)}`)
+    .digest('hex');
+}
 
 export function getLocalDateKey(value = new Date(), timeZone = LOCAL_TIME_ZONE) {
   try {
@@ -134,22 +179,40 @@ export function isNonCriticalOperationalError(scope, errorOrMessage = '') {
 }
 
 export function recordCriticalError(scope, error, details = {}, { limit = 300, level = 'error' } = {}) {
-  const message = error?.message || String(error || 'Unknown error');
+  const safeScope = redactIncidentText(scope, 160);
+  const safeLevel = level === 'warn' ? 'warn' : 'error';
+  const message = redactIncidentText(error?.message || String(error || 'Unknown error'), MAX_INCIDENT_MESSAGE_LENGTH);
   if (isNonCriticalOperationalError(scope, message)) return null;
+  const safeDetails = sanitizeIncidentValue(details);
+  const fingerprint = buildIncidentFingerprint({
+    scope: safeScope,
+    level: safeLevel,
+    message,
+    details: safeDetails
+  });
+  const now = Date.now();
+  const existing = readAuxiliaryLog(CRITICAL_ERROR_LOG_FILE).find((row) => {
+    if (row?.fingerprint !== fingerprint) return false;
+    const at = new Date(row.at || 0).getTime();
+    return Number.isFinite(at) && now - at >= 0 && now - at < CRITICAL_ERROR_DEDUPE_WINDOW_MS;
+  });
+  if (existing) return null;
+
   const row = {
     id: randomUUID(),
     at: new Date().toISOString(),
-    scope,
-    level,
+    scope: safeScope,
+    level: safeLevel,
     message,
+    fingerprint,
     user_id: state.currentUser?.id || null,
-    user_name: state.currentUser?.name || null,
-    lodge_id: state.lodgeId || null,
-    details
+    user_name: state.currentUser?.name ? redactIncidentText(state.currentUser.name, 240) : null,
+    lodge_id: state.lodgeId ? redactIncidentText(state.lodgeId, 160) : null,
+    details: safeDetails
   };
   appendAuxiliaryLog(CRITICAL_ERROR_LOG_FILE, row, limit);
-  const logger = level === 'warn' ? console.warn : console.error;
-  logger(`[APP ${scope}]`, message, details);
+  const logger = safeLevel === 'warn' ? console.warn : console.error;
+  logger(`[APP ${safeScope}]`, message, safeDetails);
   return row;
 }
 

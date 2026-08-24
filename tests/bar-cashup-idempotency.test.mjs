@@ -3,6 +3,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 const sql = readFileSync('supabase/migrations/20260729140000_cashup_idempotency_payload_guard.sql', 'utf8')
+const attendanceSessionGrantSql = readFileSync('supabase/migrations/20260816190000_attendance_pin_custom_session_grant.sql', 'utf8')
 
 test('cash-up idempotency locks and validates the cashier payload', () => {
   assert.match(sql, /submit_pos_shift_cashup\(jsonb\)\s+rename to _submit_pos_shift_cashup_v1/i)
@@ -22,4 +23,11 @@ test('shared attendance-PIN cash-up validates the manager actor and staff payloa
   assert.match(sql, /v_existing_actor is distinct from v_actor/)
   assert.match(sql, /action='cashup_submitted_shared_terminal'/)
   assert.match(sql, /v_existing\.submitted_by is distinct from v_shift\.cashier_id/)
+})
+
+test('desktop application sessions may use protected attendance-PIN clock-in and clock-out', () => {
+  assert.match(attendanceSessionGrantSql, /revoke all on function public\.clock_in_staff_with_attendance_pin\(jsonb\) from public/i)
+  assert.match(attendanceSessionGrantSql, /revoke all on function public\.clock_out_staff_with_attendance_pin\(jsonb\) from public/i)
+  assert.match(attendanceSessionGrantSql, /grant execute on function public\.clock_in_staff_with_attendance_pin\(jsonb\)\s+to anon, authenticated, service_role/i)
+  assert.match(attendanceSessionGrantSql, /grant execute on function public\.clock_out_staff_with_attendance_pin\(jsonb\)\s+to anon, authenticated, service_role/i)
 })

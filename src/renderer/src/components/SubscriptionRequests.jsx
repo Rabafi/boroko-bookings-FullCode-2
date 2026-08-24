@@ -6,6 +6,8 @@ import {
   normalizePlanName
 } from '../../../shared/subscriptionRequest'
 import { ENTERPRISE_ADDON_CATALOG } from '../../../shared/enterpriseAddons'
+import { getCommercialAddon } from '../../../shared/commercialEntitlements'
+import { DarkConfirmDialog } from './shared/DarkConfirmDialog'
 import {
   FileText, CheckCircle, XCircle, Clock, Send, Eye, ChevronDown, ChevronUp,
   Filter, RefreshCw, AlertTriangle, Mail, Phone, Building2, Home, FileDown
@@ -35,9 +37,19 @@ const STATUS_FLOW = [
   { from: 'payment_under_review', to: 'rejected', label: 'Reject' }
 ]
 
-function addonLabel(key) {
-  const addon = ENTERPRISE_ADDON_CATALOG.find((a) => a.key === key)
+function addonLabel(key, productId = null) {
+  const addon = getCommercialAddon(productId, key)
+    || ENTERPRISE_ADDON_CATALOG.find((a) => a.key === key)
   return addon?.label || key?.replace(/_/g, ' ')
+}
+
+function isActivationTargetLicense(license, request) {
+  if (!license || !request?.lodge_id) return false
+  if (String(license.lodge_id || '') !== String(request.lodge_id)) return false
+  if (license.is_active === false) return false
+  const state = String(license.subscription_state || license.payment_status || '').toLowerCase()
+  if (['cancelled', 'expired', 'superseded', 'deleted', 'inactive'].includes(state)) return false
+  return !request.product_id || String(license.product_id || '') === String(request.product_id)
 }
 
 export default function SubscriptionRequests({ licenses = [] }) {
@@ -51,6 +63,7 @@ export default function SubscriptionRequests({ licenses = [] }) {
   const [actionLoading, setActionLoading] = useState(false)
   const [rejectReason, setRejectReason] = useState('')
   const [showReject, setShowReject] = useState(false)
+  const [showActivationConfirm, setShowActivationConfirm] = useState(false)
   const [selectedLicenseId, setSelectedLicenseId] = useState('')
 
   const loadRequests = useCallback(async () => {
@@ -75,7 +88,10 @@ export default function SubscriptionRequests({ licenses = [] }) {
     setDetailLoading(true)
     try {
       const full = await window.api.subscriptionRequests.getById(req.id)
-      if (full) setSelected(full)
+      if (full) {
+        setSelected(full)
+        setSelectedLicenseId(full.existing_license_id || req.existing_license_id || '')
+      }
     } catch (err) {
       console.error('Failed to load request detail:', err)
     } finally {
@@ -123,11 +139,11 @@ export default function SubscriptionRequests({ licenses = [] }) {
     setActionLoading(true)
     try {
       const license = licenses.find((entry) => entry.id === selectedLicenseId) || null
-      const lodgeId = selected?.lodge_id || license?.lodge_id || null
-      if (!selectedLicenseId || !lodgeId) {
-        throw new Error('Select the client license to activate before continuing.')
+      const lodgeId = license?.lodge_id || null
+      if (!selectedLicenseId || !lodgeId || !isActivationTargetLicense(license, selected)) {
+        throw new Error('Select the active license for this exact company and product before continuing.')
       }
-      const result = await window.api.subscriptionRequests.activate(requestId, 'admin', {
+      const result = await window.api.subscriptionRequests.activate(requestId, null, {
         operation_id: crypto.randomUUID(),
         license_id: selectedLicenseId,
         lodge_id: lodgeId,
@@ -180,15 +196,14 @@ export default function SubscriptionRequests({ licenses = [] }) {
   }, [requests])
 
   const licenseOptions = useMemo(() => {
-    const query = String(selected?.property_name || selected?.company_name || '').trim().toLowerCase()
     const rows = Array.isArray(licenses) ? licenses : []
-    if (!query) return rows
-    const matches = rows.filter((license) =>
-      String(license.lodge_name || '').toLowerCase().includes(query) ||
-      String(license.lodge_id || '').toLowerCase() === String(selected?.lodge_id || '').toLowerCase()
-    )
-    return matches.length ? matches : rows
+    return rows.filter((license) => isActivationTargetLicense(license, selected))
   }, [licenses, selected])
+
+  const selectedActivationLicense = useMemo(
+    () => licenseOptions.find((license) => license.id === selectedLicenseId) || null,
+    [licenseOptions, selectedLicenseId]
+  )
 
   return (
     <div className="flex gap-5 h-full">
@@ -357,7 +372,7 @@ export default function SubscriptionRequests({ licenses = [] }) {
                   <div className="mt-2 flex flex-wrap gap-1">
                     {selected.requested_addons.map((key) => (
                       <span key={key} className="inline-block rounded-full bg-purple-500/20 text-purple-300 px-2 py-0.5 text-[10px] font-medium">
-                        {addonLabel(key)}
+                        {addonLabel(key, selected.product_id)}
                       </span>
                     ))}
                   </div>
@@ -443,16 +458,22 @@ export default function SubscriptionRequests({ licenses = [] }) {
                     onChange={(e) => setSelectedLicenseId(e.target.value)}
                     className="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
                   >
-                    <option value="">Select license to activate...</option>
+                    <option value="">Select matching active license...</option>
                     {licenseOptions.map((license) => (
                       <option key={license.id} value={license.id}>
                         {license.lodge_name || license.lodge_id} - {normalizePlanName(license.subscription_plan || 'Starter')}
                       </option>
                     ))}
                   </select>
-                  <p className="text-[10px] text-gray-500">
-                    Activation updates the selected license plan and enables selected add-on features. Public website requests must be linked to a license before activation.
-                  </p>
+                  {licenseOptions.length === 0 ? (
+                    <p className="text-[10px] leading-4 text-amber-300">
+                      No active {selected.product_id || 'matching'} license is linked to this exact company. Create or correct the product-matched assignment in Licensing Workbench, set its commercial due date and payment state, then return here to activate the approved request.
+                    </p>
+                  ) : (
+                    <p className="text-[10px] leading-4 text-gray-500">
+                      Activation applies the immutable approved quote to the selected license and enables only its package and add-on entitlements. The server records the operator and rejects unapproved or mismatched requests.
+                    </p>
+                  )}
                 </div>
               )}
 
@@ -469,7 +490,11 @@ export default function SubscriptionRequests({ licenses = [] }) {
                           if (action.to === 'rejected') {
                             setShowReject(true)
                           } else if (action.to === 'activated') {
-                            activateRequest(selected.id)
+                            if (!selectedActivationLicense) {
+                              toast.error('Select the active license for this exact company and product before activating.')
+                            } else {
+                              setShowActivationConfirm(true)
+                            }
                           } else {
                             updateStatus(selected.id, action.to)
                           }
@@ -520,6 +545,19 @@ export default function SubscriptionRequests({ licenses = [] }) {
           )}
         </div>
       )}
+      <DarkConfirmDialog
+        open={showActivationConfirm}
+        title="Activate approved subscription?"
+        message={`This applies the approved quote to ${selectedActivationLicense?.lodge_name || 'the selected company'} and grants its package and add-ons. Confirm only after payment approval and the due date have been checked.`}
+        confirmLabel="Activate subscription"
+        cancelLabel="Review again"
+        tone="warning"
+        onCancel={() => setShowActivationConfirm(false)}
+        onConfirm={() => {
+          setShowActivationConfirm(false)
+          if (selected) activateRequest(selected.id)
+        }}
+      />
     </div>
   )
 }

@@ -1194,6 +1194,16 @@ test('Tab status queue uses exact RPC args {p_tab_id, p_status}', () => {
   assert.ok(content.includes("queueOfflineRpcMutation('update_pos_tab_status', rpcArgs"), 'Offline path must use rpcArgs');
 });
 
+test('Legacy tab status preserves known restaurant queue but fails closed for Bar or unknown scope', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.js'), 'utf-8');
+  const start = content.indexOf("ipcMain.handle('pos:update-tab-status'");
+  const section = content.slice(start, start + 2600);
+  assert.match(section, /const rpcArgs = \{ p_tab_id: tabId, p_status: status \}/, 'Restaurant replay must retain the exact two-field RPC envelope');
+  assert.match(section, /const tabScope = getLegacyTabScope\(\)/, 'Scope must be read from the lodge-scoped settings cache');
+  assert.match(section, /tabScope\.isBar \|\| !tabScope\.known/, 'Bar and unknown scope must fail closed offline');
+  assert.match(section, /queueOfflineRpcMutation\('update_pos_tab_status', rpcArgs/, 'Known restaurant status changes remain queue-compatible');
+});
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // BEHAVIORAL TESTS: PARTIAL RETURN SAFETY
 // ═══════════════════════════════════════════════════════════════════════════════

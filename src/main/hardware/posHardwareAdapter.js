@@ -392,10 +392,10 @@ export async function sendRawEscPos(settings = {}, payload) {
   try {
     if (target.type === 'network') {
       await sendTcp(target.host, target.port, bytes, normalized.escpos_timeout_ms || DEFAULT_TIMEOUT_MS)
-      return { success: true, transport: 'network', target: `${target.host}:${target.port}` }
+      return { success: true, verified: true, transport: 'network', target: `${target.host}:${target.port}` }
     }
     await sendPath(target.path, bytes)
-    return { success: true, transport: 'path', target: target.path }
+    return { success: true, verified: true, transport: 'path', target: target.path }
   } catch (error) {
     return { success: false, error: error?.message || 'Could not send ESC/POS command.' }
   }
@@ -454,6 +454,45 @@ export async function printEscPosReceipt({ order = {}, business = {}, settings =
     : result
 }
 
+export async function printBarcodeLabels({ labels = [], settings = {} } = {}) {
+  const normalized = normalizePosHardwareSettings(settings)
+  const pathTarget = String(normalized.escpos_printer_path || '').trim()
+  if (!normalized.escpos_enabled || normalized.receipt_print_mode !== 'escpos') {
+    return { success: false, error: 'Barcode labels require ESC/POS direct printing to be enabled.' }
+  }
+  if (normalized.escpos_connection_type !== 'path' || !pathTarget) {
+    return { success: false, error: 'Barcode labels require a configured local printer output path. Configure and test the ESC/POS device first.' }
+  }
+  try {
+    if (!fs.existsSync(pathTarget)) {
+      return { success: false, error: `The configured printer output path does not exist: ${pathTarget}. Reconnect the printer and test it before printing labels.` }
+    }
+  } catch {
+    return { success: false, error: 'The configured printer output path could not be verified. Reconnect the printer and try again.' }
+  }
+  const rows = Array.isArray(labels) ? labels.slice(0, 500) : []
+  if (!rows.length) return { success: false, error: 'Select at least one stock item with a barcode.' }
+  const validRows = rows.filter((row) => {
+    const barcode = String(row?.barcode || '').trim()
+    return Boolean(barcode) && !/[^\x20-\x7e]/.test(barcode) && barcode.length <= 80
+  })
+  if (!validRows.length) return { success: false, error: 'No selected stock item has a printable barcode.' }
+  const buffers = [commandBuffer([ESC, 0x40]), commandBuffer([ESC, 0x61, 0x01])]
+  for (const row of validRows) {
+    const name = String(row?.name || 'Stock item').replace(/[\r\n\x00-\x1f\x7f]/g, ' ').slice(0, 42)
+    const barcode = String(row?.barcode || '').trim()
+    if (!barcode || /[^\x20-\x7e]/.test(barcode) || barcode.length > 80) continue
+    buffers.push(textBuffer(`${name}\n`))
+    // Code 128, subset B.  The output is sent only to the verified configured
+    // path; labels contain no financial or supplier information.
+    const data = Buffer.from(`{B${barcode}`, 'ascii')
+    buffers.push(commandBuffer([GS, 0x68, 0x50, GS, 0x77, 0x02, GS, 0x6b, 0x49, data.length]), data, textBuffer('\n\n'))
+  }
+  buffers.push(commandBuffer([ESC, 0x64, 0x03]), commandBuffer([ESC, 0x40]))
+  const result = await sendRawEscPos({ ...normalized, escpos_connection_type: 'path' }, Buffer.concat(buffers))
+  return result.success ? { ...result, printed: validRows.length, message: 'Barcode labels sent to the verified printer output path.' } : result
+}
+
 export async function openCashDrawer(settings = {}) {
   const normalized = normalizePosHardwareSettings(settings)
   if (!normalized.cash_drawer_enabled) {
@@ -491,8 +530,9 @@ export async function testPosHardwareDevice(kind = 'receipt', settings = {}, bus
   }
   return {
     success: true,
+    verified: false,
     kind,
-    message: 'Windows printer mode is configured. Use Print Receipt to test the selected Windows printer.'
+    message: 'Windows printer mode is configured, but no receipt was sent. Use Print Receipt to perform and verify a real printer test.'
   }
 }
 
@@ -551,6 +591,7 @@ export async function sendPaymentTerminalTotal(settings = {}, data = {}) {
     }
     return {
       success: true,
+      verified: true,
       approved: true,
       message: body.message || 'Payment approved by terminal.',
       approval_code: body.approval_code || body.approvalCode || body.auth_code || null,

@@ -4,6 +4,7 @@ import { BellRing, ChevronDown, ChevronUp, Download, FileText, RefreshCw, Rotate
 import { APP_FEATURES, FEATURE_LABELS, buildCapabilitySnapshot, canAccessCapability, isPosFullAccessRole } from '../../shared/accessControl'
 import { SUBSCRIPTION_PLAN_ORDER, getFeatureRequiredPlan, getSubscriptionPlan, normalizeSubscriptionPlan } from '../../shared/subscriptionPlans'
 import { getCommercialPackageCatalog, getCommercialPackageLabel } from '../../shared/commercialPackages'
+import { getCommercialAddonOffers, isCommercialSelectionEligible } from '../../shared/commercialEntitlements.js'
 import { getCommercialFeatureSet, isCommercialFeatureIncluded } from '../../shared/commercialAccess.js'
 import { isBarOnlyMode, isRestaurantOnly } from '../../shared/propertyTypes'
 import { isBarOnlyBlockedPath, normalizeAppPath } from '../../shared/barModeProfile'
@@ -911,9 +912,12 @@ function FinancialHealthBanner() {
     }
     load()
     const interval = setInterval(load, 5 * 60_000)
+    const onCleared = () => load()
+    window.addEventListener('saved-app-issues-cleared', onCleared)
     return () => {
       mounted = false
       clearInterval(interval)
+      window.removeEventListener('saved-app-issues-cleared', onCleared)
     }
   }, [])
 
@@ -1040,11 +1044,52 @@ function BookingSyncConflictNotification() {
 }
 
 // ── Trial Expired Lock Screen ─────────────────────────────────────────────────
-function TrialExpiredScreen({ lodgeName, onSwitchAccount }) {
+const SALES_EMAIL = 'sales@tsabonno.com'
+
+function commercialFeatureLabel(featureName) {
+  return FEATURE_LABELS[featureName]
+    || String(featureName || '')
+      .replace(/_/g, ' ')
+      .replace(/\b\w/g, (letter) => letter.toUpperCase())
+}
+
+function commercialPriceLabel(tier) {
+  const amount = Number(tier?.priceBwp)
+  if (!Number.isFinite(amount) || amount < 0) return 'Price on request'
+  const billingCopy = tier.billingBasis === 'annual_license'
+    ? 'per year'
+    : tier.billingBasis === 'initial_purchase'
+      ? 'once-off'
+      : 'per year'
+  return `P${amount.toLocaleString('en-BW', { maximumFractionDigits: 0 })} ${billingCopy}`
+}
+
+function commercialAddonPriceLabel(addon) {
+  const annualAmount = Number(addon?.annualPriceBwp)
+  if (Number.isFinite(annualAmount) && annualAmount >= 0) {
+    return `P${annualAmount.toLocaleString('en-BW', { maximumFractionDigits: 0 })} per year`
+  }
+  const oneTimeAmount = Number(addon?.oneTimePriceBwp)
+  if (Number.isFinite(oneTimeAmount) && oneTimeAmount >= 0) {
+    return `P${oneTimeAmount.toLocaleString('en-BW', { maximumFractionDigits: 0 })} once-off`
+  }
+  return 'Price on request'
+}
+
+function TrialExpiredScreen({ lodgeName, lodgeId, operatingProfile, propertyType, user, onSwitchAccount }) {
   const [submitted, setSubmitted] = useState(false)
   const [submitting, setSubmitting] = useState(false)
-  const tiers = getCommercialPackageCatalog(BUILD_PRODUCT.id)
-  const lockedFeatures = APP_FEATURES.map((featureName) => FEATURE_LABELS[featureName] || featureName)
+  const [requestError, setRequestError] = useState('')
+  const [selectedAddonKeys, setSelectedAddonKeys] = useState([])
+  const tiers = getCommercialPackageCatalog(BUILD_PRODUCT.id).filter((tier) => {
+    if (!IS_HPOS_PRODUCT) return true
+    if (!operatingProfile) return false
+    return isCommercialSelectionEligible({
+      productId: BUILD_PRODUCT.id,
+      commercialPackageKey: tier.commercialPackageKey,
+      operatingProfile
+    })
+  })
   const brand = BUILD_PRODUCT.brandName
   const noun = IS_LODGE_PRODUCT ? 'lodge' : BUILD_PRODUCT.businessNoun
   const shell = IS_HOTEL_PRODUCT
@@ -1053,20 +1098,53 @@ function TrialExpiredScreen({ lodgeName, onSwitchAccount }) {
       ? 'min-h-screen bg-gradient-to-br from-[#6f8061] via-[#d08a64] to-[#a83c26] flex flex-col items-center justify-center p-6'
       : 'min-h-screen bg-gradient-to-br from-green-900 via-green-800 to-green-700 flex flex-col items-center justify-center p-6'
   const subText = IS_HOTEL_PRODUCT ? `${HOTEL_CHROME.mute} text-sm max-w-md` : IS_HPOS_PRODUCT ? 'text-orange-50 text-sm max-w-md' : 'text-green-200 text-sm max-w-md'
+  const eligibleAddonsForTier = (tier) => {
+    if (!IS_HPOS_PRODUCT || !tier?.commercialPackageKey) return []
+    return getCommercialAddonOffers(BUILD_PRODUCT.id, propertyType)
+      .filter((addon) => !addon.eligiblePackageKeys || addon.eligiblePackageKeys.includes(tier.commercialPackageKey))
+      .filter((addon) => !addon.eligibleOperatingProfiles || addon.eligibleOperatingProfiles.length === 0 || addon.eligibleOperatingProfiles.includes(operatingProfile))
+  }
+  const selectedAddonsForTier = (tier) => {
+    const eligibleKeys = new Set(eligibleAddonsForTier(tier).map((addon) => addon.addonKey))
+    return selectedAddonKeys.filter((addonKey) => eligibleKeys.has(addonKey))
+  }
+  const toggleAddon = (addonKey) => {
+    setSelectedAddonKeys((current) => current.includes(addonKey)
+      ? current.filter((key) => key !== addonKey)
+      : [...current, addonKey])
+  }
 
   const requestUpgrade = async (tier) => {
+    setRequestError('')
     setSubmitting(true)
     try {
-      await window.api.admin.createSupportTicket({
-        lodge_name: lodgeName || `Unknown ${IS_LODGE_PRODUCT ? 'Lodge' : BUILD_PRODUCT.businessNounTitle}`,
-        title: `Subscription Request — ${tier} Plan`,
-        description: `The ${noun} has requested to buy a ${tier} subscription after their free trial ended.`,
-        category: 'Upgrade Request',
-        priority: 'High'
+      const selectedAddons = selectedAddonsForTier(tier)
+      const result = await window.api?.subscriptionRequests?.submit?.({
+        source: 'desktop_app',
+        request_type: 'plan_upgrade',
+        lodge_id: lodgeId || null,
+        company_name: lodgeName || '',
+        property_name: lodgeName || '',
+        contact_name: user?.full_name || user?.name || '',
+        contact_email: user?.email || '',
+        property_type: propertyType || null,
+        operating_profile: operatingProfile || null,
+        product_id: BUILD_PRODUCT.id,
+        commercial_package_key: tier.commercialPackageKey,
+        current_plan: 'Trial expired',
+        requested_plan: tier.internalPlan,
+        requested_addons: selectedAddons,
+        notes: `Submitted from expired-trial access for ${tier.displayName}${selectedAddons.length ? ` with ${selectedAddons.length} selected add-on${selectedAddons.length === 1 ? '' : 's'}` : ''}. Payment is not collected in the app; activation requires the server-authoritative quotation and payment approval.`
       })
+      if (result?.success !== true) {
+        throw new Error(result?.error || 'The commercial quote request could not be delivered.')
+      }
       setSubmitted(true)
-    } catch { setSubmitted(true) }
-    setSubmitting(false)
+    } catch (error) {
+      setRequestError(error?.message || `We could not send the request. Email ${SALES_EMAIL} for help.`)
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   const trialTitleClass = IS_HOTEL_PRODUCT ? `text-3xl font-bold ${HOTEL_CHROME.ink} mb-2` : 'text-3xl font-bold text-white mb-2'
@@ -1095,53 +1173,84 @@ function TrialExpiredScreen({ lodgeName, onSwitchAccount }) {
       {submitted ? (
         <div className="bg-white rounded-2xl p-8 max-w-md w-full text-center shadow-2xl">
           <div className="text-5xl mb-4">✅</div>
-          <h2 className="text-xl font-bold text-gray-800 mb-2">Request sent!</h2>
-          <p className="text-gray-500 text-sm">Our team will contact you shortly to activate your subscription. Thank you for choosing {brand}.</p>
+          <h2 className="text-xl font-bold text-gray-800 mb-2">Quote request sent!</h2>
+          <p className="text-gray-500 text-sm">Sales will prepare an itemised quotation, confirm payment, and activate the approved subscription. Thank you for choosing {brand}.</p>
         </div>
       ) : (
         <div className="w-full max-w-5xl space-y-5">
-          <div className="grid grid-cols-2 gap-2 rounded-2xl border border-white/10 bg-white/10 p-4 sm:grid-cols-3 lg:grid-cols-6">
-            {lockedFeatures.map((featureName) => (
-              <div key={featureName} className="rounded-xl border border-white/10 bg-white/8 px-3 py-2 text-xs font-semibold text-white/55 line-through">
-                {featureName}
-              </div>
-            ))}
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {tiers.map((tier) => (
-            <div key={tier.internalPlan} className="bg-white rounded-2xl p-6 shadow-2xl flex flex-col">
-              <div className={`text-xs font-bold uppercase tracking-widest mb-1 ${tier.internalPlan === 'Pro' ? 'text-purple-600' : tier.internalPlan === 'Standard' ? 'text-green-600' : 'text-blue-600'}`}>
-                {tier.name}
-              </div>
-              <div className="text-lg font-bold text-gray-800 mb-2">Contact us</div>
-              <p className="mb-4 text-xs font-medium leading-5 text-gray-500">{tier.headline}</p>
-              <ul className="space-y-1.5 flex-1 mb-5">
-                {tier.modules.slice(0, 5).map(f => (
-                  <li key={f} className="flex items-start gap-2 text-xs text-gray-600">
-                    <span className="text-green-500 mt-0.5 flex-shrink-0">✓</span>{f}
-                  </li>
-                ))}
-              </ul>
-              <button
-                onClick={() => requestUpgrade(tier.name)}
-                disabled={submitting}
-                className={`w-full py-2 rounded-lg text-sm font-semibold text-white transition-colors disabled:opacity-50 ${
-                  tier.internalPlan === 'Pro' ? 'bg-purple-600 hover:bg-purple-700' :
-                  tier.internalPlan === 'Standard' ? 'bg-green-600 hover:bg-green-700' :
-                  'bg-blue-600 hover:bg-blue-700'
-                }`}
-              >
-                {submitting ? 'Sending...' : `Buy ${tier.name}`}
-              </button>
+          {tiers.length === 0 ? (
+            <div className="mx-auto max-w-xl rounded-2xl border border-white/20 bg-white/10 p-6 text-center text-sm text-white">
+              We could not confirm a package that matches this business profile. Email{' '}
+              <a className="font-semibold underline" href={`mailto:${SALES_EMAIL}`}>{SALES_EMAIL}</a>{' '}
+              and our sales team will prepare the correct quotation.
             </div>
-          ))}
-          </div>
+          ) : (
+            <div className={`grid grid-cols-1 gap-4 ${tiers.length === 1 ? 'mx-auto max-w-sm' : 'md:grid-cols-3'}`}>
+              {tiers.map((tier) => (
+                <div key={tier.commercialPackageKey} className="bg-white rounded-2xl p-6 shadow-2xl flex flex-col">
+                  <div className={`text-xs font-bold uppercase tracking-widest mb-1 ${tier.commercialPackageKey === 'bar_pos' ? 'text-amber-700' : tier.commercialPackageKey === 'restaurant_growth' ? 'text-purple-600' : tier.commercialPackageKey === 'restaurant_control' ? 'text-green-600' : 'text-blue-600'}`}>
+                    {tier.displayName}
+                  </div>
+                  <div className="text-lg font-bold text-gray-800 mb-2">{commercialPriceLabel(tier)}</div>
+                  <p className="mb-4 text-xs font-medium leading-5 text-gray-500">{tier.salesCopy}</p>
+                  <ul className="space-y-1.5 flex-1 mb-5">
+                    {tier.includedFeatures.slice(0, 5).map((featureName) => (
+                      <li key={featureName} className="flex items-start gap-2 text-xs text-gray-600">
+                        <span className="text-green-500 mt-0.5 flex-shrink-0">✓</span>{commercialFeatureLabel(featureName)}
+                      </li>
+                    ))}
+                  </ul>
+                  {eligibleAddonsForTier(tier).length > 0 ? (
+                    <div className="mb-5 rounded-xl border border-amber-200 bg-amber-50 p-3 text-left">
+                      <p className="text-xs font-bold uppercase tracking-wide text-amber-800">Optional annual add-ons</p>
+                      <p className="mt-1 text-[11px] leading-4 text-amber-700">Bar POS is required. Selected add-ons are included in the first annual invoice and each annual renewal.</p>
+                      <div className="mt-3 space-y-2">
+                        {eligibleAddonsForTier(tier).map((addon) => {
+                          const selected = selectedAddonKeys.includes(addon.addonKey)
+                          return (
+                            <label key={addon.addonKey} className="flex cursor-pointer items-start gap-2 rounded-lg border border-amber-200 bg-white p-2 text-xs text-gray-700">
+                              <input
+                                type="checkbox"
+                                checked={selected}
+                                disabled={submitting}
+                                onChange={() => toggleAddon(addon.addonKey)}
+                                className="mt-0.5 h-3.5 w-3.5 accent-amber-700"
+                              />
+                              <span>
+                                <span className="block font-semibold text-gray-800">{addon.displayName} <span className="text-amber-800">— {commercialAddonPriceLabel(addon)}</span></span>
+                                <span className="mt-0.5 block leading-4 text-gray-500">{addon.description}</span>
+                              </span>
+                            </label>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  ) : null}
+                  <button
+                    onClick={() => requestUpgrade(tier)}
+                    disabled={submitting}
+                    className={`w-full py-2 rounded-lg text-sm font-semibold text-white transition-colors disabled:opacity-50 ${
+                      tier.commercialPackageKey === 'bar_pos' ? 'bg-amber-700 hover:bg-amber-800' :
+                      tier.commercialPackageKey === 'restaurant_growth' ? 'bg-purple-600 hover:bg-purple-700' :
+                      tier.commercialPackageKey === 'restaurant_control' ? 'bg-green-600 hover:bg-green-700' : 'bg-blue-600 hover:bg-blue-700'
+                    }`}
+                  >
+                    {submitting ? 'Sending…' : `Request ${tier.displayName}${selectedAddonsForTier(tier).length ? ` + ${selectedAddonsForTier(tier).length} add-on${selectedAddonsForTier(tier).length === 1 ? '' : 's'}` : ''}`}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          {requestError ? (
+            <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-center text-sm text-red-800">
+              {requestError} You can also email <a className="font-semibold underline" href={`mailto:${SALES_EMAIL}`}>{SALES_EMAIL}</a>.
+            </div>
+          ) : null}
         </div>
       )}
 
       <p className="text-green-300 text-xs mt-6">
-        Need help? Contact us at support@boroko.io
+        Need help? Email <a className="font-semibold underline" href={`mailto:${SALES_EMAIL}`}>{SALES_EMAIL}</a>
       </p>
     </div>
   )
@@ -1765,7 +1874,18 @@ export default function App() {
 
   // Trial expired and no license — full lock screen after lodge login
   if (user && trialStatus?.expired) {
-    return <TrialExpiredScreen lodgeName={settings?.lodge_name} onSwitchAccount={switchAccount} />
+    const operatingProfile = IS_HPOS_PRODUCT && settings
+      ? (isBarOnlyMode(settings) ? 'bar_only' : 'restaurant_bar')
+      : null
+    const propertyType = String(settings?.property_type || settings?.business_type || '').trim().toLowerCase() || null
+    return <TrialExpiredScreen
+      lodgeName={settings?.lodge_name}
+      lodgeId={settings?.lodge_id}
+      operatingProfile={operatingProfile}
+      propertyType={propertyType}
+      user={user}
+      onSwitchAccount={switchAccount}
+    />
   }
 
   return (
@@ -1785,7 +1905,7 @@ export default function App() {
               <SyncFailBanner />
               <FinancialHealthBanner />
               <BookingSyncConflictNotification />
-              {user && trialStatus?.status === 'trial' && trialStatus?.lodge_id && !user?.isMasterAdmin && (
+              {user && !IS_HPOS_PRODUCT && trialStatus?.status === 'trial' && trialStatus?.lodge_id && !user?.isMasterAdmin && (
                 <TrialBanner daysLeft={trialStatus.daysLeft} />
               )}
             </div>

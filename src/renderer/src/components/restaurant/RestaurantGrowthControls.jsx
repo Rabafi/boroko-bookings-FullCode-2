@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Gift, HandCoins, PackageCheck, BellRing, RefreshCw } from 'lucide-react'
+import { unpackTransport } from '../../transportUnpack'
 
 const today = () => new Date().toISOString().slice(0, 10)
 
@@ -9,7 +10,7 @@ export default function RestaurantGrowthControls({ tabKey = 'growth' }) {
   const [payout, setPayout] = useState({ staff_id: '', amount: '', method: 'cash', business_date: today(), reference: '' })
   const [lot, setLot] = useState({ inventory_item_id: '', lot_code: '', received_quantity: '', unit_cost: '', expires_on: '' })
   const [policy, setPolicy] = useState({ cancellation_cutoff_hours: '24', no_show_forfeit_percent: '100', reminder_hours_before: '24' })
-  async function load() { const [stock, expiry, users, tipRows, balances] = await Promise.all([window.api.inventory.getItems().catch(() => []), window.api.pos.getExpiryLots(14).catch(() => []), window.api.users.getAll().catch(() => []), window.api.pos.getTipPayouts ? window.api.pos.getTipPayouts(30).catch(() => []) : Promise.resolve([]), window.api.pos.getTipBalances ? window.api.pos.getTipBalances(30).catch(() => []) : Promise.resolve([])]); setItems(Array.isArray(stock) ? stock : []); setExpiring(Array.isArray(expiry) ? expiry : []); setStaff((Array.isArray(users) ? users : []).filter((user) => user?.id && String(user.status || 'active').toLowerCase() === 'active')); setPayouts(Array.isArray(tipRows) ? tipRows : []); setTipBalances(Array.isArray(balances) ? balances : []) }
+  async function load() { const [stock, expiry, users, tipRows, balances] = await Promise.all([window.api.inventory.getItems().catch(() => []), window.api.pos.getExpiryLots(14).catch(() => []), window.api.users.getAll().catch(() => []), window.api.pos.getTipPayouts ? window.api.pos.getTipPayouts(30).catch(() => []) : Promise.resolve([]), window.api.pos.getTipBalances ? window.api.pos.getTipBalances(30).then(unpackTransport).catch(() => []) : Promise.resolve([])]); setItems(Array.isArray(stock) ? stock : []); setExpiring(Array.isArray(expiry) ? expiry : []); setStaff((Array.isArray(users) ? users : []).filter((user) => user?.id && String(user.status || 'active').toLowerCase() === 'active')); setPayouts(Array.isArray(tipRows) ? tipRows : []); setTipBalances(Array.isArray(balances) ? balances : []) }
   useEffect(() => { load() }, [])
   async function submit(event, action, reset) { event.preventDefault(); setBusy(true); setNotice(''); try { const result = await action(); if (!result?.success) throw new Error(result?.error || 'Could not save'); reset?.(); setNoticeTone('success'); setNotice('Saved securely.'); await load() } catch (error) { setNoticeTone('error'); setNotice(error.message || 'Could not save') } finally { setBusy(false) } }
   const input = 'bb-input mt-1 w-full'

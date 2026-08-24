@@ -15,7 +15,9 @@ function asId(value) {
 }
 
 function cloneSession(session) {
-  return session ? { ...session } : null
+  if (!session) return null
+  const { operatorProof, ...publicSession } = session
+  return { ...publicSession }
 }
 
 export function createTillOperatorSessionStore({ clock = () => Date.now() } = {}) {
@@ -40,7 +42,17 @@ export function createTillOperatorSessionStore({ clock = () => Date.now() } = {}
     return cloneSession(session)
   }
 
-  function create({ webContentsId, staffId, staffName, outletId, shiftId, mode, inactivityMinutes } = {}) {
+  function getOperatorProof(webContentsId) {
+    const session = sessions.get(webContentsId)
+    if (!session) return null
+    if (session.expiresAt <= now()) {
+      clear(webContentsId)
+      return null
+    }
+    return session.operatorProof || null
+  }
+
+  function create({ webContentsId, staffId, staffName, outletId, shiftId, mode, inactivityMinutes, operatorProof } = {}) {
     const normalizedStaffId = asId(staffId)
     if (webContentsId === null || webContentsId === undefined || !normalizedStaffId) return null
     const minutes = Math.max(1, Number(inactivityMinutes) || 30)
@@ -52,6 +64,7 @@ export function createTillOperatorSessionStore({ clock = () => Date.now() } = {}
       shiftId: asId(shiftId),
       mode: mode === TILL_OPERATOR_MODES.SHIFT ? TILL_OPERATOR_MODES.SHIFT : TILL_OPERATOR_MODES.STRICT,
       inactivityMinutes: minutes,
+      operatorProof: asId(operatorProof),
       lastActivityAt: timestamp,
       expiresAt: timestamp + minutes * 60 * 1000
     }
@@ -89,7 +102,7 @@ export function createTillOperatorSessionStore({ clock = () => Date.now() } = {}
     return { success: true, code: null, error: null, session: cloneSession(session) }
   }
 
-  function touch(webContentsId, { outletId } = {}) {
+  function touch(webContentsId, { outletId, operatorId, shiftId } = {}) {
     const session = get(webContentsId)
     if (!session) return reject(webContentsId, TILL_OPERATOR_SESSION_CODES.EXPIRED, 'Till has locked. Verify the operator PIN to continue.')
     if (session.mode !== TILL_OPERATOR_MODES.SHIFT) {
@@ -97,6 +110,12 @@ export function createTillOperatorSessionStore({ clock = () => Date.now() } = {}
     }
     if (!outletId || session.outletId !== asId(outletId)) {
       return reject(webContentsId, TILL_OPERATOR_SESSION_CODES.OUTLET_CHANGED, 'Unlock Till again for this outlet.')
+    }
+    if (!operatorId || session.staffId !== asId(operatorId)) {
+      return reject(webContentsId, TILL_OPERATOR_SESSION_CODES.OPERATOR_MISMATCH, 'The selected Till operator does not match the active PIN session.')
+    }
+    if (!shiftId || (session.shiftId && session.shiftId !== asId(shiftId))) {
+      return reject(webContentsId, TILL_OPERATOR_SESSION_CODES.SHIFT_MISMATCH, 'Unlock Till again with the operator\'s open shift.')
     }
     const timestamp = now()
     session.lastActivityAt = timestamp
@@ -126,5 +145,5 @@ export function createTillOperatorSessionStore({ clock = () => Date.now() } = {}
     sessions.clear()
   }
 
-  return Object.freeze({ create, get, authorize, touch, consumeStrict, clear, clearMatching, clearAll })
+  return Object.freeze({ create, get, getOperatorProof, authorize, touch, consumeStrict, clear, clearMatching, clearAll })
 }

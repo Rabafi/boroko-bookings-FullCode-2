@@ -13,8 +13,10 @@ import {
   X,
 } from 'lucide-react';
 import { useAccess, useAuth, useSettings } from '../../app-context';
+import { unpackTransport } from '../../transportUnpack';
 import { canAccessCapability } from '../../../../shared/accessControl';
 import { isBarOnlyMode } from '../../../../shared/propertyTypes';
+import { BAR_PRODUCT_CATEGORIES } from '../../../../shared/barModeProfile';
 import { calculatePosFinancialTruth, classifyPosTransaction, hasRecordedPosTenderEnvelope, posTenderRows } from '../../../../shared/posFinancialTruth';
 
 const dateKeyInTimeZone = (date, timeZone) => {
@@ -80,11 +82,14 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
   const [voidError, setVoidError] = useState('');
   const [historySource, setHistorySource] = useState('');
   const [readCompleteness, setReadCompleteness] = useState({ source: 'unknown', complete: false });
+  const [serverControls, setServerControls] = useState(null);
+  const [voidTemplates, setVoidTemplates] = useState([]);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError('');
     if (sharedTillHistoryMode) {
+      setServerControls(null);
       try {
         const cached = await window.api?.pos?.getSharedTillHistory?.(start, end, { refresh: false });
         setOrders(cached?.orders || []);
@@ -106,13 +111,23 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
       return;
     }
     try {
-      const [loadedOrders, loadedVoids] = await Promise.all([
-        correctionMode ? window.api?.pos?.getMyOrders?.(start, end) : window.api?.pos?.getOrders?.(start, end),
+      setServerControls(null);
+      const [history, loadedVoids] = await Promise.all([
+        correctionMode
+          ? window.api?.pos?.getMyOrders?.(start, end)
+          : window.api?.pos?.getCertifiedReportHistory?.(start, end),
         // A waiter correction screen must never expose the outlet-wide void audit.
         correctionMode ? Promise.resolve([]) : window.api?.pos?.getVoidHistory?.(start, end),
       ]);
+      const loadedOrders = correctionMode ? unpackTransport(history) : unpackTransport(history?.orders);
       setOrders(loadedOrders || []);
-      setReadCompleteness({ source: loadedOrders?._source || 'unknown', complete: loadedOrders?._complete === true, tenderComplete: loadedOrders?._tender_complete === true, itemDetailComplete: loadedOrders?._item_detail_complete === true });
+      setReadCompleteness(correctionMode
+        ? { source: loadedOrders?._source || 'unknown', complete: loadedOrders?._complete === true, tenderComplete: loadedOrders?._tender_complete === true, itemDetailComplete: loadedOrders?._item_detail_complete === true }
+        : { source: history?.source || 'unknown', complete: history?.complete === true, tenderComplete: history?.tender_complete === true, itemDetailComplete: history?.item_detail_complete === true });
+      if (!correctionMode && history?.complete === true && history?.source === 'server' && history?.control_totals) {
+        setServerControls(history.control_totals);
+      }
+      if (!correctionMode && history?.success === false && history?.error) setNotice(history.error);
       setVoidHistory(loadedVoids || []);
     } catch (loadError) {
       setOrders([]);
@@ -125,6 +140,12 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
   useEffect(() => {
     load();
   }, [load]);
+  useEffect(() => {
+    if (!barOnly || correctionMode || sharedTillHistoryMode) return;
+    window.api?.pos?.getVoidReasonTemplates?.().then((result) => {
+      if (Array.isArray(result)) setVoidTemplates(result);
+    }).catch(() => {});
+  }, [barOnly, correctionMode, sharedTillHistoryMode]);
 
   const rows = useMemo(
     () =>
@@ -148,15 +169,21 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
   const metrics = useMemo(() => {
     const truth = calculatePosFinancialTruth(rows, { dataset_complete: readCompleteness.complete });
     const completed = truth.rows.filter((o) => o.classification === 'sale');
-    const sales = truth.controls.net_recorded_sales;
-    const discounts = truth.controls.discounts;
+    // For the normal report workspace the server report run, not renderer
+    // aggregation, is the source of financial controls. The local calculation
+    // remains only for classifications and correction-mode views.
+    const controls = !correctionMode && serverControls
+      ? { ...truth.controls, ...serverControls, dataset_complete: true, dataset_status: 'certified' }
+      : truth.controls;
+    const sales = controls.net_recorded_sales;
+    const discounts = controls.discounts;
     const attention = rows.filter(
       (o) =>
         o._sync_state === 'failed' ||
         o._pending_sync ||
         ['voided', 'cancelled'].includes(String(o.status || '').toLowerCase()),
     ).length;
-    const payment = truth.controls.tender_totals;
+    const payment = controls.tender_totals;
     const service = completed.reduce((acc, o) => {
       const key = o.service_mode || 'counter';
       acc[key] = (acc[key] || 0) + 1;
@@ -169,13 +196,39 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
       attention,
       payment,
       service,
-      average: truth.controls.average_completed_sale,
-      controls: truth.controls,
+      average: controls.average_completed_sale,
+      controls,
     };
-  }, [readCompleteness.complete, rows]);
-  const financialReady = readCompleteness.complete && metrics.controls.dataset_complete === true;
+  }, [correctionMode, readCompleteness.complete, rows, serverControls]);
+  const financialReady = readCompleteness.complete
+    && metrics.controls.dataset_complete === true
+    && (correctionMode || serverControls !== null);
   const tenderReady = financialReady && readCompleteness.tenderComplete === true && rows.filter((order) => ['sale', 'return'].includes(classifyPosTransaction(order))).every(hasRecordedPosTenderEnvelope);
   const itemDetailReady = financialReady && readCompleteness.itemDetailComplete === true;
+  const basicBarBreakdown = useMemo(() => {
+    if (!barOnly || !itemDetailReady) return { categories: [], products: [] };
+    const categoryTotals = new Map();
+    const productTotals = new Map();
+    rows.filter((order) => classifyPosTransaction(order) === 'sale').forEach((order) => {
+      (Array.isArray(order.pos_order_items) ? order.pos_order_items : []).forEach((item) => {
+        const quantity = Number(item.quantity || 0);
+        const amount = Number(item.net_subtotal ?? item.subtotal ?? item.gross_subtotal);
+        if (!Number.isFinite(quantity) || !Number.isFinite(amount)) return;
+        const rawCategory = String(item.category || item.menu_category || '').trim();
+        const category = BAR_PRODUCT_CATEGORIES.find((value) => value.toLowerCase() === rawCategory.toLowerCase()) || 'Other';
+        const name = String(item.item_name || item.name || 'Unnamed product').trim() || 'Unnamed product';
+        const currentCategory = categoryTotals.get(category) || { quantity: 0, amount: 0 };
+        categoryTotals.set(category, { quantity: currentCategory.quantity + quantity, amount: currentCategory.amount + amount });
+        const productId = String(item.product_id || item.menu_item_id || item.item_id || item.id || `custom:${name.toLowerCase()}`);
+        const currentProduct = productTotals.get(productId) || { label: name, quantity: 0, amount: 0 };
+        productTotals.set(productId, { label: currentProduct.label, quantity: currentProduct.quantity + quantity, amount: currentProduct.amount + amount });
+      });
+    });
+    return {
+      categories: [...categoryTotals.entries()].map(([label, value]) => ({ label, ...value })).sort((a, b) => b.amount - a.amount),
+      products: [...productTotals.values()].sort((a, b) => b.quantity - a.quantity || b.amount - a.amount).slice(0, 8),
+    };
+  }, [barOnly, itemDetailReady, rows]);
 
   const exportReport = async (format) => {
     setExporting(format);
@@ -388,6 +441,10 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
           {!financialReady && <p>Service mix and discounts are unavailable until the server confirms a complete POS source.</p>}
         </section>
       </div>}
+      {barOnly && !correctionMode && !sharedTillHistoryMode && <div className="hpos-report-grid hpos-bar-basic-report-grid">
+        <section className="hpos-insight-card"><h2>Bar sales by category</h2>{!itemDetailReady ? <p>Unavailable until the server certifies complete item detail.</p> : basicBarBreakdown.categories.length ? basicBarBreakdown.categories.map((row) => <div className="hpos-insight-row" key={row.label}><span>{row.label}</span><strong>{row.quantity} units · {money(row.amount, currency)}</strong></div>) : <p>No certified item sales in this period.</p>}</section>
+        <section className="hpos-insight-card"><h2>Top products</h2>{!itemDetailReady ? <p>Unavailable until the server certifies complete item detail.</p> : basicBarBreakdown.products.length ? basicBarBreakdown.products.map((row) => <div className="hpos-insight-row" key={row.label}><span>{row.label}</span><strong>{row.quantity} units · {money(row.amount, currency)}</strong></div>) : <p>No certified item sales in this period.</p>}</section>
+      </div>}
       <section className="hpos-money-ledger">
         <div className="hpos-ledger-title">
           <div>
@@ -446,7 +503,8 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
                 <p>{correctionMode ? 'You can request a correction for your own sale. A supervisor, manager or admin must enter their PIN; you cannot approve it yourself.' : 'This is irreversible. An authorised supervisor, manager, or admin must supply their PIN.'} Packaged stock is restored only when returned unopened. Food, cocktails and recipe items remain consumed.</p>
                 {voidError && <div className="hpos-inline-error" role="alert">{voidError}</div>}
                 <label>Authorised approver PIN<input type="password" inputMode="numeric" value={voidPin} onChange={(event) => setVoidPin(event.target.value.replace(/\D/g, '').slice(0, 6))} maxLength="6" disabled={voiding} required /></label>
-                <label>Reason<input value={voidReason} onChange={(event) => setVoidReason(event.target.value)} maxLength="200" placeholder="Explain why this sale must be voided" disabled={voiding} required /></label>
+                {barOnly && voidTemplates.length > 0 && <label>Reason template<select value="" onChange={(event) => { const template = voidTemplates.find((row) => row.code === event.target.value); if (template) setVoidReason(`${template.label}: `); }} disabled={voiding}><option value="">Choose a starting point…</option>{voidTemplates.map((template) => <option key={template.id || template.code} value={template.code}>{template.label}</option>)}</select></label>}
+                <label>Reason and detail<input value={voidReason} onChange={(event) => setVoidReason(event.target.value)} maxLength="200" placeholder="Choose a template, then explain what happened" disabled={voiding} required /></label>
                 {selectedHasDirectStock && <label>Packaged stock outcome<select value={directStockDisposition} onChange={(event) => setDirectStockDisposition(event.target.value)} disabled={voiding}><option value="return_to_stock">Returned unopened — restore packaged stock</option><option value="consumed_or_damaged">Broken, opened or damaged — keep stock depleted</option></select><small>Food, cocktails and other recipe items always remain consumed when voided.</small></label>}
                 <footer><button type="button" onClick={closeDetail} disabled={voiding}>Cancel</button><button type="submit" disabled={voiding}>{voiding ? 'Authorising…' : correctionMode ? 'Ask approver to confirm' : 'Authorise void'}</button></footer>
               </form>

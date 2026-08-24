@@ -7,6 +7,7 @@ import HotelKpis from './HotelKpis'
 import AdvancedReports from './AdvancedReports'
 import HorizontalScrollArea from './shared/HorizontalScrollArea'
 import { canAccessCapability } from '../../../shared/accessControl'
+import { unpackTransport } from '../transportUnpack'
 import { getDayUseActivityLabel, normalizeDayUseReportRow, summarizeDayUseExtras } from '../../../shared/dayUseReporting'
 import { isRestaurantOnly } from '../../../shared/propertyTypes'
 
@@ -303,9 +304,9 @@ export default function Reports() {
         try {
           const showPropertyWideCosts = !selectedOutlet || selectedOutlet === 'all' || selectedOutlet === 'unassigned'
           const [expenseData, maintenanceData] = await Promise.all([
-            window.api.expenses.getAll(start, end, selectedOutlet),
+            window.api.expenses.getAll(start, end, selectedOutlet).then(unpackTransport),
             showPropertyWideCosts
-              ? window.api.reports.maintenanceRows(start, end).catch(() => [])
+              ? window.api.reports.maintenanceRows(start, end).then(unpackTransport).catch(() => [])
               : Promise.resolve([])
           ])
           const combinedExpenses = [
@@ -405,7 +406,7 @@ export default function Reports() {
         setRoomProfitability([])
       } else {
         const [occ, rev, bookings, reportsSnapshot, confBookings, dayUseRows] = await Promise.all([
-          window.api.reports.occupancy(s, e),
+          window.api.reports.occupancy(s, e).then(unpackTransport),
           window.api.reports.revenue(s, e),
           window.api.bookings.getAll().catch(() => []),
           window.api.reports.snapshot(e).catch(() => null),
@@ -418,8 +419,16 @@ export default function Reports() {
         setConferenceBookings(Array.isArray(confBookings) ? confBookings : [])
         setDayUseEntries(Array.isArray(dayUseRows) ? dayUseRows : [])
         setSnapshot(reportsSnapshot && typeof reportsSnapshot === 'object' ? reportsSnapshot : null)
-        const roomRows = await window.api.reports.roomProfitability(s, e).catch(() => [])
+        const roomRows = await window.api.reports.roomProfitability(s, e).then(unpackTransport).catch(() => [])
         setRoomProfitability(Array.isArray(roomRows) ? roomRows : [])
+        // TEMP DIAG: report metadata dump (remove after diagnosis)
+        console.log('[DIAG-REPORTS]', JSON.stringify({
+          range: [s, e],
+          revenue: rev && { source: rev.source, _source: rev._source, complete: rev.complete, _complete: rev._complete, status: rev.status, financial_truth: rev.financial_truth },
+          occupancy: occ && { _source: occ._source, _complete: occ._complete, len: occ.length },
+          roomProfit: roomRows && { _source: roomRows._source, _complete: roomRows._complete, len: roomRows.length },
+          snapshot: reportsSnapshot && { source: reportsSnapshot.source, _complete: reportsSnapshot._complete, complete: reportsSnapshot.complete, last_synced_at: reportsSnapshot.last_synced_at }
+        }))
       }
     } catch (err) {
       setError(`Could not load report: ${err?.message || 'Unknown error'}`)

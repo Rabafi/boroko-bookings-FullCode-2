@@ -19,7 +19,7 @@ import {
   normalizeSubscriptionPlan
 } from '../../../shared/subscriptionPlans'
 import { formatLocalDate } from '../utils/localDate'
-import { getCommercialAddonOffers, getCommercialOffers } from '../../../shared/commercialEntitlements'
+import { getCommercialAddonOffers, getCommercialOffers, isCommercialSelectionEligible } from '../../../shared/commercialEntitlements'
 import { formatCommercialMoney } from '../../../shared/commercialPackages'
 import { getProductFamilyLabel, resolveProductFamily } from '../../../shared/productIdentity'
 
@@ -84,8 +84,36 @@ function getCompanyProductId(company, license = null) {
   return license?.product_id || resolveProductFamily(company?.property_type || company?.business_type || license?.business_type)
 }
 
+function getCompanyOperatingProfile(company, license = null) {
+  const configured = company?.operating_profile?.hospitality_mode
+    || company?.operating_profile
+    || license?.operating_profile
+    || null
+  // This is the same conservative default used by the server for older
+  // hospitality settings rows. It intentionally never exposes Bar-only SKUs
+  // unless the persisted company profile says bar_only.
+  return configured || (getCompanyProductId(company, license) === 'hospitality-pos' ? 'restaurant_bar' : null)
+}
+
+function getEligibleCommercialOffers({ productId, operatingProfile }) {
+  return getCommercialOffers(productId).filter((offer) => isCommercialSelectionEligible({
+    productId,
+    commercialPackageKey: offer.commercialPackageKey,
+    operatingProfile
+  }))
+}
+
+function getEligibleCommercialAddons({ productId, propertyType, operatingProfile, commercialPackageKey }) {
+  return getCommercialAddonOffers(productId, propertyType)
+    .filter((addon) => !addon.eligiblePackageKeys || addon.eligiblePackageKeys.includes(commercialPackageKey))
+    .filter((addon) => !addon.eligibleOperatingProfiles || addon.eligibleOperatingProfiles.length === 0 || addon.eligibleOperatingProfiles.includes(operatingProfile))
+}
+
 function getCompanyOffer(company, license = null) {
-  const offers = getCommercialOffers(getCompanyProductId(company, license))
+  const offers = getEligibleCommercialOffers({
+    productId: getCompanyProductId(company, license),
+    operatingProfile: getCompanyOperatingProfile(company, license)
+  })
   return offers.find((offer) => offer.commercialPackageKey === license?.commercial_package_key)
     || offers.find((offer) => offer.internalPlan === normalizePlanName(license?.subscription_plan))
     || offers[0]
@@ -247,6 +275,7 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
     lodge_id: '',
     lodge_name: '',
     business_type: 'lodge',
+    operating_profile: null,
     product_id: 'lodge-camp',
     commercial_package_key: 'starter',
     subscription_plan: 'Starter',
@@ -306,6 +335,7 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
       lodge_id: company?.lodge_id || '',
       lodge_name: company?.lodge_name || '',
       business_type: company?.business_type || 'lodge',
+      operating_profile: getCompanyOperatingProfile(company),
       product_id: productId,
       commercial_package_key: offer?.commercialPackageKey || '',
       subscription_plan: offer?.internalPlan || 'Starter',
@@ -333,6 +363,7 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
       lodge_id: license.lodge_id || '',
       lodge_name: license.lodge_name || company?.lodge_name || '',
       business_type: company?.business_type || license.business_type || 'lodge',
+      operating_profile: getCompanyOperatingProfile(company, license),
       product_id: productId,
       commercial_package_key: offer?.commercialPackageKey || '',
       subscription_plan: offer?.internalPlan || normalizePlanName(license.subscription_plan),
@@ -488,6 +519,7 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
                 lodge_id: company?.lodge_id || '',
                 lodge_name: company?.lodge_name || '',
                 business_type: company?.business_type || 'lodge',
+                operating_profile: getCompanyOperatingProfile(company),
                 product_id: getCompanyProductId(company),
                 commercial_package_key: getCompanyOffer(company)?.commercialPackageKey || '',
                 subscription_plan: getCompanyOffer(company)?.internalPlan || 'Starter',
@@ -511,10 +543,19 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
           <div>
             <label className="text-xs text-gray-400 block mb-1">Entitlement package</label>
             <select className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-sm text-white" value={form.commercial_package_key} onChange={(event) => {
-              const offer = getCommercialOffers(form.product_id).find((item) => item.commercialPackageKey === event.target.value)
-              setForm((current) => ({ ...current, commercial_package_key: event.target.value, subscription_plan: offer?.internalPlan || current.subscription_plan }))
+              const offer = getEligibleCommercialOffers({ productId: form.product_id, operatingProfile: form.operating_profile })
+                .find((item) => item.commercialPackageKey === event.target.value)
+              setForm((current) => {
+                const selected_addon_keys = current.selected_addon_keys.filter((addonKey) => getEligibleCommercialAddons({
+                  productId: current.product_id,
+                  propertyType: current.business_type,
+                  operatingProfile: current.operating_profile,
+                  commercialPackageKey: event.target.value
+                }).some((addon) => addon.addonKey === addonKey))
+                return { ...current, commercial_package_key: event.target.value, subscription_plan: offer?.internalPlan || current.subscription_plan, selected_addon_keys }
+              })
             }}>
-              {getCommercialOffers(form.product_id).map((offer) => (
+              {getEligibleCommercialOffers({ productId: form.product_id, operatingProfile: form.operating_profile }).map((offer) => (
                 <option key={offer.commercialPackageKey} value={offer.commercialPackageKey}>{offer.displayName} — {formatCommercialMoney(offer.priceBwp)}</option>
               ))}
             </select>
@@ -525,11 +566,11 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
               {['active', 'free', 'trial', 'overdue', 'suspended', 'cancelled'].map((status) => <option key={status} value={status}>{status}</option>)}
             </select>
           </div>
-          {getCommercialAddonOffers(form.product_id, form.business_type).length > 0 && (
+          {getEligibleCommercialAddons({ productId: form.product_id, propertyType: form.business_type, operatingProfile: form.operating_profile, commercialPackageKey: form.commercial_package_key }).length > 0 && (
             <div className="col-span-2 rounded-xl border border-gray-700 bg-gray-900/70 p-3">
               <p className="text-xs text-gray-400 mb-2">Commercial add-ons</p>
               <div className="grid md:grid-cols-2 gap-2">
-                {getCommercialAddonOffers(form.product_id, form.business_type).map((addon) => {
+                {getEligibleCommercialAddons({ productId: form.product_id, propertyType: form.business_type, operatingProfile: form.operating_profile, commercialPackageKey: form.commercial_package_key }).map((addon) => {
                   const checked = form.selected_addon_keys.includes(addon.addonKey)
                   return (
                     <label key={addon.addonKey} className="flex items-start gap-2 rounded-lg border border-gray-700 px-3 py-2 cursor-pointer">
@@ -544,7 +585,7 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
                         }))}
                       />
                       <span>
-                        <span className="block text-sm text-white">{addon.displayName}</span>
+                        <span className="block text-sm text-white">{addon.displayName} <span className="text-emerald-300">— {formatCommercialMoney(addon.annualPriceBwp || addon.oneTimePriceBwp)}{addon.annualPriceBwp ? '/year' : ''}</span></span>
                         <span className="block text-[11px] text-gray-500">{addon.description}</span>
                       </span>
                     </label>

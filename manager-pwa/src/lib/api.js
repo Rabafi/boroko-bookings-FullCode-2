@@ -1,6 +1,5 @@
 import { signInWithSupabaseAuth, supabase } from './supabase'
 import { assertCapability, getStoredEntitlement, normalizeSessionUser, storeEntitlement } from './access'
-import { getSubscriptionPlan } from '@shared/subscriptionPlans'
 import { normalizeSupportTickets } from '@shared/supportThreads'
 import { titleCase } from './format'
 import {
@@ -36,7 +35,7 @@ const STARTER_FEATURE_FLAGS = {
   supplies: false
 }
 
-const PWA_PLAN_REQUIRED_MESSAGE = `Manager mobile app access is available on the ${getSubscriptionPlan('Pro').name} plan for this lodge because ${getSubscriptionPlan('Pro').pitch.toLowerCase()}. Ask Command Central to upgrade or enable an override.`
+const PWA_PLAN_REQUIRED_MESSAGE = 'Manager mobile app access is not included or active for this business. Check the package and renewal status, or ask Command Central to review the entitlement.'
 export const FRONT_DESK_ONLY_MESSAGE = 'This action is only available in the Front Desk system.'
 const READ_ONLY_MANAGER_MESSAGE = 'This screen is view only in the manager mobile app. Use the front desk for changes.'
 const MAX_FINANCIAL_AMOUNT = 1000000
@@ -1481,7 +1480,7 @@ export async function listRestaurantPrepTickets(lodgeId) {
 
 export async function updateRestaurantPrepTicket(lodgeId, ticketId, status) {
   assertCapability('pos.reports')
-  return hotelWorkflowRpc('update_pos_prep_ticket_status', { p_ticket_id: ticketId, p_status: status, p_lodge_id: lodgeId }, 'Could not update the kitchen ticket.')
+  return hotelWorkflowRpc('update_pos_prep_ticket_status', { p_ticket_id: ticketId, p_status: status, p_lodge_id: lodgeId, p_operation_id: `pwa-ticket:${ticketId}:${String(status || '').toLowerCase()}` }, 'Could not update the kitchen ticket.')
 }
 
 export async function listRestaurantMenu(lodgeId) {

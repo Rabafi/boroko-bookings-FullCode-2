@@ -4,6 +4,7 @@ import { readCache, writeCache } from './cacheStore.js';
 import { normalizeEmail, normalizeLodgeId, normalizeUserRecord } from './shared.js';
 import { normalizeStaffStatus } from '../../shared/accessControl.js';
 import { readSecureJson, writeSecureJson } from './secureLocalStore.js';
+import { recordCriticalError } from './operationalLog.js';
 
 export function normalizeSessionUser(user) {
   if (!user || typeof user !== 'object') return user || null;
@@ -66,8 +67,20 @@ export function readAuthCache() {
 }
 
 export function writeAuthCache(entries) {
-  if (!state.cacheDir) return;
-  writeSecureJson(path.join(state.cacheDir, 'auth-cache.json'), Array.isArray(entries) ? entries : []);
+  if (!state.cacheDir) return false;
+  const written = writeSecureJson(
+    path.join(state.cacheDir, 'auth-cache.json'),
+    Array.isArray(entries) ? entries : []
+  );
+  if (!written) {
+    recordCriticalError(
+      'auth.secure_storage',
+      new Error('Secure storage is unavailable; offline sign-in preparation was not saved.'),
+      { operation: 'auth_cache_write' },
+      { limit: 120 }
+    );
+  }
+  return written;
 }
 
 export function upsertCachedUser(user) {

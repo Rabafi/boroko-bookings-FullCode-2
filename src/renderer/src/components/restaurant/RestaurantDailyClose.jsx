@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { CheckCircle2, XCircle, AlertTriangle, ClipboardCheck, Wallet, TrendingUp, Users, RefreshCw } from 'lucide-react'
 import { useSettings } from '../../app-context'
 import { isBarOnlyMode } from '../../../../shared/propertyTypes'
+import { unpackTransport } from '../../transportUnpack'
 
 export default function RestaurantDailyClose() {
   const { settings } = useSettings()
@@ -17,7 +18,7 @@ export default function RestaurantDailyClose() {
     lowStock: 0,
     todaySales: 0,
     todayOrders: 0,
-    checklistsComplete: true
+    checklistsComplete: false
   })
   const [digest, setDigest] = useState(null)
   const [generating, setGenerating] = useState(false)
@@ -38,9 +39,11 @@ export default function RestaurantDailyClose() {
         window.api.pos.getActiveShifts(),
         window.api.pos.getActiveAlerts(),
         window.api.inventory.getLowStock(),
-        window.api.pos.getOrders(new Date().toISOString().slice(0, 10), new Date().toISOString().slice(0, 10))
+        window.api.pos.getOrders(new Date().toISOString().slice(0, 10), new Date().toISOString().slice(0, 10)).then(unpackTransport),
+        barOnly ? Promise.resolve([]) : window.api.pos.getChecklists()
       ])
-      const [tables, tickets, drawer, shifts, alerts, lowStock, todayOrders] = results
+      const [tables, tickets, drawer, shifts, alerts, lowStock, todayOrders, checklists] = results
+      const orderRows = todayOrders.status === 'fulfilled' ? todayOrders.value : []
       const failedChecks = results.filter(result => result.status === 'rejected').length
       const openTables = Array.isArray(tables.value) ? tables.value.filter(t => t.status === 'occupied' || t.status === 'running').length : 0
       const pendingTickets = Array.isArray(tickets.value) ? tickets.value.filter(t => t.status === 'pending' || t.status === 'preparing').length : 0
@@ -48,16 +51,35 @@ export default function RestaurantDailyClose() {
       const activeShifts = Array.isArray(shifts.value) ? shifts.value.length : 0
       const unresolvedAlerts = Array.isArray(alerts.value) ? alerts.value.filter(a => !a.is_resolved).length : 0
       const lowStockCount = Array.isArray(lowStock.value) ? lowStock.value.length : 0
-      const orders = Array.isArray(todayOrders.value) ? todayOrders.value : []
+      const orders = Array.isArray(orderRows) ? orderRows : []
       const orderSnapshotReady = orders?._source === 'server' && orders?._complete === true
+      const today = new Date().toLocaleDateString('en-CA')
+      const operationalChecklists = Array.isArray(checklists.value)
+        ? checklists.value.filter((row) => {
+          const type = String(row.checklist_type || row.type || '').toLowerCase()
+          const date = new Date(row.checklist_date || row.created_at || 0).toLocaleDateString('en-CA')
+          return date === today && ['daily_opening', 'daily_closing', 'opening', 'closing'].includes(type)
+        })
+        : []
+      const checklistsComplete = barOnly
+        ? null
+        : checklists.status === 'fulfilled'
+          && operationalChecklists.length > 0
+          && operationalChecklists.every((row) => String(row.status || '').toLowerCase() === 'completed')
       const todaySales = orderSnapshotReady ? orders.reduce((sum, o) => sum + Number(o.total || o.amount || 0), 0) : null
       setChecks({
         openTables, pendingTickets, drawerOpen, drawer: drawer.value,
         activeShifts, unresolvedAlerts, lowStock: lowStockCount,
-        todaySales, todayOrders: orderSnapshotReady ? orders.length : null, checklistsComplete: true
+        todaySales, todayOrders: orderSnapshotReady ? orders.length : null, checklistsComplete
       })
-      setChecksVerified(failedChecks === 0 && orderSnapshotReady)
-      if (failedChecks > 0 || !orderSnapshotReady) setError(`${failedChecks > 0 ? `${failedChecks} end-of-day check(s)` : 'The POS financial snapshot'} could not be verified. Refresh before treating the day as ready.`)
+      setChecksVerified(failedChecks === 0 && orderSnapshotReady && (barOnly || checklistsComplete === true))
+      if (failedChecks > 0 || !orderSnapshotReady || (!barOnly && checklistsComplete !== true)) {
+        const reasons = []
+        if (failedChecks > 0) reasons.push(`${failedChecks} end-of-day check(s)`)
+        if (!orderSnapshotReady) reasons.push('the POS financial snapshot')
+        if (!barOnly && checklistsComplete !== true) reasons.push('today\'s operational checklist')
+        setError(`${reasons.join(' and ')} could not be verified. Refresh before treating the day as ready.`)
+      }
     } catch (err) {
       console.error('Failed to load daily close status:', err)
       setError(err.message || 'Could not load end-of-day checks.')
@@ -82,6 +104,7 @@ export default function RestaurantDailyClose() {
 
   const blockers = []
   if (!checksVerified) blockers.push('One or more close checks are not verified')
+  if (!barOnly && !checks.checklistsComplete) blockers.push("Today's operational checklist is missing or incomplete")
   if (!barOnly && checks.openTables > 0) blockers.push(`${checks.openTables} open table(s)`)
   if (!barOnly && checks.pendingTickets > 0) blockers.push(`${checks.pendingTickets} pending kitchen ticket(s)`)
   if (checks.drawerOpen) blockers.push('Cash drawer still open')

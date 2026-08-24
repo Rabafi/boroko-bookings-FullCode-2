@@ -196,6 +196,15 @@ test('HPOS manager navigation exposes Settings, System Health, and Data without 
   assert.match(hub, /Manager workspace/)
 })
 
+test('bar Manage exposes Staff accounts once, under Devices & administration', () => {
+  const hub = fs.readFileSync(path.join(root, 'src/renderer/src/components/hospitality-pos/HposManageHub.jsx'), 'utf8')
+  const runGroup = hub.slice(hub.indexOf("id: 'run'"), hub.indexOf("id: 'oversight'"))
+  const adminGroup = hub.slice(hub.indexOf("id: 'admin'"), hub.indexOf('];', hub.indexOf("id: 'admin'")))
+
+  assert.doesNotMatch(runGroup, /'\/staff'/)
+  assert.match(adminGroup, /'\/staff'/)
+})
+
 test('desktop nav hides restaurant-only and shows bar products/board in bar_only', () => {
   const access = {
     allowedByRole: {

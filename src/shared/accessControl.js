@@ -592,6 +592,10 @@ export function normalizeAppRole(role) {
   const raw = String(role || '').trim().toLowerCase()
   if (raw === 'superadmin') return 'super_admin'
   if (raw === 'administrator') return 'admin'
+  // The database keeps business owners as a distinct lodge role.  Treat that
+  // role as the existing admin capability profile in the desktop/PWA access
+  // snapshot while preserving the literal role for server-side lodge checks.
+  if (raw === 'owner') return 'admin'
   if (raw === 'frontdesk' || raw === 'front_desk') return 'receptionist'
   if (raw === 'ops') return 'operations'
   if (raw === 'accounts' || raw === 'accounting') return 'finance'

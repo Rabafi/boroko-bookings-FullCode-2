@@ -60,6 +60,7 @@ const posAPI = {
   getTabs: () => ipcRenderer.invoke('pos:get-tabs'),
   saveTab: (tab) => ipcRenderer.invoke('pos:save-tab', tab),
   updateTabStatus: (data) => ipcRenderer.invoke('pos:update-tab-status', data),
+  transferTabWaiter: (data) => ipcRenderer.invoke('pos:transfer-tab-waiter', data),
 
   // Prep Tickets
   getTickets: (filters) => ipcRenderer.invoke('pos:get-tickets', filters),

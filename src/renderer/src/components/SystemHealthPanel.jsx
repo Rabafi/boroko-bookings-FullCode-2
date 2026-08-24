@@ -531,6 +531,7 @@ export default function SystemHealthPanel() {
       setCriticalErrors([])
       setRendererErrors([])
       pushFlash('success', 'Important issue history cleared.')
+      window.dispatchEvent(new Event('saved-app-issues-cleared'))
       await load()
     } finally {
       setActionBusy('')

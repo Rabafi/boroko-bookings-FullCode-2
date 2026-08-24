@@ -48,6 +48,10 @@ const QUEUED_DEPENDENCY_CACHE_MAP = [
   { prefix: 'user-', cache: 'users' },
   { prefix: 'quotation-', cache: 'quotations' },
   { prefix: 'pos-order-', cache: 'pos-orders' },
+  { prefix: 'pos-shift-', cache: 'pos-shifts' },
+  { prefix: 'pos-catalog-snapshot-', cache: 'pos-catalog-snapshots', idField: 'snapshot_id' },
+  { prefix: 'attendance-shift-', cache: 'restaurant-shifts' },
+  { prefix: 'pos-cashup-submission-', cache: 'pos-cashup-submissions', idField: 'idempotency_key' },
   { prefix: 'conference-booking-', cache: 'conference-bookings' },
   { prefix: 'pool-day-use-', cache: 'pool-day-use' },
   { prefix: 'dayuse-', cache: 'pool-day-use' },
@@ -64,7 +68,7 @@ function isQueuedDependencyResolved(dependencyId) {
   const entityId = normalizedDependencyId.slice(target.prefix.length).trim();
   if (!entityId) return false;
 
-  const cachedRow = readCache(target.cache).find((entry) => entry?.id === entityId);
+  const cachedRow = readCache(target.cache).find((entry) => entry?.[target.idField || 'id'] === entityId);
   if (!cachedRow) return false;
 
   return cachedRow._pending_sync !== true &&
@@ -103,16 +107,19 @@ function readCacheFreshness() {
 }
 
 function classifySyncDependencyCategory(item = {}, pending = [], failed = []) {
-  const dependencyId = String(item?._depends_on || '').trim();
-  if (!dependencyId) return 'none';
+  const dependencyIds = [...new Set([
+    item?._depends_on,
+    ...(Array.isArray(item?._depends_on_all) ? item._depends_on_all : [])
+  ].map((value) => String(value || '').trim()).filter(Boolean))];
+  if (dependencyIds.length === 0) return 'none';
 
-  if (failed.some((entry) => entry?._queue_id === dependencyId)) {
+  if (dependencyIds.some((dependencyId) => failed.some((entry) => entry?._queue_id === dependencyId))) {
     return 'blocked_dependencies';
   }
-  if (pending.some((entry) => entry?._queue_id === dependencyId)) {
+  if (dependencyIds.some((dependencyId) => pending.some((entry) => entry?._queue_id === dependencyId))) {
     return 'blocked_dependencies';
   }
-  if (isQueuedDependencyResolved(dependencyId)) {
+  if (dependencyIds.every((dependencyId) => isQueuedDependencyResolved(dependencyId))) {
     return 'resolved';
   }
   return 'resolved';
@@ -166,13 +173,19 @@ export function getSyncDetails() {
 
   const enrichPending = (item) => {
     const dependencyCategory = classifySyncDependencyCategory(item, pending, failed);
+    const dependencyIds = [...new Set([
+      item?._depends_on,
+      ...(Array.isArray(item?._depends_on_all) ? item._depends_on_all : [])
+    ].map((value) => String(value || '').trim()).filter(Boolean))];
     return {
       ...item,
       isFinancial: isFinancialSyncItem(item),
+      // `_depends_on` remains the primary compatibility marker; the checks
+      // below include every `_depends_on_all` prerequisite.
       dependencyState: item?._depends_on ?
-      failed.some((f) => f?._queue_id === item._depends_on) ?
+      dependencyIds.some((dependencyId) => failed.some((f) => f?._queue_id === dependencyId)) ?
       'failed_parent' :
-      pending.some((p) => p?._queue_id === item._depends_on) ?
+      dependencyIds.some((dependencyId) => pending.some((p) => p?._queue_id === dependencyId)) ?
       'waiting_for_parent' :
       'ready_or_external' :
       'none',

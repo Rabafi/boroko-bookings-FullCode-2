@@ -17,6 +17,7 @@ const SHAREABLE_POS_OPERATIONS = new Set([
   'finalize_pos_shift_cashup_v2',
   'upsert_pos_tab',
   'update_pos_tab_status',
+  'transfer_pos_tab_waiter',
   'upsert_pos_table',
   'open_pos_shift_with_id',
   'create_pos_menu_item',

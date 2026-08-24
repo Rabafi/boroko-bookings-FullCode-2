@@ -61,6 +61,8 @@ const ALLOWED_RPC_TABLES = new Set([
   'create_inventory_stocktake_session',
   'save_inventory_stocktake_counts',
   'post_inventory_stocktake_session',
+  'post_bar_physical_count',
+  'post_bar_simple_delivery',
   'create_expense',
   'update_expense',
   'delete_expense',
@@ -88,6 +90,7 @@ const ALLOWED_RPC_TABLES = new Set([
   'finalize_pos_shift_cashup_v2',
   'upsert_pos_tab',
   'update_pos_tab_status',
+  'transfer_pos_tab_waiter',
   'upsert_pos_table',
   'open_pos_shift_with_id',
   'close_pos_shift_with_id',
@@ -115,6 +118,10 @@ function isPlainObject(value) {
 
 function hasString(value) {
   return typeof value === 'string' && value.trim().length > 0;
+}
+
+function isUuid(value) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value || '').trim())
 }
 
 function isValidDate(value) {
@@ -602,6 +609,25 @@ export function validateSyncQueueItem(item) {
     }
   }
 
+  if (item.table === 'transfer_pos_tab_waiter') {
+    const data = item.data;
+    const required = ['p_tab_id', 'p_target_waiter_id', 'p_target_shift_id', 'p_operation_id', 'p_expected_tab_version'];
+    const missing = required.filter((field) => !hasString(data[field]));
+    if (missing.length > 0) return { isValid: false, reason: `transfer_pos_tab_waiter missing ${missing.join(', ')}` };
+    if (!['p_tab_id', 'p_target_waiter_id', 'p_target_shift_id', 'p_operation_id'].every((field) => isUuid(data[field]))) {
+      return { isValid: false, reason: 'transfer_pos_tab_waiter requires UUID tab, waiter, shift, and operation identifiers' };
+    }
+    if (!Number.isInteger(Number(data.p_expected_tab_version)) || Number(data.p_expected_tab_version) < 1) {
+      return { isValid: false, reason: 'transfer_pos_tab_waiter requires a positive expected tab version' };
+    }
+    if (data.p_operator_proof != null) {
+      return { isValid: false, reason: 'transfer_pos_tab_waiter operator proofs may not be persisted or replayed through mesh' };
+    }
+    if (data.p_notes != null && (typeof data.p_notes !== 'string' || data.p_notes.length > 1000)) {
+      return { isValid: false, reason: 'transfer_pos_tab_waiter notes are limited to 1000 characters' };
+    }
+  }
+
   if (['open_pos_shift_with_id', 'close_pos_shift_with_id'].includes(item.table)) {
     const payload = item.data.payload;
     if (!isPlainObject(payload) || !hasString(payload.id) || !hasString(payload.lodge_id)) {
@@ -622,14 +648,53 @@ export function validateSyncQueueItem(item) {
     }
   }
 
-  if (item.table === 'update_pos_prep_ticket_status' && !hasString(item.data.p_ticket_id)) {
-    return { isValid: false, reason: 'update_pos_prep_ticket_status missing ticket id' };
+  if (item.table === 'update_pos_prep_ticket_status' && (!hasString(item.data.p_ticket_id) || !hasString(item.data.p_operation_id))) {
+    return { isValid: false, reason: 'update_pos_prep_ticket_status missing ticket or operation id' };
   }
 
   if (item.table === 'update_pool_day_use') {
     const payload = item.data.payload;
     if (!isPlainObject(payload) || !hasString(payload.id) || !hasString(payload.lodge_id) || !hasString(payload.idempotency_key)) {
       return { isValid: false, reason: 'update_pool_day_use missing required operation fields' };
+    }
+  }
+
+  if (['post_bar_physical_count', 'post_bar_simple_delivery'].includes(item.table)) {
+    const data = item.data;
+    if (!isUuid(data.p_lodge_id) || !isUuid(data.p_operation_id)) {
+      return { isValid: false, reason: `${item.table} missing lodge or stable operation id` };
+    }
+    if (data.p_outlet_id != null && !isUuid(data.p_outlet_id)) {
+      return { isValid: false, reason: `${item.table} has invalid outlet id` };
+    }
+    if (!Array.isArray(data.p_lines) || data.p_lines.length === 0 || data.p_lines.length > 500) {
+      return { isValid: false, reason: `${item.table} requires 1-500 stock lines` };
+    }
+    if (data.p_notes != null && (typeof data.p_notes !== 'string' || data.p_notes.trim().length > 300)) {
+      return { isValid: false, reason: `${item.table} notes exceed the 300 character limit` };
+    }
+    const seen = new Set();
+    for (const line of data.p_lines) {
+      if (!isPlainObject(line) || !isUuid(line.item_id) || seen.has(String(line.item_id))) {
+        return { isValid: false, reason: `${item.table} contains duplicate or invalid item lines` };
+      }
+      seen.add(String(line.item_id));
+      if (item.table === 'post_bar_simple_delivery' && ['supplier', 'supplier_id', 'purchase_order', 'purchase_order_id', 'lot_id', 'expiry', 'expiry_date', 'unit_cost', 'valuation_method'].some((field) => Object.prototype.hasOwnProperty.call(line, field))) {
+        return { isValid: false, reason: 'post_bar_simple_delivery cannot carry purchasing, lot, expiry, cost, or valuation fields' };
+      }
+      if (typeof line.reason !== 'string' || line.reason.length > 300 || typeof line.reason_code !== 'string' || line.reason_code.length > 64) {
+        return { isValid: false, reason: `${item.table} contains an invalid reason field` };
+      }
+      if (item.table === 'post_bar_physical_count') {
+        if (line.expected_qty == null || String(line.expected_qty).trim() === '' || line.actual_qty == null || String(line.actual_qty).trim() === '' || !isFiniteNumber(line.expected_qty) || Number(line.expected_qty) < 0 || !isFiniteNumber(line.actual_qty) || Number(line.actual_qty) < 0) {
+          return { isValid: false, reason: 'post_bar_physical_count contains invalid expected or actual quantity' };
+        }
+        if (typeof line.expected_updated_at !== 'string' || Number.isNaN(Date.parse(line.expected_updated_at))) {
+          return { isValid: false, reason: 'post_bar_physical_count requires valid expected_updated_at version evidence' };
+        }
+      } else if (!isFiniteNumber(line.quantity) || Number(line.quantity) <= 0) {
+        return { isValid: false, reason: 'post_bar_simple_delivery contains invalid quantity' };
+      }
     }
   }
 

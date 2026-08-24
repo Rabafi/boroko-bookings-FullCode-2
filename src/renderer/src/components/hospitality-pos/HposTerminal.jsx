@@ -30,6 +30,7 @@ import {
   getHposServiceModes,
   resolvePosServicePayload,
 } from "../../../../shared/barModeProfile";
+import { isCommercialFeatureIncluded } from "../../../../shared/commercialAccess.js";
 import HposTillOperatorDialog from "./HposTillOperatorDialog";
 import { POSReceipt } from "../shared/POSReceipt";
 import {
@@ -425,7 +426,8 @@ export default function HposTerminal() {
   const navigate = useNavigate();
   const { settings } = useSettings();
   const { user } = useAuth();
-  const { allowedOutletIds } = useAccess();
+  const access = useAccess();
+  const { allowedOutletIds } = access;
   const lodgeId = settings?.lodge_id || user?.lodge_id || null;
   const sharedTerminalMode = [
     "manager",
@@ -435,6 +437,22 @@ export default function HposTerminal() {
   ].includes(String(user?.role || "").toLowerCase());
   const currency = settings?.currency || "P";
   const barOnly = isBarOnlyMode(settings);
+  const commercialProductId = access?.entitlement?.product_id || null;
+  const commercialPackageKey = access?.entitlement?.commercial_package_key || null;
+  const commercialAddonKeys = Array.isArray(access?.entitlement?.enterprise_addons)
+    ? access.entitlement.enterprise_addons
+    : [];
+  const commercialContextKnown = commercialProductId === "hospitality-pos" && Boolean(commercialPackageKey);
+  const canUseBarCommercialFeature = (featureKey) => !barOnly || (
+    commercialContextKnown && isCommercialFeatureIncluded(
+      commercialProductId,
+      commercialPackageKey,
+      featureKey,
+      commercialAddonKeys,
+    )
+  );
+  const canUseVoucher = canUseBarCommercialFeature("vouchers");
+  const canUseTips = canUseBarCommercialFeature("tips_payouts");
   const barProfile = useMemo(() => getBarModeProfile(settings), [settings]);
   const tillOperatorPolicy = useMemo(() => getTillOperatorPolicy(settings), [settings]);
   const serviceModeOptions = useMemo(
@@ -615,6 +633,7 @@ export default function HposTerminal() {
     if (
       !sharedTerminalMode ||
       !verifiedOperator?.id ||
+      !currentShift?.id ||
       tillOperatorPolicy.mode !== TILL_OPERATOR_MODES.SHIFT ||
       showOperatorUnlock ||
       !selectedOutlet?.id
@@ -624,6 +643,8 @@ export default function HposTerminal() {
     tillActivityLastSentAtRef.current = timestamp;
     void Promise.resolve(window.api?.pos?.touchSharedTillOperator?.({
       outlet_id: selectedOutlet.id,
+      staff_id: verifiedOperator.id,
+      shift_id: currentShift?.id,
     })).then((result) => {
       if (result?.success && result.session) {
         setOperatorLastActivityAt(result.session.lastActivityAt || timestamp);
@@ -640,7 +661,7 @@ export default function HposTerminal() {
         message: error?.message || "Till activity could not be confirmed. Verify the operator PIN again.",
       });
     });
-  }, [clearTillOperatorState, selectedOutlet?.id, sharedTerminalMode, showOperatorUnlock, tillOperatorPolicy.mode, verifiedOperator?.id]);
+  }, [clearTillOperatorState, currentShift?.id, selectedOutlet?.id, sharedTerminalMode, showOperatorUnlock, tillOperatorPolicy.mode, verifiedOperator?.id]);
 
   useEffect(() => {
     if (
@@ -699,6 +720,14 @@ export default function HposTerminal() {
       setServiceMode(getDefaultHposServiceMode(barOnly));
     }
   }, [barOnly, serviceMode, serviceModeOptions]);
+
+  useEffect(() => {
+    if (!canUseVoucher) {
+      setVoucherCode("");
+      setVoucherAmount("");
+    }
+    if (!canUseTips) setTipAmount("");
+  }, [canUseTips, canUseVoucher]);
 
   useEffect(() => {
     let active = true;
@@ -844,6 +873,38 @@ export default function HposTerminal() {
     };
   }, [selectedOutlet?.id, sharedTerminalMode, user?.id, verifiedOperator?.id]);
 
+  // The authoritative Shift-mode session lives in the main process, not in
+  // this route component. Rehydrate its original expiry after navigation or
+  // remount, using a read-only IPC path that never touches/extends the lease.
+  useEffect(() => {
+    if (
+      !sharedTerminalMode ||
+      !selectedOutlet?.id ||
+      tillOperatorPolicy.mode !== TILL_OPERATOR_MODES.SHIFT
+    ) return undefined;
+    let active = true;
+    Promise.resolve(window.api?.pos?.getSharedTillOperatorSession?.({
+      outlet_id: selectedOutlet.id,
+    }))
+      .then((result) => {
+        if (!active || !result?.success || !result.session) return;
+        const session = result.session;
+        setVerifiedOperator({ id: session.staffId, name: session.staffName || "Till operator" });
+        setOperatorStaffId(session.staffId || "");
+        if (result.shift?.id) setCurrentShift(result.shift);
+        setTillSessionOutletId(session.outletId || null);
+        setTillSessionExpiresAt(session.expiresAt || null);
+        setOperatorLastActivityAt(session.lastActivityAt || null);
+        setOperatorPin("");
+        setShowOperatorUnlock(false);
+      })
+      .catch(() => {
+        // A failed restore is intentionally silent here; the normal unlock
+        // dialog remains the only recovery path and no lease is renewed.
+      });
+    return () => { active = false; };
+  }, [selectedOutlet?.id, sharedTerminalMode, tillOperatorPolicy.mode]);
+
   useEffect(() => {
     if (!sharedTerminalMode || !verifiedOperator?.id || tillOperatorPolicy.mode !== TILL_OPERATOR_MODES.SHIFT || !tillSessionExpiresAt) return undefined;
     const remainingMs = Math.max(0, Number(tillSessionExpiresAt) - Date.now());
@@ -904,7 +965,9 @@ export default function HposTerminal() {
       setOperatorPin("");
       setShowOperatorUnlock(false);
       setSuccessMessage(
-        tillOperatorPolicy.mode === TILL_OPERATOR_MODES.SHIFT
+        activated.offline
+          ? `${operator?.name || "Staff member"} is verified from the local staff record. The Till shift is safely queued and sales remain provisional until sync.`
+          : tillOperatorPolicy.mode === TILL_OPERATOR_MODES.SHIFT
           ? `${operator?.name || "Staff member"} is verified for this shift. Till will lock after ${tillOperatorPolicy.inactivityMinutes} minutes of inactivity.`
           : `${operator?.name || "Staff member"} is verified and ready to use Till for the next order.`,
       );
@@ -1404,7 +1467,7 @@ export default function HposTerminal() {
       setCurrentShift(shift || result.shift || result.row || null);
       setShiftFloat("");
       setShowShiftStart(false);
-      setSuccessMessage("Shift opened. You can now take payments.");
+      setSuccessMessage(result?.offline ? "Shift saved on this device. You can take payments offline; figures remain provisional until sync." : "Shift opened. You can now take payments.");
     } catch (error) {
       setSubmitError(error?.message || "Could not start the shift.");
     } finally {
@@ -1571,6 +1634,14 @@ export default function HposTerminal() {
     const tenderReference = (method) =>
       String(paymentReferences[method] || "").trim() || null;
     const voucherValue = Number(voucherAmount || 0);
+    if (!retryingSubmit && barOnly && !canUseVoucher && (voucherCode.trim() || voucherValue !== 0)) {
+      setSubmitError("Voucher tender is not included in the current Bar POS package.");
+      return;
+    }
+    if (!retryingSubmit && barOnly && !canUseTips && Number(tipTotal) !== 0) {
+      setSubmitError("Tip tender is not included in the current Bar POS package.");
+      return;
+    }
     if (!retryingSubmit && voucherValue < 0) {
       setSubmitError("Voucher amount cannot be negative.");
       return;
@@ -1648,7 +1719,7 @@ export default function HposTerminal() {
       orderPayload = pendingEnvelope.payload;
       orderItems = Array.isArray(orderPayload.items) ? orderPayload.items : [];
       setSubmitNotice(
-        "The result is uncertain; retrying will check the original sale and will not create another.",
+        "Retrying uses the original operation key. If it was never recorded, this action may complete that older sale now.",
       );
     } else {
       orderItems = cart.map((line) => ({
@@ -1871,7 +1942,7 @@ export default function HposTerminal() {
       }
       setSuccessMessage(
         (retryingSubmit
-          ? "The original sale was recorded and no duplicate was created."
+          ? "The original operation completed or replayed under its existing key. Check the receipt and Reports before taking another payment."
           : result.offline === true
             ? "Order saved locally and waiting to sync."
             : "Order sent and payment recorded.") + postOrderNotice,
@@ -1889,6 +1960,9 @@ export default function HposTerminal() {
     }
   }, [
     cart,
+    barOnly,
+    canUseTips,
+    canUseVoucher,
     chargeToAccount,
     clearTillOperatorState,
     currentShift?.id,
@@ -2340,7 +2414,8 @@ export default function HposTerminal() {
               />
             </div>
           )}
-          {serviceMode !== "table" &&
+          {canUseVoucher &&
+            serviceMode !== "table" &&
             serviceMode !== "tab" &&
             !selectedCustomer && (
               <div
@@ -2614,10 +2689,11 @@ export default function HposTerminal() {
               {recoveredAttempt ? (
                 <div style={{ flex: 1 }}>
                   <span>
-                    An earlier sale submission was interrupted on this
-                    terminal. The result is uncertain; retrying will check the
-                    original sale and will not create another.
+                    An earlier sale attempt from {recoveredAttempt.createdAtClient ? new Date(recoveredAttempt.createdAtClient).toLocaleString() : "an unknown time"} is still unresolved. Retry uses its original operation key: if the server already recorded it, the original result is returned; if it was not recorded, retry may complete that older sale now. Check Sales first and do not retry if you already entered a replacement sale.
                   </span>
+                  {Array.isArray(recoveredAttempt?.payload?.items) && <small style={{ display: "block", marginTop: 6 }}>
+                    Attempt details: {recoveredAttempt.payload.items.map((item) => `${Number(item.quantity || 0)} × ${item.item_name || "item"}`).join(", ")} · submitted tender {currency} {fmt(recoveredAttempt.payload.payment_breakdown?.reduce((sum, tender) => sum + Number(tender.amount || 0), 0) || 0)}
+                  </small>}
                   <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
                     <button
                       type="button"
@@ -2633,7 +2709,7 @@ export default function HposTerminal() {
                         cursor: submitting ? "wait" : "pointer",
                       }}
                     >
-                      Retry original sale
+                      Retry this exact attempt
                     </button>
                   </div>
                 </div>
@@ -2904,7 +2980,7 @@ export default function HposTerminal() {
                 </div>
               ) : (
                 <div style={{ padding: "0 16px 14px" }}>
-                  <label
+                  {canUseTips && <label
                     style={{
                       display: "block",
                       marginBottom: "10px",
@@ -2937,7 +3013,7 @@ export default function HposTerminal() {
                         fontSize: "14px",
                       }}
                     />
-                  </label>
+                  </label>}
                   {paymentMethod === "split" && !chargeToAccount && (
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px", marginBottom: "10px" }}>
                       <label style={{ fontSize: "12px", fontWeight: 700, color: "#5d4b52" }}>

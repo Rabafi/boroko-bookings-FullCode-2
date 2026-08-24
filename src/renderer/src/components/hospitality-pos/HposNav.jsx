@@ -80,7 +80,41 @@ function LiveClock() {
   )
 }
 
-export default function HposNav({ settings, user, syncStatus, isPosRoute, onClockIn, onLogout, onNotifications, onSearch, density, onDensityChange }) {
+function TrialStatusIndicator({ trialStatus, onOpenSubscription }) {
+  if (trialStatus?.status !== 'trial') return null
+  const daysLeft = Number(trialStatus?.daysLeft ?? trialStatus?.days_left)
+  if (!Number.isInteger(daysLeft) || daysLeft < 1) return null
+
+  const urgent = daysLeft <= 3
+  const label = daysLeft === 1 ? 'Last trial day' : `${daysLeft} trial days left`
+  return (
+    <button
+      type="button"
+      onClick={onOpenSubscription}
+      title="Open subscription details"
+      aria-label={`${label}. Open subscription details.`}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: '6px',
+        padding: '4px 10px',
+        borderRadius: '999px',
+        background: urgent ? 'rgba(245, 158, 11, 0.12)' : 'rgba(37, 99, 235, 0.10)',
+        border: `1px solid ${urgent ? 'rgba(245, 158, 11, 0.30)' : 'rgba(37, 99, 235, 0.22)'}`,
+        color: urgent ? '#a16207' : '#1d4ed8',
+        fontSize: '11px',
+        fontWeight: 700,
+        cursor: 'pointer',
+        fontVariantNumeric: 'tabular-nums'
+      }}
+    >
+      <Clock size={13} aria-hidden="true" />
+      <span>{label}</span>
+    </button>
+  )
+}
+
+export default function HposNav({ settings, user, syncStatus, trialStatus, isPosRoute, onClockIn, onLogout, onNotifications, onSearch, density, onDensityChange }) {
   const navigate = useNavigate()
   const [showProfile, setShowProfile] = useState(false)
 
@@ -156,6 +190,11 @@ export default function HposNav({ settings, user, syncStatus, isPosRoute, onCloc
       <div className="hpos-topbar-utilities">
         <button type="button" className="hpos-command-trigger" onClick={onSearch} aria-label={`Search ${barOnly ? 'bar' : 'restaurant'} workspaces and actions`}><Search size={15}/><span>Search anything…</span><kbd>Ctrl K</kbd></button>
         <LiveClock />
+
+        <TrialStatusIndicator
+          trialStatus={trialStatus}
+          onOpenSubscription={() => goTo('/settings?tab=license')}
+        />
 
         <SyncIndicator
           syncStatus={syncStatus}

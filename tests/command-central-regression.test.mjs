@@ -142,6 +142,38 @@ test('subscription request activation uses the governed operation wrapper', () =
   assert.match(component, /operation_id: crypto\.randomUUID\(\)/i)
 })
 
+test('Command Central subscription activation has an exact target, fresh operator identity, and no pre-approval bypass', () => {
+  const ipc = fs.readFileSync(new URL('../src/main/index.js', import.meta.url), 'utf8')
+  const component = fs.readFileSync(new URL('../src/renderer/src/components/SubscriptionRequests.jsx', import.meta.url), 'utf8')
+  const workbench = fs.readFileSync(new URL('../src/renderer/src/components/LicensingWorkbench.jsx', import.meta.url), 'utf8')
+  const migration = fs.readFileSync(new URL('../supabase/migrations/20260816090000_command_central_subscription_truth_hardening.sql', import.meta.url), 'utf8')
+  const activationHandler = ipc.slice(ipc.indexOf("ipcMain.handle('subscriptionRequests:activate'"), ipc.indexOf('ipcMain.handle(', ipc.indexOf("ipcMain.handle('subscriptionRequests:activate'") + 20))
+
+  assert.match(activationHandler, /requireFreshCommandCentralReauth/)
+  assert.match(activationHandler, /actor_id: admin\.id/)
+  assert.match(activationHandler, /actor_email: admin\.email/)
+  assert.match(component, /isActivationTargetLicense/)
+  assert.match(component, /Select matching active license/)
+  assert.match(component, /DarkConfirmDialog/)
+  assert.match(component, /Activate approved subscription\?/)
+  assert.match(workbench, /getEligibleCommercialOffers/)
+  assert.match(workbench, /getEligibleCommercialAddons/)
+  assert.match(workbench, /getCompanyOperatingProfile/)
+  assert.match(migration, /drop function if exists public\.activate_subscription_request\(uuid\)/i)
+  assert.match(migration, /v_request\.status <> 'approved'/)
+  assert.doesNotMatch(migration, /approved', 'payment_under_review/)
+  assert.match(migration, /predates annual add-on billing correction/)
+})
+
+test('Command Central subscription PDFs preserve itemised due-now and annual-renewal evidence', () => {
+  const ipc = fs.readFileSync(new URL('../src/main/index.js', import.meta.url), 'utf8')
+  const pdfRenderer = ipc.slice(ipc.indexOf('function buildSubscriptionRequestDocumentPdfHtml'), ipc.indexOf('function buildDetailedReportPdfHtml'))
+  assert.match(pdfRenderer, /Itemised Commercial Charges/)
+  assert.match(pdfRenderer, /pricing\.lines/)
+  assert.match(pdfRenderer, /Annual renewal/)
+  assert.match(pdfRenderer, /Bar POS annual bundles include their first annual term/)
+})
+
 test('Finance Office uses commercial ledger reads and governed payment allocation', () => {
   const component = fs.readFileSync(new URL('../src/renderer/src/components/AdminCentral.jsx', import.meta.url), 'utf8')
   const domain = fs.readFileSync(new URL('../src/main/domains/commercialBilling.js', import.meta.url), 'utf8')

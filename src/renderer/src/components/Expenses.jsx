@@ -5,6 +5,7 @@ import HorizontalScrollArea from './shared/HorizontalScrollArea'
 import { useSettings } from '../app-context'
 import { localToday } from '../utils/localDate'
 import { isRestaurantOnly } from '../../../shared/propertyTypes'
+import { unpackTransport } from '../transportUnpack'
 
 const LODGE_CATEGORIES = [
   'Food & Beverage',
@@ -115,7 +116,7 @@ export default function Expenses() {
           ? window.api.reports.supplySpend(start, end).catch(() => ({ total: 0, purchases: [] }))
           : Promise.resolve({ total: 0, purchases: [] }),
         showMaintenanceCosts
-          ? window.api.reports.maintenanceRows(start, end).catch(() => [])
+          ? window.api.reports.maintenanceRows(start, end).then(unpackTransport).catch(() => [])
           : Promise.resolve([])
       ])
       setExpenses(expenseData || [])

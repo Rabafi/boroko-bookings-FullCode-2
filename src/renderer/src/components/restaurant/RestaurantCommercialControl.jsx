@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { CheckCircle2, MessageSquareHeart, RefreshCw, ShieldCheck, WalletCards } from 'lucide-react'
 import { useAccess } from '../../app-context'
 import { canAccessCapability } from '../../../../shared/accessControl'
+import { unpackTransport } from '../../transportUnpack'
 
 function localDateKey(date = new Date()) {
   const year = date.getFullYear()
@@ -52,11 +53,11 @@ export default function RestaurantCommercialControl({ section = 'all' }) {
       setLoading(true)
       setError('')
       const [settlementRows, settlementBanks, reservationRows, feedbackResult, depositsResult] = await Promise.all([
-        showSettlements ? window.api.pos.getSettlements(date) : Promise.resolve([]),
+        showSettlements ? window.api.pos.getSettlements(date).then(unpackTransport) : Promise.resolve([]),
         showSettlements ? window.api.pos.getSettlementBankAccounts() : Promise.resolve([]),
         showDeposits ? window.api.pos.getRestaurantReservations(localDateKey(), futureDateKey(90)) : Promise.resolve([]),
         showFeedback ? window.api.pos.getFeedback(30) : Promise.resolve([]),
-        showDeposits ? window.api.pos.getReservationDeposits(90) : Promise.resolve([])
+        showDeposits ? window.api.pos.getReservationDeposits(90).then(unpackTransport) : Promise.resolve([])
       ])
       const settlementsReady = Array.isArray(settlementRows) && settlementRows._source === 'server' && settlementRows._complete === true
       const depositsReady = Array.isArray(depositsResult) && depositsResult._source === 'server' && depositsResult._complete === true

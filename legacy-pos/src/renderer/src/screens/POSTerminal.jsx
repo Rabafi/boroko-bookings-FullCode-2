@@ -4,6 +4,7 @@ import { buildPosTotals } from '@shared/totals.js';
 import { buildCreatePosOrderPayload } from '@shared/payloads.js';
 import { sanitizePosError } from '@shared/errors.js';
 import { createBarcodeScannerDecoder, normalizeBarcode, isScannerEditableTarget } from '@shared/barcodeScanner.js';
+import { isCommercialFeatureIncluded } from '../../../../../src/shared/commercialAccess.js';
 
 const CURRENCY = 'P';
 const fmt = (v) => Number(v || 0).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -116,6 +117,20 @@ export default function POSTerminal({ user, settings, isOnline, lowResource, bar
   const [barcodeFlash, setBarcodeFlash] = useState(null);
   const currency = settings?.currency || CURRENCY;
   const taxEnabled = settings?.vat_enabled === true;
+  const commercialEntitlement = settings?.commercial_entitlement || {};
+  const commercialContextKnown = commercialEntitlement?.product_id === 'hospitality-pos' && Boolean(commercialEntitlement?.commercial_package_key);
+  const canUseTips = !barOnly || (
+    commercialContextKnown && isCommercialFeatureIncluded(
+      commercialEntitlement.product_id,
+      commercialEntitlement.commercial_package_key,
+      'tips_payouts',
+      commercialEntitlement.enterprise_addons || []
+    )
+  );
+
+  useEffect(() => {
+    if (!canUseTips) setTipAmount('');
+  }, [canUseTips]);
 
   // Outlet state
   const [outlets, setOutlets] = useState([]);
@@ -514,9 +529,9 @@ export default function POSTerminal({ user, settings, isOnline, lowResource, bar
     return buildPosTotals(cartForTotals, {
       discount_total: discount,
       tax_rate: taxEnabled ? Number(taxRate) || 0 : 0,
-      tip_total: Number(tipAmount) || 0
+      tip_total: canUseTips ? Number(tipAmount) || 0 : 0
     });
-  }, [cartForTotals, discountValue, taxEnabled, taxRate, tipAmount, appliedPromo, applicablePromo]);
+  }, [cartForTotals, discountValue, taxEnabled, taxRate, tipAmount, canUseTips, appliedPromo, applicablePromo]);
 
   const effectivePaymentMethod = customerType === 'room' || customerType === 'event'
     ? 'folio'
@@ -611,6 +626,10 @@ export default function POSTerminal({ user, settings, isOnline, lowResource, bar
   const handleSubmitOrder = async () => {
     if (!selectedStaff) { setError('Select a cashier/operator first.'); return; }
     if (cart.length === 0) { setError('Add items to the cart first.'); return; }
+    if (barOnly && !canUseTips && Number(tipAmount || 0) !== 0) {
+      setError('Tip tender is not included in the current Bar POS package.');
+      return;
+    }
     if (customerType === 'room' && !selectedRoom) { setError('Select a room for folio charge.'); return; }
     if (customerType === 'event' && !selectedEventId) { setError('Select an event for folio charge.'); return; }
     if (orderStockIssues.length > 0) {
@@ -947,7 +966,7 @@ export default function POSTerminal({ user, settings, isOnline, lowResource, bar
           >
             <span>Order details</span>
             <span className="text-xs text-slate-400">
-              {detailsExpanded ? 'Hide' : [walkInName, orderNotes, discountValue && `Discount ${currency} ${discountValue}`, tipAmount && `Tip ${currency} ${tipAmount}`].filter(Boolean).join(' · ') || 'Add notes, guest, discount, tip'}
+              {detailsExpanded ? 'Hide' : [walkInName, orderNotes, discountValue && `Discount ${currency} ${discountValue}`, canUseTips && tipAmount && `Tip ${currency} ${tipAmount}`].filter(Boolean).join(' · ') || 'Add notes, guest, discount'}
             </span>
           </button>
           {detailsExpanded && customerType === 'walkin' && (
@@ -996,7 +1015,7 @@ export default function POSTerminal({ user, settings, isOnline, lowResource, bar
               </div>
             )}
           </div>}
-          {detailsExpanded && <div>
+          {detailsExpanded && canUseTips && <div>
             <label className="text-xs font-semibold text-slate-500">Tip ({currency})</label>
             <input type="number" value={tipAmount} onChange={(e) => setTipAmount(e.target.value)} placeholder="0" className="min-h-10 w-full rounded-lg border border-slate-200 px-3 text-sm" min="0" />
           </div>}
@@ -1017,7 +1036,7 @@ export default function POSTerminal({ user, settings, isOnline, lowResource, bar
           {taxEnabled && Number(cartTotals.tax_total) > 0 && (
             <div className="flex justify-between text-xs text-slate-500"><span>Tax ({cartTotals.tax_rate}%)</span><span>{currency} {fmt(cartTotals.tax_total)}</span></div>
           )}
-          {Number(cartTotals.tip_total) > 0 && (
+          {canUseTips && Number(cartTotals.tip_total) > 0 && (
             <div className="flex justify-between text-xs text-slate-500"><span>Tip</span><span>{currency} {fmt(cartTotals.tip_total)}</span></div>
           )}
           <div className="flex justify-between border-t border-slate-200 pt-2">

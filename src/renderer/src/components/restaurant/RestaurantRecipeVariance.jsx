@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { AlertTriangle, CheckCircle2, TrendingUp, Search } from 'lucide-react'
 import { useSettings } from '../../app-context'
 import { isBarOnlyMode } from '../../../../shared/propertyTypes'
+import { unpackTransport } from '../../transportUnpack'
 
 const SEVERITY_COLORS = {
   ok: 'bg-emerald-100 text-emerald-700 border-emerald-200',
@@ -38,9 +39,9 @@ export default function RestaurantRecipeVariance() {
         throw new Error('This report needs the latest desktop update. Close every Tsa Bonno window and reopen the app, then try again.')
       }
       const [data, losses, ingredients] = await Promise.all([
-        pos.getRecipeVarianceReport(startDate, endDate),
-        pos.getRecipePreparationLosses(startDate, endDate),
-        pos.getRecipePreparationLossIngredientSummary(startDate, endDate)
+        pos.getRecipeVarianceReport(startDate, endDate).then(unpackTransport),
+        pos.getRecipePreparationLosses(startDate, endDate).then(unpackTransport),
+        pos.getRecipePreparationLossIngredientSummary(startDate, endDate).then(unpackTransport)
       ])
       const reportReady = Array.isArray(data) && data._source === 'server' && data._complete === true
       const lossesReady = Array.isArray(losses) && losses._source === 'server' && losses._complete === true

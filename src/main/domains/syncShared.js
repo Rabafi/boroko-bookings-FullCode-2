@@ -29,6 +29,10 @@ export function isInventoryAdjustmentQueueItem(item) {
   return item?.type === 'rpc' && item?.table === 'adjust_inventory_stock';
 }
 
+export function isBarStockBatchQueueItem(item) {
+  return item?.type === 'rpc' && ['post_bar_physical_count', 'post_bar_simple_delivery'].includes(item?.table)
+}
+
 export function getQueuedInventoryItemId(item) {
   const payloadId = String(item?.data?.payload?.id || '').trim();
   if (payloadId) return payloadId;
@@ -104,6 +108,10 @@ export function getSyncItemBookingId(item) {
 }
 
 export function getSyncItemScope(item) {
+  if (isBarStockBatchQueueItem(item)) {
+    const operationId = String(item?.data?.p_operation_id || '').trim();
+    if (operationId) return `bar-stock-operation:${operationId}`;
+  }
   const bookingId = getSyncItemBookingId(item);
   if (bookingId) return `booking:${bookingId}`;
   const posOrderId = getQueuedPosOrderId(item);
@@ -155,10 +163,16 @@ export function normalizeQueuedSyncItemForReplay(item = {}) {
   if (!item) return item;
   const next = { ...item, data: { ...(item.data || {}) } };
 
+  // Batch Bar stock RPCs hash their ordered line envelope server-side. Keep
+  // replay byte-for-byte stable even if an older queue file was assembled in
+  // a different item order.
+  if (next.type === 'rpc' && ['post_bar_physical_count', 'post_bar_simple_delivery'].includes(next.table) && Array.isArray(next.data.p_lines)) {
+    next.data.p_lines = [...next.data.p_lines].sort((left, right) => String(left?.item_id || '').localeCompare(String(right?.item_id || '')))
+  }
+
   if (next.type === 'rpc' && ['create_pos_order', 'create_pos_order_v3'].includes(next.table) && next.data?.payload) {
     next.data.payload = adaptLegacyPosOrderFinancialPayload(next.data.payload);
   }
-
   if (next.type === 'rpc' &&
   ['update_booking', 'update_booking_status'].includes(next.table) &&
   !next.data.p_idempotency_key) {

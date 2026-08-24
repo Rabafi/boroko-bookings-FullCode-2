@@ -174,13 +174,17 @@ export const BAR_BASE_SETUP_STAGE_KEYS = Object.freeze([
   'business_profile',
   'tax_service',
   'outlets',
+  'staff_accounts',
+  'staff_roles',
+  'staff_pins',
   'menu_categories',
   'menu_pricing',
   'modifiers_combos',
   'inventory',
   'payments_tips',
   'receipt_hardware',
-  'daily_checklists'
+  'daily_checklists',
+  'first_completed_shift'
 ])
 
 /**

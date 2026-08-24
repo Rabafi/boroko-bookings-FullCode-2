@@ -5,6 +5,7 @@ import { resolve } from 'node:path'
 import {
   COMMERCIAL_PRODUCT_IDS,
   getCommercialAddonOffers,
+  getCommercialEntitlementKeys,
   getCommercialOffers,
   getCommercialOffer,
   isCommercialSelectionEligible
@@ -12,10 +13,12 @@ import {
 import { isCommercialFeatureIncluded } from '../src/shared/commercialAccess.js'
 import { buildCapabilitySnapshot } from '../src/shared/accessControl.js'
 import { buildCommercialOfferSnapshot } from '../src/shared/commercialPackages.js'
+import { getModuleByKey } from '../src/shared/moduleCatalog.js'
 
 const migration = readFileSync(resolve('supabase/migrations/20260712170000_commercial_catalog_quote_authority.sql'), 'utf8')
 const entitlementBoundaryMigration = readFileSync(resolve('supabase/migrations/20260712174000_commercial_pos_entitlement_boundary.sql'), 'utf8')
 const entitlementIdentityMigration = readFileSync(resolve('supabase/migrations/20260712175000_entitlement_rpc_commercial_identity.sql'), 'utf8')
+const barBasePwaMigration = readFileSync(resolve('supabase/migrations/20260816100000_bar_base_manager_pwa.sql'), 'utf8')
 const quoteFunction = readFileSync(resolve('marketing-site/netlify/functions/quote-download.js'), 'utf8')
 const accessPanel = readFileSync(resolve('src/renderer/src/components/SubscriptionAccessPanel.jsx'), 'utf8')
 const upgradePrompt = readFileSync(resolve('src/renderer/src/components/shared/UsageUpgradePrompt.jsx'), 'utf8')
@@ -62,6 +65,8 @@ test('POS package boundaries block higher workflows at runtime', () => {
   assert.equal(isCommercialFeatureIncluded(productId, 'restaurant_control', 'loyalty'), false)
   assert.equal(isCommercialFeatureIncluded(productId, 'restaurant_growth', 'loyalty'), true)
   assert.equal(isCommercialFeatureIncluded(productId, 'bar_pos', 'inventory'), true)
+  assert.equal(isCommercialFeatureIncluded(productId, 'bar_pos', 'pwa'), true)
+  assert.equal(isCommercialFeatureIncluded(productId, 'bar_pos', 'owner_mobile_view'), false)
   assert.equal(isCommercialFeatureIncluded(productId, 'bar_pos', 'tables'), false)
   assert.equal(isCommercialFeatureIncluded(productId, 'bar_pos', 'recipes'), false)
   assert.equal(isCommercialFeatureIncluded(productId, 'bar_pos', 'kitchen_tickets'), false)
@@ -81,6 +86,19 @@ test('POS package boundaries block higher workflows at runtime', () => {
   assert.equal(serviceAccess.capabilities['pos.view'], true)
   assert.equal(serviceAccess.capabilities['inventory.view'], false)
   assert.equal(controlAccess.capabilities['inventory.view'], true)
+})
+
+test('Bar POS explicitly includes Manager PWA without including Growth Owner View', () => {
+  const productId = COMMERCIAL_PRODUCT_IDS.HOSPITALITY_POS
+  const features = getCommercialEntitlementKeys({ productId, commercialPackageKey: 'bar_pos' })
+  assert.ok(features.includes('pwa'))
+  assert.ok(!features.includes('owner_mobile_view'))
+  assert.ok(getModuleByKey('pwa').allowedPropertyTypes.includes('restaurant'))
+  assert.match(barBasePwaMigration, /commercial_package_key = 'bar_pos'/)
+  assert.match(barBasePwaMigration, /\["pwa"\]/)
+  assert.match(barBasePwaMigration, /Active Bar POS catalogue must include the Manager PWA entitlement/)
+  assert.match(barBasePwaMigration, /on conflict \(lodge_id, feature_name\) do nothing/)
+  assert.match(barBasePwaMigration, /commercial_entitlement_backfill/)
 })
 
 test('desktop main capability snapshot preserves add-ons and user overrides', () => {

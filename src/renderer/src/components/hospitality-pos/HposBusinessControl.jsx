@@ -25,6 +25,7 @@ import {
 import { useAccess, useSettings } from '../../app-context';
 import { canAccessCapability } from '../../../../shared/accessControl';
 import { isBarOnlyMode } from '../../../../shared/propertyTypes';
+import { unpackTransport } from '../../transportUnpack';
 import { calculatePosFinancialTruth } from '../../../../shared/posFinancialTruth';
 import {
   HposButton,
@@ -164,7 +165,7 @@ export default function HposBusinessControl() {
     const incompleteSources = calls
       .map((call, index) => {
         if (call.status !== 'fulfilled') return null;
-        const result = call.value;
+        const result = unpackTransport(call.value);
         if (result == null || result?._available === false) return sourceLabels[index];
         if (index === 0 && (!Array.isArray(result) || result._complete !== true || result._source !== 'server')) return sourceLabels[index];
         if (index === 14) {
@@ -175,10 +176,10 @@ export default function HposBusinessControl() {
       })
       .filter(Boolean);
     setSourceWarnings([...new Set([...rejectedSources, ...incompleteSources])]);
-    const value = (index, fallback = []) =>
-      calls[index]?.status === 'fulfilled' && Array.isArray(calls[index].value)
-        ? calls[index].value
-        : fallback;
+    const value = (index, fallback = []) => {
+      const result = calls[index]?.status === 'fulfilled' ? unpackTransport(calls[index].value) : undefined;
+      return Array.isArray(result) ? result : fallback;
+    };
     setData({
       orders: value(0),
       menu: value(1),

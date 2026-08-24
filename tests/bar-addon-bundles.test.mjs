@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 
-import { BAR_POS_ADDON_CATALOG, getCommercialAddonOffers } from '../src/shared/commercialEntitlements.js'
+import { BAR_POS_ADDON_CATALOG, getCommercialAddonOffers, getCommercialEntitlementKeys } from '../src/shared/commercialEntitlements.js'
 import { getCommercialFeatureSet, isCommercialFeatureIncluded } from '../src/shared/commercialAccess.js'
 import { buildCommercialOfferSnapshot } from '../src/shared/commercialPackages.js'
 
@@ -16,6 +16,20 @@ test('Bar POS sells exactly three complete annual add-on bundles', () => {
   ])
   assert.deepEqual(BAR_POS_ADDON_CATALOG.map((addon) => addon.annualPriceBwp), [3000, 6000, 5000])
   assert.equal(getCommercialAddonOffers('hospitality-pos', 'restaurant').length, 3)
+})
+
+test('Bar POS Base documents counter essentials while keeping add-on depth isolated', () => {
+  const baseFeatures = new Set(getCommercialEntitlementKeys({
+    productId: 'hospitality-pos',
+    commercialPackageKey: 'bar_pos'
+  }))
+  for (const feature of ['modifiers', 'tabs', 'receipts']) assert.equal(baseFeatures.has(feature), true, `${feature} belongs to Bar POS Base`)
+  for (const feature of ['purchasing', 'payroll', 'owner_mobile_view']) assert.equal(baseFeatures.has(feature), false, `${feature} remains add-on-only`)
+
+  const sql = read('supabase/migrations/20260820100000_bar_base_catalog_feature_alignment.sql')
+  for (const feature of ['modifiers', 'tabs', 'receipts']) assert.match(sql, new RegExp(`\\"${feature}\\"`))
+  assert.match(sql, /commercial_package_key = 'bar_pos'/)
+  assert.doesNotMatch(sql, /bar_stock_purchasing_pro|bar_accounting_workforce|bar_growth_multi_outlet/)
 })
 
 test('bar add-ons extend Bar POS but never leak into restaurant packages', () => {

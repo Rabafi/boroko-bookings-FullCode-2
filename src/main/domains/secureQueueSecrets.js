@@ -1,6 +1,6 @@
 import { safeStorage } from 'electron';
 
-const SECRET_FIELDS = new Set(['pin', 'approval_pin']);
+const SECRET_FIELDS = new Set(['pin', 'approval_pin', 'manager_pin']);
 
 function canEncrypt() {
   try {

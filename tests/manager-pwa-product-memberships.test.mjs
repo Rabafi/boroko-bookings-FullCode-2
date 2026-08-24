@@ -86,6 +86,8 @@ test('PWA client uses list + issue split and never keeps password for chooser', 
   assert.match(api, /list_manager_pwa_memberships/)
   assert.match(api, /issue_manager_pwa_session/)
   assert.match(api, /return \{ memberships: entitled, user: null \}/)
+  assert.match(api, /Manager mobile app access is not included or active for this business/)
+  assert.doesNotMatch(api, /getSubscriptionPlan/)
 
   assert.match(auth, /pendingMemberships/)
   assert.match(auth, /selectMembership/)

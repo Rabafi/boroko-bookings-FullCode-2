@@ -500,7 +500,9 @@ function queueItemNeedsInventoryRefresh(item) {
     'add_inventory_purchase',
     'create_inventory_stocktake_session',
     'save_inventory_stocktake_counts',
-    'post_inventory_stocktake_session'
+    'post_inventory_stocktake_session',
+    'post_bar_physical_count',
+    'post_bar_simple_delivery'
   ].includes(item?.table)) return true;
   if (isInventoryAdjustmentQueueItem(item)) return true;
   if (isPosCreateOrderQueueItem(item) || isPosVoidQueueItem(item)) {
@@ -658,6 +660,8 @@ async function _runSyncQueue() {
   let shouldRefreshUsers = false;
   let shouldRefreshQuotations = false;
   let shouldRefreshPosOrders = false;
+  let shouldRefreshPosShifts = false;
+  let shouldRefreshPosMenu = false;
   let shouldRefreshConference = false;
   let shouldRefreshPoolDayUse = false;
   let shouldRefreshExpenses = false;
@@ -696,8 +700,13 @@ async function _runSyncQueue() {
 
     const [item] = pending.splice(nextIndex, 1);
     // Skip items whose parent operation failed this run
-    if (item._depends_on && failedQueueIds.has(item._depends_on)) {
-      console.warn('[SYNC SKIPPED DEPENDENT]', { operation: item.table, queueId: item._queue_id, dependsOn: item._depends_on });
+    const dependencyIds = [...new Set([
+      item?._depends_on,
+      ...(Array.isArray(item?._depends_on_all) ? item._depends_on_all : [])
+    ].map((value) => String(value || '').trim()).filter(Boolean))];
+    const failedDependencyId = dependencyIds.find((dependencyId) => failedQueueIds.has(dependencyId));
+    if (failedDependencyId) {
+      console.warn('[SYNC SKIPPED DEPENDENT]', { operation: item.table, queueId: item._queue_id, dependsOn: failedDependencyId });
       const retryCount = (item.retryCount || 0) + 1;
       const skipped = { ...item, _state: 'pending', retryCount, lastError: 'Skipped: parent operation failed', lastAttemptedAt: new Date().toISOString() };
       appendOperationJournalEntry('blocked', skipped, {
@@ -800,26 +809,58 @@ async function _runSyncQueue() {
         ({ error: supabaseError } = await state.supabase.from(item.table).delete().eq('id', item.id).eq('lodge_id', itemLodgeId));
       } else if (item.type === 'rpc') {
         const replayData = resolveQueuedRpcData(item.data);
-        const { data, error } = await state.supabase.rpc(item.table, replayData);
+        // Older desktop builds queued menu updates and plain clock-outs under
+        // their non-idempotent RPC names. Replay those legacy rows through the
+        // forward wrappers with a deterministic operation key derived from the
+        // persisted queue identity; never mint a fresh key on retry/timeout.
+        let replayRpc = item.table;
+        let authoritativeReplayData = replayData;
+        if (item.table === 'update_pos_menu_item') {
+          const legacyPayload = replayData?.payload || {};
+          const operationKey = legacyPayload.operation_key ||
+            `legacy-menu-update:${item._queue_id || replayData?.p_id || 'unknown'}`;
+          authoritativeReplayData = {
+            payload: {
+              ...legacyPayload,
+              lodge_id: replayData?.p_lodge_id || legacyPayload.lodge_id || state.lodgeId,
+              menu_item_id: replayData?.p_id || legacyPayload.menu_item_id,
+              operation_key: operationKey
+            }
+          };
+          replayRpc = 'update_pos_menu_item_offline';
+        } else if (item.table === 'clock_out_staff') {
+          const legacyPayload = replayData?.payload || {};
+          const operationKey = legacyPayload.idempotency_key ||
+            `legacy-clock-out:${item._queue_id || legacyPayload.shift_id || 'unknown'}`;
+          authoritativeReplayData = {
+            payload: {
+              ...legacyPayload,
+              lodge_id: legacyPayload.lodge_id || state.lodgeId,
+              idempotency_key: operationKey
+            }
+          };
+          replayRpc = 'clock_out_staff_offline';
+        }
+        const { data, error } = await state.supabase.rpc(replayRpc, authoritativeReplayData);
         rpcResultData = data || null;
         if (error) {
-          if (isAlreadyAppliedRpcError(item, error)) {
-            console.warn(`↻ RPC ${item.table} already applied remotely for queued id; treating as synced`, item._queue_id);
+          if (isAlreadyAppliedRpcError({ ...item, table: replayRpc }, error)) {
+            console.warn(`↻ RPC ${replayRpc} already applied remotely for queued id; treating as synced`, item._queue_id);
             supabaseError = null;
           } else {
-            console.error(`❌ RPC ${item.table} FAILED:`, error);
+            console.error(`❌ RPC ${replayRpc} FAILED:`, error);
             supabaseError = error;
           }
         } else if (data && data.success === false) {
-          if (isAlreadyAppliedRpcError(item, data.error)) {
-            console.warn(`↻ RPC ${item.table} reported duplicate for queued id; treating as synced`, item._queue_id);
+          if (isAlreadyAppliedRpcError({ ...item, table: replayRpc }, data.error)) {
+            console.warn(`↻ RPC ${replayRpc} reported duplicate for queued id; treating as synced`, item._queue_id);
             supabaseError = null;
           } else {
-            console.error(`❌ RPC ${item.table} LOGIC FAILED:`, data.error);
+            console.error(`❌ RPC ${replayRpc} LOGIC FAILED:`, data.error);
             supabaseError = { message: data.error };
           }
         } else {
-          console.log(`✅ RPC ${item.table} SUCCESS:`, data);
+          console.log(`✅ RPC ${replayRpc} SUCCESS:`, data);
         }
       }
     } catch (e) {
@@ -1026,6 +1067,17 @@ async function _runSyncQueue() {
         });
         pending.push(updatedItem);
       }
+      if (item?.type === 'rpc' && ['post_bar_physical_count', 'post_bar_simple_delivery'].includes(item?.table)) {
+        const batchLines = Array.isArray(item?.data?.p_lines) ? item.data.p_lines : []
+        const reason = `${item.table} rejected by server: ${errorMessage}`
+        for (const line of batchLines) {
+          if (line?.item_id) patchCachedInventoryItemSyncState(line.item_id, {
+            _pending_sync: true,
+            _sync_state: 'failed',
+            _sync_error: reason
+          })
+        }
+      }
       writeSyncQueue(pending);
     } else {
       if (isPosCreateOrderQueueItem(item)) {
@@ -1223,6 +1275,66 @@ async function _runSyncQueue() {
       if (item.type === 'rpc' && ['create_maintenance_ticket', 'update_maintenance_ticket', 'resolve_maintenance_ticket'].includes(item.table)) shouldRefreshMaintenance = true;
       if (isPosCreateOrderQueueItem(item) || isPosVoidQueueItem(item)) shouldRefreshPosOrders = true;
       if (item.type === 'rpc' && [
+        'open_pos_shift_with_id',
+        'activate_shared_till_operator_offline',
+        'link_my_pos_shift_to_attendance',
+        'submit_pos_shift_cashup',
+        'submit_pos_shift_cashup_with_attendance_pin',
+        'review_pos_cashup_submission_offline',
+        'finalize_pos_shift_cashup_v2'
+      ].includes(item.table)) shouldRefreshPosShifts = true;
+      if (item.type === 'rpc' && [
+        'create_pos_menu_item_offline',
+        'update_pos_menu_item_offline',
+        'update_pos_menu_item',
+        'delete_pos_menu_item',
+        'set_bar_pos_pack_template_offline',
+        'save_bar_pos_product_with_packs_offline',
+        'upsert_pos_modifier_groups',
+        'upsert_pos_promotions',
+        'publish_pos_catalog_snapshot_offline'
+      ].includes(item.table)) shouldRefreshPosMenu = true;
+      if (item.type === 'rpc' && item.table === 'publish_pos_catalog_snapshot_offline') {
+        const snapshotId = item?.data?.payload?.snapshot_id;
+        if (snapshotId) writeCache('pos-catalog-snapshots', readCache('pos-catalog-snapshots').map((row) => row?.snapshot_id === snapshotId ? {
+          ...row, _pending_sync: false, _sync_state: 'synced', _synced_at: new Date().toISOString()
+        } : row));
+      }
+      if (item?.type === 'rpc' && ['post_bar_physical_count', 'post_bar_simple_delivery'].includes(item?.table)) {
+        const batchLines = Array.isArray(item?.data?.p_lines) ? item.data.p_lines : []
+        for (const line of batchLines) {
+          if (line?.item_id) patchCachedInventoryItemSyncState(line.item_id, {
+            _pending_sync: false,
+            _sync_state: 'synced',
+            _sync_error: null,
+            _synced_at: new Date().toISOString()
+          })
+        }
+      }
+      if (item.type === 'rpc' && [
+        'clock_in_staff_offline',
+        'clock_in_staff_with_attendance_pin_offline',
+        'clock_in_self_for_pos_offline',
+        'clock_out_staff',
+        'clock_out_staff_offline',
+        'clock_out_staff_with_attendance_pin'
+      ].includes(item.table)) {
+        const attendanceShiftId = item?.data?.payload?.shift_id;
+        if (attendanceShiftId) writeCache('restaurant-shifts', readCache('restaurant-shifts').map((row) => row?.id === attendanceShiftId ? {
+          ...row, _pending_sync: false, _sync_state: 'synced', _synced_at: new Date().toISOString()
+        } : row));
+      }
+      if (item.type === 'rpc' && [
+        'submit_pos_shift_cashup',
+        'submit_pos_shift_cashup_with_attendance_pin',
+        'review_pos_cashup_submission_offline'
+      ].includes(item.table)) {
+        const submissionKey = item?.data?.payload?.submission_idempotency_key || item?.data?.payload?.idempotency_key;
+        if (submissionKey) writeCache('pos-cashup-submissions', readCache('pos-cashup-submissions').map((row) => row?.idempotency_key === submissionKey ? {
+          ...row, _pending_sync: false, _sync_state: 'synced', _synced_at: new Date().toISOString()
+        } : row));
+      }
+      if (item.type === 'rpc' && [
         'create_conference_booking',
         'update_conference_booking',
         'update_conference_booking_payment',
@@ -1300,6 +1412,8 @@ async function _runSyncQueue() {
   if (successCount > 0 && shouldRefreshUsers) refreshTargets.push('users');
   if (successCount > 0 && shouldRefreshQuotations) refreshTargets.push('quotations');
   if (successCount > 0 && shouldRefreshPosOrders) refreshTargets.push('pos-orders');
+  if (successCount > 0 && shouldRefreshPosShifts) refreshTargets.push('pos-shifts');
+  if (successCount > 0 && shouldRefreshPosMenu) refreshTargets.push('pos-menu-items');
   if (successCount > 0 && shouldRefreshConference) refreshTargets.push('conference-bookings', 'event-line-items');
   if (successCount > 0 && shouldRefreshPoolDayUse) refreshTargets.push('pool-day-use');
   if (successCount > 0 && shouldRefreshExpenses) refreshTargets.push('expenses');

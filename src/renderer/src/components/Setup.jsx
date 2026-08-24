@@ -856,11 +856,9 @@ export default function Setup({ onComplete }) {
                   value={admin.email}
                   onChange={(e) => setAdmin((a) => ({ ...a, email: e.target.value }))}
                 />
-                {IS_HOTEL_PRODUCT && (
-                  <p className="text-xs text-gray-400 mt-1">
-                    You can reuse an email already used on Restaurant POS or Lodge — this creates a separate hotel company.
-                  </p>
-                )}
+                <p className="text-xs text-gray-400 mt-1">
+                  You may reuse an email already linked to another Tsa Bonno company. Use the same password for that email; you will choose the company after sign-in.
+                </p>
               </div>
 
               <div>

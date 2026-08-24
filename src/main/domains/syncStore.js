@@ -8,6 +8,13 @@ const HEALTH_FAULTS_FILE = 'health-faults.json';
 const OFFLINE_OPERATION_LOG_FILE = 'offline-operation-log.jsonl';
 const OFFLINE_MODE_FILE = 'lodge-offline-mode.json';
 export const SYNC_DRIFT_FAULT_TYPES = ['customer_drift', 'room_drift', 'quotation_drift', 'pos_drift'];
+const HEALTH_FAULT_DEDUPE_WINDOW_MS = 10 * 60 * 1000;
+const HEALTH_FAULT_MAX_MESSAGE_LENGTH = 1200;
+const HEALTH_FAULT_MAX_STRING_LENGTH = 500;
+const HEALTH_FAULT_MAX_KEYS = 40;
+const HEALTH_FAULT_MAX_ARRAY_ITEMS = 20;
+const HEALTH_FAULT_MAX_DEPTH = 4;
+const HEALTH_FAULT_SENSITIVE_KEY_PATTERN = /(password|passphrase|token|secret|authorization|api[-_]?key|private[-_]?key|credential|cookie|nonce|pin|hash)/i;
 
 function requireCacheDir(label = 'local sync store') {
   if (!state.cacheDir) {
@@ -24,6 +31,44 @@ function stableStringify(value) {
 
 function hashObject(value) {
   return createHash('sha256').update(stableStringify(value)).digest('hex');
+}
+
+function redactHealthFaultText(value, maxLength = HEALTH_FAULT_MAX_STRING_LENGTH) {
+  const text = String(value ?? '');
+  const redacted = text
+    .replace(/Bearer\s+[^\s,;]+/gi, 'Bearer [REDACTED]')
+    .replace(/((?:password|passphrase|token|secret|authorization|api[-_]?key|private[-_]?key|credential|cookie|nonce|pin|hash)\s*[:=]\s*)[^\s,;]+/gi, '$1[REDACTED]');
+  return redacted.length > maxLength ? `${redacted.slice(0, maxLength)}…` : redacted;
+}
+
+function sanitizeHealthFaultValue(value, depth = 0) {
+  if (value === null || typeof value === 'boolean' || typeof value === 'number') return value;
+  if (typeof value === 'string') return redactHealthFaultText(value);
+  if (depth >= HEALTH_FAULT_MAX_DEPTH) return '[TRUNCATED]';
+  if (Array.isArray(value)) {
+    return value.slice(0, HEALTH_FAULT_MAX_ARRAY_ITEMS)
+      .map((entry) => sanitizeHealthFaultValue(entry, depth + 1));
+  }
+  if (typeof value === 'object') {
+    const output = {};
+    for (const key of Object.keys(value).sort().slice(0, HEALTH_FAULT_MAX_KEYS)) {
+      output[key] = HEALTH_FAULT_SENSITIVE_KEY_PATTERN.test(key)
+        ? '[REDACTED]'
+        : sanitizeHealthFaultValue(value[key], depth + 1);
+    }
+    return output;
+  }
+  return redactHealthFaultText(value);
+}
+
+function buildHealthFaultFingerprint(entry) {
+  return hashObject({
+    type: redactHealthFaultText(entry.type, 160),
+    scope: redactHealthFaultText(entry.scope, 160),
+    severity: entry.severity === 'error' ? 'error' : 'warn',
+    message: redactHealthFaultText(entry.message, HEALTH_FAULT_MAX_MESSAGE_LENGTH),
+    context: sanitizeHealthFaultValue(entry.context || {})
+  });
 }
 
 function getQueueIntentId(item = {}) {
@@ -507,20 +552,42 @@ export function appendHealthFault(fault = {}) {
     let existing = [];
     try {existing = JSON.parse(fs.readFileSync(filePath, 'utf-8'));} catch {/* start fresh */}
     if (!Array.isArray(existing)) existing = [];
+    const safeType = redactHealthFaultText(fault.type || 'unknown', 160);
+    const safeScope = redactHealthFaultText(fault.scope || 'unknown', 160);
+    const safeSeverity = fault.severity === 'error' ? 'error' : 'warn';
+    const safeMessage = redactHealthFaultText(
+      fault.message || 'An integrity fault was detected.',
+      HEALTH_FAULT_MAX_MESSAGE_LENGTH
+    );
+    const safeContext = fault.context && typeof fault.context === 'object'
+      ? sanitizeHealthFaultValue(fault.context)
+      : {};
+    const suppliedAt = typeof fault.at === 'string' && fault.at.length <= 80 ? fault.at : null;
     const entry = {
       id: randomUUID(),
-      type: fault.type || 'unknown',
-      scope: fault.scope || 'unknown',
-      severity: fault.severity || 'warn',
-      message: fault.message || 'An integrity fault was detected.',
-      at: fault.at || new Date().toISOString(),
-      ...(fault.context && typeof fault.context === 'object' ? { context: fault.context } : {})
+      type: safeType,
+      scope: safeScope,
+      severity: safeSeverity,
+      message: safeMessage,
+      at: suppliedAt || new Date().toISOString(),
+      context: safeContext,
+      fingerprint: buildHealthFaultFingerprint({
+        type: safeType,
+        scope: safeScope,
+        severity: safeSeverity,
+        message: safeMessage,
+        context: safeContext
+      })
     };
-    // Deduplicate: don't append a fault with the same type+scope within 10 minutes
-    const tenMinutesAgo = Date.now() - 10 * 60 * 1000;
-    const isDuplicate = existing.some(
-      (e) => e.type === entry.type && e.scope === entry.scope && Date.parse(e.at) > tenMinutesAgo
-    );
+    // Deduplicate only exact fingerprints within ten minutes. A changed
+    // message/context for the same type and scope is a distinct incident.
+    const now = Date.now();
+    const isDuplicate = existing.some((e) => {
+      const at = Date.parse(e?.at || '');
+      if (!Number.isFinite(at) || now - at < 0 || now - at >= HEALTH_FAULT_DEDUPE_WINDOW_MS) return false;
+      const fingerprint = e?.fingerprint || buildHealthFaultFingerprint(e);
+      return fingerprint === entry.fingerprint;
+    });
     if (isDuplicate) return;
     const next = [entry, ...existing].slice(0, 50);
     writeJsonFileDurable(filePath, next, 'health faults');

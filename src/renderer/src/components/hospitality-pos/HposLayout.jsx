@@ -357,6 +357,7 @@ export default function HposLayout() {
         settings={settings}
         user={user}
         syncStatus={syncStatus}
+        trialStatus={access?.entitlement}
         isPosRoute={isPosRoute}
         onClockIn={startOrder}
         onLogout={logout}

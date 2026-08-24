@@ -33,6 +33,8 @@ import {
 import { useAccess, useSettings } from '../../app-context';
 import { canAccessCapability } from '../../../../shared/accessControl';
 import { isCommercialFeatureIncluded } from '../../../../shared/commercialAccess';
+import { BAR_POS_ADDON_CATALOG } from '../../../../shared/commercialEntitlements';
+import { formatCommercialMoney } from '../../../../shared/commercialPackages';
 import { BAR_BASE_SETUP_STAGE_KEYS, getHposMoreItems } from '../../../../shared/barModeProfile';
 import { isBarOnlyMode } from '../../../../shared/propertyTypes';
 
@@ -50,7 +52,6 @@ const GROUPS = [
       '/hpos/menu',
       '/hpos/stock',
       '/hpos/team',
-      '/staff',
       '/hpos/customers',
       '/hpos/growth-tools',
     ],
@@ -212,6 +213,26 @@ const BAR_META = {
   ],
 };
 
+const BAR_ADDON_VALUE = Object.freeze({
+  bar_stock_purchasing_pro: Object.freeze({
+    eyebrow: 'Buying & stock cost',
+    summary: 'Keep suppliers, purchase orders, controlled deliveries, stock valuation and margin controls together.',
+  }),
+  bar_accounting_workforce: Object.freeze({
+    eyebrow: 'Financial position',
+    summary: 'Record supplier finance and operating costs, then use controlled accounting, bank, tax, budget and profit-and-loss workspaces.',
+  }),
+  bar_growth_multi_outlet: Object.freeze({
+    eyebrow: 'Growth',
+    summary: 'Add customer accounts, loyalty, promotions, vouchers, owner insight and accountable multi-outlet controls.',
+  }),
+});
+
+function addonKey(value) {
+  if (typeof value === 'string') return value;
+  return value?.addon_key || value?.addonKey || value?.key || '';
+}
+
 function isAllowed(access, capability) {
   if (!capability) return true;
   return canAccessCapability(access, capability);
@@ -226,6 +247,20 @@ export default function HposManageHub() {
   const [dailyOpening, setDailyOpening] = useState(null);
   const [dailyLoading, setDailyLoading] = useState(canManagePos);
   const [setupComplete, setSetupComplete] = useState(false);
+  const [setupSummary, setSetupSummary] = useState({ completed: 0, total: 0 });
+  const [setupReadStatus, setSetupReadStatus] = useState(null);
+  const activeAddonKeys = useMemo(
+    () => new Set((Array.isArray(access?.entitlement?.enterprise_addons) ? access.entitlement.enterprise_addons : []).map(addonKey).filter(Boolean)),
+    [access?.entitlement?.enterprise_addons],
+  );
+  const barAddonSummary = useMemo(
+    () => BAR_POS_ADDON_CATALOG.map((addon) => ({
+      ...addon,
+      ...BAR_ADDON_VALUE[addon.addonKey],
+      enabled: activeAddonKeys.has(addon.addonKey),
+    })),
+    [activeAddonKeys],
+  );
   const items = useMemo(
     () =>
       getHposMoreItems(barOnly).filter((item) => {
@@ -252,9 +287,21 @@ export default function HposManageHub() {
     if (!canManagePos) return;
     setDailyLoading(true);
     try {
-      const [rows, progress] = await Promise.all([
+      const [rows, progress, hardware] = await Promise.all([
         barOnly ? Promise.resolve([]) : window.api?.pos?.getChecklists?.() || [],
-        window.api?.pos?.getSetupProgress?.() || [],
+        (async () => {
+          const readWithStatus = window.api?.pos?.getSetupProgressWithReadStatus;
+          if (typeof readWithStatus === 'function') return readWithStatus();
+          const legacyRows = await window.api?.pos?.getSetupProgress?.();
+          return {
+            source: 'legacy',
+            complete: false,
+            online: null,
+            rows: Array.isArray(legacyRows) ? legacyRows : [],
+            error: 'This desktop build cannot verify setup evidence freshness. Update the POS and reconnect before relying on readiness.'
+          };
+        })(),
+        barOnly ? window.api?.pos?.getHardwareSettings?.() || {} : Promise.resolve(null),
       ]);
       const today = new Date().toLocaleDateString('en-CA');
       const opening = (Array.isArray(rows) ? rows : []).find((row) =>
@@ -262,10 +309,25 @@ export default function HposManageHub() {
         new Date(row.checklist_date || row.created_at || 0).toLocaleDateString('en-CA') === today,
       ) || null;
       setDailyOpening(opening);
-      const stages = Array.isArray(progress) ? progress : [];
+      const status = progress && typeof progress === 'object' && !Array.isArray(progress)
+        ? { source: 'unavailable', complete: false, online: null, rows: [], error: 'Setup evidence could not be verified.', ...progress }
+        : { source: 'legacy', complete: false, online: null, rows: Array.isArray(progress) ? progress : [], error: 'Setup evidence freshness could not be verified.' };
+      setSetupReadStatus(status);
+      const stages = Array.isArray(status.rows) ? status.rows : [];
       const requiredKeys = barOnly ? BAR_BASE_SETUP_STAGE_KEYS : stages.map((stage) => stage?.stage_key).filter(Boolean);
-      setSetupComplete(requiredKeys.length > 0 && requiredKeys.every((key) => stages.find((stage) => stage?.stage_key === key)?.detected === true));
-    } catch { setDailyOpening(null); setSetupComplete(false); }
+      const hardwareVerified = hardware?.hardware_last_test_success === true && Boolean(hardware?.hardware_last_test_at);
+      const completedCount = requiredKeys.filter((key) => {
+        if (barOnly && key === 'receipt_hardware') return hardwareVerified;
+        return stages.find((stage) => stage?.stage_key === key)?.detected === true;
+      }).length;
+      setSetupSummary({ completed: completedCount, total: requiredKeys.length });
+      setSetupComplete(status.complete === true && requiredKeys.length > 0 && completedCount === requiredKeys.length);
+    } catch (loadError) {
+      setDailyOpening(null);
+      setSetupReadStatus({ source: 'unavailable', complete: false, online: null, rows: [], error: loadError?.message || 'Setup evidence could not be verified.' });
+      setSetupSummary({ completed: 0, total: barOnly ? BAR_BASE_SETUP_STAGE_KEYS.length : 0 });
+      setSetupComplete(false);
+    }
     finally { setDailyLoading(false); }
   }, [barOnly, canManagePos]);
 
@@ -282,13 +344,54 @@ export default function HposManageHub() {
         <div className="hpos-manage-heading-stat"><LayoutDashboard size={20} /><span><strong>{items.length}</strong> available workspaces</span></div>
       </header>
 
-      {canManagePos && !dailyLoading && !setupComplete && <button type="button" className="hpos-manage-setup-link" onClick={() => navigate('/hpos/setup-readiness')}><ClipboardCheck size={18} /><span><strong>{barOnly ? 'Bar setup readiness' : 'Restaurant setup readiness'}</strong><small>{barOnly ? 'Finish the focused product, stock, payment and cash-control checks before the first live sale.' : 'Track the 20 evidence-based launch controls that remain before a financially safe go-live.'}</small></span><ArrowUpRight size={17} /></button>}
+      {canManagePos && !dailyLoading && (setupComplete ? (
+        <section className="hpos-manage-readiness is-ready" aria-label="Setup completion">
+          <span><CheckCircle2 size={20} /></span>
+          <div><strong>{barOnly ? 'Bar setup readiness complete' : 'Restaurant setup readiness complete'}</strong><small>{setupSummary.completed} of {setupSummary.total || '—'} evidence stages detected. The readiness board can be reopened from the setup route if a manager needs to review the proof.</small></div>
+        </section>
+      ) : (
+        <button type="button" className="hpos-manage-setup-link" onClick={() => navigate('/hpos/setup-readiness')}><ClipboardCheck size={18} /><span><strong>{setupReadStatus?.complete === true ? (barOnly ? 'Bar setup readiness' : 'Restaurant setup readiness') : 'Setup readiness unavailable'}</strong><small>{setupReadStatus?.complete === true ? `${setupSummary.completed} of ${setupSummary.total || '—'} evidence stages complete. ${barOnly ? 'Finish the focused staff, product, stock, payment and cash-control checks before the first live sale.' : 'Track the evidence-based launch controls that remain before a financially safe go-live.'}` : `${setupReadStatus?.error || 'Authoritative setup evidence is not available.'} Reconnect and refresh before relying on readiness.`}</small></span><ArrowUpRight size={17} /></button>
+      ))}
 
       {canManagePos && !barOnly && !dailyLoading && (
         <section className={`hpos-manage-readiness ${dailyOpening?.status === 'completed' ? 'is-ready' : ''}`}>
           <span>{dailyOpening?.status === 'completed' ? <CheckCircle2 size={20} /> : <ClipboardList size={20} />}</span>
           <div><strong>{dailyOpening?.status === 'completed' ? 'Today’s opening checklist is complete' : dailyOpening ? 'Today’s opening checklist needs attention' : 'Today’s opening checklist has not been started'}</strong><small>{dailyOpening?.status === 'completed' ? 'Daily service readiness is recorded for this venue.' : 'Open the control board before service starts to create or finish the opening routine.'}</small></div>
           <button type="button" onClick={() => navigate('/hpos/control')}>{dailyOpening?.status === 'completed' ? 'Review' : 'Open checks'}</button>
+        </section>
+      )}
+
+      {barOnly && canManagePos && (
+        <section className="hpos-bar-package-guide" aria-labelledby="bar-package-guide-title">
+          <div className="hpos-bar-package-guide__heading">
+            <div>
+              <p>Plan your next control</p>
+              <h2 id="bar-package-guide-title">Turn sales and stock into a fuller financial picture</h2>
+              <span>Bar POS records sales, simple deliveries and physical counts. It does not create supplier bills, purchase history, cost-of-sales reporting or a profit-and-loss statement on its own.</span>
+            </div>
+            <button type="button" className="hpos-bar-package-guide__review" onClick={() => navigate('/settings?tab=license')}>
+              Review package <ArrowUpRight size={16} />
+            </button>
+          </div>
+
+          <div className="hpos-bar-package-guide__path">
+            <CheckCircle2 size={17} />
+            <span><strong>To see purchases and P&amp;L:</strong> choose <strong>Stock &amp; Purchasing Pro</strong> and <strong>Accounting &amp; Workforce</strong> together. Package changes remain governed; reviewing this page does not change access.</span>
+          </div>
+
+          <div className="hpos-bar-package-guide__cards">
+            {barAddonSummary.map((addon) => (
+              <article key={addon.addonKey} className={addon.enabled ? 'is-enabled' : ''}>
+                <div className="hpos-bar-package-guide__card-topline">
+                  <span>{addon.eyebrow}</span>
+                  <em>{addon.enabled ? 'Enabled' : 'Optional add-on'}</em>
+                </div>
+                <h3>{addon.displayName}</h3>
+                <p>{addon.summary}</p>
+                <strong>{formatCommercialMoney(addon.annualPriceBwp)}/year</strong>
+              </article>
+            ))}
+          </div>
         </section>
       )}
 

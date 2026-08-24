@@ -35,6 +35,8 @@ import {
 } from './hardware/posHardwareAdapter.js';
 import { LOW_RESOURCE, getLowResourceConfig } from '../shared/lowResource.js';
 import { buildPosTotals, normalizeMoney } from '../shared/totals.js';
+import { isCommercialFeatureIncluded } from '../../../src/shared/commercialAccess.js';
+import { isBarOnlyMode } from '../../../src/shared/propertyTypes.js';
 import {
   appendFinancialJournalEvent,
   rebuildFinancialQueueFromJournal
@@ -405,6 +407,34 @@ const state = {
 };
 let legacyMeshController = null;
 
+async function enforceLegacyBarBaseTenderBoundary(payload = {}) {
+  const settings = readObjectCacheForCurrentLodge('settings');
+  if (!isBarOnlyMode(settings)) return;
+  const breakdown = Array.isArray(payload.payment_breakdown) ? payload.payment_breakdown : [];
+  const hasVoucher = String(payload.payment_method || '').toLowerCase() === 'voucher'
+    || breakdown.some((tender) => String(tender?.method || '').toLowerCase() === 'voucher');
+  const tip = payload.tip_total === null || payload.tip_total === undefined || payload.tip_total === '' ? 0 : Number(payload.tip_total);
+  if (!Number.isFinite(tip)) throw new Error('Tip tender is invalid and has been blocked.');
+  if (!hasVoucher && tip === 0) return;
+  let entitlement = readObjectCacheForCurrentLodge('trial_status');
+  if (state.isOnline && state.supabase && hasLodgeContext()) {
+    try {
+      const { data, error } = await state.supabase.rpc('get_lodge_entitlement', { p_lodge_id: requireLodgeContext() });
+      if (!error && data && typeof data === 'object') entitlement = data;
+    } catch {}
+  }
+  const productId = entitlement?.product_id || null;
+  const packageKey = entitlement?.commercial_package_key || null;
+  const addonKeys = entitlement?.enterprise_addons || [];
+  if (!productId || !packageKey) throw new Error('Bar POS commercial entitlement could not be verified. Tender is blocked until the package context is available.');
+  if (hasVoucher && !isCommercialFeatureIncluded(productId, packageKey, 'vouchers', addonKeys)) {
+    throw new Error('Voucher tender is not included in the current Bar POS commercial entitlement.');
+  }
+  if (tip !== 0 && !isCommercialFeatureIncluded(productId, packageKey, 'tips_payouts', addonKeys)) {
+    throw new Error('Tip tender is not included in the current Bar POS commercial entitlement.');
+  }
+}
+
 function getConfigPath() {
   return path.join(app.getPath('userData'), 'pos-config.json');
 }
@@ -687,6 +717,15 @@ function readObjectCacheForCurrentLodge(name, { strict = true } = {}) {
   if (!cached || Array.isArray(cached) || typeof cached !== 'object') return null;
   const lodgeId = normalizeUuid(state.lodgeId);
   return cacheRowBelongsToLodge(cached, lodgeId, strict) ? cached : null;
+}
+
+function getLegacyTabScope() {
+  const settings = readObjectCacheForCurrentLodge('settings');
+  if (!settings) return { known: false, isBar: false };
+  return {
+    known: true,
+    isBar: isBarOnlyMode(settings) || settings?.operating_profile?.commercial_package_key === 'bar_pos'
+  };
 }
 
 function writeCache(name, data) {
@@ -1676,6 +1715,7 @@ function registerIpcHandlers() {
       cashier_id: data.cashier_id || state.currentUser?.id,
       cashier_name: data.cashier_name || state.currentUser?.name
     });
+    await enforceLegacyBarBaseTenderBoundary(payload);
     validateProviderPaymentReferences(payload.payment_breakdown, payload.payment_method);
     const estimates = buildPosTotals(data.items || [], data);
 
@@ -2336,6 +2376,7 @@ function registerIpcHandlers() {
   ipcMain.handle('pos:save-tab', async (_event, tab) => {
     const lodgeId = requireLodgeContext();
     const payload = { ...tab, lodge_id: lodgeId };
+    const tabScope = getLegacyTabScope();
     if (state.isOnline && state.supabase) {
       try {
         const { data: result, error } = await state.supabase.rpc('upsert_pos_tab', { payload });
@@ -2350,6 +2391,7 @@ function registerIpcHandlers() {
         return result;
       } catch (rpcError) {
         if (isNetworkError(rpcError)) {
+          if (tabScope.isBar || !tabScope.known) return { success: false, error: 'Tab changes require a live connection so the package scope, assigned waiter and active Till shift can be confirmed.' };
           return queueOfflineRpcMutation('upsert_pos_tab', { payload }, 'pos_tab', payload.id || randomUUID(), {
             cacheName: 'pos-tabs',
             localPatch: { id: payload.id, ...payload, _pending_sync: true, _sync_state: 'pending', _updateKey: payload.id, _insert: true }
@@ -2358,6 +2400,7 @@ function registerIpcHandlers() {
         throw rpcError;
       }
     }
+    if (tabScope.isBar || !tabScope.known) return { success: false, error: 'Tab changes require a live connection so the package scope, assigned waiter and active Till shift can be confirmed.' };
     return queueOfflineRpcMutation('upsert_pos_tab', { payload }, 'pos_tab', payload.id || randomUUID(), {
       cacheName: 'pos-tabs',
       localPatch: { id: payload.id, ...payload, _pending_sync: true, _sync_state: 'pending', _updateKey: payload.id, _insert: true }
@@ -2366,6 +2409,10 @@ function registerIpcHandlers() {
 
   ipcMain.handle('pos:update-tab-status', async (_event, { tabId, status }) => {
     const rpcArgs = { p_tab_id: tabId, p_status: status };
+    const tabScope = getLegacyTabScope();
+    const offlineTabError = tabScope.isBar || !tabScope.known
+      ? 'Tab status changes require a live connection so the package scope, assigned waiter and active Till shift can be confirmed.'
+      : null;
     if (state.isOnline && state.supabase) {
       try {
         const { data: result, error } = await state.supabase.rpc('update_pos_tab_status', rpcArgs);
@@ -2373,6 +2420,7 @@ function registerIpcHandlers() {
         return result;
       } catch (rpcError) {
         if (isNetworkError(rpcError)) {
+          if (offlineTabError) return { success: false, error: offlineTabError };
           return queueOfflineRpcMutation('update_pos_tab_status', rpcArgs, 'pos_tab', tabId, {
             cacheName: 'pos-tabs',
             localPatch: { id: tabId, status, _pending_sync: true, _sync_state: 'pending', _updateKey: tabId }
@@ -2381,10 +2429,36 @@ function registerIpcHandlers() {
         throw rpcError;
       }
     }
+    if (offlineTabError) return { success: false, error: offlineTabError };
     return queueOfflineRpcMutation('update_pos_tab_status', rpcArgs, 'pos_tab', tabId, {
       cacheName: 'pos-tabs',
       localPatch: { id: tabId, status, _pending_sync: true, _sync_state: 'pending', _updateKey: tabId }
     });
+  });
+
+  ipcMain.handle('pos:transfer-tab-waiter', async (_event, data = {}) => {
+    const required = ['p_tab_id', 'p_target_waiter_id', 'p_target_shift_id', 'p_operation_id', 'p_expected_tab_version'];
+    if (required.some((field) => data?.[field] == null || String(data[field]).trim() === '')) {
+      return { success: false, error: 'Tab, target waiter, target shift, version, and a stable transfer key are required.' };
+    }
+    if (!state.isOnline || !state.supabase) {
+      return { success: false, error: 'Waiter transfers require a live connection so ownership and the target active shift can be confirmed.' };
+    }
+    const rpcArgs = {
+      p_tab_id: data.p_tab_id,
+      p_target_waiter_id: data.p_target_waiter_id,
+      p_target_shift_id: data.p_target_shift_id,
+      p_operation_id: data.p_operation_id,
+      p_expected_tab_version: Number(data.p_expected_tab_version),
+      p_notes: data.p_notes == null ? null : String(data.p_notes)
+    };
+    try {
+      const { data: result, error } = await state.supabase.rpc('transfer_pos_tab_waiter', rpcArgs);
+      if (error) throw new Error(error.message);
+      return result;
+    } catch (error) {
+      return { success: false, error: error.message || 'Could not confirm the waiter transfer. Retry with the same transfer key.' };
+    }
   });
 
   // ── Prep Tickets (RPC-based status update) ────────────────────────────────
@@ -2417,12 +2491,14 @@ function registerIpcHandlers() {
 
   ipcMain.handle('pos:update-ticket-status', async (_event, { ticketId, status }) => {
     const lodgeId = requireLodgeContext();
+    const operationId = `legacy-ticket:${ticketId}:${String(status || '').toLowerCase()}`;
     // RPC path (online): single source of truth for status transition
     if (state.isOnline && state.supabase) {
       const { data: result, error } = await state.supabase.rpc('update_pos_prep_ticket_status', {
         p_ticket_id: ticketId,
         p_status: status,
-        p_lodge_id: lodgeId
+        p_lodge_id: lodgeId,
+        p_operation_id: operationId
       });
       if (error) throw new Error(error.message);
       if (!result?.success) throw new Error(result?.error || 'Could not update ticket status');
@@ -2430,7 +2506,7 @@ function registerIpcHandlers() {
       const queue = readSyncQueue();
       queue.push(createQueueItem({
         functionName: 'update_pos_prep_ticket_status',
-        payload: { p_ticket_id: ticketId, p_status: status, p_lodge_id: lodgeId },
+        payload: { p_ticket_id: ticketId, p_status: status, p_lodge_id: lodgeId, p_operation_id: operationId },
         entityType: 'pos_ticket',
         entityId: ticketId
       }));
@@ -2912,20 +2988,31 @@ function registerIpcHandlers() {
 
   // ── Settings ───────────────────────────────────────────────────────────────
   ipcMain.handle('pos:get-settings', async () => {
+    const withCommercialContext = async (settings) => {
+      if (!settings || typeof settings !== 'object') return settings;
+      let entitlement = readObjectCacheForCurrentLodge('trial_status');
+      if (state.isOnline && state.supabase && hasLodgeContext()) {
+        try {
+          const { data, error } = await state.supabase.rpc('get_lodge_entitlement', { p_lodge_id: requireLodgeContext() });
+          if (!error && data && typeof data === 'object') entitlement = data;
+        } catch {}
+      }
+      return { ...settings, commercial_entitlement: entitlement || null };
+    };
     if (state.isOnline && state.supabase && hasLodgeContext()) {
       try {
         const { data, error } = await state.supabase.from('settings').select('*').eq('lodge_id', requireLodgeContext()).maybeSingle();
         if (!error && data) {
           writeCache('settings', data);
-          return data;
+          return await withCommercialContext(data);
         }
       } catch {}
       const cached = readObjectCacheForCurrentLodge('settings');
-      if (cached) return cached;
+      if (cached) return await withCommercialContext(cached);
       return null;
     }
     const cached = readObjectCacheForCurrentLodge('settings');
-    if (cached) return cached;
+    if (cached) return await withCommercialContext(cached);
     return null;
   });
 

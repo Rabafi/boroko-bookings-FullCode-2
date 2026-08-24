@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { ArrowRight, Banknote, CircleDollarSign, CreditCard, HandCoins, RefreshCw, WalletCards } from 'lucide-react'
 import { useNavigate } from 'react-router'
 import { useSettings } from '../../app-context'
+import { unpackTransport } from '../../transportUnpack'
 
 const today = () => new Date().toISOString().slice(0, 10)
 const money = (value, currency) => {
@@ -39,11 +40,17 @@ export default function RestaurantFinanceOverview() {
         window.api?.pos?.getTipBalances?.(30),
         window.api?.expenses?.getAll?.(date, date, 'all'),
       ])
-      const value = (index, fallback) => results[index]?.status === 'fulfilled' ? (results[index].value ?? fallback) : fallback
-      const readComplete = (index) => results[index]?.status === 'fulfilled'
-        && results[index].value?._available !== false
-        && results[index].value?._source === 'server'
-        && results[index].value?._complete === true
+      const value = (index, fallback) => {
+        const result = results[index]?.status === 'fulfilled' ? unpackTransport(results[index].value) : undefined
+        return result ?? fallback
+      }
+      const readComplete = (index) => {
+        const result = value(index, null)
+        return result != null
+          && result._available !== false
+          && result._source === 'server'
+          && result._complete === true
+      }
       setData({
         orders: Array.isArray(value(0, [])) ? value(0, []) : [],
         drawer: value(1, null),

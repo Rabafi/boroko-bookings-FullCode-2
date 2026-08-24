@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Users, TrendingUp, AlertTriangle, Clock, Award } from 'lucide-react'
+import { unpackTransport } from '../../transportUnpack'
 
 export default function RestaurantStaffPerformance() {
   const [shifts, setShifts] = useState([])
@@ -27,10 +28,12 @@ export default function RestaurantStaffPerformance() {
         window.api.pos.getOrders(startDate, endDate),
         window.api.pos.getActiveAlerts()
       ])
-      const shiftRows = Array.isArray(s.value) ? s.value : []
-      const orderRows = Array.isArray(o.value) ? o.value : []
-      const shiftReadAvailable = s.status === 'fulfilled' && s.value?._available !== false && s.value?._source === 'server' && s.value?._complete === true
-      const orderReadComplete = o.status === 'fulfilled' && o.value?._available !== false && o.value?._source === 'server' && o.value?._complete === true
+      const shiftValue = s.status === 'fulfilled' ? unpackTransport(s.value) : null
+      const orderValue = o.status === 'fulfilled' ? unpackTransport(o.value) : null
+      const shiftRows = Array.isArray(shiftValue) ? shiftValue : []
+      const orderRows = Array.isArray(orderValue) ? orderValue : []
+      const shiftReadAvailable = s.status === 'fulfilled' && shiftValue?._available !== false && shiftValue?._source === 'server' && shiftValue?._complete === true
+      const orderReadComplete = o.status === 'fulfilled' && orderValue?._available !== false && orderValue?._source === 'server' && orderValue?._complete === true
       setShifts(shiftRows)
       setOrders(orderRows)
       setShiftsAvailable(shiftReadAvailable)

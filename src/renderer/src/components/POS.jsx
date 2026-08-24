@@ -13,6 +13,7 @@ import { canAccessCapability } from '../../../shared/accessControl'
 import { isRestaurantOnly } from '../../../shared/propertyTypes'
 import { hasRecordedPosTenderEnvelope } from '../../../shared/posFinancialTruth'
 import { formatLocalDate } from '../utils/localDate'
+import { unpackTransport } from '../transportUnpack'
 
 const MENU_CATEGORIES = ['Food', 'Drinks', 'Other']
 const BAR_PACK_TEMPLATES = [
@@ -380,6 +381,7 @@ export default function POS() {
   const [poForm, setPoForm] = useState({ supplier_id: '', notes: '', items: [{ description: '', quantity: '', unit_cost: '' }] })
   const [activeAlerts, setActiveAlerts] = useState([])
   const [alertForm, setAlertForm] = useState({ alert_type: 'stock_low', severity: 'warning', message: '' })
+  const alertOperationIdsRef = useRef(new Map())
   const [checklists, setChecklists] = useState([])
   const [checklistType, setChecklistType] = useState('daily_opening')
   const [ownerDigest, setOwnerDigest] = useState(null)
@@ -658,7 +660,7 @@ export default function POS() {
     setOrdersError(null)
     try {
       const [data, voids] = await Promise.all([
-        window.api.pos.getOrders(histStart, histEnd),
+        window.api.pos.getOrders(histStart, histEnd).then(unpackTransport),
         window.api.pos.getVoidHistory(histStart, histEnd).catch(() => [])
       ])
       setOrders(data || [])
@@ -718,7 +720,7 @@ export default function POS() {
           cashier_id: currentOperator.id || null,
           cashier_name: currentOperator.name || null
         }),
-        window.api.pos.getCashups(12, { cashier_id: currentOperator.id || null })
+        window.api.pos.getCashups(12, { cashier_id: currentOperator.id || null }).then(unpackTransport)
       ])
       if (summary?.success === false) {
         setCashupError(summary.error || 'Could not load cash-up summary.')
@@ -5034,8 +5036,17 @@ export default function POS() {
                           <p className="text-xs text-slate-600">{a.message}</p>
                         </div>
                         <button className="text-xs text-emerald-700 underline" onClick={async () => {
-                          await window.api.pos.resolveAlert(a.id)
-                          setActiveAlerts(activeAlerts.filter((x) => x.id !== a.id))
+                          const reason = window.prompt('Why is this alert being resolved?', a.resolved_reason || '')
+                          if (!reason || reason.trim().length < 3) return
+                          const operationId = alertOperationIdsRef.current.get(a.id) || `pos-alert-resolve:${a.id}`
+                          alertOperationIdsRef.current.set(a.id, operationId)
+                          const result = await window.api.pos.resolveAlert(a.id, reason.trim(), operationId).catch((e) => ({ success: false, error: e.message }))
+                          if (!result?.success || !result.resolved_at) {
+                            alert(result?.error || 'The alert could not be resolved. Retry with the same reason to preserve safe replay.')
+                            return
+                          }
+                          alertOperationIdsRef.current.delete(a.id)
+                          setActiveAlerts((previous) => previous.filter((x) => x.id !== a.id))
                         }}>Resolve</button>
                       </div>
                     </div>

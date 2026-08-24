@@ -11,6 +11,7 @@ import {
   X,
 } from 'lucide-react';
 import { useAccess, useSettings } from '../../app-context';
+import { unpackTransport } from '../../transportUnpack';
 import { canAccessCapability } from '../../../../shared/accessControl';
 import {
   HposButton,
@@ -50,7 +51,7 @@ export default function HposExpenses() {
     setLoading(true);
     setError('');
     try {
-      const rows = await window.api?.expenses?.getAll?.(start, end, 'all');
+      const rows = unpackTransport(await (window.api?.expenses?.getAll?.(start, end, 'all') ?? []));
       setExpenses(Array.isArray(rows) ? rows : []);
       setReadCompleteness({ source: rows?._source || 'unknown', complete: rows?._complete === true });
     } catch (loadError) {

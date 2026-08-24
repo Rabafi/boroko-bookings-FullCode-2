@@ -9,7 +9,7 @@ import {
   X,
 } from "lucide-react";
 import { useNavigate } from "react-router";
-import { useSettings } from "../../app-context";
+import { useAuth, useSettings } from "../../app-context";
 import { isBarOnlyMode } from "../../../../shared/propertyTypes";
 import { HposButton, HposEmptyState, HposNotice, HposPageHero } from "./HposUi";
 
@@ -31,6 +31,7 @@ const tabValue = (tab) => {
 
 export default function HposOpenChecks() {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const { settings } = useSettings();
   const barOnly = isBarOnlyMode(settings);
   const currency = settings?.currency || "P";
@@ -42,6 +43,31 @@ export default function HposOpenChecks() {
   const [splitCount, setSplitCount] = useState(2);
   const [splitBusy, setSplitBusy] = useState(false);
   const [splitError, setSplitError] = useState("");
+  const [transferTab, setTransferTab] = useState(null);
+  const [transferChoices, setTransferChoices] = useState([]);
+  const [transferTarget, setTransferTarget] = useState("");
+  const [transferNotes, setTransferNotes] = useState("");
+  const [transferBusy, setTransferBusy] = useState(false);
+  const [transferError, setTransferError] = useState("");
+  const [sharedTillOperatorId, setSharedTillOperatorId] = useState(null);
+
+  useEffect(() => {
+    if (!barOnly) {
+      setSharedTillOperatorId(null);
+      return undefined;
+    }
+    let active = true;
+    // This is a read-only rehydration path. It must not touch or extend the
+    // Till lease merely because Open Tabs mounted.
+    Promise.resolve(window.api?.pos?.getSharedTillOperatorSession?.({}))
+      .then((result) => {
+        if (active) setSharedTillOperatorId(result?.success ? result.session?.staffId || null : null);
+      })
+      .catch(() => {
+        if (active) setSharedTillOperatorId(null);
+      });
+    return () => { active = false; };
+  }, [barOnly]);
 
   const load = useCallback(async ({ quiet = false } = {}) => {
     if (!quiet) setLoading(true);
@@ -90,21 +116,29 @@ export default function HposOpenChecks() {
   );
   const tabTotalsComplete = tabs.every((tab) => tabValue(tab) !== null);
   const total = tabTotalsComplete ? tabs.reduce((sum, tab) => sum + tabValue(tab), 0) : null;
-  const resume = (tab) =>
-    navigate("/hpos/pos", {
+  const currentOwnerId = sharedTillOperatorId || user?.id || null;
+  const canControl = (tab) => !barOnly || Boolean(tab?.waiter_id && currentOwnerId && tab.waiter_id === currentOwnerId);
+  const ownerTitle = (tab) => canControl(tab)
+    ? "Only the assigned waiter or verified Till operator can change this tab."
+    : `Assigned to ${tab?.waiter_name || tab?.opened_by_name || "another waiter"}. Unlock that waiter or ask them to transfer it.`;
+  const resume = (tab) => {
+    if (!canControl(tab)) return;
+    return navigate("/hpos/pos", {
       state: {
         tableName: tab.table_name || "",
         tabName: tab.tab_name || tab.customer_name || "",
         tabId: tab.id,
       },
     });
+  };
   const openSplit = (tab) => {
+    if (!canControl(tab)) return;
     setSplitTab(tab);
     setSplitCount(2);
     setSplitError("");
   };
   const runSplit = async () => {
-    if (!splitTab?.id || splitBusy || tabValue(splitTab) === null) return;
+    if (!splitTab?.id || splitBusy || tabValue(splitTab) === null || !canControl(splitTab)) return;
     setSplitBusy(true);
     setSplitError("");
     try {
@@ -133,6 +167,62 @@ export default function HposOpenChecks() {
       setSplitError(splitFailure?.message || "Could not split this check.");
     } finally {
       setSplitBusy(false);
+    }
+  };
+
+  const openTransfer = async (tab) => {
+    if (!barOnly || !tab?.id || !canControl(tab)) return;
+    setTransferTab(tab);
+    setTransferTarget("");
+    setTransferNotes("");
+    setTransferError("");
+    try {
+      const attendance = (await window.api?.pos?.getBarActiveShifts?.()) || [];
+      const choices = (await Promise.all(attendance.map(async (row) => {
+        const shift = await window.api?.pos?.getStaffOpenShift?.(row.staff_user_id).catch(() => null);
+        if (!shift?.id || String(shift.status || "").toLowerCase() !== "open") return null;
+        if ((shift.outlet_id || null) !== (tab.outlet_id || null) || row.staff_user_id === tab.waiter_id) return null;
+        return { ...row, pos_shift_id: shift.id, pos_shift: shift };
+      }))).filter(Boolean);
+      setTransferChoices(choices);
+      if (!choices.length) setTransferError("No other waiter has a confirmed active attendance and Till shift for this outlet.");
+    } catch (loadError) {
+      setTransferError(loadError?.message || "Active waiter shifts could not be confirmed.");
+    }
+  };
+
+  const runTransfer = async () => {
+    if (!transferTab?.id || !transferTarget || transferBusy || !canControl(transferTab)) return;
+    const target = transferChoices.find((row) => row.staff_user_id === transferTarget);
+    if (!target?.pos_shift_id) return;
+    setTransferBusy(true);
+    setTransferError("");
+    try {
+      const keyName = `hpos:pending-waiter-transfer:${transferTab.id}`;
+      const payloadFingerprint = JSON.stringify({ target_waiter_id: target.staff_user_id, target_shift_id: target.pos_shift_id, expected_tab_version: transferTab.tab_version ?? 1, notes: transferNotes.trim() || null });
+      const saved = localStorage.getItem(keyName);
+      const savedEnvelope = saved ? JSON.parse(saved) : null;
+      if (savedEnvelope?.payloadFingerprint && savedEnvelope.payloadFingerprint !== payloadFingerprint) {
+        throw new Error("A previous transfer attempt for this tab is unresolved. Retry it or refresh before choosing another waiter.");
+      }
+      const operationId = savedEnvelope?.operationId || crypto.randomUUID();
+      localStorage.setItem(keyName, JSON.stringify({ operationId, payloadFingerprint }));
+      const result = await window.api?.pos?.transferTabWaiter?.({
+        tab_id: transferTab.id,
+        target_waiter_id: target.staff_user_id,
+        target_shift_id: target.pos_shift_id,
+        expected_tab_version: transferTab.tab_version ?? 1,
+        operation_id: operationId,
+        notes: transferNotes.trim() || null,
+      });
+      if (!result?.success) throw new Error(result?.error || "The server rejected this waiter transfer.");
+      localStorage.removeItem(keyName);
+      setTransferTab(null);
+      await load({ quiet: true });
+    } catch (transferFailure) {
+      setTransferError(transferFailure?.message || "Could not confirm the waiter transfer. Retry with the same transfer key.");
+    } finally {
+      setTransferBusy(false);
     }
   };
 
@@ -215,15 +305,29 @@ export default function HposOpenChecks() {
                 <button
                   type="button"
                   onClick={() => openSplit(tab)}
-                  disabled={(tab.items || []).length < 2 || tabValue(tab) === null}
+                  disabled={!canControl(tab) || (tab.items || []).length < 2 || tabValue(tab) === null}
+                  title={!canControl(tab) ? ownerTitle(tab) : "Split this tab through the server-authoritative operation."}
                 >
                   <Scissors size={14} />
                   Split
                 </button>
+                {barOnly && (
+                  <button
+                    type="button"
+                    onClick={() => openTransfer(tab)}
+                    disabled={!canControl(tab) || !tab.waiter_id}
+                    title={!canControl(tab) ? ownerTitle(tab) : (!tab.waiter_id ? "An assigned waiter is required before transfer." : "Transfer to another waiter with an active same-outlet shift.")}
+                  >
+                    <UserRound size={14} />
+                    Transfer waiter
+                  </button>
+                )}
                 <button
                   type="button"
                   className="is-primary"
                   onClick={() => resume(tab)}
+                  disabled={!canControl(tab)}
+                  title={!canControl(tab) ? ownerTitle(tab) : "Resume this tab."}
                 >
                   Resume tab →
                 </button>
@@ -306,6 +410,20 @@ export default function HposOpenChecks() {
                 {splitBusy ? "Splitting…" : "Split checks"}
               </HposButton>
             </footer>
+          </section>
+        </div>
+      )}
+
+      {transferTab && (
+        <div className="hpos-modal-backdrop" role="presentation">
+          <section className="hpos-service-dialog" role="dialog" aria-modal="true" aria-labelledby="transfer-waiter-title">
+            <button type="button" className="hpos-service-dialog__close" onClick={() => setTransferTab(null)} disabled={transferBusy} aria-label="Close"><X size={18} /></button>
+            <h2 id="transfer-waiter-title">Transfer waiter</h2>
+            <p className="hpos-service-dialog__hint">Tab: {transferTab.table_name || transferTab.tab_name || "Open tab"}. Only its currently assigned waiter (or verified Till operator) can confirm this transfer.</p>
+            {transferError && <HposNotice tone="error">{transferError}</HposNotice>}
+            <label className="hpos-form-field"><span>Active waiter for this outlet</span><select value={transferTarget} onChange={(event) => setTransferTarget(event.target.value)} disabled={transferBusy || !transferChoices.length}><option value="">Choose waiter</option>{transferChoices.map((row) => <option key={`${row.staff_user_id}:${row.pos_shift_id}`} value={row.staff_user_id}>{row.staff_name || row.staff_user_id}</option>)}</select></label>
+            <label className="hpos-form-field"><span>Note (optional)</span><textarea value={transferNotes} onChange={(event) => setTransferNotes(event.target.value.slice(0, 1000))} disabled={transferBusy} maxLength={1000} rows={3} placeholder="Reason or handover note" /></label>
+            <div className="hpos-service-dialog__actions"><HposButton onClick={() => setTransferTab(null)} disabled={transferBusy}>Cancel</HposButton><HposButton tone="primary" onClick={runTransfer} disabled={transferBusy || !transferTarget}>{transferBusy ? "Transferring…" : "Transfer waiter"}</HposButton></div>
           </section>
         </div>
       )}

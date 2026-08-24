@@ -90,11 +90,11 @@ test('session manager renews only validated Shift activity', () => {
   const store = createTillOperatorSessionStore({ clock: () => now })
   store.create({ webContentsId: 2, staffId: 'staff-2', outletId: 'outlet-2', shiftId: 'shift-2', mode: TILL_OPERATOR_MODES.SHIFT, inactivityMinutes: 1 })
   now += 30_000
-  const touched = store.touch(2, { outletId: 'outlet-2' })
+  const touched = store.touch(2, { outletId: 'outlet-2', operatorId: 'staff-2', shiftId: 'shift-2' })
   assert.equal(touched.success, true)
   assert.equal(touched.session.lastActivityAt, now)
   assert.equal(touched.session.expiresAt, now + 60_000)
-  const wrongOutlet = store.touch(2, { outletId: 'outlet-other' })
+  const wrongOutlet = store.touch(2, { outletId: 'outlet-other', operatorId: 'staff-2', shiftId: 'shift-2' })
   assert.equal(wrongOutlet.code, TILL_OPERATOR_SESSION_CODES.OUTLET_CHANGED)
   assert.equal(store.get(2), null)
 })
@@ -117,7 +117,7 @@ test('session manager rejects missing or mismatched attribution and never renews
 test('Strict sessions are not touch-renewable and are consumed after success', () => {
   const store = createTillOperatorSessionStore({ clock: () => 30_000 })
   store.create({ webContentsId: 5, staffId: 'staff-5', outletId: 'outlet-5', shiftId: 'shift-5', mode: TILL_OPERATOR_MODES.STRICT, inactivityMinutes: 30 })
-  assert.equal(store.touch(5, { outletId: 'outlet-5' }).code, TILL_OPERATOR_SESSION_CODES.STRICT)
+  assert.equal(store.touch(5, { outletId: 'outlet-5', operatorId: 'staff-5', shiftId: 'shift-5' }).code, TILL_OPERATOR_SESSION_CODES.STRICT)
   assert.ok(store.get(5))
   store.consumeStrict(5)
   assert.equal(store.get(5), null)

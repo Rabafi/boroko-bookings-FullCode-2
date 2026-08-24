@@ -45,10 +45,10 @@ const HOTEL_CORE_FEATURES = Object.freeze([
 ])
 
 const BAR_POS_FEATURES = Object.freeze([
-  'pos', 'bar_counter_sales', 'bar_product_list', 'bar_pack_stock', 'inventory',
+  'pos', 'bar_counter_sales', 'bar_product_list', 'modifiers', 'tabs', 'receipts', 'bar_pack_stock', 'inventory',
   'bar_stock_basic', 'low_stock_alerts', 'cash_drawer', 'cash_up', 'staff',
   'bar_staff_basic', 'staff_shifts', 'reports', 'bar_reports_basic', 'audit',
-  'customer_display', 'bar_board', 'checklists', 'alerts', 'incident_log'
+  'pwa', 'customer_display', 'bar_board', 'checklists', 'alerts', 'incident_log'
 ])
 
 export const BAR_POS_ADDON_CATALOG = Object.freeze([
@@ -61,6 +61,7 @@ export const BAR_POS_ADDON_CATALOG = Object.freeze([
     oneTimePriceBwp: 0,
     annualPriceBwp: 3000,
     eligiblePropertyTypes: Object.freeze(['restaurant', 'bar']),
+    eligibleOperatingProfiles: Object.freeze(['bar_only']),
     eligiblePackageKeys: Object.freeze(['bar_pos']),
     includedFeatures: Object.freeze([
       'inventory_advanced', 'stock_control', 'suppliers', 'purchasing', 'purchase_suggestions',
@@ -77,6 +78,7 @@ export const BAR_POS_ADDON_CATALOG = Object.freeze([
     oneTimePriceBwp: 0,
     annualPriceBwp: 6000,
     eligiblePropertyTypes: Object.freeze(['restaurant', 'bar']),
+    eligibleOperatingProfiles: Object.freeze(['bar_only']),
     eligiblePackageKeys: Object.freeze(['bar_pos']),
     includedFeatures: Object.freeze([
       'restaurant_accounting', 'workforce_management', 'workforce_scheduling',
@@ -92,6 +94,7 @@ export const BAR_POS_ADDON_CATALOG = Object.freeze([
     oneTimePriceBwp: 0,
     annualPriceBwp: 5000,
     eligiblePropertyTypes: Object.freeze(['restaurant', 'bar']),
+    eligibleOperatingProfiles: Object.freeze(['bar_only']),
     eligiblePackageKeys: Object.freeze(['bar_pos']),
     includedFeatures: Object.freeze([
       'bar_crm', 'customer_accounts', 'loyalty', 'promotions', 'vouchers',
@@ -223,7 +226,7 @@ export const COMMERCIAL_PACKAGE_CATALOG = Object.freeze({
       excludedFeatures: ['kitchen', 'tables', 'recipes', 'restaurant_production'],
       upgradeTarget: 'restaurant_service',
       eligibleOperatingProfiles: ['bar_only'],
-      salesCopy: 'Counter sales, drink products, pack stock, low-stock alerts, cash-up, staff shifts, reports, customer display, and bar board.',
+      salesCopy: 'Counter sales with modifiers, open tabs and receipts; drink products, pack stock, low-stock alerts, cash-up, staff shifts, reports, Manager mobile oversight, customer display, and bar board.',
       compatibility: { hasUsageLimits: false }
     }),
     offer({

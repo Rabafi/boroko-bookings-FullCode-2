@@ -134,52 +134,108 @@ test('pending attempts are scoped to the lodge and user that created them', () =
     assert.equal(getPendingPosSubmitAttempt({ lodgeId: 'lodge-1', userId: 'user-1' })?.submitIntentId, 'intent-5')
   }))
 
-test('the newest pending attempt remains recoverable after more than 200 attempts', () =>
+test('a different sale intent is blocked while the same operator has an unresolved attempt', () =>
   withJournalFile(() => {
-    for (let index = 0; index < 201; index += 1) {
-      const id = `pending-${index}`
-      resolvePosSubmitAttempt({
-        submitIntentId: id,
-        orderId: id,
-        lodgeId: 'lodge-1',
-        userId: 'user-1',
-        payload: buildPayload({ id, submit_intent_id: id })
-      })
-    }
+    resolvePosSubmitAttempt({
+      submitIntentId: 'pending-original',
+      orderId: 'pending-original',
+      lodgeId: 'lodge-1',
+      userId: 'user-1',
+      payload: buildPayload({ id: 'pending-original', submit_intent_id: 'pending-original' })
+    })
+    const replacement = resolvePosSubmitAttempt({
+      submitIntentId: 'replacement-sale',
+      orderId: 'replacement-sale',
+      lodgeId: 'lodge-1',
+      userId: 'user-1',
+      payload: buildPayload({ id: 'replacement-sale', submit_intent_id: 'replacement-sale' })
+    })
+    assert.equal(replacement.conflict, true)
+    assert.equal(replacement.code, 'pos_submit_recovery_required')
+    assert.match(replacement.error, /unresolved/)
     const recovered = getPendingPosSubmitAttempt({ lodgeId: 'lodge-1', userId: 'user-1' })
-    assert.equal(recovered?.submitIntentId, 'pending-200')
+    assert.equal(recovered?.submitIntentId, 'pending-original')
     const journal = JSON.parse(fs.readFileSync(path.join(state.cacheDir, 'pos-submit-attempts.json'), 'utf8'))
-    assert.equal(journal.length, 201)
-    assert.ok(journal.some((attempt) => attempt.submitIntentId === 'pending-200'))
+    assert.equal(journal.length, 1)
   }))
 
-test('pending attempts are never evicted to make room for committed attempts', () =>
+test('a legacy unresolved attempt with incomplete scope blocks an unprovable replacement', () =>
   withJournalFile(() => {
-    for (let index = 0; index < 201; index += 1) {
-      const id = `pending-${index}`
-      resolvePosSubmitAttempt({
-        submitIntentId: id,
-        orderId: id,
-        lodgeId: 'lodge-1',
-        userId: 'user-1',
-        payload: buildPayload({ id, submit_intent_id: id })
-      })
-    }
+    const payload = buildPayload({ id: 'legacy-pending', submit_intent_id: 'legacy-pending' })
+    const original = resolvePosSubmitAttempt({
+      submitIntentId: 'legacy-pending',
+      orderId: 'legacy-pending',
+      lodgeId: null,
+      userId: null,
+      payload
+    })
+    const journalPath = path.join(state.cacheDir, 'pos-submit-attempts.json')
+    const journal = JSON.parse(fs.readFileSync(journalPath, 'utf8'))
+    fs.writeFileSync(journalPath, JSON.stringify([{ ...journal[0], lodgeId: null, userId: null }], null, 2))
+    assert.equal(original.conflict, false)
+
+    const replacement = resolvePosSubmitAttempt({
+      submitIntentId: 'replacement-after-legacy',
+      orderId: 'replacement-after-legacy',
+      lodgeId: 'lodge-1',
+      userId: 'user-1',
+      payload: buildPayload({ id: 'replacement-after-legacy', submit_intent_id: 'replacement-after-legacy' })
+    })
+    assert.equal(replacement.conflict, true)
+    assert.equal(replacement.code, 'pos_submit_recovery_required')
+  }))
+
+test('an unresolved attempt does not block a proven different operator or company', () =>
+  withJournalFile(() => {
+    resolvePosSubmitAttempt({
+      submitIntentId: 'operator-one-pending',
+      orderId: 'operator-one-pending',
+      lodgeId: 'lodge-1',
+      userId: 'user-1',
+      payload: buildPayload({ id: 'operator-one-pending', submit_intent_id: 'operator-one-pending' })
+    })
+    const otherOperator = resolvePosSubmitAttempt({
+      submitIntentId: 'operator-two-sale',
+      orderId: 'operator-two-sale',
+      lodgeId: 'lodge-1',
+      userId: 'user-2',
+      payload: buildPayload({ id: 'operator-two-sale', submit_intent_id: 'operator-two-sale' })
+    })
+    const otherCompany = resolvePosSubmitAttempt({
+      submitIntentId: 'other-company-sale',
+      orderId: 'other-company-sale',
+      lodgeId: 'lodge-2',
+      userId: 'user-1',
+      payload: buildPayload({ id: 'other-company-sale', submit_intent_id: 'other-company-sale' })
+    })
+    assert.equal(otherOperator.conflict, false)
+    assert.equal(otherCompany.conflict, false)
+  }))
+
+test('the unresolved attempt is never evicted to make room for committed attempts', () =>
+  withJournalFile(() => {
+    resolvePosSubmitAttempt({
+      submitIntentId: 'pending-original',
+      orderId: 'pending-original',
+      lodgeId: 'lodge-1',
+      userId: 'user-1',
+      payload: buildPayload({ id: 'pending-original', submit_intent_id: 'pending-original' })
+    })
     for (let index = 0; index < 205; index += 1) {
       const id = `committed-${index}`
       resolvePosSubmitAttempt({
         submitIntentId: id,
         orderId: id,
         lodgeId: 'lodge-1',
-        userId: 'user-1',
+        userId: `committed-user-${index}`,
         payload: buildPayload({ id, submit_intent_id: id })
       })
       commitPosSubmitAttempt(id)
     }
     const journal = JSON.parse(fs.readFileSync(path.join(state.cacheDir, 'pos-submit-attempts.json'), 'utf8'))
-    assert.equal(journal.filter((attempt) => attempt.status === 'pending').length, 201)
+    assert.equal(journal.filter((attempt) => attempt.status === 'pending').length, 1)
     assert.equal(journal.filter((attempt) => attempt.status === 'committed').length, 200)
-    assert.ok(journal.some((attempt) => attempt.submitIntentId === 'pending-0'))
+    assert.ok(journal.some((attempt) => attempt.submitIntentId === 'pending-original'))
     assert.ok(journal.some((attempt) => attempt.submitIntentId === 'committed-204'))
     assert.ok(!journal.some((attempt) => attempt.submitIntentId === 'committed-0'))
   }))

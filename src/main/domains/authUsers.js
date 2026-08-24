@@ -94,7 +94,12 @@ function nowIso() {
 
 async function findSupabaseAuthUserByEmail(adminClient, emailLower) {
   if (!adminClient || !emailLower) return null;
-  for (let page = 1; page <= 10; page += 1) {
+  // Supabase Auth does not provide an email-filtered admin lookup. Do not put
+  // an arbitrary cap on this traversal: a pre-existing identity beyond that
+  // cap would make multi-company setup try to create it again and surface a
+  // false "email already used" error. This path runs only while reconciling a
+  // staff account with its one shared Supabase Auth identity.
+  for (let page = 1; ; page += 1) {
     const { data, error } = await adminClient.auth.admin.listUsers({
       page,
       perPage: SUPABASE_AUTH_USER_PAGE_SIZE
@@ -105,7 +110,21 @@ async function findSupabaseAuthUserByEmail(adminClient, emailLower) {
     if (match) return match;
     if (users.length < SUPABASE_AUTH_USER_PAGE_SIZE) return null;
   }
-  return null;
+}
+
+function isSupabaseAuthEmailAlreadyRegisteredError(error) {
+  const message = String(error?.message || error || '');
+  return /user already registered|email.+already.+(?:registered|exists)|duplicate.+(?:email|user)|already exists/i.test(message);
+}
+
+async function updateSupabaseAuthStaffUser(adminClient, authUserId, password, metadata) {
+  const { data, error } = await adminClient.auth.admin.updateUserById(authUserId, {
+    password,
+    email_confirm: true,
+    user_metadata: metadata
+  });
+  if (error) throw new Error(error.message || 'Could not update Supabase Auth password.');
+  return data?.user?.id || authUserId;
 }
 
 export async function ensureSupabaseAuthStaffUserReady(user, password, options = {}) {
@@ -127,13 +146,7 @@ export async function ensureSupabaseAuthStaffUserReady(user, password, options =
   }
 
   if (authUserId) {
-    const { data, error } = await adminClient.auth.admin.updateUserById(authUserId, {
-      password,
-      email_confirm: true,
-      user_metadata: metadata
-    });
-    if (error) throw new Error(error.message || 'Could not update Supabase Auth password.');
-    authUserId = data?.user?.id || authUserId;
+    authUserId = await updateSupabaseAuthStaffUser(adminClient, authUserId, password, metadata);
   } else {
     const { data, error } = await adminClient.auth.admin.createUser({
       email: emailLower,
@@ -141,8 +154,20 @@ export async function ensureSupabaseAuthStaffUserReady(user, password, options =
       email_confirm: true,
       user_metadata: metadata
     });
-    if (error) throw new Error(error.message || 'Could not create confirmed Supabase Auth user.');
-    authUserId = data?.user?.id || null;
+    if (!error) {
+      authUserId = data?.user?.id || null;
+    } else if (isSupabaseAuthEmailAlreadyRegisteredError(error)) {
+      // Another setup may have created the Auth identity between our lookup
+      // and create call. Re-read, update it, and link this company profile
+      // instead of treating the shared email as a failed setup.
+      const existingAuthUser = await findSupabaseAuthUserByEmail(adminClient, emailLower);
+      if (!existingAuthUser?.id) {
+        throw new Error(error.message || 'Could not create confirmed Supabase Auth user.');
+      }
+      authUserId = await updateSupabaseAuthStaffUser(adminClient, existingAuthUser.id, password, metadata);
+    } else {
+      throw new Error(error.message || 'Could not create confirmed Supabase Auth user.');
+    }
   }
 
   if (authUserId && user?.id && lodgeId && user.auth_user_id !== authUserId) {

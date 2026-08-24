@@ -29,6 +29,22 @@ import {
 
 const queueId = (row) => row?._queue_id || row?.id || null;
 const eventName = (row) => String(row?.action || row?.event_type || row?.type || 'POS event').replaceAll('_', ' ');
+const issueLabel = (entry) => String(entry?.scope || entry?.operation || 'system')
+  .replaceAll('_', ' ')
+  .replace(/\bpos\b/gi, 'sale')
+  .replace(/\brpc\b/gi, '')
+  .replace(/\s+/g, ' ')
+  .trim()
+  .replace(/\b\w/g, (ch) => ch.toUpperCase()) || 'System';
+const issueTone = (entry) => {
+  const scope = String(entry?.scope || entry?.operation || '').toLowerCase();
+  const level = String(entry?.severity || entry?.level || '').toLowerCase();
+  return scope.includes('financial') || scope.includes('db_init') || level === 'error' ? 'danger' : 'warning';
+};
+const issueTime = (ts) => {
+  if (!ts) return 'Time unknown';
+  try { return new Date(ts).toLocaleString('en-GB'); } catch { return ts; }
+};
 
 export default function HposSystemHealth() {
   const [searchParams] = useSearchParams();
@@ -38,7 +54,12 @@ export default function HposSystemHealth() {
   const canSync = canAccessCapability(access, 'sync.manage');
   const canManagePos = canAccessCapability(access, 'settings.manage_general');
   const canAudit = canAccessCapability(access, 'audit.view');
-  const [activeTab, setActiveTab] = useState(() => searchParams.get('tab') === 'audit' ? 'audit' : 'sync');
+  const canClearIssues = canAccessCapability(access, 'system.health');
+  const requestedTab = searchParams.get('tab');
+  const initialTab = ['sync', 'issues', 'devices'].includes(requestedTab) || (requestedTab === 'audit' && canAudit)
+    ? requestedTab
+    : 'sync';
+  const [activeTab, setActiveTab] = useState(initialTab);
   const [status, setStatus] = useState(null);
   const [details, setDetails] = useState(null);
   const [hardware, setHardware] = useState({});
@@ -51,6 +72,8 @@ export default function HposSystemHealth() {
   const [scannerVerifying, setScannerVerifying] = useState(false);
   const [scannerCaptureCount, setScannerCaptureCount] = useState(0);
   const [pendingScannerVerification, setPendingScannerVerification] = useState(null);
+  const [criticalErrors, setCriticalErrors] = useState([]);
+  const [rendererErrors, setRendererErrors] = useState([]);
 
   const scannerVerification = useCallback(async (result) => {
     setScannerVerifying(false);
@@ -132,6 +155,8 @@ export default function HposSystemHealth() {
         window.api?.pos?.listDisplays?.(),
         canAudit ? window.api?.pos?.getAuditLog?.(100) : Promise.resolve([]),
         canAudit ? window.api?.users?.getAccessAudit?.() : Promise.resolve({ success: true, entries: [] }),
+        window.api?.reports?.criticalErrors?.(12).catch(() => []) || Promise.resolve([]),
+        window.api?.app?.getRendererErrors?.(6).catch(() => []) || Promise.resolve([]),
       ]);
       setStatus(results[0].status === 'fulfilled' ? results[0].value || {} : {});
       setDetails(results[1].status === 'fulfilled' ? results[1].value || {} : {});
@@ -144,6 +169,8 @@ export default function HposSystemHealth() {
       setAudit([...posAudit, ...accessAudit]
         .sort((a, b) => new Date(b.created_at || b.timestamp || 0) - new Date(a.created_at || a.timestamp || 0))
         .slice(0, 150));
+      setCriticalErrors(results[6].status === 'fulfilled' && Array.isArray(results[6].value) ? results[6].value : []);
+      setRendererErrors(results[7].status === 'fulfilled' && Array.isArray(results[7].value) ? results[7].value : []);
       if (results[0].status === 'rejected' && results[1].status === 'rejected') {
         throw new Error('System status could not be loaded.');
       }
@@ -190,6 +217,23 @@ export default function HposSystemHealth() {
       await load();
     } catch (retryError) {
       setError(retryError?.message || 'Failed operations could not be retried.');
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  const clearIssues = async () => {
+    setRunning(true);
+    setNotice('');
+    setError('');
+    try {
+      const result = await window.api?.reports?.clearCriticalErrors?.();
+      if (result?.success === false) throw new Error(result.error || 'Saved app issues could not be cleared.');
+      setCriticalErrors([]);
+      setNotice('Saved app issues cleared on this computer.');
+      window.dispatchEvent(new Event('saved-app-issues-cleared'));
+    } catch (clearError) {
+      setError(clearError?.message || 'Saved app issues could not be cleared.');
     } finally {
       setRunning(false);
     }
@@ -253,6 +297,7 @@ export default function HposSystemHealth() {
 
   const tabs = [
     ['sync', 'Sync & queue', Database, failed + pending],
+    ['issues', 'App issues', AlertTriangle, criticalErrors.length],
     ['devices', 'Devices & displays', Settings2, displays.length],
     ...(canAudit ? [['audit', 'POS audit trail', ListChecks, audit.length]] : []),
   ];
@@ -322,6 +367,62 @@ export default function HposSystemHealth() {
             )}
           </section>
           <section className="hpos-health-guidance"><CheckCircle2 size={20} /><div><h2>Financial truth stays server-authoritative</h2><p>Pending work remains visibly queued. A retry reuses the existing operation identifier; this screen never invents a replacement payment, order, or stock movement.</p></div></section>
+        </>
+      )}
+
+      {activeTab === 'issues' && (
+        <>
+          <section className="hpos-sync-desk">
+            <div className="hpos-section-heading">
+              <span><AlertTriangle size={18} /></span>
+              <div><h2>Important app issues</h2><p>Saved desktop issues, the same list the top-right warning pill counts.</p></div>
+              {canClearIssues && criticalErrors.length > 0 && <HposButton onClick={clearIssues} disabled={running}>Clear saved issues</HposButton>}
+            </div>
+            {criticalErrors.length === 0 ? (
+              <HposEmptyState icon={CheckCircle2} title="No saved app issues" description="No important desktop issues were found recently." />
+            ) : (
+              <div className="hpos-sync-list">
+                {criticalErrors.map((entry, index) => (
+                  <article key={entry.id || `${entry.at || 'issue'}-${index}`}>
+                    <span className={`hpos-health-icon is-${issueTone(entry)}`}><AlertTriangle size={17} /></span>
+                    <div>
+                      <strong>{issueLabel(entry)}</strong>
+                      <p>{entry.message || 'No message recorded.'}</p>
+                      <small>{issueTime(entry.at)}</small>
+                      {entry.details && typeof entry.details === 'object' && Object.keys(entry.details).length > 0 && (
+                        <details className="hpos-issue-details">
+                          <summary>Show context</summary>
+                          <pre>{JSON.stringify(entry.details, null, 2)}</pre>
+                        </details>
+                      )}
+                    </div>
+                    <HposStatusBadge tone={issueTone(entry)}>{issueTone(entry) === 'danger' ? 'Error' : 'Note'}</HposStatusBadge>
+                  </article>
+                ))}
+              </div>
+            )}
+          </section>
+          <section className="hpos-sync-desk">
+            <div className="hpos-section-heading">
+              <span><AlertTriangle size={18} /></span>
+              <div><h2>Recent crashes</h2><p>Crash details for when this app needs recovery.</p></div>
+            </div>
+            {rendererErrors.length === 0 ? (
+              <HposEmptyState icon={CheckCircle2} title="No recent crashes" description="No crashes were found on this computer." />
+            ) : (
+              <div className="hpos-sync-list">
+                {rendererErrors.map((entry, index) => (
+                  <article key={entry.id || `${entry.at || 'crash'}-${index}`}>
+                    <span className="hpos-health-icon is-danger"><AlertTriangle size={17} /></span>
+                    <div>
+                      <strong>{entry.message || 'Unknown app issue'}</strong>
+                      <small>{issueTime(entry.at)}</small>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
+          </section>
         </>
       )}
 

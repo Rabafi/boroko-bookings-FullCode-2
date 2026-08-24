@@ -5,6 +5,8 @@ import assert from 'node:assert/strict'
 const migration = readFileSync('supabase/migrations/20260729010000_blind_cashup_operator_preview.sql', 'utf8')
 const myCashup = readFileSync('src/renderer/src/components/hospitality-pos/HposMyCashup.jsx', 'utf8')
 const sharedCashup = readFileSync('src/renderer/src/components/hospitality-pos/HposSharedCashup.jsx', 'utf8')
+const cashClose = readFileSync('src/renderer/src/components/hospitality-pos/HposCashClose.jsx', 'utf8')
+const hospitalityPosCss = readFileSync('src/renderer/src/styles/hospitality-pos.css', 'utf8')
 
 test('cash-up preview redacts server expectations for the active cashier', () => {
   assert.match(migration, /v_role in \('cashier', 'bar', 'bartender', 'operator', 'waiter'\)/)
@@ -35,4 +37,13 @@ test('cash-up submissions reuse a stable per-shift idempotency key so retries re
   assert.match(sharedCashup, /clearCashupSubmissionRound/, 'shared-terminal cash-up clears only after server confirmation')
   assert.doesNotMatch(myCashup, /submitCashup\?\.\(\{[^}]*idempotency_key: crypto\.randomUUID\(\)/, 'no fresh random key per click')
   assert.doesNotMatch(sharedCashup, /submitCashupWithAttendancePin\?\.\(\{[^}]*idempotency_key: crypto\.randomUUID\(\)/, 'no fresh random key per click')
+})
+
+test('cash-up feedback persists after staff clock-out and manager approval actions remain reachable', () => {
+  assert.doesNotMatch(sharedCashup, /setCash\(''\); setNotice\(''\); setResolvingShift/, 'resetting staff selection must not erase a successful clock-out notice')
+  assert.match(sharedCashup, /setError\(''\); setNotice\(''\) \}\} disabled=\{loading \|\| saving\}/, 'selecting another staff member clears stale notices intentionally')
+  assert.match(cashClose, /hpos-cashup-review-card--decision/)
+  assert.match(cashClose, /hpos-cashup-review-actions/)
+  assert.match(cashClose, /scrollIntoView\(\{ block: 'end', behavior: 'smooth' \}\)/)
+  assert.match(hospitalityPosCss, /\.hpos-cashup-review-actions \{[^}]*scroll-margin-bottom:32px/, 'manager action bar keeps a safe visible scroll target')
 })

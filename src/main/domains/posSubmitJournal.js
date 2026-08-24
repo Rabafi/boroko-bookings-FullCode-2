@@ -198,11 +198,29 @@ export function resolvePosSubmitAttempt({ submitIntentId, orderId, lodgeId, user
     writeAttempts(updated)
     return { attempt: reused, reused: true, conflict: false, error: null }
   }
+  const normalizedLodgeId = asId(lodgeId) || state.lodgeId || null
+  const normalizedUserId = asId(userId) || state.currentUser?.id || null
+  const unresolvedAttempt = attempts.find((attempt) =>
+    attempt?.status === 'pending' &&
+    // Older journals may not contain both scope fields. They cannot be
+    // proven to belong to a different operator/company, so keep the Till
+    // fail-closed instead of permitting a potentially duplicate intent.
+    (!attempt.lodgeId || !normalizedLodgeId || attempt.lodgeId === normalizedLodgeId) &&
+    (!attempt.userId || !normalizedUserId || attempt.userId === normalizedUserId)
+  )
+  if (unresolvedAttempt) {
+    return {
+      conflict: true,
+      reused: false,
+      code: 'pos_submit_recovery_required',
+      error: `Sale attempt ${unresolvedAttempt.submitIntentId} is still unresolved. Reconcile or retry that exact attempt before starting a new sale.`
+    }
+  }
   const attempt = {
     submitIntentId: normalizedIntentId,
     orderId: normalizedOrderId,
-    lodgeId: asId(lodgeId) || state.lodgeId || null,
-    userId: asId(userId) || state.currentUser?.id || null,
+    lodgeId: normalizedLodgeId,
+    userId: normalizedUserId,
     createdAtClient: payload?.created_at_client || payload?.client_created_at || null,
     digest,
     payload,

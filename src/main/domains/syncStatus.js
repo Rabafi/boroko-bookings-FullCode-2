@@ -18,6 +18,10 @@ const QUEUED_DEPENDENCY_CACHE_MAP = [
 { prefix: 'user-', cache: 'users' },
 { prefix: 'quotation-', cache: 'quotations' },
 { prefix: 'pos-order-', cache: 'pos-orders' },
+{ prefix: 'pos-shift-', cache: 'pos-shifts' },
+{ prefix: 'pos-catalog-snapshot-', cache: 'pos-catalog-snapshots', idField: 'snapshot_id' },
+{ prefix: 'attendance-shift-', cache: 'restaurant-shifts' },
+{ prefix: 'pos-cashup-submission-', cache: 'pos-cashup-submissions', idField: 'idempotency_key' },
 { prefix: 'conference-booking-', cache: 'conference-bookings' },
 { prefix: 'pool-day-use-', cache: 'pool-day-use' }];
 
@@ -31,7 +35,7 @@ export function isQueuedDependencyResolved(dependencyId) {
   const entityId = normalizedDependencyId.slice(target.prefix.length).trim();
   if (!entityId) return false;
 
-  const cachedRow = readCache(target.cache).find((entry) => entry?.id === entityId);
+  const cachedRow = readCache(target.cache).find((entry) => entry?.[target.idField || 'id'] === entityId);
   if (!cachedRow) return false;
 
   return cachedRow._pending_sync !== true &&
@@ -41,12 +45,15 @@ export function isQueuedDependencyResolved(dependencyId) {
 
 function buildSyncGroupedCountsForStatus(pending = [], failed = []) {
   const classify = (item = {}, queuePending = [], queueFailed = []) => {
-    const dependencyId = String(item?._depends_on || '').trim();
-    if (!dependencyId) return 'none';
+    const dependencyIds = [...new Set([
+      item?._depends_on,
+      ...(Array.isArray(item?._depends_on_all) ? item._depends_on_all : [])
+    ].map((value) => String(value || '').trim()).filter(Boolean))];
+    if (dependencyIds.length === 0) return 'none';
 
-    if (queueFailed.some((entry) => entry?._queue_id === dependencyId)) return 'blocked_dependencies';
-    if (queuePending.some((entry) => entry?._queue_id === dependencyId)) return 'blocked_dependencies';
-    if (isQueuedDependencyResolved(dependencyId)) return 'resolved';
+    if (dependencyIds.some((dependencyId) => queueFailed.some((entry) => entry?._queue_id === dependencyId))) return 'blocked_dependencies';
+    if (dependencyIds.some((dependencyId) => queuePending.some((entry) => entry?._queue_id === dependencyId))) return 'blocked_dependencies';
+    if (dependencyIds.every((dependencyId) => isQueuedDependencyResolved(dependencyId))) return 'resolved';
     return 'resolved';
   };
 

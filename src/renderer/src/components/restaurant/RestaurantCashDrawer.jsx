@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Wallet, AlertTriangle, CheckCircle2, RefreshCw } from 'lucide-react'
+import { unpackTransport } from '../../transportUnpack'
 
 export default function RestaurantCashDrawer() {
   const [drawer, setDrawer] = useState(null)
@@ -23,8 +24,8 @@ export default function RestaurantCashDrawer() {
       setError('')
       const [d, h, orders] = await Promise.allSettled([
         window.api.pos.getOpenCashDrawer(),
-        window.api.pos.getCashups ? window.api.pos.getCashups() : Promise.resolve([]),
-        window.api.pos.getOrders(new Date().toISOString().slice(0, 10), new Date().toISOString().slice(0, 10))
+        window.api.pos.getCashups ? window.api.pos.getCashups().then(unpackTransport) : Promise.resolve([]),
+        window.api.pos.getOrders(new Date().toISOString().slice(0, 10), new Date().toISOString().slice(0, 10)).then(unpackTransport)
       ])
       setDrawer(d.value || null)
       const historyUnavailable = h.status === 'fulfilled' && h.value?._available === false

@@ -229,6 +229,7 @@ export default function HposMenu() {
 
   const [items, setItems] = useState([]);
   const [inventoryItems, setInventoryItems] = useState([]);
+  const [outlets, setOutlets] = useState([]);
   const [recipeMenuItemIds, setRecipeMenuItemIds] = useState(() => new Set());
   const [categories, setCategories] = useState([]);
   const [activeCategory, setActiveCategory] = useState("all");
@@ -259,6 +260,20 @@ export default function HposMenu() {
     max_selections: "1",
     applies_to_categories: "All",
   });
+
+  const selectedInventoryItem = useMemo(
+    () => inventoryItems.find((item) => String(item.id) === String(draft.inventory_item_id || "")) || null,
+    [inventoryItems, draft.inventory_item_id],
+  );
+  const selectedInventoryIsBar = Boolean(
+    selectedInventoryItem?.outlet_id &&
+      outlets.some(
+        (outlet) =>
+          String(outlet.id) === String(selectedInventoryItem.outlet_id) &&
+          outlet.is_active !== false &&
+          outlet.type === "beverage",
+      ),
+  );
 
   // Product setup uses the same keyboard-wedge decoder as Till and stock
   // setup. Capture is explicitly armed so manual typing remains unaffected.
@@ -312,16 +327,18 @@ export default function HposMenu() {
     let active = true;
     const load = async () => {
       try {
-        const [menuData, inventoryRows, modifierRows, recipeRows] =
+        const [menuData, inventoryRows, modifierRows, recipeRows, outletRows] =
           await Promise.all([
             window.api?.pos?.getMenuItems?.() ?? [],
             window.api?.inventory?.getItems?.() ?? [],
             window.api?.pos?.getModifierGroups?.() ?? [],
             window.api?.pos?.getRecipes?.() ?? [],
+            window.api?.outlets?.getAll?.() ?? [],
           ]);
         if (!active) return;
         setItems(Array.isArray(menuData) ? menuData : []);
         setInventoryItems(Array.isArray(inventoryRows) ? inventoryRows : []);
+        setOutlets(Array.isArray(outletRows) ? outletRows : []);
         setModifierGroups(Array.isArray(modifierRows) ? modifierRows : []);
         setRecipeMenuItemIds(
           new Set(
@@ -1036,7 +1053,7 @@ export default function HposMenu() {
                 </>
               )}
             </div>
-            {barOnly && draft.inventory_item_id && (
+            {barOnly && draft.inventory_item_id && selectedInventoryIsBar && (
               <section className="hpos-service-pack-options">
                 <strong>Pack / case sell templates</strong>
                 <p>
@@ -1096,6 +1113,14 @@ export default function HposMenu() {
                 </div>
                 {barcodeScanStatus && barcodeCaptureTarget !== "menu" && <div role="status" className="hpos-inline-notice">{barcodeScanStatus}</div>}
               </section>
+            )}
+            {barOnly && draft.inventory_item_id && !selectedInventoryIsBar && (
+              <div className="hpos-inline-notice">
+                This stock item can be sold individually. To create 6-packs,
+                12-packs or cases, assign the stock item to an active Bar outlet
+                in Stock first; pack templates are not valid for unassigned or
+                non-Bar stock.
+              </div>
             )}
             {saveError && <div className="hpos-inline-error">{saveError}</div>}
             <footer>

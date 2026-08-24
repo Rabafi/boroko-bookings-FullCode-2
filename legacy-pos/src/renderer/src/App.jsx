@@ -4,6 +4,7 @@ import { Maximize2, Minimize2 } from 'lucide-react';
 import Login from './screens/Login';
 import POSTerminal from './screens/POSTerminal';
 import tsaBonnoRestaurantLogo from './assets/tsa-bonno-restaurant-bar-os-logo-color.png';
+import { isBarOnlyMode } from '../../../../src/shared/propertyTypes.js';
 
 const Orders = lazy(() => import('./screens/Orders'));
 const CashUp = lazy(() => import('./screens/CashUp'));
@@ -50,7 +51,7 @@ export default function App() {
   const [isFullscreen, setIsFullscreen] = useState(false);
 
   const displayLodgeName = settings?.lodge_name || settings?.company_name || user?.lodge_name || '';
-  const barOnly = String(settings?.hospitality_mode || settings?.operating_profile || '').toLowerCase() === 'bar_only';
+  const barOnly = isBarOnlyMode(settings);
 
   const tryRestore = useCallback(async () => {
     try {

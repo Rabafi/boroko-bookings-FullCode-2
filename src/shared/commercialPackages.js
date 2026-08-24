@@ -216,6 +216,13 @@ export function buildCommercialOfferSnapshot({
   for (const key of [...new Set(Array.isArray(addonKeys) ? addonKeys : [])]) {
     const addon = eligibleAddons.find((entry) => entry.addonKey === key)
     if (!addon) throw new Error(`Invalid add-on for ${productId}: ${key}`)
+    // Bar annual bundles are prepaid with their first annual term. Hotel
+    // recurring add-ons retain their existing contract model: their first
+    // recurring charge is not represented as due immediately.
+    const addonDueNow = Number(addon.oneTimePriceBwp || 0)
+      + (productId === COMMERCIAL_PRODUCT_IDS.HOSPITALITY_POS && addon.billingBasis === COMMERCIAL_BILLING_BASIS.ANNUAL_ADDON
+        ? Number(addon.annualPriceBwp || 0)
+        : 0)
     lines.push({
       line_type: 'addon',
       key: addon.addonKey,
@@ -223,7 +230,7 @@ export function buildCommercialOfferSnapshot({
       billing_basis: addon.billingBasis,
       one_time_amount: addon.oneTimePriceBwp,
       recurring_amount: addon.annualPriceBwp || 0,
-      amount_due_now: addon.oneTimePriceBwp
+      amount_due_now: addonDueNow
     })
   }
   const totalDueNow = lines.reduce((sum, line) => sum + Number(line.amount_due_now || 0), 0)
@@ -246,7 +253,9 @@ export function buildCommercialOfferSnapshot({
     excluded_features: selected.excludedFeatures,
     operating_profile: operatingProfile,
     property_type: propertyType,
-    note: 'This quote is a request for manual review. Payment is not collected here and activation occurs only after Tsa Bonno approves payment proof.'
+    note: productId === COMMERCIAL_PRODUCT_IDS.HOSPITALITY_POS
+      ? 'The total due now includes the first annual term of the selected Bar package and annual add-ons. Payment is not collected here; activation occurs only after Tsa Bonno approves payment proof.'
+      : 'This quote is a request for manual review. Payment is not collected here and activation occurs only after Tsa Bonno approves payment proof.'
   }
 }
 

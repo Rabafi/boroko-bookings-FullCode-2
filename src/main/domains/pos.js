@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'crypto'
+import bcrypt from 'bcryptjs'
 import { state } from '../state.js'
 import { getActiveBookingForRoom } from './bookings.js'
 import { getLocalDateKey, recordCriticalError } from './operationalLog.js'
@@ -10,6 +11,7 @@ import {
   getOfflinePosInventoryReservation,
   queueOperation,
   readCache,
+  readSyncQueue,
   readLocalPosVoidHistory,
   refreshCache,
   upsertLocalPosVoidHistory,
@@ -23,9 +25,12 @@ import {
   clearPosSubmitAttempt as clearPosSubmitAttemptRecord
 } from './posSubmitJournal.js'
 import { classifyAuthoritativeShiftClose } from './posShiftClose.js'
+import { getTrialStatus } from './entitlements.js'
+import { isCommercialFeatureIncluded } from '../../shared/commercialAccess.js'
+import { isBarOnlyMode } from '../../shared/propertyTypes.js'
 
 const POS_REMOTE_READ_TTL_MS = 2_500;
-const POS_TICKET_SELECT = 'id, lodge_id, order_id, outlet_id, station, status, table_name, tab_name, waiter_name, room_id, notes, items, created_at, updated_at';
+const POS_TICKET_SELECT = 'id, lodge_id, order_id, outlet_id, station, status, service_mode, table_name, tab_name, waiter_name, room_id, notes, items, created_at, updated_at';
 const POS_TAB_SELECT = 'id, lodge_id, outlet_id, table_name, tab_name, customer_name, waiter_name, waiter_id, shift_id, room_id, booking_id, items, notes, status, opened_by, opened_by_name, created_at, updated_at, closed_at, tab_version, financial_snapshot';
 const ACTIVE_PREP_TICKET_STATUSES = Object.freeze(['new', 'pending', 'preparing', 'ready']);
 const posRemoteReadCache = new Map();
@@ -100,6 +105,154 @@ function applyPosOrderFilters(rows = [], startDate, endDate, outletFilter = null
     filtered = filtered.filter((order) => !order.outlet_id || outletFilter.includes(order.outlet_id));
   }
   return filtered.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
+}
+
+async function enforceBarBaseTenderBoundary(payload = {}, paymentBreakdown = [], paymentMethod = 'cash') {
+  const settings = readCache('settings')?.[0] || null
+  if (!isBarOnlyMode(settings)) return
+  const hasVoucher = String(paymentMethod || '').toLowerCase() === 'voucher' || paymentBreakdown.some((tender) => String(tender?.method || '').toLowerCase() === 'voucher')
+  const tip = payload?.tip_total === null || payload?.tip_total === undefined || payload?.tip_total === '' ? 0 : Number(payload.tip_total)
+  if (!Number.isFinite(tip)) throw new Error('Tip tender is invalid and has been blocked.')
+  if (!hasVoucher && tip === 0) return
+  const entitlement = await getTrialStatus(state.lodgeId)
+  const productId = entitlement?.product_id || null
+  const packageKey = entitlement?.commercial_package_key || null
+  const addonKeys = entitlement?.enterprise_addons || []
+  if (!productId || !packageKey) throw new Error('Bar POS commercial entitlement could not be verified. Tender is blocked until the package context is available.')
+  if (hasVoucher && !isCommercialFeatureIncluded(productId, packageKey, 'vouchers', addonKeys)) {
+    throw new Error('Voucher tender is not included in the current Bar POS commercial entitlement.')
+  }
+  if (tip !== 0 && !isCommercialFeatureIncluded(productId, packageKey, 'tips_payouts', addonKeys)) {
+    throw new Error('Tip tender is not included in the current Bar POS commercial entitlement.')
+  }
+}
+
+const POS_ATTENDANCE_CACHE = 'restaurant-shifts'
+const POS_CASHUP_SUBMISSION_CACHE = 'pos-cashup-submissions'
+
+function getCachedPosUser(userId) {
+  return (readCache('users') || []).find((row) =>
+    row?.id === userId &&
+    (!row?.lodge_id || row.lodge_id === state.lodgeId)
+  ) || null
+}
+
+function validateCachedPosPin(userId, pin, { manager = false } = {}) {
+  const user = getCachedPosUser(userId)
+  if (!user || String(user.status || 'active').toLowerCase() !== 'active') {
+    return { success: false, error: 'This staff account is not available in the trusted offline cache. Connect once and refresh the team list.' }
+  }
+  if (manager && !['supervisor', 'manager', 'admin', 'super_admin'].includes(String(user.role || '').toLowerCase())) {
+    return { success: false, error: 'This cached staff account cannot approve manager actions.' }
+  }
+  if (!user.pin_hash) {
+    return { success: false, error: 'This staff PIN was not prepared on this computer. Connect once and refresh staff access.' }
+  }
+  if (!String(pin || '').trim() || !bcrypt.compareSync(String(pin).trim(), user.pin_hash)) {
+    return { success: false, error: 'Incorrect staff PIN.' }
+  }
+  return {
+    success: true,
+    staff: {
+      id: user.id,
+      name: user.name || null,
+      email: user.email || null,
+      role: user.role || null,
+      allowed_outlet_ids: user.allowed_outlet_ids || []
+    }
+  }
+}
+
+function readAttendanceShifts() {
+  const rows = readCache(POS_ATTENDANCE_CACHE)
+  return Array.isArray(rows) ? rows : []
+}
+
+function writeAttendanceShifts(rows = []) {
+  writeCache(POS_ATTENDANCE_CACHE, rows.slice(0, 500))
+}
+
+function upsertAttendanceShift(row = {}) {
+  writeAttendanceShifts([row, ...readAttendanceShifts().filter((entry) => entry.id !== row.id)])
+  return row
+}
+
+function readPosCashupSubmissions() {
+  const rows = readCache(POS_CASHUP_SUBMISSION_CACHE)
+  return Array.isArray(rows) ? rows : []
+}
+
+function writePosCashupSubmissions(rows = []) {
+  writeCache(POS_CASHUP_SUBMISSION_CACHE, rows.slice(0, 500))
+}
+
+function upsertPosCashupSubmission(row = {}) {
+  writePosCashupSubmissions([row, ...readPosCashupSubmissions().filter((entry) => entry.id !== row.id)])
+  return row
+}
+
+function buildLocalPosCatalogSnapshot(outletId = null, snapshotId = randomUUID()) {
+  const settings = readCache('settings')?.[0] || {}
+  const items = (readCache('pos-menu-items') || [])
+    .filter((item) => !item?.archived_at && (
+      (outletId == null && item?.outlet_id == null) ||
+      item?.outlet_id == null ||
+      item?.outlet_id === outletId
+    ))
+    .map((item) => ({
+      id: item.id,
+      name: item.name,
+      category: item.category,
+      price: Number(item.price || 0),
+      is_available: item.is_available !== false,
+      inventory_item_id: item.inventory_item_id || null,
+      depletion_qty: normalizePositiveQty(item.depletion_qty, 1),
+      outlet_id: item.outlet_id || null,
+      barcode: item.barcode || null,
+      kitchen_station_id: item.kitchen_station_id || null
+    }))
+  const payload = {
+    items,
+    modifier_groups: (readPosModifierGroups() || []).filter((group) => group?.active !== false),
+    promotions: (readPosPromotions() || []).filter((promotion) => promotion?.active !== false),
+    vat_enabled: settings.vat_enabled === true,
+    vat_rate: Number(settings.vat_rate || 0)
+  }
+  const createdAt = new Date().toISOString()
+  return {
+    success: true,
+    snapshot_id: snapshotId,
+    outlet_id: outletId || null,
+    payload,
+    payload_hash: createHash('sha256').update(JSON.stringify(payload)).digest('hex'),
+    item_count: items.length,
+    created_at: createdAt,
+    _pending_sync: true,
+    _sync_state: 'pending'
+  }
+}
+
+function queueLocalPosCatalogSnapshot(outletId = null, dependsOn = null) {
+  const snapshot = buildLocalPosCatalogSnapshot(outletId)
+  const queueId = `pos-catalog-snapshot-${snapshot.snapshot_id}`
+  snapshot._queue_id = queueId
+  writeCache('pos-catalog-snapshots', [
+    snapshot,
+    ...(readCache('pos-catalog-snapshots') || []).filter((entry) => (entry?.outlet_id || null) !== (outletId || null))
+  ])
+  queueOperation('rpc', 'publish_pos_catalog_snapshot_offline', {
+    payload: {
+      lodge_id: state.lodgeId,
+      outlet_id: outletId || null,
+      snapshot_id: snapshot.snapshot_id,
+      client_created_at: snapshot.created_at,
+      idempotency_key: `pos-catalog:${snapshot.snapshot_id}`
+    }
+  }, null, {
+    _queue_id: queueId,
+    ...(dependsOn ? { _depends_on: dependsOn } : {})
+  })
+  return snapshot
 }
 
 function hasFiniteRecordedMoney(value) {
@@ -363,6 +516,9 @@ function readPosHardwareSettings() {
     scanner_last_terminator: String(current.scanner_last_terminator || '').replace(/[\u0000-\u001f\u007f]/g, ''),
     scanner_last_character_count: Number.isFinite(Number(current.scanner_last_character_count)) ? Number(current.scanner_last_character_count) : null,
     scanner_last_average_inter_key_ms: Number.isFinite(Number(current.scanner_last_average_inter_key_ms)) ? Number(current.scanner_last_average_inter_key_ms) : null,
+    hardware_last_test_at: current.hardware_last_test_at || null,
+    hardware_last_test_kind: String(current.hardware_last_test_kind || '').replace(/[\u0000-\u001f\u007f]/g, ''),
+    hardware_last_test_success: current.hardware_last_test_success === true,
     customer_display_enabled: current.customer_display_enabled === true,
     updated_at: current.updated_at || null
   };
@@ -534,7 +690,10 @@ export function getActivePosCatalogSnapshot(outletId = null) {
 }
 
 export async function publishPosCatalogSnapshot(outletId = null) {
-  if (!state.isOnline) throw new Error('Catalog publishing requires an internet connection.');
+  if (!state.isOnline) {
+    const snapshot = queueLocalPosCatalogSnapshot(outletId)
+    return { ...snapshot, offline: true, queued: true }
+  }
   const { data, error } = await state.supabase.rpc('publish_pos_catalog_snapshot', {
     p_lodge_id: state.lodgeId,
     p_outlet_id: outletId || null
@@ -575,7 +734,9 @@ export async function getPosMenuItemById(id) {
 }
 
 export async function createPosMenuItem(data) {
+  const localId = data.id || randomUUID();
   const item = {
+    id: localId,
     lodge_id: state.lodgeId,
     name: data.name,
     category: data.category || 'Other',
@@ -604,11 +765,21 @@ export async function createPosMenuItem(data) {
     });
     return { success: true, id: result?.id };
   }
-  throw new Error('No internet connection. Please check your connection and try again.');
+  const pending = { ...item, _pending_sync: true, _sync_state: 'pending', created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+  writeCache('pos-menu-items', [pending, ...(readCache('pos-menu-items') || []).filter((row) => row.id !== localId)]);
+  const queueId = `pos-menu-item-${localId}`;
+  const inventory = item.inventory_item_id ? (readCache('inventory-items') || []).find((row) => row.id === item.inventory_item_id) : null;
+  queueOperation('rpc', 'create_pos_menu_item_offline', { payload: item }, null, {
+    _queue_id: queueId,
+    ...(inventory?._pending_sync ? { _depends_on: `inventory-item-${inventory.id}` } : {})
+  });
+  const snapshot = queueLocalPosCatalogSnapshot(item.outlet_id, queueId);
+  return { success: true, id: localId, offline: true, queued: true, catalog_snapshot_id: snapshot.snapshot_id };
 }
 
 export async function updatePosMenuItem(id, data) {
   const existing = await getPosMenuItemById(id).catch(() => null);
+  const operationKey = data?.operation_key || data?.operationKey || randomUUID();
   const update = {
     name: data.name,
     category: data.category,
@@ -640,12 +811,34 @@ export async function updatePosMenuItem(id, data) {
     });
     return { success: true };
   }
-  throw new Error('No internet connection. Please check your connection and try again.');
+  if (!existing) throw new Error('Menu item not found in the offline cache.');
+  writeCache('pos-menu-items', (readCache('pos-menu-items') || []).map((row) => row.id === id ? {
+    ...row, ...update, _pending_sync: true, _sync_state: 'pending', updated_at: new Date().toISOString()
+  } : row));
+  const queueId = `pos-menu-item-update-${id}-${operationKey}`;
+  queueOperation('rpc', 'update_pos_menu_item_offline', { payload: {
+    ...update,
+    lodge_id: state.lodgeId,
+    menu_item_id: id,
+    operation_key: operationKey
+  } }, null, { _queue_id: queueId });
+  const snapshot = queueLocalPosCatalogSnapshot(update.outlet_id ?? existing.outlet_id ?? null, queueId);
+  return { success: true, offline: true, queued: true, catalog_snapshot_id: snapshot.snapshot_id };
 }
 
 export async function deletePosMenuItem(id) {
-  if (!state.isOnline) throw new Error('No internet connection. Please check your connection and try again.');
   const existing = await getPosMenuItemById(id).catch(() => null);
+  if (!state.isOnline) {
+    if (!existing) throw new Error('Menu item not found in the offline cache.');
+    writeCache('pos-menu-items', (readCache('pos-menu-items') || []).map((row) => row.id === id ? {
+      ...row, archived_at: new Date().toISOString(), is_available: false,
+      _pending_sync: true, _sync_state: 'pending'
+    } : row));
+    const queueId = `pos-menu-item-delete-${id}-${Date.now()}`;
+    queueOperation('rpc', 'delete_pos_menu_item', { p_id: id, p_lodge_id: state.lodgeId }, null, { _queue_id: queueId });
+    const snapshot = queueLocalPosCatalogSnapshot(existing.outlet_id || null, queueId);
+    return { success: true, offline: true, queued: true, catalog_snapshot_id: snapshot.snapshot_id };
+  }
   const { data: result, error } = await state.supabase.rpc('delete_pos_menu_item', {
     p_id: id,
     p_lodge_id: state.lodgeId
@@ -659,7 +852,6 @@ export async function deletePosMenuItem(id) {
 }
 
 export async function setBarPosPackTemplate(data) {
-  if (!state.isOnline) throw new Error('No internet connection. Please check your connection and try again.');
   const rawBarcode = data?.barcode == null ? '' : String(data.barcode).trim();
   if (rawBarcode.length > 128 || /[\u0000-\u001f\u007f]/.test(rawBarcode)) {
     throw new Error('Pack barcode must be 128 characters or fewer and contain no control characters.');
@@ -669,8 +861,37 @@ export async function setBarPosPackTemplate(data) {
     inventory_item_id: data.inventory_item_id,
     pack_size: Number(data.pack_size),
     enabled: data.enabled === true,
+    menu_item_id: data.menu_item_id || randomUUID(),
     ...(Object.prototype.hasOwnProperty.call(data || {}, 'barcode') ? { barcode: rawBarcode || null } : {})
   };
+  if (!state.isOnline) {
+    const inventory = (readCache('inventory-items') || []).find((row) => row.id === payload.inventory_item_id);
+    if (!inventory) throw new Error('Bar inventory product not found in the offline cache.');
+    const existing = (readCache('pos-menu-items') || []).find((row) =>
+      row.inventory_item_id === payload.inventory_item_id &&
+      row.template_kind === 'bar_pack' &&
+      Number(row.template_pack_size) === payload.pack_size
+    );
+    const menuItemId = existing?.id || payload.menu_item_id;
+    payload.menu_item_id = menuItemId;
+    const row = {
+      ...(existing || {}), id: menuItemId, lodge_id: state.lodgeId,
+      name: payload.pack_size === 24 ? `${inventory.name} Case (24)` : `${inventory.name} ${payload.pack_size} Pack`,
+      category: 'Drinks', price: Number(inventory.selling_price || 0) * payload.pack_size,
+      is_available: payload.enabled, barcode: rawBarcode || existing?.barcode || null,
+      inventory_item_id: inventory.id, depletion_qty: payload.pack_size,
+      outlet_id: inventory.outlet_id || null, template_kind: 'bar_pack', template_pack_size: payload.pack_size,
+      _pending_sync: true, _sync_state: 'pending', updated_at: new Date().toISOString()
+    };
+    writeCache('pos-menu-items', [row, ...(readCache('pos-menu-items') || []).filter((entry) => entry.id !== menuItemId)]);
+    const queueId = `bar-pack-${payload.inventory_item_id}-${payload.pack_size}-${Date.now()}`;
+    queueOperation('rpc', 'set_bar_pos_pack_template_offline', { payload }, null, {
+      _queue_id: queueId,
+      ...(inventory._pending_sync ? { _depends_on: `inventory-item-${inventory.id}` } : {})
+    });
+    const snapshot = queueLocalPosCatalogSnapshot(inventory.outlet_id || null, queueId);
+    return { success: true, id: menuItemId, outlet_id: inventory.outlet_id || null, offline: true, queued: true, catalog_snapshot_id: snapshot.snapshot_id };
+  }
   const { data: result, error } = await state.supabase.rpc('set_bar_pos_pack_template', { payload });
   if (error) throw new Error(error.message);
   if (!result?.success) throw new Error(result?.error || 'Could not update Bar POS template');
@@ -681,17 +902,20 @@ export async function setBarPosPackTemplate(data) {
 }
 
 export async function saveBarPosProductWithPacks(data = {}) {
-  if (!state.isOnline) throw new Error('No internet connection. Please check your connection and try again.');
   const rawBarcode = data?.barcode == null ? '' : String(data.barcode).trim();
   if (rawBarcode.length > 128 || /[\u0000-\u001f\u007f]/.test(rawBarcode)) throw new Error('Product barcode must be 128 characters or fewer and contain no control characters.');
+  const cachedMenu = readCache('pos-menu-items') || [];
   const packs = [6, 12, 24].map((packSize) => ({
     pack_size: packSize,
     enabled: data[`pack${packSize}`] === true,
-    barcode: data[`pack${packSize}Barcode`] || null
+    barcode: data[`pack${packSize}Barcode`] || null,
+    menu_item_id: cachedMenu.find((row) => row.inventory_item_id === data.inventory_item_id && row.template_kind === 'bar_pack' && Number(row.template_pack_size) === packSize)?.id || randomUUID()
   }));
+  const localMenuItemId = data.menu_item_id || randomUUID();
   const payload = {
     lodge_id: state.lodgeId,
     menu_item_id: data.menu_item_id || null,
+    id: localMenuItemId,
     operation_key: data.operation_key || randomUUID(),
     name: data.name,
     category: data.category || 'Drinks',
@@ -708,6 +932,38 @@ export async function saveBarPosProductWithPacks(data = {}) {
     kitchen_station_id: data.kitchen_station_id || null,
     packs
   };
+  if (!state.isOnline) {
+    const inventory = (readCache('inventory-items') || []).find((row) => row.id === payload.inventory_item_id);
+    if (payload.inventory_item_id && !inventory) throw new Error('The linked stock item is not available in the offline cache.');
+    const baseRow = {
+      ...(cachedMenu.find((row) => row.id === localMenuItemId) || {}),
+      id: localMenuItemId, lodge_id: state.lodgeId, name: payload.name, category: payload.category,
+      price: payload.price, is_available: payload.is_available, barcode: payload.barcode,
+      stock_method: payload.stock_method, inventory_item_id: payload.inventory_item_id,
+      depletion_qty: payload.depletion_qty, outlet_id: payload.outlet_id,
+      dietary_flags: payload.dietary_flags, prep_time_minutes: payload.prep_time_minutes,
+      is_popular: payload.is_popular, kitchen_station_id: payload.kitchen_station_id,
+      _pending_sync: true, _sync_state: 'pending', updated_at: new Date().toISOString()
+    };
+    const packRows = packs.filter((pack) => pack.enabled).map((pack) => ({
+      id: pack.menu_item_id, lodge_id: state.lodgeId,
+      name: pack.pack_size === 24 ? `${payload.name} Case (24)` : `${payload.name} ${pack.pack_size} Pack`,
+      category: 'Drinks', price: Number(inventory?.selling_price || payload.price || 0) * pack.pack_size,
+      is_available: true, barcode: pack.barcode || null, inventory_item_id: payload.inventory_item_id,
+      depletion_qty: pack.pack_size, outlet_id: payload.outlet_id || inventory?.outlet_id || null,
+      template_kind: 'bar_pack', template_pack_size: pack.pack_size,
+      _pending_sync: true, _sync_state: 'pending', updated_at: new Date().toISOString()
+    }));
+    const replacedIds = new Set([localMenuItemId, ...packs.map((pack) => pack.menu_item_id)]);
+    writeCache('pos-menu-items', [baseRow, ...packRows, ...cachedMenu.filter((row) => !replacedIds.has(row.id))]);
+    const queueId = `bar-product-${payload.operation_key}`;
+    queueOperation('rpc', 'save_bar_pos_product_with_packs_offline', { payload }, null, {
+      _queue_id: queueId,
+      ...(inventory?._pending_sync ? { _depends_on: `inventory-item-${inventory.id}` } : {})
+    });
+    const snapshot = queueLocalPosCatalogSnapshot(payload.outlet_id || inventory?.outlet_id || null, queueId);
+    return { success: true, id: localMenuItemId, menu_item_id: localMenuItemId, offline: true, queued: true, catalog_snapshot_id: snapshot.snapshot_id };
+  }
   const { data: result, error } = await state.supabase.rpc('save_bar_pos_product_with_packs', { payload });
   if (error) throw new Error(error.message);
   if (!result?.success) throw new Error(result?.error || 'Could not save Bar product and packs');
@@ -979,7 +1235,22 @@ export async function getPendingPosSubmitAttempt({ lodgeId, userId } = {}) {
   const attempt = getPendingSubmitAttemptRecord({ lodgeId, userId });
   if (!attempt?.orderId) return null;
   if (state.isOnline) {
-    const existing = await getPosOrderById(attempt.orderId).catch(() => null);
+    // Recovery must distinguish a confirmed absence from a failed/unauthorized
+    // lookup. Treating either error as "not found" would let an operator retry
+    // an order whose original server outcome was never actually checked.
+    const { data: existing, error } = await state.supabase.
+    from('pos_orders').
+    select('*').
+    eq('lodge_id', state.lodgeId).
+    eq('id', attempt.orderId).
+    maybeSingle();
+    if (error) {
+      return {
+        success: false,
+        code: 'pos_submit_recovery_server_check_failed',
+        error: `The server could not verify whether sale attempt ${attempt.submitIntentId} was recorded. Do not retry or enter a replacement sale until this check succeeds.`
+      };
+    }
     if (existing && !existing._pending_sync) {
       clearPosSubmitAttemptRecord(attempt.submitIntentId);
       return {
@@ -1025,11 +1296,19 @@ async function getPosOrderWithItemsById(id) {
 
 export async function createPosOrder(data) {
   try {
+    const operatorProof = String(data?._operator_proof || '').trim() || null;
+    data = { ...(data || {}) };
+    delete data._operator_proof;
+    const tabScope = getCachedTabScope();
+    if (!state.isOnline && data.tab_id && (!tabScope.known || tabScope.isBar)) {
+      throw new Error('Bar tab sales require a live connection so the assigned waiter and active Till shift can be confirmed. Counter sales may continue offline.');
+    }
     const items = data.items || [];
     const totals = buildPosTotals(items, data);
     const total = totals.total;
     const paymentBreakdown = normalizePaymentBreakdown(data.payment_breakdown || data.payments, data.payment_method || 'cash', total);
     const paymentMethod = data.payment_method || (paymentBreakdown.length > 1 ? 'split' : paymentBreakdown[0]?.method || 'cash');
+    await enforceBarBaseTenderBoundary(data, paymentBreakdown, paymentMethod);
     validateProviderPaymentReferences(paymentBreakdown, paymentMethod);
     const callerOrderId = String(data?.id || '').trim();
     const callerSubmitIntentId = String(data?.submit_intent_id || '').trim();
@@ -1056,7 +1335,7 @@ export async function createPosOrder(data) {
         userId: state.currentUser?.id || null,
         payload: rpcPayload
       });
-      if (resolution.conflict) return { success: false, code: 'idempotency_conflict', error: resolution.error };
+      if (resolution.conflict) return { success: false, code: resolution.code || 'idempotency_conflict', error: resolution.error };
       attemptResolution = resolution;
       attemptRecord = resolution.attempt;
       return null;
@@ -1094,6 +1373,9 @@ export async function createPosOrder(data) {
 
     // Offline path: queue v3 payload (server resolves prices from catalog on replay)
     if (!state.isOnline) {
+      if (data.tab_id && isBarTabScopeCached()) {
+        throw new Error('Bar tab sales require a live connection so the assigned waiter and active Till operator proof can be confirmed. Counter sales may continue offline.');
+      }
       // If a booking_id was explicitly provided, verify it exists in cache
       if (data.booking_id && !cachedBooking) {
         throw new Error(`Booking ${data.booking_id} not found locally. Sync the latest bookings and try again.`);
@@ -1107,13 +1389,16 @@ export async function createPosOrder(data) {
       }
       // Resolve catalog snapshot for offline (from cache)
       let offlineCatalogSnapshotId = data.catalog_snapshot_id || null;
+      let offlineCatalogSnapshot = null;
       if (!offlineCatalogSnapshotId) {
         const cachedSnapshots = readCache('pos-catalog-snapshots');
-        const cachedSnapshot = (Array.isArray(cachedSnapshots) ? cachedSnapshots : []).find((entry) =>
+        offlineCatalogSnapshot = (Array.isArray(cachedSnapshots) ? cachedSnapshots : []).find((entry) =>
           entry?.success === true &&
           (entry?.outlet_id || null) === (data.outlet_id || null)
         );
-        offlineCatalogSnapshotId = cachedSnapshot?.snapshot_id || null;
+        offlineCatalogSnapshotId = offlineCatalogSnapshot?.snapshot_id || null;
+      } else {
+        offlineCatalogSnapshot = (readCache('pos-catalog-snapshots') || []).find((entry) => entry?.snapshot_id === offlineCatalogSnapshotId) || null;
       }
       if (!offlineCatalogSnapshotId) {
         throw new Error('No catalog snapshot available offline. Connect to the internet, publish a catalog, then retry.');
@@ -1193,6 +1478,12 @@ export async function createPosOrder(data) {
         ? attemptRecord.payload
         : v3OfflinePayload;
 
+      const cachedShift = readPosShifts().find((shift) => shift.id === data.shift_id) || null;
+      const orderDependencies = [
+        offlineCatalogSnapshot?._pending_sync ? offlineCatalogSnapshot._queue_id : null,
+        cachedShift?._pending_sync ? (cachedShift._queue_id || `pos-shift-${cachedShift.id}`) : null,
+        cachedBooking?._pending_sync ? `booking-${cachedBooking.id}` : null
+      ].filter(Boolean);
       queueOperation('rpc', 'create_pos_order_v3', {
         payload: {
           ...effectiveOfflinePayload,
@@ -1200,7 +1491,7 @@ export async function createPosOrder(data) {
         }
       }, null, {
         _queue_id: `pos-order-${id}`,
-        ...(cachedBooking?._pending_sync ? { _depends_on: `booking-${cachedBooking.id}` } : {})
+        ...(orderDependencies[0] ? { _depends_on: orderDependencies[0], _depends_on_all: orderDependencies } : {})
       });
 
       // Recipe stock depletion is server-authoritative inside create_pos_order_v3
@@ -1371,7 +1662,7 @@ export async function createPosOrder(data) {
     // All DB writes are delegated to a single Postgres transaction via RPC.
     // If any step fails, Postgres rolls back the entire operation automatically.
     const { data: result, error } = await state.supabase.rpc('create_pos_order_v3', {
-      payload: v3Payload
+      payload: operatorProof ? { ...v3Payload, _operator_proof: operatorProof } : v3Payload
     });
 
     if (error) throw new Error(error.message);
@@ -1410,6 +1701,7 @@ export async function createPosOrder(data) {
         resultCode.startsWith('till_operator_') ||
         resultCode === 'till_shift_closed' ||
         resultCode === 'shift_not_open' ||
+        resultCode === 'pos_submit_recovery_required' ||
         resultCode === 'idempotency_conflict' ||
         resultCode === 'idempotency_expired';
       if (!outcomeMayStillBeAmbiguous) {
@@ -2003,8 +2295,13 @@ export async function createPosCashupSession(payload = {}) {
     return { success: true, id: saved.id, row: saved };
   }
 
+  const cashupDependencies = [
+    ...(readSyncQueue().filter((item) => item?.table === 'create_pos_order_v3' && item?.data?.payload?.shift_id === payload.shift_id).map((item) => item._queue_id)),
+    ...(readPosShifts().find((shift) => shift.id === payload.shift_id)?._pending_sync ? [`pos-shift-${payload.shift_id}`] : [])
+  ];
   queueOperation('rpc', 'finalize_pos_shift_cashup_v2', { payload: rpcPayload }, null, {
-    _queue_id: `pos-cashup-${id}`
+    _queue_id: `pos-cashup-${id}`,
+    ...(cashupDependencies[0] ? { _depends_on: cashupDependencies[0], _depends_on_all: cashupDependencies } : {})
   });
   const saved = upsertLocalPosCashup({ ...row, _pending_sync: true, _sync_state: 'pending' });
   return { success: true, id: saved.id, row: saved, offline: true, provisional: true };
@@ -2025,8 +2322,34 @@ function writePosTabs(rows = [], { invalidate = true } = {}) {
 
 const ACTIVE_TABLE_TAB_STATUSES = new Set(['open', 'running', 'ready', 'delivered']);
 
+// A named bar tab is a POS tab even when it is not attached to a physical
+// table. Keep this operational status predicate separate from the table-only
+// helper below: table occupancy must still require table_name, while Open
+// Tabs must include both table checks and named tabs.
+function isActivePosTab(row = {}) {
+  return ACTIVE_TABLE_TAB_STATUSES.has(normalizeTabStatus(row.status));
+}
+
 function normalizeTableName(value) {
   return String(value || '').trim();
+}
+
+function getCachedTabScope() {
+  const cached = readCache('settings');
+  const settings = Array.isArray(cached) ? cached[0] : cached;
+  if (!settings || typeof settings !== 'object') return { known: false, isBar: false };
+  return {
+    known: true,
+    isBar: isBarOnlyMode(settings) || settings.operating_profile?.commercial_package_key === 'bar_pos'
+  };
+}
+
+function isBarTabScopeCached() {
+  return getCachedTabScope().isBar;
+}
+
+function isTabScopeUnknown() {
+  return !getCachedTabScope().known;
 }
 
 function normalizeTabStatus(value, fallback = 'open') {
@@ -2080,7 +2403,7 @@ function applyPosTabFilters(rows = [], filters = {}) {
   return (Array.isArray(rows) ? rows : []).filter((row) => {
     if (outletId && row?.outlet_id !== outletId) return false;
     if (!status) return true;
-    if (status === 'active') return isActiveTableTab(row);
+    if (status === 'active') return isActivePosTab(row);
     return String(row?.status || '').trim().toLowerCase() === status;
   });
 }
@@ -2133,6 +2456,9 @@ export async function getPosTabs(filters = {}) {
 }
 
 export async function savePosTab(data = {}) {
+  const operatorProof = String(data?._operator_proof || '').trim() || null;
+  data = { ...data };
+  delete data._operator_proof;
   const status = normalizeTabStatus(data.status, normalizeTableName(data.table_name) ? 'running' : 'open');
   if (ACTIVE_TABLE_TAB_STATUSES.has(status) && (!data.waiter_id || !normalizeTableName(data.waiter_name) || !data.shift_id)) {
     return { success: false, error: 'Unlock Till with the serving staff PIN and start their shift before holding an open check.' };
@@ -2176,7 +2502,7 @@ export async function savePosTab(data = {}) {
 
   if (state.isOnline && state.supabase) {
     try {
-      const { data: rpcData, error } = await state.supabase.rpc('upsert_pos_tab', { payload: row });
+      const { data: rpcData, error } = await state.supabase.rpc('upsert_pos_tab', { payload: operatorProof ? { ...row, _operator_proof: operatorProof } : row });
       if (error) throw new Error(error.message);
       if (!rpcData?.success) {
         writePosTabs(readPosTabs().filter((entry) => entry.id !== row.id));
@@ -2201,6 +2527,10 @@ export async function savePosTab(data = {}) {
       return { success: false, error: error?.message || 'Could not confirm the open check. Check the Till unlock and shift, then try again.' };
     }
   } else {
+    if (isBarTabScopeCached() || isTabScopeUnknown()) {
+      writePosTabs(readPosTabs().filter((entry) => entry.id !== row.id));
+      return { success: false, error: 'Tab changes require a live connection so the package scope, assigned waiter, and active Till shift can be confirmed.' };
+    }
     queueOperation('rpc', 'upsert_pos_tab', { payload: row }, null, {
       _queue_id: `pos-tab-${id}`
     });
@@ -2221,7 +2551,8 @@ export async function updatePosTabStatus(id, status = 'closed', extra = {}) {
       const { data: rpcData, error } = await state.supabase.rpc('update_pos_tab_status', {
         p_tab_id: id,
         p_status: nextStatus,
-        p_notes: extra.notes || null
+        p_notes: extra.notes || null,
+        p_operator_proof: extra._operator_proof || null
       });
       if (error) throw new Error(error.message);
       if (rpcData?.success === false) throw new Error(rpcData.error || 'The server rejected this tab status change.');
@@ -2236,9 +2567,20 @@ export async function updatePosTabStatus(id, status = 'closed', extra = {}) {
       return { success: false, error: error?.message || 'Could not confirm the tab status change with the server.' };
     }
   } else {
+    // Bar ownership/current-shift proof cannot safely survive a replay under a
+    // different desktop actor. Preserve the older restaurant queue contract,
+    // but fail closed for the Bar package where the assigned waiter is part of
+    // the authoritative mutation boundary.
+    if (isBarTabScopeCached() || isTabScopeUnknown()) {
+      return { success: false, error: 'Tab status changes require a live connection so the package scope, assigned waiter, and active Till shift can be confirmed.' };
+    }
     const pending = { ...updated, _pending_sync: true, financial_complete: false, _financial_complete: false };
     upsertLocalPosTab(pending);
-    queueOperation('rpc', 'update_pos_tab_status', { p_tab_id: id, p_status: nextStatus, p_notes: extra.notes || null }, null, {
+    queueOperation('rpc', 'update_pos_tab_status', {
+      p_tab_id: id,
+      p_status: nextStatus,
+      p_notes: extra.notes || null
+    }, null, {
       _queue_id: `pos-tab-status-${id}-${nextStatus}`
     });
     appendPosAudit('tab_status_updated', { entity_type: 'pos_tab', entity_id: id, details: { status: nextStatus, table_name: updated.table_name || null, source: 'offline_queue' } });
@@ -2246,8 +2588,50 @@ export async function updatePosTabStatus(id, status = 'closed', extra = {}) {
   }
 }
 
-export async function closePosTab(id, status = 'closed') {
-  return updatePosTabStatus(id, status);
+export async function transferPosTabWaiter(data = {}) {
+  const tabId = String(data.tab_id || data.id || '').trim();
+  const targetWaiterId = String(data.target_waiter_id || '').trim();
+  const targetShiftId = String(data.target_shift_id || '').trim();
+  const operationId = String(data.operation_id || randomUUID()).trim();
+  const current = readPosTabs().find((row) => row.id === tabId) || null;
+  if (!current) return { success: false, error: 'Open table tab not found. Refresh open tabs and try again.' };
+  if (!current.waiter_id) {
+    return { success: false, error: 'This tab has no assigned waiter. Refresh open tabs and assign a serving waiter first.' };
+  }
+  if (!targetWaiterId || !targetShiftId || targetWaiterId === current.waiter_id) {
+    return { success: false, error: 'Choose another active waiter and their current Till shift.' };
+  }
+  const expectedVersion = Number(data.expected_tab_version ?? data.tab_version ?? current.tab_version);
+  if (!Number.isInteger(expectedVersion) || expectedVersion < 1) {
+    return { success: false, error: 'Refresh this tab before transferring it so its current version can be confirmed.' };
+  }
+  const rpcArgs = {
+    p_tab_id: tabId,
+    p_target_waiter_id: targetWaiterId,
+    p_target_shift_id: targetShiftId,
+    p_operation_id: operationId,
+    p_expected_tab_version: expectedVersion,
+    p_notes: data.notes ? String(data.notes).trim() : null,
+    p_operator_proof: data._operator_proof || null
+  };
+  if (state.isOnline && state.supabase) {
+    try {
+      const { data: rpcData, error } = await state.supabase.rpc('transfer_pos_tab_waiter', rpcArgs);
+      if (error) throw new Error(error.message);
+      if (rpcData?.success === false) return rpcData;
+      const remoteRow = rpcData?.tab || null;
+      if (remoteRow?.id) upsertLocalPosTab({ ...remoteRow, _pending_sync: false, _sync_state: 'synced' });
+      return { ...(rpcData || {}), success: true, tab: remoteRow || current, operation_id: operationId };
+    } catch (error) {
+      return { success: false, error: error?.message || 'Could not confirm the waiter transfer with the server. Retry with the same transfer key.' };
+    }
+  }
+
+  return { success: false, error: 'Bar waiter transfers require a live connection so ownership, target attendance, and the active Till shift can be confirmed.' };
+}
+
+export async function closePosTab(id, status = 'closed', extra = {}) {
+  return updatePosTabStatus(id, status, extra);
 }
 
 export async function overridePosTableTab(data = {}) {
@@ -2259,14 +2643,19 @@ export async function overridePosTableTab(data = {}) {
   const source = rows.find((row) => row.id === sourceId);
   if (!source) return { success: false, error: 'Open table tab not found.' };
 
+  if ((isBarTabScopeCached() || isTabScopeUnknown()) && (action === 'transfer' || action === 'merge')) {
+    return { success: false, error: 'Client-side table transfer/merge is disabled until the package scope is confirmed. Use the server-authoritative waiter transfer action.' };
+  }
+
   if (action === 'close') {
     return updatePosTabStatus(sourceId, 'closed', {
-      notes: [source.notes, data.reason || 'Manager closed stuck table'].filter(Boolean).join('\n')
+      notes: [source.notes, data.reason || 'Assigned waiter closed table'].filter(Boolean).join('\n'),
+      _operator_proof: data._operator_proof || null
     });
   }
 
   if (action === 'deliver') {
-    return updatePosTabStatus(sourceId, 'delivered');
+    return updatePosTabStatus(sourceId, 'delivered', { _operator_proof: data._operator_proof || null });
   }
 
   if (action === 'transfer') {
@@ -2322,6 +2711,7 @@ export async function overridePosTableTab(data = {}) {
 }
 
 export async function splitBillByItems(data = {}) {
+  if (isBarTabScopeCached() || isTabScopeUnknown()) return { success: false, error: 'Item splits require the server-authoritative split contract; client-side tab composition is disabled until package scope is confirmed.' };
   const { source_tab_id, item_indices, target_table_name } = data || {};
   if (!source_tab_id) return { success: false, error: 'Source tab is required.' };
   if (!Array.isArray(item_indices) || item_indices.length === 0) return { success: false, error: 'Select at least one item to split.' };
@@ -2431,7 +2821,8 @@ export async function splitBillEvenly(data = {}) {
       split_count: numSplits,
       target_table_names: Array.isArray(target_table_names) ? target_table_names : [],
       source_tab_version: source_tab_version == null ? null : Number(source_tab_version),
-      idempotency_key: data.idempotency_key || randomUUID()
+      idempotency_key: data.idempotency_key || randomUUID(),
+      _operator_proof: data._operator_proof || null
     }
   });
   if (rpcError) return { success: false, error: rpcError.message };
@@ -2450,7 +2841,30 @@ export async function splitBillEvenly(data = {}) {
 
 export async function submitPosCashup(payload = {}) {
   if (!state.isOnline || !state.supabase) {
-    return { success: false, error: 'Cash-up submission needs an internet connection so it can be reviewed safely.' };
+    const shift = readPosShifts().find((row) => row.id === payload.shift_id);
+    if (!shift || shift.status !== 'open') return { success: false, error: 'An open Till shift is required before cash-up can be submitted.' };
+    const key = payload.idempotency_key || `pos-cashup-submit:${randomUUID()}`;
+    const existing = readPosCashupSubmissions().find((row) => row.idempotency_key === key);
+    if (existing) return { success: true, submission_id: existing.id, status: existing.status, replayed: true, offline: true };
+    const submission = upsertPosCashupSubmission({
+      id: randomUUID(), lodge_id: state.lodgeId, shift_id: shift.id, outlet_id: shift.outlet_id || null,
+      cashier_id: shift.cashier_id || state.currentUser?.id || null,
+      cashier_name: shift.cashier_name || state.currentUser?.name || state.currentUser?.email || null,
+      counted_by_method: { cash: normalizeMoney(payload.counted_by_method?.cash || 0) },
+      expected_cash_drawer: null, expected_by_method: null, notes: payload.notes || null,
+      submitted_by: state.currentUser?.id || null, idempotency_key: key, status: 'submitted',
+      submitted_at: new Date().toISOString(), _pending_sync: true, _sync_state: 'pending',
+      _queue_id: `pos-cashup-submission-${key}`
+    });
+    const dependencies = [
+      shift._pending_sync ? (shift._queue_id || `pos-shift-${shift.id}`) : null,
+      ...readSyncQueue().filter((item) => item?.table === 'create_pos_order_v3' && item?.data?.payload?.shift_id === shift.id).map((item) => item._queue_id)
+    ].filter(Boolean);
+    queueOperation('rpc', 'submit_pos_shift_cashup', { payload: { ...payload, lodge_id: state.lodgeId, idempotency_key: key } }, null, {
+      _queue_id: submission._queue_id,
+      ...(dependencies[0] ? { _depends_on: dependencies[0], _depends_on_all: dependencies } : {})
+    });
+    return { success: true, submission_id: submission.id, status: 'submitted', submission, offline: true, queued: true, provisional: true };
   }
   const { data, error } = await state.supabase.rpc('submit_pos_shift_cashup', {
     payload: { ...payload, lodge_id: state.lodgeId }
@@ -2460,14 +2874,45 @@ export async function submitPosCashup(payload = {}) {
 }
 
 export async function submitPosCashupWithAttendancePin(payload = {}) {
-  if (!state.isOnline || !state.supabase) return { success: false, error: 'Shared-terminal cash-up needs an internet connection.' };
+  if (!state.isOnline || !state.supabase) {
+    const shift = readPosShifts().find((row) => row.id === payload.shift_id);
+    if (!shift || shift.status !== 'open') return { success: false, error: 'This staff member has no open Till shift.' };
+    const verified = validateCachedPosPin(shift.cashier_id, payload.pin);
+    if (!verified.success) return verified;
+    const key = payload.idempotency_key || `pos-shared-cashup:${randomUUID()}`;
+    const existing = readPosCashupSubmissions().find((row) => row.idempotency_key === key);
+    if (existing) return { success: true, submission_id: existing.id, status: existing.status, replayed: true, offline: true };
+    const submission = upsertPosCashupSubmission({
+      id: randomUUID(), lodge_id: state.lodgeId, shift_id: shift.id, outlet_id: shift.outlet_id || null,
+      cashier_id: shift.cashier_id, cashier_name: shift.cashier_name || verified.staff.name,
+      counted_by_method: { cash: normalizeMoney(payload.counted_by_method?.cash || 0) },
+      expected_cash_drawer: null, expected_by_method: null, notes: payload.notes || null,
+      submitted_by: shift.cashier_id, idempotency_key: key, status: 'submitted',
+      submitted_at: new Date().toISOString(), _pending_sync: true, _sync_state: 'pending',
+      _queue_id: `pos-cashup-submission-${key}`
+    });
+    const dependencies = [
+      shift._pending_sync ? (shift._queue_id || `pos-shift-${shift.id}`) : null,
+      ...readSyncQueue().filter((item) => item?.table === 'create_pos_order_v3' && item?.data?.payload?.shift_id === shift.id).map((item) => item._queue_id)
+    ].filter(Boolean);
+    queueOperation('rpc', 'submit_pos_shift_cashup_with_attendance_pin', { payload: {
+      ...payload, lodge_id: state.lodgeId, idempotency_key: key, device_id: getDesktopPosDeviceId()
+    } }, null, {
+      _queue_id: submission._queue_id,
+      ...(dependencies[0] ? { _depends_on: dependencies[0], _depends_on_all: dependencies } : {})
+    });
+    return { success: true, submission_id: submission.id, status: 'submitted', submission, offline: true, queued: true, provisional: true };
+  }
   const { data, error } = await state.supabase.rpc('submit_pos_shift_cashup_with_attendance_pin', { payload: { ...payload, lodge_id: state.lodgeId, device_id: getDesktopPosDeviceId() } });
   if (error) throw new Error(error.message);
   return data || { success: false, error: 'Could not submit the shared-terminal cash-up.' };
 }
 
 export async function getMyPosCashupSubmission(shiftId) {
-  if (!shiftId || !state.isOnline || !state.supabase) return { success: true, submission: null };
+  if (!shiftId) return { success: true, submission: null };
+  if (!state.isOnline || !state.supabase) {
+    return { success: true, submission: readPosCashupSubmissions().find((row) => row.shift_id === shiftId) || null, offline: true };
+  }
   const { data, error } = await state.supabase.rpc('get_my_pos_cashup_submission', {
     p_lodge_id: state.lodgeId, p_shift_id: shiftId
   });
@@ -2493,14 +2938,47 @@ export async function getMyPosCashupSubmission(shiftId) {
 }
 
 export async function getPendingPosCashupSubmissions() {
-  if (!state.isOnline || !state.supabase) return { success: false, error: 'Cash-up review needs an internet connection.' };
+  if (!state.isOnline || !state.supabase) {
+    return { success: true, submissions: readPosCashupSubmissions().filter((row) => row.status === 'submitted'), offline: true, complete: false };
+  }
   const { data, error } = await state.supabase.rpc('get_pending_pos_cashup_submissions', { p_lodge_id: state.lodgeId });
   if (error) throw new Error(error.message);
-  return data || { success: true, submissions: [] };
+  const result = data || { success: true, submissions: [] };
+  if (Array.isArray(result.submissions)) writePosCashupSubmissions(result.submissions);
+  return result;
 }
 
 export async function reviewPosCashupSubmission(payload = {}) {
-  if (!state.isOnline || !state.supabase) return { success: false, error: 'Cash-up review needs an internet connection.' };
+  if (!state.isOnline || !state.supabase) {
+    const submission = readPosCashupSubmissions().find((row) => row.id === payload.submission_id);
+    if (!submission) return { success: false, error: 'Cash-up submission not found in the offline cache.' };
+    const verified = validateCachedPosPin(state.currentUser?.id, payload.manager_pin, { manager: true });
+    if (!verified.success) return verified;
+    const decision = String(payload.decision || '').toLowerCase();
+    if (!['approve', 'reject'].includes(decision)) return { success: false, error: 'Choose approve or return for correction.' };
+    if (decision === 'reject' && !String(payload.notes || '').trim()) return { success: false, error: 'A correction note is required.' };
+    const updated = upsertPosCashupSubmission({
+      ...submission, status: decision === 'approve' ? 'approved' : 'rejected',
+      review_notes: payload.notes || null, reviewed_at: new Date().toISOString(), reviewed_by: state.currentUser?.id || null,
+      _pending_sync: true, _sync_state: 'pending'
+    });
+    if (decision === 'approve') {
+      writePosShifts(readPosShifts().map((row) => row.id === submission.shift_id ? {
+        ...row, status: 'closed', closed_at: new Date().toISOString(), _pending_sync: true, _sync_state: 'pending'
+      } : row));
+    }
+    const queueId = `pos-cashup-review-${submission.id}-${decision}`;
+    queueOperation('rpc', 'review_pos_cashup_submission_offline', { payload: {
+      lodge_id: state.lodgeId, submission_id: submission._pending_sync ? null : submission.id,
+      submission_idempotency_key: submission.idempotency_key || null,
+      decision, notes: payload.notes || null, manager_pin: payload.manager_pin,
+      idempotency_key: payload.idempotency_key || queueId, device_id: getDesktopPosDeviceId()
+    } }, null, {
+      _queue_id: queueId,
+      ...(submission._pending_sync ? { _depends_on: submission._queue_id } : {})
+    });
+    return { success: true, submission: updated, offline: true, queued: true, provisional: true };
+  }
   const { data, error } = await state.supabase.rpc('review_pos_cashup_submission', {
     payload: { ...payload, lodge_id: state.lodgeId, device_id: getDesktopPosDeviceId() }
   });
@@ -2818,6 +3296,7 @@ function buildPrepTicketsForOrder(order = {}, items = []) {
     order_id: order.id,
     outlet_id: order.outlet_id || null,
     station,
+    service_mode: order.service_mode || (order.tab_id || order.tab_name ? 'tab' : 'counter'),
     status: 'new',
     table_name: order.table_name || null,
     tab_name: order.tab_name || null,
@@ -2885,6 +3364,7 @@ export async function getPosTickets(filters = {}) {
 export async function updatePosTicketStatus(id, status) {
   const allowed = new Set(['new', 'preparing', 'ready', 'served', 'cancelled']);
   const nextStatus = allowed.has(status) ? status : 'new';
+  const operationId = `ticket:${id}:${nextStatus}`;
   const previousTickets = readPosTickets();
   const previousTicket = previousTickets.find((t) => t.id === id);
 
@@ -2893,7 +3373,8 @@ export async function updatePosTicketStatus(id, status) {
       const { data, error } = await state.supabase.rpc('update_pos_prep_ticket_status', {
         p_ticket_id: id,
         p_status: nextStatus,
-        p_lodge_id: state.lodgeId
+        p_lodge_id: state.lodgeId,
+        p_operation_id: operationId
       });
       if (error) throw new Error(error.message);
       if (data?.success === false) {
@@ -3014,12 +3495,155 @@ export async function openPosShift(data = {}) {
     return { success: true, shift: confirmed, already_open: result?.already_open === true };
   }
 
-  writePosShifts([row, ...readPosShifts()]);
-  return { success: true, shift: row };
+  const queueId = `pos-shift-${row.id}`;
+  const attendance = readAttendanceShifts().find((entry) =>
+    entry.staff_user_id === operatorId && entry.status === 'active'
+  ) || null;
+  const pendingRow = {
+    ...row,
+    attendance_shift_id: attendance?.id || null,
+    _pending_sync: true,
+    _sync_state: 'pending',
+    _queue_id: queueId
+  };
+  writePosShifts([pendingRow, ...readPosShifts().filter((shift) => shift.id !== row.id)]);
+  queueOperation('rpc', 'open_pos_shift_with_id', {
+    payload: {
+      shift_id: row.id,
+      lodge_id: state.lodgeId,
+      outlet_id: row.outlet_id,
+      cashier_id: row.cashier_id,
+      cashier_name: row.cashier_name,
+      opening_float: row.opening_float,
+      notes: row.notes,
+      attendance_shift_id: attendance?.id || null,
+      create_idempotency_key: data.create_idempotency_key || data.idempotency_key || row.id
+    }
+  }, null, {
+    _queue_id: queueId,
+    ...(attendance?._pending_sync ? { _depends_on: attendance._queue_id || `attendance-shift-${attendance.id}` } : {})
+  });
+  return { success: true, shift: pendingRow, offline: true, queued: true, provisional: true };
+}
+
+export async function updatePosTicketStatusWithOperation(id, status, operationId) {
+  const nextStatus = String(status || 'new').trim().toLowerCase();
+  const key = String(operationId || '').trim();
+  if (!id || !key) return { success: false, error: 'A stable ticket operation key is required.' };
+  if (!state.isOnline || !state.supabase || !state.lodgeId) return { success: false, error: 'Ticket status updates require an internet connection.' };
+  const { data, error } = await state.supabase.rpc('update_pos_prep_ticket_status', {
+    p_ticket_id: id,
+    p_status: nextStatus,
+    p_lodge_id: state.lodgeId,
+    p_operation_id: key
+  });
+  if (error) throw new Error(error.message);
+  if (data?.success === false) return data;
+  if (data?.ticket?.id) {
+    writePosTickets(readPosTickets().map((ticket) => ticket.id === id ? data.ticket : ticket));
+    updateTableTabStatusByTicket(data.ticket, nextStatus);
+  }
+  return data || { success: false, error: 'Could not update this ticket.' };
+}
+
+export async function getPosVoidReasonTemplates() {
+  if (!state.isOnline || !state.supabase || !state.lodgeId) return [];
+  const { data, error } = await state.supabase.rpc('get_pos_void_reason_templates', { p_lodge_id: state.lodgeId });
+  if (error) throw new Error(error.message);
+  return Array.isArray(data) ? data : [];
+}
+
+export async function savePosVoidReasonTemplate(data = {}) {
+  if (!state.isOnline || !state.supabase || !state.lodgeId) return { success: false, error: 'Void-reason templates require an internet connection.' };
+  const operationId = String(data.idempotency_key || data.operation_id || randomUUID()).trim();
+  const { data: result, error } = await state.supabase.rpc('save_pos_void_reason_template', {
+    payload: { ...data, lodge_id: state.lodgeId, idempotency_key: operationId }
+  });
+  if (error) throw new Error(error.message);
+  return result || { success: false, error: 'Could not save void-reason template.' };
+}
+
+export async function getPosShiftHandoverNotes(shiftId = null) {
+  if (!state.isOnline || !state.supabase || !state.lodgeId) return [];
+  const { data, error } = await state.supabase.rpc('get_pos_shift_handover_notes', { p_lodge_id: state.lodgeId, p_shift_id: shiftId || null });
+  if (error) throw new Error(error.message);
+  return Array.isArray(data) ? data : [];
+}
+
+export async function savePosShiftHandoverNote(data = {}) {
+  if (!state.isOnline || !state.supabase || !state.lodgeId) return { success: false, error: 'Handover notes require an internet connection so the shared team sees one authoritative record.' };
+  const operationId = String(data.operation_id || data.idempotency_key || randomUUID()).trim();
+  const { data: result, error } = await state.supabase.rpc('upsert_pos_shift_handover_note', {
+    payload: { ...data, lodge_id: state.lodgeId, operation_id: operationId }
+  });
+  if (error) throw new Error(error.message);
+  return result || { success: false, error: 'Could not save handover note.' };
+}
+
+export async function attachPosCashupProof(data = {}) {
+  if (!state.isOnline || !state.supabase || !state.lodgeId) return { success: false, error: 'Cash-up proof attachments require a live connection.' };
+  const submissionId = String(data.submission_id || '').trim();
+  const mimeType = String(data.mime_type || '').trim().toLowerCase();
+  const allowed = new Set(['application/pdf', 'image/jpeg', 'image/png']);
+  if (!submissionId || !/^[0-9a-f-]{36}$/i.test(submissionId)) return { success: false, error: 'Cash-up submission identity is invalid.' };
+  if (!allowed.has(mimeType)) return { success: false, error: 'Choose a PDF, JPG or PNG proof.' };
+  const source = data.file_bytes || data.bytes || data.file_buffer;
+  if (!(source instanceof ArrayBuffer) && !ArrayBuffer.isView(source)) return { success: false, error: 'Proof bytes must be supplied as an ArrayBuffer.' };
+  const view = source instanceof ArrayBuffer ? new Uint8Array(source) : new Uint8Array(source.buffer, source.byteOffset, source.byteLength);
+  const bytes = Buffer.from(view);
+  if (!bytes.length || bytes.length > 8 * 1024 * 1024) return { success: false, error: 'Proof files must be between 1 byte and 8 MB.' };
+  const expectedHash = createHash('sha256').update(bytes).digest('hex');
+  const suppliedHash = String(data.sha256 || expectedHash).trim().toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(suppliedHash) || suppliedHash !== expectedHash) return { success: false, error: 'The proof file hash could not be verified.' };
+  const extension = mimeType === 'application/pdf' ? 'pdf' : mimeType === 'image/png' ? 'png' : 'jpg';
+  const operationId = String(data.idempotency_key || data.operation_id || `cashup-proof:${submissionId}:${suppliedHash}`).trim();
+  const objectKey = createHash('sha256').update(operationId).digest('hex').slice(0, 32);
+  const storagePath = `${state.lodgeId}/cashups/${submissionId}/${objectKey}.${extension}`;
+  const upload = await state.supabase.storage.from('private-cashup-proofs').upload(storagePath, bytes, { contentType: mimeType, upsert: false });
+  if (upload.error && !/already exists|duplicate|409/i.test(String(upload.error.message || upload.error))) return { success: false, error: 'Durable proof storage is unavailable. The cash-up was not changed.' };
+  try {
+    const { data: result, error } = await state.supabase.rpc('attach_pos_cashup_proof', {
+      payload: {
+        lodge_id: state.lodgeId,
+        submission_id: submissionId,
+        storage_path: storagePath,
+        file_name: String(data.file_name || `cashup-proof.${extension}`).replace(/[^a-zA-Z0-9._ -]/g, '').slice(0, 120) || `cashup-proof.${extension}`,
+        mime_type: mimeType,
+        byte_count: bytes.length,
+        sha256: suppliedHash,
+        idempotency_key: operationId
+      }
+    });
+    if (error) throw new Error(error.message);
+    if (result?.success === false) return result;
+    return result || { success: false, error: 'The uploaded proof could not be recorded.' };
+  } catch (error) {
+    throw new Error(`${error?.message || 'Cash-up proof metadata could not be recorded.'} Durable upload remains unregistered for supervisor recovery.`);
+  }
+}
+
+export async function getPosCashupProofAttachments(submissionId) {
+  if (!state.isOnline || !state.supabase || !state.lodgeId || !submissionId) throw new Error('Cash-up proof metadata requires a live authorized connection.');
+  const { data, error } = await state.supabase.rpc('get_pos_cashup_proof_attachments', { p_lodge_id: state.lodgeId, p_submission_id: submissionId });
+  if (error) throw new Error(error.message);
+  if (data?.success === false) throw new Error(data.error || 'Cash-up proof metadata is unavailable.');
+  return Array.isArray(data?.attachments) ? data.attachments : [];
+}
+
+export async function createPosCashupProofSignedUrl(submissionId, attachmentId) {
+  const attachments = await getPosCashupProofAttachments(submissionId);
+  const attachment = attachments.find((row) => row.id === attachmentId);
+  if (!attachment?.storage_path || !attachment.storage_bucket) throw new Error('Cash-up proof is not available for this authorized submission.');
+  const { data, error } = await state.supabase.storage.from(attachment.storage_bucket).createSignedUrl(attachment.storage_path, 60);
+  if (error || !data?.signedUrl) throw new Error(error?.message || 'A short-lived proof read could not be created.');
+  return { success: true, signed_url: data.signedUrl, expires_in_seconds: 60, attachment: { id: attachment.id, file_name: attachment.file_name, sha256: attachment.sha256, created_at: attachment.created_at } };
 }
 
 export async function getStaffOpenPosShift(staffId) {
-  if (!staffId || !state.isOnline || !state.supabase) return null;
+  if (!staffId) return null;
+  if (!state.isOnline || !state.supabase) {
+    return readPosShifts().find((row) => row.cashier_id === staffId && row.status === 'open') || null;
+  }
   const { data, error } = await state.supabase.rpc('get_staff_open_pos_shift', { p_lodge_id: state.lodgeId, p_staff_id: staffId });
   if (error) throw new Error(error.message);
   if (data?.success === false) throw new Error(data.error || 'Could not load the staff Till shift.');
@@ -3027,21 +3651,73 @@ export async function getStaffOpenPosShift(staffId) {
 }
 
 export async function getStaffPosCashupSubmission(shiftId) {
-  if (!shiftId || !state.isOnline || !state.supabase) return { success: true, submission: null };
+  if (!shiftId) return { success: true, submission: null };
+  if (!state.isOnline || !state.supabase) {
+    return { success: true, submission: readPosCashupSubmissions().find((row) => row.shift_id === shiftId) || null, offline: true };
+  }
   const { data, error } = await state.supabase.rpc('get_staff_pos_cashup_submission', { p_lodge_id: state.lodgeId, p_shift_id: shiftId });
   if (error) throw new Error(error.message);
   return data || { success: true, submission: null };
 }
 
 export async function activateSharedTillOperator({ staff_id, staffId, outlet_id, outletId, pin, idempotency_key, idempotencyKey } = {}) {
-  if (!state.isOnline || !state.supabase) throw new Error('Unlocking Till needs an internet connection so attendance can be confirmed.');
+  const resolvedStaffId = staff_id || staffId || null;
+  const resolvedOutletId = outlet_id || outletId || null;
+  const resolvedKey = idempotency_key || idempotencyKey || randomUUID();
+  if (!state.isOnline || !state.supabase) {
+    const verified = validateCachedPosPin(resolvedStaffId, pin);
+    if (!verified.success) return verified;
+    if (!resolvedOutletId) return { success: false, error: 'Choose an outlet before unlocking Till.' };
+    let attendance = readAttendanceShifts().find((row) => row.staff_user_id === resolvedStaffId && row.status === 'active') || null;
+    if (!attendance) {
+      const attendanceId = randomUUID();
+      const attendanceQueueId = `attendance-shift-${attendanceId}`;
+      attendance = upsertAttendanceShift({
+        id: attendanceId, lodge_id: state.lodgeId, staff_user_id: resolvedStaffId,
+        staff_name: verified.staff.name || verified.staff.email, role: verified.staff.role || 'bar',
+        clock_in: new Date().toISOString(), status: 'active', idempotency_key: `${resolvedKey}:attendance`,
+        _pending_sync: true, _sync_state: 'pending', _queue_id: attendanceQueueId
+      });
+      queueOperation('rpc', 'clock_in_staff_with_attendance_pin_offline', {
+        payload: {
+          lodge_id: state.lodgeId, shift_id: attendanceId, staff_user_id: resolvedStaffId,
+          pin, role: verified.staff.role || 'bar', idempotency_key: `${resolvedKey}:attendance`,
+          device_id: getDesktopPosDeviceId()
+        }
+      }, null, { _queue_id: attendanceQueueId });
+    }
+    const shiftId = randomUUID();
+    const shiftQueueId = `pos-shift-${shiftId}`;
+    const shift = {
+      id: shiftId, lodge_id: state.lodgeId, outlet_id: resolvedOutletId,
+      cashier_id: resolvedStaffId, cashier_name: verified.staff.name || verified.staff.email,
+      opening_float: 0, status: 'open', opened_at: new Date().toISOString(), closed_at: null,
+      attendance_shift_id: attendance.id, _pending_sync: true, _sync_state: 'pending', _queue_id: shiftQueueId
+    };
+    writePosShifts([shift, ...readPosShifts().filter((row) => row.id !== shiftId)]);
+    queueOperation('rpc', 'activate_shared_till_operator_offline', {
+      payload: {
+        lodge_id: state.lodgeId, staff_user_id: resolvedStaffId, outlet_id: resolvedOutletId,
+        pos_shift_id: shiftId, pin, idempotency_key: resolvedKey, device_id: getDesktopPosDeviceId()
+      }
+    }, null, {
+      _queue_id: shiftQueueId,
+      ...(attendance?._pending_sync ? { _depends_on: attendance._queue_id || `attendance-shift-${attendance.id}` } : {})
+    });
+    appendPosAudit('shared_till_unlocked_offline', { entity_type: 'pos_shift', entity_id: shiftId, details: { staff_id: resolvedStaffId, outlet_id: resolvedOutletId } });
+    return {
+      success: true, staff: verified.staff, shift, attendance_shift_id: attendance.id,
+      session: { outlet_id: resolvedOutletId, last_activity_at: Date.now() },
+      offline: true, queued: true, provisional: true
+    };
+  }
   const { data: result, error } = await state.supabase.rpc('activate_shared_till_operator', {
     payload: {
       lodge_id: state.lodgeId,
-      staff_user_id: staff_id || staffId || null,
-      outlet_id: outlet_id || outletId || null,
+      staff_user_id: resolvedStaffId,
+      outlet_id: resolvedOutletId,
       pin: String(pin || ''),
-      idempotency_key: idempotency_key || idempotencyKey || randomUUID(),
+      idempotency_key: resolvedKey,
       device_id: getDesktopPosDeviceId()
     }
   });
@@ -3049,7 +3725,37 @@ export async function activateSharedTillOperator({ staff_id, staffId, outlet_id,
   return result || { success: false, error: 'Could not unlock Till.' };
 }
 
+export async function touchSharedTillOperatorProof({ outlet_id, outletId, staff_id, staffId, shift_id, shiftId, operator_proof } = {}) {
+  if (!state.isOnline || !state.supabase) return { success: true, offline: true };
+  const { data, error } = await state.supabase.rpc('touch_pos_till_operator_proof', {
+    payload: {
+      lodge_id: state.lodgeId,
+      outlet_id: outlet_id || outletId || null,
+      staff_id: staff_id || staffId || null,
+      shift_id: shift_id || shiftId || null,
+      operator_proof: operator_proof || null
+    }
+  });
+  if (error) throw new Error(error.message);
+  return data || { success: false, error: 'The shared Till proof could not be renewed.' };
+}
+
 export async function linkMyPosShiftToAttendance({ pos_shift_id, attendance_shift_id } = {}) {
+  if (!state.isOnline || !state.supabase) {
+    const shift = readPosShifts().find((row) => row.id === pos_shift_id);
+    const attendance = readAttendanceShifts().find((row) => row.id === attendance_shift_id);
+    if (!shift || !attendance) return { success: false, error: 'The local Till or attendance shift could not be found.' };
+    writePosShifts(readPosShifts().map((row) => row.id === pos_shift_id ? { ...row, attendance_shift_id, _pending_sync: true } : row));
+    const queueId = `pos-shift-attendance-link-${pos_shift_id}`;
+    queueOperation('rpc', 'link_my_pos_shift_to_attendance', {
+      payload: { lodge_id: state.lodgeId, pos_shift_id, attendance_shift_id }
+    }, null, {
+      _queue_id: queueId,
+      _depends_on: shift._queue_id || `pos-shift-${pos_shift_id}`,
+      _depends_on_all: [shift._queue_id || `pos-shift-${pos_shift_id}`, attendance._queue_id || `attendance-shift-${attendance_shift_id}`]
+    });
+    return { success: true, offline: true, queued: true, provisional: true };
+  }
   const { data, error } = await state.supabase.rpc('link_my_pos_shift_to_attendance', { payload: { lodge_id: state.lodgeId, pos_shift_id, attendance_shift_id } });
   if (error) throw new Error(error.message); return data || { success: false };
 }
@@ -3066,10 +3772,35 @@ async function readAuthoritativeShiftClose(shiftId, idempotencyKey = null) {
 
 export async function closePosShift(data = {}) {
   if (!state.isOnline || !state.supabase) {
-    return {
-      success: false,
-      error: 'Closing a shift needs server confirmation. Reconnect and use Cash & close to finalize it; this local shift remains open until the server confirms closure.'
+    const shift = data.shift_id
+      ? readPosShifts().find((row) => row.id === data.shift_id)
+      : readPosShifts().find((row) => row.status === 'open' && (!data.outlet_id || row.outlet_id === data.outlet_id));
+    if (!shift) return { success: false, error: 'No open Till shift is available in the offline cache.' };
+    const cashupId = data.cashup_id || randomUUID();
+    const idempotencyKey = data.idempotency_key || `pos-cashup-close:${shift.id}`;
+    const queueId = `pos-cashup-close-${shift.id}`;
+    const dependencies = [
+      shift._pending_sync ? (shift._queue_id || `pos-shift-${shift.id}`) : null,
+      ...readSyncQueue().filter((item) => item?.table === 'create_pos_order_v3' && item?.data?.payload?.shift_id === shift.id).map((item) => item._queue_id)
+    ].filter(Boolean);
+    const payload = {
+      lodge_id: state.lodgeId, shift_id: shift.id, cashup_id: cashupId,
+      idempotency_key: idempotencyKey,
+      counted_by_method: { cash: normalizeMoney(data.closing_cash || 0) },
+      notes: data.notes || null
     };
+    queueOperation('rpc', 'finalize_pos_shift_cashup_v2', { payload }, null, {
+      _queue_id: queueId,
+      ...(dependencies[0] ? { _depends_on: dependencies[0], _depends_on_all: dependencies } : {})
+    });
+    const closed = {
+      ...shift, status: 'closed', closing_cash: payload.counted_by_method.cash,
+      closed_at: new Date().toISOString(), close_notes: payload.notes,
+      _pending_sync: true, _sync_state: 'pending', _server_closed: false, _queue_id: queueId
+    };
+    writePosShifts([closed, ...readPosShifts().filter((row) => row.id !== shift.id)]);
+    appendPosAudit('shift_close_queued_offline', { entity_type: 'pos_shift', entity_id: shift.id, details: { cashup_id: cashupId, outlet_id: shift.outlet_id || null } });
+    return { success: true, shift: closed, cashup_id: cashupId, offline: true, queued: true, provisional: true };
   }
 
   let shift = data.shift_id
@@ -3230,7 +3961,15 @@ export async function getPosHardwareSettings() {
 }
 
 export async function savePosHardwareSettings(data = {}) {
-  return { success: true, settings: writePosHardwareSettings(data) };
+  // Verification fields are written only by the trusted main-process hardware
+  // test event below. Renderer-provided settings must never self-attest setup.
+  const {
+    hardware_last_test_at: _ignoredAt,
+    hardware_last_test_kind: _ignoredKind,
+    hardware_last_test_success: _ignoredSuccess,
+    ...hardwareSettings
+  } = data || {};
+  return { success: true, settings: writePosHardwareSettings(hardwareSettings) };
 }
 
 export async function testPosHardware(kind = 'receipt') {
@@ -3315,6 +4054,13 @@ export async function verifyPosBarcodeScanner(data = {}) {
 }
 
 export async function recordPosHardwareEvent(action = 'hardware_event', details = {}) {
+  if (action === 'hardware_test') {
+    writePosHardwareSettings({
+      hardware_last_test_at: new Date().toISOString(),
+      hardware_last_test_kind: String(details.kind || 'receipt').slice(0, 64),
+      hardware_last_test_success: details.success === true
+    });
+  }
   return appendPosAudit(action, {
     entity_type: details.entity_type || 'pos_hardware',
     entity_id: details.entity_id || null,
@@ -3348,7 +4094,10 @@ export async function selectPosStaffWithPin(data = {}) {
   if (!staff.has_pin) return { success: false, error: 'This staff member does not have a POS PIN set.' };
   if (!pin) return { success: false, error: 'Staff PIN is required.' };
   if (!state.isOnline || !state.supabase) {
-    return { success: false, error: 'Staff PIN selection requires an internet connection.' };
+    const verified = validateCachedPosPin(staff.id, pin);
+    if (!verified.success) return verified;
+    appendPosAudit('staff_selected_offline', { staff_id: staff.id, staff_name: staff.name, entity_type: 'pos_staff' });
+    return { success: true, staff: { ...staff, ...verified.staff }, offline: true, provisional: true };
   }
   const { data: result, error } = await state.supabase.rpc('pos_validate_pin', {
     p_lodge_id: state.lodgeId,
@@ -3399,7 +4148,13 @@ export async function savePosModifierGroup(data = {}) {
   };
   if (!row.name) return { success: false, error: 'Modifier group name is required.' };
   if (!state.isOnline || !state.supabase) {
-    return { success: false, error: 'Modifier catalog changes require an internet connection.' };
+    const rows = [row, ...readPosModifierGroups().filter((entry) => entry.id !== row.id)];
+    writePosModifierGroups(rows);
+    const queueId = `pos-modifier-groups-${row.id}-${Date.now()}`;
+    queueOperation('rpc', 'upsert_pos_modifier_groups', { payload: { lodge_id: state.lodgeId, groups: rows } }, null, { _queue_id: queueId });
+    const snapshot = queueLocalPosCatalogSnapshot(null, queueId);
+    appendPosAudit('modifier_group_saved_offline', { entity_type: 'pos_modifier_group', entity_id: row.id, details: row });
+    return { success: true, group: { ...row, _pending_sync: true }, offline: true, queued: true, catalog_snapshot_id: snapshot.snapshot_id };
   }
   const rows = [row, ...readPosModifierGroups().filter((entry) => entry.id !== row.id)];
   const { data: result, error } = await state.supabase.rpc('upsert_pos_modifier_groups', {
@@ -3445,7 +4200,13 @@ export async function savePosPromotion(data = {}) {
   if (!row.name) return { success: false, error: 'Promotion name is required.' };
   if (!(row.discount_value > 0)) return { success: false, error: 'Promotion discount must be above zero.' };
   if (!state.isOnline || !state.supabase) {
-    return { success: false, error: 'Promotion changes require an internet connection.' };
+    const rows = [row, ...readPosPromotions().filter((entry) => entry.id !== row.id)];
+    writePosPromotions(rows);
+    const queueId = `pos-promotions-${row.id}-${Date.now()}`;
+    queueOperation('rpc', 'upsert_pos_promotions', { payload: { lodge_id: state.lodgeId, promotions: rows } }, null, { _queue_id: queueId });
+    const snapshot = queueLocalPosCatalogSnapshot(null, queueId);
+    appendPosAudit('promotion_saved_offline', { entity_type: 'pos_promotion', entity_id: row.id, details: row });
+    return { success: true, promotion: { ...row, _pending_sync: true }, offline: true, queued: true, catalog_snapshot_id: snapshot.snapshot_id };
   }
   const rows = [row, ...readPosPromotions().filter((entry) => entry.id !== row.id)];
   const { data: result, error } = await state.supabase.rpc('upsert_pos_promotions', {
@@ -4118,7 +4879,27 @@ export async function recordDelivery(deliveryData) {
 // ── Phase 5: Restaurant Operating System ─────────────────────
 
 export async function clockInStaff({ staff_user_id, staffUserId, role, expected_hours, expectedHours, idempotency_key, idempotencyKey } = {}) {
-  if (!state.isOnline || !state.supabase) throw new Error('Cannot clock in offline');
+  const resolvedStaffId = staff_user_id || staffUserId || null;
+  const resolvedKey = idempotency_key || idempotencyKey || randomUUID();
+  if (!state.isOnline || !state.supabase) {
+    const staff = getCachedPosUser(resolvedStaffId);
+    if (!staff || String(staff.status || 'active').toLowerCase() !== 'active') return { success: false, error: 'Active staff member not found in the offline cache.' };
+    const existing = readAttendanceShifts().find((row) => row.staff_user_id === resolvedStaffId && row.status === 'active');
+    if (existing) return { success: true, shift_id: existing.id, already_active: true, offline: true };
+    const shiftId = randomUUID();
+    const queueId = `attendance-shift-${shiftId}`;
+    upsertAttendanceShift({
+      id: shiftId, lodge_id: state.lodgeId, staff_user_id: resolvedStaffId,
+      staff_name: staff.name || staff.email, role: role || 'cashier', expected_hours: expected_hours ?? expectedHours ?? null,
+      clock_in: new Date().toISOString(), status: 'active', idempotency_key: resolvedKey,
+      _pending_sync: true, _sync_state: 'pending', _queue_id: queueId
+    });
+    queueOperation('rpc', 'clock_in_staff_offline', { payload: {
+      lodge_id: state.lodgeId, shift_id: shiftId, staff_user_id: resolvedStaffId,
+      role: role || 'cashier', expected_hours: expected_hours ?? expectedHours ?? null, idempotency_key: resolvedKey
+    } }, null, { _queue_id: queueId });
+    return { success: true, shift_id: shiftId, offline: true, queued: true, provisional: true };
+  }
 
   try {
     const { data: result, error } = await state.supabase.rpc('clock_in_staff', {
@@ -4139,7 +4920,28 @@ export async function clockInStaff({ staff_user_id, staffUserId, role, expected_
 }
 
 export async function clockInStaffWithAttendancePin({ staff_user_id, staffUserId, pin, role, expected_hours, expectedHours, idempotency_key, idempotencyKey } = {}) {
-  if (!state.isOnline || !state.supabase) throw new Error('Attendance PIN clock-in needs an internet connection.');
+  const resolvedStaffId = staff_user_id || staffUserId || null;
+  const resolvedKey = idempotency_key || idempotencyKey || randomUUID();
+  if (!state.isOnline || !state.supabase) {
+    const verified = validateCachedPosPin(resolvedStaffId, pin);
+    if (!verified.success) return verified;
+    const existing = readAttendanceShifts().find((row) => row.staff_user_id === resolvedStaffId && row.status === 'active');
+    if (existing) return { success: true, shift_id: existing.id, already_active: true, offline: true };
+    const shiftId = randomUUID();
+    const queueId = `attendance-shift-${shiftId}`;
+    upsertAttendanceShift({
+      id: shiftId, lodge_id: state.lodgeId, staff_user_id: resolvedStaffId,
+      staff_name: verified.staff.name || verified.staff.email, role: role || 'bar', expected_hours: expected_hours ?? expectedHours ?? null,
+      clock_in: new Date().toISOString(), status: 'active', idempotency_key: resolvedKey,
+      _pending_sync: true, _sync_state: 'pending', _queue_id: queueId
+    });
+    queueOperation('rpc', 'clock_in_staff_with_attendance_pin_offline', { payload: {
+      lodge_id: state.lodgeId, shift_id: shiftId, staff_user_id: resolvedStaffId, pin: String(pin || ''),
+      role: role || 'bar', expected_hours: expected_hours ?? expectedHours ?? null,
+      idempotency_key: resolvedKey, device_id: getDesktopPosDeviceId()
+    } }, null, { _queue_id: queueId });
+    return { success: true, shift_id: shiftId, offline: true, queued: true, provisional: true };
+  }
   const { data: result, error } = await state.supabase.rpc('clock_in_staff_with_attendance_pin', {
     payload: { lodge_id: state.lodgeId, staff_user_id: staff_user_id || staffUserId || null, pin: String(pin || ''), role, expected_hours: expected_hours ?? expectedHours ?? null, idempotency_key: idempotency_key || idempotencyKey || randomUUID(), device_id: getDesktopPosDeviceId() }
   });
@@ -4148,7 +4950,24 @@ export async function clockInStaffWithAttendancePin({ staff_user_id, staffUserId
 }
 
 export async function clockInSelfForPos({ role, idempotency_key, idempotencyKey } = {}) {
-  if (!state.isOnline || !state.supabase) throw new Error('Starting a service shift needs an internet connection.');
+  const resolvedKey = idempotency_key || idempotencyKey || randomUUID();
+  if (!state.isOnline || !state.supabase) {
+    const staffId = state.currentUser?.id || null;
+    const existing = readAttendanceShifts().find((row) => row.staff_user_id === staffId && row.status === 'active');
+    if (existing) return { success: true, shift_id: existing.id, already_active: true, offline: true };
+    const shiftId = randomUUID();
+    const queueId = `attendance-shift-${shiftId}`;
+    upsertAttendanceShift({
+      id: shiftId, lodge_id: state.lodgeId, staff_user_id: staffId,
+      staff_name: state.currentUser?.name || state.currentUser?.email, role: role || 'bar', expected_hours: 8,
+      clock_in: new Date().toISOString(), status: 'active', idempotency_key: resolvedKey,
+      _pending_sync: true, _sync_state: 'pending', _queue_id: queueId
+    });
+    queueOperation('rpc', 'clock_in_self_for_pos_offline', { payload: {
+      lodge_id: state.lodgeId, shift_id: shiftId, role: role || 'bar', idempotency_key: resolvedKey
+    } }, null, { _queue_id: queueId });
+    return { success: true, shift_id: shiftId, offline: true, queued: true, provisional: true };
+  }
   const { data: result, error } = await state.supabase.rpc('clock_in_self_for_pos', {
     payload: { lodge_id: state.lodgeId, role: role || 'waiter', idempotency_key: idempotency_key || idempotencyKey || randomUUID() }
   });
@@ -4156,17 +4975,29 @@ export async function clockInSelfForPos({ role, idempotency_key, idempotencyKey 
   return result || { success: false, error: 'Could not start attendance.' };
 }
 
-export async function clockOutStaff({ shiftId, notes } = {}) {
-  if (!state.isOnline || !state.supabase) throw new Error('Cannot clock out offline');
+export async function clockOutStaff({ shiftId, notes, idempotency_key, idempotencyKey } = {}) {
+  const resolvedKey = idempotency_key || idempotencyKey || randomUUID();
+  const payload = {
+    lodge_id: state.lodgeId,
+    shift_id: shiftId,
+    notes: notes || null,
+    idempotency_key: resolvedKey,
+    device_id: getDesktopPosDeviceId()
+  };
+  if (!state.isOnline || !state.supabase) {
+    const shift = readAttendanceShifts().find((row) => row.id === shiftId);
+    if (!shift) return { success: false, error: 'Attendance shift not found in the offline cache.' };
+    upsertAttendanceShift({ ...shift, status: 'completed', clock_out: new Date().toISOString(), notes: notes || shift.notes || null, _pending_sync: true, _sync_state: 'pending' });
+    const queueId = `attendance-clock-out-${shiftId}-${resolvedKey}`;
+    queueOperation('rpc', 'clock_out_staff_offline', { payload }, null, {
+      _queue_id: queueId,
+      ...(shift._pending_sync ? { _depends_on: shift._queue_id || `attendance-shift-${shiftId}` } : {})
+    });
+    return { success: true, offline: true, queued: true, provisional: true };
+  }
 
   try {
-    const { data: result, error } = await state.supabase.rpc('clock_out_staff', {
-      payload: {
-        lodge_id: state.lodgeId,
-        shift_id: shiftId,
-        notes: notes || null
-      }
-    });
+    const { data: result, error } = await state.supabase.rpc('clock_out_staff_offline', { payload });
     if (error) throw new Error(error.message);
     return result || { success: false, error: 'Unknown error' };
   } catch (error) {
@@ -4176,18 +5007,27 @@ export async function clockOutStaff({ shiftId, notes } = {}) {
 }
 
 export async function getActiveShifts() {
-  if (!state.isOnline || !state.supabase) return [];
+  if (!state.isOnline || !state.supabase) return readAttendanceShifts().filter((row) => row.status === 'active');
 
   try {
     const { data, error } = await state.supabase.rpc('get_active_shifts', {
       p_lodge_id: state.lodgeId
     });
     if (error) throw new Error(error.message);
-    return Array.isArray(data) ? data : [];
+    const rows = Array.isArray(data) ? data : [];
+    writeAttendanceShifts(rows);
+    return rows;
   } catch (error) {
     console.error('[POS STAFF] Load shifts failed:', error?.message || error);
     return [];
   }
+}
+
+export async function getPosBarActiveShifts() {
+  if (!state.isOnline || !state.supabase || !state.lodgeId) return readAttendanceShifts().filter((row) => row.status === 'active');
+  const { data, error } = await state.supabase.rpc('get_pos_bar_active_shifts', { p_lodge_id: state.lodgeId });
+  if (error) throw new Error(error.message);
+  return Array.isArray(data) ? data : [];
 }
 
 export async function openCashDrawerSession({ openingFloat }) {
@@ -4319,7 +5159,23 @@ export async function updatePosSupplier(supplierId, supplierData) {
 }
 
 export async function clockOutStaffWithAttendancePin({ shiftId, pin, notes, idempotency_key, idempotencyKey } = {}) {
-  if (!state.isOnline || !state.supabase) throw new Error('Attendance PIN clock-out needs an internet connection.');
+  const resolvedKey = idempotency_key || idempotencyKey || randomUUID();
+  if (!state.isOnline || !state.supabase) {
+    const shift = readAttendanceShifts().find((row) => row.id === shiftId);
+    if (!shift) return { success: false, error: 'Active attendance shift not found in the offline cache.' };
+    const verified = validateCachedPosPin(shift.staff_user_id, pin);
+    if (!verified.success) return verified;
+    upsertAttendanceShift({ ...shift, status: 'completed', clock_out: new Date().toISOString(), notes: notes || shift.notes || null, _pending_sync: true, _sync_state: 'pending' });
+    const queueId = `attendance-pin-clock-out-${shiftId}-${resolvedKey}`;
+    queueOperation('rpc', 'clock_out_staff_with_attendance_pin', { payload: {
+      lodge_id: state.lodgeId, shift_id: shiftId, pin: String(pin || ''), notes: notes || null,
+      idempotency_key: resolvedKey, device_id: getDesktopPosDeviceId()
+    } }, null, {
+      _queue_id: queueId,
+      ...(shift._pending_sync ? { _depends_on: shift._queue_id || `attendance-shift-${shiftId}` } : {})
+    });
+    return { success: true, offline: true, queued: true, provisional: true };
+  }
   const { data: result, error } = await state.supabase.rpc('clock_out_staff_with_attendance_pin', {
     payload: { lodge_id: state.lodgeId, shift_id: shiftId, pin: String(pin || ''), notes: notes || null, idempotency_key: idempotency_key || idempotencyKey || randomUUID(), device_id: getDesktopPosDeviceId() }
   });
@@ -4449,12 +5305,16 @@ export async function completeChecklistItem({ itemId, notes }) {
   }
 }
 
-export async function getActiveAlerts() {
+export async function getActiveAlerts(filters = {}) {
   if (!state.isOnline || !state.supabase) return [];
 
   try {
-    const { data, error } = await state.supabase.rpc('get_active_alerts', {
-      p_lodge_id: state.lodgeId
+    const { data, error } = await state.supabase.rpc('get_restaurant_alert_history', {
+      p_lodge_id: state.lodgeId,
+      p_alert_category: filters.category || null,
+      p_outlet_id: filters.outletId || null,
+      p_include_resolved: false,
+      p_limit: Number(filters.limit || 100),
     });
     if (error) throw new Error(error.message);
     return Array.isArray(data) ? data : [];
@@ -4464,18 +5324,20 @@ export async function getActiveAlerts() {
   }
 }
 
-export async function recordExceptionAlert({ alertType, severity, message, entityType, entityId }) {
+export async function recordExceptionAlert({ alertType, category, severity, message, entityType, entityId, outletId }) {
   if (!state.isOnline || !state.supabase) throw new Error('Cannot record alert offline');
 
   try {
     const { data: result, error } = await state.supabase.rpc('record_exception_alert', {
       payload: {
         lodge_id: state.lodgeId,
-        alert_type: alertType || 'stock_low',
+        alert_type: alertType || 'custom',
+        category: category || null,
         severity: severity || 'info',
         message: message || '',
         entity_type: entityType || null,
-        entity_id: entityId || null
+        entity_id: entityId || null,
+        outlet_id: outletId || null
       }
     });
     if (error) throw new Error(error.message);
@@ -4486,14 +5348,16 @@ export async function recordExceptionAlert({ alertType, severity, message, entit
   }
 }
 
-export async function resolveExceptionAlert(alertId) {
+export async function resolveExceptionAlert(alertId, reason = 'Resolved from the Bar control board.', operationId = randomUUID()) {
   if (!state.isOnline || !state.supabase) throw new Error('Cannot resolve alert offline');
 
   try {
     const { data: result, error } = await state.supabase.rpc('resolve_exception_alert', {
       payload: {
         lodge_id: state.lodgeId,
-        alert_id: alertId
+        alert_id: alertId,
+        reason,
+        operation_id: operationId
       }
     });
     if (error) throw new Error(error.message);
@@ -4548,6 +5412,28 @@ export async function getPosPurchaseOrders(startDate, endDate) {
     console.error('[POS PURCHASE] List failed:', error?.message || error);
     throw error;
   }
+}
+
+export async function acknowledgeExceptionAlert(alertId, reason = 'Acknowledged from the Bar control board.', operationId = randomUUID()) {
+  if (!state.isOnline || !state.supabase) throw new Error('Cannot acknowledge alert offline');
+  const { data: result, error } = await state.supabase.rpc('acknowledge_exception_alert', {
+    payload: { lodge_id: state.lodgeId, alert_id: alertId, reason, operation_id: operationId },
+  });
+  if (error) throw new Error(error.message);
+  return result || { success: false, error: 'Unknown error' };
+}
+
+export async function getAlertHistory(filters = {}) {
+  if (!state.isOnline || !state.supabase) return [];
+  const { data, error } = await state.supabase.rpc('get_restaurant_alert_history', {
+    p_lodge_id: state.lodgeId,
+    p_alert_category: filters.category || null,
+    p_outlet_id: filters.outletId || null,
+    p_include_resolved: filters.includeResolved !== false,
+    p_limit: Number(filters.limit || 200),
+  });
+  if (error) throw new Error(error.message);
+  return Array.isArray(data) ? data : [];
 }
 
 export async function getShiftHistory(startDate, endDate) {
@@ -5119,6 +6005,29 @@ export async function recordRestaurantSettlement(data) {
   return result;
 }
 
+export async function seedBarChecklistTemplates() {
+  if (!state.isOnline || !state.supabase) throw new Error('Bar checklist templates require an online connection');
+  const { data: result, error } = await state.supabase.rpc('seed_bar_checklist_templates', { p_lodge_id: state.lodgeId });
+  if (error) throw new Error(error.message);
+  return result || { success: false, error: 'Could not seed Bar checklist templates.' };
+}
+
+export async function getBarChecklistTemplates() {
+  if (!state.isOnline || !state.supabase) return [];
+  const { data, error } = await state.supabase.rpc('get_bar_checklist_templates', { p_lodge_id: state.lodgeId });
+  if (error) throw new Error(error.message);
+  return Array.isArray(data) ? data : [];
+}
+
+export async function createBarChecklistFromTemplate({ templateKey, outletId, operationId } = {}) {
+  if (!state.isOnline || !state.supabase) throw new Error('Bar checklist templates require an online connection');
+  const { data: result, error } = await state.supabase.rpc('create_bar_checklist_from_template', {
+    p_payload: { lodge_id: state.lodgeId, template_key: templateKey, outlet_id: outletId || null, operation_id: operationId || randomUUID() },
+  });
+  if (error) throw new Error(error.message);
+  return result || { success: false, error: 'Could not create the Bar checklist.' };
+}
+
 export async function getRestaurantSettlementBankAccounts() {
   if (!state.isOnline || !state.supabase) return [];
   const { data, error } = await state.supabase.rpc('get_restaurant_settlement_bank_accounts', {
@@ -5259,6 +6168,30 @@ export async function getRestaurantSetupProgress() {
   const { data, error } = await state.supabase.rpc('get_restaurant_setup_progress', { p_lodge_id: state.lodgeId });
   if (error) throw new Error(error.message);
   return Array.isArray(data) ? data : [];
+}
+
+// Keep the historical array-returning method above for existing callers, but
+// expose read provenance separately so setup UI cannot mistake an offline or
+// failed read for an empty (not configured) venue.
+export async function getRestaurantSetupProgressWithReadStatus() {
+  const unavailable = (message, online = Boolean(state.isOnline)) => ({
+    source: 'unavailable',
+    complete: false,
+    online,
+    rows: [],
+    error: message
+  });
+  if (!state.isOnline || !state.supabase) {
+    return unavailable('Setup evidence is unavailable while offline. Reconnect before relying on readiness.', false);
+  }
+  try {
+    const { data, error } = await state.supabase.rpc('get_restaurant_setup_progress', { p_lodge_id: state.lodgeId });
+    if (error) return unavailable(`Setup evidence could not be verified from the server: ${error.message || 'read failed'}.`, true);
+    if (!Array.isArray(data)) return unavailable('Setup evidence returned an incomplete server response. Refresh while online before relying on readiness.', true);
+    return { source: 'server', complete: true, online: true, rows: data, error: null };
+  } catch (error) {
+    return unavailable(`Setup evidence could not be verified from the server: ${error?.message || 'read failed'}.`, true);
+  }
 }
 
 export async function setRestaurantSetupStage(data = {}) {

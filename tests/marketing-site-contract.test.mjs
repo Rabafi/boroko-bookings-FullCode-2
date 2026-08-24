@@ -21,6 +21,7 @@ const lodgeHtml = read('marketing-site/lodge-app.html')
 const hotelHtml = read('marketing-site/hotel.html')
 const restaurantHtml = read('marketing-site/restaurant-pos.html')
 const barHtml = read('marketing-site/bar-pos.html')
+const managerAppHtml = read('marketing-site/manager-app.html')
 const marketingScript = read('marketing-site/script.js')
 const netlifyToml = read('marketing-site/netlify.toml')
 
@@ -41,6 +42,17 @@ assertIncludes(packagesHtml, 'id="lodge-packages"', 'separate Lodge package sect
 assertIncludes(packagesHtml, 'id="hotel-packages"', 'separate Hotel package section')
 assertIncludes(packagesHtml, 'id="restaurant-packages"', 'separate Restaurant package section')
 assertIncludes(packagesHtml, 'id="bar-package"', 'separate Bar package section')
+assertIncludes(packagesHtml, 'Bar POS Base', 'Bar Base package name')
+assertIncludes(packagesHtml, 'Optional annual add-ons', 'Bar add-on disclosure')
+for (const [name, price] of [
+  ['Stock &amp; Purchasing Pro', 'P3,000'],
+  ['Accounting &amp; Workforce', 'P6,000'],
+  ['Growth &amp; Multi-Outlet', 'P5,000']
+]) {
+  assertIncludes(packagesHtml, name, `${name} marketing name`)
+  assertIncludes(packagesHtml, price, `${name} annual price`)
+}
+assertIncludes(packagesHtml, 'Manager mobile oversight', 'Bar package includes Manager mobile oversight')
 assertIncludes(packagesHtml, 'data-hotel-addon-builder', 'Hotel add-on builder')
 assertIncludes(packagesHtml, 'Staff Operations &amp; Workforce', 'planned Hotel workforce add-on')
 assertIncludes(packagesHtml, 'Maintenance &amp; Asset Management', 'planned Hotel asset add-on')
@@ -87,6 +99,14 @@ for (const [name, html, prices] of [
 ]) {
   for (const price of prices) assertIncludes(html, price, `${name} individual pricing`)
 }
+
+assertIncludes(barHtml, 'Manager Mobile App', 'Bar page Manager App feature')
+assertIncludes(barHtml, 'Manager oversight included', 'Bar page PWA inclusion')
+assertIncludes(barHtml, 'Bar POS Base is P4,500', 'Bar page Base hero pricing')
+assertIncludes(managerAppHtml, 'Lodge, Hotel, Restaurant, and Bar', 'Manager App product-family coverage')
+assertIncludes(managerAppHtml, 'Bar POS Base includes read-only Manager oversight', 'Manager App Bar Base boundary')
+assertIncludes(managerAppHtml, 'optional Growth &amp; Multi-Outlet bundle adds the advanced Owner View', 'Manager App Growth boundary')
+assert.ok(!managerAppHtml.includes('included with the Pro package'), 'Manager App must not claim it is only included with Pro')
 
 assertIncludes(enterpriseHtml, 'id="enterprise-quote-form"', 'legacy Hotel quote form id')
 assertIncludes(enterpriseHtml, 'data-product="hotel"', 'Hotel quotation product identity')

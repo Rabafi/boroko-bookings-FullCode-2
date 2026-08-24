@@ -69,7 +69,7 @@ const rpcProbes = [
   ['open_pos_shift', { p_lodge_id: '00000000-0000-0000-0000-000000000000', p_cashier_id: '00000000-0000-0000-0000-000000000000', p_cashier_name: 'probe', p_opening_float: 0, p_notes: null }],
   ['open_pos_shift_with_id', { payload: {} }],
   ['get_pos_shifts', { p_lodge_id: '00000000-0000-0000-0000-000000000000' }],
-  ['update_pos_prep_ticket_status', { p_ticket_id: '00000000-0000-0000-0000-000000000000', p_status: 'ready', p_lodge_id: '00000000-0000-0000-0000-000000000000' }],
+  ['update_pos_prep_ticket_status', { p_ticket_id: '00000000-0000-0000-0000-000000000000', p_status: 'ready', p_lodge_id: '00000000-0000-0000-0000-000000000000', p_operation_id: 'probe-ticket-status' }],
   ['upsert_pos_modifier_groups', { payload: {} }],
   ['upsert_pos_promotions', { payload: {} }],
   ['upsert_pos_floor_layout', { payload: {} }],
