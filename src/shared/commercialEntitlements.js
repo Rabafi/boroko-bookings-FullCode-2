@@ -17,8 +17,14 @@ const LODGE_FEATURES = Object.freeze([
   'bookings', 'rooms', 'guests', 'quotations', 'invoices', 'housekeeping', 'maintenance'
 ])
 
+// Starter exposes a deliberately narrow, read-only operational summary. The
+// full `reports` entitlement remains a Standard boundary.
+const STARTER_FEATURES = Object.freeze([
+  ...LODGE_FEATURES, 'basic_reports'
+])
+
 const STANDARD_FEATURES = Object.freeze([
-  ...LODGE_FEATURES, 'reports', 'expenses', 'staff', 'audit', 'conference', 'dayuse', 'import'
+  ...STARTER_FEATURES, 'reports', 'expenses', 'staff', 'audit', 'conference', 'dayuse', 'import'
 ])
 
 const PRO_FEATURES = Object.freeze([
@@ -169,10 +175,10 @@ export const COMMERCIAL_PACKAGE_CATALOG = Object.freeze({
       internalPlan: 'Starter',
       billingBasis: COMMERCIAL_BILLING_BASIS.ANNUAL_LICENSE,
       priceBwp: 8999,
-      includedFeatures: LODGE_FEATURES,
+      includedFeatures: STARTER_FEATURES,
       excludedFeatures: ['reports', 'expenses', 'staff', 'audit', 'pos', 'inventory', 'online_booking'],
       upgradeTarget: 'standard',
-      salesCopy: 'Daily lodge operations for bookings, rooms, guests, quotations, and housekeeping.'
+      salesCopy: 'Daily lodge operations plus a view-only 1, 7, or 30-day operating summary.'
     }),
     offer({
       productId: COMMERCIAL_PRODUCT_IDS.LODGE_CAMP,

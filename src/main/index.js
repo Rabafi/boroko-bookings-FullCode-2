@@ -7408,6 +7408,12 @@ app.whenReady().then(async () => {
       return await db.deleteExpense(id, operationId)
     } catch (e) { return { success: false, error: e.message } }
   })
+  ipcMain.handle('reports:basicSummary', async (_, rangeDays = 1) => {
+    try {
+      await requireCapability('reports.basic_view')
+      return await db.getStarterBasicReport(rangeDays)
+    } catch (e) { throw new Error(e?.message || 'Failed to load Starter basic report') }
+  })
   ipcMain.handle('expenses:submit', async (_, id, payload, operationId) => {
     try {
       await requireCapability('expenses.manage')

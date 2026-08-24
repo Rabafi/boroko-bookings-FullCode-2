@@ -1156,7 +1156,7 @@ export {
   getRestaurantPayrollReadinessV2, setRestaurantPayrollAttendanceDispositionV2,
   getRestaurantPayrollAttendanceReconciliationV2,
    getRestaurantAccountingReadinessV2, getPosFinancialReportExportV2,
-   getLodgeOperationalReportExportV2, recordReportArtifactResult, recordAccountingExportArtifactV3,
+   getLodgeOperationalReportExportV2, getStarterBasicReport, recordReportArtifactResult, recordAccountingExportArtifactV3,
    prepareRestaurantHistoricalCutoverV2,
   activateRestaurantAccountingV2, suspendRestaurantAccountingV2,
   getRestaurantFinancialSourceCoverageV2, startRestaurantReportRunV2,

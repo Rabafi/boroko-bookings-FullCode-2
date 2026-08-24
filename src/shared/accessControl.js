@@ -1,6 +1,7 @@
 import { isCommercialFeatureIncluded } from './commercialAccess.js'
 
 export const APP_FEATURES = [
+  'basic_reports',
   'reports',
   'expenses',
   'staff',
@@ -23,6 +24,7 @@ export const APP_FEATURES = [
 ]
 
 export const FEATURE_LABELS = {
+  basic_reports: 'Basic reports',
   reports: 'Reports & analytics',
   expenses: 'Expenses',
   staff: 'Staff management',
@@ -81,6 +83,7 @@ export const CAPABILITY_LABELS = {
   'maintenance.preventive': 'Manage preventive maintenance',
   'maintenance.ooo': 'Set rooms out of order',
   'reports.view': 'View reports',
+  'reports.basic_view': 'View basic reports',
   'expenses.view': 'View expenses',
   'expenses.manage': 'Manage expenses',
   'audit.view': 'Run night audit',
@@ -360,6 +363,7 @@ const ROLE_CAPABILITIES = {
     'invoices.view',
     'invoices.send',
     'guests.view',
+    'reports.basic_view',
     'reports.view',
     'reports.export',
     'expenses.view',
@@ -389,6 +393,7 @@ const ROLE_CAPABILITIES = {
     'guests.view',
     'guests.manage',
     'guests.blacklist',
+    'reports.basic_view',
     'rooms.view',
     'rooms.manage',
     'housekeeping.manage',
@@ -467,6 +472,7 @@ const ROLE_CAPABILITIES = {
 }
 
 const CAPABILITY_FEATURE_REQUIREMENTS = {
+  'reports.basic_view': 'basic_reports',
   'reports.view': 'reports',
   'expenses.view': 'expenses',
   'expenses.manage': 'expenses',

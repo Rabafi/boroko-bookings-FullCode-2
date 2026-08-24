@@ -53,6 +53,9 @@ for (const [name, price] of [
   assertIncludes(packagesHtml, price, `${name} annual price`)
 }
 assertIncludes(packagesHtml, 'Manager mobile oversight', 'Bar package includes Manager mobile oversight')
+assertIncludes(packagesHtml, 'View-only daily, 7-day, and 30-day operations summary', 'Starter basic report boundary')
+assertIncludes(packagesHtml, 'Full reports and exports', 'Standard full report boundary')
+assertIncludes(lodgeHtml, 'view-only basic operating summary', 'Lodge Starter basic report positioning')
 assertIncludes(packagesHtml, 'data-hotel-addon-builder', 'Hotel add-on builder')
 assertIncludes(packagesHtml, 'Staff Operations &amp; Workforce', 'planned Hotel workforce add-on')
 assertIncludes(packagesHtml, 'Maintenance &amp; Asset Management', 'planned Hotel asset add-on')

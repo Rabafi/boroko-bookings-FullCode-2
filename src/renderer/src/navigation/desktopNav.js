@@ -275,6 +275,17 @@ export const ALL_NAV = [
     keywords: ['analytics', 'performance', 'insights']
   },
   {
+    to: '/basic-reports',
+    label: 'Daily summary',
+    icon: BarChart3,
+    types: ['lodge'],
+    group: 'Finance',
+    feature: 'basic_reports',
+    tier: 'Starter',
+    capability: 'reports.basic_view',
+    keywords: ['daily', 'starter', 'occupancy', 'collections']
+  },
+  {
     to: '/pos',
     label: 'POS',
     icon: ShoppingCart,

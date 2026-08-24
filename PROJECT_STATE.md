@@ -1,4 +1,43 @@
 # Tsa Bonno HospitalityOS Project State
+## 2026-08-24 — Lodge Starter basic reports (linked database applied; desktop publication pending)
+
+Lodge Starter now includes a deliberately narrow, view-only `basic_reports`
+module for Today, 7-day, and 30-day operating summaries. The full `reports`
+module and all report exports remain Standard-only. The desktop route is
+capability-gated by `reports.basic_view`; only manager/finance/admin-equivalent
+roles receive that capability by default, with the existing entitlement and
+override boundaries still applied.
+
+Forward migration `20260824050000_starter_basic_report.sql` adds the
+server-authoritative `get_starter_basic_report(uuid, integer)` RPC. It enforces
+application-session, lodge, role/capability, and range checks server-side; uses
+the property's configured business timezone; distinguishes arrivals,
+departures, and bookings-created dates; calculates occupancy from room-nights;
+and derives collections and outstanding balances from signed payment-ledger
+entries rather than a cached booking total. Financial values are returned only
+when booking/payment source coverage and payment signs can be certified;
+otherwise every monetary field is `NULL` with an actionable reason. The
+desktop anon-key application-session grant is restored explicitly while the
+SECURITY DEFINER body remains fail-closed.
+The same migration updates the active accommodation-package catalogue and
+package-entitlement rows, backfills valid current and legacy accommodation
+licences without overwriting manual feature overrides, and records each new
+lodge grant in the activation audit log.
+
+Focused Starter/marketing coverage passes 5/5, commercial coverage passes
+11/11, production guardrails pass, and the LodgingOS production build passes
+with the existing Vite mesh dynamic/static import warning. The affected
+enterprise entitlement run passes 46/47; its sole failure is the pre-existing
+IPC parity test expecting literal `ipcRenderer.invoke(...)` calls even though
+the preload uses the shared `invoke(...)` wrapper, so it discovers zero preload
+channels before evaluating this feature's matching handler. Migration
+`20260824050000` is applied to the linked Tsa Bonno HospitalityOS project;
+local/remote history is in parity through that ID, the post-deployment dry run
+reports the remote database up to date, linked error-level SQL lint returns no
+findings, and error-level advisors report no issues. The updated desktop and
+marketing source remain unpublished, and no desktop installer has been built
+or published for this tranche.
+
 ## 2026-08-24 — Consolidated main and Bar/POS source publication
 
 Repository history is consolidated onto `main`; redundant local and GitHub branch labels were removed only after their committed tips were preserved on `main`. The previously uncommitted Bar/POS operational tranche is now prepared for repository publication on that single branch, including the ordered forward migrations through `20260821040000`, guarded offline replay, authoritative financial/read completeness, Bar Base stock and Till controls, cash-up evidence, setup/read truth, secure local storage, Command Central subscription hardening, Manager PWA alignment, Legacy POS continuity, marketing copy, and the matching regression coverage.

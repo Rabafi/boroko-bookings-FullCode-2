@@ -47,6 +47,7 @@ const MasterSetup = lazy(() => import('./components/MasterSetup'))
 const LodgeChooser = lazy(() => import('./components/LodgeChooser'))
 const Calendar    = lazy(() => import('./components/Calendar'))
 const Reports     = lazy(() => import('./components/Reports'))
+const BasicReports = lazy(() => import('./components/BasicReports'))
 const Staff       = lazy(() => import('./components/Staff'))
 const Settings    = lazy(() => import('./components/Settings'))
 const RoomGrid    = lazy(() => import('./components/RoomGrid'))
@@ -1962,6 +1963,7 @@ export default function App() {
                 <Route path="settings"    element={<CapabilityRoute capability="settings.view"><Lazy><Settings /></Lazy></CapabilityRoute>} />
                 {/* Standard tier — lazy (UpgradeWall outside Lazy so wall renders without loading) */}
                 <Route path="reports"    element={<UpgradeWall feature="reports">   <RestaurantReportsEntry />    </UpgradeWall>} />
+                <Route path="basic-reports" element={<CapabilityRoute capability="reports.basic_view"><UpgradeWall feature="basic_reports"><Lazy><BasicReports /></Lazy></UpgradeWall></CapabilityRoute>} />
                 <Route path="expenses"   element={<UpgradeWall feature="expenses">  <RestaurantExpensesEntry />   </UpgradeWall>} />
                 <Route path="staff"      element={<UpgradeWall feature="staff">     <Lazy><Staff /></Lazy>      </UpgradeWall>} />
                 <Route path="audit"      element={<UpgradeWall feature="audit">     <Lazy><NightAudit /></Lazy> </UpgradeWall>} />

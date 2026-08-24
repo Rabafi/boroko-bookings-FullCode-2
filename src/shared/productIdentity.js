@@ -26,6 +26,7 @@ const CORE_SHARED_HOSPITALITY_POS = Object.freeze(CORE_SHARED.filter((route) => 
 const ACCOMMODATION_OPS = Object.freeze([
   'rooms',
   'bookings',
+  'basic-reports',
   'quotations',
   'invoices',
   'prepayments',

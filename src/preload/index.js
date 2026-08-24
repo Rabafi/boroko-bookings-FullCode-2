@@ -181,6 +181,7 @@ const api = {
     recordDelivery: (payload) => invoke('invoices:recordDelivery', payload)
   },
   reports: {
+    basicSummary: (rangeDays = 1) => invoke('reports:basicSummary', rangeDays),
     occupancy: (start, end) => invoke('reports:occupancy', start, end),
     revenue: (start, end) => invoke('reports:revenue', start, end),
     snapshot: (today) => invoke('reports:snapshot', today),

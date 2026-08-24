@@ -140,6 +140,21 @@ export const MODULE_CATALOG = [
     rolloutStatus: 'live'
   },
   {
+    key: 'basic_reports',
+    label: 'Basic Reports',
+    description: 'Read-only daily operating summary for occupancy, bookings, and certified collections',
+    category: MODULE_CATEGORIES.finance,
+    requiredPlan: 'Starter',
+    isAddon: false,
+    addonKey: null,
+    allowedPropertyTypes: ['guest_house', 'bnb', 'lodge', 'camp', 'motel', 'hotel', 'resort'],
+    visibility: 'property_type_relevant',
+    upsellPriority: 80,
+    routes: ['/basic-reports'],
+    capabilities: ['reports.basic_view'],
+    rolloutStatus: 'live'
+  },
+  {
     key: 'reports',
     label: 'Reports',
     description: 'Performance and financial reporting',

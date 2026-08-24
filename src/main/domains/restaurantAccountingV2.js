@@ -126,5 +126,14 @@ export const reopenRestaurantPeriodCloseV2 = (periodCloseId, reason) => rpc('reo
 export const getRestaurantPeriodCloseV2 = (periodStart, periodEnd) => rpc('get_restaurant_period_close',{p_period_start:periodStart,p_period_end:periodEnd})
 export const getPosFinancialReportExportV2 = (data = {}) => rpc('get_pos_financial_report_export_v2',{p_start_date:data.startDate,p_end_date:data.endDate,p_outlet_id:data.outletId||null})
 export const getLodgeOperationalReportExportV2 = (data = {}) => rpc('get_lodge_operational_report_export_v2',{p_report_key:data.reportKey,p_start_date:data.startDate,p_end_date:data.endDate,p_filters:data.filters||{}})
+export const getStarterBasicReport = async (rangeDays = 1) => {
+  const days = Number(rangeDays)
+  if (![1, 7, 30].includes(days)) throw new Error('Basic report range must be one of 1, 7, or 30 days')
+  const result = await rpc('get_starter_basic_report', { p_range_days: days })
+  if (!result?.data || result.data.schema_version !== 'starter-basic-report-v1') {
+    throw new Error('Starter basic report returned an invalid server response')
+  }
+  return result.data
+}
 export const recordReportArtifactResult = (data = {}) => rpc('record_report_artifact_result',{p_report_run_id:data.reportRunId,p_artifact_type:data.artifactType,p_file_path:data.filePath||null,p_file_hash:data.fileHash||null,p_byte_count:data.byteCount||0,p_artifact_error:data.artifactError||null})
 export const recordAccountingExportArtifactV3 = (data = {}) => rpc('record_accounting_export_artifact_v3', { p_export_id: data.exportId, p_artifact_type: data.artifactType, p_file_hash: data.fileHash || null, p_byte_count: data.byteCount || 0, p_artifact_file_path: data.filePath || null, p_detailed_companion_path: data.detailedCompanionPath || null, p_detailed_companion_hash: data.detailedCompanionHash || null, p_artifact_error: data.artifactError || null })

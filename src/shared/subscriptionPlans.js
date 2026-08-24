@@ -13,6 +13,7 @@ const PLAN_ALIASES = {
 }
 
 const FEATURE_REQUIRED_PLAN = {
+  basic_reports: 'Starter',
   reports: 'Standard',
   expenses: 'Standard',
   staff: 'Standard',
@@ -52,6 +53,7 @@ const FEATURE_REQUIRED_PLAN = {
 }
 
 const FEATURE_UPGRADE_CONTEXT = {
+  basic_reports: 'The lodge needs a certified daily, 7-day, or 30-day operating summary.',
   reports: 'The lodge needs owner visibility through performance and financial reporting.',
   expenses: 'The lodge needs better control over expenses and money leakage.',
   staff: 'The lodge needs stronger staff accountability and role-based control.',
@@ -99,13 +101,14 @@ const PLANS = {
     headline: 'Everything needed to run a small lodge front desk',
     pitch: 'Covers the daily guest, booking, room, and front-desk basics',
     audience: 'Best for small lodges that need a dependable daily operations system before they invest in deeper business controls.',
-    summary: 'A practical daily-use package for bookings, guests, room availability, quotations, invoices, housekeeping, and maintenance.',
+    summary: 'A practical daily-use package for bookings, guests, room availability, quotations, invoices, housekeeping, maintenance, and a certified basic operating summary.',
     modules: [
       'Take and manage bookings',
       'Keep room availability clear',
       'Send quotations and invoices',
       'Track guests and stays',
       'Run housekeeping and maintenance',
+      'Review a basic daily, 7-day, or 30-day summary',
       'Work from one front-desk system'
     ],
     upgradeNudge: 'Upgrade to Standard when you want owner visibility, expense control, staff accountability, and night audit.'
@@ -118,10 +121,10 @@ const PLANS = {
     headline: 'The complete management package for most serious lodges',
     pitch: 'Adds the business-control tools owners quickly start asking for',
     audience: 'Best for growing lodges that want reports, expense tracking, staff control, and better day-to-day discipline without jumping to the full commercial suite.',
-    summary: 'Adds reports, expenses, staff management, night audit, imports, conference bookings, and day use so the owner can manage the business properly.',
+    summary: 'Adds full reports and exports, expenses, staff management, night audit, imports, conference bookings, and day use so the owner can manage the business properly.',
     modules: [
       'Everything in Starter',
-      'See lodge performance clearly',
+      'Use full reports, analysis, and exports',
       'Track expenses and money leaks',
       'Control staff and accountability',
       'Close the day with night audit',
@@ -208,7 +211,7 @@ const PLAN_UPSELL_BENEFITS = {
   Starter: {
     nextPlan: 'Standard',
     capacities: ['200 bookings/month', '20 rooms', '5 users'],
-    features: ['Reports & Analytics', 'Staff Management', 'Expenses', 'Night Audit', 'Conference and Day Use']
+    features: ['Full Reports, Analytics & Exports', 'Staff Management', 'Expenses', 'Night Audit', 'Conference and Day Use']
   },
   Standard: {
     nextPlan: 'Pro',
