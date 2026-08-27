@@ -12,7 +12,9 @@ SigV4-signed S3-compatible request with a dedicated managed prefix and bounded
 daily/weekly retention that never deletes the sole successful object. A local offline
 verification/rehearsal command now decrypts an existing archive into a unique
 temporary path, rejects unsafe or malformed tar input, verifies required files,
-checks the recorded SHA-256 values and metadata, emits a secret-redacted report,
+checks the recorded SHA-256 values and metadata, accepts legacy v1
+`github_run_id` archives through an explicit compatibility alias while emitting
+canonical `run_id` output, emits a secret-redacted report,
 and removes plaintext by default. It does not restore or write a database.
 
 Live read-only inventory found that all three scheduled workflow runs to date
@@ -37,7 +39,7 @@ function sources, and maintain a separately protected restore inventory for
 secrets that must be recreated rather than exported.
 
 Local evidence passes the R2/workflow, backup-crypto/retention, and offline
-rehearsal tests (21/21), script syntax validation, `git diff --check`, and
+rehearsal tests (25/25), script syntax validation, `git diff --check`, and
 production guardrails. These workflow and verifier changes are uncommitted and
 unpublished. They will not protect production until the owner credentials are
 configured, the source is deliberately committed and pushed, a manual workflow

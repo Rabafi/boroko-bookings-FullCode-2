@@ -38,7 +38,7 @@ function tarEntry(name, content, type = '0') {
   return Buffer.concat([header, bytes, padding])
 }
 
-function validArchiveFiles(overrides = {}) {
+function validArchiveFiles(overrides = {}, metadataOverrides = {}) {
   const values = {
     'roles.sql': '-- roles\n',
     'schema.sql': 'create table example(id uuid primary key);\n',
@@ -51,7 +51,8 @@ function validArchiveFiles(overrides = {}) {
     repository: 'example/repository',
     commit: '0123456789abcdef',
     run_id: '42',
-    contents: ['roles.sql', 'schema.sql', 'data.sql']
+    contents: ['roles.sql', 'schema.sql', 'data.sql'],
+    ...metadataOverrides
   }))
   values['metadata.json'] = metadata
   values.SHA256SUMS = Buffer.from(['roles.sql', 'schema.sql', 'data.sql', 'metadata.json']
@@ -91,6 +92,30 @@ test('verifies encrypted SQL archive manifest and all checksums', async (context
   assert.equal(result.metadata.contents.includes('data.sql'), true)
   assert.equal(result.decrypted_archive_path, undefined)
   await assert.rejects(fs.stat(path.join(fixture.directory, 'database.tar.gz')), { code: 'ENOENT' })
+})
+
+test('accepts the live v1 github_run_id metadata shape and normalizes it to run_id', () => {
+  const bytes = validArchiveFiles({}, { run_id: undefined, github_run_id: 'live-run-42' })
+  const result = verifyPlainArchiveBytes(bytes)
+  assert.equal(result.metadata.run_id, 'live-run-42')
+  assert.equal(result.metadata.github_run_id, undefined)
+})
+
+test('accepts canonical future run_id metadata and keeps the normalized identity', () => {
+  const bytes = validArchiveFiles({}, { run_id: 'future-run-99', github_run_id: undefined })
+  const result = verifyPlainArchiveBytes(bytes)
+  assert.equal(result.metadata.run_id, 'future-run-99')
+  assert.equal(result.metadata.github_run_id, undefined)
+})
+
+test('rejects metadata when canonical and legacy run IDs conflict', () => {
+  const bytes = validArchiveFiles({}, { run_id: 'canonical-run', github_run_id: 'legacy-run' })
+  assert.throws(() => verifyPlainArchiveBytes(bytes), /run_id conflicts with github_run_id/i)
+})
+
+test('rejects metadata when neither canonical nor legacy run ID is present', () => {
+  const bytes = validArchiveFiles({}, { run_id: undefined, github_run_id: undefined })
+  assert.throws(() => verifyPlainArchiveBytes(bytes), /metadata\.json is missing run_id/i)
 })
 
 test('rehearsal writes only a non-secret validation report and no plaintext archive', async (context) => {

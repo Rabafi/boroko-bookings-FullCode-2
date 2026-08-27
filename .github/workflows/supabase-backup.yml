@@ -92,7 +92,7 @@ jobs:
             --arg repository "${GITHUB_REPOSITORY}" \
             --arg commit "${GITHUB_SHA}" \
             --arg run_id "${GITHUB_RUN_ID}" \
-            '{format_version: 1, created_at: $created_at, repository: $repository, commit: $commit, github_run_id: $run_id, contents: ["roles.sql", "schema.sql", "data.sql"]}' \
+            '{format_version: 1, created_at: $created_at, repository: $repository, commit: $commit, run_id: $run_id, contents: ["roles.sql", "schema.sql", "data.sql"]}' \
             > "${backup_dir}/metadata.json"
           (
             cd "${backup_dir}"

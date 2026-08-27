@@ -151,9 +151,25 @@ function parseAndValidateMetadata(entry, entries, checksums) {
   if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) throw new Error('metadata.json must contain an object.')
   if (metadata.format_version !== 1) throw new Error('metadata.json has an unsupported format_version.')
   if (typeof metadata.created_at !== 'string' || !Number.isFinite(Date.parse(metadata.created_at))) throw new Error('metadata.json has an invalid created_at.')
-  for (const field of ['repository', 'commit', 'run_id']) {
+  for (const field of ['repository', 'commit']) {
     if (typeof metadata[field] !== 'string' || !metadata[field].trim()) throw new Error(`metadata.json is missing ${field}.`)
   }
+  const hasRunId = Object.hasOwn(metadata, 'run_id')
+  const hasLegacyRunId = Object.hasOwn(metadata, 'github_run_id')
+  if (hasRunId && (typeof metadata.run_id !== 'string' || !metadata.run_id.trim())) {
+    throw new Error('metadata.json run_id is invalid.')
+  }
+  if (hasLegacyRunId && (typeof metadata.github_run_id !== 'string' || !metadata.github_run_id.trim())) {
+    throw new Error('metadata.json github_run_id is invalid.')
+  }
+  if (!hasRunId && !hasLegacyRunId) throw new Error('metadata.json is missing run_id.')
+  if (hasRunId && hasLegacyRunId && metadata.run_id !== metadata.github_run_id) {
+    throw new Error('metadata.json run_id conflicts with github_run_id.')
+  }
+  // v1 archives created before the canonical field was named `run_id` used
+  // `github_run_id`. Accept that exact legacy shape, but normalize all
+  // verifier output to the canonical field so callers have one contract.
+  const runId = metadata.run_id || metadata.github_run_id
   if (!Array.isArray(metadata.contents) || !metadata.contents.length) throw new Error('metadata.json contents must be a non-empty array.')
   const contents = metadata.contents.map((name) => normalizeArchiveName(name))
   if (new Set(contents).size !== contents.length) throw new Error('metadata.json contents contains duplicates.')
@@ -166,7 +182,7 @@ function parseAndValidateMetadata(entry, entries, checksums) {
     created_at: metadata.created_at,
     repository: metadata.repository,
     commit: metadata.commit,
-    run_id: metadata.run_id,
+    run_id: runId,
     contents
   }
 }
