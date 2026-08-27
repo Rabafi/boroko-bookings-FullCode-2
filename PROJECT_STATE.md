@@ -1,6 +1,6 @@
 # Tsa Bonno HospitalityOS Project State
 
-## 2026-08-27 — Supabase disaster-backup hardening (local only; credentials and first successful run pending)
+## 2026-08-27 — Encrypted Supabase database backup live and independently verified
 
 The scheduled GitHub Actions database-backup workflow now has a fail-closed
 preflight that reports every missing repository secret by its actual GitHub
@@ -17,14 +17,26 @@ checks the recorded SHA-256 values and metadata, accepts legacy v1
 canonical `run_id` output, emits a secret-redacted report,
 and removes plaintext by default. It does not restore or write a database.
 
-Live read-only inventory found that all three scheduled workflow runs to date
-failed and that GitHub supplied none of the six required repository secrets:
+The first three scheduled workflow runs failed because GitHub supplied none of
+the six required repository secrets:
 `SUPABASE_BACKUP_DB_URL`, `BACKUP_ENCRYPTION_PUBLIC_KEY_B64`,
 `CLOUDFLARE_R2_ACCOUNT_ID`, `CLOUDFLARE_R2_BUCKET`,
-`CLOUDFLARE_R2_ACCESS_KEY_ID`, and `CLOUDFLARE_R2_SECRET_ACCESS_KEY`. The current GitHub
-token can inspect Actions but cannot inspect or create repository secrets, so a
-repository owner must add them without sharing their values in chat. No
-successful off-site database backup is currently evidenced.
+`CLOUDFLARE_R2_ACCESS_KEY_ID`, and `CLOUDFLARE_R2_SECRET_ACCESS_KEY`. The owner
+subsequently configured all six without placing their values in source or chat.
+Manual GitHub Actions run `33079309627` on commit `9be651a` completed all dump,
+encryption, GitHub-artifact, R2-upload, freshness, retention, and cleanup steps.
+R2 retained one encrypted object and deleted none.
+
+The exact object downloaded back from R2 was independently decrypted and
+verified locally using the owner-held encrypted private key and separately held
+passphrase:
+`tsa-bonno_supabase_tsa-bonno-supabase-2026-08-27T13-54-39Z-33079309627.tar.gz.tbbackup`,
+10,828,261 bytes, archive SHA-256
+`cd7e2d498898cf36968141dcfc341f0b83b4803d011b201978eef85bcbef5668`.
+Verification confirmed the required SQL files, metadata, and internal checksums
+and removed temporary plaintext. Commit `e074610` corrected future archives to
+write canonical `run_id` while retaining a strict, conflict-rejecting v1 adapter
+for the first archive's `github_run_id` field.
 
 The linked Supabase project currently exposes one Storage bucket,
 `private-cashup-proofs`, and four deployed Edge Functions. Only
@@ -40,10 +52,13 @@ secrets that must be recreated rather than exported.
 
 Local evidence passes the R2/workflow, backup-crypto/retention, and offline
 rehearsal tests (25/25), script syntax validation, `git diff --check`, and
-production guardrails. These workflow and verifier changes are uncommitted and
-unpublished. They will not protect production until the owner credentials are
-configured, the source is deliberately committed and pushed, a manual workflow
-run succeeds end to end, and an offline-key verification rehearsal passes.
+production guardrails. The workflow and verifier are committed and pushed to
+`main`; the daily schedule is active and the first encrypted database backup is
+verified. This is not yet whole-project disaster recovery: Auth users, Storage
+object bytes/configuration, two missing Edge Function sources, deployed
+function secrets, provider/project configuration, and unsynced device queues
+still require separate backup contracts and full disposable-project restore
+evidence.
 
 ## 2026-08-27 — Starter recovery workspace and weekly automation (database deployed; desktop not released)
 
