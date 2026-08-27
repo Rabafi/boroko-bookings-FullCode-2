@@ -37,11 +37,69 @@ import {
 } from './users.js';
 import { readCache, writeCache } from './cacheStore.js';
 import { normalizeStaffStatus } from '../../shared/accessControl.js';
+import { normalizeSubscriptionPlan } from '../../shared/subscriptionPlans.js';
+import { getTrialStatus } from './entitlements.js';
 
 const AUTH_CONTRACT_VERSION = 2;
 const ADMIN_GUARD_STATUSES = new Set(['active', 'suspended']);
 const SUPABASE_AUTH_USER_PAGE_SIZE = 1000;
 const MANAGER_MANAGED_ROLES = new Set(['cashier', 'supervisor', 'receptionist', 'operations']);
+
+async function getStarterUsersAccessMode() {
+  const entitlement = await getTrialStatus(state.lodgeId, { forceFresh: state.isOnline });
+  const plan = normalizeSubscriptionPlan(entitlement?.plan || entitlement?.subscription_plan || 'Starter');
+  const features = entitlement?.effective_features || {};
+  return {
+    isStarter: plan === 'Starter' && features.staff_basic !== false && features.staff !== true,
+    entitlement
+  };
+}
+
+/**
+ * Main-process guard for Starter Users & Access Lite. The database trigger is
+ * the final authority, but rejecting malformed requests here gives direct IPC
+ * callers an immediate, actionable error and keeps offline queue payloads
+ * within the same fixed-role contract.
+ */
+export async function assertStarterUsersAccessLite({ data = {}, existingUser = null, hasExistingUsers = false, allowArchive = false } = {}) {
+  const { isStarter } = await getStarterUsersAccessMode();
+  if (!isStarter) return false;
+
+  if (data?._delete === true) {
+    throw new Error('Starter supports suspend and reactivate only. Permanent account deletion is available on Standard.');
+  }
+  if (data?._audit === true) {
+    throw new Error('The server-backed access audit viewer is included with Standard. Starter records changes but does not expose the audit viewer.');
+  }
+
+  const requestedRole = data?.role ? normalizeStaffRole(data.role) : normalizeStaffRole(existingUser?.role);
+  const existingRole = normalizeStaffRole(existingUser?.role);
+  const isExistingOwner = Boolean(existingUser) && existingRole === 'admin' && requestedRole === 'admin';
+  if (!existingUser && !hasExistingUsers && requestedRole !== 'admin') {
+    throw new Error('The first lodge user must use the Admin role template.');
+  }
+  if (!existingUser && hasExistingUsers && requestedRole && !['receptionist', 'operations'].includes(requestedRole)) {
+    throw new Error('Starter additional users must use the Receptionist or Operations role template.');
+  }
+  if (existingUser && data?.role && !['receptionist', 'operations'].includes(requestedRole) && !isExistingOwner) {
+    throw new Error('Starter additional users must use the Receptionist or Operations role template.');
+  }
+  if (Object.prototype.hasOwnProperty.call(data || {}, 'capability_overrides')
+      && Object.keys(normalizeCapabilityOverrides(data.capability_overrides)).length > 0) {
+    throw new Error('Starter uses fixed role templates. Custom permission exceptions require Standard.');
+  }
+  if (data?.pwa_enabled === true || data?.pwa_password || data?.pwa_disabled_reason) {
+    throw new Error('Manager mobile access is not included in Starter. Upgrade to Pro for mobile access.');
+  }
+  if (Object.prototype.hasOwnProperty.call(data || {}, 'allowed_outlet_ids')
+      && Array.isArray(data.allowed_outlet_ids) && data.allowed_outlet_ids.length > 0) {
+    throw new Error('Outlet-scoped access is not included in Starter Users & Access.');
+  }
+  if (!allowArchive && data?.status && normalizeStaffStatus(data.status) === 'archived') {
+    throw new Error('Starter supports suspend and reactivate only. Archive is available on Standard.');
+  }
+  return true;
+}
 
 function currentUserCanAdministerStaff() {
   const user = state.currentUser;
@@ -357,6 +415,8 @@ export async function runAuthHealthCheck(email = '', options = {}) {
 
 export async function createUser(data) {
   await requireStaffAdmin({ allowInitialSetup: true });
+  const currentUsers = state.isOnline ? await getAllUsers() : readCache('users');
+  await assertStarterUsersAccessLite({ data, hasExistingUsers: currentUsers.length > 0 });
   assertManagerCanManageRole(data?.role);
   if (currentUserIsLimitedStaffManager() && Object.keys(data?.capability_overrides || {}).length > 0) {
     throw new Error('Managers cannot set custom permission exceptions. Ask an administrator to make this access change.');
@@ -578,6 +638,7 @@ export async function updateUser(id, data) {
   const cachedUsers = readCache('users');
   const existingUser = cachedUsers.find((u) => u.id === id);
   if (!existingUser) throw new Error('Staff account not found.');
+  await assertStarterUsersAccessLite({ data, existingUser });
   assertManagerCanManageRole(existingUser.role);
   assertManagerCanManageRole(data?.role || existingUser.role);
   if (currentUserIsLimitedStaffManager() && Object.prototype.hasOwnProperty.call(data || {}, 'capability_overrides')) {
@@ -730,6 +791,7 @@ export async function updateUser(id, data) {
 
 export async function getStaffAccessAudit(limit = 100) {
   await requireStaffAdmin()
+  await assertStarterUsersAccessLite({ data: { _audit: true } });
   await checkOnline()
   if (!state.isOnline || !state.supabase) {
     throw new Error('Connect to the internet to view the server-backed staff access audit.')
@@ -850,6 +912,7 @@ export async function deleteUser(id) {
   const users = state.isOnline ? await getAllUsers() : readCache('users').map(normalizeUserRecord).filter(Boolean);
   const existingUser = users.find((u) => u.id === id);
   if (!existingUser) throw new Error('Staff account not found.');
+  await assertStarterUsersAccessLite({ data: { _delete: true }, existingUser });
   assertManagerCanManageRole(existingUser.role);
   if (state.currentUser?.id === id) throw new Error('You cannot delete the account you are currently signed in with.');
 

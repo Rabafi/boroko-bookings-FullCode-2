@@ -85,5 +85,6 @@ export const COMMAND_CENTRAL_CAPABILITIES = Object.freeze([
   'command_central.releases.manage',
   'command_central.support.manage',
   'command_central.security.manage',
-  'command_central.destructive.manage'
+  'command_central.destructive.manage',
+  'command_central.recovery.manage'
 ])

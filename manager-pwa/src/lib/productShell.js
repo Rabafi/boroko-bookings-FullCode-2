@@ -56,6 +56,7 @@ const ACCOMMODATION_ONLY_ROUTES = new Set([
   '/supplies',
   '/quotations',
   '/invoices',
+  '/prepayments',
   '/guests',
   '/conference',
   '/day-use'
@@ -65,7 +66,7 @@ const RESTAURANT_ONLY_ROUTES = new Set(['/restaurant-owner', '/restaurant/servic
 
 const HOTEL_ONLY_ROUTES = new Set(['/hotel-dashboard', '/folios', '/checkin-workflow', '/night-audit-enterprise', '/hotel-revenue'])
 
-const LODGE_ONLY_ROUTES = new Set(['/calendar', '/roomgrid', '/prepayments'])
+const LODGE_ONLY_ROUTES = new Set(['/calendar', '/roomgrid'])
 
 const SHELL = Object.freeze({
   [PRODUCT_FAMILY_IDS.LODGE_CAMP]: Object.freeze({

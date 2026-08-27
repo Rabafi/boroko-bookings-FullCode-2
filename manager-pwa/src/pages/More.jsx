@@ -1,9 +1,10 @@
 import { Link } from 'react-router'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   Bell,
   Briefcase,
   Building2,
+  ChevronRight,
   ClipboardCheck,
   FileText,
   LogOut,
@@ -11,6 +12,7 @@ import {
   Moon,
   Package,
   ReceiptText,
+  RefreshCw,
   Shield,
   ShoppingCart,
   Sun,
@@ -25,6 +27,13 @@ import { useFeatures } from '../contexts/FeaturesContext'
 import { getPwaShellConfig, isBarHospitalityMode } from '../lib/productShell'
 import { getNotificationSettings, setNotificationSettings } from '../lib/runtime'
 import { playTestSound, vibratePulse } from '../lib/notificationSound'
+import { APP_BUILD_ID, APP_VERSION, shortBuildId } from '../lib/buildInfo'
+import {
+  applyAppUpdate,
+  checkForAppUpdate,
+  getAppUpdateSnapshot,
+  subscribeToAppUpdate
+} from '../lib/appUpdate'
 
 function SectionCard({ to, title, sub, icon: Icon }) {
   return (
@@ -72,7 +81,7 @@ function NotifToggle({ label, description, icon: Icon, enabled, onChange }) {
 }
 
 export default function More() {
-  const { logout, user } = useAuth()
+  const { logout, user, availableMemberships, switchMembership } = useAuth()
   const { can, features, isEnabled } = useFeatures()
   const shell = getPwaShellConfig(user?.product_family)
   const isRestaurant = shell.restaurantModules === true
@@ -82,6 +91,11 @@ export default function More() {
   const isLodge = shell.productFamily === 'lodge-camp'
   const isDark = document.documentElement.classList.contains('dark-mode')
   const [notifPrefs, setNotifPrefs] = useState(() => getNotificationSettings())
+  const [switchLoadingId, setSwitchLoadingId] = useState(null)
+  const [switchError, setSwitchError] = useState('')
+  const [updateState, setUpdateState] = useState(() => getAppUpdateSnapshot())
+
+  useEffect(() => subscribeToAppUpdate(setUpdateState), [])
 
   const updateNotifPref = (key) => {
     const next = { ...notifPrefs, [key]: !notifPrefs[key] }
@@ -90,6 +104,20 @@ export default function More() {
     if (key === 'sound' && next.sound) playTestSound({ sound: true })
     if (key === 'vibration' && next.vibration) vibratePulse('reply', { vibration: true })
   }
+
+  const chooseBusiness = async (membership) => {
+    setSwitchError('')
+    setSwitchLoadingId(membership?.lodge_id || null)
+    try {
+      await switchMembership(membership)
+    } catch (error) {
+      setSwitchError(error.message || 'Could not switch businesses.')
+    } finally {
+      setSwitchLoadingId(null)
+    }
+  }
+
+  const hasMultipleBusinesses = Array.isArray(availableMemberships) && availableMemberships.length > 1
 
   return (
     <div className="min-h-screen bg-gray-950 pb-24">
@@ -103,6 +131,55 @@ export default function More() {
       </div>
 
       <div className="px-4 py-3 space-y-5">
+        {hasMultipleBusinesses && (
+          <SectionGroup label="Businesses">
+            <div className="space-y-2">
+              {availableMemberships.map((membership) => {
+                const lodgeId = String(membership?.lodge_id || '').trim().toLowerCase()
+                const current = lodgeId === String(user?.lodge_id || '').trim().toLowerCase()
+                const selectable = membership?.pwa_enabled === true && membership?.pwa_feature_enabled === true
+                const status = current
+                  ? 'Current business'
+                  : membership?.pwa_feature_enabled !== true
+                    ? 'Manager app not entitled for this plan'
+                    : membership?.pwa_enabled !== true
+                      ? 'Mobile access off'
+                      : 'Switch business'
+                return (
+                  <button
+                    key={lodgeId}
+                    type="button"
+                    disabled={current || !selectable || Boolean(switchLoadingId)}
+                    onClick={() => chooseBusiness(membership)}
+                    className="w-full rounded-2xl border border-gray-800 bg-gray-800 p-3 text-left transition-colors hover:bg-gray-750 disabled:cursor-not-allowed disabled:opacity-70"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gray-900 text-green-300">
+                        <Building2 size={18} />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-semibold text-white">{membership.lodge_display_name || 'Unnamed business'}</p>
+                        <p className="mt-0.5 truncate text-[11px] text-gray-400">
+                          {membership.product_family_label || membership.product_family || 'Business'}
+                          {membership.package_label ? ` · ${membership.package_label}` : ''}
+                        </p>
+                        <p className={`mt-1 text-[11px] ${current ? 'text-emerald-300' : selectable ? 'text-blue-300' : 'text-amber-300'}`}>
+                          {switchLoadingId === lodgeId ? 'Opening…' : status}
+                        </p>
+                      </div>
+                      <ChevronRight size={17} className="shrink-0 text-gray-500" />
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
+            {switchError ? (
+              <p className="mt-2 rounded-xl border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs text-red-200">{switchError}</p>
+            ) : null}
+            <p className="mt-2 px-1 text-[11px] text-gray-500">Business access and entitlement are checked again by the server when you switch.</p>
+          </SectionGroup>
+        )}
+
         <SectionGroup label="Operations">
           <SectionCard to="/alerts" title="Alerts" sub="Urgent issues and follow-up" icon={Bell} />
           {isHotel && <SectionCard to="/hotel-dashboard" title="Front Desk" sub="Arrivals, departures, in-house stays, and rooms" icon={Building2} />}
@@ -112,7 +189,7 @@ export default function More() {
           {isHotel && (can('rate_plans.view') || can('corporate_accounts.view')) && <SectionCard to="/hotel-revenue" title="Rates & Corporate" sub="Rate-plan and company-account visibility" icon={Briefcase} />}
           {isLodge && <SectionCard to="/calendar" title="Planning" sub="Upcoming stays and room demand" icon={ClipboardCheck} />}
           {isLodge && <SectionCard to="/roomgrid" title="Room Board" sub="Live room availability and occupancy" icon={Building2} />}
-          {isLodge && can('invoices.view') && <SectionCard to="/prepayments" title="Prepayments" sub="Customer-credit balances and liability" icon={WalletCards} />}
+          {isAccommodation && can('prepayments.view') && <SectionCard to="/prepayments" title="Guest Deposits" sub="Read-only, server-confirmed customer-credit balances" icon={WalletCards} />}
           {isAccommodation && <SectionCard to="/housekeeping" title="Housekeeping" sub="Room readiness and cleaning watch" icon={Wrench} />}
           {isAccommodation && can('maintenance.view') && <SectionCard to="/maintenance" title="Maintenance" sub="Tickets and new requests" icon={Wrench} />}
           {can('pos.reports') && isEnabled('pos') && <SectionCard to="/pos" title={isRestaurant ? 'Sales' : 'POS Sales'} sub="Live sales and transaction history" icon={ShoppingCart} />}
@@ -202,6 +279,47 @@ export default function More() {
             enabled={notifPrefs.frontDeskReplies}
             onChange={() => updateNotifPref('frontDeskReplies')}
           />
+          <div className="bg-gray-800 rounded-2xl p-3">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-xl bg-gray-900 text-green-300 flex items-center justify-center shrink-0">
+                <RefreshCw size={18} />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-semibold text-white">App version and updates</p>
+                <p className="text-[11px] text-gray-400 mt-0.5">
+                  Installed v{APP_VERSION} · build {shortBuildId(APP_BUILD_ID)}
+                </p>
+                {updateState.phase === 'available' && (
+                  <p className="text-[11px] text-emerald-300 mt-1">
+                    New build ready: v{updateState.version} · {shortBuildId(updateState.buildId)}
+                  </p>
+                )}
+                {updateState.phase === 'unavailable' && (
+                  <p className="text-[11px] text-amber-300 mt-1">Update checks are unavailable until the app shell finishes loading.</p>
+                )}
+                {updateState.phase === 'error' && (
+                  <p className="text-[11px] text-amber-300 mt-1">Could not check right now. Try again when online.</p>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  if (updateState.phase === 'available') applyAppUpdate()
+                  else void checkForAppUpdate()
+                }}
+                disabled={updateState.phase === 'checking' || updateState.phase === 'applying'}
+                className="shrink-0 rounded-xl bg-gray-900 px-3 py-2 text-[11px] font-semibold text-green-300 disabled:opacity-50"
+              >
+                {updateState.phase === 'available'
+                  ? 'Update'
+                  : updateState.phase === 'checking'
+                    ? 'Checking'
+                    : updateState.phase === 'applying'
+                      ? 'Updating'
+                      : 'Check'}
+              </button>
+            </div>
+          </div>
           <button
             onClick={logout}
             className="w-full bg-gray-800 rounded-2xl p-3 flex items-center gap-3 active:scale-[0.98] transition-transform"

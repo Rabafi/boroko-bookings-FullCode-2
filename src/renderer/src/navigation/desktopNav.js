@@ -146,13 +146,15 @@ export const ALL_NAV = [
   },
   {
     to: '/prepayments',
-    label: 'Prepayments',
+    label: 'Guest Deposits',
     icon: Banknote,
-    types: ['lodge'],
+    types: ['lodge', 'hotel'],
     group: 'Finance',
-    capability: 'invoices.view',
-    moduleKey: null,
-    keywords: ['customer credit', 'advance payment', 'deposit without dates', 'held money']
+    feature: 'prepayments_basic',
+    tier: 'Starter',
+    capability: 'prepayments.view',
+    moduleKey: 'prepayments_basic',
+    keywords: ['prepayments', 'customer credit', 'advance payment', 'deposit without dates', 'held money']
   },
   {
     to: '/roomgrid',
@@ -284,6 +286,18 @@ export const ALL_NAV = [
     tier: 'Starter',
     capability: 'reports.basic_view',
     keywords: ['daily', 'starter', 'occupancy', 'collections']
+  },
+  {
+    to: '/starter-backup',
+    label: 'Core data recovery export',
+    icon: Database,
+    types: ['lodge'],
+    group: 'Finance',
+    feature: 'starter_backup',
+    tier: 'Starter',
+    capability: 'backup.starter_export',
+    moduleKey: 'starter_backup',
+    keywords: ['backup', 'recovery', 'core data', 'data ownership', 'support']
   },
   {
     to: '/pos',
@@ -462,15 +476,15 @@ export const ALL_NAV = [
   },
   {
     to: '/staff',
-    label: 'Staff',
+    label: 'Users & Access',
     icon: Users,
     types: ['lodge', 'restaurant'],
     group: 'Team',
-    feature: 'staff',
-    tier: 'Standard',
+    feature: 'staff_basic',
+    tier: 'Starter',
     capability: 'staff.view',
-    moduleKey: 'staff',
-    keywords: ['employees', 'team']
+    moduleKey: 'staff_basic',
+    keywords: ['users', 'access', 'invite', 'team']
   },
   {
     to: '/data-management',

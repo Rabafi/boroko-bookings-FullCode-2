@@ -32,8 +32,11 @@ const hotelNightAudit = fs.readFileSync(path.join(root, 'manager-pwa/src/pages/H
 const restaurantFloorKitchen = fs.readFileSync(path.join(root, 'manager-pwa/src/pages/RestaurantFloorKitchen.jsx'), 'utf8')
 const restaurantMenu = fs.readFileSync(path.join(root, 'manager-pwa/src/pages/RestaurantMenu.jsx'), 'utf8')
 const prepayments = fs.readFileSync(path.join(root, 'manager-pwa/src/pages/Prepayments.jsx'), 'utf8')
+const managerApp = fs.readFileSync(path.join(root, 'manager-pwa/src/App.jsx'), 'utf8')
 const hotelRevenue = fs.readFileSync(path.join(root, 'manager-pwa/src/pages/HotelRevenue.jsx'), 'utf8')
 const roomSupplies = fs.readFileSync(path.join(root, 'manager-pwa/src/pages/RoomSupplies.jsx'), 'utf8')
+const pwaAccess = fs.readFileSync(path.join(root, 'manager-pwa/src/lib/access.js'), 'utf8')
+const more = fs.readFileSync(path.join(root, 'manager-pwa/src/pages/More.jsx'), 'utf8')
 
 test('product family mapping: motel is Lodge & Camp; pos_only is hospitality-pos', () => {
   assert.equal(resolveProductFamily('motel'), 'lodge-camp')
@@ -85,7 +88,8 @@ test('PWA client uses list + issue split and never keeps password for chooser', 
   assert.match(api, /export async function issueManagerPwaSession/)
   assert.match(api, /list_manager_pwa_memberships/)
   assert.match(api, /issue_manager_pwa_session/)
-  assert.match(api, /return \{ memberships: entitled, user: null \}/)
+  assert.match(api, /return \{ memberships: available, user: null \}/)
+  assert.doesNotMatch(api, /const entitled =|const enabledRows =|const entitledRows =/)
   assert.match(api, /Manager mobile app access is not included or active for this business/)
   assert.doesNotMatch(api, /getSubscriptionPlan/)
 
@@ -98,6 +102,28 @@ test('PWA client uses list + issue split and never keeps password for chooser', 
   assert.match(login, /Select your business/)
   assert.match(login, /product_family/)
   assert.match(login, /selectMembership/)
+})
+
+test('multi-property PWA keeps every membership visible and switches with a fresh server session', () => {
+  assert.match(api, /export function isManagerPwaMembershipSelectable/)
+  assert.match(api, /const selected = rows\.find\(\(row\) => row\.lodge_id === String\(lodgeId\)\.trim\(\)\.toLowerCase\(\)\)/)
+  assert.doesNotMatch(api, /const selected = rows\.find\([\s\S]{0,180}\) \|\| rows\[0\]/)
+  assert.match(auth, /availableMemberships/)
+  assert.match(auth, /const switchMembership = async \(membership\)/)
+  assert.match(auth, /memberships = await listManagerPwaMemberships\(\)/)
+  assert.match(auth, /await logoutManagerSession\(previousToken\)/)
+  assert.match(auth, /await logoutManagerSession\(nextToken\)\.catch\(\(\) => \{\}\)/)
+  assert.match(auth, /return startSession\(result\.user, user, memberships\)/)
+  assert.match(login, /disabled=\{Boolean\(selectLoadingId\) \|\| !selectable\}/)
+  assert.match(login, /Manager mobile access off/)
+  assert.match(login, /Manager app not entitled/)
+  assert.match(more, /availableMemberships/)
+  assert.match(more, /Mobile access off/)
+  assert.match(more, /Manager app not entitled/)
+  assert.match(more, /switchMembership/)
+  assert.match(managerApp, /<FeaturesProvider key=\{user\.lodge_id\}>/)
+  assert.match(managerApp, /<InboxProvider key=\{user\.lodge_id\}>/)
+  assert.match(managerApp, /<AuthenticatedShell[\s\S]{0,160}key=\{`\$\{user\.lodge_id\}/)
 })
 
 test('PWA shell adapts nav by server product_family', () => {
@@ -202,9 +228,27 @@ test('Restaurant menu is a product-scoped live PWA catalogue read', () => {
   assert.match(restaurantMenu, /listRestaurantMenu\(user\.lodge_id\)/)
 })
 
-test('Lodge prepayments use the authoritative customer-credit summary and remain read-only', () => {
+test('Accommodation Guest Deposits use the authoritative customer-credit summary and remain read-only', () => {
   assert.match(prepayments, /getCustomerCreditSummaryPwa\(user\.lodge_id/)
-  assert.match(prepayments, /Receiving, allocating, refunding, and reversing customer credit remains/)
+  assert.match(api, /getCustomerCreditSummaryPwa[\s\S]{0,220}assertCapability\('prepayments\.view',\s*\{\s*lodgeId\s*\}\)/)
+  assert.match(api, /authoritative customer credit summary response was unavailable or malformed/)
+  assert.match(pwaAccess, /productId:\s*user\?\.product_id/)
+  assert.match(pwaAccess, /commercialPackageKey:\s*user\?\.commercial_package_key/)
+  assert.match(shell, /ACCOMMODATION_ONLY_ROUTES[\s\S]{0,260}'\/prepayments'/)
+  assert.doesNotMatch(shell, /LODGE_ONLY_ROUTES[^\n]*\/prepayments/)
+  assert.match(shell, /PRODUCT_FAMILY_IDS\.HOTEL[\s\S]{0,1200}accommodationModules: true/)
+  assert.match(shell, /PRODUCT_FAMILY_IDS\.HOSPITALITY_POS[\s\S]{0,1200}accommodationModules: false/)
+  assert.match(managerApp, /<ProductRouteGuard path="\/prepayments" productFamily=\{user\?\.product_family\}/)
+  assert.match(managerApp, /<Guard capability="prepayments\.view"><Prepayments \/><\/Guard>/)
+  assert.match(more, /isAccommodation && can\('prepayments\.view'\)/)
+  assert.match(prepayments, /Receiving, allocating, refunding, reversing, reconciling, exporting, matching, and configuring Guest Deposits remain/)
+  assert.match(pwaAccess, /blockedOnMobile[\s\S]{0,900}'prepayments\.receive'/)
+  assert.doesNotMatch(pwaAccess, /blockedOnMobile[\s\S]{0,900}'prepayments\.view'/)
+  assert.doesNotMatch(api, /record_customer_credit|apply_customer_credit_to_booking|refund_customer_credit|reverse_customer_credit_entry/)
+  assert.doesNotMatch(prepayments, /onSubmit|window\.api\.(?:customerCredit|prepayments)\.(?:record|apply|refund|reverse|export|setConfig)/i)
+  for (const capability of ['receive', 'allocate', 'refund', 'reverse', 'reconcile', 'export', 'age', 'match', 'configure']) {
+    assert.match(pwaAccess, new RegExp(`'prepayments\\.${capability}'`))
+  }
 })
 
 test('Hotel rate plans and corporate accounts are live, capability-gated PWA reference workspaces', () => {

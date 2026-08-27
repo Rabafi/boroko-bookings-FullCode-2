@@ -205,7 +205,7 @@ test('corporate settlement charge goes through RPC and is online_only', () => {
 // ── Customer credit allocation idempotency ───────────────────────────────────
 
 test('customer credit allocation uses stable idempotency (no Date.now)', () => {
-  assert.ok(customerCreditSrc.includes('buildCreditIdempotencyKey'), 'stable key helper')
+  assert.ok(customerCreditSrc.includes('requireStableOperationId'), 'stable key validator')
   assert.ok(customerCreditSrc.includes('apply_customer_credit_to_booking'), 'allocation RPC')
   assert.ok(customerCreditSrc.includes('p_idempotency_key'), 'passes p_idempotency_key')
 
@@ -215,12 +215,12 @@ test('customer credit allocation uses stable idempotency (no Date.now)', () => {
   const nextExport = customerCreditSrc.indexOf('export async function refundCustomerCredit', allocIdx + 1)
   const allocBody = customerCreditSrc.slice(allocIdx, nextExport > 0 ? nextExport : allocIdx + 4000)
   assert.ok(!allocBody.includes('Date.now()'), 'allocation must not use Date.now in idempotency key')
-  assert.ok(
-    allocBody.includes('buildCreditIdempotencyKey') || allocBody.includes('callerIdempotencyKey'),
-    'allocation must use stable or caller-supplied key'
+  assert.ok(allocBody.includes('callerIdempotencyKey'), 'allocation must use the caller-owned intent key')
+  assert.match(
+    allocBody,
+    /requireStableOperationId\([^)]*(?:callerIdempotencyKey|operationId|operationKey)[^)]*,\s*['"]allocation['"]\)/,
+    'allocation must validate the caller-owned key and label its operation scope'
   )
-  assert.ok(allocBody.includes('customer-credit:allocation') || allocBody.includes("buildCreditIdempotencyKey('customer-credit:allocation'"),
-    'allocation key namespace')
 })
 
 // ── OFFLINE_MATRIX alignment ─────────────────────────────────────────────────

@@ -1,5 +1,106 @@
 # Deployment Evidence Matrix
 
+## 2026-08-27 — Starter recovery and weekly automation (database deployed; desktop not released)
+
+Local source implements a v3 encrypted `.tbbackup` contract, the
+freshly-reauthenticated Command Central disposable recovery workspace, an
+atomic/idempotent service-path restore RPC with post-restore verification, and
+opt-in weekly customer-owned backup automation. Local evidence passes Starter
+backup 27/27 and combined recovery/automation/wiring/SQL coverage 42/42.
+
+The ordered linked chain is applied through
+`20260827020000_starter_recovery_campsite_booking_completeness.sql`. Migration
+history has local/remote parity, the post-deploy dry run is empty, and linked
+error-level SQL lint and security advisors return no findings. This includes
+the recovery/automation RPCs, idempotent replay and double-quarantine
+guardrails, and atomic campsite booking-detail restoration.
+
+No authenticated service-role restore, two-lodge isolation smoke, restart
+credential test, packaged installer, publication, or customer enablement is
+claimed. The desktop workflow remains unreleased and live-lodge replacement
+remains unavailable. The export accepts up to 256 MiB/100,000 rows per table,
+but the present authoritative restore RPC accepts at most 8 MiB; a larger valid
+core package is saved and verifiable but is not currently restorable through
+Command Central without the planned chunked transport.
+
+## 2026-08-25 — Manager PWA version and multi-business switcher (production)
+
+The deployed Manager PWA shows semantic version and per-build identity, checks
+for updates on load, return-to-app, and operator request, and names the waiting
+build before applying it. Login and the authenticated Menu now show all active
+server memberships across Lodge, Hotel, Restaurant, and Bar. Disabled or
+unentitled rows remain visible but fail closed; a successful switch re-lists
+server membership, issues the exact selected lodge session, revokes the prior
+session, and remounts lodge/product/capability state.
+
+Combined affected coverage passes 68/68, lint reports zero errors and 34
+existing warnings, and the production build passes. Vercel deployment
+`dpl_62R3FmKmkDm4HqW4p579XNbgaucy` is READY; the production alias is
+`boroko-bookings.vercel.app`, and the stable project alias
+`tsa-bonno-hospitalityos-manager.vercel.app` also loads successfully.
+
+Read-only linked evidence for `botswapelostudios2@gmail.com` shows five active,
+auth-linked Admin memberships. Restaurant is enabled/entitled; Bar, Lodge, and
+Lounge are entitled but mobile access is off; Hotel is disabled and lacks the
+Manager App entitlement. No permission, package, or database state was mutated,
+and no authenticated multi-property production smoke is claimed. Desktop,
+marketing, database migrations, commit, and push remain outside this PWA
+deployment.
+
+## 2026-08-25 — Tiered Guest Deposits / Prepayments (local-only)
+
+Local source implements Guest Deposits Lite for Lodge Starter, Prepayments
+Management for Lodge Standard, and Credit Control & Automation for Lodge Pro,
+with Hotel Core receiving all three accommodation tiers and Hospitality POS
+excluded. All tiers use the existing authoritative customer-credit ledger and
+RPC family. Stable operation IDs, mandatory refund/reversal reasons,
+server-enforced role/lodge/feature checks, fail-closed authoritative reads,
+explicit offline estimates, audited formula-safe exports, and read-only
+matching suggestions preserve the financial boundary. The Manager PWA remains
+read-only.
+
+The local Manager PWA route and API now require `prepayments.view`, support both
+LodgingOS and HotelOS accommodation memberships, reject Hospitality POS product
+deep links, fail closed on malformed summaries, and explicitly block every
+deposit mutation, reconciliation/export, ageing/matching, and configuration
+capability on mobile. Marketing package, feature, product, Manager App, home
+comparison, and brochure copy now match the same Starter/Standard/Pro and Hotel
+Core boundaries. The guest booking site requires no internal package change.
+
+Local evidence passes the focused prepayments contract 16/16, combined affected
+contracts 44/44, hotel financial invariants 9/9, production guardrails, and the
+LodgingOS and Manager PWA production builds. Manager lint reports zero errors
+and 34 existing warnings; Manager product-membership coverage passes 17/17 and
+the marketing contract passes its legacy assertions plus 4/4 new tier checks.
+The existing Vite mesh import warning remains. A linked
+`supabase db push --linked --dry-run` identifies only
+`20260825010000_prepayments_tier_controls.sql` as pending. The migration was not
+pushed and no authenticated production Guest Deposits behavior or isolation
+smoke is claimed. Manager PWA deployment `dpl_3WtPaDKfEC8wZozNu7bMEzKDkkEH`
+is READY on Vercel; both stable Manager aliases return HTTP 200 and serve the
+same hashed shell assets as the verified local build. Desktop and marketing
+source remain uncommitted/unpublished.
+
+## 2026-08-24 — Lodge Starter package completion (linked database applied)
+
+Local source now includes bounded Users & Access Lite, customer-owned Starter
+Backup, Basic Report print/A4-PDF output, and immutable universal operational
+audit recording. Cross-product focused coverage passes 57/57, production
+guardrails pass, and the LodgingOS production build passes with the existing
+Vite mesh import warning. The affected Enterprise entitlement file passes
+21/22; only the pre-existing preload wrapper/parser mismatch remains.
+
+Linked migrations `20260824060000_starter_users_access_lite.sql`,
+`20260824065000_starter_backup_entitlement.sql`, and
+`20260824070000_starter_universal_audit_recording.sql` are applied. Local/remote
+migration history matches through `20260824070000`, a post-deployment dry run
+reports the remote database up to date, and linked error-level SQL lint returns
+`results=[]`. A restarted authenticated Hills View Lodge session refreshed the
+Starter entitlement with `staff_basic: true` and refreshed its three existing
+user records; it correctly remains above the two-user limit. Desktop source is
+still uncommitted/unpublished, and authenticated backup, print/PDF,
+artifact-audit, installer, and public-release smoke are not claimed.
+
 ## 2026-08-24 — Lodge Starter basic reports
 
 Linked migration `20260824050000_starter_basic_report.sql` was applied to the

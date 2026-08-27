@@ -2,6 +2,8 @@ import { createContext, useContext, useState, useEffect } from 'react'
 import {
   authenticateManager,
   issueManagerPwaSession,
+  isManagerPwaMembershipSelectable,
+  listManagerPwaMemberships,
   logoutManagerSession,
   refreshManagerSession,
   validateManagerSession
@@ -57,6 +59,9 @@ function buildSessionRecord(row, previous = null) {
     package_label: row.package_label || previous?.package_label || null,
     hospitality_mode: row.hospitality_mode || previous?.hospitality_mode || null,
     effective_features: row.effective_features || previous?.effective_features || null,
+    available_memberships: Array.isArray(row.available_memberships)
+      ? row.available_memberships
+      : (Array.isArray(previous?.available_memberships) ? previous.available_memberships : []),
     pwa_enabled: row.pwa_enabled === true,
     pwa_feature_enabled: row.pwa_feature_enabled !== false,
     plan: row.plan || row.pwa_plan || previous?.plan || 'Starter',
@@ -72,16 +77,23 @@ export function AuthProvider({ children }) {
   const [user, setUser] = useState(null)
   const [loading, setLoading] = useState(true)
   const [pendingMemberships, setPendingMemberships] = useState(null)
+  const [availableMemberships, setAvailableMemberships] = useState([])
 
   const clearAuthSession = () => {
     clearSupabaseSessionToken()
     clearSession()
     setUser(null)
     setPendingMemberships(null)
+    setAvailableMemberships([])
   }
 
-  const startSession = (row, previous = null) => {
-    const session = buildSessionRecord(row, previous)
+  const startSession = (row, previous = null, memberships = null) => {
+    const nextMemberships = Array.isArray(memberships)
+      ? memberships
+      : (Array.isArray(row?.available_memberships)
+        ? row.available_memberships
+        : (Array.isArray(previous?.available_memberships) ? previous.available_memberships : []))
+    const session = buildSessionRecord({ ...row, available_memberships: nextMemberships }, previous)
     if (isSessionExpired(session.session_expires_at) && !isTrustedSessionValid(session)) {
       clearAuthSession()
       throw new Error('Your session has expired. Please sign in again.')
@@ -90,6 +102,7 @@ export function AuthProvider({ children }) {
     setSession(session)
     setUser(session)
     setPendingMemberships(null)
+    setAvailableMemberships(nextMemberships)
     return session
   }
 
@@ -153,7 +166,17 @@ export function AuthProvider({ children }) {
           return
         }
 
-        startSession(mergedProfile, saved)
+        let memberships = Array.isArray(saved.available_memberships) ? saved.available_memberships : []
+        if (!isOffline()) {
+          try {
+            const freshMemberships = await listManagerPwaMemberships()
+            if (freshMemberships.length > 0) memberships = freshMemberships
+          } catch {
+            // A valid saved session can still restore when membership listing is temporarily unavailable.
+          }
+        }
+        if (cancelled) return
+        startSession(mergedProfile, saved, memberships)
       } catch {
         clearAuthSession()
       } finally {
@@ -217,9 +240,11 @@ export function AuthProvider({ children }) {
 
   const login = async (identifier, password) => {
     const result = await authenticateManager(identifier, password)
+    const memberships = Array.isArray(result?.memberships) ? result.memberships : []
     if (result?.memberships?.length > 1) {
       // Supabase Auth holds the credential; do not keep the password in React state.
-      setPendingMemberships(result.memberships)
+      setAvailableMemberships(memberships)
+      setPendingMemberships(memberships)
       return null
     }
 
@@ -227,18 +252,65 @@ export function AuthProvider({ children }) {
       throw new Error('Could not open a manager session.')
     }
 
-    return startSession(result.user)
+    return startSession(result.user, null, memberships)
   }
 
   const selectMembership = async (membership) => {
     if (!membership?.lodge_id) {
       throw new Error('Select a business to continue.')
     }
+    if (!isManagerPwaMembershipSelectable(membership)) {
+      throw new Error('This business is not currently entitled or enabled for Manager mobile access.')
+    }
     const result = await issueManagerPwaSession(membership.lodge_id)
     if (!result?.user) {
       throw new Error('Could not open a manager session for that business.')
     }
-    return startSession(result.user, membership)
+    return startSession(result.user, membership, availableMemberships.length ? availableMemberships : [membership])
+  }
+
+  const switchMembership = async (membership) => {
+    if (!user?.session_token) {
+      throw new Error('Your current manager session is unavailable. Please sign in again.')
+    }
+
+    const selectedLodgeId = String(membership?.lodge_id || '').trim().toLowerCase()
+    const currentLodgeId = String(user.lodge_id || '').trim().toLowerCase()
+    if (!selectedLodgeId) throw new Error('Select a business to continue.')
+    if (selectedLodgeId === currentLodgeId) return user
+
+    // Re-list while the current token is still active. A stale cached option
+    // must never be enough to switch tenants.
+    let memberships
+    try {
+      memberships = await listManagerPwaMemberships()
+    } catch {
+      throw new Error('Could not refresh your businesses. The current session remains active.')
+    }
+    const selected = memberships.find((row) => String(row.lodge_id).trim().toLowerCase() === selectedLodgeId)
+    if (!selected) throw new Error('That business is no longer available for this account.')
+    if (!isManagerPwaMembershipSelectable(selected)) {
+      throw new Error('This business is not currently entitled or enabled for Manager mobile access.')
+    }
+
+    const previousToken = user.session_token
+    const result = await issueManagerPwaSession(selected.lodge_id)
+    const nextToken = result?.user?.session_token
+    if (!result?.user || !nextToken) {
+      throw new Error('The server did not issue a valid mobile app session for that business.')
+    }
+
+    try {
+      // Keep the current session active until the new session is issued. Only
+      // commit the new local tenant after the old server token is revoked.
+      await logoutManagerSession(previousToken)
+    } catch {
+      // Best-effort cleanup prevents an uncommitted second active session.
+      await logoutManagerSession(nextToken).catch(() => {})
+      throw new Error('Could not safely switch businesses. Your current session remains active.')
+    }
+
+    return startSession(result.user, user, memberships)
   }
 
   const logout = async () => {
@@ -256,6 +328,7 @@ export function AuthProvider({ children }) {
 
   const cancelMembershipSelection = async () => {
     setPendingMemberships(null)
+    setAvailableMemberships([])
     await signOutSupabaseAuth()
     clearSupabaseSessionToken()
   }
@@ -269,6 +342,8 @@ export function AuthProvider({ children }) {
         logout,
         pendingMemberships,
         pendingLodges: pendingMemberships,
+        availableMemberships,
+        switchMembership,
         selectMembership,
         selectLodge: selectMembership,
         cancelMembershipSelection

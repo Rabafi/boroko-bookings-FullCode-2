@@ -1,4 +1,215 @@
 # Tsa Bonno HospitalityOS Project State
+
+## 2026-08-27 — Supabase disaster-backup hardening (local only; credentials and first successful run pending)
+
+The scheduled GitHub Actions database-backup workflow now has a fail-closed
+preflight that reports every missing repository secret by its actual GitHub
+name, writes a safe run summary, opens one deduplicated failure issue, detects
+an overdue successful backup after 26 hours, and closes the overdue issue after
+a fully successful run. Success requires the encrypted database artifact and
+the private Cloudflare R2 upload; cleanup remains unconditional. R2 uses a
+SigV4-signed S3-compatible request with a dedicated managed prefix and bounded
+daily/weekly retention that never deletes the sole successful object. A local offline
+verification/rehearsal command now decrypts an existing archive into a unique
+temporary path, rejects unsafe or malformed tar input, verifies required files,
+checks the recorded SHA-256 values and metadata, emits a secret-redacted report,
+and removes plaintext by default. It does not restore or write a database.
+
+Live read-only inventory found that all three scheduled workflow runs to date
+failed and that GitHub supplied none of the six required repository secrets:
+`SUPABASE_BACKUP_DB_URL`, `BACKUP_ENCRYPTION_PUBLIC_KEY_B64`,
+`CLOUDFLARE_R2_ACCOUNT_ID`, `CLOUDFLARE_R2_BUCKET`,
+`CLOUDFLARE_R2_ACCESS_KEY_ID`, and `CLOUDFLARE_R2_SECRET_ACCESS_KEY`. The current GitHub
+token can inspect Actions but cannot inspect or create repository secrets, so a
+repository owner must add them without sharing their values in chat. No
+successful off-site database backup is currently evidenced.
+
+The linked Supabase project currently exposes one Storage bucket,
+`private-cashup-proofs`, and four deployed Edge Functions. Only
+`send-booking-confirmation` and `send-push` have source in this repository;
+`auth-master-admin` and `send-welcome-email` must be recovered into source
+control. The present workflow backs up the PostgreSQL database archive only. It
+does not yet copy Storage objects, Edge Function source, function-secret values,
+or external-provider configuration. A future whole-project tranche must add an
+encrypted, content-addressed Storage manifest/object backup with retention that
+never deletes blobs referenced by retained manifests, recover the missing
+function sources, and maintain a separately protected restore inventory for
+secrets that must be recreated rather than exported.
+
+Local evidence passes the R2/workflow, backup-crypto/retention, and offline
+rehearsal tests (21/21), script syntax validation, `git diff --check`, and
+production guardrails. These workflow and verifier changes are uncommitted and
+unpublished. They will not protect production until the owner credentials are
+configured, the source is deliberately committed and pushed, a manual workflow
+run succeeds end to end, and an offline-key verification rehearsal passes.
+
+## 2026-08-27 — Starter recovery workspace and weekly automation (database deployed; desktop not released)
+
+The Starter `.tbbackup` contract now defaults to v3 with recomputed canonical
+per-table hashes, strict import ceilings, schema-aligned restore allowlists,
+protected/media-field removal, explicit non-transactional snapshot disclosure,
+and signed-ledger validation/reconstruction. Command Central now has a
+freshly-reauthenticated, capability-gated recovery workspace that decrypts only
+in the Electron main process, validates and remaps in memory, and can submit an
+idempotent restore only to a new quarantined disposable lodge. A restore is not
+labelled verified until the authoritative execute RPC and a separate server
+verification RPC both confirm actor, target, counts, isolation, quarantine,
+ledger reconciliation, and request binding. Live-lodge replacement remains
+blocked. Source room-type and floor-section IDs are deliberately not copied
+across lodge boundaries; their unresolved counts are disclosed while campsite
+operational fields are preserved.
+
+Eligible accommodation packages now have an opt-in, customer-owned weekly
+automation path with OS-secure passphrase storage, active-lodge scoping,
+startup/reconnect due evaluation, crash-safe single-flight locking, immediate
+post-write verification, bounded retention of scheduler-owned verified files,
+and a simple status/setup UI with passphrase visibility controls. This remains
+separate from managed/Pro backup policy and never blocks lodge operations.
+
+Local verification passes: Starter backup 27/27 and combined recovery,
+automation, wiring, and SQL-contract coverage 42/42. The linked project is now
+applied through `20260827020000_starter_recovery_campsite_booking_completeness.sql`,
+including the prepayment entitlement migration, the recovery/automation RPCs,
+post-deploy idempotency and quarantine guardrails, and campsite booking-detail
+restore coverage. Local/remote migration history matches, the post-deploy dry
+run is empty, and linked error-level SQL lint and security advisors report no
+issues.
+
+This is database deployment evidence only. No authenticated Command Central
+disposable-restore/two-lodge isolation smoke, restart credential test, packaged
+installer, publication, or customer enablement has been completed, so the
+desktop recovery and automation workflows are not yet customer-ready. The
+package remains a seven-category core-data export rather than a whole-product
+backup. Its export ceiling is 256 MiB/100,000 rows per table, while the current
+authoritative one-RPC restore transport is limited to 8 MiB; larger valid
+packages require a future chunked restore transport and must not be presented
+as currently restorable.
+
+The approved future direction is now recorded in
+`docs/STARTER_BACKUP_RECOVERY_ROADMAP.md`: every authoritative customer data
+domain must gain a backup and tested recovery path, including POS, inventory,
+expenses/accounting, events, assets, attachments, non-secret memberships, and
+audit evidence. Secrets and rebuildable device state remain excluded. The
+current product name must remain **Core Data Backup** until that broader scope,
+chunked transport, reconciliation, and disposable restore evidence exist.
+
+No installer was built or published.
+During local work, ignored reproducible `out/hospitality-pos`,
+`dist/hospitality-pos`, and `node_modules/.vite` artifacts were removed to
+recover disk space; no source, customer data, or `.tbbackup` file was removed.
+
+## 2026-08-25 — Starter Core Data Recovery Export package (local implementation; no publication)
+
+Starter Backup now writes a branded `.tbbackup` envelope around canonical core
+JSON. The package carries included/excluded dataset categories, app/schema
+versions, full SHA-256 checksums, recovery readme, and optional AES-256-GCM
+encryption using a passphrase that is never persisted. The desktop flow shows
+the saved destination, full fingerprint, record counts and completeness,
+supports opening the folder, verification, saving another atomic copy,
+seven-day history/reminders, and a disposable in-memory support-led restore
+rehearsal that writes only a non-PII validation report. Decrypted customer data
+is not returned over the renderer IPC verifier and is not extracted by the
+rehearsal. No live restore or database overwrite path was added. Package
+round-trip, integrity, wrong-passphrase, atomic-write contract, history, and
+rehearsal tests pass;
+`npm run build` passes with the existing Vite dynamic-import warning. This
+source remains unpublished and no installer or external deployment is claimed.
+The near-term implementation plan for Command Central live recovery and
+automated encrypted Starter backups is tracked in
+[docs/STARTER_BACKUP_RECOVERY_ROADMAP.md](docs/STARTER_BACKUP_RECOVERY_ROADMAP.md).
+
+## 2026-08-25 — Manager PWA version visibility and multi-business switching (production deployed)
+
+The Manager PWA now exposes the root application semantic version plus a
+unique per-build identifier under Menu, supports an explicit update check, and
+identifies the waiting build in the global update prompt. Service-worker
+registration is build-addressed and bypasses the HTTP cache for update checks;
+runtime asset caching and the existing offline shell remain intact.
+
+Supabase-authenticated accounts now retain every active Manager membership
+returned by the server instead of silently filtering disabled or unentitled
+companies and auto-opening the last eligible product. Login presents a
+product/package-aware company chooser, and Menu presents the same company list
+inside the authenticated app. Unavailable companies remain visible with an
+actionable access/plan state but cannot be selected. A switch re-lists
+memberships server-side, selects the exact lodge without a fallback row, mints
+the new lodge-scoped app session, revokes the previous session, and remounts
+entitlement, inbox, product-shell, and data providers by lodge/session identity.
+
+A read-only linked account check for `botswapelostudios2@gmail.com` found five
+active, auth-linked Admin memberships. Restaurant is enabled and entitled;
+Bar, Lodge, and Lounge are entitled but their per-user Manager PWA access is
+off; Hotel is both disabled and not entitled under its current package state.
+No production permission or entitlement was changed. Enabling the three
+eligible memberships remains an explicit access-control action, while Hotel
+requires a valid Manager App entitlement before it may be opened.
+
+Combined PWA/product/prepayment coverage passes 68/68, Manager lint has zero
+errors and 34 existing warnings, and the production PWA build passes. Vercel
+deployment `dpl_62R3FmKmkDm4HqW4p579XNbgaucy` is READY and is aliased to
+`boroko-bookings.vercel.app`; both that alias and
+`tsa-bonno-hospitalityos-manager.vercel.app` load the Tsa Bonno HospitalityOS
+Manager production shell. No database migration, desktop release, marketing
+deployment, commit, or push is claimed for this tranche.
+
+## 2026-08-25 — Tiered Guest Deposits / Prepayments (local implementation; database deployment pending)
+
+The accommodation products now use one authoritative customer-credit ledger
+and RPC family across three commercial tiers. Lodge Starter exposes Guest
+Deposits Lite (`prepayments_basic`) for receiving a deposit, viewing the
+server-confirmed balance and history, allocating credit to a booking, and
+Admin-authorized refund/reversal with a mandatory reason. Lodge Standard adds
+Prepayments Management (`prepayments_management`) with portfolio search,
+reconciliation, partial or split allocation support, bounded operational
+reporting, and audited CSV export. Lodge Pro adds Credit Control & Automation
+(`prepayments_advanced`) with server-calculated ageing, configurable three-band
+thresholds, alerts, analytics, and advisory read-only matching suggestions.
+Hotel Core carries all three accommodation capabilities; Hospitality POS
+packages carry none. Downgraded accommodation accounts retain ledger reads
+while actions outside the active tier fail closed. The Manager PWA remains
+read-only.
+
+The Manager PWA now uses the exact `prepayments.view` capability instead of
+the older invoice-view proxy. `/prepayments` is an accommodation route for both
+LodgingOS and HotelOS, remains unavailable to Hospitality POS, fails closed on
+malformed authoritative summaries, and explicitly disables receive, allocate,
+refund, reverse, reconcile, export, ageing, matching, and configuration
+capabilities on mobile. It does not calculate a portfolio liability from row
+fallbacks. Public marketing now presents the same tier boundaries across the
+home comparison, package page, feature page, LodgingOS and HotelOS pages,
+Manager App page, and brochure. The Standard brochure no longer places the
+Manager App below Pro. The public guest booking site remains unchanged because
+it contains no internal package or customer-credit control surface.
+
+Desktop mutations require caller-owned stable operation IDs; refund and
+reversal require a reason; IPC, domain, and database boundaries independently
+enforce lodge, actor, role, capability, subscription feature, and input rules.
+Offline allocation exposes explicitly pending estimate fields and never authors
+authoritative `amount_paid` or `payment_status`. Failed or malformed
+authoritative reads remain unavailable rather than becoming zero. Standard CSV
+exports are bounded, neutralize spreadsheet formulas, hash the written file,
+and record server audit evidence with a visible partial-success state when the
+file succeeds but audit confirmation fails. Pro ageing, alerts, matching, and
+configuration are server-backed; matching suggestions do not mutate ledgers.
+
+Forward migration `20260825010000_prepayments_tier_controls.sql` adds the
+catalogue, entitlement, authorization, configuration/audit, portfolio,
+reconciliation, ageing, alert, matching, and export contracts. A linked dry run
+on 2026-08-25 identifies exactly this migration as pending; it has not been
+deployed or live-smoke-tested. Local evidence passes the 16/16 focused tier
+contract, 44/44 combined affected contracts, 9/9 hotel financial invariants,
+production guardrails, the LodgingOS production build, and the Manager PWA
+build. Manager membership coverage passes 17/17, the marketing contract passes
+all legacy assertions plus 4/4 new tier-boundary checks, and Manager lint has
+zero errors and 34 existing warnings. The existing Vite mesh dynamic/static
+import warning remains. Manager PWA production deployment
+`dpl_3WtPaDKfEC8wZozNu7bMEzKDkkEH` is READY on Vercel; both
+`tsa-bonno-hospitalityos-manager.vercel.app` and the compatibility alias
+`boroko-bookings.vercel.app` return HTTP 200, and their production shell asset
+hashes match the verified local build. The prepayments database migration,
+desktop source, and marketing source remain uncommitted/unpublished; no
+authenticated production Guest Deposits smoke is claimed.
+
 ## 2026-08-24 — Lodge Starter basic reports (linked database applied; desktop publication pending)
 
 Lodge Starter now includes a deliberately narrow, view-only `basic_reports`
@@ -37,6 +248,56 @@ reports the remote database up to date, linked error-level SQL lint returns no
 findings, and error-level advisors report no issues. The updated desktop and
 marketing source remain unpublished, and no desktop installer has been built
 or published for this tranche.
+
+## 2026-08-24 — Lodge Starter package completion (linked database applied; desktop publication pending)
+
+The Starter package now has four bounded operator workflows in local source:
+Users & Access Lite, customer-owned Starter Backup, print/save-PDF output for
+Basic Reports, and universal immutable operational audit recording. Users &
+Access Lite permits at most two accounts, requires one active Admin, restricts
+the second account to Receptionist or Operations, and withholds custom
+permissions, PWA access, outlet scope, audit viewing, and full Staff Management.
+The matching database guards serialize account changes and reject a
+noncompliant Starter activation or downgrade instead of silently accepting an
+over-limit lodge.
+
+Starter Backup creates an atomic, customer-owned JSON artifact with lodge scope,
+PII warnings, completeness evidence, row ceilings, a SHA-256 digest, and no
+secret/idempotency-key or absolute-path disclosure. Recovery is explicitly
+support-led; the feature does not claim a live restore. It is available only to
+licensed Lodge/Hotel accommodation packages and is rejected for Hospitality POS
+before any save dialog or data read. Basic Reports now support bounded A4 PDF
+and native print output for the existing Today/7-day/30-day summaries. Report
+money remains server-authoritative, and print retries retain a stable operation
+ID for idempotent audit evidence.
+
+Starter operational writes now have a forward-only audit-recording closure in
+`20260824070000_starter_universal_audit_recording.sql`. Existing
+`financial_audit_log` remains authoritative for booking/payment financial
+mutations, `staff_access_audit` remains authoritative for Starter user-access
+changes, and POS ledgers remain unchanged. The new lodge-scoped,
+actor-attributed `starter_operational_audit_log` captures rooms, housekeeping,
+customers, quotations, invoices, and maintenance changes with immutable
+append-only protection and recursive credential/identity-secret redaction.
+Starter backup creation and basic-report PDF/print artifact actions call the
+server RPC `record_starter_artifact_audit` with stable content/operation IDs;
+artifact writes report `auditRecorded: false` when server evidence cannot be
+confirmed. Audit viewing and night-audit workflow remain Standard-only. Focused
+cross-product coverage passes 57/57, production guardrails pass, and the
+LodgingOS production build passes with the existing Vite mesh import warning.
+The affected Enterprise entitlement file passes 21/22; its sole failure is the
+pre-existing IPC parity parser that expects literal `ipcRenderer.invoke(...)`
+calls although preload uses the shared `invoke(...)` wrapper. Linked migrations
+`20260824060000_starter_users_access_lite.sql`,
+`20260824065000_starter_backup_entitlement.sql`, and
+`20260824070000_starter_universal_audit_recording.sql` are applied. Migration
+history has local/remote parity through `20260824070000`, the post-deployment
+dry run reports the remote database up to date, and linked error-level SQL lint
+returns no findings. A refreshed authenticated Hills View Lodge desktop session
+now resolves `staff_basic: true` and refreshes all three existing user records;
+the lodge remains above the Starter two-user limit and new creation is blocked.
+Desktop source remains uncommitted/unpublished, and authenticated backup,
+report-artifact, installer, and public-release smoke remain open.
 
 ## 2026-08-24 — Consolidated main and Bar/POS source publication
 

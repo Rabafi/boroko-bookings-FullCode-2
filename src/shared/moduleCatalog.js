@@ -76,7 +76,7 @@ export const MODULE_CATALOG = [
     visibility: 'always',
     upsellPriority: 0,
     routes: ['/invoices'],
-    capabilities: ['invoices.view'],
+    capabilities: ['prepayments.view'],
     rolloutStatus: 'live'
   },
   {
@@ -140,6 +140,51 @@ export const MODULE_CATALOG = [
     rolloutStatus: 'live'
   },
   {
+    key: 'prepayments_basic',
+    label: 'Guest Deposits',
+    description: 'Receive, receipt, allocate, and maintain a server-authoritative customer deposit ledger before dates are confirmed',
+    category: MODULE_CATEGORIES.finance,
+    requiredPlan: 'Starter',
+    isAddon: false,
+    addonKey: null,
+    allowedPropertyTypes: ['guest_house', 'bnb', 'lodge', 'camp', 'motel', 'hotel', 'resort'],
+    visibility: 'property_type_relevant',
+    upsellPriority: 76,
+    routes: ['/prepayments'],
+    capabilities: ['prepayments.view', 'prepayments.receive', 'prepayments.allocate', 'prepayments.refund', 'prepayments.reverse'],
+    rolloutStatus: 'live'
+  },
+  {
+    key: 'prepayments_management',
+    label: 'Guest Deposits Management',
+    description: 'Search the deposit portfolio, reconcile server totals, and export certified deposit reporting',
+    category: MODULE_CATEGORIES.finance,
+    requiredPlan: 'Standard',
+    isAddon: false,
+    addonKey: null,
+    allowedPropertyTypes: ['guest_house', 'bnb', 'lodge', 'camp', 'motel', 'hotel', 'resort'],
+    visibility: 'property_type_relevant',
+    upsellPriority: 78,
+    routes: ['/prepayments'],
+    capabilities: ['prepayments.reconcile', 'prepayments.export'],
+    rolloutStatus: 'live'
+  },
+  {
+    key: 'prepayments_advanced',
+    label: 'Guest Deposits Advanced',
+    description: 'Expose only server-backed deposit liability, validation alerts, and payment-control affordances',
+    category: MODULE_CATEGORIES.finance,
+    requiredPlan: 'Pro',
+    isAddon: false,
+    addonKey: null,
+    allowedPropertyTypes: ['guest_house', 'bnb', 'lodge', 'camp', 'motel', 'hotel', 'resort'],
+    visibility: 'property_type_relevant',
+    upsellPriority: 82,
+    routes: ['/prepayments'],
+    capabilities: ['prepayments.age', 'prepayments.match', 'prepayments.configure'],
+    rolloutStatus: 'guarded'
+  },
+  {
     key: 'basic_reports',
     label: 'Basic Reports',
     description: 'Read-only daily operating summary for occupancy, bookings, and certified collections',
@@ -152,6 +197,21 @@ export const MODULE_CATALOG = [
     upsellPriority: 80,
     routes: ['/basic-reports'],
     capabilities: ['reports.basic_view'],
+    rolloutStatus: 'live'
+  },
+  {
+    key: 'starter_backup',
+    label: 'Core data recovery export',
+    description: 'Customer-owned .tbbackup package for support-led recovery; imports and managed backups remain Standard-only',
+    category: MODULE_CATEGORIES.finance,
+    requiredPlan: 'Starter',
+    isAddon: false,
+    addonKey: null,
+    allowedPropertyTypes: ['guest_house', 'bnb', 'lodge', 'camp', 'motel', 'hotel', 'resort'],
+    visibility: 'property_type_relevant',
+    upsellPriority: 85,
+    routes: ['/starter-backup'],
+    capabilities: ['backup.starter_export'],
     rolloutStatus: 'live'
   },
   {
@@ -185,9 +245,26 @@ export const MODULE_CATALOG = [
     rolloutStatus: 'live'
   },
   {
+    key: 'staff_basic',
+    label: 'Users & Access',
+    description: 'List, invite, reset, suspend, and reactivate accounts using safe fixed-role templates',
+    category: MODULE_CATEGORIES.team,
+    requiredPlan: 'Starter',
+    isAddon: false,
+    addonKey: null,
+    allowedPropertyTypes: ['guest_house', 'bnb', 'lodge', 'camp', 'motel', 'hotel', 'resort', 'restaurant'],
+    visibility: 'property_type_relevant',
+    upsellPriority: 70,
+    // Users & Access and full Staff Management intentionally share one route;
+    // the route's entitlement and capability checks select the safe surface.
+    routes: ['/staff'],
+    capabilities: ['staff.view', 'staff.manage'],
+    rolloutStatus: 'live'
+  },
+  {
     key: 'staff',
-    label: 'Staff',
-    description: 'Employee management and roles',
+    label: 'Staff Management',
+    description: 'Full employee management, custom roles, permissions, and deeper workforce controls',
     category: MODULE_CATEGORIES.team,
     requiredPlan: 'Standard',
     isAddon: false,
@@ -196,7 +273,7 @@ export const MODULE_CATALOG = [
     visibility: 'property_type_relevant',
     upsellPriority: 70,
     routes: ['/staff'],
-    capabilities: ['staff.view'],
+    capabilities: ['staff.view', 'staff.manage', 'staff.permissions'],
     rolloutStatus: 'live'
   },
   {

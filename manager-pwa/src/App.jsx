@@ -12,6 +12,15 @@ import { dismissPwaNotification, getNotificationSettings, getPwaQueueHealth, get
 import { shortDateTime } from './lib/format'
 import { normalizeSupportMessages, supportMessageSide, supportSenderMeta, supportSenderName } from '@shared/supportThreads'
 import { playNotificationSound, vibratePulse } from './lib/notificationSound'
+import { serviceWorkerUrl, shortBuildId } from './lib/buildInfo'
+import {
+  applyAppUpdate,
+  checkForAppUpdate,
+  getAppUpdateSnapshot,
+  markServiceWorkerUpdateAvailable,
+  setServiceWorkerRegistration,
+  subscribeToAppUpdate
+} from './lib/appUpdate'
 
 
 import Login from './pages/Login'
@@ -63,11 +72,13 @@ function PageLoader() {
 let swRegistration = null
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js')
+    navigator.serviceWorker.register(serviceWorkerUrl(), { updateViaCache: 'none' })
       .then((registration) => {
         swRegistration = registration
+        setServiceWorkerRegistration(registration)
 
-        const notifyUpdate = () => {
+        const notifyUpdate = (worker = registration.waiting) => {
+          markServiceWorkerUpdateAvailable(registration, worker)
           window.dispatchEvent(new CustomEvent('boroko:pwa-update-ready', { detail: { registration } }))
         }
 
@@ -77,12 +88,17 @@ if ('serviceWorker' in navigator) {
           if (!worker) return
           worker.addEventListener('statechange', () => {
             if (worker.state === 'installed' && navigator.serviceWorker.controller) {
-              notifyUpdate()
+              notifyUpdate(worker)
             }
           })
         })
+        void checkForAppUpdate()
       })
       .catch(() => {})
+  })
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') void checkForAppUpdate()
   })
 
   let reloadingForUpdate = false
@@ -211,11 +227,12 @@ function BroadcastBanners() {
 
 function PwaLifecyclePrompts() {
   const [installPrompt, setInstallPrompt] = useState(null)
-  const [updateRegistration, setUpdateRegistration] = useState(null)
+  const [updateState, setUpdateState] = useState(() => getAppUpdateSnapshot())
   const [dismissedInstall, setDismissedInstall] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
 
   useEffect(() => {
+    const unsubscribeUpdateState = subscribeToAppUpdate(setUpdateState)
     const handleInstallPrompt = (event) => {
       event.preventDefault()
       setInstallPrompt(event)
@@ -225,16 +242,12 @@ function PwaLifecyclePrompts() {
       setInstallPrompt(null)
       setDismissedInstall(true)
     }
-    const handleUpdateReady = (event) => {
-      setUpdateRegistration(event.detail?.registration || swRegistration)
-    }
     window.addEventListener('beforeinstallprompt', handleInstallPrompt)
     window.addEventListener('appinstalled', handleInstalled)
-    window.addEventListener('boroko:pwa-update-ready', handleUpdateReady)
     return () => {
+      unsubscribeUpdateState?.()
       window.removeEventListener('beforeinstallprompt', handleInstallPrompt)
       window.removeEventListener('appinstalled', handleInstalled)
-      window.removeEventListener('boroko:pwa-update-ready', handleUpdateReady)
     }
   }, [])
 
@@ -245,25 +258,25 @@ function PwaLifecyclePrompts() {
   }
 
   const update = () => {
-    const waiting = updateRegistration?.waiting
-    if (!waiting) {
-      updateRegistration?.update?.()
+    if (!applyAppUpdate()) {
+      void checkForAppUpdate()
       return
     }
     setRefreshing(true)
-    waiting.postMessage({ type: 'SKIP_WAITING' })
   }
 
-  if (!installPrompt && !updateRegistration) return null
+  if (!installPrompt && updateState.phase !== 'available') return null
 
   return (
     <div className="mx-3 mt-2 space-y-2">
-      {updateRegistration && (
+      {updateState.phase === 'available' && (
         <div className="rounded-2xl border border-emerald-900 bg-emerald-950/40 px-4 py-3 text-sm text-emerald-100">
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
-              <p className="font-semibold">New version ready</p>
-              <p className="mt-1 text-xs text-emerald-200/80">Refresh Tsa Bonno Manager to use the latest mobile build.</p>
+              <p className="font-semibold">New build ready</p>
+              <p className="mt-1 text-xs text-emerald-200/80">
+                v{updateState.version} · build {shortBuildId(updateState.buildId)} is ready. Refresh Tsa Bonno Manager to use it.
+              </p>
             </div>
             <button
               type="button"
@@ -1082,7 +1095,7 @@ function AuthenticatedApp({ alertCount, dark, setAlertCount, notificationCount, 
           <Route path="/restaurant/floor" element={<ProductRouteGuard path="/restaurant/floor" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><RestaurantFloorKitchen mode="floor" /></Suspense></ProductRouteGuard>} />
           <Route path="/restaurant/kitchen-workspace" element={<ProductRouteGuard path="/restaurant/kitchen-workspace" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><RestaurantFloorKitchen mode="kitchen" /></Suspense></ProductRouteGuard>} />
           <Route path="/restaurant/menu-production" element={<ProductRouteGuard path="/restaurant/menu-production" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><RestaurantMenu /></Suspense></ProductRouteGuard>} />
-          <Route path="/prepayments" element={<ProductRouteGuard path="/prepayments" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><Guard capability="invoices.view"><Prepayments /></Guard></Suspense></ProductRouteGuard>} />
+          <Route path="/prepayments" element={<ProductRouteGuard path="/prepayments" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><Guard capability="prepayments.view"><Prepayments /></Guard></Suspense></ProductRouteGuard>} />
           <Route path="/hotel-revenue" element={<ProductRouteGuard path="/hotel-revenue" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><HotelRevenue /></Suspense></ProductRouteGuard>} />
           <Route path="/supplies" element={<ProductRouteGuard path="/supplies" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><Guard capability="supplies.view"><RoomSupplies /></Guard></Suspense></ProductRouteGuard>} />
           <Route path="/control" element={<Suspense fallback={<PageLoader />}><Control /></Suspense>} />
@@ -1139,10 +1152,11 @@ function AppShell() {
   if (!user) return <Login dark={dark} setDark={setDark} />
 
   return (
-    <FeaturesProvider>
-      <InboxProvider>
+    <FeaturesProvider key={user.lodge_id}>
+      <InboxProvider key={user.lodge_id}>
         <DeviceHealthHeartbeat lodgeId={user.lodge_id} />
         <AuthenticatedShell
+          key={`${user.lodge_id}:${user.session_token || ''}`}
           alertCount={alertCount}
           dark={dark}
           notificationCount={notificationCount}

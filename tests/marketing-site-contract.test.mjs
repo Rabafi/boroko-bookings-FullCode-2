@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import test from 'node:test'
 import { readFileSync, readdirSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -14,6 +15,22 @@ function assertIncludes(source, expected, label) {
   assert.ok(source.includes(expected), `${label} should include ${expected}`)
 }
 
+function normalizeMarkup(source) {
+  return source
+    .replaceAll('&amp;', '&')
+    .replaceAll('&ndash;', '–')
+    .replaceAll('&mdash;', '—')
+    .replace(/\s+/g, ' ')
+}
+
+function sliceBetween(source, startMarker, endMarker, label) {
+  const start = source.indexOf(startMarker)
+  const end = source.indexOf(endMarker, start + startMarker.length)
+  assert.ok(start >= 0, `${label} start marker should exist`)
+  assert.ok(end > start, `${label} end marker should exist after its start`)
+  return source.slice(start, end)
+}
+
 const packagesHtml = read('marketing-site/packages.html')
 const enterpriseHtml = read('marketing-site/enterprise.html')
 const homeHtml = read('marketing-site/index.html')
@@ -22,6 +39,7 @@ const hotelHtml = read('marketing-site/hotel.html')
 const restaurantHtml = read('marketing-site/restaurant-pos.html')
 const barHtml = read('marketing-site/bar-pos.html')
 const managerAppHtml = read('marketing-site/manager-app.html')
+const brochureHtml = read('marketing-site/brochure.html')
 const marketingScript = read('marketing-site/script.js')
 const netlifyToml = read('marketing-site/netlify.toml')
 
@@ -53,9 +71,100 @@ for (const [name, price] of [
   assertIncludes(packagesHtml, price, `${name} annual price`)
 }
 assertIncludes(packagesHtml, 'Manager mobile oversight', 'Bar package includes Manager mobile oversight')
-assertIncludes(packagesHtml, 'View-only daily, 7-day, and 30-day operations summary', 'Starter basic report boundary')
-assertIncludes(packagesHtml, 'Full reports and exports', 'Standard full report boundary')
-assertIncludes(lodgeHtml, 'view-only basic operating summary', 'Lodge Starter basic report positioning')
+assertIncludes(packagesHtml, 'Basic Reports for today, 7-day, and 30-day views with print/PDF', 'Starter basic report boundary')
+assertIncludes(packagesHtml, 'Full Staff Management, full reports and exports', 'Standard full report boundary')
+
+const packageMarkup = normalizeMarkup(packagesHtml)
+const lodgePackagesMarkup = sliceBetween(
+  packageMarkup,
+  '<section class="section pricing-section" id="lodge-packages">',
+  '<section class="section" id="hotel-packages">',
+  'Lodge package section'
+)
+const starterCard = sliceBetween(lodgePackagesMarkup, '<h3>Starter</h3>', '<h3>Standard</h3>', 'Starter package card')
+const standardCard = sliceBetween(lodgePackagesMarkup, '<h3>Standard</h3>', '<h3>Pro</h3>', 'Standard package card')
+const proCard = lodgePackagesMarkup.slice(lodgePackagesMarkup.indexOf('<h3>Pro</h3>'))
+const hotelPackagesMarkup = sliceBetween(
+  packageMarkup,
+  '<section class="section" id="hotel-packages">',
+  '<section class="section section-contrast" id="restaurant-packages">',
+  'Hotel package section'
+)
+
+test('public Lodge package cards state the exact Starter, Standard, and Pro boundaries', () => {
+  for (const phrase of [
+    'Users & Access Lite',
+    'Customer-owned backup',
+    'support-led recovery',
+    'immutable operational audit evidence',
+    'Guest Deposits Lite'
+  ]) {
+    assert.ok(starterCard.toLowerCase().includes(phrase.toLowerCase()), `Starter should include ${phrase}`)
+  }
+  assert.match(starterCard, /Basic Reports[\s\S]{0,220}(?:print|PDF)/i)
+  assert.doesNotMatch(starterCard, /CSV|Excel|full reports? and exports|Prepayments Management|Credit Control & Automation|Full Staff Management|Manager App/i)
+
+  assert.match(standardCard, /Prepayments Management/i)
+  assert.match(standardCard, /Full Staff Management|full staff/i)
+  assert.match(standardCard, /Full reports(?: and exports)?/i)
+  assert.doesNotMatch(standardCard, /Credit Control & Automation/i)
+  assert.doesNotMatch(standardCard, /Manager App/i)
+
+  assert.match(proCard, /Credit Control & Automation/i)
+  assert.match(proCard, /(?:Manager App[\s\S]{0,180}read-only|read-only[\s\S]{0,180}Manager App)/i)
+})
+
+test('Hotel Core publicly carries the full accommodation deposit depth', () => {
+  assert.match(hotelPackagesMarkup, /Hotel Core/i)
+  for (const phrase of ['Guest Deposits Lite', 'Prepayments Management', 'Credit Control & Automation']) {
+    assertIncludes(hotelPackagesMarkup, phrase, `Hotel Core ${phrase}`)
+  }
+})
+
+const brochureMarkup = normalizeMarkup(brochureHtml)
+const brochureStandardJourney = sliceBetween(
+  brochureMarkup,
+  '<section class="brochure-page" aria-label="Standard package journey">',
+  '<section class="brochure-page" aria-label="Pro package journey">',
+  'brochure Standard journey'
+)
+const brochureProJourney = sliceBetween(
+  brochureMarkup,
+  '<section class="brochure-page" aria-label="Pro package journey">',
+  '<section class="brochure-page" aria-label="Product capabilities">',
+  'brochure Pro journey'
+)
+const brochurePackageLadder = sliceBetween(
+  brochureMarkup,
+  '<section class="brochure-page" aria-label="Packages">',
+  '<section class="brochure-page dark-panel" aria-label="Contact and next steps">',
+  'brochure package ladder'
+)
+const brochureStandardCard = sliceBetween(
+  brochurePackageLadder,
+  '<span class="label">Standard</span>',
+  '<span class="label">Pro</span>',
+  'brochure Standard card'
+)
+
+test('brochure keeps Manager App read-only and out of the Standard package', () => {
+  assert.doesNotMatch(brochureStandardJourney, /Manager App/i)
+  assert.doesNotMatch(brochureStandardCard, /Manager App/i)
+  assert.match(brochureProJourney, /(?:Manager App[\s\S]{0,180}read-only|read-only[\s\S]{0,180}Manager App)/i)
+})
+
+test('Manager App marketing does not claim mobile deposit mutations', () => {
+  assertIncludes(managerAppHtml, 'Guest Deposit balances are read-only on mobile', 'Manager App Guest Deposit read-only boundary')
+  const mobileCanList = sliceBetween(
+    normalizeMarkup(managerAppHtml),
+    'Managers CAN',
+    'Front desk DOES on desktop',
+    'Manager App mobile capability list'
+  )
+  assert.doesNotMatch(mobileCanList, /(?:receive|refund|reverse|allocate|reconcile|export|match|configure)[\s\S]{0,80}(?:deposit|prepayment|customer credit)/i)
+})
+
+assertIncludes(lodgeHtml, 'Basic Reports with print/PDF', 'Lodge Starter basic report positioning')
 assertIncludes(packagesHtml, 'data-hotel-addon-builder', 'Hotel add-on builder')
 assertIncludes(packagesHtml, 'Staff Operations &amp; Workforce', 'planned Hotel workforce add-on')
 assertIncludes(packagesHtml, 'Maintenance &amp; Asset Management', 'planned Hotel asset add-on')

@@ -1,4 +1,3 @@
-import crypto from 'crypto';
 import { randomUUID } from 'crypto';
 import { state } from '../state.js';
 import { readCache, writeCache, refreshCache, queueOperation, logActivity, createBackup } from './infrastructure.js';
@@ -6,17 +5,16 @@ import { recordCriticalError } from './operationalLog.js';
 
 // ─── CUSTOMER CREDIT ─────────────────────────────────────────────────────────
 
-function buildCreditIdempotencyKey(prefix, operationData) {
-  const digest = crypto
-    .createHash('sha256')
-    .update(JSON.stringify(operationData))
-    .digest('hex')
-    .slice(0, 32);
-  return `${prefix}:${digest}`.slice(0, 128);
-}
-
 const CREDIT_IN_TYPES = new Set(['receipt', 'adjustment_in', 'reversal_in']);
 const CREDIT_OUT_TYPES = new Set(['booking_allocation', 'refund', 'adjustment_out', 'reversal_out']);
+
+function requireStableOperationId(value, label = 'operation') {
+  const key = String(value || '').trim();
+  if (!key || key.length < 8 || key.length > 128 || !/^[A-Za-z0-9:_-]+$/.test(key)) {
+    throw new Error(`A stable operation ID between 8 and 128 letters, digits, :, _, or - is required for ${label}.`);
+  }
+  return key;
+}
 
 function appendPendingCreditEntry(entry = {}) {
   const cached = readCache('customer-credit-ledger') || [];
@@ -77,6 +75,13 @@ function patchCreditSummaryBalance(customerId, balance, patch = {}) {
   ]);
 }
 
+function patchAuthoritativeCreditBalance(customerId, value, patch = {}) {
+  const balance = Number(value);
+  if (!Number.isFinite(balance)) return false;
+  patchCreditSummaryBalance(customerId, balance, patch);
+  return true;
+}
+
 function creditLedgerDelta(entries = []) {
   return entries.reduce((sum, e) => {
     if (CREDIT_IN_TYPES.has(e.entry_type)) return sum + Number(e.amount || 0);
@@ -109,8 +114,11 @@ function patchCachedBookingCreditEstimate(bookingId, amount) {
   const amountPaid = Math.min(totalOwed, Number(current.amount_paid || 0) + Number(amount || 0));
   const next = {
     ...current,
-    amount_paid: amountPaid,
-    payment_status: totalOwed > 0 && amountPaid >= totalOwed ? 'paid' : amountPaid > 0 ? 'partial' : 'unpaid',
+    // Offline replay may be pending or fail. Keep authoritative booking
+    // amount_paid/payment_status untouched; expose only a labelled estimate.
+    _amount_paid_estimate: amountPaid,
+    _payment_status_estimate: totalOwed > 0 && amountPaid >= totalOwed ? 'paid' : amountPaid > 0 ? 'partial' : 'unpaid',
+    _payment_status_pending: true,
     _pending_sync: true,
     _pending_payment: true,
     _financial_estimate: true,
@@ -133,9 +141,15 @@ function getCreditQueueIdForEntry(entry = {}) {
 }
 
 export async function getCustomerCreditBalance(customerId) {
-  if (!customerId) return { success: true, balance: 0 };
+  if (!customerId) return { success: false, unavailable: true, error: 'Customer ID is required.' };
   if (!state.isOnline) {
-    return { success: true, balance: getCachedCreditBalance(customerId) };
+    return {
+      success: true,
+      balance: getCachedCreditBalance(customerId),
+      offline: true,
+      unavailable: true,
+      _confirmed_balance: false
+    };
   }
   try {
     const { data, error } = await state.supabase.rpc('get_customer_credit_balance', {
@@ -143,12 +157,17 @@ export async function getCustomerCreditBalance(customerId) {
       p_customer_id: customerId
     });
     if (error) throw new Error(error.message);
-    const result = data || { success: true, balance: 0 };
-    patchCreditSummaryBalance(customerId, result.balance || 0);
-    return result;
+    const result = data;
+    const numericBalance = Number(result?.balance);
+    if (!result || typeof result !== 'object' || result.success !== true || !Number.isFinite(numericBalance)) {
+      throw new Error('The authoritative customer-credit balance response was unavailable or malformed.');
+    }
+    patchAuthoritativeCreditBalance(customerId, numericBalance);
+    return { ...result, balance: numericBalance, _confirmed_balance: true };
   } catch (error) {
     recordCriticalError('customerCredit.getBalance', error, { customer_id: customerId });
-    return { success: true, balance: 0 };
+    // A failed authoritative read must never become a false zero balance.
+    throw error;
   }
 }
 
@@ -158,7 +177,8 @@ export async function getCustomerCreditHistory(customerId, limit = 50, offset = 
     return (readCache('customer-credit-ledger') || [])
       .filter((entry) => entry?.customer_id === customerId && entry?.lodge_id === state.lodgeId)
       .sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')))
-      .slice(Number(offset || 0), Number(offset || 0) + Number(limit || 50));
+      .slice(Number(offset || 0), Number(offset || 0) + Number(limit || 50))
+      .map((entry) => ({ ...entry, _offline_snapshot: true, _confirmed_balance: false }));
   }
   try {
     const { data, error } = await state.supabase.rpc('get_customer_credit_history', {
@@ -168,7 +188,8 @@ export async function getCustomerCreditHistory(customerId, limit = 50, offset = 
       p_offset: offset
     });
     if (error) throw new Error(error.message);
-    const rows = Array.isArray(data) ? data : [];
+    if (!Array.isArray(data)) throw new Error('The authoritative customer-credit history response was unavailable or malformed.');
+    const rows = data;
     mergeCreditLedgerRows(rows);
     return rows;
   } catch (error) {
@@ -187,7 +208,9 @@ export async function getCustomerCreditSummary(search = null, limit = 50, offset
       byCustomer.set(summary.customer_id, {
         ...summary,
         balance: getCachedCreditBalance(summary.customer_id),
-        _pending_sync: summary._pending_sync === true
+        _pending_sync: summary._pending_sync === true,
+        _confirmed_balance: false,
+        _offline_snapshot: true
       });
     }
     for (const customer of customers) {
@@ -200,7 +223,9 @@ export async function getCustomerCreditSummary(search = null, limit = 50, offset
         customer_email: customer.email || '',
         balance: getCachedCreditBalance(customer.id),
         latest_entry_at: null,
-        _pending_sync: false
+        _pending_sync: false,
+        _confirmed_balance: false,
+        _offline_snapshot: true
       });
     }
     for (const entry of readCache('customer-credit-ledger') || []) {
@@ -212,12 +237,16 @@ export async function getCustomerCreditSummary(search = null, limit = 50, offset
         customer_email: '',
         balance: getCachedCreditBalance(entry.customer_id),
         latest_entry_at: null,
-        _pending_sync: false
+        _pending_sync: false,
+        _confirmed_balance: false,
+        _offline_snapshot: true
       };
       if (!row.latest_entry_at || String(entry.created_at || '') > String(row.latest_entry_at || '')) {
         row.latest_entry_at = entry.created_at || null;
       }
       row._pending_sync = row._pending_sync || entry._pending_sync === true;
+      row._confirmed_balance = false;
+      row._offline_snapshot = true;
       byCustomer.set(entry.customer_id, row);
     }
     return [...byCustomer.values()]
@@ -234,12 +263,16 @@ export async function getCustomerCreditSummary(search = null, limit = 50, offset
       p_offset: offset
     });
     if (error) throw new Error(error.message);
-    const rows = Array.isArray(data) ? data : [];
+    if (!Array.isArray(data)) throw new Error('The authoritative customer-credit summary response was unavailable or malformed.');
+    const rows = data;
     mergeCreditSummaryRows(rows);
     return rows;
   } catch (error) {
     recordCriticalError('customerCredit.getSummary', error, { search });
-    return [];
+    // Preserve the established array-on-success contract, but fail closed on
+    // an unavailable authoritative read rather than presenting an empty
+    // portfolio as proof that no money exists.
+    throw error;
   }
 }
 
@@ -250,7 +283,9 @@ export async function recordCustomerCredit({
   reference,
   notes,
   recordedBy,
-  idempotencyKey: callerIdempotencyKey
+  idempotencyKey: callerIdempotencyKey,
+  operationId,
+  operationKey
 }) {
   try {
     if (!customerId) throw new Error('Customer ID is required');
@@ -258,8 +293,7 @@ export async function recordCustomerCredit({
     if (!method) throw new Error('Payment method is required');
 
     // Stable per-attempt key: caller must reuse on ambiguous timeout (never Date.now()).
-    const idempotencyKey = callerIdempotencyKey
-      || `customer-credit:receipt:${randomUUID()}`;
+    const idempotencyKey = requireStableOperationId(callerIdempotencyKey || operationId || operationKey, 'receipt');
 
     if (state.isOnline) {
       const { data: result, error } = await state.supabase.rpc('record_customer_credit', {
@@ -275,7 +309,7 @@ export async function recordCustomerCredit({
       if (error) throw new Error(error.message);
       if (!result?.success) throw new Error(result?.error || 'Could not record customer credit');
 
-      patchCreditSummaryBalance(customerId, result.balance || 0);
+      patchAuthoritativeCreditBalance(customerId, result.balance);
       await refreshCache('customers');
       const postedHistory = await getCustomerCreditHistory(customerId, 100, 0).catch(() => []);
       const postedEntry = postedHistory.find((entry) => entry.id === result.entry_id);
@@ -358,23 +392,17 @@ export async function applyCustomerCreditToBooking({
   notes,
   recordedBy,
   expectedBookingUpdatedAt,
-  idempotencyKey: callerIdempotencyKey
+  idempotencyKey: callerIdempotencyKey,
+  operationId,
+  operationKey
 }) {
   try {
     if (!customerId) throw new Error('Customer ID is required');
     if (!bookingId) throw new Error('Booking ID is required');
     if (!amount || amount <= 0) throw new Error('Allocation amount must be greater than zero');
 
-    // Content-stable key so the same allocation payload cannot double-apply on retry.
-    // Callers may override with an explicit key for multi-attempt UI flows.
-    const idempotencyKey = callerIdempotencyKey
-      || buildCreditIdempotencyKey('customer-credit:allocation', {
-        lodge_id: state.lodgeId,
-        customer_id: customerId,
-        booking_id: bookingId,
-        amount: Number(amount),
-        notes: notes || ''
-      });
+    // The caller owns the intent key and must reuse it for an ambiguous retry.
+    const idempotencyKey = requireStableOperationId(callerIdempotencyKey || operationId || operationKey, 'allocation');
 
     if (!state.isOnline) {
       const balance = getCachedCreditBalance(customerId);
@@ -428,8 +456,8 @@ export async function applyCustomerCreditToBooking({
         entry_id: entryId,
         payment_id: null,
         balance: Math.round((balance - numericAmount) * 100) / 100,
-        amount_paid: patchedBooking?.amount_paid ?? null,
-        payment_status: patchedBooking?.payment_status ?? null,
+        amount_paid_estimate: patchedBooking?._amount_paid_estimate ?? null,
+        payment_status_pending: true,
         offline: true,
         queued: true
       };
@@ -448,7 +476,7 @@ export async function applyCustomerCreditToBooking({
     if (error) throw new Error(error.message);
     if (!result?.success) throw new Error(result?.error || 'Could not apply customer credit');
 
-    patchCreditSummaryBalance(customerId, result.balance || 0);
+    patchAuthoritativeCreditBalance(customerId, result.balance);
     await refreshCache('bookings');
 
     const customer = readCache('customers').find((c) => c.id === customerId);
@@ -485,15 +513,17 @@ export async function refundCustomerCredit({
   notes,
   requestedBy,
   approvedBy,
-  idempotencyKey: callerIdempotencyKey
+  idempotencyKey: callerIdempotencyKey,
+  operationId,
+  operationKey
 }) {
   try {
     if (!customerId) throw new Error('Customer ID is required');
     if (!amount || amount <= 0) throw new Error('Refund amount must be greater than zero');
     if (!method) throw new Error('Refund method is required');
+    if (!String(notes || '').trim()) throw new Error('A reason is required for a prepayment refund.');
 
-    const idempotencyKey = callerIdempotencyKey
-      || `customer-credit:refund:${randomUUID()}`;
+    const idempotencyKey = requireStableOperationId(callerIdempotencyKey || operationId || operationKey, 'refund');
 
     if (!state.isOnline) {
       const balance = getCachedCreditBalance(customerId);
@@ -560,7 +590,7 @@ export async function refundCustomerCredit({
     if (error) throw new Error(error.message);
     if (!result?.success) throw new Error(result?.error || 'Could not refund customer credit');
 
-    patchCreditSummaryBalance(customerId, result.balance || 0);
+    patchAuthoritativeCreditBalance(customerId, result.balance);
     const customer = readCache('customers').find((c) => c.id === customerId);
     logActivity(
       'customer_credit_refunded',
@@ -587,18 +617,15 @@ export async function reverseCustomerCreditEntry({
   entryId,
   notes,
   recordedBy,
-  idempotencyKey: callerIdempotencyKey
+  idempotencyKey: callerIdempotencyKey,
+  operationId,
+  operationKey
 }) {
   try {
     if (!entryId) throw new Error('Entry ID is required');
+    if (!String(notes || '').trim()) throw new Error('A reason is required for a prepayment reversal.');
 
-    const idempotencyKey = callerIdempotencyKey
-      || buildCreditIdempotencyKey('customer-credit:reverse', {
-        lodge_id: state.lodgeId,
-        entry_id: entryId,
-        notes: notes || ''
-      });
-
+    const idempotencyKey = requireStableOperationId(callerIdempotencyKey || operationId || operationKey, 'reversal');
     if (!state.isOnline) {
       const original = (readCache('customer-credit-ledger') || []).find((entry) => entry?.id === entryId);
       if (!original) throw new Error('Credit entry not found in offline ledger.');
@@ -661,7 +688,7 @@ export async function reverseCustomerCreditEntry({
     if (!result?.success) throw new Error(result?.error || 'Could not reverse entry');
 
     const original = (readCache('customer-credit-ledger') || []).find((entry) => entry?.id === entryId);
-    if (original?.customer_id) patchCreditSummaryBalance(original.customer_id, result.balance || 0);
+    if (original?.customer_id) patchAuthoritativeCreditBalance(original.customer_id, result.balance);
     logActivity(
       'customer_credit_reversed',
       `Credit entry reversed · Entry ${entryId.slice(0, 8)}`
@@ -677,4 +704,102 @@ export async function reverseCustomerCreditEntry({
     recordCriticalError('customerCredit.reverse', error, { entry_id: entryId });
     throw error;
   }
+}
+
+// Advanced Prepayments reads intentionally stay online-only. They are
+// server-derived projections over customer_credit_ledger; a stale local cache
+// must not be promoted into reconciliation, ageing, matching, or export truth.
+async function prepaymentReadRpc(rpcName, params) {
+  if (!state.isOnline) {
+    return {
+      success: false,
+      unavailable: true,
+      offline: true,
+      error: 'This server-authoritative prepayments view requires a connection.'
+    };
+  }
+  const { data, error } = await state.supabase.rpc(rpcName, params);
+  if (error) throw new Error(error.message);
+  if (!data || typeof data !== 'object' || data.success !== true) {
+    throw new Error(data?.error || `The authoritative ${rpcName} response was unavailable or malformed.`);
+  }
+  return data;
+}
+
+export async function getPrepaymentPortfolio(asOf = null) {
+  return prepaymentReadRpc('get_prepayment_portfolio', {
+    p_lodge_id: state.lodgeId,
+    ...(asOf ? { p_as_of: asOf } : {})
+  });
+}
+
+export async function getPrepaymentAging(asOf = null) {
+  return prepaymentReadRpc('get_prepayment_aging', {
+    p_lodge_id: state.lodgeId,
+    ...(asOf ? { p_as_of: asOf } : {})
+  });
+}
+
+export async function getPrepaymentReconciliation(startAt, endAt) {
+  return prepaymentReadRpc('get_prepayment_reconciliation', {
+    p_lodge_id: state.lodgeId,
+    p_start_at: startAt,
+    p_end_at: endAt
+  });
+}
+
+export async function getPrepaymentMatchingSuggestions(limit = 50) {
+  return prepaymentReadRpc('get_prepayment_matching_suggestions', {
+    p_lodge_id: state.lodgeId,
+    p_limit: limit
+  });
+}
+
+export async function getPrepaymentConfig() {
+  return prepaymentReadRpc('get_prepayment_config', { p_lodge_id: state.lodgeId });
+}
+
+export async function setPrepaymentConfig({ config, operationId, operationKey, idempotencyKey }) {
+  const stableKey = requireStableOperationId(idempotencyKey || operationId || operationKey, 'configuration');
+  if (!state.isOnline) {
+    return {
+      success: false,
+      unavailable: true,
+      offline: true,
+      error: 'Prepayments configuration requires a server connection.'
+    };
+  }
+  const { data, error } = await state.supabase.rpc('set_prepayment_config', {
+    p_lodge_id: state.lodgeId,
+    p_config: config || {},
+    p_idempotency_key: stableKey
+  });
+  if (error) throw new Error(error.message);
+  if (data?.success === false) throw new Error(data.error || 'Could not save prepayments configuration');
+  return data;
+}
+
+export async function exportPrepayments(startAt = null, endAt = null) {
+  return prepaymentReadRpc('get_prepayment_export', {
+    p_lodge_id: state.lodgeId,
+    p_start_at: startAt,
+    p_end_at: endAt
+  });
+}
+
+export async function recordPrepaymentExportAudit({ artifactSha256, fileName, rowCount, startAt = null, endAt = null } = {}) {
+  if (!state.isOnline) {
+    return { success: false, unavailable: true, offline: true, error: 'Export audit requires a server connection.' };
+  }
+  const { data, error } = await state.supabase.rpc('record_prepayment_export_audit', {
+    p_lodge_id: state.lodgeId,
+    p_artifact_sha256: artifactSha256,
+    p_file_name: fileName,
+    p_row_count: rowCount,
+    p_start_at: startAt,
+    p_end_at: endAt
+  });
+  if (error) throw new Error(error.message);
+  if (data?.success === false) throw new Error(data.error || 'Could not record the prepayment export audit.');
+  return data;
 }

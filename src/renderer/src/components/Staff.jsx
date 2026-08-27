@@ -212,6 +212,8 @@ function StaffMembers() {
   const navigate = useNavigate()
   const { user: currentUser } = useAuth()
   const access = useAccess()
+  const features = useFeatures()
+  const starterAccessLite = features?.staff_basic === true && features?.staff !== true
   const { settings } = useSettings()
   const propertyType = settings?.property_type || settings?.business_type || 'lodge'
   const restaurantMode = isRestaurantOnly(propertyType)
@@ -220,7 +222,7 @@ function StaffMembers() {
   const currentRole = normalizeAppRole(currentUser?.role)
   const canManageStaff = canAccessCapability(access, 'staff.manage')
   const usageLimits = getPlanUsageLimits(access?.entitlement?.plan || 'Starter')
-  const canSetRoles = canManageStaff && ['admin', 'super_admin'].includes(currentRole)
+  const canSetRoles = canManageStaff && !starterAccessLite && ['admin', 'super_admin'].includes(currentRole)
   const isLimitedStaffManager = canManageStaff && currentRole === 'manager'
 
   const [users, setUsers] = useState([])
@@ -267,12 +269,13 @@ function StaffMembers() {
   const availableRoles = useMemo(() => {
     return getRoleOptions().filter((role) => {
       if (role.value === 'super_admin') return false
+      if (starterAccessLite && !['receptionist', 'operations'].includes(role.value)) return false
       if (restaurantMode && ['receptionist', 'operations'].includes(role.value)) return false
       if (isLimitedStaffManager && !isManagerManagedRole(role.value)) return false
       if (role.value === 'admin') return currentUser?.role === 'admin' || currentUser?.role === 'super_admin' || currentUser?.isMasterAdmin
       return true
     })
-  }, [currentUser?.isMasterAdmin, currentUser?.role, isLimitedStaffManager, restaurantMode])
+  }, [currentUser?.isMasterAdmin, currentUser?.role, isLimitedStaffManager, restaurantMode, starterAccessLite])
 
   const load = useCallback(async () => {
     setLoadingUsers(true)
@@ -442,6 +445,20 @@ function StaffMembers() {
     event.preventDefault()
     setLoading(true)
     setError('')
+
+    if (starterAccessLite) {
+      const isExistingStarterOwner = editingUser && normalizeAppRole(editingUser.role) === 'admin' && normalizeAppRole(form.role) === 'admin'
+      if (!['receptionist', 'operations'].includes(form.role) && !isExistingStarterOwner) {
+        setLoading(false)
+        setError('Starter users can only use the Receptionist or Operations role templates.')
+        return
+      }
+      if (Object.keys(form.capability_overrides || {}).length > 0 || form.pwa_enabled || (form.allowed_outlet_ids || []).length > 0) {
+        setLoading(false)
+        setError('Starter user access uses fixed role templates. Custom permissions, mobile access, and outlet assignments are available on Standard.')
+        return
+      }
+    }
 
     if (isLimitedStaffManager && !isManagerManagedRole(form.role)) {
       setLoading(false)
@@ -633,7 +650,7 @@ function StaffMembers() {
                 ? `${filteredUsers.length} of ${users.length} staff member${users.length !== 1 ? 's' : ''}`
                 : `${users.length} staff member${users.length !== 1 ? 's' : ''}`}
           </p>
-          <p className="mt-1 text-xs text-slate-400">Role templates set who can serve, take payment, manage stock, close shifts, and approve exceptions.</p>
+          <p className="mt-1 text-xs text-slate-400">{starterAccessLite ? 'Invite one additional lodge user with a safe Receptionist or Operations role. Suspend or reactivate access as needed.' : 'Role templates set who can serve, take payment, manage stock, close shifts, and approve exceptions.'}</p>
           <div className="mt-2">
             {isProPlan ? (
               <span className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700">
@@ -709,7 +726,7 @@ function StaffMembers() {
               disabled={userLimitStatus.isBlocked}
               className="restaurant-staff-add btn-primary disabled:cursor-not-allowed disabled:opacity-60"
             >
-              <Plus size={15} /> Add Staff
+              <Plus size={15} /> {starterAccessLite ? 'Add User' : 'Add Staff'}
             </button>
           )}
         </div>
@@ -817,18 +834,20 @@ function StaffMembers() {
                     >
                       <Mail size={13} /> {inviteLoadingId === staffUser.id ? 'Sending...' : (staffUser.auth_user_id ? 'Send Reset Link' : 'Send Invite')}
                     </button>
-                    <button
-                      onClick={() => openDelete(staffUser)}
-                      disabled={Boolean(deleteBlockedReason)}
-                      title={deleteBlockedReason || 'Delete staff'}
-                      className={`flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs transition-colors ${
-                        deleteBlockedReason
-                          ? 'cursor-not-allowed text-slate-300'
-                          : 'text-red-500 hover:bg-red-50 hover:text-red-700'
-                      }`}
-                    >
-                      <Trash2 size={13} /> Delete
-                    </button>
+                    {!starterAccessLite && (
+                      <button
+                        onClick={() => openDelete(staffUser)}
+                        disabled={Boolean(deleteBlockedReason)}
+                        title={deleteBlockedReason || 'Delete staff'}
+                        className={`flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs transition-colors ${
+                          deleteBlockedReason
+                            ? 'cursor-not-allowed text-slate-300'
+                            : 'text-red-500 hover:bg-red-50 hover:text-red-700'
+                        }`}
+                      >
+                        <Trash2 size={13} /> Delete
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
@@ -853,14 +872,14 @@ function StaffMembers() {
                     Administrator-controlled account
                   </span>
                 )}
-                {pwaEligible && (
+                {!starterAccessLite && pwaEligible && (
                   <span className={`text-xs px-2 py-1 rounded-full ${
                     pwaEnabled ? 'bg-indigo-100 text-indigo-700' : 'bg-amber-100 text-amber-700'
                   }`}>
                     {pwaEnabled ? 'Manager mobile app ready' : 'Manager mobile app turned off'}
                   </span>
                 )}
-                {staffUser.pwa_password_set_at && (
+                {!starterAccessLite && staffUser.pwa_password_set_at && (
                   <span className="rounded-full bg-slate-100 px-2 py-1 text-xs text-slate-500">
                     Mobile app password updated {formatShortDate(staffUser.pwa_password_set_at)}
                   </span>
@@ -873,7 +892,7 @@ function StaffMembers() {
                   </span>
                 ))}
               </div>
-              {pwaEligible && !pwaEnabled && staffUser.pwa_disabled_reason && (
+              {!starterAccessLite && pwaEligible && !pwaEnabled && staffUser.pwa_disabled_reason && (
                 <p className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-xl px-3 py-2 mt-3">
                   {staffUser.pwa_disabled_reason}
                 </p>
@@ -889,7 +908,7 @@ function StaffMembers() {
                       Suspend
                     </button>
                   )}
-                  {normalizeStaffStatus(staffUser.status) !== 'archived' && !isSelf && (
+                  {!starterAccessLite && normalizeStaffStatus(staffUser.status) !== 'archived' && !isSelf && (
                     <button
                       onClick={() => handleStatusChange(staffUser, 'archived')}
                       className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50"
@@ -929,7 +948,7 @@ function StaffMembers() {
 
       {showModal && (
         <Modal
-          title={editingId ? 'Edit Staff Member' : 'Add Staff Member'}
+          title={starterAccessLite ? (editingId ? 'Edit User Access' : 'Add User') : (editingId ? 'Edit Staff Member' : 'Add Staff Member')}
           onClose={() => {
             setShowModal(false)
             setResetForm(emptyResetForm)
@@ -937,11 +956,11 @@ function StaffMembers() {
           size="lg"
           footer={(
             <div className="restaurant-staff-modal-footer">
-              <p>Role templates are the normal way to assign access. Changes are recorded in Access audit.</p>
+              <p>{starterAccessLite ? 'Starter uses fixed role templates and records account changes on the server.' : 'Role templates are the normal way to assign access. Changes are recorded in Access audit.'}</p>
               <div className="flex gap-3">
                 <button type="button" onClick={() => setShowModal(false)} className="btn-secondary">Cancel</button>
                 <button type="submit" form="staff-member-form" disabled={loading} className="btn-primary min-w-[132px]">
-                  {loading ? 'Saving…' : editingId ? 'Save changes' : 'Add staff'}
+                  {loading ? 'Saving…' : editingId ? 'Save changes' : starterAccessLite ? 'Add user' : 'Add staff'}
                 </button>
               </div>
             </div>
@@ -1057,7 +1076,7 @@ function StaffMembers() {
               </p>
             </div>
 
-            {(rolePreview.gained.length > 0 || rolePreview.lost.length > 0) && (
+            {!starterAccessLite && (rolePreview.gained.length > 0 || rolePreview.lost.length > 0) && (
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                 <p className="text-sm font-medium text-slate-800">Role change preview</p>
                 {rolePreview.gained.length > 0 && (
@@ -1194,7 +1213,7 @@ function StaffMembers() {
               </div>
             )}
 
-            {isPwaEligibleRole(form.role) && (
+            {!starterAccessLite && isPwaEligibleRole(form.role) && (
               <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
                 <div>
                   <p className="text-sm font-medium text-slate-800">Manager mobile app access</p>
@@ -1788,6 +1807,7 @@ export default function Staff() {
   const [tab, setTab] = useState('staff')
   const [searchParams, setSearchParams] = useSearchParams()
   const features = useFeatures()
+  const starterAccessLite = features?.staff_basic === true && features?.staff !== true
   const hasHotelRoles = features?.hotel_roles === true
   const access = useAccess()
   const { settings } = useSettings()
@@ -1799,14 +1819,18 @@ export default function Staff() {
 
   useEffect(() => {
     const tabParam = searchParams.get('tab')
+    if (starterAccessLite) {
+      setTab('staff')
+      return
+    }
     if (tabParam) setTab(tabParam)
-  }, [searchParams])
+  }, [searchParams, starterAccessLite])
 
   const tabs = [
-    { key: 'staff', label: 'Staff Members', icon: User },
-    { key: 'roles', label: restaurantMode ? 'Service roles & access' : 'Roles & Permissions', icon: ShieldCheck },
-    ...(hasHotelRoles && !restaurantMode ? [{ key: 'hotel-roles', label: 'Hotel Roles', icon: Briefcase }] : []),
-    { key: 'activity', label: restaurantMode ? 'Access audit' : 'Activity Log', icon: ClipboardList }
+    { key: 'staff', label: starterAccessLite ? 'User Accounts' : 'Staff Members', icon: User },
+    ...(!starterAccessLite ? [{ key: 'roles', label: restaurantMode ? 'Service roles & access' : 'Roles & Permissions', icon: ShieldCheck }] : []),
+    ...(!starterAccessLite && hasHotelRoles && !restaurantMode ? [{ key: 'hotel-roles', label: 'Hotel Roles', icon: Briefcase }] : []),
+    ...(!starterAccessLite ? [{ key: 'activity', label: restaurantMode ? 'Access audit' : 'Activity Log', icon: ClipboardList }] : [])
   ]
 
   return (
@@ -1814,9 +1838,9 @@ export default function Staff() {
       <div className="bb-page-header">
         <div>
           <p className={`text-xs font-semibold uppercase tracking-[0.22em] ${restaurantMode ? 'restaurant-staff-kicker' : 'text-emerald-700/70'}`}>{barOnly ? 'Bar operations' : restaurantMode ? 'Restaurant operations' : 'People & Access'}</p>
-          <h1 className="bb-page-header-title mt-2">{barOnly ? 'Your bar team' : restaurantMode ? 'Your service team' : 'Staff'}</h1>
+          <h1 className="bb-page-header-title mt-2">{starterAccessLite ? 'Users & Access' : barOnly ? 'Your bar team' : restaurantMode ? 'Your service team' : 'Staff'}</h1>
           <p className="bb-page-header-subtitle">
-            {barOnly ? 'Add cashiers, bartenders and managers, assign only the access they need, and keep every shift accountable.' : restaurantMode ? 'Add the people who run service, assign their access, and keep accountability clear.' : 'Manage your team, assign role templates, and review operational activity.'}
+            {starterAccessLite ? 'Manage the two user accounts included with Starter. Invite, reset, suspend, or reactivate a safe fixed role.' : barOnly ? 'Add cashiers, bartenders and managers, assign only the access they need, and keep every shift accountable.' : restaurantMode ? 'Add the people who run service, assign their access, and keep accountability clear.' : 'Manage your team, assign role templates, and review operational activity.'}
           </p>
         </div>
         <div className="hidden items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-2 text-xs md:flex">

@@ -255,7 +255,15 @@ export {
   recordCustomerCredit,
   applyCustomerCreditToBooking,
   refundCustomerCredit,
-  reverseCustomerCreditEntry
+  reverseCustomerCreditEntry,
+  getPrepaymentPortfolio,
+  getPrepaymentAging,
+  getPrepaymentReconciliation,
+  getPrepaymentMatchingSuggestions,
+  getPrepaymentConfig,
+  setPrepaymentConfig,
+  exportPrepayments,
+  recordPrepaymentExportAudit
 } from './domains/customerCredit.js'
 export {
   getExpenses,
@@ -748,6 +756,54 @@ export {
   getImportBatches,
   undoImportBatch
 } from './domains/misc.js'
+export {
+  writeStarterBackupToPath,
+  buildStarterBackupPayload,
+  createStarterBackupPackage,
+  validateStarterBackupPackage,
+  writeStarterBackupPackageBytes,
+  verifyStarterBackupAtPath,
+  getStarterBackupHistory,
+  recordStarterBackupHistory,
+  getStarterBackupReminder,
+  createStarterRestoreRehearsal,
+  STARTER_BACKUP_SCHEMA,
+  STARTER_BACKUP_PACKAGE_SCHEMA,
+  STARTER_BACKUP_PACKAGE_SCHEMA_V3,
+  SUPPORTED_PACKAGE_SCHEMAS,
+  RESTORE_FIELD_ALLOWLIST,
+  captureBackupContext,
+  perTableCanonicalHash,
+  sanitizeRowForRestore,
+  reconstructBookingLedger,
+  buildRecoveryIdentityMap,
+  remapPayloadForRecovery,
+  buildRestorePreviewReport
+} from './domains/starterBackup.js'
+export { recordStarterArtifactAudit } from './domains/starterAudit.js'
+export {
+  beginStarterRecoveryOperation,
+  stageStarterRecoveryPackage,
+  sealAndValidateStarterRecovery,
+  previewStarterRecovery,
+  approveStarterRecovery,
+  executeStarterRecovery,
+  discardStarterRecoveryOperation,
+  getStarterRecoveryOperation,
+  listStarterRecoveryOperations,
+  verifyStarterRecoveryOperation,
+  cleanupExpiredStagedOperations,
+  RECOVERY_WORKSPACE_ENV
+} from './domains/starterRecovery.js'
+export {
+  getStarterBackupAutomationStatus,
+  configureStarterBackupAutomation,
+  disableStarterBackupAutomation,
+  snoozeStarterBackupAutomation,
+  clearStarterBackupAutomationSnooze,
+  runStarterBackupAutomationOnce,
+  evaluateAutomationDueAtStartup
+} from './domains/starterBackupAutomation.js'
 
 export {
   getDashboardStats as getHotelDashboardStats,

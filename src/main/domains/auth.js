@@ -8,6 +8,7 @@ import {
 import { normalizeEmail } from './shared.js'
 import { checkOnline } from './connectivity.js'
 import { getAllUsers, getUserById, getUserPosOutletFilter, getUsers } from './users.js'
+import { assertStarterUsersAccessLite } from './authUsers.js'
 
 import {
   logActivity,
@@ -34,6 +35,7 @@ export async function sendPasswordResetEmail(email) {
 export async function sendUserInviteOrReset(id) {
   const user = await getUserById(id)
   if (!user) throw new Error('Staff account not found.')
+  await assertStarterUsersAccessLite({ data: {}, existingUser: user })
   const emailLower = normalizeEmail(user.email)
   if (!emailLower) throw new Error('Staff account is missing an email address.')
   await checkOnline()

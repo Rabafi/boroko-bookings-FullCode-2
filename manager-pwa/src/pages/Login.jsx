@@ -123,11 +123,17 @@ export default function Login({ dark, setDark }) {
             const label = membership.product_family_label || shell.productFamilyLabel
             const packageLabel = membership.package_label || membership.plan || membership.pwa_plan
             const busy = selectLoadingId === membership.lodge_id
+            const selectable = membership.pwa_enabled === true && membership.pwa_feature_enabled === true
+            const status = membership.pwa_feature_enabled !== true
+              ? 'Manager app not entitled for this plan'
+              : membership.pwa_enabled !== true
+                ? 'Manager mobile access off'
+                : 'Open business'
             return (
               <button
                 key={membership.lodge_id}
                 type="button"
-                disabled={Boolean(selectLoadingId)}
+                disabled={Boolean(selectLoadingId) || !selectable}
                 onClick={() => chooseMembership(membership)}
                 className="w-full bg-gray-800 hover:bg-gray-700 active:bg-gray-600 border border-gray-700 rounded-2xl px-5 py-4 flex items-center gap-4 transition-colors text-left disabled:opacity-60"
               >
@@ -143,6 +149,7 @@ export default function Login({ dark, setDark }) {
                     <span className="text-gray-400 text-xs capitalize">{membership.role}</span>
                     {packageLabel ? <span className="text-gray-500 text-xs">· {packageLabel}</span> : null}
                   </div>
+                  <p className={`mt-1 text-[11px] ${selectable ? 'text-blue-300' : 'text-amber-300'}`}>{status}</p>
                 </div>
                 <ChevronRight size={18} className={`text-gray-500 flex-shrink-0 ${busy ? 'animate-pulse' : ''}`} />
               </button>

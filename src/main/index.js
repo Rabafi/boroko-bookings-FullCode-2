@@ -1,5 +1,5 @@
 import { app, shell, BrowserWindow, ipcMain, Notification, dialog, Menu, nativeImage, screen } from 'electron'
-import { join, dirname, basename } from 'path'
+import { join, dirname, basename, resolve } from 'path'
 import { fileURLToPath } from 'url'
 import fs from 'fs'
 import crypto from 'crypto'
@@ -825,6 +825,17 @@ async function printWebContentsToPdfSafely(webContents, pdfOptions = {}, waitOpt
   return await webContents.printToPDF(pdfOptions)
 }
 
+async function assertBasicReportPage(webContents) {
+  const route = await webContents.executeJavaScript(`
+    String(window.location.hash || window.location.pathname || '')
+  `, true).catch(() => '')
+  if (!route.includes('basic-reports')) {
+    throw new Error('Starter PDF and print are only available from the Basic Reports page.')
+  }
+}
+
+const STARTER_PRINT_OPERATION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
 async function renderHtmlToPdfBuffer(html, pdfOptions = {}, waitOptions = {}) {
   const pdfWindow = new BrowserWindow({
     show: false,
@@ -943,6 +954,42 @@ function csvCell(value) {
   return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
 }
 
+// Prepayment exports contain operator/customer-controlled ledger text. Prefix
+// formula-looking cells so opening the CSV in a spreadsheet cannot execute a
+// formula from a name, reference, method, notes, or idempotency value.
+function safePrepaymentCsvCell(value) {
+  let text = String(value ?? '')
+  if (/^[\t\r]/.test(text) || /^[=+\-@]/.test(text)) text = `'${text}`
+  return csvCell(text)
+}
+
+const PREPAYMENT_EXPORT_COLUMNS = [
+  ['id', 'Entry ID'],
+  ['created_at', 'Created at'],
+  ['customer_id', 'Customer ID'],
+  ['customer_name', 'Customer name'],
+  ['entry_type', 'Entry type'],
+  ['amount', 'Amount'],
+  ['method', 'Method'],
+  ['reference', 'Reference'],
+  ['notes', 'Notes'],
+  ['booking_id', 'Booking ID'],
+  ['payment_id', 'Payment ID'],
+  ['recorded_by', 'Recorded by'],
+  ['idempotency_key', 'Operation ID']
+]
+
+function buildPrepaymentExportCsv(entries = []) {
+  const header = PREPAYMENT_EXPORT_COLUMNS.map(([, label]) => csvCell(label)).join(',')
+  const rows = entries.map((entry) => PREPAYMENT_EXPORT_COLUMNS.map(([key]) => {
+    const value = entry?.[key]
+    // Keep numeric amounts machine-readable while treating every ledger text
+    // field as hostile spreadsheet input.
+    return key === 'amount' ? csvCell(value) : safePrepaymentCsvCell(value)
+  }).join(','))
+  return `${[header, ...rows].join('\r\n')}\r\n`
+}
+
 function buildAccountingExportCsv(source) {
   const lines = [['record_type', 'path', 'value']]
   const metadataRows = flattenAccountingExportValue(Object.fromEntries(Object.entries(source).filter(([key]) => key !== 'data')), 'metadata')
@@ -1028,7 +1075,18 @@ function writeAccountingExportFile(filePath, format, source, companionFilePath =
 }
 
 function buildPrepaymentReceiptPdfHtml(receipt = {}) {
-  const money = (value) => `${escapeHtml(receipt.currency || 'P')} ${Number(value || 0).toFixed(2)}`
+  const money = (value) => {
+    if (value === null || value === undefined || value === '') return 'Unavailable'
+    const amount = Number(value)
+    return Number.isFinite(amount)
+      ? `${escapeHtml(receipt.currency || 'P')} ${amount.toFixed(2)}`
+      : 'Unavailable'
+  }
+  const balanceLabel = receipt.balanceState === 'pending'
+    ? 'Pending server confirmation'
+    : receipt.balanceState === 'unavailable'
+      ? 'Unavailable'
+      : money(receipt.balance)
   const logo = String(receipt.logo || '').trim()
   const contact = [receipt.phone, receipt.email, receipt.website].filter(Boolean).map(escapeHtml).join(' - ')
   return `<!doctype html><html><head><meta charset="utf-8"><style>
@@ -1060,7 +1118,7 @@ function buildPrepaymentReceiptPdfHtml(receipt = {}) {
       ${receipt.address ? `<p class="muted">${escapeHtml(receipt.address)}</p>` : ''}
       ${contact ? `<p class="muted">${contact}</p>` : ''}
     </div>
-    <div class="title"><div><h2>Advance Payment Receipt</h2><p class="muted">${escapeHtml(receipt.receiptNumber || '')}</p></div>
+    <div class="title"><div><h2>Guest Deposit Receipt</h2><p class="muted">${escapeHtml(receipt.receiptNumber || '')}</p></div>
       <div style="text-align:right"><div class="label">Date issued</div><div class="value">${escapeHtml(new Date(receipt.createdAt || Date.now()).toLocaleString('en-BW'))}</div></div></div>
     <div class="grid">
       <div><div class="label">Customer</div><div class="value">${escapeHtml(receipt.customerName || '')}</div></div>
@@ -1068,7 +1126,7 @@ function buildPrepaymentReceiptPdfHtml(receipt = {}) {
       <div><div class="label">Reference</div><div class="value">${escapeHtml(receipt.reference || '-')}</div></div>
       <div><div class="label">Receipt number</div><div class="value">${escapeHtml(receipt.receiptNumber || '')}</div></div>
     </div>
-    <div class="amount"><span>Amount received</span><strong>${money(receipt.amount)}</strong><span>Remaining customer credit: ${money(receipt.balance)}</span></div>
+    <div class="amount"><span>Amount received</span><strong>${money(receipt.amount)}</strong><span>Remaining customer credit: ${balanceLabel}</span></div>
     ${receipt.notes ? `<div class="notes"><div class="label">Notes</div><div class="value">${escapeHtml(receipt.notes)}</div></div>` : ''}
     <div class="warning">This payment is held as customer credit. It does not reserve accommodation or guarantee room availability until a booking is confirmed.</div>
     <div class="footer">Generated by ${escapeHtml(APP_BRAND_NAME)} - ${escapeHtml(receipt.receiptNumber || '')}</div>
@@ -4261,6 +4319,20 @@ app.whenReady().then(async () => {
     throw new Error(errorMessage || 'Your role does not have access to this action.')
   }
 
+  function requireStablePrepaymentOperation(payload, label) {
+    const key = String(payload?.idempotencyKey || payload?.operationId || payload?.operationKey || payload?.idempotency_key || '').trim()
+    if (!key || key.length < 8 || key.length > 128 || !/^[A-Za-z0-9:_-]+$/.test(key)) {
+      throw new Error(`A stable operation ID between 8 and 128 letters, digits, :, _, or - is required for ${label}.`)
+    }
+    return key
+  }
+
+  function requirePrepaymentReason(payload, label) {
+    if (!String(payload?.notes || payload?.reason || '').trim()) {
+      throw new Error(`A reason is required for a prepayment ${label}.`)
+    }
+  }
+
   // Read-only POS panels must be able to distinguish an empty result from a
   // source that was unavailable or not entitled.  Keep the IPC value
   // structured-clone safe and non-array so existing operational callers still
@@ -6040,6 +6112,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('customerCredit:getBalance', async (_, customerId) => {
     try {
       await requireCapability('invoices.view')
+      await requireCapability('prepayments.view')
       return await db.getCustomerCreditBalance(customerId)
     } catch (e) {
       return { success: false, error: e.message }
@@ -6048,6 +6121,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('customerCredit:getHistory', async (_, customerId, limit, offset) => {
     try {
       await requireCapability('invoices.view')
+      await requireCapability('prepayments.view')
       return await db.getCustomerCreditHistory(customerId, limit, offset)
     } catch (e) {
       return { success: false, error: e.message }
@@ -6056,6 +6130,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('customerCredit:getSummary', async (_, search, limit, offset) => {
     try {
       await requireCapability('invoices.view')
+      await requireCapability('prepayments.view')
       return await db.getCustomerCreditSummary(search, limit, offset)
     } catch (e) {
       return { success: false, error: e.message }
@@ -6064,6 +6139,8 @@ app.whenReady().then(async () => {
   ipcMain.handle('customerCredit:record', async (_, data) => {
     try {
       await requireCapability('payments.record')
+      await requireCapability('prepayments.receive')
+      requireStablePrepaymentOperation(data, 'receipt')
       return await db.recordCustomerCredit(data)
     } catch (e) {
       return { success: false, error: e.message }
@@ -6072,6 +6149,8 @@ app.whenReady().then(async () => {
   ipcMain.handle('customerCredit:applyToBooking', async (_, data) => {
     try {
       await requireCapability('payments.record')
+      await requireCapability('prepayments.allocate')
+      requireStablePrepaymentOperation(data, 'allocation')
       if (data.bookingId) await assertResourceBelongsToCurrentLodge('Booking', data.bookingId, db.getBookingById)
       return await db.applyCustomerCreditToBooking(data)
     } catch (e) {
@@ -6081,6 +6160,9 @@ app.whenReady().then(async () => {
   ipcMain.handle('customerCredit:refund', async (_, data) => {
     try {
       await requireCapability('payments.refund')
+      await requireCapability('prepayments.refund')
+      requireStablePrepaymentOperation(data, 'refund')
+      requirePrepaymentReason(data, 'refund')
       return await db.refundCustomerCredit(data)
     } catch (e) {
       return { success: false, error: e.message }
@@ -6089,6 +6171,9 @@ app.whenReady().then(async () => {
   ipcMain.handle('customerCredit:reverse', async (_, data) => {
     try {
       await requireCapability('payments.refund')
+      await requireCapability('prepayments.reverse')
+      requireStablePrepaymentOperation(data, 'reversal')
+      requirePrepaymentReason(data, 'reversal')
       return await db.reverseCustomerCreditEntry(data)
     } catch (e) {
       return { success: false, error: e.message }
@@ -7260,6 +7345,399 @@ app.whenReady().then(async () => {
     try { await requireCapability('system.health'); return await db.getBackupInfo() }
     catch { return { backups: [], backupDir: null } }
   })
+
+  // -- Tiered Prepayments advanced workspace -------------------------------
+  // These handlers are online/server-authoritative only. Capability checks
+  // here are a UI boundary; each RPC repeats lodge, actor, package, and PWA
+  // enforcement so direct IPC callers cannot bypass the contract.
+  ipcMain.handle('prepayments:getPortfolio', async (_, asOf) => {
+    try { await requireCapability('prepayments.reconcile'); return await db.getPrepaymentPortfolio(asOf || null) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('prepayments:getAging', async (_, asOf) => {
+    try { await requireCapability('prepayments.age'); return await db.getPrepaymentAging(asOf || null) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('prepayments:getReconciliation', async (_, startAt, endAt) => {
+    try { await requireCapability('prepayments.reconcile'); return await db.getPrepaymentReconciliation(startAt, endAt) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('prepayments:getMatchingSuggestions', async (_, limit) => {
+    try { await requireCapability('prepayments.match'); return await db.getPrepaymentMatchingSuggestions(limit) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('prepayments:getConfig', async () => {
+    try { await requireCapability('prepayments.age'); return await db.getPrepaymentConfig() }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('prepayments:setConfig', async (_, payload) => {
+    try { await requireCapability('prepayments.configure'); requireStablePrepaymentOperation(payload, 'configuration'); return await db.setPrepaymentConfig(payload || {}) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('prepayments:export', async (event, startAt, endAt) => {
+    try {
+      await requireCapability('prepayments.export')
+      const serverResult = await db.exportPrepayments(startAt || null, endAt || null)
+      if (serverResult?.success === false) return serverResult
+      const entries = Array.isArray(serverResult?.data?.entries) ? serverResult.data.entries : []
+      const win = BrowserWindow.fromWebContents(event.sender)
+      const result = await dialog.showSaveDialog(win, {
+        title: 'Export Guest Deposits ledger',
+        defaultPath: `${APP_EXPORT_PREFIX}-prepayments-${formatFilenameStamp()}.csv`,
+        filters: [{ name: 'CSV Files', extensions: ['csv'] }],
+        properties: ['showOverwriteConfirmation', 'createDirectory']
+      })
+      if (result.canceled || !result.filePath) {
+        return { success: false, canceled: true, fileName: null, rowCount: entries.length }
+      }
+      const filePath = result.filePath.toLowerCase().endsWith('.csv') ? result.filePath : `${result.filePath}.csv`
+      const csvBytes = Buffer.from(buildPrepaymentExportCsv(entries), 'utf8')
+      fs.writeFileSync(filePath, csvBytes)
+      const artifactSha256 = crypto.createHash('sha256').update(csvBytes).digest('hex')
+      let audit
+      try {
+        audit = await db.recordPrepaymentExportAudit({
+          artifactSha256,
+          fileName: basename(filePath),
+          rowCount: entries.length,
+          startAt: startAt || null,
+          endAt: endAt || null
+        })
+      } catch (auditError) {
+        return {
+          success: false,
+          canceled: false,
+          fileWritten: true,
+          auditRecorded: false,
+          fileName: basename(filePath),
+          filePath,
+          rowCount: entries.length,
+          error: `Export was written but authoritative audit recording failed. Keep the file and reconnect before treating it as audit-confirmed. ${auditError?.message || ''}`.trim()
+        }
+      }
+      return {
+        success: true,
+        canceled: false,
+        fileName: basename(filePath),
+        filePath,
+        rowCount: entries.length,
+        source: 'customer_credit_ledger',
+        financialCertified: serverResult?.data?.financial_certified === true,
+        auditRecorded: audit?.success === true,
+        artifactSha256
+      }
+    } catch (e) {
+      return { success: false, canceled: false, error: e?.message || 'Guest Deposits export could not be saved.' }
+    }
+  })
+  // Recovery and verification results are metadata-only at the renderer
+  // boundary. The protected main process may briefly hold decrypted rows, but
+  // no row-bearing field is allowed to cross IPC, including nested rehearsal
+  // or verification objects.
+  const RECOVERY_IPC_DATA_KEYS = new Set([
+    'payload', 'tables', 'sanitizedTables', 'remappedTables', 'decryptedTables',
+    'decryptedRows', 'rawRows', 'rows', 'passphrase', 'passphrase_hash'
+  ])
+  const stripRecoveryIpcData = (value) => {
+    if (Array.isArray(value)) return value.map(stripRecoveryIpcData)
+    if (!value || typeof value !== 'object') return value
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([key]) => !RECOVERY_IPC_DATA_KEYS.has(key))
+        .map(([key, nested]) => [key, stripRecoveryIpcData(nested)])
+    )
+  }
+  const stripRendererLodgeScope = (payload) => {
+    const source = payload && typeof payload === 'object' ? payload : {}
+    const { lodge_id: _lodgeId, lodgeId: _camelLodgeId, ...safePayload } = source
+    return safePayload
+  }
+
+  ipcMain.handle('backup:starterExport', async (event, options = {}) => {
+    try {
+      await requireCapability('backup.starter_export')
+      if (BUILD_PRODUCT_ID === 'hospitality-pos') {
+        throw new Error('Starter backup is available only in LodgingOS and HotelOS.')
+      }
+      await requireCommercialFeature(
+        'starter_backup',
+        'Starter backup is not included in the current commercial package.'
+      )
+      const win = BrowserWindow.fromWebContents(event.sender)
+      const result = await dialog.showSaveDialog(win, {
+        // Starter core-data backup is retained as the internal compatibility label.
+        title: 'Save Core data recovery export',
+        defaultPath: `tsa-bonno-core-data-recovery-${formatFilenameStamp()}.tbbackup`,
+        filters: [{ name: 'Tsa Bonno recovery package', extensions: ['tbbackup'] }],
+        properties: ['showOverwriteConfirmation', 'createDirectory']
+      })
+      if (result.canceled || !result.filePath) return { success: false, canceled: true }
+      const filePath = result.filePath.toLowerCase().endsWith('.tbbackup') ? result.filePath : `${result.filePath}.tbbackup`
+      const passphrase = typeof options?.passphrase === 'string' ? options.passphrase : ''
+      const backup = await db.writeStarterBackupToPath(filePath, { passphrase, appVersion: app.getVersion() })
+      const historyPath = join(app.getPath('userData'), 'starter-backup-history.json')
+      let historyEntry = null
+      let reminder = null
+      let historyRecorded = true
+      try {
+        historyEntry = db.recordStarterBackupHistory(historyPath, backup)
+        reminder = db.getStarterBackupReminder(historyPath, { lodgeId: backup.lodgeId })
+      } catch (historyError) {
+        historyRecorded = false
+        console.warn('[Starter recovery export] local history could not be recorded:', historyError?.message || 'unknown error')
+      }
+      try {
+        await db.recordStarterArtifactAudit({
+          action: 'starter_backup_created',
+          artifactId: backup.sha256,
+          metadata: {
+            schema: backup.manifest?.format || 'tsa-bonno-starter-backup-package/v2',
+            bytes: backup.bytes,
+            complete: backup.complete,
+            counts: backup.counts,
+            encrypted: backup.encrypted === true
+          }
+        })
+      } catch (auditError) {
+        return stripRecoveryIpcData({ ...backup, success: false, fileWritten: true, auditRecorded: false, historyRecorded, historyEntry, reminder, error: `Backup was written but authoritative audit recording failed. Keep the file and reconnect before treating it as audit-confirmed. ${auditError?.message || ''}`.trim() })
+      }
+      return stripRecoveryIpcData({ ...backup, auditRecorded: true, historyRecorded, historyEntry, reminder })
+    } catch (e) {
+      return { success: false, error: e?.message || 'Starter backup could not be created. No success is claimed.' }
+    }
+  })
+  ipcMain.handle('backup:starterHistory', async () => {
+    try {
+      await requireCapability('backup.starter_export')
+      await requireCommercialFeature('starter_backup', 'Core data recovery exports are not included in the current commercial package.')
+      const historyPath = join(app.getPath('userData'), 'starter-backup-history.json')
+      const lodgeId = db.getCurrentUser?.()?.lodge_id || db.getActiveProfile?.()?.lodge_id || null
+      return { success: true, ...db.getStarterBackupReminder(historyPath, { lodgeId }) }
+    } catch (e) { return { success: false, error: e?.message || 'Core data recovery export history is unavailable.' } }
+  })
+  ipcMain.handle('backup:starterVerify', async (_, options = {}) => {
+    try {
+      await requireCapability('backup.starter_export')
+      await requireCommercialFeature('starter_backup', 'Core data recovery exports are not included in the current commercial package.')
+      const destination = String(options?.destination || '').trim()
+      const lodgeId = db.getCurrentUser?.()?.lodge_id || db.getActiveProfile?.()?.lodge_id || null
+      const verification = db.verifyStarterBackupAtPath(destination, { passphrase: typeof options?.passphrase === 'string' ? options.passphrase : '', expectedLodgeId: lodgeId })
+      if (!verification?.success) return stripRecoveryIpcData(verification)
+      return stripRecoveryIpcData(verification)
+    } catch (e) { return { success: false, error: e?.message || 'Core data recovery export verification is unavailable.' } }
+  })
+  ipcMain.handle('backup:starterOpenFolder', async (_, options = {}) => {
+    try {
+      await requireCapability('backup.starter_export')
+      await requireCommercialFeature('starter_backup', 'Core data recovery exports are not included in the current commercial package.')
+      const historyPath = join(app.getPath('userData'), 'starter-backup-history.json')
+      const lodgeId = db.getCurrentUser?.()?.lodge_id || db.getActiveProfile?.()?.lodge_id || null
+      const history = db.getStarterBackupHistory(historyPath, { lodgeId })
+      const requestedDestination = String(options?.destination || '').trim()
+      const selected = requestedDestination
+        ? history.find((entry) => resolve(entry.destination) === resolve(requestedDestination))
+        : history[0]
+      const destination = selected?.destination
+      if (!destination) return { success: false, error: 'Create a core data recovery export first so its folder can be opened.' }
+      const openError = await shell.openPath(dirname(destination))
+      if (openError) return { success: false, error: `Could not open the recovery export folder. ${openError}`.trim() }
+      return { success: true }
+    } catch (e) { return { success: false, error: e?.message || 'Could not open the recovery export folder.' } }
+  })
+  ipcMain.handle('backup:starterCopy', async (event, options = {}) => {
+    try {
+      await requireCapability('backup.starter_export')
+      await requireCommercialFeature('starter_backup', 'Core data recovery exports are not included in the current commercial package.')
+      const source = String(options?.destination || '').trim()
+      const passphrase = typeof options?.passphrase === 'string' ? options.passphrase : ''
+      const lodgeId = db.getCurrentUser?.()?.lodge_id || db.getActiveProfile?.()?.lodge_id || null
+      const verification = db.verifyStarterBackupAtPath(source, { passphrase, expectedLodgeId: lodgeId })
+      if (!verification.success) return stripRecoveryIpcData(verification)
+      const win = BrowserWindow.fromWebContents(event.sender)
+      const targetResult = await dialog.showSaveDialog(win, { title: 'Save another copy of this recovery export', defaultPath: `tsa-bonno-core-data-recovery-copy-${formatFilenameStamp()}.tbbackup`, filters: [{ name: 'Tsa Bonno recovery package', extensions: ['tbbackup'] }], properties: ['showOverwriteConfirmation', 'createDirectory'] })
+      if (targetResult.canceled || !targetResult.filePath) return { success: false, canceled: true }
+      const target = targetResult.filePath.toLowerCase().endsWith('.tbbackup') ? targetResult.filePath : `${targetResult.filePath}.tbbackup`
+      if (resolve(source) === resolve(target)) return { success: false, error: 'Choose a different destination for the additional copy.' }
+      const sourceBytes = fs.readFileSync(source)
+      db.writeStarterBackupPackageBytes(target, sourceBytes)
+      const copied = { success: true, destination: target, fileName: basename(target), bytes: sourceBytes.length, sha256: verification.packageSha256, encrypted: verification.encrypted === true, complete: verification.complete === true, counts: verification.counts }
+      const historyPath = join(app.getPath('userData'), 'starter-backup-history.json')
+      db.recordStarterBackupHistory(historyPath, { ...copied, lodgeId, at: new Date().toISOString() })
+      return copied
+    } catch (e) { return { success: false, error: e?.message || 'The recovery export copy could not be saved.' } }
+  })
+  ipcMain.handle('backup:starterRestoreRehearsal', async (_, options = {}) => {
+    try {
+      await requireCapability('backup.starter_export')
+      await requireCommercialFeature('starter_backup', 'Core data recovery exports are not included in the current commercial package.')
+      const historyPath = join(app.getPath('userData'), 'starter-backup-history.json')
+      const lodgeId = db.getCurrentUser?.()?.lodge_id || db.getActiveProfile?.()?.lodge_id || null
+      const latest = db.getStarterBackupHistory(historyPath, { lodgeId })[0]
+      const destination = String(options?.destination || latest?.destination || '').trim()
+      const rehearsalRoot = join(app.getPath('userData'), 'starter-restore-rehearsals')
+      const rehearsal = await db.createStarterRestoreRehearsal(destination, rehearsalRoot, { passphrase: typeof options?.passphrase === 'string' ? options.passphrase : '', expectedLodgeId: lodgeId })
+      return stripRecoveryIpcData(rehearsal)
+    } catch (e) { return { success: false, error: e?.message || 'Disposable restore rehearsal is unavailable.' } }
+  })
+  // --- Recovery workspace: Begin → Stage → Seal → Preview → Approve → Execute → Verify → Discard
+  // Support-only, disposable-only. Decryption and validation run in the
+  // protected main process; the passphrase never reaches Supabase/PostgreSQL
+  // and service-role credentials never ship to the renderer. A recovery is
+  // successful only when the disposable server-side restore is confirmed;
+  // local rehearsal evidence is never presented as a completed restore.
+  // Live-lodge replacement remains blocked.
+  ipcMain.handle('backup:recoveryBegin', async (_, payload = {}) => {
+    try {
+      requireFreshCommandCentralReauth()
+      await requireCapability('command_central.recovery.manage')
+      const lodgeId = assertCommandCentralTarget(String(payload?.lodge_id || payload?.lodgeId || ''))
+      const op = db.beginStarterRecoveryOperation({ operation_id: payload?.operation_id || payload?.operationId, lodge_id: lodgeId, lodgeId, reason: payload?.reason, ticket_ref: payload?.ticket_ref || payload?.ticketRef })
+      return { success: true, operation: stripRecoveryIpcData(op) }
+    } catch (e) { return { success: false, error: e?.message || 'Recovery operation could not be started. Command Central support capability is required.' } }
+  })
+  ipcMain.handle('backup:recoveryChoosePackage', async (event) => {
+    try {
+      requireFreshCommandCentralReauth()
+      await requireCapability('command_central.recovery.manage')
+      const win = BrowserWindow.fromWebContents(event.sender)
+      const result = await dialog.showOpenDialog(win, {
+        title: 'Choose Customer Recovery Backup',
+        properties: ['openFile'],
+        filters: [{ name: 'Tsa Bonno Backup', extensions: ['tbbackup'] }]
+      })
+      if (result.canceled || !result.filePaths?.[0]) return { success: false, canceled: true }
+      return { success: true, path: result.filePaths[0], fileName: basename(result.filePaths[0]) }
+    } catch (e) { return { success: false, error: e?.message || 'The recovery package could not be selected.' } }
+  })
+  ipcMain.handle('backup:recoveryStage', async (_, payload = {}) => {
+    try {
+      requireFreshCommandCentralReauth()
+      await requireCapability('command_central.recovery.manage')
+      const op = db.stageStarterRecoveryPackage(String(payload?.operation_id || payload?.operationId || ''), String(payload?.source_path || payload?.sourcePath || payload?.destination || ''), { passphrase: typeof payload?.passphrase === 'string' ? payload.passphrase : '' })
+      return { success: true, operation: stripRecoveryIpcData(op) }
+    } catch (e) { return { success: false, error: e?.message || 'Recovery package could not be staged.' } }
+  })
+  ipcMain.handle('backup:recoverySeal', async (_, payload = {}) => {
+    try {
+      requireFreshCommandCentralReauth()
+      await requireCapability('command_central.recovery.manage')
+      const op = db.sealAndValidateStarterRecovery(String(payload?.operation_id || payload?.operationId || ''), { passphrase: typeof payload?.passphrase === 'string' ? payload.passphrase : '' })
+      return { success: true, operation: stripRecoveryIpcData(op) }
+    } catch (e) { return { success: false, error: e?.message || 'Recovery package could not be sealed.' } }
+  })
+  ipcMain.handle('backup:recoveryPreview', async (_, operationId) => {
+    try {
+      // Preview advances the recovery state and appends an audit event; treat
+      // it as a sensitive recovery mutation even though it returns metadata.
+      requireFreshCommandCentralReauth()
+      assertMasterAdmin(db.getCurrentUser?.())
+      await requireCapability('command_central.recovery.manage')
+      const preview = db.previewStarterRecovery(String(operationId || ''))
+      // Strip any PII tables before crossing IPC — metadata only.
+      return { success: true, preview: stripRecoveryIpcData(preview) }
+    } catch (e) { return { success: false, error: e?.message || 'Recovery preview is unavailable.' } }
+  })
+  ipcMain.handle('backup:recoveryApprove', async (_, payload = {}) => {
+    try {
+      requireFreshCommandCentralReauth()
+      await requireCapability('command_central.recovery.manage')
+      const op = db.approveStarterRecovery(String(payload?.operation_id || payload?.operationId || ''), { reason: payload?.reason, ticket_ref: payload?.ticket_ref || payload?.ticketRef })
+      return { success: true, operation: stripRecoveryIpcData(op) }
+    } catch (e) { return { success: false, error: e?.message || 'Recovery operation could not be approved.' } }
+  })
+  ipcMain.handle('backup:recoveryExecute', async (_, payload = {}) => {
+    try {
+      requireFreshCommandCentralReauth()
+      await requireCapability('command_central.recovery.manage')
+      const op = await db.executeStarterRecovery(String(payload?.operation_id || payload?.operationId || ''), { passphrase: typeof payload?.passphrase === 'string' ? payload.passphrase : '' })
+      return { success: true, operation: stripRecoveryIpcData(op) }
+    } catch (e) { return { success: false, error: e?.message || 'Recovery execution failed.' } }
+  })
+  ipcMain.handle('backup:recoveryDiscard', async (_, operationId) => {
+    try {
+      requireFreshCommandCentralReauth()
+      await requireCapability('command_central.recovery.manage')
+      const op = db.discardStarterRecoveryOperation(String(operationId || ''))
+      return { success: true, operation: stripRecoveryIpcData(op) }
+    } catch (e) { return { success: false, error: e?.message || 'Recovery operation could not be discarded.' } }
+  })
+  ipcMain.handle('backup:recoveryGet', async (_, operationId) => {
+    try {
+      assertMasterAdmin(db.getCurrentUser?.())
+      await requireCapability('command_central.recovery.manage')
+      const op = db.getStarterRecoveryOperation(String(operationId || ''))
+      return { success: true, operation: stripRecoveryIpcData(op) }
+    } catch (e) { return { success: false, error: e?.message || 'Recovery operation not found.' } }
+  })
+  ipcMain.handle('backup:recoveryList', async () => {
+    try {
+      assertMasterAdmin(db.getCurrentUser?.())
+      await requireCapability('command_central.recovery.manage')
+      const ops = db.listStarterRecoveryOperations().map((op) => stripRecoveryIpcData(op))
+      return { success: true, operations: ops }
+    } catch (e) { return { success: false, error: e?.message || 'Recovery operations could not be listed.' } }
+  })
+  ipcMain.handle('backup:recoveryVerify', async (_, operationId) => {
+    try {
+      // Verification persists the server result and may move the operation
+      // back to approved/verified, so it requires the same fresh unlock as
+      // the other recovery state transitions.
+      requireFreshCommandCentralReauth()
+      assertMasterAdmin(db.getCurrentUser?.())
+      await requireCapability('command_central.recovery.manage')
+      const result = await db.verifyStarterRecoveryOperation(String(operationId || ''))
+      // Ensure report tables are not leaked; report already contains only counts/hashes.
+      return { success: true, ...stripRecoveryIpcData(result) }
+    } catch (e) { return { success: false, error: e?.message || 'Recovery verification failed.' } }
+  })
+  // --- Automation: weekly encrypted Starter backup (customer-owned, opt-in)
+  ipcMain.handle('backup:automationStatus', async () => {
+    try {
+      await requireCapability('backup.starter_automation')
+      await requireCommercialFeature('starter_backup_automation', 'Weekly backup automation is not included in the current commercial package.')
+      const lodgeId = db.getCurrentUser?.()?.lodge_id || db.getActiveProfile?.()?.lodge_id || null
+      return db.getStarterBackupAutomationStatus(lodgeId)
+    } catch (e) { return { success: false, error: e?.message || 'Automation status is unavailable.' } }
+  })
+  ipcMain.handle('backup:automationConfigure', async (_, payload = {}) => {
+    try {
+      await requireCapability('backup.starter_automation')
+      await requireCommercialFeature('starter_backup_automation', 'Weekly backup automation is not included in the current commercial package.')
+      const lodgeId = db.getCurrentUser?.()?.lodge_id || db.getActiveProfile?.()?.lodge_id || null
+      const result = db.configureStarterBackupAutomation({ ...stripRendererLodgeScope(payload), lodge_id: lodgeId })
+      return result
+    } catch (e) { return { success: false, error: e?.message || 'Automation could not be configured.' } }
+  })
+  ipcMain.handle('backup:automationDisable', async () => {
+    try {
+      await requireCapability('backup.starter_automation')
+      const lodgeId = db.getCurrentUser?.()?.lodge_id || db.getActiveProfile?.()?.lodge_id || null
+      return db.disableStarterBackupAutomation(lodgeId)
+    } catch (e) { return { success: false, error: e?.message || 'Automation could not be disabled.' } }
+  })
+  ipcMain.handle('backup:automationSnooze', async () => {
+    try {
+      await requireCapability('backup.starter_automation')
+      const lodgeId = db.getCurrentUser?.()?.lodge_id || db.getActiveProfile?.()?.lodge_id || null
+      return db.snoozeStarterBackupAutomation(lodgeId)
+    } catch (e) { return { success: false, error: e?.message || 'Automation snooze failed.' } }
+  })
+  ipcMain.handle('backup:automationClearSnooze', async () => {
+    try {
+      await requireCapability('backup.starter_automation')
+      const lodgeId = db.getCurrentUser?.()?.lodge_id || db.getActiveProfile?.()?.lodge_id || null
+      return db.clearStarterBackupAutomationSnooze(lodgeId)
+    } catch (e) { return { success: false, error: e?.message || 'Automation snooze could not be cleared.' } }
+  })
+  ipcMain.handle('backup:automationRunNow', async (_, payload = {}) => {
+    try {
+      await requireCapability('backup.starter_automation')
+      await requireCommercialFeature('starter_backup_automation', 'Weekly backup automation is not included in the current commercial package.')
+      const lodgeId = db.getCurrentUser?.()?.lodge_id || db.getActiveProfile?.()?.lodge_id || null
+      const result = await db.runStarterBackupAutomationOnce({ ...stripRendererLodgeScope(payload), lodgeId })
+      return result
+    } catch (e) { return { success: false, error: e?.message || 'Scheduled backup could not be run.' } }
+  })
   ipcMain.handle('backup:chooseTargetFolder', async (event) => {
     try {
       await requireCapability('backup.manage')
@@ -7408,11 +7886,101 @@ app.whenReady().then(async () => {
       return await db.deleteExpense(id, operationId)
     } catch (e) { return { success: false, error: e.message } }
   })
+  ipcMain.handle('backup:chooseStarterAutomationFolder', async (event) => {
+    try {
+      await requireCapability('backup.starter_automation')
+      await requireCommercialFeature('starter_backup_automation', 'Weekly backup automation is not included in the current commercial package.')
+      const win = BrowserWindow.fromWebContents(event.sender)
+      const result = await dialog.showOpenDialog(win, {
+        title: 'Choose Weekly Backup Folder',
+        properties: ['openDirectory']
+      })
+      if (result.canceled || !result.filePaths?.[0]) return { success: false, canceled: true }
+      return { success: true, path: result.filePaths[0] }
+    } catch (e) { return { success: false, error: e?.message || 'Backup folder could not be selected.' } }
+  })
   ipcMain.handle('reports:basicSummary', async (_, rangeDays = 1) => {
     try {
       await requireCapability('reports.basic_view')
       return await db.getStarterBasicReport(rangeDays)
     } catch (e) { throw new Error(e?.message || 'Failed to load Starter basic report') }
+  })
+  ipcMain.handle('reports:basicSavePDF', async (event, payload = {}) => {
+    try {
+      await requireCapability('reports.basic_view')
+      await assertBasicReportPage(event.sender)
+      const rangeDays = Number(payload?.rangeDays)
+      if (![1, 7, 30].includes(rangeDays)) return { success: false, error: 'Choose a 1, 7, or 30-day report period before saving.' }
+      const win = BrowserWindow.fromWebContents(event.sender)
+      const result = await dialog.showSaveDialog(win, {
+        title: 'Save Starter Basic Report as PDF',
+        defaultPath: buildReportExportFilename({
+          prefix: APP_EXPORT_PREFIX,
+          reportTitle: 'starter-basic-report',
+          period: `${rangeDays}-day`,
+          extension: 'pdf'
+        }),
+        filters: [{ name: 'PDF Files', extensions: ['pdf'] }]
+      })
+      if (result.canceled || !result.filePath) return { success: false, canceled: true }
+      const pdfBuffer = await printWebContentsToPdfSafely(win.webContents, {
+        pageSize: 'A4',
+        printBackground: true,
+        margins: { marginType: 'default' }
+      }, { minTextLength: 40 })
+      fs.writeFileSync(result.filePath, pdfBuffer)
+      if (!fs.existsSync(result.filePath) || fs.statSync(result.filePath).size === 0) {
+        throw new Error('The PDF was not written successfully.')
+      }
+      const size = fs.statSync(result.filePath).size
+      const fileHash = crypto.createHash('sha256').update(pdfBuffer).digest('hex')
+      try {
+        await db.recordStarterArtifactAudit({
+          action: 'starter_report_pdf_saved',
+          artifactId: fileHash,
+          metadata: { range_days: rangeDays, bytes: size, file_name: basename(result.filePath) }
+        })
+      } catch (auditError) {
+        return { success: false, fileName: basename(result.filePath), size, fileWritten: true, auditRecorded: false, error: `Report PDF was written but authoritative audit recording failed. Keep the file and reconnect before treating it as audit-confirmed. ${auditError?.message || ''}`.trim() }
+      }
+      return { success: true, fileName: basename(result.filePath), size, sha256: fileHash, auditRecorded: true }
+    } catch (e) {
+      if (e?.code === 'EBUSY' || e?.code === 'EACCES') {
+        return { success: false, error: 'The selected PDF destination is unavailable. Close the file or choose another destination.' }
+      }
+      return { success: false, error: e?.message || 'Starter Basic Report PDF could not be saved.' }
+    }
+  })
+  ipcMain.handle('reports:basicPrint', async (event, payload = {}) => {
+    try {
+      await requireCapability('reports.basic_view')
+      await assertBasicReportPage(event.sender)
+      const operationId = String(payload?.operationId || '').trim()
+      if (!STARTER_PRINT_OPERATION_ID_PATTERN.test(operationId)) {
+        return { success: false, auditRecorded: false, error: 'A valid print operation ID is required. Refresh the report and try again.' }
+      }
+      const win = BrowserWindow.fromWebContents(event.sender)
+      const printResult = await printWebContentsSafely(win.webContents, {
+        silent: false,
+        printBackground: true,
+        margins: { marginType: 'default' }
+      }, { minTextLength: 40 })
+      if (printResult?.success === false) return { ...printResult, auditRecorded: false }
+      if (printResult?.success !== false) {
+        try {
+          await db.recordStarterArtifactAudit({
+            action: 'starter_report_printed',
+            artifactId: `print-${operationId}`,
+            metadata: { surface: 'desktop-basic-report', operation_id: operationId }
+          })
+        } catch (auditError) {
+          return { success: false, printed: true, auditRecorded: false, error: `Report was sent to the printer but authoritative audit recording failed. ${auditError?.message || ''}`.trim() }
+        }
+      }
+      return { ...printResult, auditRecorded: true }
+    } catch (e) {
+      return { success: false, error: e?.message || 'Starter Basic Report could not be printed.' }
+    }
   })
   ipcMain.handle('expenses:submit', async (_, id, payload, operationId) => {
     try {
@@ -10466,6 +11034,35 @@ app.whenReady().then(async () => {
       console.error('Managed weekly backup check failed:', error?.message || error)
     })
   }, 60 * 60 * 1000)
+
+  let starterAutomationSchedulerRunning = false
+  const runStarterAutomationScheduler = async (trigger) => {
+    if (starterAutomationSchedulerRunning) return
+    starterAutomationSchedulerRunning = true
+    try {
+      const due = db.evaluateAutomationDueAtStartup()
+      if (due?.due === true) {
+        await db.runStarterBackupAutomationOnce({
+          trigger,
+          appVersion: app.getVersion()
+        })
+      }
+    } catch (error) {
+      console.warn('Starter weekly backup check did not complete:', error?.message || error)
+    } finally {
+      starterAutomationSchedulerRunning = false
+    }
+  }
+
+  setTimeout(() => {
+    runStarterAutomationScheduler('startup')
+  }, 25_000)
+
+  // Connectivity is checked more frequently than the weekly schedule, so a
+  // backup deferred while offline is retried shortly after the app reconnects.
+  setInterval(() => {
+    runStarterAutomationScheduler('periodic_or_reconnect')
+  }, 15 * 60 * 1000)
 
   setTimeout(() => {
     db.runScheduledFinancialValidation('startup').catch((error) => {

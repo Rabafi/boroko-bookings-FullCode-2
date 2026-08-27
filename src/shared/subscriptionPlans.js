@@ -14,6 +14,12 @@ const PLAN_ALIASES = {
 
 const FEATURE_REQUIRED_PLAN = {
   basic_reports: 'Starter',
+  starter_backup: 'Starter',
+  starter_backup_automation: 'Starter',
+  staff_basic: 'Starter',
+  prepayments_basic: 'Starter',
+  prepayments_management: 'Standard',
+  prepayments_advanced: 'Pro',
   reports: 'Standard',
   expenses: 'Standard',
   staff: 'Standard',
@@ -54,6 +60,12 @@ const FEATURE_REQUIRED_PLAN = {
 
 const FEATURE_UPGRADE_CONTEXT = {
   basic_reports: 'The lodge needs a certified daily, 7-day, or 30-day operating summary.',
+  starter_backup: 'The lodge needs a customer-owned core-data copy for support-led recovery.',
+  starter_backup_automation: 'The lodge needs an opt-in weekly encrypted backup safeguard in a customer-owned folder.',
+  staff_basic: 'The lodge needs to manage its two Starter user accounts safely.',
+  prepayments_basic: 'The lodge needs a safe Guest Deposits ledger for money received before dates are confirmed.',
+  prepayments_management: 'The lodge needs a searchable deposit portfolio, reconciliation controls, and server-certified exports.',
+  prepayments_advanced: 'The lodge needs advanced deposit liability visibility, alerts, and payment-control affordances.',
   reports: 'The lodge needs owner visibility through performance and financial reporting.',
   expenses: 'The lodge needs better control over expenses and money leakage.',
   staff: 'The lodge needs stronger staff accountability and role-based control.',

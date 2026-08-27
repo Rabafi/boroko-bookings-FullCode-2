@@ -175,6 +175,15 @@ const api = {
     refund: (data) => invoke('customerCredit:refund', data),
     reverse: (data) => invoke('customerCredit:reverse', data)
   },
+  prepayments: {
+    getPortfolio: (asOf) => invoke('prepayments:getPortfolio', asOf),
+    getAging: (asOf) => invoke('prepayments:getAging', asOf),
+    getReconciliation: (startAt, endAt) => invoke('prepayments:getReconciliation', startAt, endAt),
+    getMatchingSuggestions: (limit) => invoke('prepayments:getMatchingSuggestions', limit),
+    getConfig: () => invoke('prepayments:getConfig'),
+    setConfig: (payload) => invoke('prepayments:setConfig', payload),
+    export: (startAt, endAt) => invoke('prepayments:export', startAt, endAt)
+  },
   invoices: {
     getBookingInvoices: () => invoke('invoices:getBookingInvoices'),
     sendBookingInvoiceEmail: (invoice) => invoke('invoices:sendBookingInvoiceEmail', invoice),
@@ -182,6 +191,8 @@ const api = {
   },
   reports: {
     basicSummary: (rangeDays = 1) => invoke('reports:basicSummary', rangeDays),
+    basicSavePDF: (payload) => invoke('reports:basicSavePDF', payload),
+    basicPrint: (payload) => invoke('reports:basicPrint', payload),
     occupancy: (start, end) => invoke('reports:occupancy', start, end),
     revenue: (start, end) => invoke('reports:revenue', start, end),
     snapshot: (today) => invoke('reports:snapshot', today),
@@ -254,6 +265,33 @@ const api = {
   },
   backup: {
     getInfo: () => invoke('backup:getInfo'),
+    starterExport: (options) => invoke('backup:starterExport', options),
+    starterHistory: () => invoke('backup:starterHistory'),
+    starterVerify: (options) => invoke('backup:starterVerify', options),
+    starterOpenFolder: (options) => invoke('backup:starterOpenFolder', options),
+    starterCopy: (options) => invoke('backup:starterCopy', options),
+    starterRestoreRehearsal: (options) => invoke('backup:starterRestoreRehearsal', options),
+    // Recovery workspace: Begin → Stage → Seal → Preview → Approve → Execute → Verify → Discard.
+    // Decryption happens only in the protected main process; the passphrase never reaches SQL.
+    recoveryBegin: (payload) => invoke('backup:recoveryBegin', payload),
+    recoveryChoosePackage: () => invoke('backup:recoveryChoosePackage'),
+    recoveryStage: (payload) => invoke('backup:recoveryStage', payload),
+    recoverySeal: (payload) => invoke('backup:recoverySeal', payload),
+    recoveryPreview: (operationId) => invoke('backup:recoveryPreview', operationId),
+    recoveryApprove: (payload) => invoke('backup:recoveryApprove', payload),
+    recoveryExecute: (payload) => invoke('backup:recoveryExecute', payload),
+    recoveryDiscard: (operationId) => invoke('backup:recoveryDiscard', operationId),
+    recoveryGet: (operationId) => invoke('backup:recoveryGet', operationId),
+    recoveryList: () => invoke('backup:recoveryList'),
+    recoveryVerify: (operationId) => invoke('backup:recoveryVerify', operationId),
+    // Weekly automation: durable per-lodge window, lodge-scoped history, separate capability.
+    automationStatus: () => invoke('backup:automationStatus'),
+    automationConfigure: (payload) => invoke('backup:automationConfigure', payload),
+    automationDisable: () => invoke('backup:automationDisable'),
+    automationSnooze: () => invoke('backup:automationSnooze'),
+    automationClearSnooze: () => invoke('backup:automationClearSnooze'),
+    automationRunNow: (payload) => invoke('backup:automationRunNow', payload),
+    chooseStarterAutomationFolder: () => invoke('backup:chooseStarterAutomationFolder'),
     chooseTargetFolder: () => invoke('backup:chooseTargetFolder'),
     savePolicy: (updates) => invoke('backup:savePolicy', updates),
     runManagedNow: () => invoke('backup:runManagedNow'),

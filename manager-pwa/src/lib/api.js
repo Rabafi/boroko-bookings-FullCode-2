@@ -1530,7 +1530,8 @@ export async function getRefundHistory(lodgeId, limit = 20) {
 }
 
 export async function getCustomerCreditSummaryPwa(lodgeId, search = '', limit = 50, offset = 0) {
-  assertCapability('invoices.view')
+  if (!lodgeId) throw new Error('A lodge is required to load customer credit summary.')
+  assertCapability('prepayments.view', { lodgeId })
   const { data, error } = await supabase.rpc('get_customer_credit_summary', {
     p_lodge_id: lodgeId,
     p_search: search || null,
@@ -1538,7 +1539,8 @@ export async function getCustomerCreditSummaryPwa(lodgeId, search = '', limit = 
     p_offset: Math.max(Number(offset) || 0, 0)
   })
   if (error) throw new Error(friendlyErrorMessage(error, 'Could not load customer credit summary.'))
-  return Array.isArray(data) ? data : []
+  if (!Array.isArray(data)) throw new Error('The authoritative customer credit summary response was unavailable or malformed.')
+  return data
 }
 
 async function getInvoiceDeliveryHistory(lodgeId, limit = 20) {
@@ -1880,27 +1882,31 @@ function extractManagerCandidates(data, email = '') {
     if (data.lodge_id || data.role || data.name || data.id) pushRow(data)
   }
 
-  return rows.filter((row) => row.lodge_id)
+  const byLodge = new Map()
+  rows
+    .filter((row) => row.lodge_id)
+    .forEach((row) => {
+      const lodgeId = String(row.lodge_id).trim().toLowerCase()
+      if (!byLodge.has(lodgeId)) byLodge.set(lodgeId, row)
+    })
+  return [...byLodge.values()]
 }
 
-function assertMembershipEntitlements(rows) {
+export function isManagerPwaMembershipSelectable(row) {
+  return row?.pwa_enabled === true && row?.pwa_feature_enabled === true
+}
+
+export function getManagerPwaMembershipBlockReason(row) {
+  if (row?.pwa_feature_enabled !== true) return PWA_PLAN_REQUIRED_MESSAGE
+  if (row?.pwa_enabled !== true) return row?.pwa_disabled_reason || 'Manager mobile access is disabled for this business.'
+  return ''
+}
+
+function assertMembershipsAvailable(rows) {
   if (rows.length === 0) {
     throw new Error('That email or password is incorrect, or this account has no manager access.')
   }
-
-  const enabledRows = rows.filter((row) => row.pwa_enabled === true)
-  if (enabledRows.length === 0) {
-    throw new Error(rows[0]?.pwa_disabled_reason || 'Manager mobile app access is disabled for this account.')
-  }
-
-  const entitledRows = enabledRows.filter((row) => row.pwa_feature_enabled === true)
-  if (entitledRows.length === 0) {
-    const planError = new Error(PWA_PLAN_REQUIRED_MESSAGE)
-    planError.code = 'pwa_plan_required'
-    throw planError
-  }
-
-  return entitledRows
+  return rows
 }
 
 /**
@@ -1932,16 +1938,16 @@ export async function issueManagerPwaSession(lodgeId) {
   }
 
   const rows = extractManagerCandidates(data)
-  const selected = rows.find((row) => row.lodge_id === String(lodgeId).trim().toLowerCase()) || rows[0]
+  const selected = rows.find((row) => row.lodge_id === String(lodgeId).trim().toLowerCase())
   if (!selected) {
     throw new Error('That business is no longer available for this account.')
   }
-  if (selected.pwa_enabled !== true) {
-    throw new Error(selected.pwa_disabled_reason || 'Manager mobile app access is disabled for this account.')
-  }
-  if (selected.pwa_feature_enabled !== true) {
-    const planError = new Error(PWA_PLAN_REQUIRED_MESSAGE)
-    planError.code = 'pwa_plan_required'
+  if (!isManagerPwaMembershipSelectable(selected)) {
+    const reason = getManagerPwaMembershipBlockReason(selected)
+    const planError = new Error(reason)
+    if (selected.pwa_enabled === true && selected.pwa_feature_enabled !== true) {
+      planError.code = 'pwa_plan_required'
+    }
     throw planError
   }
   if (!selected.session_token || selected.authenticated !== true) {
@@ -1952,9 +1958,11 @@ export async function issueManagerPwaSession(lodgeId) {
 
 /**
  * Sign in with email/password, then either:
- * - return { memberships } when more than one entitled company exists, or
- * - issue a session immediately when exactly one entitled company exists.
- * Password is not retained for a later chooser step; selection uses Supabase Auth.
+ * - return { memberships } when more than one company is linked, or
+ * - issue a session immediately when exactly one company is linked.
+ * Password is not retained for a later chooser step. Disabled or unentitled
+ * memberships remain visible so the account owner can understand the access
+ * state; issue_manager_pwa_session remains the final server-side gate.
  */
 export async function authenticateManager(identifier, password) {
   const email = identifier.trim().toLowerCase()
@@ -1979,18 +1987,19 @@ export async function authenticateManager(identifier, password) {
     }
   }
 
-  const entitled = assertMembershipEntitlements(memberships)
+  const available = assertMembershipsAvailable(memberships)
 
-  if (entitled.length > 1) {
-    return { memberships: entitled, user: null }
+  if (available.length > 1) {
+    return { memberships: available, user: null }
   }
 
-  const only = entitled[0]
+  const only = available[0]
   try {
-    return await issueManagerPwaSession(only.lodge_id)
+    const issued = await issueManagerPwaSession(only.lodge_id)
+    return { ...issued, memberships: available }
   } catch (issueError) {
     // Compatibility: older issue path via authenticate_manager_from_supabase(lodge_id).
-    if (issueError?.code === 'pwa_plan_required') throw issueError
+    if (issueError?.code === 'pwa_plan_required' || only.pwa_enabled !== true) throw issueError
     const legacy = await supabase.rpc('authenticate_manager_from_supabase', {
       p_lodge_id: only.lodge_id
     })
@@ -1998,11 +2007,17 @@ export async function authenticateManager(identifier, password) {
       throw new Error(friendlyErrorMessage(legacy.error, 'Could not open a manager session.'))
     }
     const rows = extractManagerCandidates(legacy.data, email)
-    const selected = rows.find((row) => row.authenticated === true && row.session_token) || rows[0]
+    const selected = rows.find((row) => row.lodge_id === only.lodge_id && row.authenticated === true && row.session_token)
     if (!selected?.session_token) {
       throw new Error('The server did not issue a valid mobile app session.')
     }
-    return { user: selected }
+    if (!isManagerPwaMembershipSelectable(selected)) {
+      const reason = getManagerPwaMembershipBlockReason(selected)
+      const accessError = new Error(reason)
+      if (selected.pwa_enabled === true && selected.pwa_feature_enabled !== true) accessError.code = 'pwa_plan_required'
+      throw accessError
+    }
+    return { user: selected, memberships: available }
   }
 }
 
@@ -2046,5 +2061,6 @@ export async function logoutManagerSession(sessionToken = null) {
     p_session_token: sessionToken
   })
   if (error) throw new Error(friendlyErrorMessage(error, 'Could not sign out this mobile session.'))
+  if (data && data.success === false) throw new Error('The mobile session could not be revoked.')
   return data
 }

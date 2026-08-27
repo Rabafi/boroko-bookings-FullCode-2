@@ -20,15 +20,15 @@ const LODGE_FEATURES = Object.freeze([
 // Starter exposes a deliberately narrow, read-only operational summary. The
 // full `reports` entitlement remains a Standard boundary.
 const STARTER_FEATURES = Object.freeze([
-  ...LODGE_FEATURES, 'basic_reports'
+  ...LODGE_FEATURES, 'basic_reports', 'starter_backup', 'starter_backup_automation', 'staff_basic', 'prepayments_basic'
 ])
 
 const STANDARD_FEATURES = Object.freeze([
-  ...STARTER_FEATURES, 'reports', 'expenses', 'staff', 'audit', 'conference', 'dayuse', 'import'
+  ...STARTER_FEATURES, 'reports', 'expenses', 'staff', 'audit', 'conference', 'dayuse', 'import', 'prepayments_management'
 ])
 
 const PRO_FEATURES = Object.freeze([
-  ...STANDARD_FEATURES, 'pwa', 'online_booking', 'pos', 'inventory', 'supplies', 'room_supplies'
+  ...STANDARD_FEATURES, 'pwa', 'online_booking', 'pos', 'inventory', 'supplies', 'room_supplies', 'prepayments_advanced'
 ])
 
 /**
@@ -52,7 +52,7 @@ const HOTEL_CORE_FEATURES = Object.freeze([
 
 const BAR_POS_FEATURES = Object.freeze([
   'pos', 'bar_counter_sales', 'bar_product_list', 'modifiers', 'tabs', 'receipts', 'bar_pack_stock', 'inventory',
-  'bar_stock_basic', 'low_stock_alerts', 'cash_drawer', 'cash_up', 'staff',
+  'bar_stock_basic', 'low_stock_alerts', 'cash_drawer', 'cash_up', 'staff', 'staff_basic',
   'bar_staff_basic', 'staff_shifts', 'reports', 'bar_reports_basic', 'audit',
   'pwa', 'customer_display', 'bar_board', 'checklists', 'alerts', 'incident_log'
 ])
@@ -112,7 +112,7 @@ export const BAR_POS_ADDON_CATALOG = Object.freeze([
 
 const RESTAURANT_SERVICE_FEATURES = Object.freeze([
   'pos', 'menus', 'modifiers', 'tables', 'tabs', 'receipts', 'kitchen_tickets',
-  'bar_tickets', 'stations', 'cash_drawer', 'cash_up', 'staff', 'reports'
+  'bar_tickets', 'stations', 'cash_drawer', 'cash_up', 'staff', 'staff_basic', 'reports'
 ])
 
 const RESTAURANT_CONTROL_FEATURES = Object.freeze([

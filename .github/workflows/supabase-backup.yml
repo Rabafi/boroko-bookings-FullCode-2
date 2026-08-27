@@ -12,13 +12,15 @@ concurrency:
 
 permissions:
   contents: read
+  actions: read
+  issues: write
 
 jobs:
   backup:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
-      BACKUP_FILE_PREFIX: tsa-bonno-supabase-
+      BACKUP_R2_PREFIX: tsa-bonno/supabase/
       BACKUP_DAILY_RETENTION_DAYS: '14'
       BACKUP_WEEKLY_RETENTION_DAYS: '90'
 
@@ -33,29 +35,34 @@ jobs:
 
       - name: Verify backup secrets
         env:
-          SUPABASE_DB_URL: ${{ secrets.SUPABASE_BACKUP_DB_URL }}
-          BACKUP_PUBLIC_KEY_B64: ${{ secrets.BACKUP_ENCRYPTION_PUBLIC_KEY_B64 }}
-          GOOGLE_DRIVE_CLIENT_ID: ${{ secrets.GOOGLE_DRIVE_CLIENT_ID }}
-          GOOGLE_DRIVE_CLIENT_SECRET: ${{ secrets.GOOGLE_DRIVE_CLIENT_SECRET }}
-          GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
-          GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
+          SUPABASE_BACKUP_DB_URL: ${{ secrets.SUPABASE_BACKUP_DB_URL }}
+          BACKUP_ENCRYPTION_PUBLIC_KEY_B64: ${{ secrets.BACKUP_ENCRYPTION_PUBLIC_KEY_B64 }}
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+          CLOUDFLARE_R2_BUCKET: ${{ secrets.CLOUDFLARE_R2_BUCKET }}
+          CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+          CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
         shell: bash
         run: |
           set -euo pipefail
-          required=(
-            SUPABASE_DB_URL
-            BACKUP_PUBLIC_KEY_B64
-            GOOGLE_DRIVE_CLIENT_ID
-            GOOGLE_DRIVE_CLIENT_SECRET
-            GOOGLE_DRIVE_REFRESH_TOKEN
-            GOOGLE_DRIVE_FOLDER_ID
+          required_secrets=(
+            SUPABASE_BACKUP_DB_URL
+            BACKUP_ENCRYPTION_PUBLIC_KEY_B64
+            CLOUDFLARE_R2_ACCOUNT_ID
+            CLOUDFLARE_R2_BUCKET
+            CLOUDFLARE_R2_ACCESS_KEY_ID
+            CLOUDFLARE_R2_SECRET_ACCESS_KEY
           )
-          for name in "${required[@]}"; do
-            if [ -z "${!name:-}" ]; then
-              echo "::error::Missing required GitHub Actions secret: ${name}"
-              exit 1
+          missing_secrets=()
+          for secret_name in "${required_secrets[@]}"; do
+            if [ -z "${!secret_name:-}" ]; then
+              missing_secrets+=("${secret_name}")
             fi
           done
+          if (( ${#missing_secrets[@]} > 0 )); then
+            printf '::error::Missing required GitHub Actions secrets: %s\n' "$(IFS=', '; echo "${missing_secrets[*]}")"
+            exit 1
+          fi
+          echo "All required backup secrets are configured."
 
       - name: Create authoritative Supabase SQL dumps
         id: dump
@@ -105,6 +112,7 @@ jobs:
           echo "encrypted_name=$(basename "${encrypted_path}")" >> "${GITHUB_OUTPUT}"
 
       - name: Retain encrypted GitHub recovery artifact
+        id: artifact_upload
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.dump.outputs.encrypted_name }}
@@ -113,13 +121,160 @@ jobs:
           retention-days: 7
           compression-level: 0
 
-      - name: Upload encrypted backup to Google Drive
+      - name: Upload encrypted backup to Cloudflare R2
+        id: r2_upload
         env:
-          GOOGLE_DRIVE_CLIENT_ID: ${{ secrets.GOOGLE_DRIVE_CLIENT_ID }}
-          GOOGLE_DRIVE_CLIENT_SECRET: ${{ secrets.GOOGLE_DRIVE_CLIENT_SECRET }}
-          GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
-          GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
-        run: node scripts/google-drive-backup.mjs "${{ steps.dump.outputs.encrypted_path }}"
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+          CLOUDFLARE_R2_BUCKET: ${{ secrets.CLOUDFLARE_R2_BUCKET }}
+          CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+          CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+          BACKUP_R2_PREFIX: ${{ env.BACKUP_R2_PREFIX }}
+          BACKUP_DAILY_RETENTION_DAYS: ${{ env.BACKUP_DAILY_RETENTION_DAYS }}
+          BACKUP_WEEKLY_RETENTION_DAYS: ${{ env.BACKUP_WEEKLY_RETENTION_DAYS }}
+        run: node scripts/r2-backup.mjs "${{ steps.dump.outputs.encrypted_path }}"
+
+      - name: Write backup failure summary
+        if: failure()
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo '## Supabase backup failed'
+            echo
+            echo "The scheduled backup did not complete. No secret values are included in this summary."
+            echo
+            echo "- Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo "- Trigger: ${GITHUB_EVENT_NAME}"
+            echo "- Commit: ${GITHUB_SHA}"
+            echo
+            echo 'Inspect the failed step, then verify the latest encrypted Cloudflare R2 copy before retrying.'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Open or update backup failure issue
+        if: failure()
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const marker = '<!-- tsa-bonno-supabase-backup-failure -->'
+            const title = 'Supabase backup failed'
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
+            const body = [
+              marker,
+              '## Supabase backup failed',
+              '',
+              `Run: [${context.runId}](${runUrl})`,
+              `Trigger: ${context.eventName}`,
+              `Commit: ${context.sha}`,
+              '',
+              'This issue is deduplicated by its marker. Review the run logs and confirm the latest encrypted Cloudflare R2 copy before closing it.',
+            ].join('\n')
+            const { data: openIssues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              per_page: 100,
+            })
+            const existing = openIssues.find((issue) => issue.title === title && issue.body?.includes(marker))
+            if (existing) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body,
+              })
+              core.notice(`Updated existing backup failure issue #${existing.number}.`)
+            } else {
+              const created = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+              })
+              core.notice(`Opened backup failure issue #${created.data.number}.`)
+            }
+
+      - name: Check backup freshness and report overdue state
+        if: always()
+        continue-on-error: true
+        env:
+          BACKUP_SUCCEEDED: ${{ steps.dump.outcome == 'success' && steps.artifact_upload.outcome == 'success' && steps.r2_upload.outcome == 'success' }}
+          BACKUP_MAX_AGE_HOURS: '26'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const marker = '<!-- tsa-bonno-supabase-backup-overdue -->'
+            const title = 'Supabase backup overdue'
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
+            const { data: openIssues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              per_page: 100,
+            })
+            const existing = openIssues.find((issue) => issue.title === title && issue.body?.includes(marker))
+            const closeIssue = async (issue) => {
+              if (!issue) return
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                state: 'closed',
+              })
+              core.notice(`Closed recovered backup overdue issue #${issue.number}.`)
+            }
+
+            if (process.env.BACKUP_SUCCEEDED === 'true') {
+              await closeIssue(existing)
+              core.notice('Backup completed; freshness is current.')
+              return
+            }
+
+            const { data: runs } = await github.rest.actions.listWorkflowRunsForWorkflow({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'supabase-backup.yml',
+              event: 'schedule',
+              status: 'completed',
+              per_page: 20,
+            })
+            const previousSuccess = runs.workflow_runs.find((run) => run.id !== context.runId && run.conclusion === 'success')
+            const lastSuccessAt = previousSuccess && Date.parse(previousSuccess.updated_at || previousSuccess.created_at)
+            const maxAgeMs = Number(process.env.BACKUP_MAX_AGE_HOURS) * 60 * 60 * 1000
+            const overdue = !lastSuccessAt || (Date.now() - lastSuccessAt) > maxAgeMs
+            if (!overdue) {
+              core.notice('A recent successful backup exists; overdue alert not required.')
+              return
+            }
+
+            const body = [
+              marker,
+              '## Supabase backup overdue',
+              '',
+              `The latest scheduled backup is older than ${process.env.BACKUP_MAX_AGE_HOURS} hours or no successful scheduled backup exists.`,
+              '',
+              `Current run: [${context.runId}](${runUrl})`,
+              previousSuccess ? `Last successful run: [${previousSuccess.id}](${previousSuccess.html_url})` : 'Last successful run: none found',
+              '',
+              'This issue is deduplicated by its marker. Inspect the workflow and verify the latest encrypted Cloudflare R2 copy.',
+            ].join('\n')
+            if (existing) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body,
+              })
+              core.notice(`Updated existing backup overdue issue #${existing.number}.`)
+            } else {
+              const created = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+              })
+              core.notice(`Opened backup overdue issue #${created.data.number}.`)
+            }
 
       - name: Remove runner backup material
         if: always()

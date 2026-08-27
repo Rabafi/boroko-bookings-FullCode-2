@@ -197,10 +197,10 @@ export function normalizeQueuedSyncItemForReplay(item = {}) {
       next.data.p_idempotency_key = `sync:reschedule_booking:${queueId}`.slice(0, 128);
     }
   }
-  if (next.type === 'rpc' && next.table === 'record_customer_credit' && !next.data.p_idempotency_key) {
+  if (next.type === 'rpc' && ['record_customer_credit', 'apply_customer_credit_to_booking', 'refund_customer_credit', 'reverse_customer_credit_entry'].includes(next.table) && !next.data.p_idempotency_key) {
     const queueId = String(next._queue_id || '').replace(/[^A-Za-z0-9:_-]/g, '-').slice(0, 80);
     if (queueId) {
-      next.data.p_idempotency_key = `sync:record_customer_credit:${queueId}`.slice(0, 128);
+      next.data.p_idempotency_key = `sync:${next.table}:${queueId}`.slice(0, 128);
     }
   }
 

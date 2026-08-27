@@ -48,6 +48,7 @@ const LodgeChooser = lazy(() => import('./components/LodgeChooser'))
 const Calendar    = lazy(() => import('./components/Calendar'))
 const Reports     = lazy(() => import('./components/Reports'))
 const BasicReports = lazy(() => import('./components/BasicReports'))
+const StarterBackup = lazy(() => import('./components/StarterBackup'))
 const Staff       = lazy(() => import('./components/Staff'))
 const Settings    = lazy(() => import('./components/Settings'))
 const RoomGrid    = lazy(() => import('./components/RoomGrid'))
@@ -1964,8 +1965,9 @@ export default function App() {
                 {/* Standard tier — lazy (UpgradeWall outside Lazy so wall renders without loading) */}
                 <Route path="reports"    element={<UpgradeWall feature="reports">   <RestaurantReportsEntry />    </UpgradeWall>} />
                 <Route path="basic-reports" element={<CapabilityRoute capability="reports.basic_view"><UpgradeWall feature="basic_reports"><Lazy><BasicReports /></Lazy></UpgradeWall></CapabilityRoute>} />
+                <Route path="starter-backup" element={<CapabilityRoute capability="backup.starter_export"><UpgradeWall feature="starter_backup"><Lazy><StarterBackup /></Lazy></UpgradeWall></CapabilityRoute>} />
                 <Route path="expenses"   element={<UpgradeWall feature="expenses">  <RestaurantExpensesEntry />   </UpgradeWall>} />
-                <Route path="staff"      element={<UpgradeWall feature="staff">     <Lazy><Staff /></Lazy>      </UpgradeWall>} />
+                <Route path="staff"      element={<UpgradeWall feature="staff_basic"><Lazy><Staff /></Lazy>      </UpgradeWall>} />
                 <Route path="audit"      element={<UpgradeWall feature="audit">     <Lazy><NightAudit /></Lazy> </UpgradeWall>} />
                 <Route path="conference" element={<UpgradeWall feature="conference"><Lazy><Conference /></Lazy>  </UpgradeWall>} />
                 <Route path="dayuse"     element={<UpgradeWall feature="pool">      <Lazy><DayUse /></Lazy>     </UpgradeWall>} />

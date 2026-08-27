@@ -1,7 +1,7 @@
-const ENTITLEMENT_FEATURES = ['reports', 'expenses', 'staff', 'pwa', 'audit', 'conference', 'pool', 'import', 'pos', 'inventory', 'supplies', 'online_booking', 'hotel_mode', 'room_types', 'room_attributes', 'physical_inventory', 'floors_sections', 'front_desk_dashboard', 'folios', 'advanced_housekeeping', 'hotel_kpis', 'corporate_accounts', 'rate_plans', 'custom_website', 'payment_gateway', 'channel_manager', 'multi_property', 'room_moves', 'subscription_builder', 'advanced_rates', 'rate_calendar', 'promo_codes', 'advanced_reports', 'guest_portal', 'multi_outlet_pos', 'linen_laundry', 'lost_found', 'incident_log', 'visitor_register', 'emergency_list', 'housekeeping_command_center', 'maintenance_enterprise', 'group_operations', 'operations_compliance', 'guest_messaging', 'guest_crm', 'documents', 'hotel_roles', 'night_audit_enterprise', 'checkin_workflow', 'early_late_checkout', 'cancellation_policies', 'advanced_booking_engine', 'workforce_management', 'asset_management', 'venue_management'];
+const ENTITLEMENT_FEATURES = ['basic_reports', 'starter_backup', 'starter_backup_automation', 'staff_basic', 'prepayments_basic', 'prepayments_management', 'prepayments_advanced', 'reports', 'expenses', 'staff', 'pwa', 'audit', 'conference', 'pool', 'import', 'pos', 'inventory', 'supplies', 'online_booking', 'hotel_mode', 'room_types', 'room_attributes', 'physical_inventory', 'floors_sections', 'front_desk_dashboard', 'folios', 'advanced_housekeeping', 'hotel_kpis', 'corporate_accounts', 'rate_plans', 'custom_website', 'payment_gateway', 'channel_manager', 'multi_property', 'room_moves', 'subscription_builder', 'advanced_rates', 'rate_calendar', 'promo_codes', 'advanced_reports', 'guest_portal', 'multi_outlet_pos', 'linen_laundry', 'lost_found', 'incident_log', 'visitor_register', 'emergency_list', 'housekeeping_command_center', 'maintenance_enterprise', 'group_operations', 'operations_compliance', 'guest_messaging', 'guest_crm', 'documents', 'hotel_roles', 'night_audit_enterprise', 'checkin_workflow', 'early_late_checkout', 'cancellation_policies', 'advanced_booking_engine', 'workforce_management', 'asset_management', 'venue_management'];
 const PLAN_FEATURE_MAP = {
   Starter: {
-    reports: false, expenses: false, staff: false, pwa: false, audit: false,
+    basic_reports: true, starter_backup: true, starter_backup_automation: true, staff_basic: true, prepayments_basic: true, prepayments_management: false, prepayments_advanced: false, reports: false, expenses: false, staff: false, pwa: false, audit: false,
     conference: false, pool: false, import: false, pos: false,
     inventory: false, supplies: false, online_booking: false,
     hotel_mode: false, room_types: false, room_attributes: false, physical_inventory: false,
@@ -20,7 +20,7 @@ const PLAN_FEATURE_MAP = {
     workforce_management: false, asset_management: false, venue_management: false
   },
   Standard: {
-    reports: true, expenses: true, staff: true, pwa: false, audit: true,
+    basic_reports: true, starter_backup: true, starter_backup_automation: true, staff_basic: true, prepayments_basic: true, prepayments_management: true, prepayments_advanced: false, reports: true, expenses: true, staff: true, pwa: false, audit: true,
     conference: true, pool: true, import: true, pos: false,
     inventory: false, supplies: false, online_booking: false,
     hotel_mode: false, room_types: false, room_attributes: false, physical_inventory: false,
@@ -39,7 +39,7 @@ const PLAN_FEATURE_MAP = {
     workforce_management: false, asset_management: false, venue_management: false
   },
   Pro: {
-    reports: true, expenses: true, staff: true, pwa: true, audit: true,
+    basic_reports: true, starter_backup: true, starter_backup_automation: true, staff_basic: true, prepayments_basic: true, prepayments_management: true, prepayments_advanced: true, reports: true, expenses: true, staff: true, pwa: true, audit: true,
     conference: true, pool: true, import: true, pos: true,
     inventory: true, supplies: true, online_booking: true,
     hotel_mode: false, room_types: false, room_attributes: false, physical_inventory: false,
@@ -63,7 +63,7 @@ const PLAN_FEATURE_MAP = {
    * false = optional add-on / planned premium — must not unlock on a clean Core licence
    */
   Enterprise: {
-    reports: true, expenses: true, staff: true, pwa: true, audit: true,
+    basic_reports: true, starter_backup: true, starter_backup_automation: true, staff_basic: true, prepayments_basic: true, prepayments_management: true, prepayments_advanced: true, reports: true, expenses: true, staff: true, pwa: true, audit: true,
     conference: true, pool: true, import: true, pos: true,
     inventory: true, supplies: true, online_booking: true,
     hotel_mode: true, room_types: true, room_attributes: true, physical_inventory: true,

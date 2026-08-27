@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { BarChart3, CircleAlert, Clock3, RefreshCw, ShieldCheck } from 'lucide-react'
+import { BarChart3, CircleAlert, Clock3, Download, Printer, RefreshCw, ShieldCheck } from 'lucide-react'
 import { useSettings } from '../app-context'
 
 const RANGES = [
@@ -51,6 +51,10 @@ export default function BasicReports() {
   const [report, setReport] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [artifactBusy, setArtifactBusy] = useState('')
+  const [artifactError, setArtifactError] = useState('')
+  const [artifactNotice, setArtifactNotice] = useState('')
+  const [generatedAt, setGeneratedAt] = useState('')
 
   const load = async (days) => {
     setLoading(true)
@@ -75,6 +79,44 @@ export default function BasicReports() {
 
   useEffect(() => { load(rangeDays) }, [rangeDays])
 
+  const nextPaint = () => new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve))
+  })
+
+  const createArtifact = async (kind) => {
+    if (!report || artifactBusy) return
+    setArtifactBusy(kind)
+    setArtifactError('')
+    setArtifactNotice('')
+    const timestamp = new Date().toLocaleString()
+    setGeneratedAt(timestamp)
+    try {
+      await nextPaint()
+      const bridge = kind === 'pdf'
+        ? window.api?.reports?.basicSavePDF
+        : window.api?.reports?.basicPrint
+      if (typeof bridge !== 'function') {
+        throw new Error('Starter report printing is not available in this desktop build.')
+      }
+      const result = kind === 'pdf'
+        ? await bridge({ rangeDays })
+        : await bridge({ operationId: crypto.randomUUID() })
+      if (result?.canceled) {
+        setArtifactNotice('PDF save cancelled. No file was created.')
+      } else if (result?.success) {
+        setArtifactNotice(kind === 'pdf'
+          ? `PDF saved${result.fileName ? ` as ${result.fileName}` : ''}.`
+          : 'Report sent to the selected printer.')
+      } else {
+        throw new Error(result?.error || (kind === 'pdf' ? 'The PDF could not be saved.' : 'The report could not be printed.'))
+      }
+    } catch (err) {
+      setArtifactError(err?.message || (kind === 'pdf' ? 'The PDF could not be saved.' : 'The report could not be printed.'))
+    } finally {
+      setArtifactBusy('')
+    }
+  }
+
   const operational = report?.operational || {}
   const financial = report?.financial || {}
   const certified = report?.complete === true
@@ -89,7 +131,7 @@ export default function BasicReports() {
     || 'The server could not certify every financial source row. Amounts are withheld.'
 
   return (
-    <main className="mx-auto max-w-6xl space-y-6 p-6" data-testid="basic-reports">
+    <main id="printable-report" className="mx-auto max-w-6xl space-y-6 p-6" data-testid="basic-reports">
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <p className="text-xs font-bold uppercase tracking-[.18em] text-emerald-700">Starter · view only</p>
@@ -98,20 +140,35 @@ export default function BasicReports() {
             A server-backed snapshot of lodge activity. Financial values appear only when the payment-ledger evidence is certified.
           </p>
         </div>
-        <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white p-1" role="group" aria-label="Report period">
-          {RANGES.map(({ days, label }) => (
-            <button
-              key={days}
-              type="button"
-              onClick={() => setRangeDays(days)}
-              className={`rounded-lg px-3 py-2 text-sm font-semibold ${rangeDays === days ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
-              aria-pressed={rangeDays === days}
-            >
-              {label}
-            </button>
-          ))}
+        <div className="no-print flex flex-wrap items-center justify-end gap-2">
+          <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white p-1" role="group" aria-label="Report period">
+            {RANGES.map(({ days, label }) => (
+              <button
+                key={days}
+                type="button"
+                onClick={() => setRangeDays(days)}
+                className={`rounded-lg px-3 py-2 text-sm font-semibold ${rangeDays === days ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
+                aria-pressed={rangeDays === days}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <button type="button" onClick={() => createArtifact('pdf')} disabled={!report || loading || Boolean(artifactBusy)} className="inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">
+            <Download className="h-4 w-4" /> {artifactBusy === 'pdf' ? 'Saving…' : 'Save PDF'}
+          </button>
+          <button type="button" onClick={() => createArtifact('print')} disabled={!report || loading || Boolean(artifactBusy)} className="inline-flex items-center gap-2 rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50">
+            <Printer className="h-4 w-4" /> {artifactBusy === 'print' ? 'Printing…' : 'Print'}
+          </button>
         </div>
       </header>
+
+      <div className="print-only mb-6 border-b-2 border-emerald-700 pb-4">
+        <p className="text-xs font-bold uppercase tracking-[.18em] text-emerald-700">Tsa Bonno HospitalityOS · Starter</p>
+        <h1 className="mt-1 text-2xl font-bold text-slate-950">{settings?.lodge_name || settings?.company_name || 'Lodge'} · Basic Operating Summary</h1>
+        <p className="mt-1 text-sm text-slate-700">Period: {report?.period?.start || 'Unavailable'} to {report?.period?.end || 'Unavailable'} ({rangeDays} day{rangeDays === 1 ? '' : 's'})</p>
+        <p className="mt-1 text-xs text-slate-600">Generated: {generatedAt || 'Unavailable'} · Certification: {certified ? 'Certified' : 'Not certified — financial values withheld'} · Source: server-authoritative · View-only</p>
+      </div>
 
       {error && (
         <div className="flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900" role="alert">
@@ -122,6 +179,9 @@ export default function BasicReports() {
           </div>
         </div>
       )}
+
+      {artifactError && <div className="no-print rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-800" role="alert">{artifactError}</div>}
+      {artifactNotice && <div className="no-print rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800" role="status">{artifactNotice}</div>}
 
       {loading ? (
         <div className="rounded-2xl border border-slate-200 bg-white p-10 text-center text-sm text-slate-500">
@@ -210,7 +270,7 @@ export default function BasicReports() {
 
       <footer className="flex items-center gap-2 text-xs text-slate-500">
         <Clock3 className="h-4 w-4" />
-        Server-generated · view-only · exports are not available in Starter.
+        Server-generated · view-only · PDF/print snapshot only. CSV, Excel, and full report exports are not available in Starter.
       </footer>
     </main>
   )

@@ -27,6 +27,7 @@ const ACCOMMODATION_OPS = Object.freeze([
   'rooms',
   'bookings',
   'basic-reports',
+  'starter-backup',
   'quotations',
   'invoices',
   'prepayments',

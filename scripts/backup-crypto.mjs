@@ -15,6 +15,7 @@ import { pathToFileURL } from 'node:url'
 const MAGIC = Buffer.from('TSABONNO-BACKUP-V1\n', 'utf8')
 const HEADER_LENGTH_BYTES = 4
 const AUTH_TAG_BYTES = 16
+const writableErrors = new WeakMap()
 
 function requireValue(value, label) {
   if (!value) throw new Error(`${label} is required.`)
@@ -23,30 +24,91 @@ function requireValue(value, label) {
 
 async function writeChunk(stream, chunk) {
   if (!chunk || chunk.length === 0) return
-  if (stream.write(chunk)) return
+  const previousError = writableErrors.get(stream)
+  if (previousError) throw previousError
   await new Promise((resolve, reject) => {
+    let settled = false
     const cleanup = () => {
       stream.removeListener('drain', onDrain)
       stream.removeListener('error', onError)
     }
-    const onDrain = () => {
+    const finish = (callback, value) => {
+      if (settled) return
+      settled = true
       cleanup()
-      resolve()
+      callback(value)
     }
-    const onError = (error) => {
-      cleanup()
-      reject(error)
-    }
-    stream.once('drain', onDrain)
+    const onDrain = () => finish(resolve)
+    const onError = (error) => finish(reject, error)
     stream.once('error', onError)
+    try {
+      if (stream.write(chunk)) {
+        const error = writableErrors.get(stream)
+        if (error) finish(reject, error)
+        else finish(resolve)
+      } else {
+        stream.once('drain', onDrain)
+        const error = writableErrors.get(stream)
+        if (error) finish(reject, error)
+      }
+    } catch (error) {
+      finish(reject, error)
+    }
   })
 }
 
 async function closeWritable(stream) {
+  const previousError = writableErrors.get(stream)
+  if (previousError) throw previousError
   await new Promise((resolve, reject) => {
-    stream.once('finish', resolve)
-    stream.once('error', reject)
-    stream.end()
+    let settled = false
+    const cleanup = () => {
+      stream.removeListener('finish', onFinish)
+      stream.removeListener('error', onError)
+    }
+    const finish = (callback, value) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      callback(value)
+    }
+    const onFinish = () => finish(resolve)
+    const onError = (error) => finish(reject, error)
+    stream.once('finish', onFinish)
+    stream.once('error', onError)
+    const error = writableErrors.get(stream)
+    if (error) {
+      finish(reject, error)
+      return
+    }
+    try {
+      stream.end()
+    } catch (endError) {
+      finish(reject, endError)
+    }
+  })
+}
+
+// A failed authenticated decrypt can happen while the output stream still
+// has buffered writes. Attach the error listener before destroying it and wait
+// for close so a late ERR_STREAM_DESTROYED cannot escape as an unhandled event
+// when several backup tests/jobs are active at once.
+async function abortWritable(stream) {
+  await new Promise((resolve) => {
+    const onClose = () => {
+      stream.removeListener('close', onClose)
+      resolve()
+    }
+    stream.once('close', onClose)
+    stream.destroy()
+    if (stream.closed) resolve()
+  })
+}
+
+function watchWritable(stream) {
+  writableErrors.set(stream, null)
+  stream.on('error', (error) => {
+    if (!writableErrors.get(stream)) writableErrors.set(stream, error)
   })
 }
 
@@ -101,6 +163,7 @@ export async function encryptBackupFile({ inputPath, outputPath, publicKeyPem })
 
   await fs.mkdir(path.dirname(outputPath), { recursive: true })
   const output = createWriteStream(outputPath, { flags: 'wx' })
+  watchWritable(output)
   const cipher = createCipheriv('aes-256-gcm', dataKey, iv)
   cipher.setAAD(Buffer.concat([MAGIC, headerLength, header]))
 
@@ -116,7 +179,7 @@ export async function encryptBackupFile({ inputPath, outputPath, publicKeyPem })
     await closeWritable(output)
     return { outputPath, originalSize: source.size }
   } catch (error) {
-    output.destroy()
+    await abortWritable(output)
     await removePartial(outputPath)
     throw error
   } finally {
@@ -174,6 +237,9 @@ export async function decryptBackupFile({ inputPath, outputPath, privateKeyPem, 
 
   await fs.mkdir(path.dirname(outputPath), { recursive: true })
   const output = createWriteStream(outputPath, { flags: 'wx' })
+  // See abortWritable: authenticated failures may arrive after buffered
+  // writes have been accepted by the stream.
+  watchWritable(output)
   try {
     const ciphertextEnd = source.size - AUTH_TAG_BYTES - 1
     for await (const chunk of createReadStream(inputPath, { start: ciphertextStart, end: ciphertextEnd })) {
@@ -187,7 +253,7 @@ export async function decryptBackupFile({ inputPath, outputPath, privateKeyPem, 
     }
     return { outputPath, originalName: header.original_name, restoredSize: restored.size }
   } catch (error) {
-    output.destroy()
+    await abortWritable(output)
     await removePartial(outputPath)
     throw error
   } finally {

@@ -21,6 +21,7 @@ const SurfaceIntelligence = lazy(() => import('./SurfaceIntelligence'))
 const SubscriptionRequests = lazy(() => import('./SubscriptionRequests'))
 const EnterpriseWorkflowWorkspace = lazy(() => import('./EnterpriseWorkflowWorkspace'))
 const PaymentGatewayConfig = lazy(() => import('./PaymentGatewayConfig'))
+const StarterRecoveryWorkspace = lazy(() => import('./StarterRecoveryWorkspace'))
 import Pagination, { usePagination } from './shared/Pagination'
 import {
   MONTHLY_USAGE_RESET_COPY,
@@ -3386,6 +3387,7 @@ const NAV_GROUPS = [
     label: 'Operations',
     items: [
       { id: 'platform', label: 'Platform Operations', icon: Server, tip: 'System health, surfaces, fleet, and releases' },
+      { id: 'recovery', label: 'Data Recovery', icon: Shield, tip: 'Validate and restore customer backups into quarantined disposable lodges' },
       { id: 'activity', label: 'Activity Log', icon: Activity, tip: 'Audit trail of all admin actions' },
     ]
   },
@@ -4592,6 +4594,7 @@ export default function AdminCentral() {
             {(section === 'notifications' || section === 'broadcasts' || section === 'email-alerts' || section === 'communications') && <ErrorBoundary><CommunicationsHub companies={companies} onOpenCompany={(company) => setViewClient360(company)} initialTab={section === 'broadcasts' ? 'broadcasts' : section === 'email-alerts' ? 'email' : 'notifications'} /></ErrorBoundary>}
             {section === 'activity' && <ErrorBoundary><ActivityLog companies={companies} onOpenCompany={(company) => setViewClient360(company)} /></ErrorBoundary>}
             {(section === 'health' || section === 'surfaces' || section === 'fleet' || section === 'releases' || section === 'platform') && <ErrorBoundary><PlatformOperations onOpenCompany={(company) => setViewClient360(company)} companies={companies} initialTab={['health', 'surfaces', 'fleet', 'releases'].includes(section) ? section : 'health'} /></ErrorBoundary>}
+            {section === 'recovery' && <ErrorBoundary><StarterRecoveryWorkspace companies={companies} unlocked={reauthVerified} /></ErrorBoundary>}
             {section === 'implementation' && <ErrorBoundary><ImplementationAddons companies={companies} /></ErrorBoundary>}
             {(section === 'search' || section === 'bulk' || section === 'test-reset' || section === 'tools') && <ErrorBoundary><AdminTools onNavigate={(s) => setSection(s)} onOpenCompany={(company) => setViewClient360(company)} companies={companies} initialTab={['search', 'bulk', 'test-reset'].includes(section) ? section : 'search'} /></ErrorBoundary>}
           </>

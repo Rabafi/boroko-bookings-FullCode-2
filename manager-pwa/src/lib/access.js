@@ -50,13 +50,25 @@ export function buildAccessSnapshot(user, features = {}) {
   const snapshot = buildCapabilitySnapshot({
     role: normalizeAppRole(user?.role),
     features,
-    capabilityOverrides: user?.capability_overrides || {}
+    capabilityOverrides: user?.capability_overrides || {},
+    productId: user?.product_id || null,
+    commercialPackageKey: user?.commercial_package_key || null,
+    commercialAddonKeys: user?.commercial_addon_keys || []
   })
 
   const blockedOnMobile = new Set([
     'bookings.manage',
     'payments.record',
     'payments.refund',
+    'prepayments.receive',
+    'prepayments.allocate',
+    'prepayments.refund',
+    'prepayments.reverse',
+    'prepayments.reconcile',
+    'prepayments.export',
+    'prepayments.age',
+    'prepayments.match',
+    'prepayments.configure',
     'quotations.manage',
     'guests.manage',
     'guests.blacklist',
