@@ -19,39 +19,41 @@ import {
 } from '../src/shared/subscriptionPlans.js'
 import { normalizePlanName as normalizeEntitlementPlan } from '../src/main/domains/subscriptionState.js'
 
-test('Starter booking grace allows #51 and #52, blocks #53', () => {
-  assert.equal(getPlanUsageLimits('Starter').monthlyBookings, 50)
+test('Starter permits bookings through #122 and then blocks additional check-ins', () => {
+  assert.equal(getPlanUsageLimits('Starter').monthlyBookings, 120)
   assert.equal(getPlanUsageLimits('Starter').monthlyBookingsGrace, 2)
-  assert.equal(canCreateBooking({ plan: 'Starter', used: 50 }).isInGrace, false)
-  assert.equal(canCreateBooking({ plan: 'Starter', used: 51 }).isInGrace, true)
-  assert.equal(canCreateBooking({ plan: 'Starter', used: 52 }).isInGrace, true)
-  assert.equal(canCreateBooking({ plan: 'Starter', used: 53 }).isBlocked, true)
+  assert.equal(canCreateBooking({ plan: 'Starter', used: 120 }).isBlocked, false)
+  assert.equal(canCreateBooking({ plan: 'Starter', used: 121 }).isInGrace, true)
+  assert.equal(canCreateBooking({ plan: 'Starter', used: 121 }).isBlocked, false)
+  assert.equal(canCreateBooking({ plan: 'Starter', used: 122 }).isBlocked, true)
 })
 
-test('Standard booking grace allows #201-#205, blocks #206', () => {
-  assert.equal(getPlanUsageLimits('Standard').monthlyBookings, 200)
+test('Standard permits bookings through #405 and then blocks additional check-ins', () => {
+  assert.equal(getPlanUsageLimits('Standard').monthlyBookings, 400)
   assert.equal(getPlanUsageLimits('Standard').monthlyBookingsGrace, 5)
-  assert.equal(canCreateBooking({ plan: 'Standard', used: 201 }).isInGrace, true)
-  assert.equal(canCreateBooking({ plan: 'Standard', used: 205 }).isInGrace, true)
-  assert.equal(canCreateBooking({ plan: 'Standard', used: 206 }).isBlocked, true)
+  assert.equal(canCreateBooking({ plan: 'Standard', used: 400 }).isBlocked, false)
+  assert.equal(canCreateBooking({ plan: 'Standard', used: 404 }).isInGrace, true)
+  assert.equal(canCreateBooking({ plan: 'Standard', used: 404 }).isBlocked, false)
+  assert.equal(canCreateBooking({ plan: 'Standard', used: 405 }).isBlocked, true)
 })
 
 test('Pro plan has capped usage limits', () => {
   const limits = getPlanUsageLimits('Pro')
-  assert.equal(limits.monthlyBookings, 500)
+  assert.equal(limits.monthlyBookings, 600)
   assert.equal(limits.monthlyBookingsGrace, 10)
   assert.equal(limits.rooms, 30)
   assert.equal(limits.users, 10)
-  assert.equal(canCreateBooking({ plan: 'Pro', used: 500 }).isBlocked, false)
-  assert.equal(canCreateBooking({ plan: 'Pro', used: 501 }).isInGrace, true)
-  assert.equal(canCreateBooking({ plan: 'Pro', used: 511 }).isBlocked, true)
+  assert.equal(canCreateBooking({ plan: 'Pro', used: 600 }).isBlocked, false)
+  assert.equal(canCreateBooking({ plan: 'Pro', used: 609 }).isInGrace, true)
+  assert.equal(canCreateBooking({ plan: 'Pro', used: 609 }).isBlocked, false)
+  assert.equal(canCreateBooking({ plan: 'Pro', used: 610 }).isBlocked, true)
 })
 
 test('active trial resolves to Pro usage limits at the entitlement boundary', () => {
   assert.equal(normalizeEntitlementPlan('Trial'), 'Pro')
   assert.equal(getPlanUsageLimits('Trial').rooms, 30)
-  assert.equal(canCreateBooking({ plan: 'Trial', used: 500 }).isBlocked, false)
-  assert.equal(canCreateBooking({ plan: 'Trial', used: 511 }).isBlocked, true)
+  assert.equal(canCreateBooking({ plan: 'Trial', used: 600 }).isBlocked, false)
+  assert.equal(canCreateBooking({ plan: 'Trial', used: 610 }).isBlocked, true)
   assert.equal(canCreateRoom({ plan: 'Trial', used: 30 }).isBlocked, true)
   assert.equal(canCreateUser({ plan: 'Trial', used: 10 }).isBlocked, true)
 })
@@ -88,7 +90,7 @@ test('booking usage month uses check_in month, not created_at', () => {
   assert.equal(isCountableBookingForUsage(rows[6]), false)
 })
 
-test('booking creation month counts created_at and blocks the stricter bucket first', () => {
+test('booking creation month remains informational while check-in month enforces the cap', () => {
   const month = new Date('2026-04-20T00:00:00Z')
   const rows = [
     { id: 'a', status: 'confirmed', check_in: '2026-07-02', created_at: '2026-04-02' },
@@ -100,13 +102,16 @@ test('booking creation month counts created_at and blocks the stricter bucket fi
 
   assert.equal(countMonthlyCreatedBookings(rows, month), 2)
 
-  const creationBlocked = evaluateBookingCreationAllowance({ plan: 'Starter', targetMonthUsed: 10, createdMonthUsed: 52 })
-  assert.equal(creationBlocked.isBlocked, true)
-  assert.equal(creationBlocked.blockReason, 'creation_month')
-  assert.equal(creationBlocked.targetMonthStatus.isBlocked, false)
-  assert.equal(creationBlocked.creationMonthStatus.isBlocked, true)
+  const creationOnlyAtLimit = evaluateBookingCreationAllowance({ plan: 'Starter', targetMonthUsed: 10, createdMonthUsed: 122 })
+  assert.equal(creationOnlyAtLimit.isBlocked, false)
+  assert.equal(creationOnlyAtLimit.blockReason, null)
+  assert.equal(creationOnlyAtLimit.targetMonthStatus.isBlocked, false)
+  assert.equal(creationOnlyAtLimit.creationMonthStatus.isBlocked, false)
+  assert.equal(creationOnlyAtLimit.creationMonthStatus.enforced, false)
+  assert.equal(creationOnlyAtLimit.creationMonthStatus.benchmarkState, 'blocked')
+  assert.equal(creationOnlyAtLimit.combinedStatus, creationOnlyAtLimit.targetMonthStatus)
 
-  const targetBlocked = evaluateBookingCreationAllowance({ plan: 'Starter', targetMonthUsed: 52, createdMonthUsed: 10 })
+  const targetBlocked = evaluateBookingCreationAllowance({ plan: 'Starter', targetMonthUsed: 122, createdMonthUsed: 10 })
   assert.equal(targetBlocked.isBlocked, true)
   assert.equal(targetBlocked.blockReason, 'target_month')
   assert.equal(targetBlocked.targetMonthStatus.isBlocked, true)
@@ -120,7 +125,7 @@ test('monthly usage reset copy is explicit', () => {
 test('plan recommendation points to the next tier when a single metric crosses 80 percent', () => {
   const starterRec = getPlanRecommendation({
     plan: 'Starter',
-    bookingsUsage: 41,
+    bookingsUsage: 97,
     roomsUsage: 3,
     usersUsage: 1
   })
@@ -154,7 +159,7 @@ test('plan limit text stays readable across tiers', () => {
   const pro = formatPlanLimits('Pro')
   const enterprise = formatPlanLimits('Enterprise')
 
-  assert.equal(starter.bookings, '50 bookings per month')
+  assert.equal(starter.bookings, '120 bookings per month')
   assert.equal(starter.grace, '+2 grace bookings')
   assert.equal(starter.rooms, '6 rooms')
   assert.equal(starter.users, '2 users')
@@ -162,7 +167,7 @@ test('plan limit text stays readable across tiers', () => {
   assert.match(starter.bookingExplanation, /confirmed, checked_in, or checked_out/i)
   assert.match(starter.graceExplanation, /small grace allowance/i)
 
-  assert.equal(pro.bookings, '500 bookings per month')
+  assert.equal(pro.bookings, '600 bookings per month')
   assert.equal(pro.grace, '+10 grace bookings')
   assert.equal(pro.rooms, '30 rooms')
   assert.equal(pro.users, '10 users')
@@ -176,7 +181,7 @@ test('plan limit text stays readable across tiers', () => {
 test('upgrade request message includes lodge context and timestamps', () => {
   const request = buildUpgradeRequestMessage(
     { lodgeName: 'Sunset Inn', currentPlan: 'Starter' },
-    { bookings: 52, rooms: 6, users: 2 },
+    { bookings: 122, rooms: 6, users: 2 },
     { recommendedPlan: 'Standard', reason: 'High booking volume' }
   )
 
@@ -184,14 +189,14 @@ test('upgrade request message includes lodge context and timestamps', () => {
   assert.match(request.emailSubject, /Starter → Standard/)
   assert.match(request.emailBody, /Lodge: Sunset Inn/)
   assert.match(request.emailBody, /Current plan: Starter/)
-  assert.match(request.emailBody, /Booking usage: 52 \/ 50/)
+  assert.match(request.emailBody, /Booking usage: 122 \/ 120/)
   assert.match(request.emailBody, /Room usage: 6 \/ 6/)
   assert.match(request.emailBody, /User usage: 2 \/ 2/)
   assert.match(request.emailBody, /Recommended plan: Standard/)
   assert.match(request.emailBody, /Timestamp:/)
   assert.match(request.whatsappText, /Upgrade request for Sunset Inn/)
   assert.match(request.whatsappText, /Current plan: Starter → Standard/)
-  assert.match(request.whatsappText, /Bookings: 52 \/ 50/)
+  assert.match(request.whatsappText, /Bookings: 122 \/ 120/)
 })
 
 test('usage state classification stays consistent across badges and sorting', () => {

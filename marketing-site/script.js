@@ -30,6 +30,8 @@
   }
 
   function detectProductId() {
+    var requestedProduct = new URLSearchParams(window.location.search).get('product') || ''
+    if (PRODUCT_RELEASES[requestedProduct]) return requestedProduct
     var bodyProduct = (document.body && document.body.dataset.product) || ''
     if (PRODUCT_RELEASES[bodyProduct]) return bodyProduct
     var page = (document.body && document.body.dataset.page) || ''
@@ -462,6 +464,7 @@
         '<div class="download-modal-body" id="download-modal-body">' +
           '<h3 style="margin:0 0 4px;">Start your free trial</h3>' +
           '<p style="color:var(--ink-soft);margin:0 0 20px;font-size:0.92rem;">Fill in your details and the download will start automatically.</p>' +
+          '<p class="download-security-preview"><strong>Windows note:</strong> Our first releases are not yet digitally signed, so Windows may ask you to confirm the installer. The next page shows the safe steps.</p>' +
           '<form id="download-form">' +
             '<label>' + BUSINESS_FIELD_LABEL + ' <input type="text" name="lodgeName" placeholder="' + BUSINESS_FIELD_PLACEHOLDER + '" required /></label>' +
             '<label>Your name <input type="text" name="contactName" placeholder="Your full name" required /></label>' +
@@ -491,6 +494,7 @@
       bodyEl.innerHTML =
         '<h3 style="margin:0 0 4px;">Start your free trial</h3>' +
         '<p style="color:var(--ink-soft);margin:0 0 20px;font-size:0.92rem;">Fill in your details and the download will start automatically.</p>' +
+        '<p class="download-security-preview"><strong>Windows note:</strong> Our first releases are not yet digitally signed, so Windows may ask you to confirm the installer. The next page shows the safe steps.</p>' +
         '<form id="download-form">' +
           '<label>' + BUSINESS_FIELD_LABEL + ' <input type="text" name="lodgeName" placeholder="' + BUSINESS_FIELD_PLACEHOLDER + '" required /></label>' +
           '<label>Your name <input type="text" name="contactName" placeholder="Your full name" required /></label>' +
@@ -551,7 +555,7 @@
           a.rel = 'noreferrer'
           a.click()
           setTimeout(function () {
-            window.location.href = './thank-you.html?email=' + encodeURIComponent(email)
+            window.location.href = './thank-you.html?email=' + encodeURIComponent(email) + '&product=' + encodeURIComponent(ACTIVE_PRODUCT_ID)
           }, 500)
         }).catch(function () {
           btn.disabled = false

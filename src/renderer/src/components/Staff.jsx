@@ -257,7 +257,6 @@ function StaffMembers() {
   const [loadError, setLoadError] = useState('')
   const [showPermissionOverrides, setShowPermissionOverrides] = useState(false)
   const currentPlan = normalizeSubscriptionPlan(usageSnapshot?.plan || access?.entitlement?.plan || 'Starter')
-  const isProPlan = currentPlan === 'Pro'
 
   useEffect(() => {
     window.api.outlets.getAll()
@@ -306,7 +305,7 @@ function StaffMembers() {
     usersUsage: usageSnapshot?.usage?.users ?? users.length,
     limits: usageLimits
   })
-  const showStaffEarlyPrompt = !isProPlan && !userLimitStatus.isBlocked && staffEarlyPrompt.shouldPrompt
+  const showStaffEarlyPrompt = !userLimitStatus.isBlocked && staffEarlyPrompt.shouldPrompt
 
   const sortedUsers = useMemo(() => {
     const roleLabel = (user) => {
@@ -652,21 +651,11 @@ function StaffMembers() {
           </p>
           <p className="mt-1 text-xs text-slate-400">{starterAccessLite ? 'Invite one additional lodge user with a safe Receptionist or Operations role. Suspend or reactivate access as needed.' : 'Role templates set who can serve, take payment, manage stock, close shifts, and approve exceptions.'}</p>
           <div className="mt-2">
-            {isProPlan ? (
-              <span className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700">
-                Unlimited access
-              </span>
-            ) : (
-              <UsageLimitIndicator label="Users" used={usageSnapshot?.usage?.users ?? users.length} limit={usageLimits.users} />
-            )}
+            <UsageLimitIndicator label="Users" used={usageSnapshot?.usage?.users ?? users.length} limit={usageLimits.users} />
           </div>
-          {!isProPlan && (
-            <>
-              <p className="mt-2 text-xs text-slate-400">{usageSnapshot?.monthlyResetCopy || MONTHLY_USAGE_RESET_COPY}</p>
-              {userLimitMessage && (
-                <p className="mt-2 text-xs text-rose-600">{userLimitMessage}</p>
-              )}
-            </>
+          <p className="mt-2 text-xs text-slate-400">{usageSnapshot?.monthlyResetCopy || MONTHLY_USAGE_RESET_COPY}</p>
+          {userLimitMessage && (
+            <p className="mt-2 text-xs text-rose-600">{userLimitMessage}</p>
           )}
           <div className="mt-3">
             <UpgradeNudgeBanner

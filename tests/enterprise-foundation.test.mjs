@@ -107,7 +107,7 @@ test('Enterprise plan has correct usage limits', () => {
 
 test('Pro plan has capped limits', () => {
   const limits = getPlanUsageLimits('Pro')
-  assert.equal(limits.monthlyBookings, 500)
+  assert.equal(limits.monthlyBookings, 600)
   assert.equal(limits.monthlyBookingsGrace, 10)
   assert.equal(limits.rooms, 30)
   assert.equal(limits.users, 10)
@@ -122,13 +122,13 @@ test('Enterprise booking grace allows #2001-#2050, blocks #2051', () => {
   assert.equal(canCreateBooking({ plan: 'Enterprise', used: 2051 }).isBlocked, true)
 })
 
-test('Pro booking grace allows #501-#510, blocks #511', () => {
-  assert.equal(getPlanUsageLimits('Pro').monthlyBookings, 500)
+test('Pro booking grace permits bookings through #610, then blocks additional check-ins', () => {
+  assert.equal(getPlanUsageLimits('Pro').monthlyBookings, 600)
   assert.equal(getPlanUsageLimits('Pro').monthlyBookingsGrace, 10)
-  assert.equal(canCreateBooking({ plan: 'Pro', used: 500 }).isInGrace, false)
-  assert.equal(canCreateBooking({ plan: 'Pro', used: 501 }).isInGrace, true)
-  assert.equal(canCreateBooking({ plan: 'Pro', used: 510 }).isInGrace, true)
-  assert.equal(canCreateBooking({ plan: 'Pro', used: 511 }).isBlocked, true)
+  assert.equal(canCreateBooking({ plan: 'Pro', used: 600 }).isInGrace, false)
+  assert.equal(canCreateBooking({ plan: 'Pro', used: 601 }).isInGrace, true)
+  assert.equal(canCreateBooking({ plan: 'Pro', used: 609 }).isBlocked, false)
+  assert.equal(canCreateBooking({ plan: 'Pro', used: 610 }).isBlocked, true)
 })
 
 test('Enterprise room and user limits enforce thresholds', () => {

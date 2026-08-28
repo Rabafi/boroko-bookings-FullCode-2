@@ -42,8 +42,8 @@ async function run() {
     .eq('lodge_id', TEST_LODGE_ID)
     .order('created_at', { ascending: true })
   if (roomsError) throw roomsError
-  if (!Array.isArray(rooms) || rooms.length < 2) {
-    skip('need at least two rooms in the test lodge so the harness can create 52 non-overlapping bookings')
+  if (!Array.isArray(rooms) || rooms.length < 4) {
+    skip('need at least four rooms in the test lodge so the harness can create 122 non-overlapping bookings in one month')
     return
   }
 
@@ -74,21 +74,12 @@ async function run() {
     if (!customerResult?.success) throw new Error(customerResult?.error || 'Could not create test customer')
   }
 
-  const now = new Date()
-  const previousMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 15, 12, 0, 0))
   const targetMonth = new Date(Date.UTC(2099, 0, 15, 12, 0, 0))
   const creationMonth = new Date(Date.UTC(2099, 1, 15, 12, 0, 0))
   const targetMonthWindow = monthWindow(targetMonth)
   const creationMonthWindow = monthWindow(creationMonth)
-  const currentMonthWindow = monthWindow(now)
 
-  const [{ count: currentCreationCount }, { count: targetCount }, { count: creationTargetCount }] = await Promise.all([
-    supabase.from('bookings').select('id', { count: 'exact', head: true })
-      .eq('lodge_id', TEST_LODGE_ID)
-      .in('status', ['confirmed', 'checked_in', 'checked_out'])
-      .eq('is_exclusive_event', false)
-      .gte('created_at', currentMonthWindow.start.toISOString())
-      .lt('created_at', currentMonthWindow.end.toISOString()),
+  const [{ count: targetCount }, { count: creationTargetCount }] = await Promise.all([
     supabase.from('bookings').select('id', { count: 'exact', head: true })
       .eq('lodge_id', TEST_LODGE_ID)
       .in('status', ['confirmed', 'checked_in', 'checked_out'])
@@ -103,7 +94,7 @@ async function run() {
       .lt('check_in', creationMonthWindow.end.toISOString().slice(0, 10))
   ])
 
-  if (Number(currentCreationCount || 0) !== 0 || Number(targetCount || 0) !== 0 || Number(creationTargetCount || 0) !== 0) {
+  if (Number(targetCount || 0) !== 0 || Number(creationTargetCount || 0) !== 0) {
     skip('the disposable test lodge already has bookings in the test months; choose a cleaner lodge before running this script')
     return
   }
@@ -156,18 +147,12 @@ async function run() {
   }
 
   try {
-    // Target-month limit: seed 52 rows, move them out of the current creation month, then verify
-    for (let i = 0; i < 52; i += 1) {
+    // Starter target-month limit: 120 base + 2 grace bookings.
+    for (let i = 0; i < 122; i += 1) {
       const bookingId = randomUUID()
       const createdBookingId = await createBookingFor(pickSlot(i, targetMonth), bookingId)
       targetBookingIds.push(createdBookingId)
     }
-
-    const { error: shiftError } = await supabase
-      .from('bookings')
-      .update({ created_at: previousMonth.toISOString() })
-      .in('id', targetBookingIds)
-    if (shiftError) throw shiftError
 
     const { count: shiftedTargetCount } = await supabase.from('bookings').select('id', { count: 'exact', head: true })
       .eq('lodge_id', TEST_LODGE_ID)
@@ -175,10 +160,10 @@ async function run() {
       .eq('is_exclusive_event', false)
       .gte('check_in', targetMonthWindow.start.toISOString().slice(0, 10))
       .lt('check_in', targetMonthWindow.end.toISOString().slice(0, 10))
-    assert.equal(Number(shiftedTargetCount || 0), 52)
+    assert.equal(Number(shiftedTargetCount || 0), 122)
 
     const targetFailureId = randomUUID()
-    const targetFailureSlot = pickSlot(52, targetMonth)
+    const targetFailureSlot = pickSlot(122, targetMonth)
     const { data: targetFailureResult, error: targetFailureError } = await supabase.rpc('create_booking', {
       p_lodge_id: TEST_LODGE_ID,
       p_customer_id: customerId,
@@ -200,46 +185,11 @@ async function run() {
     assert.equal(targetFailureResult?.success, false)
     assert.match(String(targetFailureResult?.error || ''), /selected check-in month/i)
 
-    await deleteBookingArtifacts(targetBookingIds)
-    targetBookingIds.length = 0
-
-    // Creation-month limit: 52 future bookings in the current creation month, then one more should fail
-    for (let i = 0; i < 52; i += 1) {
-      const bookingId = randomUUID()
-      const createdBookingId = await createBookingFor(pickSlot(i, creationMonth), bookingId)
-      creationBookingIds.push(createdBookingId)
-    }
-
-    const { count: creationCount } = await supabase.from('bookings').select('id', { count: 'exact', head: true })
-      .eq('lodge_id', TEST_LODGE_ID)
-      .in('status', ['confirmed', 'checked_in', 'checked_out'])
-      .eq('is_exclusive_event', false)
-      .gte('created_at', currentMonthWindow.start.toISOString())
-      .lt('created_at', currentMonthWindow.end.toISOString())
-    assert.equal(Number(creationCount || 0), 52)
-
-    const creationFailureId = randomUUID()
-    const creationFailureSlot = pickSlot(52, creationMonth)
-    const { data: creationFailureResult, error: creationFailureError } = await supabase.rpc('create_booking', {
-      p_lodge_id: TEST_LODGE_ID,
-      p_customer_id: customerId,
-      p_room_id: creationFailureSlot.room.id,
-      p_check_in: creationFailureSlot.checkInDate.toISOString().slice(0, 10),
-      p_check_out: creationFailureSlot.checkOutDate.toISOString().slice(0, 10),
-      p_adults: 1,
-      p_children: 0,
-      p_total_amount: creationFailureSlot.totalAmount,
-      p_invoice_number: null,
-      p_notes: 'SQL usage limit harness',
-      p_created_by: null,
-      p_deposit_amount: 0,
-      p_booking_id: creationFailureId,
-      p_idempotency_key: `sql-usage:${creationFailureId}`,
-      p_deposit_method: null
-    })
-    if (creationFailureError) throw creationFailureError
-    assert.equal(creationFailureResult?.success, false)
-    assert.match(String(creationFailureResult?.error || ''), /monthly booking creation limit/i)
+    // Creation month is informational: after creating 122 rows now, another
+    // booking for a different check-in month must still succeed.
+    const creationBookingId = randomUUID()
+    const createdBookingId = await createBookingFor(pickSlot(0, creationMonth), creationBookingId)
+    creationBookingIds.push(createdBookingId)
 
     await deleteBookingArtifacts(creationBookingIds)
     creationBookingIds.length = 0

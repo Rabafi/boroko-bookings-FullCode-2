@@ -30,7 +30,7 @@ import UsageUpgradePrompt from './shared/UpgradePromptModal'
 import UpgradeNudgeBanner from './shared/UpgradeNudgeBanner'
 import { DESKTOP_PAYMENT_METHODS, PAYMENT_METHOD_LABELS } from '../constants/paymentMethods'
 import { useAccess, useAuth, useSettings, useFeatures } from '../app-context'
-import { MONTHLY_USAGE_RESET_COPY, canCreateBooking, countMonthlyUsageBookings, getEarlyUpgradePromptState, getPlanUsageLimits, normalizeSubscriptionPlan } from '../../../shared/subscriptionPlans'
+import { canCreateBooking, countMonthlyCreatedBookings, countMonthlyUsageBookings, getEarlyUpgradePromptState, getPlanUsageLimits, normalizeSubscriptionPlan } from '../../../shared/subscriptionPlans'
 import { formatLocalDate, localToday } from '../utils/localDate'
 import { getBusinessDisplayName, getUiVocabulary } from '../../../shared/uiVocabulary'
 
@@ -620,10 +620,6 @@ export default function Bookings() {
   }
 
   const openAdd = () => {
-    if (bookingCreateBlocked) {
-      setShowUpgradePrompt(true)
-      return
-    }
     setEditingId(null)
     setEditingGroupId(null)
     setEditingBaseUpdatedAt(null)
@@ -797,15 +793,6 @@ export default function Bookings() {
       if (editingId) {
         res = await window.api.bookings.update(editingId, data)
       } else {
-        const bookingLimitStatus = canCreateBooking({
-          plan: access?.entitlement?.plan || 'Starter',
-          used: thisMonthBookings
-        })
-        if (bookingLimitStatus.isBlocked) {
-          const plan = access?.entitlement?.plan || 'Starter'
-          const nextPlan = plan === 'Starter' ? 'Standard' : 'Pro'
-          throw new Error(`You’ve reached ${thisMonthBookings} / ${bookingLimitStatus.effectiveLimit} monthly bookings on ${plan}. Upgrade to ${nextPlan} for higher monthly booking capacity.`)
-        }
         if (isMultiRoomDraft) {
           res = await window.api.bookings.createMultiRoom({
             ...data,
@@ -1215,10 +1202,27 @@ export default function Bookings() {
     : 0
   const usageLimits = getPlanUsageLimits(access?.entitlement?.plan || 'Starter')
   const currentPlan = normalizeSubscriptionPlan(usageSnapshot?.plan || access?.entitlement?.plan || 'Starter')
-  const isProPlan = currentPlan === 'Pro'
-  const thisMonthBookings = countMonthlyUsageBookings(bookings, new Date())
-  const bookingLimitStatus = usageSnapshot?.statuses?.bookings || canCreateBooking({ plan: access?.entitlement?.plan || 'Starter', used: thisMonthBookings })
-  const bookingCreateBlocked = usageSnapshot?.bookingAllowance?.isBlocked === true || bookingLimitStatus.isBlocked === true
+  const usageMonthDate = new Date()
+  const thisMonthBookings = countMonthlyUsageBookings(bookings, usageMonthDate)
+  const rawCheckInMonthBookings = usageSnapshot?.usage?.monthlyBookings
+  const parsedCheckInMonthBookings = Number(rawCheckInMonthBookings)
+  const checkInMonthBookings = Number.isFinite(parsedCheckInMonthBookings) && parsedCheckInMonthBookings >= 0
+    ? parsedCheckInMonthBookings
+    : thisMonthBookings
+  const bookingLimitStatus = usageSnapshot?.bookingAllowance?.targetMonthStatus
+    || usageSnapshot?.statuses?.bookingTargetMonth
+    || canCreateBooking({ plan: currentPlan, used: checkInMonthBookings })
+  const currentCheckInMonthFull = bookingLimitStatus.isBlocked === true || bookingLimitStatus.state === 'blocked'
+  const thisMonthCreatedBookings = countMonthlyCreatedBookings(bookings, usageMonthDate)
+  const rawCreationMonthBookings = usageSnapshot?.usage?.creationMonthBookings
+    ?? usageSnapshot?.bookingAllowance?.createdMonthUsed
+  const parsedCreationMonthBookings = Number(rawCreationMonthBookings)
+  const creationMonthBookings = Number.isFinite(parsedCreationMonthBookings) && parsedCreationMonthBookings >= 0
+    ? parsedCreationMonthBookings
+    : thisMonthCreatedBookings
+  const creationMonthStatus = usageSnapshot?.bookingAllowance?.creationMonthStatus
+    || usageSnapshot?.statuses?.bookingCreationMonth
+    || null
   const bookingEarlyPrompt = getEarlyUpgradePromptState({
     plan: currentPlan,
     bookingsUsage: usageSnapshot?.usage?.monthlyBookings ?? thisMonthBookings,
@@ -1226,14 +1230,12 @@ export default function Bookings() {
     usersUsage: usageSnapshot?.usage?.users ?? 0,
     limits: usageLimits
   })
-  const showBookingEarlyPrompt = !isProPlan && !bookingCreateBlocked && bookingEarlyPrompt.shouldPrompt
-  const bookingLimitMessage = usageSnapshot?.warning || (
-    bookingCreateBlocked
-      ? 'Booking creation is restricted until usage drops or the plan is upgraded.'
+  const showBookingEarlyPrompt = !currentCheckInMonthFull && bookingEarlyPrompt.shouldPrompt
+  const bookingLimitMessage = currentCheckInMonthFull
+    ? 'Check-ins this month are at the plan limit. You can still create bookings for another check-in month.'
       : bookingLimitStatus.isInGrace
-        ? 'A small booking grace allowance is active right now.'
+        ? 'Check-ins this month are using the plan grace allowance.'
         : ''
-  )
 
   return (
     <div className="mx-auto flex max-w-7xl flex-col gap-6">
@@ -1273,27 +1275,28 @@ export default function Bookings() {
               <h1 className="bb-page-header-title mt-2">Bookings</h1>
               <p className="bb-page-header-subtitle">{bookings.length} total bookings across current and upcoming stays.</p>
           <div className="mt-2">
-            {isProPlan ? (
-              <span className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700">
-                Unlimited access
+            <UsageLimitIndicator label="Check-ins this month" used={usageSnapshot?.usage?.monthlyBookings ?? thisMonthBookings} limit={usageLimits.monthlyBookings} grace={usageLimits.monthlyBookingsGrace} />
+            <div
+              aria-live="polite"
+              className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs"
+              data-creation-status={creationMonthStatus?.state || 'unknown'}
+              data-testid="booking-creation-usage"
+            >
+              <span className="font-medium text-slate-600">
+                Created this month: {creationMonthBookings}
               </span>
-            ) : (
-              <UsageLimitIndicator label="Monthly bookings" used={usageSnapshot?.usage?.monthlyBookings ?? thisMonthBookings} limit={usageLimits.monthlyBookings} grace={usageLimits.monthlyBookingsGrace} />
-            )}
-            {usageSnapshot?.source === 'cache' && !isProPlan && (
+              <span className="text-slate-400">(informational only)</span>
+            </div>
+            {usageSnapshot?.source === 'cache' && (
               <p className="mt-2 text-xs text-amber-700">
                 Usage count may be outdated because the app is offline. New records may be rejected during sync if the subscription limit has already been reached.
               </p>
             )}
-            {!isProPlan && (
-              <>
-                <p className="mt-2 text-xs text-slate-500">{usageSnapshot?.monthlyResetCopy || MONTHLY_USAGE_RESET_COPY}</p>
-                {bookingLimitMessage && (
-                  <p className={`mt-2 text-xs ${bookingCreateBlocked ? 'text-rose-700' : 'text-amber-700'}`}>
-                    {bookingLimitMessage}
-                  </p>
-                )}
-              </>
+            <p className="mt-2 text-xs text-slate-500">Each check-in month has its own allowance; advance bookings count in their selected check-in month.</p>
+            {bookingLimitMessage && (
+              <p className={`mt-2 text-xs ${currentCheckInMonthFull ? 'text-rose-700' : 'text-amber-700'}`}>
+                {bookingLimitMessage}
+              </p>
             )}
             <div className="mt-3">
               <UpgradeNudgeBanner
@@ -1320,8 +1323,7 @@ export default function Bookings() {
           </button>
           <button
             onClick={openAdd}
-            disabled={bookingCreateBlocked}
-            className="btn-primary disabled:cursor-not-allowed disabled:opacity-60"
+            className="btn-primary"
           >
             <Plus size={16} /> New Booking
           </button>
@@ -1338,9 +1340,9 @@ export default function Bookings() {
           ✓ {success}
         </div>
       )}
-      {bookingCreateBlocked && (
+      {currentCheckInMonthFull && (
         <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800 shadow-sm">
-          {bookingLimitMessage || `Booking creation is currently restricted for ${getUiVocabulary({}).thisNoun}.`}
+          {bookingLimitMessage}
         </div>
       )}
       {pendingOnlineCount > 0 && (
@@ -2713,7 +2715,7 @@ export default function Bookings() {
         limit={usageLimits.monthlyBookings}
         grace={usageLimits.monthlyBookingsGrace}
         status={bookingLimitStatus}
-        message={usageSnapshot?.warning || `Monthly booking creation is restricted for ${getUiVocabulary({}).thisNoun} right now.`}
+        message={bookingLimitMessage || 'Booking capacity is checked against the selected check-in month.'}
         usage={usageSnapshot?.usage}
         recommendation={usageSnapshot?.recommendation}
         lodgeName={settings?.lodge_name || settings?.company_name || ''}

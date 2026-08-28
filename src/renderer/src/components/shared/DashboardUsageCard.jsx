@@ -66,7 +66,6 @@ export default function DashboardUsageCard({
     usersUsage: usersUsed,
     limits
   })
-  const isPro = currentPlan === 'Pro'
   const usageNote = status?.isBlocked
     ? 'New bookings are currently blocked until you upgrade.'
     : status?.isInGrace
@@ -91,35 +90,6 @@ export default function DashboardUsageCard({
     if (typeof onUpgrade === 'function') {
       await onUpgrade()
     }
-  }
-
-  if (isPro) {
-    return (
-      <section className="bb-card overflow-hidden border border-emerald-200 bg-emerald-50">
-        <div className="flex flex-wrap items-start justify-between gap-4 px-5 py-5">
-          <div className="min-w-0">
-            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-emerald-700">Plan</p>
-            <h2 className="mt-2 text-xl font-semibold text-emerald-950">Pro</h2>
-            <p className="mt-1 text-sm text-emerald-800">Unlimited access</p>
-          </div>
-          <span className="inline-flex items-center rounded-full border border-emerald-300 bg-white px-3 py-1.5 text-xs font-semibold text-emerald-700">
-            <CheckCircle2 size={14} className="mr-1" />
-            Full access enabled
-          </span>
-        </div>
-        <div className="grid gap-3 border-t border-emerald-100 px-5 py-4 sm:grid-cols-3">
-          <div className="rounded-2xl border border-emerald-100 bg-white px-4 py-3 text-sm font-semibold text-emerald-900">
-            Unlimited bookings
-          </div>
-          <div className="rounded-2xl border border-emerald-100 bg-white px-4 py-3 text-sm font-semibold text-emerald-900">
-            Unlimited rooms
-          </div>
-          <div className="rounded-2xl border border-emerald-100 bg-white px-4 py-3 text-sm font-semibold text-emerald-900">
-            Unlimited users
-          </div>
-        </div>
-      </section>
-    )
   }
 
   const usageRows = [

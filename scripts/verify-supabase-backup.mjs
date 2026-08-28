@@ -211,8 +211,14 @@ function verifyPlainArchiveBytes(bytes, options = {}) {
   const checksums = parseChecksumManifest(entries.get('SHA256SUMS').content, entries)
   for (const name of REQUIRED_CHECKSUM_FILES) {
     if (!checksums.has(name)) throw new Error(`SHA256SUMS is missing ${name}.`)
+  }
+  // Verify every manifest entry, not only the three legacy database files.
+  // Whole-project bundles add Auth, Storage-schema, migration-history, and
+  // inventory files; accepting a tampered extension would make the package
+  // appear valid while silently losing its recovery evidence.
+  for (const [name, expected] of checksums) {
     const actual = sha256(entries.get(name).content)
-    if (!safeEqualHex(actual, checksums.get(name))) throw new Error(`SHA-256 verification failed for ${name}.`)
+    if (!safeEqualHex(actual, expected)) throw new Error(`SHA-256 verification failed for ${name}.`)
   }
   const metadata = parseAndValidateMetadata(entries.get('metadata.json'), entries, checksums)
   const files = [...entries.values()]

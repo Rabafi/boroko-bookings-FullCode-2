@@ -1116,6 +1116,11 @@ export async function createMultiRoomBooking(data = {}) {
   }
 
   const { nights } = validateBookingDates(data.check_in, data.check_out);
+  await assertCreationWithinUsageLimit('booking', {
+    forceRemoteRefresh: state.isOnline,
+    monthDate: new Date(data.check_in),
+    requestedUnits: roomLines.length
+  });
   await checkExclusiveEventConflict(data.check_in, data.check_out);
 
   const groupId = data.group_id || buildAccommodationGroupId();

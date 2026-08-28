@@ -505,7 +505,6 @@ export default function Dashboard() {
     [allUpcoming]
   )
   const currentPlan = normalizeSubscriptionPlan(usageSnapshot?.plan || settings?.subscription_plan || 'Starter')
-  const isProPlan = currentPlan === 'Pro'
   const usageLimits = getPlanUsageLimits(currentPlan)
   const usageCounts = usageSnapshot?.usage || { monthlyBookings: 0, rooms: 0, users: 0 }
   const bookingStatus = usageSnapshot?.statuses?.bookings || getUsageLimitStatus({ used: usageCounts.monthlyBookings, limit: usageLimits.monthlyBookings, grace: usageLimits.monthlyBookingsGrace })
@@ -519,7 +518,7 @@ export default function Dashboard() {
     usersUsage: usageCounts.users,
     limits: usageLimits
   })
-  const showDashboardPrompt = !isProPlan && dashboardPrompt.shouldPrompt
+  const showDashboardPrompt = dashboardPrompt.shouldPrompt
   const openTableCount = restaurantTables.filter(t => t.status === 'occupied' || t.status === 'reserved').length
   const totalTableCount = restaurantTables.length
   const pendingTicketCount = kitchenTickets.filter(t => ['pending', 'preparing'].includes(String(t.status || '').toLowerCase())).length

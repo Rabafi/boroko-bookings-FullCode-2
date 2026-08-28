@@ -1,5 +1,80 @@
 # Tsa Bonno HospitalityOS Project State
 
+## 2026-08-28 — Check-in-month booking-cap rule implemented locally (migration pending)
+
+Booking-cap enforcement now uses only the selected check-in month's active,
+non-exclusive bookings (`confirmed`, `checked_in`, and `checked_out`). Booking
+creation-month volume remains visible as an explicitly informational metric and
+cannot block booking creation. The desktop no longer disables New Booking merely
+because the current check-in month is full; the selected date is enforced during
+creation, and multi-room bookings preflight all requested room-booking units.
+
+Forward migration `20260828090000_booking_check_in_month_usage_enforcement.sql`
+removes the creation-month quota, serializes per-lodge/per-check-in-month quota
+acquisition, and applies the same guard when a pending/cancelled booking is
+confirmed or a booking is moved into another month. LodgingOS booking bases are
+now Starter 120, Standard 400, and Pro 600, retaining only the small existing
+grace allowances of +2, +5, and +10 respectively. Pro is no longer treated as
+unlimited by the forward server rule or usage UI. Enterprise/Hotel limits remain
+unchanged pending the separate product-boundary work. Focused subscription,
+cross-layer enforcement, and production-guardrail tests pass, as does the
+Lodge/Camp production build. The migration has not yet been deployed to the
+linked Supabase project, so live server enforcement remains unchanged until it
+is applied and verified.
+
+## 2026-08-27 — Whole-project Auth/config recovery integration (local-only)
+
+The scheduled backup workflow now has a separate encrypted whole-project
+recovery bundle step. It uses the existing database URL and encryption public
+key to capture explicit Auth schema/data, Storage schema, migration history,
+and a value-free repository function/config inventory; it uploads only the
+encrypted artifact to the dedicated `tsa-bonno/supabase/whole-project/` R2
+prefix and a seven-day GitHub artifact. The shared R2 helper remains backward
+compatible with the existing database artifact names. No Management API token,
+function secret, project API key, provider credential, Storage object byte,
+private key, or passphrase is exported. The integration, checksums, and restore
+ordering pass locally; no live workflow run, upload, deployment, or restore
+proof exists yet.
+
+## 2026-08-27 — Encrypted Supabase Storage backup tranche implemented locally (credentials and live proof pending)
+
+The existing scheduled database-backup workflow now has a separate encrypted
+Supabase Storage tranche. It uses dedicated Supabase Storage S3 credentials only
+inside the Storage step, dynamically lists every live bucket and paginated object,
+HEADs private and public objects, records S3-visible bucket/object metadata and
+plaintext SHA-256 values in an encrypted manifest, and writes independently
+encrypted object blobs to the existing private Cloudflare R2 bucket. R2 blob keys
+are deterministic synthetic hashes; the incremental public index contains no
+bucket names or object paths. Unchanged blobs are reused only after their encrypted
+size and checksum metadata are HEAD-verified.
+
+Storage snapshots are explicitly non-atomic. A run publishes its encrypted
+manifest and complete public index only after a second full bucket/object/HEAD
+inventory exactly matches the first. Every manifest, blob, and public index upload
+is read-after-write or HEAD verified. Storage retention uses a separate versioned
+R2 prefix, validates the complete index/manifest graph and every blob referenced by
+retained snapshots before deleting anything, and fails with no deletion on a
+malformed index, orphan/missing manifest, or missing/corrupt retained blob. It
+retains 14 daily days and one snapshot per ISO week through 90 days and never uses
+a service-role fallback.
+
+Focused local coverage exercises S3 continuation-token pagination, private object
+paths and metadata remaining absent from the public index/R2 key names, encrypted
+manifest recovery, unchanged-blob reuse, mid-run source mutation rejection,
+retained-reference-safe cleanup, fail-closed malformed/missing reference state,
+and workflow credential scoping. This tranche is not deployed, committed, pushed,
+or live-verified. It still requires four repository secrets
+(`SUPABASE_STORAGE_S3_ENDPOINT`, `SUPABASE_STORAGE_S3_REGION`,
+`SUPABASE_STORAGE_S3_ACCESS_KEY_ID`, and
+`SUPABASE_STORAGE_S3_SECRET_ACCESS_KEY`), a controlled manual workflow run, R2
+inspection, representative blob decryption/checksum proof, and a disposable-project
+Storage restore rehearsal. Supabase-generated S3 credentials are server-only but
+have full Storage access across all buckets and bypass RLS; Supabase currently does
+not provide a generated read-only S3 key. The initial copy consumes Storage egress,
+S3 does not expose all bucket access/restriction settings, and object versioning is
+not supported, so the database archive and a separately protected secrets/function
+inventory remain required for whole-project recovery.
+
 ## 2026-08-27 — Encrypted Supabase database backup live and independently verified
 
 The scheduled GitHub Actions database-backup workflow now has a fail-closed

@@ -17,6 +17,9 @@ const backupKey = (stamp, runId) => `${DEFAULT_PREFIX}tsa-bonno-supabase-${stamp
 
 test('R2 object discovery accepts only names from the managed encrypted-backup namespace', () => {
   assert.equal(isManagedBackupObject({ key: backupKey('2026-08-27T00-00-00Z', 123) }), true)
+  const recoveryPrefix = 'tsa-bonno/supabase/whole-project/'
+  assert.equal(isManagedBackupObject({ key: `${recoveryPrefix}tsa-bonno-supabase-whole-project-2026-08-27T00-00-00Z-123.tar.gz.tbbackup` }, recoveryPrefix), true)
+  assert.equal(isManagedBackupObject({ key: `${DEFAULT_PREFIX}tsa-bonno-supabase-whole-project-2026-08-27T00-00-00Z-123.tar.gz.tbbackup` }), false)
   assert.equal(isManagedBackupObject({ key: `${DEFAULT_PREFIX}other-file.tbbackup` }), false)
   assert.equal(isManagedBackupObject({ key: `other-prefix/tsa-bonno-supabase-2026-08-27T00-00-00Z-123.tar.gz.tbbackup` }), false)
   assert.equal(isManagedBackupObject({ key: `${DEFAULT_PREFIX}tsa-bonno-supabase-2026-08-27T00-00-00Z-123.tar.gz` }), false)
@@ -31,6 +34,20 @@ test('R2 retention never deletes the sole positively identified successful backu
     weeklyRetentionDays: 90
   })
   assert.equal(result.keep.length, 1)
+  assert.equal(result.trash.length, 0)
+})
+
+test('R2 retention applies the configured whole-project namespace', () => {
+  const prefix = 'tsa-bonno/supabase/whole-project/'
+  const result = selectBackupRetention([
+    { key: `${prefix}tsa-bonno-supabase-whole-project-2026-01-01T00-00-00Z-1.tar.gz.tbbackup`, lastModified: '2026-01-01T00:00:00Z' }
+  ], {
+    now: new Date('2026-08-27T00:00:00Z'),
+    dailyRetentionDays: 14,
+    weeklyRetentionDays: 90,
+    prefix
+  })
+  assert.equal(result.keep.length, 1, 'the configured namespace must retain the sole recovery backup')
   assert.equal(result.trash.length, 0)
 })
 

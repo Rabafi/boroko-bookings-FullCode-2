@@ -124,10 +124,7 @@ function usageLimitErrorMessage(resource, summary) {
   const plan = summary.plan;
   const limits = summary.limits;
   if (resource === 'booking') {
-    if (summary.bookingAllowance?.blockReason === 'creation_month') {
-      return 'Monthly booking creation limit reached for this plan. Upgrade to continue creating future bookings.';
-    }
-    return 'Booking limit reached for the selected check-in month.';
+    return 'Booking limit reached for the selected check-in month. Choose another check-in month or upgrade the plan.';
   }
 
   const nextPlan = getNextSubscriptionPlan(plan);
@@ -146,14 +143,11 @@ function usageLimitErrorMessage(resource, summary) {
 export function buildUsageWarning(summary) {
   if (!summary) return '';
   const plan = summary.plan;
-  if (summary.statuses?.rooms?.isAbovePlan || summary.statuses?.users?.isAbovePlan || summary.statuses?.bookings?.isBlocked) {
-    return `This lodge is above the ${plan} plan limits. Existing records remain available, but new records are restricted until usage is reduced or the plan is upgraded.`;
-  }
-  if (summary.bookingAllowance?.creationMonthStatus?.isBlocked) {
-    return 'Monthly booking creation limit reached for this plan. Upgrade to continue creating future bookings.';
-  }
   if (summary.bookingAllowance?.targetMonthStatus?.isBlocked) {
-    return 'Booking limit reached for the selected check-in month.';
+    return 'The selected check-in month has reached its booking allowance. Another check-in month may still be available.';
+  }
+  if (summary.statuses?.rooms?.isAbovePlan || summary.statuses?.users?.isAbovePlan) {
+    return `This lodge is above the ${plan} plan limits. Existing records remain available, but new records are restricted until usage is reduced or the plan is upgraded.`;
   }
   if (summary.bookingAllowance?.combinedStatus?.isInGrace) {
     return 'You have reached the monthly booking limit and are using grace bookings. Upgrade now to avoid interruptions.';

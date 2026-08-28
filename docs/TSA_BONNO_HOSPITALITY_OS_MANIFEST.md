@@ -332,7 +332,7 @@ Recommended limits:
 
 - 6 rooms;
 - 2 users;
-- 50 bookings/month;
+- 120 bookings/month;
 - 2 grace bookings.
 
 Included:
@@ -388,7 +388,7 @@ Recommended limits:
 
 - 20 rooms;
 - 5 users;
-- 200 bookings/month;
+- 400 bookings/month;
 - 5 grace bookings.
 
 Included:
@@ -432,7 +432,7 @@ Recommended limits:
 
 - 30 rooms;
 - 10 users;
-- 500 bookings/month;
+- 600 bookings/month;
 - 10 grace bookings.
 
 Included:

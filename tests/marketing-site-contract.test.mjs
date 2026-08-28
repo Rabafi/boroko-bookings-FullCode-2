@@ -38,6 +38,8 @@ const lodgeHtml = read('marketing-site/lodge-app.html')
 const hotelHtml = read('marketing-site/hotel.html')
 const restaurantHtml = read('marketing-site/restaurant-pos.html')
 const barHtml = read('marketing-site/bar-pos.html')
+const downloadHtml = read('marketing-site/download.html')
+const thankYouHtml = read('marketing-site/thank-you.html')
 const managerAppHtml = read('marketing-site/manager-app.html')
 const brochureHtml = read('marketing-site/brochure.html')
 const marketingScript = read('marketing-site/script.js')
@@ -73,6 +75,9 @@ for (const [name, price] of [
 assertIncludes(packagesHtml, 'Manager mobile oversight', 'Bar package includes Manager mobile oversight')
 assertIncludes(packagesHtml, 'Basic Reports for today, 7-day, and 30-day views with print/PDF', 'Starter basic report boundary')
 assertIncludes(packagesHtml, 'Full Staff Management, full reports and exports', 'Standard full report boundary')
+assertIncludes(packagesHtml, 'Up to 120 bookings/month, 6 rooms, 2 users', 'Starter capacity disclosure')
+assertIncludes(packagesHtml, 'Up to 400 bookings/month, 20 rooms, 5 users', 'Standard capacity disclosure')
+assertIncludes(packagesHtml, 'Up to 600 bookings/month, 30 rooms, 10 users', 'Pro capacity disclosure')
 
 const packageMarkup = normalizeMarkup(packagesHtml)
 const lodgePackagesMarkup = sliceBetween(
@@ -202,6 +207,39 @@ assertIncludes(homeHtml, 'href="./restaurant-pos.html"', 'home Restaurant POS la
 assertIncludes(marketingScript, "BUSINESS_FIELD_LABEL", 'product-specific trial form labels')
 assertIncludes(marketingScript, "window.location.href = './hotel.html'", 'Hotel CTA routing')
 assertIncludes(marketingScript, "querySelector('[data-hotel-addon-builder]')", 'Hotel add-on calculator wiring')
+
+test('unsigned Windows installer guidance is clear, consistent, and source-aware', () => {
+  for (const phrase of [
+    'not yet digitally signed',
+    'Windows protected your PC',
+    'Unknown publisher',
+    'More info',
+    'Run anyway',
+    'do not install it'
+  ]) {
+    assertIncludes(downloadHtml, phrase, `download guidance ${phrase}`)
+  }
+  assertIncludes(thankYouHtml, 'not yet digitally signed', 'post-download signing explanation')
+  assertIncludes(thankYouHtml, 'More info', 'post-download Windows step')
+  assertIncludes(thankYouHtml, 'ask us to confirm the installer', 'post-download safe recovery path')
+  assert.ok(!thankYouHtml.includes('security prompt — click <strong>Run anyway</strong>'), 'post-download guidance must not tell users to bypass Windows without checking the source')
+  assertIncludes(marketingScript, 'The next page shows the safe steps.', 'download modal signing heads-up')
+
+  for (const [name, html] of [
+    ['Lodge', lodgeHtml],
+    ['Hotel', hotelHtml],
+    ['Restaurant POS', restaurantHtml],
+    ['Bar POS', barHtml]
+  ]) {
+    assertIncludes(html, 'Windows protected your PC', `${name} direct download Windows explanation`)
+    assertIncludes(html, '<strong>More info</strong>', `${name} direct download More info step`)
+    assertIncludes(html, '<strong>Run anyway</strong>', `${name} direct download checked continuation step`)
+    assertIncludes(html, 'If anything looks unfamiliar, stop', `${name} direct download stop guidance`)
+  }
+
+  assertIncludes(marketingScript, "new URLSearchParams(window.location.search).get('product')", 'post-download product identity detection')
+  assertIncludes(marketingScript, "'&product=' + encodeURIComponent(ACTIVE_PRODUCT_ID)", 'post-download product identity handoff')
+})
 
 for (const [name, html, prices] of [
   ['Lodge', lodgeHtml, ['P8,999/year', 'P12,999/year', 'P18,999/year']],

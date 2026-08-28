@@ -133,13 +133,13 @@ export function generateBackupKeyPair(passphrase) {
   })
 }
 
-export async function encryptBackupFile({ inputPath, outputPath, publicKeyPem }) {
+export async function encryptBackupFile({ inputPath, outputPath, publicKeyPem, allowEmpty = false }) {
   requireValue(inputPath, 'Input path')
   requireValue(outputPath, 'Output path')
   requireValue(publicKeyPem, 'Backup public key')
 
   const source = await fs.stat(inputPath)
-  if (!source.isFile() || source.size <= 0) throw new Error('Backup input must be a non-empty file.')
+  if (!source.isFile() || (!allowEmpty && source.size <= 0)) throw new Error('Backup input must be a non-empty file.')
 
   const dataKey = randomBytes(32)
   const iv = randomBytes(12)
@@ -194,7 +194,7 @@ export async function decryptBackupFile({ inputPath, outputPath, privateKeyPem, 
   requireValue(passphrase, 'Private-key passphrase')
 
   const source = await fs.stat(inputPath)
-  const minimumSize = MAGIC.length + HEADER_LENGTH_BYTES + AUTH_TAG_BYTES + 1
+  const minimumSize = MAGIC.length + HEADER_LENGTH_BYTES + AUTH_TAG_BYTES
   if (!source.isFile() || source.size < minimumSize) throw new Error('Encrypted backup is truncated.')
 
   const handle = await fs.open(inputPath, 'r')
@@ -208,7 +208,7 @@ export async function decryptBackupFile({ inputPath, outputPath, privateKeyPem, 
     const headerSize = prefix.readUInt32BE(MAGIC.length)
     if (headerSize <= 0 || headerSize > 64 * 1024) throw new Error('Encrypted backup header is invalid.')
     ciphertextStart = prefix.length + headerSize
-    if (ciphertextStart + AUTH_TAG_BYTES >= source.size) throw new Error('Encrypted backup payload is truncated.')
+    if (ciphertextStart + AUTH_TAG_BYTES > source.size) throw new Error('Encrypted backup payload is truncated.')
     const headerBuffer = Buffer.alloc(headerSize)
     await handle.read(headerBuffer, 0, headerSize, prefix.length)
     header = JSON.parse(headerBuffer.toString('utf8'))
@@ -241,9 +241,12 @@ export async function decryptBackupFile({ inputPath, outputPath, privateKeyPem, 
   // writes have been accepted by the stream.
   watchWritable(output)
   try {
-    const ciphertextEnd = source.size - AUTH_TAG_BYTES - 1
-    for await (const chunk of createReadStream(inputPath, { start: ciphertextStart, end: ciphertextEnd })) {
-      await writeChunk(output, decipher.update(chunk))
+    const ciphertextLength = source.size - AUTH_TAG_BYTES - ciphertextStart
+    if (ciphertextLength > 0) {
+      const ciphertextEnd = source.size - AUTH_TAG_BYTES - 1
+      for await (const chunk of createReadStream(inputPath, { start: ciphertextStart, end: ciphertextEnd })) {
+        await writeChunk(output, decipher.update(chunk))
+      }
     }
     await writeChunk(output, decipher.final())
     await closeWritable(output)

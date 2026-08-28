@@ -189,19 +189,19 @@ const PLANS = {
 
 const PLAN_USAGE_LIMITS = {
   Starter: {
-    monthlyBookings: 50,
+    monthlyBookings: 120,
     monthlyBookingsGrace: 2,
     rooms: 6,
     users: 2
   },
   Standard: {
-    monthlyBookings: 200,
+    monthlyBookings: 400,
     monthlyBookingsGrace: 5,
     rooms: 20,
     users: 5
   },
   Pro: {
-    monthlyBookings: 500,
+    monthlyBookings: 600,
     monthlyBookingsGrace: 10,
     rooms: 30,
     users: 10
@@ -222,12 +222,12 @@ const UPGRADE_INTENT_LOG_LIMIT = 50
 const PLAN_UPSELL_BENEFITS = {
   Starter: {
     nextPlan: 'Standard',
-    capacities: ['200 bookings/month', '20 rooms', '5 users'],
+    capacities: ['400 bookings/month', '20 rooms', '5 users'],
     features: ['Full Reports, Analytics & Exports', 'Staff Management', 'Expenses', 'Night Audit', 'Conference and Day Use']
   },
   Standard: {
     nextPlan: 'Pro',
-    capacities: ['500 bookings/month', '30 rooms', '10 users'],
+    capacities: ['600 bookings/month', '30 rooms', '10 users'],
     features: ['POS', 'Inventory', 'Room Supplies', 'Manager Mobile App', 'Public Booking Site']
   },
   Pro: {
@@ -623,13 +623,6 @@ export function countMonthlyCreatedBookings(bookings = [], monthDate = new Date(
   )).length
 }
 
-function pickStricterUsageStatus(firstStatus, secondStatus) {
-  const priority = { blocked: 5, grace: 4, critical: 3, warning: 2, ok: 1, unlimited: 0 }
-  const firstRank = priority[firstStatus?.state] || 0
-  const secondRank = priority[secondStatus?.state] || 0
-  return secondRank > firstRank ? secondStatus : firstStatus
-}
-
 function resolveUsageValue(candidate, fallback = 0) {
   const value = Number(candidate)
   if (Number.isFinite(value)) return value
@@ -643,11 +636,19 @@ export function evaluateBookingCreationAllowance({
   createdMonthUsed = 0
 } = {}) {
   const targetMonthStatus = canCreateBooking({ plan, used: targetMonthUsed })
-  const creationMonthStatus = canCreateBooking({ plan, used: createdMonthUsed })
-  const combinedStatus = pickStricterUsageStatus(targetMonthStatus, creationMonthStatus)
-  let blockReason = null
-  if (targetMonthStatus.isBlocked) blockReason = 'target_month'
-  else if (creationMonthStatus.isBlocked) blockReason = 'creation_month'
+  const creationMonthBenchmark = canCreateBooking({ plan, used: createdMonthUsed })
+  const creationMonthStatus = {
+    ...creationMonthBenchmark,
+    state: 'informational',
+    blocked: false,
+    isBlocked: false,
+    isInGrace: false,
+    badgeLabel: 'Informational only',
+    enforced: false,
+    benchmarkState: creationMonthBenchmark.state
+  }
+  const combinedStatus = targetMonthStatus
+  const blockReason = targetMonthStatus.isBlocked ? 'target_month' : null
 
   return {
     plan: normalizeSubscriptionPlan(plan),
@@ -656,8 +657,8 @@ export function evaluateBookingCreationAllowance({
     targetMonthStatus,
     creationMonthStatus,
     combinedStatus,
-    isBlocked: Boolean(blockReason),
-    isInGrace: targetMonthStatus.isInGrace || creationMonthStatus.isInGrace,
+    isBlocked: targetMonthStatus.isBlocked,
+    isInGrace: targetMonthStatus.isInGrace,
     blockReason
   }
 }

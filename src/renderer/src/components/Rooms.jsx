@@ -372,7 +372,6 @@ function RoomsTab() {
   const maintenance = roomStatusCounts.maintenance || 0
   const usageLimits = getPlanUsageLimits(access?.entitlement?.plan || 'Starter')
   const currentPlan = normalizeSubscriptionPlan(usageSnapshot?.plan || access?.entitlement?.plan || 'Starter')
-  const isProPlan = currentPlan === 'Pro'
   const roomLimitStatus = usageSnapshot?.statuses?.rooms || canCreateRoom({ plan: access?.entitlement?.plan || 'Starter', used: rooms.length })
   const roomEarlyPrompt = getEarlyUpgradePromptState({
     plan: currentPlan,
@@ -381,7 +380,7 @@ function RoomsTab() {
     usersUsage: usageSnapshot?.usage?.users ?? 0,
     limits: usageLimits
   })
-  const showRoomEarlyPrompt = !isProPlan && !roomLimitStatus.isBlocked && roomEarlyPrompt.shouldPrompt
+  const showRoomEarlyPrompt = !roomLimitStatus.isBlocked && roomEarlyPrompt.shouldPrompt
   const vocab = getUiVocabulary({ settings })
   const roomLimitMessage = roomLimitStatus.isAbovePlan
     ? `${vocab.thisNoun[0].toUpperCase()}${vocab.thisNoun.slice(1)} is above the ${usageSnapshot?.plan || access?.entitlement?.plan || 'Starter'} plan limits. Existing records remain available, but new records are restricted until usage is reduced or the plan is upgraded.`
@@ -418,17 +417,9 @@ function RoomsTab() {
             {rooms.length} total · {available} available · {occupied} occupied · {maintenance} maintenance
           </p>
           <div className="mt-2">
-            {isProPlan ? (
-              <span className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700">
-                Unlimited access
-              </span>
-            ) : (
-              <>
-                <UsageLimitIndicator label="Rooms" used={usageSnapshot?.usage?.rooms ?? rooms.length} limit={usageLimits.rooms} />
-                <p className="mt-1 text-xs text-slate-500">{usageSnapshot?.monthlyResetCopy || MONTHLY_USAGE_RESET_COPY}</p>
-                {roomLimitMessage && <p className="mt-2 text-xs text-rose-700">{roomLimitMessage}</p>}
-              </>
-            )}
+            <UsageLimitIndicator label="Rooms" used={usageSnapshot?.usage?.rooms ?? rooms.length} limit={usageLimits.rooms} />
+            <p className="mt-1 text-xs text-slate-500">{usageSnapshot?.monthlyResetCopy || MONTHLY_USAGE_RESET_COPY}</p>
+            {roomLimitMessage && <p className="mt-2 text-xs text-rose-700">{roomLimitMessage}</p>}
             <div className="mt-2">
               <UpgradeNudgeBanner
                 visible={showRoomEarlyPrompt}

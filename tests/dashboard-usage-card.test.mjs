@@ -17,13 +17,13 @@ async function read(path) {
 test('early upgrade trigger fires at 80 percent and stays off below threshold', () => {
   const prompt = getEarlyUpgradePromptState({
     plan: 'Starter',
-    bookingsUsage: 40,
+    bookingsUsage: 96,
     roomsUsage: 4,
     usersUsage: 1
   })
   const below = getEarlyUpgradePromptState({
     plan: 'Starter',
-    bookingsUsage: 39,
+    bookingsUsage: 95,
     roomsUsage: 4,
     usersUsage: 1
   })
@@ -42,13 +42,13 @@ test('early upgrade trigger fires at 80 percent and stays off below threshold', 
 test('whatsapp upgrade message stays shorter than email and keeps lodge context', () => {
   const whatsapp = buildUpgradeRequestMessage(
     { lodgeName: 'Sunset Inn', currentPlan: 'Starter' },
-    { bookings: 52, rooms: 6, users: 2 },
+    { bookings: 122, rooms: 6, users: 2 },
     { recommendedPlan: 'Standard', reason: 'High booking volume' },
     { channel: 'whatsapp' }
   )
   const email = buildUpgradeRequestMessage(
     { lodgeName: 'Sunset Inn', currentPlan: 'Starter' },
-    { bookings: 52, rooms: 6, users: 2 },
+    { bookings: 122, rooms: 6, users: 2 },
     { recommendedPlan: 'Standard', reason: 'High booking volume' }
   )
 
@@ -67,15 +67,16 @@ test('usage state presentation stays consistent for shared badges', () => {
   assert.equal(getUsageStatePresentation({ state: 'blocked', isAbovePlan: true }).label, 'Above plan')
 })
 
-test('DashboardUsageCard source keeps pro users unlimited and exposes the upgrade CTA', async () => {
+test('DashboardUsageCard shows configured counters for Pro and exposes the upgrade CTA', async () => {
   const source = await read('src/renderer/src/components/shared/DashboardUsageCard.jsx')
-  assert.match(source, /Unlimited access/)
-  assert.match(source, /Full access enabled/)
+  assert.match(source, /const usageRows =/)
+  assert.match(source, /limit: limits\.monthlyBookings/)
+  assert.doesNotMatch(source, /const isPro =/)
+  assert.doesNotMatch(source, /Unlimited bookings/)
   assert.match(source, /Usage resets on the 1st of each month/)
   assert.match(source, /New bookings are currently blocked until you upgrade\./)
   assert.match(source, /You’re using your grace allowance\. New bookings will soon be blocked\./)
   assert.match(source, /Upgrade Plan/)
-  assert.match(source, /Without usage counters or warning bars are shown for Pro|Unlimited bookings/)
 })
 
 test('Upgrade nudge banner uses local storage cooldown and the shared CTA text', async () => {
@@ -119,7 +120,7 @@ test('upgrade cooldown persistence and intent tracking use local storage safely'
       lodgeId: 'l-1',
       lodgeName: 'Sunset Inn',
       plan: 'Starter',
-      usage: { bookings: 52, rooms: 6, users: 2 },
+      usage: { bookings: 122, rooms: 6, users: 2 },
       recommendation: { recommendedPlan: 'Standard' },
       trigger: 'dashboard'
     })
@@ -129,7 +130,7 @@ test('upgrade cooldown persistence and intent tracking use local storage safely'
     assert.equal(event.trigger, 'dashboard')
     const logged = JSON.parse(localStorage.getItem('boroko:upgrade-intent-log'))
     assert.equal(logged[0].lodgeName, 'Sunset Inn')
-    assert.equal(logged[0].usage.bookings, 52)
+    assert.equal(logged[0].usage.bookings, 122)
     assert.equal(logged[0].trigger, 'dashboard')
   } finally {
     if (previousWindow === undefined) {

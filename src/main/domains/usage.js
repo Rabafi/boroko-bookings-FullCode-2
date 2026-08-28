@@ -72,20 +72,26 @@ export async function getCreationUsageSummary(targetLodgeId = state.lodgeId, { m
   eq('lodge_id', targetLodgeId)]
   );
 
-  if (bookingsResult.error || createdBookingsResult.error || roomsResult.error || usersResult.error) {
+  if (bookingsResult.error || roomsResult.error || usersResult.error) {
     const usage = getCachedEntityUsageCounts({ targetMonthDate: monthDate, creationMonthDate });
     return { ...buildUsageSummary(plan, limits, usage, 'cache'), lastUsageSyncAt: state.lastUsageSyncAt };
   }
 
+  const cachedUsage = createdBookingsResult.error
+    ? getCachedEntityUsageCounts({ targetMonthDate: monthDate, creationMonthDate })
+    : null;
   state.lastUsageSyncAt = new Date().toISOString();
   return {
     ...buildUsageSummary(plan, limits, {
       monthlyBookings: Number(bookingsResult.count || 0),
       targetMonthBookings: Number(bookingsResult.count || 0),
-      creationMonthBookings: Number(createdBookingsResult.count || 0),
+      creationMonthBookings: createdBookingsResult.error
+        ? Number(cachedUsage?.creationMonthBookings || 0)
+        : Number(createdBookingsResult.count || 0),
       rooms: Number(roomsResult.count || 0),
       users: Number(usersResult.count || 0)
     }, 'remote'),
+    creationMonthSource: createdBookingsResult.error ? 'cache' : 'remote',
     lastUsageSyncAt: state.lastUsageSyncAt
   };
 }
@@ -112,5 +118,20 @@ export async function assertCreationWithinUsageLimit(resource, options = {}) {
     creationMonthDate,
     forceRemoteRefresh: options.forceRemoteRefresh === true
   });
-  return finalizeUsageGate(resource, summary);
+  const finalized = finalizeUsageGate(resource, summary);
+  if (resource === 'booking') {
+    const requestedUnits = Math.max(1, Math.floor(Number(options.requestedUnits) || 1));
+    const status = finalized.bookingAllowance?.targetMonthStatus;
+    const rawEffectiveLimit = status?.effectiveLimit;
+    const effectiveLimit = Number(rawEffectiveLimit);
+    const used = Math.max(0, Number(status?.used) || 0);
+    const hasFiniteLimit = rawEffectiveLimit !== null && rawEffectiveLimit !== undefined && rawEffectiveLimit !== '' && Number.isFinite(effectiveLimit);
+    if (hasFiniteLimit && used + requestedUnits > effectiveLimit) {
+      const remaining = Math.max(0, effectiveLimit - used);
+      throw new Error(
+        `Only ${remaining} booking${remaining === 1 ? '' : 's'} remain for the selected check-in month; this booking needs ${requestedUnits}.`
+      );
+    }
+  }
+  return finalized;
 }

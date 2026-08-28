@@ -1,6 +1,6 @@
 {
   "name": "tsa-bonno-hospitalityos",
-  "version": "1.5.6",
+  "version": "1.5.7",
   "private": true,
   "type": "module",
   "description": "Tsa Bonno HospitalityOS desktop product workspace",
@@ -36,6 +36,7 @@
     "test:financial-truth-followup": "node --test tests/financial-truth-remediation-followup.test.mjs",
     "test:marketing-site": "node .\\tests\\marketing-site-contract.test.mjs",
     "test:starter-backup": "node --test tests\\starter-backup-package.test.mjs tests\\starter-backup-contract.test.mjs",
+    "test:cloud-backups": "node --test tests\\cloud-backup-tools.test.mjs tests\\supabase-backup-workflow.test.mjs tests\\supabase-storage-backup.test.mjs tests\\supabase-whole-project-recovery.test.mjs tests\\verify-supabase-backup.test.mjs",
     "test:starter-recovery": "node --test tests\\starter-backup-automation.test.mjs tests\\starter-backup-recovery-wiring.test.mjs tests\\starter-recovery-behavior.test.mjs tests\\starter-recovery-sql-contract.test.mjs tests\\starter-recovery-workspace.test.mjs",
     "test:brand-migration": "node .\\tests\\tsa-bonno-brand-migration.test.mjs",
     "audit:brand": "node .\\scripts\\audit-brand-migration.mjs",

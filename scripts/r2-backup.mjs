@@ -8,7 +8,10 @@ const AWS_REGION = 'auto'
 const AWS_SERVICE = 's3'
 const DEFAULT_PREFIX = 'tsa-bonno/supabase/'
 const MAX_LIST_PAGES = 100
+// Keep the live database artifact name backward compatible while permitting
+// the whole-project recovery bundle only under its dedicated R2 prefix.
 const BACKUP_FILE_PATTERN = /^tsa-bonno-supabase-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z-\d+\.tar\.gz\.tbbackup$/
+const WHOLE_PROJECT_BACKUP_FILE_PATTERN = /^tsa-bonno-supabase-whole-project-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z-\d+\.tar\.gz\.tbbackup$/
 
 function requireValue(value, label) {
   if (!value) throw new Error(`${label} is required.`)
@@ -180,7 +183,8 @@ export function isManagedBackupObject(object, prefix = DEFAULT_PREFIX) {
   const normalizedPrefix = normalizePrefix(prefix)
   const key = String(object?.key || object?.Key || '')
   const fileName = key.startsWith(normalizedPrefix) ? key.slice(normalizedPrefix.length) : ''
-  return Boolean(fileName && !fileName.includes('/') && BACKUP_FILE_PATTERN.test(fileName))
+  const pattern = normalizedPrefix.endsWith('/whole-project/') ? WHOLE_PROJECT_BACKUP_FILE_PATTERN : BACKUP_FILE_PATTERN
+  return Boolean(fileName && !fileName.includes('/') && pattern.test(fileName))
 }
 
 export async function uploadEncryptedBackup({ accountId, bucket, accessKeyId, secretAccessKey, filePath, prefix = DEFAULT_PREFIX } = {}) {
@@ -334,7 +338,8 @@ async function runCli() {
   }
   const policy = selectBackupRetention(files, {
     dailyRetentionDays: Number(process.env.BACKUP_DAILY_RETENTION_DAYS || 14),
-    weeklyRetentionDays: Number(process.env.BACKUP_WEEKLY_RETENTION_DAYS || 90)
+    weeklyRetentionDays: Number(process.env.BACKUP_WEEKLY_RETENTION_DAYS || 90),
+    prefix: config.prefix
   })
   for (const object of policy.trash) await deleteR2Object({ ...config, object })
   console.log(`Cloudflare R2 retention complete: ${policy.keep.length} retained, ${policy.trash.length} deleted.`)
@@ -353,6 +358,7 @@ export {
   AWS_SERVICE,
   DEFAULT_PREFIX,
   BACKUP_FILE_PATTERN,
+  WHOLE_PROJECT_BACKUP_FILE_PATTERN,
   canonicalPath,
   canonicalQuery,
   parseListObjectsXml,

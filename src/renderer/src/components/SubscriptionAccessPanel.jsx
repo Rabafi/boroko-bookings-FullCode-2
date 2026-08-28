@@ -187,9 +187,7 @@ export default function SubscriptionAccessPanel() {
   const canManageSubscription = canAccessCapability(access, 'settings.manage_subscription')
   const entitlementExpired = licenseStatus?.expired === true
   const licensedPlan = normalizeSubscriptionPlan(licenseStatus?.plan || 'Starter')
-  const isProPlan = licensedPlan === 'Pro'
   const isEnterprisePlan = licensedPlan === 'Enterprise'
-  const hasUsageLimits = !IS_POS_PRODUCT && !isProPlan && !isEnterprisePlan
   const licensedPlanIndex = SUBSCRIPTION_PLAN_ORDER.indexOf(licensedPlan)
   const enterpriseAddons = Array.isArray(licenseStatus?.enterprise_addons)
     ? licenseStatus.enterprise_addons
@@ -407,12 +405,6 @@ export default function SubscriptionAccessPanel() {
                 <p className="text-xs font-semibold uppercase tracking-wide text-amber-700">POS entitlement</p>
                 <p className="mt-2 text-sm font-semibold text-amber-800">Commercial POS packages do not inherit Lodge &amp; Camp usage caps.</p>
                 <p className="mt-1 text-xs text-amber-700">Your selected package controls feature access: Service, Control, or Growth workflows.</p>
-              </div>
-            ) : isProPlan ? (
-              <div className="mb-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
-                <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Usage</p>
-                <p className="mt-2 text-sm font-semibold text-emerald-800">Unlimited access</p>
-                <p className="mt-1 text-xs text-emerald-700">No usage counters or warning bars are shown for Pro.</p>
               </div>
             ) : isEnterprisePlan ? (
               <div className="mb-4 rounded-2xl border border-purple-200 bg-purple-50 p-4">

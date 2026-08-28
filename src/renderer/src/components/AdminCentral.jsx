@@ -1062,9 +1062,9 @@ function Companies({ companies, licenses, loading, onReload }) {
                   const bookingPct = rollup.recommendation?.currentUsagePct?.bookings ?? 0
                   const roomPct = rollup.recommendation?.currentUsagePct?.rooms ?? 0
                   const userPct = rollup.recommendation?.currentUsagePct?.users ?? 0
-                  const bookingUsageText = displayPlan === 'Pro' ? 'Unlimited' : `${bookingPct}%`
-                  const roomUsageText = displayPlan === 'Pro' ? 'Unlimited' : `${roomPct}%`
-                  const userUsageText = displayPlan === 'Pro' ? 'Unlimited' : `${userPct}%`
+                  const bookingUsageText = `${bookingPct}%`
+                  const roomUsageText = `${roomPct}%`
+                  const userUsageText = `${userPct}%`
                   const lastBookingDisplay = rollup.lastBookingDate ? fmt(rollup.lastBookingDate) : 'No bookings yet'
                   return (
                 <tr

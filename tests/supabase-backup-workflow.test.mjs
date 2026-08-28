@@ -75,3 +75,36 @@ test('runner cleanup remains unconditional and removes plaintext and encrypted t
   assert.match(cleanup, /tsa-bonno-supabase-\*/)
   assert.match(cleanup, /backup-public\.pem/)
 })
+
+test('whole-project recovery is encrypted, isolated, and wired to a dedicated R2 prefix', () => {
+  assert.match(workflow, /BACKUP_RECOVERY_R2_PREFIX: tsa-bonno\/supabase\/whole-project\//)
+  const buildStart = workflow.indexOf('      - name: Build encrypted whole-project recovery bundle')
+  const artifactStart = workflow.indexOf('      - name: Retain encrypted whole-project recovery artifact')
+  const r2Start = workflow.indexOf('      - name: Upload encrypted whole-project recovery bundle to Cloudflare R2')
+  const failureStart = workflow.indexOf('      - name: Write backup failure summary')
+  assert.ok(buildStart >= 0 && artifactStart > buildStart && r2Start > artifactStart && failureStart > r2Start)
+
+  const build = workflow.slice(buildStart, artifactStart)
+  const artifact = workflow.slice(artifactStart, r2Start)
+  const r2 = workflow.slice(r2Start, failureStart)
+  assert.match(build, /SUPABASE_BACKUP_DB_URL: \$\{\{ secrets\.SUPABASE_BACKUP_DB_URL \}\}/)
+  assert.match(build, /BACKUP_ENCRYPTION_PUBLIC_KEY_B64: \$\{\{ secrets\.BACKUP_ENCRYPTION_PUBLIC_KEY_B64 \}\}/)
+  assert.match(build, /node scripts\/supabase-whole-project-recovery\.mjs/)
+  assert.match(build, /supabase-whole-project-output/)
+  assert.match(build, /encrypted_path=/)
+  assert.doesNotMatch(build, /SUPABASE_ACCESS_TOKEN|SUPABASE_AUTH|SUPABASE_FUNCTION_SECRET|CLOUDFLARE_R2_SECRET_ACCESS_KEY/)
+
+  assert.match(artifact, /uses: actions\/upload-artifact@v4/)
+  assert.match(artifact, /steps\.recovery_bundle\.outputs\.encrypted_path/)
+  assert.match(artifact, /compression-level: 0/)
+
+  assert.match(r2, /CLOUDFLARE_R2_SECRET_ACCESS_KEY: \$\{\{ secrets\.CLOUDFLARE_R2_SECRET_ACCESS_KEY \}\}/)
+  assert.match(r2, /BACKUP_R2_PREFIX: \$\{\{ env\.BACKUP_RECOVERY_R2_PREFIX \}\}/)
+  assert.match(r2, /node scripts\/r2-backup\.mjs \"\$\{\{ steps\.recovery_bundle\.outputs\.encrypted_path \}\}\"/)
+  assert.doesNotMatch(r2, /SUPABASE_BACKUP_DB_URL|BACKUP_ENCRYPTION_PUBLIC_KEY_B64/)
+
+  assert.match(workflow, /steps\.recovery_bundle\.outcome == 'success'/)
+  assert.match(workflow, /steps\.recovery_artifact_upload\.outcome == 'success'/)
+  assert.match(workflow, /steps\.recovery_r2_upload\.outcome == 'success'/)
+  assert.match(workflow, /supabase-whole-project-output/)
+})
