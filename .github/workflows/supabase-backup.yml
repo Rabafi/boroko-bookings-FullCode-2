@@ -325,6 +325,8 @@ jobs:
           script: |
             const marker = '<!-- tsa-bonno-supabase-backup-overdue -->'
             const title = 'Supabase backup overdue'
+            const failureMarker = '<!-- tsa-bonno-supabase-backup-failure -->'
+            const failureTitle = 'Supabase backup failed'
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
             const { data: openIssues } = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
@@ -333,7 +335,8 @@ jobs:
               per_page: 100,
             })
             const existing = openIssues.find((issue) => issue.title === title && issue.body?.includes(marker))
-            const closeIssue = async (issue) => {
+            const existingFailure = openIssues.find((issue) => issue.title === failureTitle && issue.body?.includes(failureMarker))
+            const closeIssue = async (issue, alertType) => {
               if (!issue) return
               await github.rest.issues.update({
                 owner: context.repo.owner,
@@ -341,11 +344,12 @@ jobs:
                 issue_number: issue.number,
                 state: 'closed',
               })
-              core.notice(`Closed recovered backup overdue issue #${issue.number}.`)
+              core.notice(`Closed recovered backup ${alertType} issue #${issue.number}.`)
             }
 
             if (process.env.BACKUP_SUCCEEDED === 'true') {
-              await closeIssue(existing)
+              await closeIssue(existing, 'overdue')
+              await closeIssue(existingFailure, 'failure')
               core.notice('Backup completed; freshness is current.')
               return
             }

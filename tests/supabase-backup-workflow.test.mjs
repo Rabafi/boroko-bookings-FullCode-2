@@ -55,6 +55,8 @@ test('backup observability has scoped permissions, a safe summary, and deduplica
   assert.match(observability, /github\.rest\.issues\.listForRepo/)
   assert.match(observability, /github\.rest\.issues\.(create|update)/)
   assert.match(observability, /tsa-bonno-supabase-backup-overdue/)
+  assert.match(observability, /existingFailure/)
+  assert.match(observability, /closeIssue\(existingFailure, 'failure'\)/)
   assert.match(observability, /BACKUP_MAX_AGE_HOURS: '26'/)
   assert.match(observability, /github\.rest\.actions\.listWorkflowRuns/)
   assert.doesNotMatch(observability, /listWorkflowRunsForWorkflow/)
