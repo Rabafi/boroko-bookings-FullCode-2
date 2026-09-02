@@ -376,12 +376,11 @@ export function validatePublicIndex(index, prefix = DEFAULT_PREFIX) {
 
 async function verifyDestinationObject(destination, bucket, key, expected) {
   const head = await destination.headObject(bucket, key)
-  if (head.size !== expected.size) throw new Error('Cloudflare R2 upload size verification failed.')
-  if (head.metadata?.['tsa-sha256'] === expected.sha256) return head
+  if (head.size === expected.size && head.metadata?.['tsa-sha256'] === expected.sha256) return head
 
-  // Some S3-compatible gateways omit custom metadata from HEAD responses.
-  // In that case verify the actual encrypted bytes instead of weakening the
-  // certification contract or failing a valid upload on metadata alone.
+  // Some S3-compatible gateways omit or normalize Content-Length and custom
+  // metadata on HEAD responses. Verify the actual encrypted bytes whenever
+  // either HEAD signal differs instead of weakening the certification contract.
   const content = await destination.hashObject(bucket, key)
   if (content.size !== expected.size || content.sha256 !== expected.sha256) {
     throw new Error('Cloudflare R2 upload content verification failed.')

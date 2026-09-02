@@ -254,7 +254,7 @@ test('certified backup encrypts private paths and reuses an unchanged verified b
   assert.equal(source.downloads, 1, 'unchanged verified bytes should not be downloaded twice')
 })
 
-test('R2 verification hashes encrypted bytes when HEAD omits custom metadata', async (context) => {
+test('R2 verification hashes encrypted bytes when HEAD omits reliable size and metadata', async (context) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'storage-backup-head-metadata-'))
   context.after(() => fs.rm(directory, { recursive: true, force: true }))
   const pair = generateBackupKeyPair('storage metadata fallback passphrase')
@@ -262,7 +262,7 @@ test('R2 verification hashes encrypted bytes when HEAD omits custom metadata', a
   const destination = new MemoryDestination()
   const originalHead = destination.headObject.bind(destination)
   let contentVerifications = 0
-  destination.headObject = async (...args) => ({ ...await originalHead(...args), metadata: {} })
+  destination.headObject = async (...args) => ({ ...await originalHead(...args), size: 0, metadata: {} })
   const originalHash = destination.hashObject.bind(destination)
   destination.hashObject = async (...args) => {
     contentVerifications += 1
