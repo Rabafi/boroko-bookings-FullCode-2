@@ -243,6 +243,18 @@ export class S3Client {
     return { size, sha256: hash.digest('hex') }
   }
 
+  async hashObject(bucket, key) {
+    const response = await this.request({ method: 'GET', bucket, key, operation: 'verify object content' })
+    if (!response.body) throw new Error(`${this.label} verification download returned no body.`)
+    const hash = createHash('sha256')
+    let size = 0
+    for await (const chunk of Readable.fromWeb(response.body)) {
+      hash.update(chunk)
+      size += chunk.length
+    }
+    return { size, sha256: hash.digest('hex') }
+  }
+
   async putFile(bucket, key, filePath, { sha256: checksum, contentType = 'application/octet-stream' } = {}) {
     const stat = await fs.stat(filePath)
     const payloadHash = checksum || await sha256File(filePath)
@@ -364,8 +376,15 @@ export function validatePublicIndex(index, prefix = DEFAULT_PREFIX) {
 
 async function verifyDestinationObject(destination, bucket, key, expected) {
   const head = await destination.headObject(bucket, key)
-  if (head.size !== expected.size || head.metadata?.['tsa-sha256'] !== expected.sha256) {
-    throw new Error('Cloudflare R2 upload verification failed.')
+  if (head.size !== expected.size) throw new Error('Cloudflare R2 upload size verification failed.')
+  if (head.metadata?.['tsa-sha256'] === expected.sha256) return head
+
+  // Some S3-compatible gateways omit custom metadata from HEAD responses.
+  // In that case verify the actual encrypted bytes instead of weakening the
+  // certification contract or failing a valid upload on metadata alone.
+  const content = await destination.hashObject(bucket, key)
+  if (content.size !== expected.size || content.sha256 !== expected.sha256) {
+    throw new Error('Cloudflare R2 upload content verification failed.')
   }
   return head
 }
@@ -409,8 +428,9 @@ async function loadIndexes(destination, bucket, prefix) {
     const canonicalIndexBody = Buffer.from(`${canonicalJson(index)}\n`, 'utf8')
     await verifyDestinationObject(destination, bucket, object.key, { size: canonicalIndexBody.length, sha256: sha256(canonicalIndexBody) })
     if (!manifestKeys.has(index.manifest.key)) throw new Error('Storage retention stopped: an index references a missing manifest.')
-    const manifestHead = await destination.headObject(bucket, index.manifest.key)
-    if (manifestHead.size !== index.manifest.size || manifestHead.metadata?.['tsa-sha256'] !== index.manifest.sha256) {
+    try {
+      await verifyDestinationObject(destination, bucket, index.manifest.key, index.manifest)
+    } catch {
       throw new Error('Storage retention stopped: a manifest failed verification.')
     }
     loaded.push({ object, index })

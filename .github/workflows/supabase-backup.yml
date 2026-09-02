@@ -115,7 +115,7 @@ jobs:
 
       - name: Retain encrypted GitHub recovery artifact
         id: artifact_upload
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ steps.dump.outputs.encrypted_name }}
           path: ${{ steps.dump.outputs.encrypted_path }}
@@ -137,6 +137,7 @@ jobs:
 
       - name: Back up and certify encrypted Supabase Storage
         id: storage_backup
+        continue-on-error: true
         env:
           SUPABASE_STORAGE_S3_ENDPOINT: ${{ secrets.SUPABASE_STORAGE_S3_ENDPOINT }}
           SUPABASE_STORAGE_S3_REGION: ${{ secrets.SUPABASE_STORAGE_S3_REGION }}
@@ -195,7 +196,7 @@ jobs:
 
       - name: Retain encrypted whole-project recovery artifact
         id: recovery_artifact_upload
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ steps.recovery_bundle.outputs.encrypted_name }}
           path: ${{ steps.recovery_bundle.outputs.encrypted_path }}
@@ -214,6 +215,43 @@ jobs:
           BACKUP_DAILY_RETENTION_DAYS: ${{ env.BACKUP_DAILY_RETENTION_DAYS }}
           BACKUP_WEEKLY_RETENTION_DAYS: ${{ env.BACKUP_WEEKLY_RETENTION_DAYS }}
         run: node scripts/r2-backup.mjs "${{ steps.recovery_bundle.outputs.encrypted_path }}"
+
+      - name: Enforce complete backup success
+        id: backup_gate
+        if: always()
+        env:
+          DATABASE_DUMP_OUTCOME: ${{ steps.dump.outcome }}
+          DATABASE_ARTIFACT_OUTCOME: ${{ steps.artifact_upload.outcome }}
+          DATABASE_R2_OUTCOME: ${{ steps.r2_upload.outcome }}
+          STORAGE_BACKUP_OUTCOME: ${{ steps.storage_backup.outcome }}
+          RECOVERY_BUNDLE_OUTCOME: ${{ steps.recovery_bundle.outcome }}
+          RECOVERY_ARTIFACT_OUTCOME: ${{ steps.recovery_artifact_upload.outcome }}
+          RECOVERY_R2_OUTCOME: ${{ steps.recovery_r2_upload.outcome }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          failures=()
+          require_success() {
+            local label="$1"
+            local outcome="$2"
+            if [ "${outcome}" != 'success' ]; then
+              failures+=("${label}=${outcome:-not-run}")
+            fi
+          }
+
+          require_success 'database-dump' "${DATABASE_DUMP_OUTCOME}"
+          require_success 'database-github-artifact' "${DATABASE_ARTIFACT_OUTCOME}"
+          require_success 'database-r2' "${DATABASE_R2_OUTCOME}"
+          require_success 'storage-backup' "${STORAGE_BACKUP_OUTCOME}"
+          require_success 'whole-project-bundle' "${RECOVERY_BUNDLE_OUTCOME}"
+          require_success 'whole-project-github-artifact' "${RECOVERY_ARTIFACT_OUTCOME}"
+          require_success 'whole-project-r2' "${RECOVERY_R2_OUTCOME}"
+
+          if (( ${#failures[@]} > 0 )); then
+            printf '::error::Supabase backup incomplete: %s\n' "$(IFS=', '; echo "${failures[*]}")"
+            exit 1
+          fi
+          echo 'Database, Storage, and whole-project backup tranches completed successfully.'
 
       - name: Write backup failure summary
         if: failure()
@@ -235,7 +273,7 @@ jobs:
       - name: Open or update backup failure issue
         if: failure()
         continue-on-error: true
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             const marker = '<!-- tsa-bonno-supabase-backup-failure -->'
@@ -280,9 +318,9 @@ jobs:
         if: always()
         continue-on-error: true
         env:
-          BACKUP_SUCCEEDED: ${{ steps.dump.outcome == 'success' && steps.artifact_upload.outcome == 'success' && steps.r2_upload.outcome == 'success' && steps.storage_backup.outcome == 'success' && steps.recovery_bundle.outcome == 'success' && steps.recovery_artifact_upload.outcome == 'success' && steps.recovery_r2_upload.outcome == 'success' }}
+          BACKUP_SUCCEEDED: ${{ steps.backup_gate.outcome == 'success' }}
           BACKUP_MAX_AGE_HOURS: '26'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             const marker = '<!-- tsa-bonno-supabase-backup-overdue -->'
@@ -312,7 +350,7 @@ jobs:
               return
             }
 
-            const { data: runs } = await github.rest.actions.listWorkflowRunsForWorkflow({
+            const { data: runs } = await github.rest.actions.listWorkflowRuns({
               owner: context.repo.owner,
               repo: context.repo.repo,
               workflow_id: 'supabase-backup.yml',

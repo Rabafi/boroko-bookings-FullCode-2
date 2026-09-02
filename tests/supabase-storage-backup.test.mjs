@@ -33,6 +33,15 @@ class MemoryDestination {
     return { size: value.body.length, metadata: value.metadata || {}, eTag: value.eTag || '"memory"' }
   }
 
+  async hashObject(bucket, key) {
+    const value = this.objects.get(key)
+    if (!value) throw new Error(`missing: ${key}`)
+    return {
+      size: value.body.length,
+      sha256: createHash('sha256').update(value.body).digest('hex'),
+    }
+  }
+
   async putFile(bucket, key, filePath, details) {
     this.objects.set(key, { body: await fs.readFile(filePath), metadata: { 'tsa-sha256': details.sha256 } })
     return details
@@ -245,6 +254,31 @@ test('certified backup encrypts private paths and reuses an unchanged verified b
   assert.equal(source.downloads, 1, 'unchanged verified bytes should not be downloaded twice')
 })
 
+test('R2 verification hashes encrypted bytes when HEAD omits custom metadata', async (context) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'storage-backup-head-metadata-'))
+  context.after(() => fs.rm(directory, { recursive: true, force: true }))
+  const pair = generateBackupKeyPair('storage metadata fallback passphrase')
+  const source = new MemorySource()
+  const destination = new MemoryDestination()
+  const originalHead = destination.headObject.bind(destination)
+  let contentVerifications = 0
+  destination.headObject = async (...args) => ({ ...await originalHead(...args), metadata: {} })
+  const originalHash = destination.hashObject.bind(destination)
+  destination.hashObject = async (...args) => {
+    contentVerifications += 1
+    return originalHash(...args)
+  }
+
+  const result = await backupSupabaseStorage({
+    source, destination, destinationBucket: 'backup-bucket', publicKeyPem: pair.publicKey,
+    tempDirectory: path.join(directory, 'work'), runId: 'metadata-fallback',
+    clock: clock(['2026-08-27T12:00:00Z', '2026-08-27T12:01:00Z', '2026-08-27T12:02:00Z', '2026-08-27T12:03:00Z', '2026-08-27T12:04:00Z']),
+  })
+
+  assert.equal(result.objectCount, 1)
+  assert.ok(contentVerifications >= 3, 'blob, manifest, and public index bytes should be verified')
+})
+
 test('zero-byte S3 objects remain recoverable', async (context) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'storage-backup-empty-'))
   context.after(() => fs.rm(directory, { recursive: true, force: true }))
@@ -349,5 +383,6 @@ test('workflow scopes Supabase Storage S3 credentials to the certifying Storage 
   }
   assert.match(storageStep, /node scripts\/supabase-storage-backup\.mjs/)
   assert.doesNotMatch(workflow, /SUPABASE_(SERVICE_ROLE|SERVICE_KEY)|service[_-]?role/i)
-  assert.match(workflow, /steps\.storage_backup\.outcome == 'success'/)
+  assert.match(workflow, /STORAGE_BACKUP_OUTCOME: \$\{\{ steps\.storage_backup\.outcome \}\}/)
+  assert.match(workflow, /require_success 'storage-backup'/)
 })
